@@ -37,7 +37,6 @@ test("the Engines section lists llama.cpp, whisper.cpp and audio.cpp", () => {
     section,
     /installed: hw\.audioCpp \?\? status\?\.audio\?\.installed_tag \?\? null,/,
   );
-  // A missing runtime still gets its row, so the version list never silently drops one.
   assert.match(
     section,
     /row\.installed \?\? t\("settings\.about\.engines\.notInstalled"\)/,

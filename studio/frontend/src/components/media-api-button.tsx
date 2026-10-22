@@ -13,7 +13,6 @@ import { publicModelId } from "@/features/hub";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 
-/** The Images and Video header's way to Settings > API, with the loaded model filled in. Same look as the Audio page's. */
 export function MediaApiButton({
   kind,
   model,

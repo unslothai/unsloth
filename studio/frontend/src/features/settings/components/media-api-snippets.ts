@@ -8,7 +8,6 @@ export type MediaApiKind = "images" | "video";
 
 export const MEDIA_API_KINDS: readonly MediaApiKind[] = ["images", "video"];
 
-/** Shown until the page hands over the model it has loaded. */
 export const MEDIA_API_PLACEHOLDER_MODELS: Record<MediaApiKind, string> = {
   images: "unsloth/FLUX.2-klein-4B-GGUF",
   video: "unsloth/Wan2.2-TI2V-5B-GGUF",
@@ -98,7 +97,6 @@ curl -sSf "$BASE/v1/images/generations" \\
   | jq -r '.data[0].b64_json' | base64 --decode > image.png`;
 }
 
-// A video renders as a job: create it, poll until it settles, then download the file.
 function videoSnippet({ base, apiKey, model, lang, os }: MediaApiSnippetInput) {
   const body = { model, prompt: VIDEO_PROMPT };
   if (lang === "python") {

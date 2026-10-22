@@ -255,8 +255,7 @@ export function WaveformBars({
   );
 }
 
-/** Pill bars drawn in HTML: an SVG stretched with preserveAspectRatio="none" squashes rx, so its
- *  bars came out square-ended. */
+/** HTML pills: an SVG stretched with preserveAspectRatio="none" squashes rx into square ends. */
 export function WaveformBarGlyphs({
   peaks,
   count,
@@ -270,7 +269,6 @@ export function WaveformBarGlyphs({
     <div aria-hidden="true" className="flex size-full items-center">
       {Array.from({ length: count }, (_, index) => {
         const peak = peaks ? (peaks[index] ?? 0) : 0;
-        // A floor keeps silence visible as a dot rather than a gap.
         const height = Math.max(2, peak * 30);
         return (
           <span

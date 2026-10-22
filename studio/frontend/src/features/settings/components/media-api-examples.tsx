@@ -41,7 +41,6 @@ const LANGS: { id: AudioApiLang; label: string }[] = [
   { id: "javascript", label: "JavaScript" },
 ];
 
-/** Settings > API: /v1/images/generations and /v1/videos, opened from the Images and Video pages. */
 export function MediaApiExamples({
   apiKey,
   useTunnel,
@@ -68,7 +67,6 @@ export function MediaApiExamples({
   const [os, setOs] = useState<AudioApiOs>(
     storedPrefs.apiExampleOs ?? (deviceType === "windows" ? "windows" : "unix"),
   );
-  // The model each page had loaded when its button was pressed.
   const [pageModels, setPageModels] = useState<
     Partial<Record<MediaApiKind, string>>
   >({});
@@ -88,7 +86,6 @@ export function MediaApiExamples({
     useSettingsDialogStore.getState().consumeMediaApiRequest();
   }, [mediaApiRequested]);
 
-  // Same pinning as the Audio API card: the tab above it grows as its sections load.
   useEffect(() => {
     if (scrollTarget !== "api-keys-media-api") return;
     const section = sectionRef.current;
@@ -249,7 +246,6 @@ export function MediaApiExamples({
             redactFromReload={Boolean(apiKey)}
           />
         </div>
-        {/* With auto-switch off the request runs on whatever the page has loaded, whatever it names. */}
         {pageModel == null || autoSwitch === false ? (
           <div className="flex min-w-0 flex-col gap-1 border-t border-border px-3 py-2.5 text-ui-11 leading-snug text-muted-foreground">
             {pageModel == null ? (

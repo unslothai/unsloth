@@ -738,8 +738,6 @@ export function GeneralTab() {
           )}
           className="pb-1"
         />
-        {/* One compact line per channel under a shared heading, rather than three rows that each
-            restate "update notifications". */}
         <div className="flex flex-col pb-3">
           {UPDATE_REMINDER_CHANNELS.map(({ channel, name, hintKey }) => (
             <div

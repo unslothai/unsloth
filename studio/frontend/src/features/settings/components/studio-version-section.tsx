@@ -64,10 +64,7 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   }
 }
 
-// Shared "Unsloth" version block, shown in both General and About. The engine
-// builds (llama.cpp, whisper.cpp, audio.cpp) live in About's Engines section,
-// beside their update controls. Children are appended below the version rows,
-// for controls that act on them.
+// Shared "Unsloth" version block (General and About); engine builds live in EngineVersionsSection.
 export function StudioVersionSection({
   desktopAppVersion,
   children,

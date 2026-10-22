@@ -60,7 +60,6 @@ export interface AudioApiRequest {
   model: string | null;
 }
 
-/** What the Images or Video page asks the API tab to show. */
 export interface MediaApiRequest {
   kind: "images" | "video";
   model: string | null;
@@ -98,7 +97,6 @@ interface SettingsDialogState {
   // The Audio API card applies it, then clears it. Same lifetime as archivedRequested.
   audioApiRequested: AudioApiRequest | null;
   decisionTryRequested: string | null;
-  // The Image and video API card applies it, then clears it, like decisionTryRequested.
   mediaApiRequested: MediaApiRequest | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;

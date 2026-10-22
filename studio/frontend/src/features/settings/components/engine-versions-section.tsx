@@ -24,7 +24,6 @@ type EngineRow = {
   offer: ComponentOffer | null;
 };
 
-/** Settings > About: every runtime's installed version, and the same update the corner card offers. */
 export function EngineVersionsSection() {
   const t = useT();
   const hw = useHardwareInfo();
@@ -35,8 +34,7 @@ export function EngineVersionsSection() {
   const [checking, setChecking] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
 
-  // The hardware probe reads the binary's own build string, which names the variant the release
-  // tag leaves out, so it wins where both exist.
+  // The binary's own build string names the variant the release tag leaves out.
   const rows: EngineRow[] = [
     {
       key: "llama",

@@ -208,9 +208,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
 // resynced -- would otherwise replay the same completed job forever. Persist the handled marker
 // outside React state so it survives both, and is shared across tabs in this browser.
 const HANDLED_RELOAD_STORAGE_KEY = "unsloth_llama_update_reload_handled_at";
-// sessionStorage, not localStorage: a skipped or snoozed card comes back the next time the app is
-// opened. Kept for good, the card was the only way to update, so a skip stranded the install on
-// that release until the whole app was reinstalled.
+// sessionStorage, not localStorage: a skip kept for good stranded the install on that release.
 const OFFER_SUPPRESSION_STORAGE_KEY = "unsloth_llama_update_offer_suppression";
 const OFFER_SUPPRESSION_EVENT = "unsloth:llama-update-offer-suppression";
 
@@ -791,7 +789,6 @@ export function useLlamaUpdateCheck({
     );
   }, [applying, startJobPoll, notifyReloadIfNeeded, clearSuppression]);
 
-  /** Asks the release feed now rather than at the next hourly check; null when it could not answer. */
   const refresh = useCallback(async (): Promise<LlamaUpdateStatus | null> => {
     const next = await readStatus(true);
     if (activeRef.current) surfaceIfAvailable(next);
