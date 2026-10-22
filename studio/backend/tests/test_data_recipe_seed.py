@@ -29,8 +29,8 @@ class _FakeUpload:
         self.filename = filename
         self._content = content
 
-    async def read(self) -> bytes:
-        return self._content
+    async def read(self, size: int = -1) -> bytes:
+        return self._content if size < 0 else self._content[:size]
 
 
 def _load_seed_route(
@@ -345,6 +345,29 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
 
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
+
+
+def test_an_oversized_upload_is_refused_after_reading_one_byte_past_the_cap(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES", 32)
+    upload = _FakeUpload("big.txt", b"x" * 4096)
+    upload.size = 4096
+    sizes: list[int] = []
+    real_read = upload.read
+
+    async def tracking_read(size: int = -1) -> bytes:
+        sizes.append(size)
+        return await real_read(size)
+
+    upload.read = tracking_read
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.upload_unstructured_file(upload, "block"))
+
+    assert sizes == [33]
+    assert exc.value.status_code == 413
+    assert "(4096 bytes)" in exc.value.detail
+    assert _block_files(seed_route) == []
 
 
 def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_path):
@@ -1758,3 +1781,119 @@ def test_validate_answers_when_the_error_collector_cannot_read_the_seed(monkeypa
 
     assert response.valid is False
     assert "repository not found" in (response.raw_detail or "")
+
+
+def test_every_recipe_document_type_has_an_extractor(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    from core.rag import config
+
+    readable = (
+        config.SUPPORTED_UPLOAD_EXTS | config.DOCUMENT_UPLOAD_EXTS | seed_route._MUPDF_EBOOK_EXTS
+    )
+    assert seed_route.UNSTRUCTURED_ALLOWED_EXTS <= readable
+    assert {".epub", ".mobi", ".doc", ".xlsx", ".pptx", ".odt", ".rtf", ".eml"} <= (
+        seed_route.UNSTRUCTURED_ALLOWED_EXTS
+    )
+
+
+def test_recipe_upload_extracts_office_ebook_and_email_files(monkeypatch, tmp_path):
+    from .test_rag_office_formats import BUILDERS
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    for ext, build in sorted(BUILDERS.items()):
+        assert ext in seed_route.UNSTRUCTURED_ALLOWED_EXTS, ext
+        source = build(tmp_path / f"source{ext}")
+        result = _run_upload(seed_route, f"book{ext}", source.read_bytes(), block_id = ext[1:])
+        assert result.status == "ok", (ext, result.error)
+        extracted = (
+            seed_route.UNSTRUCTURED_UPLOAD_ROOT / ext[1:] / f"{result.file_id}.extracted.txt"
+        )
+        assert "zebramarker" in extracted.read_text(encoding = "utf-8").lower(), ext
+
+
+_FB2 = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">'
+    "<description><title-info><book-title>Tiny</book-title></title-info></description>"
+    "<body><section><title><p>Chapter One</p></title>"
+    "<p>It was a bright cold day in April, and the clocks were striking thirteen.</p>"
+    "<p>Zebramarker closes the chapter.</p></section></body></FictionBook>"
+).encode()
+
+
+def test_recipe_upload_reads_mupdf_ebooks_in_the_worker_pool(monkeypatch, tmp_path):
+    pytest.importorskip("pymupdf")
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+
+    result = _run_upload(seed_route, "novel.fb2", _FB2)
+
+    assert result.status == "ok", result.error
+    extracted = seed_route.UNSTRUCTURED_UPLOAD_ROOT / "block" / f"{result.file_id}.extracted.txt"
+    assert extracted.read_text(encoding = "utf-8") == (
+        "Chapter One\n\n"
+        "It was a bright cold day in April, and the clocks were striking thirteen.\n\n"
+        "Zebramarker closes the chapter."
+    )
+
+
+def test_recipe_upload_names_pymupdf_when_an_ebook_reader_is_missing(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        seed_route,
+        "_extract_text_from_file",
+        _raise(ModuleNotFoundError("No module named 'pymupdf'", name = "pymupdf")),
+    )
+
+    result = _run_upload(seed_route, "novel.mobi", b"BOOKMOBI")
+
+    assert result.status == "error"
+    assert result.error == "Cannot read .mobi files: the 'pymupdf' package is not installed."
+    assert _block_files(seed_route) == []
+
+
+def test_document_seed_preview_reports_every_chunk_not_just_the_preview(monkeypatch, tmp_path):
+    chunking = pytest.importorskip("data_designer_unstructured_seed.chunking")
+    from models.data_recipe import SeedInspectUploadRequest
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(chunking, "_CACHE_DIR", tmp_path / "chunk-cache")
+    sentence = "A sentence long enough to fill most of a small chunk on its own. "
+    ids, names = [], []
+    for name in ("one.txt", "two.txt"):
+        result = _run_upload(seed_route, name, ("\n\n".join([sentence] * 30)).encode())
+        ids.append(result.file_id)
+        names.append(name)
+
+    response = seed_route.inspect_seed_upload(
+        SeedInspectUploadRequest(
+            block_id = "block",
+            file_ids = ids,
+            file_names = names,
+            preview_size = 3,
+            seed_source_type = "unstructured",
+            unstructured_chunk_size = 100,
+            unstructured_chunk_overlap = 0,
+        )
+    )
+
+    assert len(response.preview_rows) == 3
+    assert response.total_rows == 60
+
+
+def test_document_extraction_threads_are_bounded(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+    seen = []
+
+    async def run_sync(
+        fn,
+        *args,
+        limiter = None,
+        **kwargs,
+    ):
+        seen.append(limiter)
+        return fn(*args)
+
+    monkeypatch.setattr(seed_route.to_thread, "run_sync", run_sync)
+
+    assert _run_upload(seed_route, "notes.txt", b"hello").status == "ok"
+    assert seen == [seed_route._document_extraction_limiter]
+    assert seed_route._document_extraction_limiter.total_tokens == 2
