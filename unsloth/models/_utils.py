@@ -7660,7 +7660,6 @@ def _move_dispatch_hook(dst: torch.nn.Module, src: torch.nn.Module) -> None:
         original_devices = dict(getattr(hook, "original_devices", {}) or {})
     try:
         from accelerate.hooks import add_hook_to_module
-
         add_hook_to_module(dst, hook)
         if offload and original_devices:
             hook.original_devices = original_devices
