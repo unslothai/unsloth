@@ -782,11 +782,9 @@ def _is_gpu_device_lost(exc: BaseException) -> bool:
 
 
 def _resident_source(name: str):
-    """``name`` imported, or None if it cannot import (so it never ran). Other errors propagate."""
-    try:
-        return importlib.import_module(name)
-    except ImportError:
-        return None
+    """``name`` if this process already imported it, else None: a module never imported
+    never ran, so it holds no GPU (and nothing is imported, or executed, to ask)."""
+    return sys.modules.get(name)
 
 
 def _gpus_held_outside_llama() -> Optional[frozenset]:

@@ -949,7 +949,12 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # TP, so startup must clear it -- else /status misreports TP and an identical
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
-    assert "self._tensor_parallel = False" in src
+    # Through the one split-state reset, which clears the auto split with it.
+    assert "self._clear_split_state()" in src
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+    backend._tensor_parallel = True
+    backend._clear_split_state()
+    assert backend._tensor_parallel is False
     # Taken from the request rather than the effective pin, which a forced-CPU launch on
     # virtualised Metal clears.
     assert "_pinned = (fit_gpus or [sorted(gpu_ids)[0]]) if gpu_ids else None" in src
