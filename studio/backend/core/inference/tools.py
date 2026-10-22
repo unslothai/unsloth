@@ -13268,6 +13268,16 @@ def _scope_retrieval_kwargs(scope: dict) -> dict:
     return {"mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid"}
 
 
+# The sidebar's Top K maximum. Uncapped, lexical binds top_k as an SQL LIMIT and dense fails past vec0's KNN limit.
+_MAX_KNOWLEDGE_SEARCH_TOP_K = 50
+
+
+def _kb_top_k(value) -> int | None:
+    """``value`` capped at the sidebar maximum, or None (the search default) when it is not a positive count."""
+    k = _opt_int(value)
+    return min(k, _MAX_KNOWLEDGE_SEARCH_TOP_K) if k is not None and k > 0 else None
+
+
 def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     """Run the RAG search bound to the hidden per-request ``rag_scope`` (the model supplies only
     ``query``/``top_k``). Lazy import; missing sqlite-vec degrades to a friendly message."""
@@ -13284,7 +13294,7 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         logger.warning("RAG tool unavailable: %s", exc)
         return "Knowledge base search is unavailable on this server."
 
-    top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
+    top_k = _kb_top_k((arguments or {}).get("top_k")) or _kb_top_k(scope.get("default_top_k"))
     text, sources = search_knowledge_base_with_sources(
         query = str(query),
         scope_kb_id = scope.get("kb_id"),
