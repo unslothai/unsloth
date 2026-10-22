@@ -706,15 +706,16 @@ def _matches(snapshots: list, call: tuple) -> bool:
     actual = mg._leaves(call)
     if len(actual) != len(snapshots):
         return False
+    tensors = []
     for (pa, va), (ps, vs) in zip(actual, snapshots):
         if pa != ps:
             return False
         if isinstance(vs, torch.Tensor):
-            if not mg._bitwise_equal(va, vs):
-                return False
+            tensors.append((va, vs))
         elif not mg._same_value(va, vs):
             return False
-    return True
+    # Every tensor argument under one host read per device (once per guided step), not one torch.equal each.
+    return mg._bitwise_equal_all(tensors)
 
 
 def _pad_text(first: dict, second: dict) -> None:
