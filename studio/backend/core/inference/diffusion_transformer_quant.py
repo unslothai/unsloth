@@ -490,10 +490,26 @@ def _nvfp4_gate_failure(family) -> Optional[str]:
         return None
 
 
-def _warn_nvfp4_flashinfer_mismatch(family, base_repo) -> None:
-    """A lifted deny on a flashinfer the gate record does not cover still loads, with one warning."""
+def _warn_nvfp4_flashinfer_mismatch(
+    family,
+    base_repo,
+    device: Any = None,
+) -> None:
+    """A gated nvfp4 load on a flashinfer the gate record does not cover still runs, with one warning, but only when
+    this device really selects the flashinfer backend (torchao, by env or a failed preflight, runs other kernels)."""
     try:
-        from .diffusion_nvfp4_gate import warn_flashinfer_mismatch_once
+        from .diffusion_nvfp4_gate import (
+            nvfp4_gate_flashinfer_mismatch,
+            warn_flashinfer_mismatch_once,
+        )
+
+        # Metadata read first: the backend probe (a preflight on the device) runs only when there is a mismatch.
+        if nvfp4_gate_flashinfer_mismatch(family, base_repo) is None:
+            return
+        from .diffusion_nvfp4_ops import BACKEND_FLASHINFER, select_nvfp4_backend
+
+        if str(select_nvfp4_backend(device)) != BACKEND_FLASHINFER:
+            return
         warn_flashinfer_mismatch_once(family, base_repo)
     except Exception:  # noqa: BLE001 -- a warning, never a load error
         pass
@@ -1082,7 +1098,7 @@ def select_transformer_quant_scheme(
             return None
         if requested == TQ_NVFP4:
             # Every explicit nvfp4 pick, deny-listed family or not, names a flashinfer its gate record does not cover.
-            _warn_nvfp4_flashinfer_mismatch(family, base_repo)
+            _warn_nvfp4_flashinfer_mismatch(family, base_repo, device)
         return requested
     cap = _capability()
     if cap is None:

@@ -272,3 +272,51 @@ def test_a_covered_flashinfer_loads_explicit_nvfp4_silently(monkeypatch, enabled
             == "nvfp4"
         )
     assert not [r for r in caplog.records if "nvfp4.gate" in r.getMessage()]
+
+
+@pytest.mark.parametrize("backend", ["torchao", "raises"])
+def test_an_explicit_nvfp4_pick_on_torchao_never_warns_about_flashinfer(
+    monkeypatch, enabled, caplog, backend
+):
+    """UNSLOTH_NVFP4_BACKEND=torchao or a failed flashinfer preflight runs torchao kernels: the flashinfer coverage
+    warning would name kernels this load does not use."""
+    import core.inference.diffusion_nvfp4_ops as ops
+
+    target = _blackwell(monkeypatch)
+
+    def _select(device = None):
+        if backend == "raises":
+            raise RuntimeError("preflight blew up")
+        return backend
+
+    monkeypatch.setattr(ops, "select_nvfp4_backend", _select)
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
+    with caplog.at_level("WARNING"):
+        assert (
+            tq.select_transformer_quant_scheme(
+                target, "nvfp4", family = "z-image", base_repo = _ZIMAGE, has_prequant = _hosted
+            )
+            == "nvfp4"
+        )
+    assert not [r for r in caplog.records if "nvfp4.gate" in r.getMessage()]
+
+
+def test_the_backend_probe_is_skipped_when_the_installed_flashinfer_is_covered(
+    monkeypatch, enabled
+):
+    import core.inference.diffusion_nvfp4_ops as ops
+
+    target = _blackwell(monkeypatch)
+    probed = []
+    monkeypatch.setattr(
+        ops, "select_nvfp4_backend", lambda device = None: probed.append(device) or "flashinfer"
+    )
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.6.6")
+    assert (
+        tq.select_transformer_quant_scheme(
+            target, "nvfp4", family = "z-image", base_repo = _ZIMAGE, has_prequant = _hosted
+        )
+        == "nvfp4"
+    )
+    assert probed == []

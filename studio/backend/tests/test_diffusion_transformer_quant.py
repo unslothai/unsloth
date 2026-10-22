@@ -2140,7 +2140,9 @@ def _nvfp4_runtime(monkeypatch, order):
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4})
     # The flashinfer-coverage warning reads the gate (one more policy resolution); it has its own tests.
-    monkeypatch.setattr(tq, "_warn_nvfp4_flashinfer_mismatch", lambda family, base_repo: None)
+    monkeypatch.setattr(
+        tq, "_warn_nvfp4_flashinfer_mismatch", lambda family, base_repo, device = None: None
+    )
     tqz = types.ModuleType("torchao.quantization")
     tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
