@@ -87,11 +87,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     activeNativePathToken,
     checkpoint,
   });
-  const platform = usePlatformStore();
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const isMlx = residentIsServedByMlx(
     isGguf,
-    platform.deviceType,
-    platform.chatOnlyReason,
+    deviceType,
+    chatOnlyReason,
     loadedIsMlx,
   );
 

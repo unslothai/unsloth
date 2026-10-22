@@ -103,13 +103,7 @@ def test_account_roots_are_separate(monkeypatch, tmp_path):
 
 
 def test_archive_and_delete_survive_a_filesystem_without_flock(monkeypatch):
-    """A lock we cannot take must not cost the user archiving, only clearing.
-
-    ``clear`` deletes on the strength of a flag, so it fails closed. Archiving and
-    deleting one named transcript do not, and audio_gallery.set_flags deliberately takes
-    the plain lock for exactly that reason. Taking require_file_lock here made both a 500
-    on any mount where flock is unavailable, while the same account's audio clips worked.
-    """
+    """Archive and delete use the plain lock; require_file_lock would 500 on a mount without flock."""
     import contextlib
 
     @contextlib.contextmanager

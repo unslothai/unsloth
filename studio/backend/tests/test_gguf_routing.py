@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for GGUF routing in detect_gguf_model.
-
-Regression test: on Windows a .gguf file can briefly appear inaccessible
-during llama-server teardown, making is_file() return False and routing
-the model to the transformers backend instead of llama-server.
-"""
+"""Routes .gguf by extension; on Windows is_file() can fail during llama-server teardown."""
 
 import sys
 import os
@@ -15,7 +9,6 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
-# Stub structlog before importing backend modules (as in other suite tests)
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -42,11 +35,7 @@ def test_detects_gguf_file_normally(tmp_path):
 
 
 def test_detects_gguf_when_stat_raises_oserror(tmp_path):
-    """
-    Regression: on Windows is_file()/exists() call stat(), which raises OSError
-    in the brief lock window after llama-server is killed. detect_gguf_model must
-    still route to llama-server by file extension alone.
-    """
+    """stat() can raise OSError during llama-server teardown; route by extension alone."""
     gguf = tmp_path / "gpt-oss-20b-MXFP4.gguf"
     gguf.write_bytes(b"")
 

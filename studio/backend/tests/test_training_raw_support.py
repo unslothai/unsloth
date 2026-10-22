@@ -165,9 +165,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertNotIn("lora_random_state", config)
 
     def test_mlx_max_grad_norm_is_honored_without_changing_the_default(self):
-        # The worker used to hardcode 0.0 and drop the request, so an explicit
-        # threshold never reached the trainer. Explicit values must pass through,
-        # while unset stays 0.0 so the clip mode is unchanged.
+        # Explicit thresholds must pass through; unset stays 0.0.
         from pydantic import ValidationError
 
         from core.training.worker import _resolve_mlx_max_grad_norm
@@ -205,13 +203,10 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_mlx_worker_asks_the_trainer_to_report_the_gradient_norm(self):
-        # What refills Unsloth's Gradient Norm chart on Apple Silicon; see the
-        # rationale at the opt-in site in worker.py.
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         self.assertIn('if "report_grad_norm" in _supported_fields:', source)
         self.assertIn('mlx_config_kwargs["report_grad_norm"] = True', source)
-        # Feature-detected like the other newer fields, so an older unsloth_zoo
-        # without the flag keeps working instead of raising on construction.
+        # Feature-detected so an older unsloth_zoo without the flag keeps working.
         gated = source.split("_supported_fields = ")[1]
         self.assertNotIn(
             "report_grad_norm = True,", gated.split("MLXTrainer(")[0].split("dict(")[0]
@@ -270,14 +265,12 @@ class TestTrainingRawSupport(unittest.TestCase):
     def test_mlx_worker_falls_back_init_seeds_to_random_seed(self):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
 
-        # random_seed itself is normalized first so an explicit None from a raw caller cannot propagate.
         self.assertIn('_raw_seed = config.get("random_seed", 3407)', source)
         self.assertIn(
             "random_seed = 3407 if _raw_seed is None else int(_raw_seed)",
             source,
         )
-        # Both absent and explicit None must fall back to random_seed: `dict.get(key, default)` only
-        # fills the default on absent keys, so an explicit None would reach get_peft_model.
+        # dict.get(key, default) does not cover an explicit None.
         self.assertIn('_model_seed = config.get("model_random_state")', source)
         self.assertIn(
             "model_random_state = random_seed if _model_seed is None else int(_model_seed)",
@@ -290,14 +283,12 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
         self.assertIn("random_state = model_random_state", source)
         self.assertIn("random_state = lora_random_state", source)
-        # MLXTrainingConfig now receives the normalized seed directly.
         self.assertIn("seed = random_seed,", source)
 
     def test_mlx_worker_preserves_null_max_grad_value_for_trainer_default(self):
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
 
-        # None must survive to the MLX trainer so it picks its own runtime default, and any other
-        # value must coerce to float without rebinding None to 1.0 (which the legacy code did).
+        # None reaches the MLX trainer for its own default; never rebind it to 1.0.
         self.assertIn('max_grad_value = config.get("max_grad_value")', source)
         self.assertIn("max_grad_value = float(max_grad_value)", source)
         self.assertNotIn(
@@ -306,10 +297,8 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_training_backend_normalizes_explicit_none_seed_and_dtypes(self):
-        # `random_seed=None` and `cast_norm_output_to_input_dtype=None` must not
-        # leak past `TrainingBackend.start_training`: set_seed(None) raises, PEFT
-        # init goes nondeterministic, and the MLX norm-output cast flips. The MLX
-        # clip knobs are the exception, where None means "owner picks the default".
+        # None must not leak past start_training: set_seed(None) raises. The MLX clip knobs
+        # are the exception, where None means "owner picks the default".
         from core.training.training import (
             _coerce_seed,
             _coerce_optional_bool,
@@ -372,9 +361,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertTrue(math.isfinite(_resolve_mlx_max_grad_norm(None)))
 
     def test_mlx_worker_feature_detects_optional_mlx_config_fields(self):
-        # `cast_norm_output_to_input_dtype`, `dataset_order`, `max_grad_leaf_norm` and `append_eos` ship
-        # in the paired unsloth-zoo update, so until that floor is in place the worker must gate them
-        # or releases predating those fields cannot construct MLXTrainingConfig.
+        # These fields ship in the paired unsloth-zoo update, so the worker must gate them.
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
 
         self.assertIn(
@@ -391,9 +378,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertIn('if "append_eos" in _supported_fields:', source)
         self.assertIn('format_type == "raw"', source)
         self.assertIn('mlx_config_kwargs["append_eos"] = bool(raw_text_mode)', source)
-        # The unconditional kwargs must NOT include any gated field. Proper paren tracking is needed:
-        # `source.find(")", ...)` would stop at the first close paren inside the dict body (e.g.
-        # `int(config.get("save_steps", 0) or 0)`) and miss a later unconditional addition.
+        # Track parens properly: find(")") would stop inside the dict body.
         unconditional_block_start = source.find("mlx_config_kwargs = dict(")
         self.assertNotEqual(unconditional_block_start, -1)
         depth = 0

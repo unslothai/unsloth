@@ -62,7 +62,6 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     # The training inventory must not advertise physical pins for a Vulkan
     # llama.cpp build. Its ordinals live in inference_gpu below.
     assert gpu["gguf_gpu_ids_supported"] is False
-    # Torch's view stays empty; the ggml ordinals stay in inference_gpu.
     assert gpu["devices"] == []
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == [vulkan_device]
@@ -167,7 +166,6 @@ def test_system_gpu_info_keeps_forced_vulkan_separate_from_training_metrics(monk
     assert gpu["devices"][0]["vram_used_gb"] == 6.0
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"][0]["vram_used_gb"] == 1.0
-    # Probed devices exist, so the ordinals are known and picks are offered.
     assert inference_gpu["gguf_gpu_ids_supported"] is True
 
 
@@ -213,12 +211,7 @@ def test_system_gpu_info_does_not_merge_metrics_across_backend_index_spaces(monk
 
 
 def test_vulkan_inference_gpu_uses_real_device_names_and_igpu_flag(monkeypatch):
-    """The picker and the GPU labels need ggml's real device description, not a
-    Vulkan<i> placeholder, and an explicit iGPU flag rather than inferring one
-    from a zero total. Memory still comes from _get_gpu_memory so the iGPU host
-    reserve is applied; budgeting off the raw shared total would hand out the
-    whole machine's RAM with no OS headroom.
-    """
+    """Vulkan needs ggml's real device names and an explicit iGPU flag; memory takes the iGPU reserve."""
     from core.inference import llama_cpp
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.hardware.hardware import get_vulkan_inference_gpu_info

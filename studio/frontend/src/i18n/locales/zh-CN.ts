@@ -118,6 +118,7 @@ export const zhCN = {
     reload: "重新加载",
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
+    local: "本地",
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -468,6 +469,8 @@ export const zhCN = {
       downloadFailed: "无法下载 {name}",
       notMarked: "{name} 已保存,但无法标记为从互联网下载,因此打开前系统不会发出警告。",
       blocked: "此地址无法在浏览器面板中打开。面板只打开公开网站。",
+      blockedLocal: "此本地地址无法在此打开。请在地址栏中输入它来打开。",
+      studioAddress: "这是 Unsloth 自身的地址，因此无法在浏览器面板中打开。",
       clearDataSettingDescription: "清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，这会让你退出各网站。",
       clearDataDescription: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       clearDataFailed: "无法清除网站数据。请重试。",
@@ -1083,6 +1086,10 @@ export const zhCN = {
       alternateSlot: "备用快捷键",
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
+      metaUnsupported: "Windows 键不能用于快捷键。",
+      altGraphUnsupported: "AltGr 组合不能用作快捷键。",
+      desktopOnly: "仅限桌面应用",
+      builtInKey: "内置：{key}",
       actions: {
         findInPage: {
           label: "在页面中查找",
@@ -1283,6 +1290,10 @@ export const zhCN = {
         steerMessage: {
           label: "引导回复",
           description: "停止当前回复并接着发送草稿",
+        },
+        stopGeneration: {
+          label: "停止生成",
+          description: "停止正在生成的回复",
         },
         cycleReasoningEffort: {
           label: "循环切换推理强度",
@@ -1789,20 +1800,14 @@ export const zhCN = {
       },
       notifications: {
         sectionTitle: "通知",
-        showLlamaUpdates: "llama.cpp 更新通知",
-        showLlamaUpdatesDescription:
-          "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
-        showLoadedModels: "已加载模型指示器",
-        showLoadedModelsDescription:
-          "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
-        showAudioCppUpdates: "audio.cpp 更新通知",
-        showAudioCppUpdatesDescription:
-          "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
-        showUnslothUpdates: "Unsloth 更新通知",
-        showUnslothUpdatesDescription:
-          "有新版本的 Unsloth 可供安装时通知。",
+        showLoadedModels: "已加载模型卡片",
+        showLoadedModelsDescription: "角落卡片列出每个已加载的模型，一键卸载。",
+        updateReminders: "更新提醒",
+        updateRemindersDescription: "新版本就绪时多久提醒一次。",
+        llamaHint: "聊天和 GGUF 模型",
+        audioHint: "语音、音乐和转录",
         frequency: {
-          always: "总是",
+          always: "一有就提醒",
           daily: "每天一次",
           weekly: "每周一次",
           biweekly: "每两周一次",
@@ -2041,9 +2046,9 @@ export const zhCN = {
         longestStreak: "最长连续天数",
         activityTitle: "Token 活跃度",
         activityDescription: {
-          daily: "过去{weeks}共{total}",
-          weekly: "峰值周 {total} · 最近{weeks}",
-          cumulative: "过去{weeks}累计{total}",
+          daily: "自 {since} 起共 {total}",
+          weekly: "最活跃的一周 {total} · 自 {since} 起",
+          cumulative: "自 {since} 起累计 {total}",
         },
         mode: {
           daily: "按天",
@@ -2052,8 +2057,9 @@ export const zhCN = {
         },
         cellTooltip: "{date} · {tokens}，{messages}",
         weekTooltip: "{date} 当周 · {tokens}",
-        chartToggle: "图表",
-        chartToggleHint: "以带坐标轴标签的图表显示按周和累计",
+        emptyDayTooltip: "{date} · 无活动",
+        apiRequests: "通过 API {count} 次",
+        cumulativeTooltip: "截至 {date} 那一周 · 累计 {tokens}",
         less: "较少",
         more: "较多",
         insightsTitle: "活跃度分析",
@@ -3086,6 +3092,14 @@ export const zhCN = {
           "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
         useViaApi: "通过 API 使用",
       },
+      mediaApi: {
+        title: "图像和视频 API",
+        description: "通过兼容 OpenAI 的端点，在你自己的代码中生成图像和视频。",
+        images: "图像",
+        video: "视频",
+        placeholderModel: "显示的模型只是示例。在图像或视频页面加载模型，再从该页面的 API 按钮打开此处即可填入。",
+        autoSwitchOff: "媒体自动切换已关闭，因此请求无论指定哪个模型，都会在页面已加载的模型上运行。",
+      },
       decisionApi: {
         title: "决策 API",
         docs: "文档",
@@ -3165,6 +3179,24 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      whisperCppVersion: "whisper.cpp 版本",
+      engines: {
+        title: "引擎",
+        description: "Unsloth 用来运行模型的运行时。更新在后台安装，无需重启。",
+        updatesLabel: "引擎更新",
+        notInstalled: "未安装",
+        available: "{version} 可用",
+        upToDate: "已是最新",
+        updatesAvailable: "有可用更新",
+        checking: "正在检查更新...",
+        checkFailed: "无法检查更新，请稍后重试。",
+        unsupported: "此安装的引擎由 Unsloth 之外管理。",
+        checkForUpdates: "检查更新",
+        update: "更新",
+        updating: "正在更新...",
+        updated: "引擎已更新。",
+        updateFailed: "更新失败：{error}",
+      },
       hardware: "硬件",
       gpu: "GPU",
       gpuIntegrated: "集成",
@@ -3243,6 +3275,9 @@ export const zhCN = {
         docsUpdating: "更新",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
