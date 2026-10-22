@@ -257,7 +257,7 @@ def _triton_windows_spec() -> str:
     """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
 
     Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.12 and
-    2.13 pin triton 3.7 and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
+    2.13 pin triton 3.7 (2.12.0 exactly 3.7.0) and 2.14 pins 3.8; anything older (or unreadable) keeps the long-standing <3.7.
     A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
     """
     import platform  # noqa: PLC0415
@@ -266,9 +266,13 @@ def _triton_windows_spec() -> str:
         return "triton-windows>=3.8.0.post28"
     try:
         from importlib.metadata import version  # noqa: PLC0415
-        major, minor = (int(part) for part in version("torch").split("+", 1)[0].split(".")[:2])
+        major, minor, patch = (
+            int(part) for part in version("torch").split("+", 1)[0].split(".")[:3]
+        )
     except Exception:  # noqa: BLE001 -- a hint must never raise
         return "triton-windows<3.7"
+    if (major, minor, patch) == (2, 12, 0):
+        return "triton-windows>=3.7,<3.7.1"
     if (major, minor) in ((2, 12), (2, 13)):
         return "triton-windows>=3.7,<3.8"
     if (major, minor) == (2, 14):
