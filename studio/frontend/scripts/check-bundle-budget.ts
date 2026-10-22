@@ -377,10 +377,16 @@ export const BUDGET = {
   // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
   // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
   // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
-  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer. Raised by that plus about
-  // 500 B raw (the CI build measured 6,738.9 KB raw / 2,030.0 KB transfer before #14500, about 100 B over a local build).
-  transferBytes: 2_079_588,
-  rawBytes: 6_902_664,
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
+  transferBytes: 2_083_759,
+  rawBytes: 6_917_454,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
