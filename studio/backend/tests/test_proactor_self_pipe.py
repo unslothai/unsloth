@@ -225,7 +225,6 @@ def test_persistent_socketpair_failure_warns_once_per_streak_and_keeps_wakeups(r
         loop._csock.shutdown(socket.SHUT_WR)
         await asyncio.sleep(1.0)
         during_failure = await wakeup_delay(loop)
-        # Recovery resets the streak, so a later failure streak warns again.
         psp._socketpair = socket.socketpair
         await asyncio.sleep(0.3)
         psp._socketpair = failing_socketpair
@@ -241,7 +240,6 @@ def test_persistent_socketpair_failure_warns_once_per_streak_and_keeps_wakeups(r
     assert during_failure < 0.5
     assert 8 <= attempts["n"] <= 30
     warnings = [line for level, line in log.lines if level == "warning"]
-    # "rebuilding it" once, then the first failure of each of the two streaks; every other retry logs at debug.
     assert len(warnings) == 3, warnings
     assert reads["n"] < 50
 
@@ -290,7 +288,6 @@ def test_guard_leaves_a_foreign_signal_wakeup_fd_alone(reads):
             loop._csock.shutdown(socket.SHUT_WR)
             await asyncio.sleep(0.2)
         finally:
-            # The loop's old socket is closed by now, so hand the fd back to its current one.
             current = signal.set_wakeup_fd(loop._csock.fileno())
         return current
 

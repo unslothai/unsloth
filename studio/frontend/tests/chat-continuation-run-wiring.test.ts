@@ -2,16 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * `watchAutoContinueRun` against the real module-scope keeper. `chat-continuation.test.ts` proves
- * the keeper DECIDES correctly once handed a run; this proves the run reaches it, which a
- * source-text match cannot: emptying this function's body kept all of those cases green.
- *
- * Its own file because `auto-continue-run-keeper.ts` reads `runningByThreadId` off the chat runtime
- * store and so needs the store stub resolver. The observable is the renewal timer, which the keeper
- * clears as soon as nothing is held, so "the timer stopped" is "the hold was given up" with no clock
- * to advance. Replaced outright rather than mocked: the keeper captured `Date.now` as a default
- * argument at import, so mocking `Date` desynchronises its clock from the lease's and renewals
- * silently stop landing, passing this test for the wrong reason.
+ * Proves a run reaches the keeper, which a source match cannot. Date.now is replaced, not
+ * mocked: the keeper captured it as a default argument at import.
  */
 
 import assert from "node:assert/strict";
@@ -37,7 +29,6 @@ const { useChatRuntimeStore } = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 
-/** This tab's stored lease for `messageId`, or null once it is gone. */
 function lease(messageId: string): { expires?: number; done?: boolean } | null {
   const raw = store.get(AUTO_CONTINUE_LEASE_KEY);
   if (!raw) {
@@ -50,7 +41,6 @@ function lease(messageId: string): { expires?: number; done?: boolean } | null {
   );
 }
 
-/** Let the renewal's own promise land: the keeper drops it, so draining is the only way. */
 async function settleWrites(): Promise<void> {
   for (let turn = 0; turn < 25; turn += 1) {
     await new Promise((resolve) => setImmediate(resolve));
@@ -60,12 +50,10 @@ async function settleWrites(): Promise<void> {
 test("the run the bar started reaches the keeper, so stopping it gives the lease back", async (t) => {
   useChatRuntimeStore.setState({ runningByThreadId: {} });
 
-  // The renewal interval, captured rather than scheduled, so its ticks are this test's to drive.
   const realSetInterval = globalThis.setInterval;
   const realClearInterval = globalThis.clearInterval;
   const renewalId = Symbol("renewal-interval");
-  // Collected, not a `let`: narrowing ignores a write inside a callback, so the handler would
-  // type as `never` and not call.
+  // Collected in an array: TS narrowing ignores writes inside callbacks, so a `let` types as never.
   const renewalTicks: (() => void)[] = [];
   let renewalStopped = false;
   globalThis.setInterval = ((handler: () => void) => {
@@ -88,7 +76,6 @@ test("the run the bar started reaches the keeper, so stopping it gives the lease
     "this tab has to own the message before it can hold its lease",
   );
 
-  // Idle, the ordinary case, so the hold owns the key and a stopped preflight is decidable.
   holdAutoContinueRun("m1", "thread-A");
   assert.equal(
     renewalTicks.length,
@@ -97,14 +84,12 @@ test("the run the bar started reaches the keeper, so stopping it gives the lease
   );
   const renewalTick = renewalTicks[0];
 
-  // A real promise, because that is what `startRun` hands back and `issuedRunFrom` must accept.
   let stopTheRun: (() => void) | undefined;
   const startedRun = new Promise<void>((resolve) => {
     stopTheRun = resolve;
   });
   watchAutoContinueRun("m1", "thread-A", startedRun);
 
-  // Renewed throughout a long preflight, which is why arming has no deadline.
   for (let renewal = 0; renewal < 3; renewal += 1) {
     renewalTick();
     await settleWrites();
@@ -116,13 +101,10 @@ test("the run the bar started reaches the keeper, so stopping it gives the lease
   );
   assert.ok(lease("m1"), "the lease is still held while its run is starting");
 
-  // Stop. The stream flag never moved and no failure is announced, and those were the keeper's
-  // only two signals before this change, so without the run itself nothing reports anything.
   stopTheRun?.();
   await startedRun;
   await settleWrites();
 
-  // Still open and still ticking, but its own run is over, so the keeper stops.
   renewalTick();
   await settleWrites();
 

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native (sd.cpp) route for Qwen-Image-Layered: the asset mapping, the layer count on the one-shot
-argv and in the sd-server body, the canvas the input is decomposed at, and the layers + 1 images
-sd.cpp decodes, of which the first (its reconstruction of the input) is dropped as the diffusers
-pipeline drops it."""
+"""Qwen-Image-Layered route: layers+1 images decoded, the first dropped."""
 
 from __future__ import annotations
 
