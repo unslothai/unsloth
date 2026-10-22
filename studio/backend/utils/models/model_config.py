@@ -2796,6 +2796,10 @@ class GgufVariantInfo:
     size_bytes: int  # file size
 
 
+# Mirrors hub.utils.gguf._NVFP_AT_NAME_END: NVFP is a quant token only last in the name.
+_NVFP_AT_NAME_END = r"(?=(?:-[0-9]+(?:\.[0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:\.gguf)?$)"
+
+
 def _extract_quant_label(filename: str) -> str:
     """
     Extract quant label like Q4_K_M, IQ4_XS, BF16 from a GGUF filename.
@@ -2816,7 +2820,8 @@ def _extract_quant_label(filename: str) -> str:
     stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0])
     quant_re = (
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
-        r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
+        r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
+        r"|NVFP[0-9]+(?:_[A-Z0-9]+)*" + _NVFP_AT_NAME_END +  # NVFP4, last in the name only
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
         r"|P?TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
@@ -2848,7 +2853,8 @@ def _extract_quant_label(filename: str) -> str:
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|NVFP[0-9]+(?:_[A-Z0-9]+)*" + _NVFP_AT_NAME_END +
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"

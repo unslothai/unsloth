@@ -73,10 +73,13 @@ GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
+# NVFP names the quant only where llama.cpp naming puts the type: last in the name (bpw modifier, shard suffix and extension aside), as in Model-NVFP4.gguf or NVFP4/. Earlier it is part of a community model name (Qwen3.8-27B-NVFP4-MTP-HIGH.gguf, ...-NVFP4-Experts-Only-Q8_0.gguf), which kept its pre-NVFP key: matching it there gave every build in such a repo the one key NVFP4. MXFP was a token before NVFP and keeps matching anywhere, so its stored keys stay put.
+_NVFP_AT_NAME_END = r"(?=(?:-[0-9]+(?:\.[0-9]+)?bpw)?(?:-[0-9]{3,}-of-[0-9]{3,})?(?:\.gguf)?$)"
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|NVFP[0-9]+(?:_[A-Z0-9]+)*" + _NVFP_AT_NAME_END +
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
