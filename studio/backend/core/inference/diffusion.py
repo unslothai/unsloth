@@ -392,6 +392,7 @@ from .diffusion_comfy_quant import (
     comfy_int8_backend,
     comfy_torchao_quantized,
     fp8_storage_wanted,
+    fp8_widen_chosen,
     fp8_stored_layers,
     pipe_fp8_stored_layers,
     load_comfy_quant_transformer,
@@ -8834,6 +8835,9 @@ class DiffusionBackend:
                                     fp8_storage = self._fp8_storage_for(
                                         single_file_path, target, loras
                                     ),
+                                    fp8_widen_chosen = self._fp8_widen_for(
+                                        single_file_path, target, loras
+                                    ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                             else:
@@ -8849,6 +8853,9 @@ class DiffusionBackend:
                                         sf_kwargs,
                                         logger,
                                         fp8_storage = self._fp8_storage_for(
+                                            single_file_path, target, loras
+                                        ),
+                                        fp8_widen_chosen = self._fp8_widen_for(
                                             single_file_path, target, loras
                                         ),
                                     )
@@ -10156,6 +10163,14 @@ class DiffusionBackend:
         """Probe the ComfyUI backends as offloaded: the plan offloads, or it was priced with the offloaded backends."""
         priced = getattr(self, "_comfy_priced_offload", None) or {}
         return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
+
+    def _fp8_widen_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
+        """The planner's ``fp8_widen_chosen`` pick for this file, re-checked against device / LoRA / env: only then
+        does the host RAM refusal reserve what that rule keeps free."""
+        picks = getattr(self, "_fp8_widen_picks", None) or {}
+        return bool(picks.get(str(single_file_path))) and comfy_fp8_storage(
+            target, lora = _has_active_lora(loras)
+        )
 
     def _fp8_storage_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_storage_wanted`` pick for this file, re-checked against device / LoRA / env."""
@@ -11584,21 +11599,25 @@ class DiffusionBackend:
             # Re-plan at the fp8-stored size: a widened load that had to offload may now stay resident.
             from .diffusion_memory import _available_system_memory_mib
 
-            store = fp8_storage_wanted(
-                target,
+            fp8_rule = dict(
                 lora = lora,
                 offload = not plan_keeps_transformer_resident(plan),
                 widened_mib = transformer_resident,
                 host_available_mib = _available_system_memory_mib(),
             )
+            store = fp8_storage_wanted(target, **fp8_rule)
             picks = self.__dict__.setdefault("_fp8_storage_picks", {})
             picks[str(single_file_path)] = store
+            self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = (
+                not store and fp8_widen_chosen(target, **fp8_rule)
+            )
             if store:
                 plan = _plan(
                     model_dense_mib - int(transformer_resident) + single_file_fp8_stored_mib
                 )
         elif kind == "single_file" and single_file_path:
             self.__dict__.setdefault("_fp8_storage_picks", {})[str(single_file_path)] = False
+            self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = False
         return plan
 
     @staticmethod

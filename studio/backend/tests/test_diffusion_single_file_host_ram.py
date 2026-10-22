@@ -273,12 +273,14 @@ _GIB = 1024
 _KREA2_WIDENED_MIB = 24 * _GIB  # Krea 2 fp8 widened to bf16
 
 
-def _budget(tmp_path, monkeypatch, total_mib, available_mib):
+def _budget(tmp_path, monkeypatch, total_mib, available_mib, fp8_widen_chosen = False):
     monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
     _host(monkeypatch, available_mib, total_mib)
     path = tmp_path / "krea2.safetensors"
     path.write_bytes(b"\0")
-    return conv.HostRamBudget(str(path), "widening its weights to bfloat16")
+    return conv.HostRamBudget(
+        str(path), "widening its weights to bfloat16", fp8_widen_chosen = fp8_widen_chosen
+    )
 
 
 @pytest.mark.parametrize("available_gib", [28.5, 29.0, 30.0, 30.3])
@@ -294,8 +296,79 @@ def test_big_host_loads_what_the_fp8_storage_rule_widens(tmp_path, monkeypatch, 
         )
         is False
     )
-    budget = _budget(tmp_path, monkeypatch, 64 * _GIB, available)
+    chosen = cq.fp8_widen_chosen(cuda, widened_mib = _KREA2_WIDENED_MIB, host_available_mib = available)
+    assert chosen is True
+    budget = _budget(tmp_path, monkeypatch, 64 * _GIB, available, fp8_widen_chosen = chosen)
     budget.check(_KREA2_WIDENED_MIB * conv._MIB)  # no refusal
+
+
+@pytest.mark.parametrize("available_gib", [28.5, 29.0, 30.0, 30.3])
+def test_big_host_keeps_the_proportional_reserve_without_an_fp8_widen_choice(
+    tmp_path, monkeypatch, available_gib
+):
+    """No fp8-storage choice was made (int8 / nvfp4 file, LoRA, kill switch): the same load keeps the 10% reserve of
+    #14510 and is refused, as before the cap."""
+    budget = _budget(tmp_path, monkeypatch, 64 * _GIB, int(available_gib * _GIB))
+    assert budget.reserve_mib == small_host.host_reserve_mib(64 * _GIB) > cq.FP8_STORAGE_HOST_RESERVE_MIB
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        budget.check(_KREA2_WIDENED_MIB * conv._MIB)
+
+
+def test_fp8_widen_chosen_only_when_the_rule_had_the_choice(monkeypatch):
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    cuda = type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
+    mps = type("T", (), {"device": "mps", "dtype": torch.bfloat16})()
+    room = dict(widened_mib = _KREA2_WIDENED_MIB, host_available_mib = 29 * _GIB)
+    assert cq.fp8_widen_chosen(cuda, **room) is True
+    # no fp8 storage option: LoRA, MPS, offload forces storage, unknown sizes, crowded host (stores instead)
+    assert cq.fp8_widen_chosen(cuda, lora = True, **room) is False
+    assert cq.fp8_widen_chosen(mps, **room) is False
+    assert cq.fp8_widen_chosen(cuda, offload = True, **room) is False
+    assert cq.fp8_widen_chosen(cuda, widened_mib = _KREA2_WIDENED_MIB) is False
+    assert (
+        cq.fp8_widen_chosen(cuda, widened_mib = _KREA2_WIDENED_MIB, host_available_mib = 26 * _GIB)
+        is False
+    )
+    for env in ("0", "1"):
+        monkeypatch.setenv(cq.FP8_STORAGE_ENV, env)
+        assert cq.fp8_widen_chosen(cuda, **room) is False
+
+
+def _reserve_seen(monkeypatch):
+    seen = []
+    real = conv.HostRamBudget.check
+
+    def spy(self, need_bytes):
+        seen.append(self.reserve_mib)
+        return real(self, need_bytes)
+
+    monkeypatch.setattr(conv.HostRamBudget, "check", spy)
+    return seen
+
+
+def test_loaders_cap_the_reserve_only_for_an_fp8_widen_choice(tmp_path, monkeypatch, krea2):
+    """Both single-file loaders refuse against the capped reserve only when the planner chose to widen fp8."""
+    total = 64 * _GIB
+    proportional = small_host.host_reserve_mib(total)
+    _host(monkeypatch, 60 * _GIB, total)
+    seen = _reserve_seen(monkeypatch)
+    path, _ = _write(tmp_path, "fp8")
+    conv.load_original_layout_transformer(krea2, str(path), dict(_KWARGS))
+    conv.load_original_layout_transformer(krea2, str(path), dict(_KWARGS), fp8_widen_chosen = True)
+    path, _ = _write(tmp_path, "fp8_scaled")
+    scan = cq.refuse_comfy_quant(str(path))
+    for chosen in (False, True):
+        cq.load_comfy_quant_transformer(
+            krea2,
+            str(path),
+            scan,
+            dict(_KWARGS),
+            int8_backend = None,
+            fp8_backend = None,
+            fp8_widen_chosen = chosen,
+        )
+    cap = cq.FP8_STORAGE_HOST_RESERVE_MIB
+    assert seen == [proportional, cap, proportional, cap]
 
 
 def test_reserves_cannot_drift(monkeypatch):
