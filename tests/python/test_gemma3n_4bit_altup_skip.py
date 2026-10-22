@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
+
 """Gemma 3n on-the-fly 4-bit keeps the AltUp coefficient Linears in 16-bit: AltUp clamps
 prediction_coefs.weight.data in place every training step, which fails on packed uint8 weights."""
 
