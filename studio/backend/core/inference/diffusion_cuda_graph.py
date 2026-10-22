@@ -1023,6 +1023,7 @@ class GraphedForward:
             "traceback": traceback.format_exc()[-6000:],
         }
         self.poisoned = True
+        _retire_stable_placement(self.placement)
         # ``__call__`` short-circuits to eager on ``poisoned`` before it reads the cache, so every
         # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
         # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
@@ -1044,6 +1045,7 @@ class GraphedForward:
         self.uninstall()
         if self.placement is not None:
             self.placement.release_slots()
+        _retire_stable_placement(getattr(self, "placement", None))
         self.enabled = False
         _LIVE_WRAPPERS.discard(self)
         return self
@@ -2070,6 +2072,21 @@ def _detach_stable_range(module: Any) -> None:
         arena = arena_of(module)
         if arena is not None:
             arena.detach()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _retire_stable_placement(placement: Any) -> None:
+    """No graph of this placement can replay again (a poisoned or freed handle): stop paying for stable addresses. A
+    re-arm attaches afresh."""
+    if placement is None:
+        return
+    if placement.mode == "model":
+        _detach_stable_range(placement.module)
+        return
+    try:
+        from .diffusion_stable_arena import drop_stable_repin
+        drop_stable_repin(placement.module)
     except Exception:  # noqa: BLE001
         pass
 

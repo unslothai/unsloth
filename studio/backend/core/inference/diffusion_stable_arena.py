@@ -240,8 +240,16 @@ class VmmArena:
             except Exception:
                 lib.cuMemRelease(handle.value)
                 raise
+            try:
+                base = torch.as_tensor(_CudaArray(self.va, self.size), device = self.device)
+            except Exception:
+                # nothing may keep the mapping a failed map() leaves no tensor over: unmap and release it, so the
+                # arena is unmapped and retryable and the caller's stock fallback holds the only copy
+                lib.cuMemUnmap(self.va, self.size)
+                lib.cuMemRelease(handle.value)
+                raise
             self._handle = int(handle.value)
-            self._base = torch.as_tensor(_CudaArray(self.va, self.size), device = self.device)
+            self._base = base
         _count_mapped(self.device_index, self.size)
         self.maps += 1
         return self._base
@@ -373,7 +381,8 @@ class ModuleArena:
         self.layout: Optional[dict] = None
         self.arena: Optional[VmmArena] = None
         self.failed: Optional[str] = None
-        self.stats = {"onloads": 0, "placed": 0, "stock": 0, "maps": 0, "unmaps": 0}
+        self.stats = {"onloads": 0, "placed": 0, "stock": 0, "maps": 0, "unmaps": 0, "rebuilds": 0}
+        self._retiring = False
         self._module = weakref.ref(module)
         self._stock_to = type(module).to
         module.__dict__["to"] = self._to
@@ -383,7 +392,7 @@ class ModuleArena:
         weakref.finalize(module, ModuleArena._finalize, self.__dict__)
 
     def _reinstall(self, module: Any, _args: Any) -> None:
-        if module.__dict__.get("to") != self._to and self.failed is None:
+        if module.__dict__.get("to") != self._to and (self.failed is None or self._retiring):
             module.__dict__["to"] = self._to
             self.stats["reinstalls"] = self.stats.get("reinstalls", 0) + 1
 
@@ -397,7 +406,15 @@ class ModuleArena:
                 pass
 
     def detach(self) -> None:
+        """Give the module its stock onload back and close the range. Detached while the weights still live in the
+        range (graphing stopped mid-render), it stops placing at once and finishes on the offload that moves them
+        out, so the range is never left mapped."""
         module = self._module()
+        if self.arena is not None and module is not None and self._referenced(module):
+            self.failed = self.failed or "detached"
+            self._retiring = True
+            return
+        self._retiring = False
         if module is not None and module.__dict__.get("to") == self._to:
             module.__dict__.pop("to", None)
         try:
@@ -433,6 +450,22 @@ class ModuleArena:
         self.layout = layout
         self.arena = VmmArena(max(offset, _ALIGN), self.device.index)
 
+    def _stale(self, entries: list) -> bool:
+        """Whether a placeable host weight has no slot of its shape, stride and dtype in the layout."""
+        assert self.layout is not None
+        for name, _regs, _kind, whole in entries:
+            if whole.device.type != "cpu" or not _placeable(whole):
+                continue
+            for key, t in _pieces(name, whole):
+                slot = self.layout.get(key)
+                if slot is None or (tuple(t.shape), tuple(t.stride()), t.dtype) != (
+                    slot[1],
+                    slot[2],
+                    slot[3],
+                ):
+                    return True
+        return False
+
     def _referenced(self, module: Any) -> bool:
         if self.arena is None or not self.arena.mapped:
             return False
@@ -458,6 +491,15 @@ class ModuleArena:
         import torch
 
         entries = _entries(module)
+        if self.layout is not None and self._stale(entries):
+            # A weight changed on the host since the layout was fixed (a new adapter, a dtype or shape change): the
+            # old range would be mapped in full while those weights move the stock way beside it, at new addresses
+            # every onload. Lay it out again (the range is unmapped between onloads).
+            if self.arena is not None:
+                self.arena.close()
+            self.arena = None
+            self.layout = None
+            self.stats["rebuilds"] += 1
         if self.layout is None:
             self._build(entries)
         assert self.arena is not None and self.layout is not None
@@ -547,6 +589,8 @@ class ModuleArena:
         out = self._stock_to(module, *args, **kwargs)
         if module is not None:
             self._release(module)
+            if self._retiring and (self.arena is None or not self.arena.mapped):
+                self.detach()
         return out
 
     def _release(self, module: Any) -> None:
@@ -649,6 +693,15 @@ def want_stable_repin(module: Any) -> Optional[str]:
     except Exception as exc:  # noqa: BLE001
         return f"module not writable ({exc})"
     return None
+
+
+def drop_stable_repin(module: Any) -> None:
+    """Graphing stopped for ``module``: later re-pins move the stock way. A mapped range is unmapped by the next
+    release as before; the address ranges themselves go with the module."""
+    try:
+        module.__dict__.pop(_REPIN_WANTED, None)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def stable_repin_wanted(module: Any) -> bool:

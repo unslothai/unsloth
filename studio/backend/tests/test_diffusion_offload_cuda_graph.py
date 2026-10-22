@@ -483,6 +483,89 @@ def test_model_offload_replays_over_the_stable_range_and_frees_it_between_render
     cg.uninstall_all(handles)
 
 
+def test_a_poisoned_model_offload_graph_gives_back_the_stable_range():
+    """A failed capture poisons the handle for the load: no graph replays again, so the module goes back to the stock
+    onload. Poisoned mid-render (the weights in the range), the range is closed on the offload that moves them out."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    ref, net, hook = _model_offloaded()
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1 and "stable device range" in reason, reason
+    arena = sa.arena_of(net)
+    _run(net, [0, 1])
+    assert arena.arena.mapped
+    handles[0].poison(RuntimeError("capture failed"))
+    assert arena.arena.mapped  # the weights still live in it
+    hook.offload()
+    assert net.proj_in.weight.device.type == "cpu"
+    assert sa.arena_of(net) is None and "to" not in net.__dict__
+    assert arena.arena is None  # closed: no mapping left behind
+    maps = arena.stats["maps"]
+    for a, b in zip(_run(net, [2, 3]), _run(ref, [2, 3])):
+        assert torch.equal(a, b)
+    assert arena.stats["maps"] == maps and arena.stats["onloads"] == 1
+    cg.uninstall_all(handles)
+
+
+def test_freed_block_offload_graphs_stop_the_stable_repin():
+    _cuda()
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    assert sa.stable_repin_wanted(net)
+    cg.uninstall_all(handles)
+    assert not sa.stable_repin_wanted(net)
+
+
+def test_model_offload_stable_range_is_rebuilt_when_a_weight_changes_on_the_host():
+    """A weight added or reshaped on the host after the range was laid out (a new adapter) lands in a rebuilt range,
+    not beside a fully mapped stale one at a new address every onload."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    ref, net, hook = _model_offloaded()
+    arena, why = sa.attach(net)
+    assert arena is not None, why
+    _run(net, [0])
+    hook.offload()
+    net.extra = torch.nn.Parameter(
+        torch.randn(512, 512)
+    )  # on the host, like the rest between renders
+    for render in range(2):
+        for a, b in zip(_run(net, [render + 1]), _run(ref, [render + 1])):
+            assert torch.equal(a, b)
+        lo, hi = arena.arena.va, arena.arena.va + arena.arena.size
+        assert all(lo <= p.data_ptr() < hi for p in net.parameters())
+        hook.offload()
+        assert not arena.arena.mapped
+    assert arena.stats["rebuilds"] == 1
+    arena.detach()
+
+
+def test_a_failed_wrap_of_the_mapped_range_leaves_it_unmapped_and_retryable(monkeypatch):
+    _cuda()
+    try:
+        sa._driver()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"CUDA VMM unavailable ({exc})")
+    dev = torch.cuda.current_device()
+    arena = sa.VmmArena(4 << 20, dev)
+    before = sa.mapped_bytes(dev)
+    real = torch.as_tensor
+
+    def refuse(*args, **kwargs):
+        raise TypeError("unsupported __cuda_array_interface__")
+
+    monkeypatch.setattr(torch, "as_tensor", refuse)
+    with pytest.raises(TypeError):
+        arena.map()
+    assert not arena.mapped and sa.mapped_bytes(dev) == before
+    monkeypatch.setattr(torch, "as_tensor", real)
+    base = arena.map()
+    base.fill_(7)
+    assert arena.mapped and int(base[0]) == 7
+    arena.close()
+    assert sa.mapped_bytes(dev) == before
+
+
 def test_model_offload_stops_recording_only_when_moves_outpace_replays():
     placement = cg.OffloadPlacement.__new__(cg.OffloadPlacement)
     placement.mode = "model"
