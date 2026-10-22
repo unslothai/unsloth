@@ -362,11 +362,14 @@ export const BUDGET = {
   // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
   // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
   // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
   // Apple unified-memory fit hint (#14598) in the eager GPU info hook and fit check:
-  // +1,099 B raw / +380 B transfer (6,881,936 -> 6,883,035 B raw,
-  // 2,073,188 -> 2,073,568 B transfer against b2ba86a514, Node 26, 97 chunks). Raised by that.
-  transferBytes: 2_073_689,
-  rawBytes: 6_883_210,
+  // +1,048 B raw / +390 B transfer (6,885,298 -> 6,886,346 B raw,
+  // 2,074,890 -> 2,075,280 B transfer against 8bcbf837bd, Node 26, 98 chunks). Raised by that.
+  transferBytes: 2_075_426,
+  rawBytes: 6_886_498,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

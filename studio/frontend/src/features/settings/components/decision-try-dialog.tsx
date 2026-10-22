@@ -80,9 +80,9 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
-import { isMacPlatform } from "../lib/keyboard-shortcuts";
+import { isModEnter, modEnterLabel } from "../lib/keyboard-shortcuts";
 
-const SHORTCUT = isMacPlatform() ? "⌘↵" : "Ctrl ↵";
+const SHORTCUT = modEnterLabel();
 
 const TYPE_LABELS: Record<DecisionType, TranslationKey> = {
   noul: "decisions.typeNoul",
@@ -988,9 +988,7 @@ export function DecisionTryDialog({
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (
-      event.key !== "Enter" ||
-      !(event.metaKey || event.ctrlKey) ||
-      event.nativeEvent.isComposing ||
+      !isModEnter(event) ||
       event.repeat ||
       (event.target instanceof Element &&
         event.target.closest('[role="menu"], [role="listbox"]'))
