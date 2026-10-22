@@ -118,6 +118,7 @@ export const zhCN = {
     reload: "重新加载",
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
+    local: "本地",
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -468,6 +469,8 @@ export const zhCN = {
       downloadFailed: "无法下载 {name}",
       notMarked: "{name} 已保存,但无法标记为从互联网下载,因此打开前系统不会发出警告。",
       blocked: "此地址无法在浏览器面板中打开。面板只打开公开网站。",
+      blockedLocal: "此本地地址无法在此打开。请在地址栏中输入它来打开。",
+      studioAddress: "这是 Unsloth 自身的地址，因此无法在浏览器面板中打开。",
       clearDataSettingDescription: "清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，这会让你退出各网站。",
       clearDataDescription: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       clearDataFailed: "无法清除网站数据。请重试。",
@@ -622,6 +625,8 @@ export const zhCN = {
     temporaryChatDescription: "此聊天不会出现在你的历史记录中，也不会被保存。离开后即消失。",
   },
   picker: {
+    unifiedTightFit: "勉强可用",
+    unifiedTightFitHint: "在这台 Mac 上可能以更短的上下文加载，或运行更慢。",
     onDevice: "本机",
     huggingFace: "Hugging Face",
     retry: "重试",
@@ -1797,20 +1802,14 @@ export const zhCN = {
       },
       notifications: {
         sectionTitle: "通知",
-        showLlamaUpdates: "llama.cpp 更新通知",
-        showLlamaUpdatesDescription:
-          "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
-        showLoadedModels: "已加载模型指示器",
-        showLoadedModelsDescription:
-          "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
-        showAudioCppUpdates: "audio.cpp 更新通知",
-        showAudioCppUpdatesDescription:
-          "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
-        showUnslothUpdates: "Unsloth 更新通知",
-        showUnslothUpdatesDescription:
-          "有新版本的 Unsloth 可供安装时通知。",
+        showLoadedModels: "已加载模型卡片",
+        showLoadedModelsDescription: "角落卡片列出每个已加载的模型，一键卸载。",
+        updateReminders: "更新提醒",
+        updateRemindersDescription: "新版本就绪时多久提醒一次。",
+        llamaHint: "聊天和 GGUF 模型",
+        audioHint: "语音、音乐和转录",
         frequency: {
-          always: "总是",
+          always: "一有就提醒",
           daily: "每天一次",
           weekly: "每周一次",
           biweekly: "每两周一次",
@@ -1962,6 +1961,18 @@ export const zhCN = {
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
       },
+      fullInstall: {
+        label: "安装类型",
+        description:
+          "仅聊天 (GGUF)。完整安装会添加训练、导出、视频、safetensors 模型和更多图像生成功能。",
+        action: "升级到完整安装",
+        confirmTitle: "要升级到完整安装吗？",
+        confirmDescription:
+          "此仅聊天安装运行 GGUF 模型。完整安装会为本机 GPU 添加 PyTorch，从而启用训练、导出、视频、safetensors 模型和更多图像生成功能。它会下载几 GB 数据（至少 5 GB 磁盘空间）并重启服务器。聊天记录、模型和设置会保留。这可能需要几分钟。",
+        confirmAction: "升级",
+        keywords:
+          "full install upgrade 安装类型 完整安装 升级 仅聊天 chat only gguf add training 训练 微调 train fine-tune pytorch torch 导出 视频 图像生成 safetensors",
+      },
       repairInstall: {
         label: "修复安装",
         description:
@@ -1970,6 +1981,8 @@ export const zhCN = {
         confirmTitle: "要修复此安装吗？",
         confirmDescription:
           "停止服务器并重新运行安装程序，为本机 GPU 重新安装 PyTorch。聊天记录和设置会保留。这可能需要几分钟。",
+        confirmDescriptionChatOnly:
+          "停止服务器并重新运行安装程序。这是仅聊天安装，因此安装程序还会将其升级为包含 PyTorch 的完整安装（共几 GB）。聊天记录和设置会保留。这可能需要几分钟。",
         confirmAction: "立即修复",
       },
       resetPreferences: {
@@ -2670,6 +2683,10 @@ export const zhCN = {
         "通知 提醒 完成 结束 就绪 回复 后台 最小化 notify notification alert done finished reply background",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
+      showReplyTimes: "回复时间",
+      showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
+      showReplyTimesKeywords:
+        "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       modelDisclaimer: "显示模型免责声明",
@@ -3066,6 +3083,7 @@ export const zhCN = {
       relativeNever: "从未",
       relativeJustNow: "刚刚",
       expired: "已过期",
+      expiredStatus: "已过期",
       today: "今天",
       created: "创建于 {value}",
       used: "上次使用：{value}",
@@ -3094,6 +3112,14 @@ export const zhCN = {
         autoSwitchOff:
           "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
         useViaApi: "通过 API 使用",
+      },
+      mediaApi: {
+        title: "图像和视频 API",
+        description: "通过兼容 OpenAI 的端点，在你自己的代码中生成图像和视频。",
+        images: "图像",
+        video: "视频",
+        placeholderModel: "显示的模型只是示例。在图像或视频页面加载模型，再从该页面的 API 按钮打开此处即可填入。",
+        autoSwitchOff: "媒体自动切换已关闭，因此请求无论指定哪个模型，都会在页面已加载的模型上运行。",
       },
       decisionApi: {
         title: "决策 API",
@@ -3174,6 +3200,24 @@ export const zhCN = {
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
       audioCppVersion: "audio.cpp 版本",
+      whisperCppVersion: "whisper.cpp 版本",
+      engines: {
+        title: "引擎",
+        description: "Unsloth 用来运行模型的运行时。更新在后台安装，无需重启。",
+        updatesLabel: "引擎更新",
+        notInstalled: "未安装",
+        available: "{version} 可用",
+        upToDate: "已是最新",
+        updatesAvailable: "有可用更新",
+        checking: "正在检查更新...",
+        checkFailed: "无法检查更新，请稍后重试。",
+        unsupported: "此安装的引擎由 Unsloth 之外管理。",
+        checkForUpdates: "检查更新",
+        update: "更新",
+        updating: "正在更新...",
+        updated: "引擎已更新。",
+        updateFailed: "更新失败：{error}",
+      },
       hardware: "硬件",
       gpu: "GPU",
       gpuIntegrated: "集成",
@@ -3252,6 +3296,9 @@ export const zhCN = {
         docsUpdating: "更新",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4556,5 +4603,42 @@ export const zhCN = {
     cantRun: "无法运行",
     failed: "错误 {status}",
     invalidJson: "请求体不是有效的 JSON。",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "已加载的模型",
+      countOne: "已加载 {count} 个模型",
+      countMany: "已加载 {count} 个模型",
+      pillLabel: "{count}。显示详情，或拖动以移动",
+      dragToMove: "拖动以移动",
+      dragHandleLabel: "移动已加载的模型面板。方向键可微调位置。",
+      collapse: "折叠",
+      collapseLabel: "折叠已加载的模型",
+      close: "关闭",
+      closeLabel: "关闭已加载的模型",
+      backOnNextLoad: "下次加载模型时会重新显示",
+      ejectToFree: "弹出以释放内存",
+      ejectLabel: "弹出 {model}",
+      openTarget: "打开 {target}",
+      rowLabel: "{model}。打开 {target}",
+      loading: "加载中",
+      ejecting: "弹出中",
+      stillInMemory: "仍在内存中",
+      alsoServing: "同时也在服务",
+      noneLoaded: "没有已加载的模型",
+      noneLoadedDetail: "你加载的模型会显示在这里。",
+      otherAccount: "正被其他账户使用",
+      otherAccountDetail: "内存被一个你看不到的模型占用",
+      toastStillResident: "弹出期间“{model}”被加载，因此仍在占用内存。请再次弹出以释放。",
+      toastUnverified: "已请求卸载 {model}，但运行时未确认。请稍后查看卡片。",
+      toastAlreadyFree: "{model} 已不再处于加载状态。",
+      toastReplaced: "{model} 已不再加载。“{resident}”取代了它，未做处理。",
+      toastEjected: "已弹出 {model}",
+      toastFailed: "弹出 {model} 失败",
+    },
+    monitor: {
+      dragHandleLabel: "移动实时监控。方向键可微调位置，双击可重置。",
+      reconnecting: "正在重新连接...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

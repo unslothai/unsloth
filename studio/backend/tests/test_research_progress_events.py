@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every Deep Research model call must bracket itself with timeline events.
-
-Planning, per-step decisions, and the synthesis audit run with thinking disabled and report
-progress off. Without these brackets they emit nothing at all, and the UI showed a static
-"0 sources, 0 actions" card for the whole call.
-"""
+"""Each Deep Research model call must emit timeline events, or the UI shows a static 0 sources card."""
 
 import asyncio
 import json
@@ -201,7 +196,6 @@ def test_titles_split_across_tokens_still_publish(research_home, monkeypatch):
             return None
 
         async def aiter_lines(self):
-            # Three chars per token, so a title's closing quote rarely lands on a boundary.
             for index in range(0, len(body), 3):
                 chunk = json.dumps({"choices": [{"delta": {"content": body[index : index + 3]}}]})
                 yield f"data: {chunk}"
@@ -275,15 +269,13 @@ def test_decision_phase_bracket_carries_its_step_position(research_home, monkeyp
 
 
 def test_event_stream_is_reachable_over_post_as_well_as_get():
-    # Proxies that stream POST /v1/chat/completions still hold a streamed GET until it closes.
     from routes.research_runs import router
     events = [route for route in router.routes if route.path == "/{run_id}/events"]
     assert {method for route in events for method in route.methods} >= {"GET", "POST"}
 
 
 def test_event_stream_verbs_do_not_share_one_operation_id():
-    # A single api_route for both verbs gave them one operationId, which FastAPI warns about and
-    # OpenAPI generators resolve by dropping one of the two operations.
+    # One api_route for both verbs shares an operationId; OpenAPI generators drop one.
     import warnings
 
     from fastapi import FastAPI

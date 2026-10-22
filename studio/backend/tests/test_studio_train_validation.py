@@ -87,14 +87,13 @@ class TestVisionImageSizeCap:
 
     @pytest.mark.parametrize("value", [True, False])
     def test_bool_error_says_integer_not_range(self, value):
-        # Regression guard: bools say "integer or null", not "in [256, 2048]".
+        # Bools must say "integer or null", not "in [256, 2048]".
         with pytest.raises(ValidationError) as exc:
             _check_field("vision_image_size", value)
         assert "integer or null" in str(exc.value)
 
     @pytest.mark.parametrize("value", ["++512", "--256", "+-+512", "+", "-"])
     def test_multi_sign_string_says_integer_not_raw(self, value):
-        # Regression guard: multi-sign strings say "integer or null", not int()'s raw message.
         with pytest.raises(ValidationError) as exc:
             _check_field("vision_image_size", value)
         assert "integer or null" in str(exc.value)

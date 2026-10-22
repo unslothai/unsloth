@@ -117,6 +117,7 @@ export const it = {
     reload: "Ricarica",
     more: "Altro",
     addressPlaceholder: "Cerca o inserisci un URL",
+    local: "Locale",
     suggested: "Suggeriti",
     suggestedMenu: {
       open: "Apri",
@@ -467,6 +468,8 @@ export const it = {
       downloadFailed: "Impossibile scaricare {name}",
       notMarked: "{name} è stato salvato ma non è stato possibile contrassegnarlo come scaricato da Internet, quindi il sistema non avviserà prima di aprirlo.",
       blocked: "Questo indirizzo non si può aprire nel pannello del browser. Apre solo siti web pubblici.",
+      blockedLocal: "Questo indirizzo locale non si può aprire qui. Digitalo nella barra degli indirizzi per aprirlo.",
+      studioAddress: "Questo è l'indirizzo di Unsloth stesso, quindi non si può aprire nel pannello del browser.",
       clearDataSettingDescription: "Cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti.",
       clearDataDescription: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
       clearDataFailed: "Impossibile cancellare i dati dei siti. Riprova.",
@@ -1761,20 +1764,14 @@ export const it = {
       },
       notifications: {
         sectionTitle: "Notifiche",
-        showLlamaUpdates: "Notifiche di aggiornamento di llama.cpp",
-        showLlamaUpdatesDescription:
-          "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva le notifiche se usi Unsloth solo per l'addestramento.",
-        showLoadedModels: "Indicatore dei modelli caricati",
-        showLoadedModelsDescription:
-          "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
-        showAudioCppUpdates: "Notifiche di aggiornamento di audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Avvisa quando il runtime di audio.cpp deve essere aggiornato per le pagine Audio. Disattiva le notifiche se non usi mai Audio.",
-        showUnslothUpdates: "Notifiche di aggiornamento di Unsloth",
-        showUnslothUpdatesDescription:
-          "Avvisa quando è disponibile una versione più recente di Unsloth da installare.",
+        showLoadedModels: "Scheda dei modelli caricati",
+        showLoadedModelsDescription: "Una scheda nell'angolo con ogni modello caricato, da scaricare con un clic.",
+        updateReminders: "Promemoria di aggiornamento",
+        updateRemindersDescription: "Ogni quanto proporre una nuova versione quando è pronta.",
+        llamaHint: "Modelli di chat e GGUF",
+        audioHint: "Voce, musica e trascrizione",
         frequency: {
-          always: "Sempre",
+          always: "Appena disponibile",
           daily: "Una volta al giorno",
           weekly: "Una volta a settimana",
           biweekly: "Ogni due settimane",
@@ -1937,6 +1934,18 @@ export const it = {
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
       },
+      fullInstall: {
+        label: "Tipo di installazione",
+        description:
+          "Solo chat (GGUF). L'installazione completa aggiunge addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini.",
+        action: "Passa all'installazione completa",
+        confirmTitle: "Passare all'installazione completa?",
+        confirmDescription:
+          "Questa installazione solo chat esegue modelli GGUF. L'installazione completa aggiunge PyTorch per la GPU di questa macchina, abilitando addestramento, esportazione, video, modelli safetensors e altre funzionalità di generazione di immagini. Scarica diversi gigabyte (almeno 5 GB di spazio su disco) e riavvia il server. Le chat, i modelli e le impostazioni vengono mantenuti. L'operazione può richiedere alcuni minuti.",
+        confirmAction: "Aggiorna",
+        keywords:
+          "full install upgrade tipo di installazione installazione completa aggiorna solo chat chat only gguf add training addestramento addestrare train fine-tune pytorch torch esportazione video generazione di immagini safetensors",
+      },
       repairInstall: {
         label: "Ripara l'installazione",
         description:
@@ -1945,6 +1954,8 @@ export const it = {
         confirmTitle: "Riparare questa installazione?",
         confirmDescription:
           "Arresta il server e riesegue il programma di installazione, che reinstalla PyTorch per la GPU di questa macchina. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
+        confirmDescriptionChatOnly:
+          "Arresta il server e riesegue il programma di installazione. Questa è un'installazione solo chat, quindi il programma di installazione la porta anche all'installazione completa con PyTorch, diversi gigabyte in totale. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Ripara ora",
       },
       resetPreferences: {
@@ -2659,6 +2670,10 @@ export const it = {
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
+      showReplyTimes: "Orario delle risposte",
+      showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
+      showReplyTimesKeywords:
+        "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",
@@ -3073,6 +3088,7 @@ export const it = {
       relativeNever: "mai",
       relativeJustNow: "proprio ora",
       expired: "scaduta",
+      expiredStatus: "Scaduta",
       today: "oggi",
       created: "Creato {value}",
       used: "Ultimo utilizzo: {value}",
@@ -3101,6 +3117,14 @@ export const it = {
         autoSwitchOff:
           "Il modello si carica per nome solo con il cambio automatico del modello attivo. Attivalo, oppure carica prima il modello dalla sua pagina Audio.",
         useViaApi: "Usa via API",
+      },
+      mediaApi: {
+        title: "API per immagini e video",
+        description: "Genera immagini e video dal tuo codice con gli endpoint compatibili con OpenAI.",
+        images: "Immagini",
+        video: "Video",
+        placeholderModel: "Il modello mostrato è un esempio. Carica un modello nella pagina Immagini o Video e apri questa sezione dal suo pulsante API per compilarlo.",
+        autoSwitchOff: "Il cambio automatico dei media è disattivato, quindi le richieste usano il modello caricato nella pagina, qualunque nome indichino.",
       },
       decisionApi: {
         title: "API decisionale",
@@ -3180,6 +3204,24 @@ export const it = {
       packageVersion: "Versione del pacchetto",
       llamaCppVersion: "Versione di llama.cpp",
       audioCppVersion: "Versione di audio.cpp",
+      whisperCppVersion: "Versione di whisper.cpp",
+      engines: {
+        title: "Motori",
+        description: "I runtime che Unsloth usa per eseguire i modelli. Gli aggiornamenti si installano in background, senza riavvio.",
+        updatesLabel: "Aggiornamenti dei motori",
+        notInstalled: "Non installato",
+        available: "{version} disponibile",
+        upToDate: "Aggiornato",
+        updatesAvailable: "Aggiornamenti disponibili",
+        checking: "Ricerca aggiornamenti...",
+        checkFailed: "Impossibile cercare aggiornamenti. Riprova più tardi.",
+        unsupported: "I motori di questa installazione sono gestiti fuori da Unsloth.",
+        checkForUpdates: "Cerca aggiornamenti",
+        update: "Aggiorna",
+        updating: "Aggiornamento...",
+        updated: "Motori aggiornati.",
+        updateFailed: "Aggiornamento non riuscito: {error}",
+      },
       hardware: "Hardware",
       gpu: "GPU",
       gpuIntegrated: "integrata",
@@ -3268,6 +3310,9 @@ export const it = {
         docsUpdating: "Aggiornamento",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3330,6 +3375,8 @@ export const it = {
       "Questa chat non comparirà nella cronologia e non viene salvata. Scompare quando esci.",
   },
   picker: {
+    unifiedTightFit: "Al limite",
+    unifiedTightFitHint: "Su questo Mac potrebbe caricarsi con un contesto più breve o essere più lento.",
     onDevice: "Sul dispositivo",
     huggingFace: "Hugging Face",
     retry: "Riprova",
@@ -4730,5 +4777,42 @@ export const it = {
     cantRun: "Impossibile eseguire",
     failed: "Errore {status}",
     invalidJson: "Il corpo della richiesta non è un JSON valido.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Modelli caricati",
+      countOne: "{count} modello caricato",
+      countMany: "{count} modelli caricati",
+      pillLabel: "{count}. Mostra i dettagli o trascina per spostare",
+      dragToMove: "Trascina per spostare",
+      dragHandleLabel: "Sposta i modelli caricati. I tasti freccia lo spostano leggermente.",
+      collapse: "Comprimi",
+      collapseLabel: "Comprimi i modelli caricati",
+      close: "Chiudi",
+      closeLabel: "Chiudi i modelli caricati",
+      backOnNextLoad: "Tornerà al prossimo caricamento di un modello",
+      ejectToFree: "Espelli per liberare memoria",
+      ejectLabel: "Espelli {model}",
+      openTarget: "Apri {target}",
+      rowLabel: "{model}. Apri {target}",
+      loading: "Caricamento",
+      ejecting: "Espulsione",
+      stillInMemory: "Ancora in memoria",
+      alsoServing: "Serve anche",
+      noneLoaded: "Nessun modello caricato",
+      noneLoadedDetail: "I modelli che carichi verranno mostrati qui.",
+      otherAccount: "In uso da un altro account",
+      otherAccountDetail: "La memoria è occupata da un modello che non puoi vedere",
+      toastStillResident: "“{model}” è stato caricato durante l'espulsione, quindi usa ancora memoria. Espellilo di nuovo per liberarla.",
+      toastUnverified: "È stato richiesto lo scaricamento di {model}, ma il runtime non lo ha confermato. Controlla la scheda tra un attimo.",
+      toastAlreadyFree: "{model} non era più caricato.",
+      toastReplaced: "{model} non è più caricato. “{resident}” ha preso il suo posto e non è stato toccato.",
+      toastEjected: "{model} espulso",
+      toastFailed: "Impossibile espellere {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Sposta il monitor in tempo reale. I tasti freccia lo spostano leggermente, il doppio clic lo reimposta.",
+      reconnecting: "Riconnessione...",
+    },
   },
 } as const;

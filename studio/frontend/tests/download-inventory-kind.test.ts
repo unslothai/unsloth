@@ -75,7 +75,6 @@ test("recovers scoped inventory format from backend files", () => {
 });
 
 test("classifies staged single-file checkpoints from their file set", () => {
-  // A `.safetensors` checkpoint can sit in the field named gguf_filename, so that field is not evidence of GGUF.
   assert.equal(
     downloadRequestInventoryKind({
       kind: "model",
@@ -132,7 +131,6 @@ test("infers missing scoped request formats during adoption", () => {
 });
 
 test("separates live inventory rows for hybrid repository formats", () => {
-  // Two scoped jobs on one repo share the variant SHAPE, so only the resolved inventory kind separates them; keying on the variant collapses both rows onto one.
   const selector = createLiveInventoryJobsSelector(false);
   const rows = selector({
     jobs: {
@@ -169,7 +167,6 @@ test("same-format live jobs for one repository still collapse", () => {
 });
 
 test("protects observed keys with the job's explicit inventory kind", () => {
-  // A scoped job classified as gguf must protect the gguf key, not the key its `@variant` shape alone implies.
   const keys = observedKeyProtections({
     scoped: liveJob({
       key: "scoped",

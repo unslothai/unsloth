@@ -96,8 +96,7 @@ def test_text_identity_filters_old_unlinked_bullets(monkeypatch):
 
 
 def test_delta_fails_closed_when_installed_notes_have_no_bullets(monkeypatch):
-    # Pre-b9625-mix-2d6bd50 (2026-06-14) releases name carried PRs in prose, so the
-    # bullet list is empty for a build that does carry #24423.
+    # pre-b9625-mix-2d6bd50 releases named carried PRs in prose, so no bullets despite carries
     releases = {
         "b9596-mix-e6f2453": {
             "body": (
@@ -121,7 +120,7 @@ def test_delta_fails_closed_when_installed_notes_have_no_bullets(monkeypatch):
 
 
 def test_delta_reports_no_changes_when_target_drops_every_carried_pr(monkeypatch):
-    # Not a failure: the target is always newest, so no bullets means no carries.
+    # not a failure: the target is always newest, so no bullets means no carries
     releases = {
         "old": {"body": OLD_BODY},
         "new": {"body": "Automated Unsloth llama.cpp prebuild for upstream b10800."},
@@ -174,7 +173,6 @@ def test_repo_with_a_dot_segment_never_reaches_github(monkeypatch):
 
 
 def test_pull_and_issue_urls_share_one_identity_namespace():
-    # One number space, so the same reference written three ways must match itself.
     from_pull = changes._identities(
         "Fix a crash ([ggml-org/llama.cpp#900](https://github.com/ggml-org/llama.cpp/pull/900))"
     )
@@ -224,7 +222,6 @@ def test_a_bullet_with_no_summary_does_not_suppress_a_later_real_one(monkeypatch
 
 
 def test_a_missing_target_body_fails_closed(monkeypatch):
-    # Distinct from a prose-only target, which legitimately means "carries nothing".
     releases = {"old": {"body": OLD_BODY}, "new": {}}
     monkeypatch.setattr(
         changes,
@@ -249,7 +246,6 @@ def test_forced_refresh_is_floored_to_one_fetch_per_interval(monkeypatch):
     for _ in range(10):
         changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh = True)
 
-    # Without the floor this was ten uncached GitHub round trips per ten clicks.
     assert len(calls) == 1
 
 
@@ -272,7 +268,6 @@ def test_release_page_url_is_github_or_nothing():
 
 
 def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
-    # Predating the bullet format is permanent, so the banner offers no Retry.
     releases = {
         "prose": {"body": "Automated Unsloth llama.cpp prebuild for upstream b9000."},
         "itemised": {"body": OLD_BODY},
@@ -294,9 +289,7 @@ def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
 
 
 def test_a_noncumulative_repo_is_never_compared(monkeypatch):
-    # Measured on real upstream releases: b10721 -> b10734 reported 5 "changes"
-    # (commit-message lines and an attestation URL) and dropped the 324 bullets in
-    # the 9 releases between them, because per-release notes are not cumulative.
+    # upstream per-release notes are not cumulative, so a delta drops the releases between
     upstream = {
         "b10721": {"body": "<details open>\n\n- webgpu : avoid a crash (#28045)\n"},
         "b10734": {"body": "<details open>\n\n- metal : enable Metal 4.0 (#27461)\n"},
@@ -308,7 +301,6 @@ def test_a_noncumulative_repo_is_never_compared(monkeypatch):
     )
 
     assert changes.changelog_for_update("ggml-org/llama.cpp", "b10721", "b10734") is None
-    # Permanent: that repo will never publish cumulative notes, so no Retry.
     assert (
         changes.unavailable_reason("ggml-org/llama.cpp", "b10721", "b10734")
         == "notes_not_comparable"
@@ -335,8 +327,7 @@ def test_a_case_variant_of_the_official_repo_is_still_official(monkeypatch):
 
 
 def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
-    # The target is the newest release, so a missing body is a publishing gap that
-    # may be filled in: keep the Retry.
+    # the target is newest, so a missing body is a publishing gap that may fill: keep Retry
     releases = {"itemised": {"body": OLD_BODY}, "bodyless": {}}
     monkeypatch.setattr(
         changes,

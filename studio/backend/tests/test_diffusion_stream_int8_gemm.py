@@ -46,12 +46,10 @@ def _record_install(monkeypatch):
 @pytest.mark.parametrize(
     "offload_active, denoiser_offloaded, onload, expected",
     [
-        # moved denoiser with a known onload device: installed against it
         (True, True, "cuda:1", {"offload_active": False, "device": "cuda:1"}),
         (True, None, "cuda", {"offload_active": False, "device": "cuda"}),
-        # no onload device (video backend, ROCm, CPU): the old refusal
+        # no onload device (video backend, ROCm, CPU): still refused
         (True, True, None, {"offload_active": True, "device": None}),
-        # a resident denoiser never needs the device
         (True, False, "cuda", {"offload_active": False, "device": None}),
         (False, None, "cuda", {"offload_active": False, "device": None}),
     ],
@@ -75,7 +73,7 @@ def test_moved_denoiser_installs_against_the_onload_device(
     [
         (types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda:1"), "cuda:1"),
         (types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda"), "cuda"),
-        (types.SimpleNamespace(device = "cuda", backend = "cuda"), "cuda"),  # video's namespace target
+        (types.SimpleNamespace(device = "cuda", backend = "cuda"), "cuda"),
         (types.SimpleNamespace(device = "cuda", backend = "rocm", torch_device = "cuda"), None),
         (types.SimpleNamespace(device = "cpu", backend = "cpu", torch_device = "cpu"), None),
         (types.SimpleNamespace(device = "mps", backend = "mps", torch_device = "mps"), None),

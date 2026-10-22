@@ -116,6 +116,7 @@ export const sv = {
     reload: "Läs in igen",
     more: "Mer",
     addressPlaceholder: "Sök eller ange en URL",
+    local: "Lokal",
     suggested: "Förslag",
     suggestedMenu: {
       open: "Öppna",
@@ -492,6 +493,8 @@ export const sv = {
       notMarked: "{name} sparades men kunde inte markeras som nedladdad från internet, så systemet varnar inte innan den öppnas.",
       blocked:
         "Den här adressen kan inte öppnas i webbläsarpanelen. Den öppnar bara offentliga webbplatser.",
+      blockedLocal: "Den här lokala adressen kan inte öppnas här. Skriv den i adressfältet för att öppna den.",
+      studioAddress: "Det här är Unsloths egen adress, så den kan inte öppnas i webbläsarpanelen.",
       clearDataSettingDescription:
         "Rensa webbhistorik, hämtningshistorik, cachade sidor samt de cookies och webbplatsdata som sidor sparar, vilket loggar ut dig från webbplatser.",
       clearDataDescription:
@@ -725,6 +728,8 @@ export const sv = {
       "Den här chatten visas inte i din historik och sparas inte. Den försvinner när du lämnar den.",
   },
   picker: {
+    unifiedTightFit: "Snäv passform",
+    unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -1989,20 +1994,14 @@ export const sv = {
       },
       notifications: {
         sectionTitle: "Aviseringar",
-        showLlamaUpdates: "Uppdateringsaviseringar för llama.cpp",
-        showLlamaUpdatesDescription:
-          "Avisera när en nyare llama.cpp-version finns för att köra nya modeller. Stäng av om du endast tränar.",
-        showLoadedModels: "Indikator för inlästa modeller",
-        showLoadedModelsDescription:
-          "Visa ett litet kort i nedre högra hörnet med alla modeller som för närvarande finns i minnet (chatt, tal, bild, video), med en knapp för att mata ut var och en.",
-        showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
-        showAudioCppUpdatesDescription:
-          "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
-        showUnslothUpdates: "Uppdateringsaviseringar för Unsloth",
-        showUnslothUpdatesDescription:
-          "Meddela när en nyare version av Unsloth finns att installera.",
+        showLoadedModels: "Kort för inlästa modeller",
+        showLoadedModelsDescription: "Ett hörnkort med varje inläst modell, mata ut med ett klick.",
+        updateReminders: "Uppdateringspåminnelser",
+        updateRemindersDescription: "Hur ofta en ny version erbjuds när den är klar.",
+        llamaHint: "Chatt- och GGUF-modeller",
+        audioHint: "Tal, musik och transkribering",
         frequency: {
-          always: "Alltid",
+          always: "Så fort den finns",
           daily: "En gång om dagen",
           weekly: "En gång i veckan",
           biweekly: "Varannan vecka",
@@ -2172,6 +2171,18 @@ export const sv = {
         openError: "Det gick inte att öppna katalogen",
         copyError: "Det gick inte att kopiera sökvägen",
       },
+      fullInstall: {
+        label: "Installationstyp",
+        description:
+          "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        action: "Uppgradera till fullständig installation",
+        confirmTitle: "Uppgradera till den fullständiga installationen?",
+        confirmDescription:
+          "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmAction: "Uppgradera",
+        keywords:
+          "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
+      },
       repairInstall: {
         label: "Reparera installationen",
         description:
@@ -2180,6 +2191,8 @@ export const sv = {
         confirmTitle: "Reparera den här installationen?",
         confirmDescription:
           "Stoppar servern och kör installationsprogrammet igen, vilket installerar om PyTorch för den här datorns GPU i den senaste versionen som stöds. Chattar och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionChatOnly:
+          "Stoppar servern och kör installationsprogrammet igen. Det här är en installation med endast chatt, så installationsprogrammet uppgraderar den även till den fullständiga installationen med PyTorch, flera gigabyte totalt. Chattar och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Reparera nu",
       },
       resetPreferences: {
@@ -2913,6 +2926,10 @@ export const sv = {
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
+      showReplyTimes: "Svarstider",
+      showReplyTimesDescription: "Visa under varje svar när det blev klart.",
+      showReplyTimesKeywords:
+        "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
@@ -3341,6 +3358,7 @@ export const sv = {
       relativeNever: "aldrig",
       relativeJustNow: "just nu",
       expired: "har löpt ut",
+      expiredStatus: "Har löpt ut",
       today: "i dag",
       created: "Skapad {value}",
       used: "Senast använd {value}",
@@ -3370,6 +3388,14 @@ export const sv = {
         autoSwitchOff:
           "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
         useViaApi: "Använd via API",
+      },
+      mediaApi: {
+        title: "API för bild och video",
+        description: "Skapa bilder och videor från din egen kod med de OpenAI-kompatibla slutpunkterna.",
+        images: "Bilder",
+        video: "Video",
+        placeholderModel: "Modellen som visas är ett exempel. Läs in en modell på sidan Bilder eller Video och öppna det här från dess API-knapp för att fylla i den.",
+        autoSwitchOff: "Automatiskt mediabyte är av, så förfrågningar körs på modellen som sidan har läst in, oavsett vilken de anger.",
       },
       decisionApi: {
         title: "Decision API",
@@ -3455,6 +3481,24 @@ export const sv = {
       desktopAppVersionUnavailable: "Inte tillgänglig",
       llamaCppVersion: "llama.cpp-version",
       audioCppVersion: "audio.cpp-version",
+      whisperCppVersion: "whisper.cpp-version",
+      engines: {
+        title: "Motorer",
+        description: "Körmiljöerna som Unsloth använder för att köra modeller. Uppdateringar installeras i bakgrunden, utan omstart.",
+        updatesLabel: "Motoruppdateringar",
+        notInstalled: "Inte installerad",
+        available: "{version} tillgänglig",
+        upToDate: "Uppdaterad",
+        updatesAvailable: "Uppdateringar tillgängliga",
+        checking: "Söker efter uppdateringar...",
+        checkFailed: "Det gick inte att söka efter uppdateringar. Försök igen senare.",
+        unsupported: "Den här installationens motorer hanteras utanför Unsloth.",
+        checkForUpdates: "Sök efter uppdateringar",
+        update: "Uppdatera",
+        updating: "Uppdaterar...",
+        updated: "Motorerna har uppdaterats.",
+        updateFailed: "Uppdateringen misslyckades: {error}",
+      },
       hardware: "Maskinvara",
       gpu: "GPU",
       gpuIntegrated: "integrerad",
@@ -3540,6 +3584,9 @@ export const sv = {
         docsUpdating: "Uppdatering",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4936,5 +4983,42 @@ export const sv = {
     cantRun: "Kunde inte köras",
     failed: "Fel {status}",
     invalidJson: "Begärans body är inte giltig JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Inlästa modeller",
+      countOne: "{count} modell inläst",
+      countMany: "{count} modeller inlästa",
+      pillLabel: "{count}. Visa detaljer eller dra för att flytta",
+      dragToMove: "Dra för att flytta",
+      dragHandleLabel: "Flytta inlästa modeller. Piltangenterna flyttar den lite i taget.",
+      collapse: "Fäll ihop",
+      collapseLabel: "Fäll ihop inlästa modeller",
+      close: "Stäng",
+      closeLabel: "Stäng inlästa modeller",
+      backOnNextLoad: "Visas igen vid nästa modellinläsning",
+      ejectToFree: "Mata ut för att frigöra minne",
+      ejectLabel: "Mata ut {model}",
+      openTarget: "Öppna {target}",
+      rowLabel: "{model}. Öppna {target}",
+      loading: "Läser in",
+      ejecting: "Matar ut",
+      stillInMemory: "Finns kvar i minnet",
+      alsoServing: "Betjänar även",
+      noneLoaded: "Inga modeller inlästa",
+      noneLoadedDetail: "Modeller du läser in visas här.",
+      otherAccount: "Används av ett annat konto",
+      otherAccountDetail: "Minnet hålls av en modell som du inte kan se",
+      toastStillResident: "”{model}” lästes in under utmatningen och använder därför fortfarande minne. Mata ut den igen för att frigöra det.",
+      toastUnverified: "{model} ombads att laddas ur, men körmiljön bekräftade inte. Kontrollera kortet om en stund.",
+      toastAlreadyFree: "{model} var inte längre inläst.",
+      toastReplaced: "{model} är inte längre inläst. ”{resident}” tog dess plats och lämnades orörd.",
+      toastEjected: "{model} utmatad",
+      toastFailed: "Det gick inte att mata ut {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Flytta liveövervakaren. Piltangenterna flyttar den lite i taget, dubbelklick återställer den.",
+      reconnecting: "Återansluter …",
+    },
   },
 } as const;

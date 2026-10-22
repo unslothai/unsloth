@@ -1254,7 +1254,7 @@ function MlxOffloadSettings({
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   offloadable: readonly MlxOffloadablePart[];
-  decided: Record<MlxOffloadablePart, number | null>;
+  decided: Record<MlxOffloadablePart, number | null> | null;
   notes: Record<MlxOffloadablePart, string | null>;
 }) {
   const sliders = MLX_OFFLOAD_SLIDERS.filter(
@@ -1284,14 +1284,15 @@ function MlxOffloadSettings({
         </div>
         <Select
           value={isManual ? "manual" : "auto"}
-          onValueChange={(v) =>
+          onValueChange={(v) => {
+            if (v === "manual" && !decided) return;
             update(
               mlxOffloadModePatch(
                 v === "manual",
-                sliders.map(({ part, key }) => ({ key, decided: decided[part] })),
+                sliders.map(({ part, key }) => ({ key, decided: decided?.[part] ?? null })),
               ),
-            )
-          }
+            );
+          }}
         >
           <SelectTrigger
             animateRadius={false}
@@ -1303,7 +1304,9 @@ function MlxOffloadSettings({
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
             <SelectItem value="auto">Default</SelectItem>
-            <SelectItem value="manual">Manual</SelectItem>
+            <SelectItem value="manual" disabled={!isManual && !decided}>
+              Manual
+            </SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -1642,7 +1645,7 @@ function MlxAdvancedSettings({
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
   offloadable: readonly MlxOffloadablePart[];
-  offloadDecided: Record<MlxOffloadablePart, number | null>;
+  offloadDecided: Record<MlxOffloadablePart, number | null> | null;
   offloadNotes: Record<MlxOffloadablePart, string | null>;
   speculativeFallback: string;
   modelPath: string;

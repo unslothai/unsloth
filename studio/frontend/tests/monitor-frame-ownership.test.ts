@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Closing and reopening the Live monitor inside its exit animation leaves two
-// panels mounted at once: AnimatePresence keeps the leaving child rendered and
-// drops it in a later commit (framer-motion's AnimatePresence calls
-// setRenderedChildren(pendingPresentChildren.current) only once every exit has
-// completed), so the replacement mounts and publishes first and the old panel
-// unmounts last. Its cleanup must not take the replacement's frame with it.
+// AnimatePresence keeps an exiting panel mounted, so its cleanup runs after the replacement.
 
 // The store's half is asserted directly; the panel's half by reading the
 // source, since the node suite has no DOM to mount two panels into.
@@ -28,13 +23,10 @@ const SETTINGS_MOUNT_SOURCE = readSrc(
   "features/settings/settings-dialog-mount.tsx",
 );
 
-/** The Live monitor where it opens by default: bottom-right, w-64, inset-4. */
 function corner(height = 300): MonitorFrame {
   return { left: 1168, top: 884 - height, right: 1424, bottom: 884 };
 }
 
-/** Every published box, in publish order. Replaces the merged rectangle the
- *  store used to expose: it merged obstacles that do not touch. */
 function published(): MonitorFrame[] {
   return [...useMonitorFrameStore.getState().frames.values()];
 }
@@ -58,8 +50,6 @@ test("closing the only monitor clears the frame", () => {
   assert.deepEqual(published(), []);
 });
 
-// The regression: reopened during the exit animation, so the replacement
-// publishes before the panel it replaced is torn down.
 test("an exiting panel does not clear the replacement's frame", () => {
   reset();
   const closing = {};
@@ -74,8 +64,7 @@ test("an exiting panel does not clear the replacement's frame", () => {
     [corner(220)],
     "the open monitor's frame must survive the old panel's unmount",
   );
-  // A monitor that then sits still resizes nothing and republishes nothing, so
-  // a lost frame would stay lost and the stack would sit back on top of it.
+  // A still monitor republishes nothing, so a lost frame stays lost.
   assert.deepEqual(
     [...useMonitorFrameStore.getState().frames.keys()],
     [reopened],
@@ -94,8 +83,7 @@ test("the replacement can still clear its own frame when closed", () => {
   assert.deepEqual(published(), []);
 });
 
-// The overlay stack re-renders on every notification, and reconcileGeometry
-// runs on each ResizeObserver delivery, so an unchanged box must not notify.
+// The stack re-renders per notification and ResizeObserver fires often, so skip no-ops.
 test("republishing the same box from the same panel does not notify", () => {
   reset();
   const panel = {};
@@ -110,7 +98,6 @@ test("republishing the same box from the same panel does not notify", () => {
   assert.equal(notifications, 1);
 });
 
-// This is what regressed: the unmount cleanup nulled the shared frame outright.
 test("the panel's unmount cleanup goes through clearFrame", () => {
   assert.match(
     PANEL_SOURCE,
@@ -122,7 +109,6 @@ test("the panel's unmount cleanup goes through clearFrame", () => {
     /setFrame\(\s*null\s*\)/,
     "no unconditional clear of the shared frame",
   );
-  // Every publish carries the owner, so a frame can never be left unowned.
   assert.equal(
     PANEL_SOURCE.match(/setFrame\(publisher,/g)?.length,
     2,
@@ -144,11 +130,7 @@ test("clearing on behalf of a panel that owns nothing does not notify", () => {
   assert.deepEqual(published(), [corner()]);
 });
 
-// The card is the first overlay in that corner that is persistent rather than
-// transient, and the chat composer docks to the bottom of the same column once
-// a thread has turns. The card sat on the Send button and swallowed the click,
-// which the chat UI Playwright suite caught as a 60s timeout on a button it
-// could see. So the store carries every published box, not just the newest.
+// The store keeps every published box, so the stack dodges the card and composer together.
 test("two publishers are dodged together, not one at a time", () => {
   reset();
   const monitor = {};
@@ -175,8 +157,7 @@ test("dropping one publisher leaves the other's box intact", () => {
   assert.deepEqual(published(), [composerBox]);
 });
 
-// A composer that is hidden measures 0x0, and publishing that would pull the
-// union out to the top-left corner and pin the stack there.
+// A hidden composer measures 0x0, which would pin the stack to the top-left.
 test("the publish hook drops an unmeasurable box rather than publishing it", () => {
   const HOOK = readSrc("features/settings/hooks/use-published-frame.ts");
   assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
