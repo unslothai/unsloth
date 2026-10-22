@@ -367,6 +367,19 @@ import {
 } from "./lib/shift-choice";
 import { listDiffusionEmbeddings } from "./embeddings-api";
 import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
+import { HiresControls, UpscaleModelField } from "./hires-controls";
+import {
+  HIRES_OFF,
+  HIRES_UPSCALER_LABELS,
+  hiresBaseSize,
+  hiresFromRecipe,
+  hiresNotApplied,
+  hiresRequest,
+  hiresSummary,
+  hiresVisible,
+  resolveRestoredHires,
+  type HiresChoice,
+} from "./lib/hires-choice";
 import {
   enhancePromptRequestField,
   enhanceRestoreFor,
@@ -1390,6 +1403,12 @@ function RecipePopover({
           {image.upscale != null && image.workflow === "upscale" ? (
             <RecipeRow label="Upscale" value={`${image.upscale}×`} />
           ) : null}
+          {image.upscale_model && image.workflow === "upscale" ? (
+            <RecipeRow label="Upscaler" value={HIRES_UPSCALER_LABELS[image.upscale_model] ?? image.upscale_model.replace(/^local:/, "")} />
+          ) : null}
+          {image.hires_scale != null ? (
+            <RecipeRow label="Hires fix" value={hiresSummary(hiresFromRecipe(image))} wrap />
+          ) : null}
           {image.reference_image_count != null &&
           (image.workflow === "reference" || image.workflow === "edit") ? (
             <RecipeRow label="References" value={String(image.reference_image_count)} />
@@ -1737,6 +1756,9 @@ export function ImagesPage({
   // Upscale (hires fix): the enlargement factor and the low denoise strength that re-details the result.
   const [upscaleFactor, setUpscaleFactor] = useState(2);
   const [upscaleStrength, setUpscaleStrength] = useState(0.35);
+  const [upscaleModel, setUpscaleModel] = useState<string | null>(null);
+  // Hires fix (Create only): off by default; status.hires gates the control.
+  const [hires, setHires] = useState<HiresChoice>(HIRES_OFF);
   // Reference and Edit: the ADDITIONAL images after the source. "" holds a cleared slot so others do not renumber.
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
@@ -2800,7 +2822,11 @@ export function ImagesPage({
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
-    const restored = restorableSize(image.width, image.height, image.workflow, sizeLimits);
+    // A Hires fix image records its output size; the Width / Height controls take the base pass.
+    const base = hiresBaseSize(image) ?? { width: image.width, height: image.height };
+    const restored = restorableSize(base.width, base.height, image.workflow, sizeLimits);
+    setHires(resolveRestoredHires(hiresFromRecipe(image), status?.hires));
+    setUpscaleModel(image.upscale_model ?? null);
     setWidth(restored.width);
     setHeight(restored.height);
     // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.
@@ -2859,7 +2885,7 @@ export function ImagesPage({
     // The Recipe popover goes on showing the recorded size, so a restore that had to move it says
     // so rather than leaving the two silently disagreeing.
     const rescaled =
-      restored.width !== image.width || restored.height !== image.height
+      restored.width !== base.width || restored.height !== base.height
         ? { description: `Size scaled to ${restored.width} × ${restored.height} to fit the ${MIN_DIM}-${sizeLimits.maxSide} range.` }
         : undefined;
     // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
@@ -2870,7 +2896,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status?.hires]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -2986,6 +3012,7 @@ export function ImagesPage({
         ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
         ...shiftNotApplied(recipe, shiftControl),
+        ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
       if (tiMatch) {
@@ -5303,6 +5330,8 @@ export function ImagesPage({
             strength: condStrength,
             ...condInpaint,
             upscale: condUpscale,
+            upscale_model: isUpscale && upscaleModel ? upscaleModel : undefined,
+            hires: hiresRequest(hires, status?.hires, workflow),
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
@@ -5404,7 +5433,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, hires, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -6187,6 +6216,7 @@ export function ImagesPage({
                   step={0.05}
                   onChange={setUpscaleStrength}
                 />
+                <UpscaleModelField models={status?.upscale_models} value={upscaleModel} onChange={setUpscaleModel} />
               </>
             )}
 
@@ -6756,6 +6786,11 @@ export function ImagesPage({
               </Field>
             )}
             <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            {hiresVisible(status?.hires, workflow) ? (
+              <HiresControls capability={status.hires} choice={hires} onChange={setHires} width={width} height={height} />
+            ) : workflow === "create" && status?.hires_unavailable_reason ? (
+              <p className="pt-2 text-xs text-muted-foreground">{status.hires_unavailable_reason}</p>
+            ) : null}
             <EmbeddingsField
               family={status?.family}
               enabled={embeddingsEnabled}

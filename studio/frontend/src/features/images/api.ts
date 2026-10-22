@@ -12,6 +12,7 @@ import {
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
+import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
 import type { ShiftControl } from "./lib/shift-choice";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
@@ -116,6 +117,11 @@ export interface DiffusionStatus {
   // an older backend: no Enhance prompt toggle.
   supports_prompt_upsampler?: boolean;
   prompt_upsampler_default?: boolean;
+  // Hires fix the loaded model takes; null/absent = hidden (no img2img path, or an engine without it).
+  hires?: HiresCapability | null;
+  hires_unavailable_reason?: string | null;
+  // Model upscalers the Upscale workflow can use; empty/absent = Lanczos only.
+  upscale_models?: Array<{ id: string; label: string; scale: number }>;
 }
 
 export interface DiffusionSamplerOption {
@@ -276,6 +282,10 @@ export interface DiffusionGenerateRequest {
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
+  // Hires fix (text to image only); omitted = off.
+  hires?: HiresRequest;
+  // Upscale workflow: a model upscaler id from status.upscale_models; omitted = Lanczos.
+  upscale_model?: string | null;
 }
 
 // One LoRA selection sent with a generation.
@@ -374,6 +384,15 @@ export interface GalleryImage {
   mask_blur?: number | null;
   inpaint_only_masked?: boolean | null;
   inpaint_padding?: number | null;
+  upscale_model?: string | null;
+  // Hires fix; `width` / `height` stay the output size, hires_base_* the base pass.
+  hires_scale?: number | null;
+  hires_denoise?: number | null;
+  hires_steps?: number | null;
+  hires_upscaler?: string | null;
+  hires_guidance?: number | null;
+  hires_base_width?: number | null;
+  hires_base_height?: number | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
