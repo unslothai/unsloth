@@ -102,7 +102,7 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import { type MemoryEstimate } from "../api/memory-estimate";
+import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
   resolveEstimateContext,
@@ -110,7 +110,14 @@ import {
   resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../model-config/estimate-context";
-import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
+import {
+  MLX_OFFLOAD_SLIDER_AUTO,
+  mlxOffloadDecided,
+  mlxOffloadFromSlider,
+  mlxOffloadModePatch,
+  mlxOffloadSliderValue,
+  resolveReclaimableMemoryCredit,
+} from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
@@ -178,6 +185,7 @@ import {
   MLX_KV_QUANTS,
   mlxKvQuantLabel,
   type MlxKvQuant,
+  type MlxOffload,
   N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
   N_BATCH_MIN,
@@ -1216,6 +1224,115 @@ function GpuMemorySettings({
 
 const MLX_KV_QUANT_AUTO = "auto";
 
+const MLX_OFFLOAD_SLIDERS = [
+  {
+    part: "experts",
+    key: "mlxExpertOffload",
+    label: "Experts on Disk",
+    hint: "Share of the MoE experts read from disk as they are needed instead of held in memory. Saves memory but slows generation a lot. 0% keeps every expert in memory; Auto leaves it to Unsloth.",
+  },
+  {
+    part: "ple",
+    key: "mlxPleOffload",
+    label: "PLE on Disk",
+    hint: "Share of the per-layer embedding tables read from disk instead of held in memory. Saves memory at a small cost to generation speed. 0% keeps them all in memory; Auto leaves it to Unsloth.",
+  },
+] as const satisfies readonly {
+  part: MlxOffloadablePart;
+  key: "mlxPleOffload" | "mlxExpertOffload";
+  label: string;
+  hint: string;
+}[];
+
+function MlxOffloadSettings({
+  config,
+  update,
+  offloadable,
+  decided,
+  notes,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  offloadable: readonly MlxOffloadablePart[];
+  decided: Record<MlxOffloadablePart, number | null> | null;
+  notes: Record<MlxOffloadablePart, string | null>;
+}) {
+  const sliders = MLX_OFFLOAD_SLIDERS.filter(
+    ({ part, key }) => offloadable.includes(part) || config[key] != null,
+  );
+  if (sliders.length === 0) return null;
+  const isManual = sliders.some(({ key }) => config[key] != null);
+  const shownNotes = sliders.map(({ part }) => notes[part]).filter(Boolean);
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Disk Offload</span>
+          <InfoHint>
+            <div className="flex flex-col gap-1.5">
+              <div>
+                <span className="font-medium">Default:</span> Unsloth reads
+                parts of the model from disk only when it would not otherwise
+                fit in memory.
+              </div>
+              <div>
+                <span className="font-medium">Manual:</span> set how much of
+                each part stays on disk.
+              </div>
+            </div>
+          </InfoHint>
+        </div>
+        <Select
+          value={isManual ? "manual" : "auto"}
+          onValueChange={(v) => {
+            if (v === "manual" && !decided) return;
+            update(
+              mlxOffloadModePatch(
+                v === "manual",
+                sliders.map(({ part, key }) => ({ key, decided: decided?.[part] ?? null })),
+              ),
+            );
+          }}
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={SELECT_TRIGGER_CLASS}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="auto">Default</SelectItem>
+            <SelectItem value="manual" disabled={!isManual && !decided}>
+              Manual
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {isManual &&
+        sliders.map(({ part, key, label, hint }) => (
+          <AdvancedGpuSlider
+            key={part}
+            label={label}
+            value={mlxOffloadSliderValue(config[key])}
+            min={MLX_OFFLOAD_SLIDER_AUTO}
+            max={100}
+            step={5}
+            onChange={(v) => update({ [key]: mlxOffloadFromSlider(v) })}
+            format={(v) => (v < 0 ? "Auto" : `${v}%`)}
+            info={hint}
+          />
+        ))}
+      {shownNotes.map((note) => (
+        <p key={note} className="text-ui-11 text-muted-foreground">
+          {note}
+        </p>
+      ))}
+    </>
+  );
+}
+
 function AdvancedSettingsToggle({
   checked,
   onCheckedChange,
@@ -1511,6 +1628,9 @@ function MlxAdvancedSettings({
   servedByMlx,
   int8PrefillAvailable,
   onInt8PrefillChange,
+  offloadable,
+  offloadDecided,
+  offloadNotes,
   speculativeFallback,
   modelPath,
   onEditTemplate,
@@ -1524,6 +1644,9 @@ function MlxAdvancedSettings({
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
+  offloadable: readonly MlxOffloadablePart[];
+  offloadDecided: Record<MlxOffloadablePart, number | null> | null;
+  offloadNotes: Record<MlxOffloadablePart, string | null>;
   speculativeFallback: string;
   modelPath: string;
   onEditTemplate: () => void;
@@ -1605,6 +1728,15 @@ function MlxAdvancedSettings({
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <MlxOffloadSettings
+          config={config}
+          update={update}
+          offloadable={offloadable}
+          decided={offloadDecided}
+          notes={offloadNotes}
+        />
       )}
       <div className="space-y-1">
         <ChatTemplateSetting
@@ -2443,6 +2575,16 @@ export function ModelConfigPage({
     useShallow(selectResidentEstimateSettings),
   );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxPleOffloadRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxPleOffloadRequested,
+  );
+  const loadedMlxExpertOffloadRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxExpertOffloadRequested,
+  );
+  const loadedMlxPleOffload = useChatRuntimeStore((s) => s.loadedMlxPleOffload);
+  const loadedMlxExpertOffload = useChatRuntimeStore((s) => s.loadedMlxExpertOffload);
+  const mlxPleOffloadReason = useChatRuntimeStore((s) => s.mlxPleOffloadReason);
+  const mlxExpertOffloadReason = useChatRuntimeStore((s) => s.mlxExpertOffloadReason);
   const loadedMlxKvQuantRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvQuantRequested,
   );
@@ -2630,16 +2772,23 @@ export function ModelConfigPage({
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
   );
+  const [initialMlxOffload] = useState(
+    () => configState.mlxPleOffload != null || configState.mlxExpertOffload != null,
+  );
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
+  const autoOpenForMlxOffload = servedByMlx && initialMlxOffload;
   // Opened to change one field: show its section for this visit, leaving the saved switch alone.
   const [revealForFocus, setRevealForFocus] = useState(focusField != null);
   const showAdvanced =
     revealForFocus ||
     (advancedPreference ??
-      (autoOpenAdvanced || autoOpenForMlxKvQuant || autoOpenForMlxInt8Prefill));
+      (autoOpenAdvanced ||
+        autoOpenForMlxKvQuant ||
+        autoOpenForMlxInt8Prefill ||
+        autoOpenForMlxOffload));
   const toggleAdvanced = (open: boolean) => {
     setRevealForFocus(false);
     saveAdvancedSettingsOpen(open);
@@ -3257,6 +3406,8 @@ export function ModelConfigPage({
             ? null
             : resolveMlxEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
+          mlxPleOffload: targetIsMlx ? (runtimeConfig.mlxPleOffload ?? null) : null,
+          mlxExpertOffload: targetIsMlx ? (runtimeConfig.mlxExpertOffload ?? null) : null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
@@ -3287,6 +3438,24 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  // The loaded model's reason answers only the request it was given.
+  const mlxOffloadNote = (
+    value: MlxOffload | undefined,
+    loadedRequested: MlxOffload,
+    reason: string | null,
+  ): string | null =>
+    isActiveModel && reason && (value ?? null) === (loadedRequested ?? null)
+      ? reason
+      : null;
+  const mlxOffloadNotes = {
+    ple: mlxOffloadNote(config.mlxPleOffload, loadedMlxPleOffloadRequested, mlxPleOffloadReason),
+    experts: mlxOffloadNote(
+      config.mlxExpertOffload,
+      loadedMlxExpertOffloadRequested,
+      mlxExpertOffloadReason,
+    ),
+  };
+  const mlxOffloadDecidedNow = mlxOffloadDecided(memoryEstimate);
   const mlxFittedWindow = targetIsMlx
     ? servedWindow(memoryEstimate.estimate?.contextFitted)
     : null;
@@ -3318,7 +3487,11 @@ export function ModelConfigPage({
     residentEstimateSettings,
     residentContext,
     targetIsMlx && !residentModelLoading
-      ? { kvQuant: loadedMlxKvQuantRequested ?? null }
+      ? {
+          kvQuant: loadedMlxKvQuantRequested ?? null,
+          pleOffload: loadedMlxPleOffload,
+          expertOffload: loadedMlxExpertOffload,
+        }
       : undefined,
   );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
@@ -3958,6 +4131,9 @@ export function ModelConfigPage({
                         ? setInt8PrefillConfirmOpen(true)
                         : update({ mlxInt8Prefill: false })
                     }
+                    offloadable={memoryEstimate.estimate?.mlxOffloadable ?? []}
+                    offloadDecided={mlxOffloadDecidedNow}
+                    offloadNotes={mlxOffloadNotes}
                     speculativeFallback={speculativeFallback}
                     modelPath={target.id}
                     onEditTemplate={() => setTemplateOpen(true)}

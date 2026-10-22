@@ -108,9 +108,9 @@ test("only Streamdown's animation transformer is removed", () => {
 
 const paragraphs = (count: number, label = "part") =>
   Array.from({ length: count }, (_, index) => `${label} ${index}\n\n`).join("");
+// Just past the rollback window, since the block list interleaves separators.
 const retainedCase = (fragment: string) =>
   `${paragraphs(12, "before")} ${fragment}\n\n${paragraphs(12, "after")}`;
-// Just past the rollback window, since the block list interleaves separators.
 const SHORT_GAP = "\n\np0\n\np1\n\np2\n\np3\n\n";
 
 const MARKDOWN_CASES = [
@@ -146,16 +146,10 @@ const MARKDOWN_CASES = [
   `\`\`\`text\n$$\n\`\`\`\n\n${paragraphs(12)}$$\nx`,
   `takes 5~10 minutes\n\n${paragraphs(20)}`,
   `- >= 16 GB of RAM\n\n${paragraphs(20)}`,
-  // Remend completes a dangling link, or truncates at a dangling image, using
-  // the end of the whole document.
   `Pick x in the interval [0, 1) for the ratio.\n\n${paragraphs(14)}done`,
   `see ![alt text\n\n${paragraphs(12)}later y](`,
-  // A backtick that ends a retained block still closes inline code for remend.
   `Escape a backtick as \\\`\n\n${paragraphs(10)}$$\nE=mc^2\n$$`,
-  // Remend orders its closers from a raw "**" search, fenced code included.
   `\`\`\`c\nchar **argv;\n\`\`\`\n\n${paragraphs(12)}set _flag to **on`,
-  // Reduced shapes, one per whole-document rule the retained prefix has to
-  // reproduce. Reported by @mahiatlinux on the PR.
   `\`\`\`x\`\`\`\`${SHORT_GAP}~~ y`,
   `see [note${SHORT_GAP}tail`,
   `\\\`${SHORT_GAP}$$`,
@@ -165,25 +159,15 @@ const MARKDOWN_CASES = [
   `a \`\`\` b\n\nc \\\`\`\` d${SHORT_GAP}- >= 4 GB`,
   `[x]: https://e.test\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
-  // A Python return annotation inside a list-nested fence is code, not a
-  // definition, so the incremental path has to keep retaining past it.
   `See [a][ref].\n\n1. item\n   \`\`\`python\n   def f() -> list[str]:\n       return []\n   \`\`\`\n\n${paragraphs(12)}end`,
-  // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
-  // Every label to CommonMark's 999 is registered, so one past 200 must be held.
   `[${"x".repeat(250)}]: /url\n\n${paragraphs(12)}[${"x".repeat(250)}]: /url\n\nq\n\n`,
   `[${"x".repeat(999)}]: /url\n\n${paragraphs(12)}[${"x".repeat(999)}]: /url\n\nq\n\n`,
-  // Label whitespace is normalised: `[foo\nbar]` registers as `foo bar`.
   `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
   `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
-  // 1040 UTF-16 units, 520 code points: the bound must count the latter. Also
-  // cuts surrogate pairs in half while streaming.
+  // 1040 UTF-16 units, 520 code points: the bound must count code points.
   `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
-  // Registers as `foo\ bar`, so the escape must admit a line ending; `.` cannot.
   `[foo\\\nbar]: /url\n\n${paragraphs(12)}[foo\\\nbar]: /url\n\nq\n\n`,
-  // Retained-prefix contexts that nothing else reaches: a balanced single
-  // underscore, one first seen inside inline code, and an underscore that
-  // precedes the first bold marker.
   `Use _snake_ case.${SHORT_GAP}see _italic`,
   `use \`a _b_ c\` here${SHORT_GAP}see _italic`,
   `Set _flag_ and **mode** now.${SHORT_GAP}see _italic and **bold`,
@@ -360,8 +344,6 @@ test("a definition inside a block quote or a list is still document-wide", () =>
 });
 
 test("only spaces and tabs may follow a closing fence marker", () => {
-  // U+00A0 after the marker is code content to marked, so the fence is still open and
-  // the marker on the next line is the one that closes it.
   const reply =
     "See [guide][g].\n\n```ts\nconst x = 1;\n```\u00a0\n```\n\n[g]: /guide\n";
 
@@ -386,9 +368,7 @@ test("a fence marker inside a raw HTML block is literal content", () => {
 });
 
 test("the block split is shared per reply without leaking between replies", () => {
-  // `blocksOf` keeps one slot at module scope. Two messages streaming at once interleave
-  // their calls through it, so the only thing keeping that honest is that the slot is keyed
-  // on the exact reply text: a miss recomputes, it never answers for the wrong reply.
+  // blocksOf keeps one module-level slot keyed on the exact reply text; a miss recomputes.
   const plain = "Message A.\n\n```ts\nconst a = grid[r][c];\n```\n";
   const withReference =
     "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
@@ -446,8 +426,7 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
-// Everything Marked stores must move the key as it arrives, or the reference keeps
-// the stale link. Every line ending, because the key reads un-normalised text.
+// The key reads un-normalised text, so every line ending must be covered.
 test("a definition that spans lines still moves the render key", () => {
   const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
 
@@ -455,8 +434,6 @@ test("a definition that spans lines still moves the render key", () => {
     const eol = (text: string) => text.replaceAll("\n", newline);
     const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
 
-    // A container marker is stripped before storing, so label, destination and
-    // title each have to be found behind one.
     for (const label of labels) {
       for (const [container, indent] of [
         ["", "  "],
@@ -488,14 +465,9 @@ test("a definition that spans lines still moves the render key", () => {
   }
 });
 
-// The other half of that contract: text the key captures that marked does NOT
-// store remounts the whole subtree once per character of it. A definition in a
-// container keeps its continuation in the same block, so these reach the key
-// suffix where prose after a plain definition does not.
 test("prose after a definition does not move the render key", () => {
   const tails = [
     "ordinary prose that follows on the next line",
-    // Opens like a title and never closes: marked stores none until one does.
     '"a quoted sentence that keeps going',
     "'a quoted sentence that keeps going",
     "(a parenthetical that keeps going",
@@ -517,7 +489,6 @@ test("prose after a definition does not move the render key", () => {
         const key = markdownRenderKey(settled);
         const shape = JSON.stringify(`${definition}⏎${tail}`);
 
-        // A key that moves at ANY prefix is a remount, so sweep, not endpoints.
         for (let index = 1; index <= tail.length; index += 1) {
           const separator = definition.includes("\n") ? " " : `\n${indent}`;
           assert.equal(
@@ -531,8 +502,7 @@ test("prose after a definition does not move the render key", () => {
   }
 });
 
-// marked stores the space in `[g]: <https://x.test/a b>`, so the key must follow
-// an angle destination to its `>` or it settles on the first word and freezes.
+// marked stores spaces in angle destinations, so the key must follow to `>`.
 test("an angle-bracketed destination keeps moving the render key", () => {
   const usage = "See [guide][g].\n\n";
   const streamed = [
@@ -550,7 +520,6 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     previous = key;
   }
 
-  // `>` closes the ANGLE form only: marked keeps it in `[g]: https://x.test/a>b`.
   let bareStep = markdownRenderKey(`${usage}[g]: `);
   for (const step of ["https://x.test/a", "https://x.test/a>", "https://x.test/a>b"]) {
     const key = markdownRenderKey(`${usage}[g]: ${step}`);
@@ -558,7 +527,6 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     bareStep = key;
   }
 
-  // Padding after the destination does not stop Marked storing a next-line title.
   for (const [container, indent] of [
     ["", "  "],
     ["> ", "> "],
@@ -571,7 +539,6 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     );
   }
 
-  // Bare still stops at whitespace, which is what keeps prose out of the key.
   const bare = markdownRenderKey(`${usage}[g]: https://x.test/ab`);
   assert.equal(
     markdownRenderKey(`${usage}[g]: https://x.test/ab\nordinary prose follows`),
@@ -579,9 +546,6 @@ test("an angle-bracketed destination keeps moving the render key", () => {
   );
 });
 
-// The window back from each `]:` has to hold the widest label: 999 escapes each
-// followed by an astral code point. Sized in code points it cuts the opening `[`
-// off these. The padding is what forces the window to be the thing under test.
 test("the widest label is still found far into a reply", () => {
   const padding = "ordinary prose. ".repeat(400);
   for (const filler of ["z", "\u{1F600}", "\\z", "\\\u{1F600}"]) {
@@ -594,11 +558,6 @@ test("the widest label is still found far into a reply", () => {
   }
 });
 
-// Every `[` used to be a start position that ran to the bound before it could
-// fail, so one long line dense with `[` cost half a second per render. A wall-clock
-// budget, not a ratio against a plain reply of the same length: marked's own block
-// split is itself far dearer over 100,000 `[` than over 100,000 `x`, so a ratio
-// would measure marked rather than this probe.
 test("a bracket-dense reply does not stall the scan", () => {
   const reply = `See [guide][g].\n\n${"[".repeat(100_000)}\n\n[g]: /guide`;
   for (let run = 0; run < 3; run += 1) markdownRenderScope(reply);
@@ -737,14 +696,10 @@ test("single-dollar parity affects the retained tail repair", () => {
 });
 
 test("a code character class matches Streamdown's own footnote short-circuit", () => {
-  // `\s` is outside `[\w-]`, so this never looks like a footnote and retains.
   const escaped = `\`\`\`js\nconst token = /[^\\s]+/;\n\`\`\`\n\n${paragraphs(100)}`;
   const render = new IncrementalMarkdownCache().update(escaped);
   assert.ok(render.markdown.length < escaped.length / 4);
 
-  // `[^a-z]` does match, and Streamdown's splitter short-circuits on the same
-  // pair of raw regexes and returns the whole reply as one block, so the
-  // full-document path is the answer that agrees with it.
   const matching = `\`\`\`js\nconst re = /[^a-z]/;\n\`\`\`\n\n${paragraphs(100)}`;
   assert.equal(parseMarkdownIntoBlocks(remend(matching)).length, 1);
   const fallback = new IncrementalMarkdownCache().update(matching);
@@ -756,8 +711,7 @@ test("a code character class matches Streamdown's own footnote short-circuit", (
 });
 
 test("a marker the reply never closes gives up on the retained prefix", () => {
-  // Without this the boundary scan is paid on every update on top of the full
-  // repair it exists to replace, which is slower than not being there at all.
+  // Otherwise the boundary scan is paid on top of the full repair it replaces.
   const source = `\`\`\`sh\necho $HOME\n\`\`\`\n\n${paragraphs(4000)}`;
   const cache = new IncrementalMarkdownCache();
   const render = cache.update(source);
@@ -771,8 +725,6 @@ test("a marker the reply never closes gives up on the retained prefix", () => {
     parseMarkdownIntoBlocks(remend(source)),
   );
 
-  // A short-lived imbalance still recovers, so the budget has to be well above
-  // an ordinary unclosed marker.
   const transient = `Match *.py files here.\n\n${paragraphs(20)}`;
   const transientCache = new IncrementalMarkdownCache();
   transientCache.update(transient);
@@ -784,8 +736,6 @@ test("a marker the reply never closes gives up on the retained prefix", () => {
 });
 
 test("an edit that drops retained blocks moves the render identity", () => {
-  // Deleting exactly the retained prefix leaves the live tail, and with it the
-  // only thing Streamdown compares, unchanged.
   const source = paragraphs(30);
   const cache = new IncrementalMarkdownCache();
   const streamed = cache.update(source);
@@ -800,8 +750,6 @@ test("an edit that drops retained blocks moves the render identity", () => {
     parseMarkdownIntoBlocks(remend(streamed.markdown)),
   );
 
-  // A reply that only grows never remounts, including while the stabilizer
-  // withholds an ambiguous trailing line.
   const streaming = new IncrementalMarkdownCache();
   for (let length = 1; length <= source.length; length += 5) {
     streaming.update(source.slice(0, length));
@@ -811,8 +759,6 @@ test("an edit that drops retained blocks moves the render identity", () => {
 });
 
 test("a definition shown inside a fenced example still retains", () => {
-  // Marked reads that line as code, so treating it as a definition would stall
-  // retention for the rest of the reply.
   const shown = `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(30)}end`;
   const shownCache = new IncrementalMarkdownCache();
   let render = shownCache.update("");
@@ -821,8 +767,6 @@ test("a definition shown inside a fenced example still retains", () => {
   }
   assert.ok(render.markdown.length < shown.length / 3);
 
-  // A real definition is never retained, whatever block it sits in, so Marked
-  // always lexes it together with a later twin and absorbs the duplicate.
   for (const first of [
     "[x]: https://e.test",
     "[x\ny]: https://e.test",
@@ -843,15 +787,11 @@ test("a definition shown inside a fenced example still retains", () => {
       repeatedRender.parseMarkdownIntoBlocks(repeatedRender.markdown),
       parseMarkdownIntoBlocks(remend(processStreamingText(repeated))),
     );
-    // Held in the live tail, not committed into an independently parsed prefix.
     assert.ok(repeatedRender.markdown.length > repeated.length / 2, first);
   }
 });
 
 test("an update with unchanged text repeats no work", () => {
-  // Tokens arrive faster than frames, so the coalescer hands the same text to
-  // several renders. Redoing the repair there is the whole reply again once the
-  // full-document path is in use.
   const source = `A claim[^note]\n\n${"a paragraph of reply text\n\n".repeat(6000)}`;
   const cache = new IncrementalMarkdownCache();
   const first = cache.update(source);
@@ -864,9 +804,7 @@ test("an update with unchanged text repeats no work", () => {
 });
 
 test("Streamdown re-renders only when the Markdown string changes", () => {
-  // Its memo comparator is what decides whether the parser callback runs again,
-  // and it does not compare that callback. Retaining a block therefore has to
-  // change the Markdown too, or the retained block never reaches the DOM.
+  // Streamdown's memo comparator ignores the parser callback, so retaining must change the Markdown.
   const { compare } = Streamdown as unknown as {
     compare: (previous: object, next: object) => boolean;
   };
@@ -883,9 +821,6 @@ test("Streamdown re-renders only when the Markdown string changes", () => {
 });
 
 test("a repeating reply keeps displaying every retained block", () => {
-  // A reply that repeats a line leaves the tail unchanged when an update
-  // retains exactly what it appended, so the cache must not hand Streamdown a
-  // Markdown string it already holds.
   const line = "I cannot provide that information.\n\n";
   const step = line.length;
   const source = `Here is the answer.\n\n${line.repeat(60)}`;
@@ -901,16 +836,10 @@ test("a repeating reply keeps displaying every retained block", () => {
       displayed = render.parseMarkdownIntoBlocks(render.markdown);
     }
     assert.deepEqual(displayed, parseMarkdownIntoBlocks(remend(input)));
-    // Retaining one update later must not let the live tail track the reply.
     assert.ok(render.markdown.length < step * 6);
   }
 });
 
-// The stalled-tail budget is only reachable once the live tail holds more than
-// ROLLBACK_BLOCKS blocks, so a single long fenced block never reaches it: while
-// the fence is open the tail lexes to a handful of blocks and stays retainable.
-// What reaches it is an inline marker with many paragraphs before its closer,
-// and since the budget is spent before giving up, that shape sizes the budget.
 test("an emphasis marker that closes far later stays near the full-repair cost", () => {
   const source = `An *opening\n\n${paragraphs(3_600)}closing* marker.\n\n${paragraphs(200)}`;
   const cache = new IncrementalMarkdownCache();
@@ -926,16 +855,12 @@ test("an emphasis marker that closes far later stays near the full-repair cost",
     render.parseMarkdownIntoBlocks(render.markdown),
     parseMarkdownIntoBlocks(remend(input)),
   );
-  // Retaining nothing is the correct answer here; retaining the attempt is not.
   assert.equal(
     (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
     true,
   );
 });
 
-// A long fenced block is the shape most likely to be mistaken for the budget's
-// trigger. It is not one: it keeps retaining, so a code-heavy answer does not
-// quietly lose the optimisation.
 test("a fenced block larger than the budget keeps retaining", () => {
   const body = "const value = compute(argument, options, fallback);\n".repeat(
     1_700,
@@ -960,21 +885,13 @@ test("a fenced block larger than the budget keeps retaining", () => {
   );
 });
 
-// The window skip is sound only because a match opens with `[` and its label holds no bare `]`.
-// Two ways it could be wrong, both pinned: the LAST `[` is not the only candidate, and the
-// lookahead must not rescan once it has run out.
 test("a `]:` whose window holds no `[` is skipped without changing the answer", () => {
-  // `[a[]:` matches from 0 (label `a[`), not from the last `[` (empty label): a skip clamped to
-  // the last one reports false.
   assert.equal(markdownRenderScope(`See [x][a[].\n\n${paragraphs(12)}[a[]: /url\n`), "document");
-  // Nothing to open a definition with, at any distance.
   assert.equal(markdownRenderScope(`See [x][y].\n\n${"]: ".repeat(2000)}`), "blocks");
 });
 
 test("a reply dense with `]:` and no definition does not pay per occurrence", () => {
-  // Not linearity: unskipped this is linear too, with the 2999-char window as its constant. The
-  // gap is the constant's SIZE, ~80x (289ms vs 3.6ms at 500k), on a path markdownRenderKey runs
-  // every render. Absolute and loose so a 10x slower runner still separates ~36ms from ~2900ms.
+  // The skip shrinks the constant (~80x), not the order; the bound is loose for slow runners.
   const dense = `See [guide][g].\n\n${"]: ".repeat(166666)}`;
   for (let i = 0; i < 3; i += 1) markdownRenderScope(dense + " ");
   const runs: number[] = [];
@@ -987,8 +904,6 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
   assert.ok(median < 100,
     `500k of \`]:\` cost ${median.toFixed(1)}ms; the per-occurrence window scan is back`);
 
-  // A `[` in the window is not enough: `[]: ` keeps one in every window while never opening a
-  // definition, so unbounded each occurrence still slices ~3000 chars. 338ms against 7ms.
   const invalid = `See [guide][g].\n\n${"[]: ".repeat(125000)}`;
   for (let i = 0; i < 3; i += 1) markdownRenderScope(invalid + " ");
   const invalidRuns: number[] = [];
@@ -1021,8 +936,7 @@ test("unclosed backtick runs of many widths do not rescan the paragraph", () => 
 });
 
 test("a reference label past the old cap still resolves against its definition", () => {
-  // A label resolves only when BOTH probes admit it, and the definition one moved to 999 while
-  // this one stayed at 200, so 201..999 stayed on the blocks path (unslothai/unsloth#9540).
+  // A label resolves only when BOTH probes admit it, so their caps must match (999).
   for (const length of [200, 201, 400, 999]) {
     const label = "L".repeat(length);
     const reply = `See [guide][${label}].\n\n[${label}]: https://x.test/a\n`;
@@ -1030,15 +944,12 @@ test("a reference label past the old cap still resolves against its definition",
       `a ${length}-character label did not reach the document path`);
     assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
   }
-  // 999 is CommonMark's, not Marked's, whose `def` label is uncapped but only SPLITS here. The
-  // render is remark, CommonMark-strict: 0 links past 999, so the blocks path loses nothing.
+  // 999 is CommonMark's cap; remark renders 0 links past it, so the blocks path loses nothing.
   const tooLong = "L".repeat(1000);
   assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
 });
 
 test("a run of `[` before a reference does not walk the widened label budget", () => {
-  // A run of `[` is one start position per character, so the widened budget is paid at each:
-  // 1743ms at 500k against 7.7ms bounding each seam. Loose, so a slow runner still separates them.
   const run = `${"[".repeat(500000)}][x]`;
   for (let i = 0; i < 3; i += 1) markdownRenderScope(run + " ");
   const runs: number[] = [];
@@ -1053,8 +964,7 @@ test("a run of `[` before a reference does not walk the widened label budget", (
 });
 
 test("a reply whose every `]` is escaped does not rescan the tail per seam", () => {
-  // `\][` leaves no unescaped `]` after the first seam, so the lookahead comes back empty and a
-  // cached -1 would rescan the tail per seam: quadratic, 196s at 500k against 162ms narrow.
+  // `\][` leaves no unescaped `]`, so a cached -1 would rescan the tail per seam.
   const escaped = "\\][".repeat(166_666);
   for (let i = 0; i < 3; i += 1) markdownRenderScope(escaped + " ");
   const runs: number[] = [];
@@ -1069,8 +979,6 @@ test("a reply whose every `]` is escaped does not rescan the tail per seam", () 
 });
 
 test("a seam whose reference label is past the cap is rejected once, not per `[`", () => {
-  // The window bounds the slice, not the start positions in it: packed with `[` and a label past
-  // the cap, it fails from every one and gives the window back nothing. Test that label once.
   const packed = `${"[".repeat(3000)}][${"y".repeat(3000)}]`.repeat(83);
   for (let i = 0; i < 3; i += 1) markdownRenderScope(packed + " ");
   const runs: number[] = [];
@@ -1082,7 +990,6 @@ test("a seam whose reference label is past the cap is rejected once, not per `[`
   const median = runs.sort((a, b) => a - b)[2]!;
   assert.ok(median < 150,
     `500k of packed \`[\` cost ${median.toFixed(1)}ms; the window is re-tested from every \`[\``);
-  // The rejection is a cost bound, not a change of answer: a label inside the cap still resolves.
   const label = "L".repeat(400);
   assert.equal(markdownRenderScope(`See [guide][${label}].\n\n[${label}]: /u\n`), "document");
 });
@@ -1102,7 +1009,7 @@ const isFullDocumentMode = (cache: IncrementalMarkdownCache): boolean =>
   (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode;
 
 test("a list-nested Python annotation does not stick to the full-document path", () => {
-  // The block opens with the list marker, not the fence (#10529).
+  // The block opens with the list marker, not the fence.
   for (const block of [
     "1. item\n   ```python\n   def f() -> list[str]:\n       return []\n   ```",
     "- item\n  ```python\n  def f() -> list[str]:\n      return []\n  ```",

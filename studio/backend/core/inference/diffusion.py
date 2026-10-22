@@ -233,6 +233,8 @@ from .diffusion_memory import (
     vae_is_sliced,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from . import diffusion_hires, diffusion_upscalers
+from .diffusion_hires import HiresPass, with_hires
 from .image_orientation import exif_upright
 from .mcp_images import flattened_rgb
 from .media_decode_phase import decode_phase, denoise_phase
@@ -786,6 +788,124 @@ def _baked_lora_names(pipe: Any) -> list:
         if name:
             names.append(str(name))
     return names
+
+
+# ``(module, adapter, base)`` for every baked LoRA scale held as a device tensor; ``base`` is lora_alpha / r.
+_PINNED_LORA_SCALES_ATTR = "_unsloth_pinned_lora_scales"
+# ``(module, adapter)`` for the baked LoRA layers OUTSIDE the denoisers (a text encoder carrying the same file's
+# adapter): their scales stay floats and are set the way set_adapters would set them.
+_PINNED_LORA_SIDE_ATTR = "_unsloth_pinned_lora_side"
+
+
+def _side_lora_layers(pipe: Any) -> list:
+    """``(module, adapter)`` for every PEFT LoRA layer on a pipeline component that is not a denoiser."""
+    import torch
+
+    skip = {id(m) for _a, m in denoiser_modules(pipe)}
+    components = getattr(pipe, "components", None)
+    if not isinstance(components, dict):
+        components = dict(vars(pipe))
+    out = []
+    seen: set[int] = set()
+    for value in components.values():
+        if not isinstance(value, torch.nn.Module) or id(value) in skip or id(value) in seen:
+            continue
+        seen.add(id(value))
+        for module in value.modules():
+            scaling = module.__dict__.get("scaling")
+            lora_b = getattr(module, "lora_B", None)
+            if not isinstance(scaling, dict) or lora_b is None or not hasattr(module, "set_scale"):
+                continue
+            # Every scaled adapter, an Embedding's (factors in lora_embedding_A/B, not lora_B) included.
+            out.extend((module, adapter) for adapter in scaling)
+    return out
+
+
+def _pin_baked_lora_scales(pipe: Any, target_device: Any) -> int:
+    """Hold each baked adapter's PEFT scale as a 0-d tensor on its LoRA weights' device, so a later weight change or
+    subset switch is an in-place write instead of a new Python float.
+
+    PEFT keeps ``scaling[adapter]`` as a float and multiplies by it inside the LoRA forward. torch.compile guards on
+    that float (``self.scaling['b'] == 1.0``), and a CUDA graph records it as a kernel argument, so every new weight
+    vector recompiled and recaptured. The adapters and their shapes never change on a baked load, only the scale,
+    so a tensor read at run time serves every selection with the first prompt's graphs. Call before compile and
+    graph capture. Skipped (floats kept, the reset path stays) on an offloaded denoiser, where the LoRA weights move
+    off the scale's device, and when any LoRA weight is not yet on the target device type. Returns the count."""
+    if not getattr(pipe, "_unsloth_loras_baked", False) or getattr(
+        pipe, _PINNED_LORA_SCALES_ATTR, None
+    ):
+        return 0
+    if _denoiser_hooked(pipe):
+        return 0
+    import math
+
+    import torch
+
+    # The type off the string form ("cuda:0" -> "cuda"), as torch.device(...).type gives, without a torch.device.
+    want = str(target_device).split(":", 1)[0]
+    found = []
+    for _attr, root in denoiser_modules(pipe):
+        modules = getattr(root, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            scaling = module.__dict__.get("scaling")
+            lora_b = getattr(module, "lora_B", None)
+            if not isinstance(scaling, dict) or lora_b is None:
+                continue
+            for adapter, value in scaling.items():
+                if isinstance(value, torch.Tensor):
+                    continue
+                if adapter not in lora_b:
+                    # A scale with no lora_B entry (a PEFT Embedding keeps lora_embedding_A/B): pinning the rest
+                    # would skip set_adapters and leave this one at its bake-time weight, so keep the float path.
+                    return 0
+                weight = lora_b[adapter].weight
+                if weight.device.type != want:
+                    return 0
+                r = module.r[adapter]
+                alpha = module.lora_alpha[adapter]
+                rslora = bool(getattr(module, "use_rslora", {}).get(adapter, False))
+                base = alpha / (math.sqrt(r) if rslora else r)
+                found.append((module, adapter, base, float(value), weight.device))
+    if not found:
+        return 0
+    pinned = []
+    # A normal tensor even when the load runs under inference_mode: an inference tensor refuses the later fill_.
+    with torch.inference_mode(False):
+        for module, adapter, base, value, device in found:
+            module.scaling[adapter] = torch.tensor(value, dtype = torch.float32, device = device)
+            pinned.append((module, adapter, base))
+    setattr(pipe, _PINNED_LORA_SIDE_ATTR, tuple(_side_lora_layers(pipe)))
+    setattr(pipe, _PINNED_LORA_SCALES_ATTR, tuple(pinned))
+    return len(pinned)
+
+
+def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
+    """Write ``weights`` (adapter name -> weight, omitted = 0) into the pinned scale tensors in place. False, with the
+    pin dropped, when there is none or it no longer holds (something rewrote a scale as a float or moved the
+    weights): the caller then takes the set_adapters + graph reset path."""
+    pinned = getattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
+    if not pinned:
+        return False
+    import torch
+
+    for module, adapter, _base in pinned:
+        value = module.scaling.get(adapter)
+        if (
+            not isinstance(value, torch.Tensor)
+            or value.device != module.lora_B[adapter].weight.device
+        ):
+            setattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
+            return False
+    with torch.no_grad():
+        for module, adapter, base in pinned:
+            module.scaling[adapter].fill_(float(weights.get(adapter, 0.0)) * base)
+    # The same adapter on a text encoder (SD / SDXL / SD3 / FLUX files can carry one): set_adapters is skipped, so
+    # set its scale here, or prompt encoding keeps the bake-time weight while the marker names the new one.
+    for module, adapter in getattr(pipe, _PINNED_LORA_SIDE_ATTR, None) or ():
+        module.set_scale(adapter, float(weights.get(adapter, 0.0)))
+    return True
 
 
 def resolve_local_single_file(model_path: str) -> Optional[str]:
@@ -9814,6 +9934,14 @@ class DiffusionBackend:
                             )
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
+                    # Placed, not yet compiled or captured: a later LoRA weight / subset change then writes in place.
+                    pinned_scales = _pin_baked_lora_scales(pipe, target.device)
+                    if pinned_scales:
+                        logger.info(
+                            "diffusion.lora_bake: %d adapter scale(s) held as device tensors (weight changes "
+                            "keep the compiled graphs)",
+                            pinned_scales,
+                        )
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
                     if (
                         denoisers_pinned_resident(pipe)
@@ -11896,6 +12024,7 @@ class DiffusionBackend:
                     pass
                 pipe._unsloth_loras = ()
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
 
         if _small_host_int8(pipe):
@@ -11959,10 +12088,12 @@ class DiffusionBackend:
             # The adapters the graphs were captured with are gone and the marker says none are applied,
             # so no later call reaches the resets above; without this a base-model render replays them.
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+            invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+        invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
 
     def _adjust_baked_loras(
         self,
@@ -11991,10 +12122,16 @@ class DiffusionBackend:
             names = [n for (n, _p, _w) in current]
             if any(w != 0 for (_n, _p, w) in current):
                 _refuse_weight_change_on_streamed_graph(state)
+                disabled = tuple((n, p, 0.0) for (n, p, _w) in current)
+                # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
+                if _set_pinned_lora_scales(pipe, {}):
+                    pipe._unsloth_loras = disabled
+                    return
                 pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
-                pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
+                pipe._unsloth_loras = disabled
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
         desired = self._resolve_lora_set(
             specs,
@@ -12019,12 +12156,16 @@ class DiffusionBackend:
         if updated == current:
             return
         _refuse_weight_change_on_streamed_graph(state)
+        if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
+            pipe._unsloth_loras = updated
+            return
         pipe.set_adapters(
             [n for (n, _p, _w) in updated],
             adapter_weights = [w for (_n, _p, w) in updated],
         )
         pipe._unsloth_loras = updated
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+        invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
 
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
@@ -12289,6 +12430,7 @@ class DiffusionBackend:
         )
 
     @_release_render_on_unload
+    @with_hires
     def generate(
         self,
         *,
@@ -12338,16 +12480,22 @@ class DiffusionBackend:
         mask_blur: Optional[int] = None,
         inpaint_only_masked: Optional[bool] = None,
         inpaint_padding: Optional[int] = None,
+        # Upscale workflow: a model upscaler id (diffusion_upscalers) in place of the Lanczos resize. None = Lanczos.
+        upscale_model: Optional[str] = None,
+        _hires_pass: Optional[HiresPass] = None,
     ) -> dict[str, Any]:
         import torch
+        from contextlib import nullcontext
+
         from PIL import Image
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
-        cancel = threading.Event()
+        cancel = _hires_pass.cancel if _hires_pass is not None else threading.Event()
         from core.inference.generation_ticket import bind_generation_cancel
 
-        bind_generation_cancel(cancel)
-        with self._generation_slot(cancel):
+        if _hires_pass is None:
+            bind_generation_cancel(cancel)
+        with nullcontext() if _hires_pass is not None else self._generation_slot(cancel):
             # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
             if pending_bg is not None and pending_bg.compiling():
@@ -12517,6 +12665,13 @@ class DiffusionBackend:
                         )
                     workflow = "reference"
                     conditioned = True
+                elif _hires_pass is not None and _hires_pass.refine:
+                    workflow = "upscale"
+                    pipe = self._workflow_pipe(state, fam.img2img_pipeline_class, workflow)
+                    init_pil = _hires_pass.source
+                    steps = diffusion_hires.refine_inference_steps(
+                        steps, float(strength), diffusion_hires.timestep_rule(pipe)
+                    )
                 elif mask_image is not None and init_image is not None:
                     workflow = "inpaint"
                     pipe = self._workflow_pipe(state, fam.inpaint_pipeline_class, workflow)
@@ -12543,12 +12698,28 @@ class DiffusionBackend:
                             f"({max(iw, ih)}px) already meets the {max_side}px output limit. "
                             f"Use a smaller source image."
                         )
-                    init_pil = init_pil.resize((tw, th), Image.LANCZOS)
+                    if upscale_model:
+                        # ESRGAN-family model, then resized to the target (ComfyUI ImageUpscaleWithModel -> ImageScale).
+                        init_pil = diffusion_upscalers.upscale_with_model(
+                            init_pil,
+                            upscale_model,
+                            (tw, th),
+                            device = state.device,
+                            keep_resident = getattr(state, "offload_policy", None)
+                            in (None, OFFLOAD_NONE),
+                            cancel = cancel,
+                        ).image
+                    else:
+                        init_pil = init_pil.resize((tw, th), Image.LANCZOS)
                     upscale = round(
                         max(tw / iw, th / ih), 2
                     )  # the factor after both caps, for the log
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
+                elif upscale_model:
+                    raise ValueError(
+                        "upscale_model applies only to the Upscale workflow (init_image + upscale > 1)."
+                    )
                 elif getattr(fam, "reference", False) and init_image is not None:
                     workflow = "reference"
                     conditioned = True
@@ -12744,6 +12915,11 @@ class DiffusionBackend:
                         kwargs["padding_mask_crop"] = inpaint_padding_applied
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
+                    if _hires_pass is not None and _hires_pass.latent_from is not None:
+                        # Latent upscaler: the SDXL img2img pipe takes 4-channel latents as the image.
+                        kwargs["image"] = diffusion_hires.encode_upscaled_latents(
+                            pipe, _hires_pass.latent_from, init_pil.size
+                        )
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
                 # the latents mismatch, and many drop them, so pass only when accepted.
                 if not source_sized:
@@ -12920,6 +13096,8 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
+                    if _hires_pass is not None and _hires_pass.preflight is not None:
+                        _hires_pass.preflight(guard_kwargs)
                     _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
@@ -12931,7 +13109,13 @@ class DiffusionBackend:
                         "diffusion.generate: activation headroom re-check skipped (%s)", exc
                     )
 
-                gen = _GenState(total_steps = steps * len(chunks))
+                # The steps the pipe runs: a Hires refine converts its count to a longer schedule it enters partway.
+                progress_steps = (
+                    int(_hires_pass.stats.get("refine_steps") or steps)
+                    if _hires_pass is not None and _hires_pass.refine
+                    else steps
+                )
+                gen = _GenState(total_steps = progress_steps * len(chunks))
                 # Steps completed by FINISHED chunks, so the bar spans the whole multi-chunk call (mutable cell for
                 # _on_step).
                 steps_done = [0]
@@ -12968,7 +13152,7 @@ class DiffusionBackend:
                         width = preview_w,
                         device = state.device,
                         publish = _publish_preview,
-                        total_steps = steps,
+                        total_steps = progress_steps,
                     )
 
                 # Count steps the GPU FINISHED (per-step CUDA events, as the video path): under CUDA graphs the host
@@ -12982,12 +13166,12 @@ class DiffusionBackend:
                 )
 
                 # Replaced per chunk: a finished chunk's boundary must not end the next one's denoise.
-                chunk_ticker = [_CompletedStepTicker(steps)]
+                chunk_ticker = [_CompletedStepTicker(progress_steps)]
 
                 def _report(done_in_chunk: int) -> None:
                     if gen.phase not in ("encode", "denoise"):
                         return
-                    done = steps_done[0] + max(0, min(int(done_in_chunk), steps))
+                    done = steps_done[0] + max(0, min(int(done_in_chunk), progress_steps))
                     if done <= gen.step:
                         return
                     gen.phase = "denoise"
@@ -13002,7 +13186,7 @@ class DiffusionBackend:
 
                 def _flip_to_decode(gen = gen) -> None:
                     # The chunk's denoise is provably over: complete it even if a skipped event left the count short.
-                    _report(steps)
+                    _report(progress_steps)
                     gen.phase = "decode"
                     gen.eta_seconds = None
 
@@ -13171,7 +13355,7 @@ class DiffusionBackend:
                             if state.te_releaser is not None:
                                 state.te_releaser.release()
 
-                        chunk_ticker[0] = _CompletedStepTicker(steps)
+                        chunk_ticker[0] = _CompletedStepTicker(progress_steps)
 
                         def _enter_decode_phase() -> None:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
@@ -13259,7 +13443,7 @@ class DiffusionBackend:
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
-                        steps_done[0] += steps
+                        steps_done[0] += progress_steps
                 except BaseException:
                     if previewer is not None:
                         previewer.finish()
@@ -13296,7 +13480,8 @@ class DiffusionBackend:
                 if bg_eager:
                     # Nothing compiled ran, so nothing to register or save yet.
                     bg.note_eager_generation()
-                    bg.kick()
+                    if _hires_pass is None or not _hires_pass.defer_bg_kick:
+                        bg.kick()
                 else:
                     try:
                         # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
@@ -13341,7 +13526,8 @@ class DiffusionBackend:
                 # Components are offloaded and transfer copies dropped; return the pages now.
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
-                object.__setattr__(state, "generation_count", state.generation_count + 1)
+                if _hires_pass is None or not _hires_pass.refine:
+                    object.__setattr__(state, "generation_count", state.generation_count + 1)
                 result = {
                     "images": list(images),
                     "seed": int(seed),
@@ -13387,6 +13573,8 @@ class DiffusionBackend:
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
                 }
+                if upscale_model and workflow == "upscale":
+                    result["upscale_model"] = upscale_model
                 if applied_shift is not None:
                     result["shift"] = shift
                     result["base_shift"] = base_shift
@@ -13623,6 +13811,7 @@ class DiffusionBackend:
         self._aux_pipes.clear()
         self._cn_pipes.clear()
         self._cn_models.clear()
+        diffusion_upscalers.release_models()
         self._state = None
         del state
         try:
@@ -13723,6 +13912,10 @@ class DiffusionBackend:
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "baked_loras": _baked_lora_names(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
+            "graph_engagement": cuda_graph.engagement(
+                tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
+                or getattr(state, "cuda_graphs", ())
+            ),
             "cfg_batch": cfg_batch_status(state.pipe),
             "zimage_cfg_split": zimage_cfg_split_status(state.pipe),
             "resolved": resolved,
@@ -13750,6 +13943,7 @@ class DiffusionBackend:
             if pipe_sample_sigmas(state.pipe) is not None
             else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
             "textual_inversion": getattr(state.family, "textual_inversion", None),
+            **_hires_status(state.family),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
@@ -13800,6 +13994,24 @@ def _transformer_quant_backend(state: Any) -> Optional[str]:
         return "torchao"
     except Exception:  # noqa: BLE001 -- see the docstring: a poll must not fail on a probe
         return None
+
+
+def _hires_status(fam: DiffusionFamily) -> dict[str, Any]:
+    """Status keys for Hires fix (hidden without an img2img path) and the Upscale workflow's model upscalers."""
+    try:
+        models = diffusion_upscalers.model_upscalers()
+    except Exception as exc:  # noqa: BLE001 - a broken scan hides model upscalers, never the status
+        logger.debug("diffusion.upscalers: scan failed: %s", exc)
+        models = []
+    hires = diffusion_hires.capability(fam, model_rows = models)
+    return {
+        "hires": hires,
+        # Why the control is hidden (no img2img path yet), shown in its place.
+        "hires_unavailable_reason": diffusion_hires.unavailable_reason(fam)
+        if hires is None
+        else None,
+        "upscale_models": models if getattr(fam, "img2img_pipeline_class", None) else [],
+    }
 
 
 def _family_workflows(fam: DiffusionFamily) -> list[str]:

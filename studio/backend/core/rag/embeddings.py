@@ -808,6 +808,14 @@ def _release_st_model() -> bool:
             released = _model is not None
             _model = None
             _name = None
+    if released:
+        # Dropping the reference leaves its blocks reserved; gated, since before detection clear_gpu_cache() runs it.
+        try:
+            from utils import hardware
+            if hardware.hardware.DEVICE is not None:
+                hardware.clear_gpu_cache()
+        except Exception as e:  # noqa: BLE001 - freeing is best effort
+            logger.debug("GPU cache clear after embedder release failed: %s", e)
     return released
 
 
