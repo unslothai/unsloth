@@ -160,7 +160,7 @@ test("recording is gated on the preference, not on whether the card shows", () =
   // Reachability carries the auth gate; dismissal must not stop recording.
   assert.match(
     INDICATOR,
-    /useLoadedModels\(\s*enabled,\s*showIndicator && reachable,\s*\)/,
+    /useLoadedModels\(\s*enabled,\s*showIndicator && reachable,?\s*\)/,
     "recording survives a dismissal but not a route with no session",
   );
 });
