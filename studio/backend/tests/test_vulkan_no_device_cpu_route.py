@@ -549,7 +549,9 @@ def test_a_child_exiting_at_the_deadline_is_a_crash_not_a_stall(monkeypatch):
 
 
 @pytest.mark.parametrize("probe_rows, stays_cpu", [([], True), ([{"name": "Intel Arc"}], False)])
-def test_a_reload_after_a_zero_device_probe_asks_again(monkeypatch, tmp_path, probe_rows, stays_cpu):
+def test_a_reload_after_a_zero_device_probe_asks_again(
+    monkeypatch, tmp_path, probe_rows, stays_cpu
+):
     """A GPU made visible since the zero-device load runs on it; still none keeps CPU."""
     from core.inference.llama_cpp import GgufLoadIntent
 
