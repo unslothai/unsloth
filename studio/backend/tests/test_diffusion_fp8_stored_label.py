@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Planner identity of an fp8-STORED denoiser (single-file fp8 weights kept as fp8 codes, widened per layer).
-
-The stored layer keeps its codes and scales as buffers (``weight_q`` / ``weight_scale``), so a check over
-parameters alone sees only the float biases / norms and calls the denoiser dense. It is not: every forward widens
-the whole Linear (fp32 codes, fp32 scaled, then the compute dtype), a transient the dense eager table never
-measured. These tests pin its own learned-peak label, the packed verdict (learned peak only, no dense static seed)
-and that the dense / packed labels stay as they were. CPU-only.
-"""
+"""Planner identity of an fp8-STORED denoiser: its own learned-peak label, packed verdict, dense labels unchanged."""
 
 from __future__ import annotations
 
@@ -182,11 +175,9 @@ def test_stored_fp8_places_from_its_own_learned_peak_only(learned_store):
     dense_label = dm.learned_peak_label(_pipe(torch.float16, False))
     stored_label = dm.learned_peak_label(pipe)
     kw = dict(family = "flux.2-klein", speed_mode = "off", width = 1024, height = 1024)
-    # a dense render's peak is not read by the stored build
     learned_store.record(**kw, quant = dense_label, peak_mib = 1000)
     plan = _flat_plan()
     assert _refine(pipe, plan) is plan
-    # its own measured peak (the per-layer widen included) places it
     learned_store.record(**kw, quant = stored_label, peak_mib = 2000)
     new = _refine(pipe, plan)
     assert new is not plan

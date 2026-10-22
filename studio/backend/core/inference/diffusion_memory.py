@@ -1637,8 +1637,7 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
 
 
 def _holds_fp8_stored(module: Any) -> bool:
-    """Whether ``module`` holds fp8-STORED Linears (single-file fp8 codes kept as fp8, widened per layer). Their codes
-    and scales are buffers, so a parameter scan sees only the float biases / norms and reads the denoiser as dense."""
+    """Whether ``module`` holds fp8-STORED Linears; codes and scales are buffers, so a parameter scan reads it dense."""
     if module is None:
         return False
     try:
@@ -3124,8 +3123,7 @@ def refine_plan_from_loaded_weights(
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
-        # The dense table covers fp16 / fp32 unpacked weights only: bf16, packed and fp8-stored denoisers (a per-layer
-        # widen it never ran) use a learned peak alone, which measured that widen.
+        # The dense table covers fp16 / fp32 unpacked weights only; everything else uses a learned peak alone.
         static_seed = not (
             dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe))
         )
