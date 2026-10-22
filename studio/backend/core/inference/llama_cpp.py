@@ -8001,7 +8001,9 @@ _CONFIG_GPU_LAYER_KEYS = frozenset(
 
 
 def _config_files_set_any(
-    paths: Sequence[str], keys: Collection[str], value: Optional[str] = None
+    paths: Sequence[str],
+    keys: Collection[str],
+    value: Optional[str] = None,
 ) -> bool:
     """Whether any llama.cpp config.ini in ``paths`` sets one of ``keys`` (to ``value``, if given).
 
