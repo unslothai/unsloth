@@ -196,7 +196,6 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     if sandbox_linux.shutil.which("bwrap") is None:
         pytest.skip("bubblewrap is not installed on this host")
     etc = tmp_path / "etc"
-    # Debian, Fedora (conf/ and lib/), and Arch layouts.
     fedora = etc / "java" / "java-25-openjdk" / "java-25-openjdk"
     roots = (etc / "java-21-openjdk", fedora / "conf", fedora / "lib", etc / "java21-openjdk")
     secrets = []
@@ -211,13 +210,11 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     outside = tmp_path / "outside"
     outside.mkdir()
     secrets.append(outside / "private-key")
-    # A non-JDK tree the glob also matches.
     service = etc / "java-service"
     (service / "security").mkdir(parents = True)
     secrets += [service / "security" / "token", service / "app.properties"]
     for secret in secrets:
         secret.write_text("SECRET", encoding = "utf-8")
-    # Bind-source symlinks could expose host secrets; each target carries a marker.
     (outside / "java.security").write_text("", encoding = "utf-8")
     linked = etc / "java-8-openjdk"
     linked.mkdir()
@@ -260,7 +257,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     java = shutil.which("java")
     if sandbox_linux.shutil.which("bwrap") is None or java is None:
         pytest.skip("needs bubblewrap and a Java runtime")
-    # Force Java to load java.security.
     payload = (java, "-XshowSettings:security:properties", "-version")
     if subprocess.run(payload, capture_output = True).returncode != 0:
         pytest.skip("this JVM does not support -XshowSettings:security")
@@ -285,7 +281,6 @@ def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path
     completed = run(payload)
     assert completed.returncode == 0, completed.stderr
     assert "Error loading java.security" not in completed.stderr
-    # Distro JDKs reach cacerts through /etc links.
     keytool = os.path.join(os.path.dirname(os.path.realpath(java)), "keytool")
     if os.access(keytool, os.X_OK):
         completed = run((keytool, "-list", "-cacerts", "-storepass", "changeit"))
@@ -1358,10 +1353,7 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     session = str(tmp_path / "session")
     assert sandbox_linux._model_cache_binds(session) == {}
     assert sandbox_linux._model_cache_binds(session) == {}
-    # `started` is filled from the scan workers, which a loaded runner can schedule after
-    # the launch that started them has returned, so counting it between the two launches
-    # reads a slow first-launch worker as a second one. Wait until every worker either
-    # launch started has reached the scan, then compare workers to paths.
+    # Scan workers may run late, so wait for each launched worker to reach the scan before counting.
     workers = [
         t
         for t in threading.enumerate()
@@ -1459,7 +1451,7 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
     link.symlink_to(real)
     monkeypatch.setattr(sys, "executable", str(link))
 
-    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
+    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Unsloth"):
         sandbox_linux._runtime_paths_under(str(workdir))
 
 

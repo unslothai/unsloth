@@ -22,6 +22,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 import unsloth  # noqa: F401  (patches before transformers)
 from unsloth.models import loader_utils
 
@@ -96,7 +98,7 @@ def test_sync_ignores_other_models(monkeypatch):
     assert os.environ["UNSLOTH_MODEL_NAME"] == "llama,_load_in_4bit_"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU for bitsandbytes")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU for bitsandbytes")
 def test_bf16_checkpoint_loads_real_weights_in_4bit(tmp_path):
     pytest.importorskip("bitsandbytes")
     from safetensors.torch import load_file
@@ -157,7 +159,7 @@ def test_bf16_checkpoint_loads_real_weights_in_4bit(tmp_path):
     assert expert_grads and any(float(g.abs().sum()) > 0 for g in expert_grads)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU for bitsandbytes")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU for bitsandbytes")
 def test_bf16_checkpoint_4bit_generate_matches_prefill(tmp_path):
     """One-token decode on the fused Params4bit experts gives the prefill (module forward) logits."""
     pytest.importorskip("bitsandbytes")

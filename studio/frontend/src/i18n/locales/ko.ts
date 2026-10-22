@@ -118,6 +118,7 @@ export const ko = {
     reload: "새로고침",
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
+    local: "로컬",
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -468,6 +469,8 @@ export const ko = {
       downloadFailed: "{name}을(를) 다운로드할 수 없습니다",
       notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
       blocked: "이 주소는 브라우저 패널에서 열 수 없습니다. 공개 웹사이트만 열 수 있습니다.",
+      blockedLocal: "이 로컬 주소는 여기에서 열 수 없습니다. 열려면 주소 표시줄에 입력하세요.",
+      studioAddress: "Unsloth 자체의 주소이므로 브라우저 패널에서 열 수 없습니다.",
       clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제합니다. 사이트에서 로그아웃됩니다.",
       clearDataDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
@@ -1085,6 +1088,10 @@ export const ko = {
       alternateSlot: "대체 단축키",
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
+      metaUnsupported: "Windows 키는 단축키에 사용할 수 없습니다.",
+      altGraphUnsupported: "AltGr 조합은 단축키로 사용할 수 없습니다.",
+      desktopOnly: "데스크톱 앱 전용",
+      builtInKey: "기본 제공: {key}",
       actions: {
         findInPage: {
           label: "페이지에서 찾기",
@@ -1285,6 +1292,10 @@ export const ko = {
         steerMessage: {
           label: "응답 조정",
           description: "현재 응답을 중단하고 초안을 다음으로 보냅니다",
+        },
+        stopGeneration: {
+          label: "생성 중지",
+          description: "작성 중인 응답을 중지합니다",
         },
         cycleReasoningEffort: {
           label: "추론 강도 순환",
@@ -1805,23 +1816,14 @@ export const ko = {
       },
       notifications: {
         sectionTitle: "알림",
-        showLlamaUpdates: "llama.cpp 업데이트 알림",
-        showLlamaUpdatesDescription:
-          "새 모델 실행을 위한 최신 llama.cpp 업데이트가 있으면 알려드립니다. 학습 기능만 사용하는 경우 꺼두세요.",
-        showLoadedModels: "로드된 모델 표시기",
-        showLoadedModelsDescription:
-          "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
-        showWhisperUpdates: "whisper.cpp 업데이트 알림",
-        showWhisperUpdatesDescription:
-          "음성 인식 모델을 위한 최신 whisper.cpp 빌드가 있으면 알립니다. 오디오를 전사하지 않는다면 끄세요.",
-        showAudioCppUpdates: "audio.cpp 업데이트 알림",
-        showAudioCppUpdatesDescription:
-          "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
-        showUnslothUpdates: "Unsloth 업데이트 알림",
-        showUnslothUpdatesDescription:
-          "설치할 수 있는 새 Unsloth 버전이 있으면 알립니다.",
+        showLoadedModels: "로드된 모델 카드",
+        showLoadedModelsDescription: "로드된 모든 모델을 보여 주는 모서리 카드로, 클릭 한 번에 내릴 수 있습니다.",
+        updateReminders: "업데이트 알림",
+        updateRemindersDescription: "새 버전이 준비되면 얼마나 자주 안내할지 정합니다.",
+        llamaHint: "채팅 및 GGUF 모델",
+        audioHint: "음성, 음악, 받아쓰기",
         frequency: {
-          always: "항상",
+          always: "나올 때마다",
           daily: "하루에 한 번",
           weekly: "일주일에 한 번",
           biweekly: "2주에 한 번",
@@ -2062,9 +2064,9 @@ export const ko = {
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
         activityDescription: {
-          daily: "최근 {weeks} 동안 {total}",
-          weekly: "최고 주 {total} · 최근 {weeks}",
-          cumulative: "최근 {weeks} 동안 누적 {total}",
+          daily: "{since} 이후 {total}",
+          weekly: "가장 많은 주 {total} · {since} 이후",
+          cumulative: "{since} 이후 누적 {total}",
         },
         mode: {
           daily: "일별",
@@ -2073,8 +2075,9 @@ export const ko = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} 주간 · {tokens}",
-        chartToggle: "차트",
-        chartToggleHint: "주별 및 누적을 축 레이블이 있는 차트로 표시",
+        emptyDayTooltip: "{date} · 활동 없음",
+        apiRequests: "API로 {count}건",
+        cumulativeTooltip: "{date} 주까지 · 누적 {tokens}",
         less: "적음",
         more: "많음",
         insightsTitle: "활동 분석",
@@ -2698,6 +2701,10 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      showReplyTimes: "응답 시간",
+      showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
+      showReplyTimesKeywords:
+        "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
@@ -2753,6 +2760,22 @@ export const ko = {
         visibility: "사고 과정",
         visibilityDescription:
           "사고 과정이 열리는 방식. 각 블록은 직접 펼치거나 접을 수 있습니다.",
+      },
+      memory: {
+        title: "메모리",
+        description: "모든 채팅이 읽는 메모로, 로컬이든 클라우드든 모든 모델에 적용됩니다. 프로젝트의 채팅은 해당 프로젝트의 AGENTS.md도 읽습니다.",
+        enable: "채팅에서 메모리 사용",
+        enableDescription: "이 메모를 모든 채팅과 함께 보냅니다.",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD로 이 설치에서 꺼져 있습니다.",
+        editor: "메모리 메모",
+        placeholder: "예:\n- Python을 쓰고 uv를 사용합니다.\n- 답변은 짧게 해 주세요.",
+        hint: "{path}에 저장됩니다. 이 파일은 어떤 텍스트 편집기에서도 편집할 수 있습니다.",
+        size: "{used} / {max} KB",
+        save: "저장",
+        saved: "메모리를 저장했습니다",
+        loadError: "메모리를 불러오지 못했습니다.",
+        saveError: "메모리를 저장하지 못했습니다.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md 메모리 기억 개인화 프로필 메모",
       },
       currentDate: {
         label: "모델에 오늘 날짜 알려주기",
@@ -3115,6 +3138,14 @@ export const ko = {
           "모델 자동 전환이 켜져 있을 때만 이름으로 모델을 불러옵니다. 자동 전환을 켜거나 먼저 오디오 페이지에서 모델을 불러오세요.",
         useViaApi: "API로 사용",
       },
+      mediaApi: {
+        title: "이미지 및 동영상 API",
+        description: "OpenAI 호환 엔드포인트로 직접 작성한 코드에서 이미지와 동영상을 생성하세요.",
+        images: "이미지",
+        video: "동영상",
+        placeholderModel: "표시된 모델은 예시입니다. 이미지 또는 동영상 페이지에서 모델을 로드한 뒤 그 페이지의 API 버튼으로 여기를 열면 채워집니다.",
+        autoSwitchOff: "미디어 자동 전환이 꺼져 있어 요청은 이름과 관계없이 페이지에 로드된 모델에서 실행됩니다.",
+      },
       decisionApi: {
         title: "판단 API",
         docs: "문서",
@@ -3194,6 +3225,24 @@ export const ko = {
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
+      whisperCppVersion: "whisper.cpp 버전",
+      engines: {
+        title: "엔진",
+        description: "Unsloth가 모델을 실행하는 데 사용하는 런타임입니다. 업데이트는 재시작 없이 백그라운드에서 설치됩니다.",
+        updatesLabel: "엔진 업데이트",
+        notInstalled: "설치되지 않음",
+        available: "{version} 사용 가능",
+        upToDate: "최신 상태",
+        updatesAvailable: "업데이트 있음",
+        checking: "업데이트 확인 중...",
+        checkFailed: "업데이트를 확인할 수 없습니다. 나중에 다시 시도하세요.",
+        unsupported: "이 설치의 엔진은 Unsloth 외부에서 관리됩니다.",
+        checkForUpdates: "업데이트 확인",
+        update: "업데이트",
+        updating: "업데이트 중...",
+        updated: "엔진이 업데이트되었습니다.",
+        updateFailed: "업데이트 실패: {error}",
+      },
       hardware: "하드웨어",
       gpu: "GPU",
       gpuIntegrated: "내장",
@@ -3278,6 +3327,9 @@ export const ko = {
         docsUpdating: "업데이트",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A tool that keeps returning the same answer must not be allowed to eat the turn.
-
-Observed at a 4096 window, asked to show a 2401-byte file inline. `tool_result_budget`
-collapsed to zero, so every read returned only the notice saying it had been cut:
-
-    tool result: name=terminal budget_tokens=0 chars=109      (six of the last eight)
-
-The model read that as a fresh failure and tried again, varying the line range each time,
-for eighteen calls. Two things were missing. The budget was never rescued, though room is
-exactly what compaction reclaims; and nothing noticed that the answer had stopped changing.
-
-The guard is keyed on the RESULT, not the arguments, which is the whole point here: the
-arguments differed on every one of those calls. OpenClaw's tool-loop detection keys on the
-result for the same reason, and stays quiet while results are still changing so that
-legitimate polling is untouched.
-"""
+"""Repeats are caught on the tool result, not the arguments, which differed on every retry."""
 
 from __future__ import annotations
 
@@ -161,8 +146,6 @@ def test_a_tool_repeating_one_answer_is_told_so(monkeypatch):
     results = _tool_results(_run(backend))
 
     assert any("it will not change" in r for r in results)
-    # The notice that caused the repeats is kept: replacing it would leave the model
-    # holding less than it already had.
     assert any(_TRUNCATION_NOTICE in r for r in results)
 
 
@@ -236,15 +219,7 @@ def _thread_with_a_big_completed_call(body_chars: int = 9000) -> list[dict]:
 
 
 def test_a_tool_is_not_priced_at_zero_behind_a_finished_call(monkeypatch):
-    """A call priced at zero can only ever return the notice saying it returned nothing.
-
-    Scope, stated because the name could promise more: this pins the PRICING, not the
-    compaction rescue that backs it up. The rescue re-counts the prompt with the real
-    tokenizer, and this harness has no llama-server to render a template, so the rescue
-    bails out here by design. It is covered by the live run at a 4096 window, where the
-    log line `Result budget for X was 0; compacted N completed call(s) and it is now M`
-    is the evidence.
-    """
+    """A tool must never be priced at zero behind a finished call; this covers pricing, not the rescue."""
 
     received: list[object] = []
 
@@ -292,15 +267,7 @@ def test_a_repeat_that_stops_repeating_resets(monkeypatch):
 
 
 def test_distinct_calls_answered_with_the_same_acknowledgement_are_left_alone(monkeypatch):
-    """A generic `OK` is not a dead end, and the nudge would talk the model out of the
-    work it has left.
-
-    Some tools answer every distinct mutation with the same short string. Keyed on the
-    result alone, three successful writes to three different records read as one answer
-    repeated, and the model is then told that different arguments will not change it.
-    The window's OWN notices keep the result-only key, which is the case this guard was
-    built for and is covered above.
-    """
+    """Distinct calls answered with the same generic OK are not repeats, so the nudge must not fire."""
 
     streams = [[_call(f"record-{i}", i), _done()] for i in range(_MAX_IDENTICAL_TOOL_RESULTS + 1)]
     streams.append([_sse({"content": "All three updated."}), _done()])
@@ -320,11 +287,8 @@ def _starve_the_budget(monkeypatch):
 
 
 def test_a_short_result_that_fit_is_not_called_starved(monkeypatch):
-    """The budget says what the window ALLOWED, not what the tool returned.
-
-    "Created a.py" fits a few tokens completely. Telling the model it got nothing usable
-    and to continue without it invites it to discard a successful write, or do it twice.
-    """
+    """A short result that fit is not starved: the budget reports what the window allowed, not the
+    output."""
     _starve_the_budget(monkeypatch)
     streams = [[_call("make the file", 0), _done()], [_sse({"content": "Done."}), _done()]]
     payloads: list[dict] = []
@@ -352,22 +316,13 @@ def test_a_result_the_window_actually_cut_is_still_called_starved(monkeypatch):
 
 
 def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
-    """Both counts have to price the SAME prompt, or the rescue gives away real room.
-
-    The initial sizing appends an empty `tool` stand-in because Qwen-style templates render
-    an assistant tool call only once a reply follows it. The rescue re-count after
-    compaction did not, so on those templates this call's own arguments dropped out of the
-    total and the room they occupy was handed to the result -- the exact overcount the
-    stand-in exists to prevent, reintroduced on the path that was meant to fix it.
-    """
+    """The rescue recount must use the same empty tool stand-in as sizing, or the call's args drop out."""
 
     counted: list[list] = []
 
     def fake_count(messages, *_args, **_kwargs):
         counted.append(list(messages))
-        # Under the prompt budget, so the pre-execution fit leaves the calls alone and
-        # there is still something for the rescue to compact, but close enough to it that
-        # the result prices under _MIN_USEFUL_RESULT_TOKENS, which is what triggers it.
+        # Under the prompt budget but prices below _MIN_USEFUL_RESULT_TOKENS, triggering rescue.
         return 3050
 
     payloads: list[dict] = []
@@ -390,8 +345,7 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
 
     monkeypatch.setattr(llama_cpp_module, "compact_completed_tool_arguments", spy_compact)
 
-    # Two finished calls, because the rescue protects the newest one: with a single
-    # completed call there is nothing left for it to compact and it never re-counts.
+    # Two calls: the rescue protects the newest, so one call leaves nothing to compact.
     _thread = _thread_with_a_big_completed_call()
     _older = copy.deepcopy(_thread[1:3])
     _older[0]["tool_calls"][0]["id"] = "c0"
@@ -419,14 +373,7 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
 
 
 def test_the_zero_room_stub_counts_as_a_window_notice(monkeypatch):
-    """At a budget of zero there is no truncated body to append a notice to.
-
-    `_truncate` returns `_zero_room_stub` instead, whose text carries neither the
-    truncation marker nor any of the result. Missing it is exactly the case this
-    classification exists for: the nudge is skipped and the no-progress key falls back to
-    including the arguments, so a model reading one file in different slices gets the
-    same empty stub forever without ever being told why.
-    """
+    """A zero-budget stub must count as a window notice, or the nudge is skipped silently."""
     from core.inference.tools import _zero_room_stub
 
     stub = _zero_room_stub(2401, None, True)
@@ -445,12 +392,7 @@ def test_the_zero_room_stub_counts_as_a_window_notice(monkeypatch):
 
 
 def test_a_resumed_turn_prices_its_tool_result_by_what_is_left(monkeypatch):
-    """The payload used the continuation's remainder; this budget still used the whole cap.
-
-    With 100 of 1000 tokens left, the result was priced as if 1000 were still to come, so
-    `tool_result_budget` reserved room the request was never going to use and could hand
-    the call a zero budget -- a starvation notice for a read there was space for.
-    """
+    """A resumed turn must price its tool result by what is left, not the whole cap, or it is starved."""
 
     caps: list[object] = []
 
@@ -488,12 +430,7 @@ def test_a_resumed_turn_prices_its_tool_result_by_what_is_left(monkeypatch):
 
 
 def test_a_resumed_turn_sizes_its_recall_by_what_is_left(monkeypatch):
-    """`retrieval_budget` reserves the output allowance before handing back recall room.
-
-    Reserving the caller's whole cap on a continuation that has a fraction of it left
-    returns a near-zero budget, so `search_conversation` drops context the request had
-    ample room for.
-    """
+    """retrieval_budget reserves the output allowance first, so a resumed turn keeps its recall room."""
 
     caps: list[object] = []
 

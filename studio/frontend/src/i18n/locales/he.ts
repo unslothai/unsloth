@@ -119,6 +119,7 @@ export const he = {
     reload: "טען מחדש",
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
+    local: "מקומי",
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -486,6 +487,8 @@ export const he = {
       notMarked: "{name} נשמר, אך לא ניתן היה לסמן אותו כקובץ שהורד מהאינטרנט, ולכן המערכת לא תזהיר לפני שתפתח אותו.",
       blocked:
         "לא ניתן לפתוח כתובת זו בחלונית הדפדפן. היא פותחת רק אתרים ציבוריים.",
+      blockedLocal: "לא ניתן לפתוח כאן את הכתובת המקומית הזו. הקלד אותה בשורת הכתובת כדי לפתוח אותה.",
+      studioAddress: "זו הכתובת של Unsloth עצמו, ולכן לא ניתן לפתוח אותה בחלונית הדפדפן.",
       clearDataSettingDescription:
         "נקה את היסטוריית הגלישה, היסטוריית ההורדות, הדפים השמורים במטמון וקובצי ה-Cookie ונתוני האתרים שהדפים שומרים, מה שינתק אותך מאתרים.",
       clearDataDescription:
@@ -1174,6 +1177,10 @@ export const he = {
       alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
+      metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
+      altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
+      desktopOnly: "באפליקציית שולחן העבודה בלבד",
+      builtInKey: "מובנה: {key}",
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1375,6 +1382,10 @@ export const he = {
         steerMessage: {
           label: "הכוונת התשובה",
           description: "עצור את התשובה הנוכחית ושלח את הטיוטה מיד אחריה",
+        },
+        stopGeneration: {
+          label: "עצירת היצירה",
+          description: "עצירת התשובה שנכתבת",
         },
         cycleReasoningEffort: {
           label: "החלף רמת מאמץ חשיבה",
@@ -1919,23 +1930,14 @@ export const he = {
       },
       notifications: {
         sectionTitle: "התראות",
-        showLlamaUpdates: "התראות עדכון llama.cpp",
-        showLlamaUpdatesDescription:
-          "הודע כאשר גרסה חדשה יותר של llama.cpp זמינה להרצת מודלים חדשים. כבה אם אתה רק מאמן מודלים.",
-        showLoadedModels: "חיווי מודלים טעונים",
-        showLoadedModelsDescription:
-          "הצג כרטיס קטן בפינה הימנית התחתונה המפרט כל מודל שנמצא כרגע בזיכרון (צ'אט, דיבור, תמונה, וידאו), עם כפתור לפריקת כל אחד מהם.",
-        showWhisperUpdates: "התראות עדכון של whisper.cpp",
-        showWhisperUpdatesDescription:
-          "הודע כאשר גרסת build חדשה יותר של whisper.cpp זמינה עבור מודלים של המרת דיבור לטקסט. כבה אם אינך מתמלל אודיו אף פעם.",
-        showAudioCppUpdates: "התראות עדכון של audio.cpp",
-        showAudioCppUpdatesDescription:
-          "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
-        showUnslothUpdates: "התראות עדכון של Unsloth",
-        showUnslothUpdatesDescription:
-          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        showLoadedModels: "כרטיס מודלים טעונים",
+        showLoadedModelsDescription: "כרטיס בפינה עם כל מודל טעון, לפריקה בלחיצה.",
+        updateReminders: "תזכורות עדכון",
+        updateRemindersDescription: "באיזו תדירות להציע גרסה חדשה כשהיא מוכנה.",
+        llamaHint: "מודלי צ'אט ו-GGUF",
+        audioHint: "דיבור, מוזיקה ותמלול",
         frequency: {
-          always: "תמיד",
+          always: "כשזמין",
           daily: "פעם ביום",
           weekly: "פעם בשבוע",
           biweekly: "כל שבועיים",
@@ -2164,9 +2166,9 @@ export const he = {
         longestStreak: "רצף שיא",
         activityTitle: "פעילות טוקנים",
         activityDescription: {
-          daily: "{total} במהלך {weeks} האחרונים",
-          weekly: "שבוע שיא: {total} · {weeks} אחרונים",
-          cumulative: "{total} נצברו במהלך {weeks} האחרונים",
+          daily: "{total} מאז {since}",
+          weekly: "השבוע העמוס ביותר {total} · מאז {since}",
+          cumulative: "{total} בסך הכול מאז {since}",
         },
         mode: {
           daily: "יומי",
@@ -2175,8 +2177,9 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
-        chartToggle: "תרשים",
-        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
+        emptyDayTooltip: "{date} · אין פעילות",
+        apiRequests: "{count} דרך API",
+        cumulativeTooltip: "עד שבוע {date} · {tokens} בסך הכול",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
@@ -2823,6 +2826,10 @@ export const he = {
         "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
+      showReplyTimes: "זמני תשובות",
+      showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
+      showReplyTimesKeywords:
+        "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
@@ -2879,6 +2886,22 @@ export const he = {
         visibility: "חשיבה",
         visibilityDescription:
           "כיצד תהליך החשיבה נפתח. עדיין תוכל להרחיב או לכווץ כל מקטע בעצמך.",
+      },
+      memory: {
+        title: "זיכרון",
+        description: "הערות שכל צ'אט קורא, בכל מודל, מקומי או בענן. צ'אטים בפרויקט קוראים גם את קובץ AGENTS.md של הפרויקט.",
+        enable: "שימוש בזיכרון בצ'אטים",
+        enableDescription: "שליחת ההערות האלה עם כל צ'אט.",
+        locked: "כבוי בהתקנה זו על ידי UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "הערות זיכרון",
+        placeholder: "לדוגמה:\n- אני כותב ב-Python ומשתמש ב-uv.\n- תשובות קצרות.",
+        hint: "נשמר ב-{path}. אפשר גם לערוך את הקובץ בכל עורך טקסט.",
+        size: "{used} / {max} KB",
+        save: "שמירה",
+        saved: "הזיכרון נשמר",
+        loadError: "טעינת הזיכרון נכשלה.",
+        saveError: "שמירת הזיכרון נכשלה.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md זיכרון לזכור התאמה אישית פרופיל הערות",
       },
       currentDate: {
         label: "ספק למודל את התאריך של היום",
@@ -3248,6 +3271,14 @@ export const he = {
           "המודל נטען לפי שם רק כשהחלפת מודל אוטומטית פועלת. הפעל אותה, או טען קודם את המודל בדף השמע שלו.",
         useViaApi: "שימוש דרך API",
       },
+      mediaApi: {
+        title: "API לתמונות ולווידאו",
+        description: "צרו תמונות וסרטונים מהקוד שלכם דרך נקודות הקצה התואמות ל-OpenAI.",
+        images: "תמונות",
+        video: "וידאו",
+        placeholderModel: "המודל המוצג הוא דוגמה. טענו מודל בדף התמונות או הווידאו ופתחו את זה מכפתור ה-API שלו כדי למלא אותו.",
+        autoSwitchOff: "המעבר האוטומטי למדיה כבוי, ולכן הבקשות רצות על המודל שהדף טען, לא משנה איזה שם הן נותנות.",
+      },
       decisionApi: {
         title: "ממשק API להחלטות",
         docs: "תיעוד",
@@ -3329,6 +3360,24 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      whisperCppVersion: "גרסת whisper.cpp",
+      engines: {
+        title: "מנועים",
+        description: "סביבות ההרצה ש-Unsloth משתמש בהן כדי להריץ מודלים. העדכונים מותקנים ברקע, ללא הפעלה מחדש.",
+        updatesLabel: "עדכוני מנועים",
+        notInstalled: "לא מותקן",
+        available: "{version} זמין",
+        upToDate: "מעודכן",
+        updatesAvailable: "יש עדכונים",
+        checking: "מחפש עדכונים...",
+        checkFailed: "לא ניתן היה לחפש עדכונים. נסה שוב מאוחר יותר.",
+        unsupported: "המנועים של התקנה זו מנוהלים מחוץ ל-Unsloth.",
+        checkForUpdates: "חיפוש עדכונים",
+        update: "עדכון",
+        updating: "מעדכן...",
+        updated: "המנועים עודכנו.",
+        updateFailed: "העדכון נכשל: {error}",
+      },
       hardware: "חומרה",
       gpu: "GPU",
       gpuIntegrated: "משולב",
@@ -3411,6 +3460,9 @@ export const he = {
         docsUpdating: "עדכון",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

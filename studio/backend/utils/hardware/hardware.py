@@ -179,19 +179,30 @@ def _running_under_rosetta() -> bool:
 
 # Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
 TORCH_IMPORT_ERROR: Optional[str] = None
+# Detection epoch of the last broken import: retried (and logged) once per epoch, not on every poll.
+_TORCH_IMPORT_FAILED_EPOCH: Optional[int] = None
 
 
 def _has_torch() -> bool:
     """True if PyTorch is importable. Any failure counts as "no torch": ensure_hardware_detected() re-runs while DEVICE is None, so an escaping OSError would make every request retry the import. The error is recorded, or the host is told to install the torch it already has."""
-    global TORCH_IMPORT_ERROR
+    global TORCH_IMPORT_ERROR, _TORCH_IMPORT_FAILED_EPOCH
+    if (
+        TORCH_IMPORT_ERROR is not None
+        and _TORCH_IMPORT_FAILED_EPOCH == DETECTION_EPOCH
+        and "torch" not in sys.modules
+    ):
+        return False
     try:
         import torch
+
         TORCH_IMPORT_ERROR = None
+        _TORCH_IMPORT_FAILED_EPOCH = None
         return True
     except Exception as exc:
         # ImportError does NOT mean "not installed": a wheel with unresolved native libs raises it from torch's own __init__. Only ModuleNotFoundError naming torch itself is absent; a failed submodule is a broken install.
         absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
         TORCH_IMPORT_ERROR = None if absent else repr(exc)
+        _TORCH_IMPORT_FAILED_EPOCH = None if absent else DETECTION_EPOCH
         if TORCH_IMPORT_ERROR is not None:
             logger.error("torch is installed but failed to import: %r", exc)
         # A part-way failure leaves submodules cached under an evicted parent, so the next importer gets a torch missing pieces; purge_partial_import() clears that.
@@ -881,7 +892,9 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     recorded, pinned = _recorded_install_flavor()
     if recorded == "cpu" and not pinned:
         # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
-        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair. A stated GPU index wins.
+        if _stated_torch_index_source():
+            return False
         from utils.tegra import tegra_before_cuda13
         return tegra_before_cuda13()
     return recorded == "cpu" and pinned
@@ -2805,7 +2818,24 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 
 
 # APU architectures that are unified memory but sit outside the shared classifier's positive set, which names anything else from hipDeviceProp_t::integrated. clr never assigned deviceProps.integrated before rocm-6.2.0 and the legacy R0000 property ABI still does not, while paldevice.cpp inflates globalMemSize_ off settings().apuSystem_ in both cases -- harmless for the cap and the total, wrong for a NUMERATOR. gfx1103 Phoenix / Hawk Point never shipped as a discrete board, so naming it here can only upgrade a part whose props.total_memory really does span host memory.
-_ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
+# The rest of LLVM's AMDGPUUsage processor table rows typed APU are named here on the same footing (none ever shipped as a
+# discrete board): gfx1153 Krackan Point 2 (Windows-supported), gfx1033 Van Gogh, gfx1035 Rembrandt, gfx1036 Raphael /
+# Granite Ridge iGPU, gfx1013 Cyan Skillfish, gfx90c / gfx902 / gfx909 Renoir / Raven, gfx801 / gfx810 Carrizo / Stoney.
+_ROCM_UNNAMED_APU_ARCHES = frozenset(
+    {
+        "gfx801",
+        "gfx810",
+        "gfx902",
+        "gfx909",
+        "gfx90c",
+        "gfx1013",
+        "gfx1033",
+        "gfx1035",
+        "gfx1036",
+        "gfx1103",
+        "gfx1153",
+    }
+)
 
 
 def _rocm_props_unified_status(props: Any) -> Optional[bool]:
@@ -3105,8 +3135,33 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
     return None
 
 
+_APPLE_GPU_STATS_TTL_S = 1.5
+_apple_gpu_stats_lock = threading.Lock()
+_apple_gpu_stats_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
 def _read_apple_gpu_stats() -> Dict[str, Any]:
-    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed."""
+    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed. Display reads reuse one up to 1.5 s old (a refresh asks twice); fit and placement read fresh."""
+    global _apple_gpu_stats_cache
+    try:
+        from utils.hardware import gpu_query
+        serve_cached = gpu_query.display_cache_allowed()
+    except Exception:
+        serve_cached = False
+    with _apple_gpu_stats_lock:
+        cached = _apple_gpu_stats_cache
+        if (
+            serve_cached
+            and cached is not None
+            and time.monotonic() - cached[0] < _APPLE_GPU_STATS_TTL_S
+        ):
+            return dict(cached[1])
+        stats = _read_apple_gpu_stats_uncached()
+        _apple_gpu_stats_cache = (time.monotonic(), dict(stats)) if stats else None
+        return stats
+
+
+def _read_apple_gpu_stats_uncached() -> Dict[str, Any]:
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
@@ -5141,6 +5196,15 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
                 "devices": [],
                 "index_kind": "relative",
             }
+        gpu_utilization_pct = temperature_c = power_draw_w = None
+        try:
+            from . import apple
+
+            gpu_utilization_pct = _read_apple_gpu_stats().get("utilization_pct")
+            temperature_c = apple.read_gpu_temperature_c()
+            power_draw_w = apple.read_gpu_power_w()
+        except Exception as e:
+            logger.debug("Apple GPU telemetry unavailable: %s", e)
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -5150,14 +5214,14 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
                     "index": 0,
                     "index_kind": "relative",
                     "visible_ordinal": 0,
-                    "gpu_utilization_pct": None,
-                    "temperature_c": None,
+                    "gpu_utilization_pct": gpu_utilization_pct,
+                    "temperature_c": temperature_c,
                     "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
                     "vram_total_gb": round(mem.get("total_gb", 0), 2),
                     # Unified memory: free is not total - used, so publish it rather than let the caller subtract.
                     "vram_free_gb": round(mem.get("free_gb", 0), 2),
                     "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
-                    "power_draw_w": None,
+                    "power_draw_w": power_draw_w,
                     "power_limit_w": None,
                     "power_utilization_pct": None,
                 }

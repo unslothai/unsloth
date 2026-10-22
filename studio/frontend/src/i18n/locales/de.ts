@@ -118,6 +118,7 @@ export const de = {
     reload: "Neu laden",
     more: "Mehr",
     addressPlaceholder: "Suchen oder URL eingeben",
+    local: "Lokal",
     suggested: "Vorschläge",
     suggestedMenu: {
       open: "Öffnen",
@@ -468,6 +469,8 @@ export const de = {
       downloadFailed: "{name} konnte nicht heruntergeladen werden",
       notMarked: "{name} wurde gespeichert, konnte aber nicht als aus dem Internet heruntergeladen markiert werden. Dein System warnt deshalb vor dem Öffnen nicht.",
       blocked: "Diese Adresse kann im Browserbereich nicht geöffnet werden. Er öffnet nur öffentliche Websites.",
+      blockedLocal: "Diese lokale Adresse kann hier nicht geöffnet werden. Gib sie in die Adressleiste ein, um sie zu öffnen.",
+      studioAddress: "Das ist die Adresse von Unsloth selbst und kann deshalb nicht im Browserbereich geöffnet werden.",
       clearDataSettingDescription: "Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten löschen. Du wirst dabei von Websites abgemeldet.",
       clearDataDescription: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",
       clearDataFailed: "Websitedaten konnten nicht gelöscht werden. Versuche es erneut.",
@@ -1090,6 +1093,10 @@ export const de = {
       alternateSlot: "Alternatives Kürzel",
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
+      metaUnsupported: "Die Windows-Taste kann nicht in Tastenkürzeln verwendet werden.",
+      altGraphUnsupported: "AltGr-Kombinationen können nicht als Tastenkürzel verwendet werden.",
+      desktopOnly: "Nur in der Desktop-App",
+      builtInKey: "Integriert: {key}",
       actions: {
         findInPage: {
           label: "Auf der Seite suchen",
@@ -1290,6 +1297,10 @@ export const de = {
         steerMessage: {
           label: "Antwort steuern",
           description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
+        stopGeneration: {
+          label: "Generierung stoppen",
+          description: "Die laufende Antwort anhalten",
         },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
@@ -1829,23 +1840,14 @@ export const de = {
       },
       notifications: {
         sectionTitle: "Benachrichtigungen",
-        showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
-        showLlamaUpdatesDescription:
-          "Benachrichtigt, wenn ein neuerer llama.cpp-Build verfügbar ist, um neue Modelle auszuführen. Deaktivieren Sie dies, wenn Sie nur trainieren.",
-        showLoadedModels: "Anzeige geladener Modelle",
-        showLoadedModelsDescription:
-          "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
-        showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
-        showWhisperUpdatesDescription:
-          "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
-        showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
-        showAudioCppUpdatesDescription:
-          "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
-        showUnslothUpdates: "Unsloth-Update-Benachrichtigungen",
-        showUnslothUpdatesDescription:
-          "Benachrichtigen, wenn eine neuere Unsloth-Version zur Installation bereitsteht.",
+        showLoadedModels: "Karte geladener Modelle",
+        showLoadedModelsDescription: "Eine Eckkarte mit allen geladenen Modellen, mit einem Klick entladbar.",
+        updateReminders: "Update-Erinnerungen",
+        updateRemindersDescription: "Wie oft eine neue Version angeboten wird, sobald sie bereit ist.",
+        llamaHint: "Chat- und GGUF-Modelle",
+        audioHint: "Sprache, Musik und Transkription",
         frequency: {
-          always: "Immer",
+          always: "Sobald verfügbar",
           daily: "Einmal täglich",
           weekly: "Einmal pro Woche",
           biweekly: "Alle zwei Wochen",
@@ -2097,9 +2099,9 @@ export const de = {
         longestStreak: "Längste Serie",
         activityTitle: "Token-Aktivität",
         activityDescription: {
-          daily: "Zeitraum: {weeks} · {total}",
-          weekly: "Spitzenwoche {total} · letzte {weeks}",
-          cumulative: "{total} kumuliert in den letzten {weeks}",
+          daily: "{total} seit {since}",
+          weekly: "Aktivste Woche {total} · seit {since}",
+          cumulative: "{total} insgesamt seit {since}",
         },
         mode: {
           daily: "Täglich",
@@ -2108,8 +2110,9 @@ export const de = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Woche vom {date} · {tokens}",
-        chartToggle: "Diagramm",
-        chartToggleHint: "Wöchentlich und Kumuliert als Diagramm mit beschrifteten Achsen anzeigen",
+        emptyDayTooltip: "{date} · Keine Aktivität",
+        apiRequests: "{count} über die API",
+        cumulativeTooltip: "Bis zur Woche vom {date} · {tokens} insgesamt",
         less: "Weniger",
         more: "Mehr",
         insightsTitle: "Aktivitätsauswertung",
@@ -2748,6 +2751,10 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      showReplyTimes: "Antwortzeiten",
+      showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
+      showReplyTimesKeywords:
+        "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
@@ -2803,6 +2810,22 @@ export const de = {
         visibility: "Denken",
         visibilityDescription:
           "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
+      },
+      memory: {
+        title: "Gedächtnis",
+        description: "Notizen, die jeder Chat liest, für jedes Modell, lokal oder in der Cloud. Chats in einem Projekt lesen zusätzlich dessen AGENTS.md.",
+        enable: "Gedächtnis in Chats verwenden",
+        enableDescription: "Diese Notizen mit jedem Chat senden.",
+        locked: "Für diese Installation durch UNSLOTH_STUDIO_AGENTS_MD deaktiviert.",
+        editor: "Gedächtnisnotizen",
+        placeholder: "Zum Beispiel:\n- Ich schreibe Python und nutze uv.\n- Antworte kurz.",
+        hint: "Gespeichert in {path}. Du kannst diese Datei auch in jedem Texteditor bearbeiten.",
+        size: "{used} / {max} KB",
+        save: "Speichern",
+        saved: "Gedächtnis gespeichert",
+        loadError: "Gedächtnis konnte nicht geladen werden.",
+        saveError: "Gedächtnis konnte nicht gespeichert werden.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md gedächtnis erinnern merken personalisierung profil notizen",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
@@ -3174,6 +3197,14 @@ export const de = {
           "Das Modell wird nur per Name geladen, wenn der automatische Modellwechsel an ist. Schalte ihn ein oder lade das Modell zuerst auf seiner Audio-Seite.",
         useViaApi: "Per API nutzen",
       },
+      mediaApi: {
+        title: "Bild- und Video-API",
+        description: "Erzeuge Bilder und Videos aus deinem eigenen Code über die OpenAI-kompatiblen Endpunkte.",
+        images: "Bilder",
+        video: "Video",
+        placeholderModel: "Das gezeigte Modell ist ein Beispiel. Lade ein Modell auf der Bilder- oder Video-Seite und öffne dies über deren API-Schaltfläche, um es einzusetzen.",
+        autoSwitchOff: "Der automatische Medienwechsel ist aus, daher laufen Anfragen auf dem Modell, das die Seite geladen hat, egal welches sie nennen.",
+      },
       decisionApi: {
         title: "Entscheidungs-API",
         docs: "Dokumentation",
@@ -3253,6 +3284,24 @@ export const de = {
       desktopAppVersionUnavailable: "Nicht verfügbar",
       llamaCppVersion: "llama.cpp-Version",
       audioCppVersion: "audio.cpp-Version",
+      whisperCppVersion: "whisper.cpp-Version",
+      engines: {
+        title: "Engines",
+        description: "Die Laufzeiten, mit denen Unsloth Modelle ausführt. Updates werden im Hintergrund installiert, ohne Neustart.",
+        updatesLabel: "Engine-Updates",
+        notInstalled: "Nicht installiert",
+        available: "{version} verfügbar",
+        upToDate: "Auf dem neuesten Stand",
+        updatesAvailable: "Updates verfügbar",
+        checking: "Suche nach Updates...",
+        checkFailed: "Updates konnten nicht geprüft werden. Versuche es später erneut.",
+        unsupported: "Die Engines dieser Installation werden außerhalb von Unsloth verwaltet.",
+        checkForUpdates: "Nach Updates suchen",
+        update: "Aktualisieren",
+        updating: "Wird aktualisiert...",
+        updated: "Engines aktualisiert.",
+        updateFailed: "Update fehlgeschlagen: {error}",
+      },
       hardware: "Hardware",
       gpu: "GPU",
       gpuIntegrated: "integriert",
@@ -3339,6 +3388,9 @@ export const de = {
         docsUpdating: "Aktualisierung",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

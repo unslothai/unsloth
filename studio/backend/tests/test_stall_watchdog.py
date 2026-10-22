@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A stalled event loop gets its thread stacks dumped while still stalled (#9712).
-
-The GIL-held cases hold the GIL for real (busy loop under a long switch interval), since
-faulthandler's C thread firing without the GIL is what the design rests on. CPU-only.
-"""
+"""Stack dumps come from faulthandler's C thread, which fires even while a loop holds the GIL."""
 
 from __future__ import annotations
 
@@ -225,10 +221,7 @@ def test_a_python_dump_disarms_the_switch_for_the_cooldown(loop_in_thread, tmp_p
 
 
 def test_stands_down_until_the_warm_is_over(monkeypatch):
-    """The dead man's switch cannot be disarmed once the warm holds the GIL, so the
-    gate has to be closed before the warm starts, and stay closed until it is over.
-    Gating on 'warm running' left the window between the watchdog's first beat and
-    start_background_warm(), and every cold start dumped over the torch import."""
+    """The watchdog gate must close before the warm starts: a GIL-holding warm cannot be disarmed."""
     import utils.stall_watchdog as sw
     import utils.torch_warmup as tw
 
@@ -249,7 +242,6 @@ def test_stands_down_until_the_warm_is_over(monkeypatch):
     assert sw.stand_down_for_the_warm() is True
     status(started = True, finished = True, alive = False)
     assert sw.stand_down_for_the_warm() is False
-    # A warm that died mid-stage is not coming back.
     status(started = True, finished = False, alive = False)
     assert sw.stand_down_for_the_warm() is False
 

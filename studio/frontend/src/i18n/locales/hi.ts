@@ -118,6 +118,7 @@ export const hi = {
     reload: "फिर से लोड करें",
     more: "और",
     addressPlaceholder: "खोजें या URL डालें",
+    local: "लोकल",
     suggested: "सुझाव",
     suggestedMenu: {
       open: "खोलें",
@@ -468,6 +469,8 @@ export const hi = {
       downloadFailed: "{name} डाउनलोड नहीं हो सका",
       notMarked: "{name} सहेजा गया, लेकिन इसे इंटरनेट से डाउनलोड की गई फ़ाइल के रूप में चिह्नित नहीं किया जा सका, इसलिए खोलने से पहले आपका सिस्टम चेतावनी नहीं देगा।",
       blocked: "यह पता ब्राउज़र पैनल में नहीं खुल सकता। यह केवल सार्वजनिक वेबसाइटें खोलता है।",
+      blockedLocal: "यह लोकल पता यहाँ नहीं खुल सकता। इसे खोलने के लिए एड्रेस बार में टाइप करें।",
+      studioAddress: "यह Unsloth का अपना पता है, इसलिए यह ब्राउज़र पैनल में नहीं खुल सकता।",
       clearDataSettingDescription: "ब्राउज़िंग इतिहास, डाउनलोड इतिहास, कैश किए गए पेज और साइट कुकीज़ व डेटा साफ़ करें। इससे आप साइटों से साइन आउट हो जाएंगे।",
       clearDataDescription: "इससे आपका ब्राउज़िंग इतिहास, डाउनलोड इतिहास, कैश किए गए पेज और साइट कुकीज़ व डेटा साफ़ हो जाते हैं, और आप साइटों से साइन आउट हो जाते हैं। डाउनलोड की गई फ़ाइलें आपके कंप्यूटर पर रहती हैं।",
       clearDataFailed: "साइट डेटा साफ़ नहीं हो सका। फिर से कोशिश करें।",
@@ -1089,6 +1092,10 @@ export const hi = {
       alternateSlot: "वैकल्पिक शॉर्टकट",
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
+      metaUnsupported: "Windows कुंजी का उपयोग शॉर्टकट में नहीं किया जा सकता।",
+      altGraphUnsupported: "AltGr संयोजनों को शॉर्टकट के रूप में उपयोग नहीं किया जा सकता।",
+      desktopOnly: "केवल डेस्कटॉप ऐप में",
+      builtInKey: "अंतर्निहित: {key}",
       actions: {
         findInPage: {
           label: "पेज में खोजें",
@@ -1289,6 +1296,10 @@ export const hi = {
         steerMessage: {
           label: "उत्तर बदलें",
           description: "मौजूदा उत्तर रोककर ड्राफ़्ट अगला भेजें",
+        },
+        stopGeneration: {
+          label: "जनरेशन रोकें",
+          description: "लिखा जा रहा जवाब रोकें",
         },
         cycleReasoningEffort: {
           label: "तर्क प्रयास बदलें",
@@ -1812,23 +1823,14 @@ export const hi = {
       },
       notifications: {
         sectionTitle: "सूचनाएं",
-        showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
-        showLlamaUpdatesDescription:
-          "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
-        showLoadedModels: "लोड किए गए मॉडल का संकेतक",
-        showLoadedModelsDescription:
-          "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
-        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
-        showWhisperUpdatesDescription:
-          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
-        showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
-        showAudioCppUpdatesDescription:
-          "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
-        showUnslothUpdates: "Unsloth अपडेट सूचनाएँ",
-        showUnslothUpdatesDescription:
-          "जब Unsloth का नया संस्करण इंस्टॉल करने के लिए उपलब्ध हो, तब सूचित करें।",
+        showLoadedModels: "लोड किए गए मॉडल कार्ड",
+        showLoadedModelsDescription: "कोने में हर लोड किए गए मॉडल का कार्ड, एक क्लिक में अनलोड करने के लिए।",
+        updateReminders: "अपडेट रिमाइंडर",
+        updateRemindersDescription: "नया संस्करण तैयार होने पर उसे कितनी बार पेश करना है।",
+        llamaHint: "चैट और GGUF मॉडल",
+        audioHint: "स्पीच, संगीत और ट्रांसक्रिप्शन",
         frequency: {
-          always: "हमेशा",
+          always: "उपलब्ध होते ही",
           daily: "दिन में एक बार",
           weekly: "सप्ताह में एक बार",
           biweekly: "हर दो सप्ताह में",
@@ -2074,9 +2076,9 @@ export const hi = {
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
         activityDescription: {
-          daily: "अवधि: {weeks} · {total}",
-          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
-          cumulative: "पिछले {weeks} में कुल {total}",
+          daily: "{since} से {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · {since} से",
+          cumulative: "{since} से कुल {total}",
         },
         mode: {
           daily: "दैनिक",
@@ -2085,8 +2087,9 @@ export const hi = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} वाला हफ़्ता · {tokens}",
-        chartToggle: "चार्ट",
-        chartToggleHint: "साप्ताहिक और संचयी को लेबल वाले अक्षों के साथ चार्ट के रूप में दिखाएँ",
+        emptyDayTooltip: "{date} · कोई गतिविधि नहीं",
+        apiRequests: "API से {count}",
+        cumulativeTooltip: "{date} के सप्ताह तक · कुल {tokens}",
         less: "कम",
         more: "ज़्यादा",
         insightsTitle: "गतिविधि विश्लेषण",
@@ -2716,6 +2719,10 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      showReplyTimes: "जवाब का समय",
+      showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
+      showReplyTimesKeywords:
+        "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
@@ -2771,6 +2778,22 @@ export const hi = {
         visibility: "थिंकिंग",
         visibilityDescription:
           "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
+      },
+      memory: {
+        title: "मेमोरी",
+        description: "ऐसे नोट्स जिन्हें हर चैट पढ़ती है, हर मॉडल के लिए, लोकल या क्लाउड। किसी प्रोजेक्ट की चैट उस प्रोजेक्ट की AGENTS.md भी पढ़ती हैं।",
+        enable: "चैट में मेमोरी का उपयोग करें",
+        enableDescription: "ये नोट्स हर चैट के साथ भेजें।",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD ने इस इंस्टॉल के लिए इसे बंद कर दिया है।",
+        editor: "मेमोरी नोट्स",
+        placeholder: "उदाहरण:\n- मैं Python लिखता हूँ और uv का उपयोग करता हूँ।\n- जवाब छोटे रखें।",
+        hint: "{path} में सेव होता है। आप इस फ़ाइल को किसी भी टेक्स्ट एडिटर में भी बदल सकते हैं।",
+        size: "{used} / {max} KB",
+        save: "सेव करें",
+        saved: "मेमोरी सेव हो गई",
+        loadError: "मेमोरी लोड नहीं हो सकी।",
+        saveError: "मेमोरी सेव नहीं हो सकी।",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md मेमोरी याद पर्सनलाइज़ेशन प्रोफ़ाइल नोट्स",
       },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",
@@ -3136,6 +3159,14 @@ export const hi = {
           "मॉडल नाम से तभी लोड होता है जब मॉडल ऑटो-स्विच चालू हो। इसे चालू करें, या पहले मॉडल को उसके ऑडियो पेज पर लोड करें।",
         useViaApi: "API से इस्तेमाल करें",
       },
+      mediaApi: {
+        title: "इमेज और वीडियो API",
+        description: "OpenAI-संगत एंडपॉइंट से अपने कोड से इमेज और वीडियो बनाएं।",
+        images: "इमेज",
+        video: "वीडियो",
+        placeholderModel: "दिखाया गया मॉडल एक उदाहरण है। इमेज या वीडियो पेज पर मॉडल लोड करें और उसे भरने के लिए उसके API बटन से इसे खोलें।",
+        autoSwitchOff: "मीडिया ऑटो-स्विच बंद है, इसलिए अनुरोध उसी मॉडल पर चलते हैं जो पेज ने लोड किया है, चाहे वे कोई भी नाम दें।",
+      },
       decisionApi: {
         title: "निर्णय API",
         docs: "दस्तावेज़",
@@ -3215,6 +3246,24 @@ export const hi = {
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
       llamaCppVersion: "llama.cpp संस्करण",
       audioCppVersion: "audio.cpp संस्करण",
+      whisperCppVersion: "whisper.cpp संस्करण",
+      engines: {
+        title: "इंजन",
+        description: "वे रनटाइम जिनसे Unsloth मॉडल चलाता है। अपडेट बैकग्राउंड में इंस्टॉल होते हैं, रीस्टार्ट की ज़रूरत नहीं।",
+        updatesLabel: "इंजन अपडेट",
+        notInstalled: "इंस्टॉल नहीं है",
+        available: "{version} उपलब्ध",
+        upToDate: "अप टू डेट",
+        updatesAvailable: "अपडेट उपलब्ध हैं",
+        checking: "अपडेट खोजे जा रहे हैं...",
+        checkFailed: "अपडेट नहीं खोजे जा सके। बाद में फिर से कोशिश करें।",
+        unsupported: "इस इंस्टॉल के इंजन Unsloth के बाहर प्रबंधित होते हैं।",
+        checkForUpdates: "अपडेट खोजें",
+        update: "अपडेट करें",
+        updating: "अपडेट हो रहा है...",
+        updated: "इंजन अपडेट हो गए।",
+        updateFailed: "अपडेट विफल: {error}",
+      },
       hardware: "हार्डवेयर",
       gpu: "GPU",
       gpuIntegrated: "इंटीग्रेटेड",
@@ -3300,6 +3349,9 @@ export const hi = {
         docsUpdating: "अपडेट करना",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

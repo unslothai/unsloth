@@ -197,8 +197,8 @@ test("Hub model cards are wired to the literal-tag pipeline", () => {
     ts.forEachChild(node, visit);
   })(source);
   assert.ok(rehypePlugins, `${path}: Streamdown has no rehypePlugins`);
-  assert.equal(
+  assert.match(
     initializers.get(rehypePlugins) ?? rehypePlugins,
-    "withLiteralUnknownTags(README_ALLOWED_TAGS)",
+    /withLiteralUnknownTags\(\s*README_ALLOWED_TAGS,/,
   );
 });

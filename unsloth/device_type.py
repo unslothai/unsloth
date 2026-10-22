@@ -237,8 +237,10 @@ def cuda_order_mismatch_names():
 
 
 def xpu_supports_native_bf16():
-    """Without libocloc (absent in torch-xpu wheels) every aspect reads False, so trust the probe
-    only once some aspect reads True. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
+    """Process-wide like CUDA: any visible XPU proven to lack native bf16 turns it off, since the
+    load target is not known here. Each device is judged by its own aspects: without libocloc
+    (absent in torch-xpu wheels) every aspect reads False, so trust the probe only once some
+    aspect reads True on that device. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
     aspects = (
         "has_bfloat16_conversions",
         "has_subgroup_matrix_multiply_accumulate",
@@ -249,15 +251,27 @@ def xpu_supports_native_bf16():
         count = torch.xpu.device_count()
     except Exception:
         return True
-    lacks_bf16 = probe_works = False
     for index in range(count):
         try:
             props = torch.xpu.get_device_properties(index)
         except Exception:
             continue
-        lacks_bf16 |= getattr(props, "has_bfloat16_conversions", True) is False
-        probe_works |= any(getattr(props, name, False) is True for name in aspects)
-    return not (lacks_bf16 and probe_works)
+        lacks_bf16 = getattr(props, "has_bfloat16_conversions", True) is False
+        if lacks_bf16 and any(getattr(props, name, False) is True for name in aspects):
+            return False
+    return True
+
+
+def xpu_keeps_explicit_bf16():
+    """An explicit bf16 request on XPU stays bf16 (emulated if need be) only beside an unsloth_zoo
+    that does the same for vLLM, so the engine and the HF weights it shares agree on one dtype."""
+    if DEVICE_TYPE != "xpu":
+        return False
+    try:
+        import unsloth_zoo.device_type as zoo_device_type
+    except Exception:
+        return False
+    return bool(getattr(zoo_device_type, "XPU_KEEPS_EXPLICIT_BF16", False))
 
 
 def zoo_shares_xpu_bf16():

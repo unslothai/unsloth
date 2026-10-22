@@ -118,6 +118,7 @@ export const ru = {
     reload: "Обновить",
     more: "Ещё",
     addressPlaceholder: "Введите запрос или URL",
+    local: "Локальный",
     suggested: "Рекомендуемые",
     suggestedMenu: {
       open: "Открыть",
@@ -468,6 +469,8 @@ export const ru = {
       downloadFailed: "Не удалось загрузить {name}",
       notMarked: "{name} сохранён, но не удалось пометить его как загруженный из интернета, поэтому система не предупредит перед открытием.",
       blocked: "Этот адрес нельзя открыть в панели браузера. Она открывает только общедоступные сайты.",
+      blockedLocal: "Этот локальный адрес нельзя открыть здесь. Введите его в адресной строке, чтобы открыть.",
+      studioAddress: "Это собственный адрес Unsloth, поэтому его нельзя открыть в панели браузера.",
       clearDataSettingDescription: "Очистить историю просмотров, историю загрузок, кэшированные страницы, а также файлы cookie и данные сайтов. Вы выйдете из аккаунтов на сайтах.",
       clearDataDescription: "Будут очищены история просмотров, история загрузок, кэшированные страницы, а также файлы cookie и данные сайтов, и вы выйдете из аккаунтов на сайтах. Загруженные файлы останутся на компьютере.",
       clearDataFailed: "Не удалось очистить данные сайтов. Повторите попытку.",
@@ -1088,6 +1091,10 @@ export const ru = {
       alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
+      metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
+      altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
+      desktopOnly: "Только в настольном приложении",
+      builtInKey: "Встроено: {key}",
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1288,6 +1295,10 @@ export const ru = {
         steerMessage: {
           label: "Скорректировать ответ",
           description: "Остановить текущий ответ и отправить черновик следующим",
+        },
+        stopGeneration: {
+          label: "Остановить генерацию",
+          description: "Остановить текущий ответ",
         },
         cycleReasoningEffort: {
           label: "Переключать усилие рассуждения",
@@ -1814,23 +1825,14 @@ export const ru = {
       },
       notifications: {
         sectionTitle: "Уведомления",
-        showLlamaUpdates: "Уведомления об обновлениях llama.cpp",
-        showLlamaUpdatesDescription:
-          "Уведомлять о доступности новой сборки llama.cpp для запуска новых моделей. Отключите, если вы только обучаете модели.",
-        showLoadedModels: "Индикатор загруженных моделей",
-        showLoadedModelsDescription:
-          "Показывает в правом нижнем углу небольшую карточку со всеми моделями, находящимися сейчас в памяти (чат, речь, изображения, видео), и кнопку для выгрузки каждой из них.",
-        showWhisperUpdates: "Уведомления об обновлениях whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Уведомлять о доступности новой сборки whisper.cpp для моделей распознавания речи. Отключите, если вы не расшифровываете аудио.",
-        showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
-        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
-        showUnslothUpdatesDescription:
-          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        showLoadedModels: "Карточка загруженных моделей",
+        showLoadedModelsDescription: "Карточка в углу со всеми загруженными моделями, выгрузка одним щелчком.",
+        updateReminders: "Напоминания об обновлениях",
+        updateRemindersDescription: "Как часто предлагать новую версию, когда она готова.",
+        llamaHint: "Чат-модели и GGUF",
+        audioHint: "Речь, музыка и расшифровка",
         frequency: {
-          always: "Всегда",
+          always: "Как только выйдет",
           daily: "Раз в день",
           weekly: "Раз в неделю",
           biweekly: "Раз в две недели",
@@ -2078,9 +2080,9 @@ export const ru = {
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
         activityDescription: {
-          daily: "Период: {weeks} · {total}",
-          weekly: "Пиковая неделя {total} · последние {weeks}",
-          cumulative: "{total} накоплено за последние {weeks}",
+          daily: "{total} с {since}",
+          weekly: "Самая активная неделя {total} · с {since}",
+          cumulative: "Всего {total} с {since}",
         },
         mode: {
           daily: "По дням",
@@ -2089,8 +2091,9 @@ export const ru = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Неделя с {date} · {tokens}",
-        chartToggle: "График",
-        chartToggleHint: "Показывать режимы «По неделям» и «Накопительно» графиком с подписанными осями",
+        emptyDayTooltip: "{date} · Нет активности",
+        apiRequests: "{count} через API",
+        cumulativeTooltip: "К неделе {date} · всего {tokens}",
         less: "Меньше",
         more: "Больше",
         insightsTitle: "Сводка по активности",
@@ -2724,6 +2727,10 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      showReplyTimes: "Время ответов",
+      showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
+      showReplyTimesKeywords:
+        "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
@@ -2779,6 +2786,22 @@ export const ru = {
         visibility: "Размышления",
         visibilityDescription:
           "Как открываются размышления. Любой блок по-прежнему можно развернуть или свернуть вручную.",
+      },
+      memory: {
+        title: "Память",
+        description: "Заметки, которые читает каждый чат, для любой модели, локальной или облачной. Чаты в проекте также читают AGENTS.md этого проекта.",
+        enable: "Использовать память в чатах",
+        enableDescription: "Отправлять эти заметки в каждом чате.",
+        locked: "Отключено для этой установки через UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Заметки памяти",
+        placeholder: "Например:\n- Я пишу на Python и использую uv.\n- Отвечай кратко.",
+        hint: "Сохраняется в {path}. Этот файл можно редактировать и в любом текстовом редакторе.",
+        size: "{used} / {max} КБ",
+        save: "Сохранить",
+        saved: "Память сохранена",
+        loadError: "Не удалось загрузить память.",
+        saveError: "Не удалось сохранить память.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md память запомнить персонализация профиль заметки",
       },
       currentDate: {
         label: "Сообщать модели сегодняшнюю дату",
@@ -3143,6 +3166,14 @@ export const ru = {
           "Модель загружается по имени, только когда включено автопереключение моделей. Включите его или сначала загрузите модель на её странице «Аудио».",
         useViaApi: "Через API",
       },
+      mediaApi: {
+        title: "API для изображений и видео",
+        description: "Создавайте изображения и видео из своего кода через OpenAI-совместимые эндпоинты.",
+        images: "Изображения",
+        video: "Видео",
+        placeholderModel: "Показанная модель приведена для примера. Загрузите модель на странице «Изображения» или «Видео» и откройте этот раздел её кнопкой API, чтобы подставить её.",
+        autoSwitchOff: "Автопереключение медиамоделей выключено, поэтому запросы выполняются на модели, загруженной на странице, какое бы имя в них ни было.",
+      },
       decisionApi: {
         title: "API решений",
         docs: "Документация",
@@ -3223,6 +3254,24 @@ export const ru = {
       desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
       audioCppVersion: "Версия audio.cpp",
+      whisperCppVersion: "Версия whisper.cpp",
+      engines: {
+        title: "Движки",
+        description: "Среды выполнения, с помощью которых Unsloth запускает модели. Обновления устанавливаются в фоне, без перезапуска.",
+        updatesLabel: "Обновления движков",
+        notInstalled: "Не установлено",
+        available: "Доступна {version}",
+        upToDate: "Актуальная версия",
+        updatesAvailable: "Доступны обновления",
+        checking: "Проверка обновлений...",
+        checkFailed: "Не удалось проверить обновления. Повторите попытку позже.",
+        unsupported: "Движки этой установки управляются вне Unsloth.",
+        checkForUpdates: "Проверить обновления",
+        update: "Обновить",
+        updating: "Обновление...",
+        updated: "Движки обновлены.",
+        updateFailed: "Не удалось обновить: {error}",
+      },
       hardware: "Оборудование",
       gpu: "GPU",
       gpuIntegrated: "встроенная",
@@ -3311,6 +3360,9 @@ export const ru = {
         docsUpdating: "Обновление",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

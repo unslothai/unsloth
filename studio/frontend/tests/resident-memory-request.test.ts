@@ -152,7 +152,6 @@ test("an MLX resident is priced at its served window and loaded cache width", ()
   });
   assert.equal(auto?.maxSeqLength, 8192);
   assert.equal(auto?.mlxKvQuant, null);
-  // A GGUF resident keeps its old shape: nothing MLX reads is added.
   const gguf = resolveResidentEstimateRequest(pending, settings, 8192);
   assert.ok(gguf && !("maxSeqLength" in gguf) && !("mlxKvQuant" in gguf));
 });
@@ -164,8 +163,7 @@ test("an MLX resident is credited without the llama.cpp settings it never record
   });
   assert.equal(request?.maxSeqLength, 20736);
   assert.equal(resolveResidentEstimateRequest(pending, null, 20736), null);
-  // The page reads an MLX resident's window from loadedContextLength: activeLoadedContext
-  // is GGUF-only, and reading it left the MLX branch unreachable.
+  // activeLoadedContext is GGUF-only, so MLX residents read loadedContextLength.
   const page = readFileSync(
     new URL(
       "../src/features/model-picker/components/model-config-page.tsx",

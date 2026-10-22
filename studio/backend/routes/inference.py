@@ -94,6 +94,7 @@ from utils.first_token_timeout import (
     start_first_token_wait,
     timeout_seconds as configured_first_token_timeout_s,
 )
+from utils.hidden_models import is_decision_api_model
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_errors import modelscope_missing
@@ -9349,8 +9350,26 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return slot.llama if slot is not None else _llama_cpp_backend
 
 
+def _worker_exited(slot: Optional[_ExtraSlot]) -> bool:
+    proc = getattr(model_slots.in_slot(slot, _peek_inference_backend), "_proc", None)
+    return proc is not None and not proc.is_alive()
+
+
+def _reap_dead_workers(slots: list) -> None:
+    for slot in slots:
+        model_slots.in_slot(slot, lambda: reap_dead_worker(_peek_inference_backend()))
+
+
+async def _reap_exited_workers() -> None:
+    # A killed worker stays named until reaped; is_alive() is a non-blocking waitpid.
+    exited = [slot for slot in (None, *model_slots.slots) if _worker_exited(slot)]
+    if exited:
+        await asyncio.to_thread(_reap_dead_workers, exited)
+
+
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
     """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
+    await _reap_exited_workers()
     return await model_slots.route(requested, _loaded_satisfies)
 
 
@@ -10650,11 +10669,18 @@ async def _maybe_auto_download_model(
     unknown id like "gpt-4" still falls through to the resident model.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
-    from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
+    from core.inference.openai_auto_download import (
+        is_downloadable_ref,
+        maybe_auto_download,
+        split_model_ref,
+    )
 
     if not requested_model or not get_openai_auto_download_enabled():
         return
     if not is_downloadable_ref(requested_model):
+        return
+    # The resolver never serves a Decision API repo, so fetching one would only fill the disk.
+    if is_decision_api_model(split_model_ref(requested_model)[0]):
         return
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
     if await asyncio.to_thread(_loaded_satisfies, requested_model):
@@ -12826,6 +12852,16 @@ def reap_dead_managed_engine(backend) -> None:
         account_access.clear_resident("chat")
 
 
+def reap_dead_worker(backend) -> None:
+    """Cleared, never respawned: every routed request runs this, so an OOM respawn would loop."""
+    from core.inference.gpu_arbiter import CHAT, holds
+
+    if getattr(backend, "_proc", None) is None:
+        return
+    if backend.reap_dead_worker() and (release_chat_after_kept_models() or not holds(CHAT)):
+        account_access.clear_resident("chat")
+
+
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
@@ -12899,6 +12935,8 @@ async def load_model_for_preview(
                         detail = "A transformers installation is in progress. Retry when it completes.",
                         headers = {"Retry-After": "10"},
                     )
+                # Else a dead worker's name refuses every preview as Studio-owned.
+                await _reap_exited_workers()
                 loaded = _loaded_slot_ident()
                 # Borrow the resident model when it already serves this checkpoint, matching
                 # an equivalent spelling (relative vs the resolved absolute path) via realpath
@@ -18894,6 +18932,14 @@ async def load_model_gated(
     return mid-load and hide a late failure in an unread body. This blocks until the
     model is resident and raises the real exception.
     """
+    if is_decision_api_model(request.model_path):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This is a Decision API model, not a chat model. "
+                "Use it from Settings > API > Decision API (POST /v1/systemone)."
+            ),
+        )
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -19390,6 +19436,8 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
 
+    # Before the early return: the NPU and managed-engine guards read the primary's name.
+    await _reap_exited_workers()
     # The NPU backend is one per process and replaces the primary, so it never takes a slot. vLLM
     # and SGLang reserve a fixed share of the GPU up front, so neither shares it with a kept model.
     if is_npu_model_path(request.model_path) or request.engine != "auto":
@@ -20070,6 +20118,7 @@ async def _load_model_impl(
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
+            await asyncio.to_thread(reap_dead_worker, backend)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
@@ -25449,6 +25498,8 @@ def _discard_audio_clips(outputs: list[str], sources: list[str]) -> None:
 async def _dispatch_audio_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
+    if body.provider_id:
+        return await _speak_on_connection(body, request)
     if body.workflow == "separate":
         return await _run_separation(body, request, current_subject)
     if body.workflow == "convert":
@@ -25852,6 +25903,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -25865,7 +25917,9 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         base_url = validate_provider_base_url(base_url)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -25875,6 +25929,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         if body.encrypted_api_key and body.provider_base_url != current.get("base_url"):
             # The browser encrypted a legacy key for the connection it rendered. A
             # same-id edit may have replaced both its destination and saved key while
@@ -25936,6 +25991,64 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     return Response(content = audio_bytes, media_type = media_type)
+
+
+async def _speak_on_connection(body: AudioRunRequest, request: Request) -> AudioRunResponse:
+    import wave
+
+    if (
+        body.workflow != "speak"
+        or body.inputs != AudioRunInputs()
+        or body.language
+        or body.options
+        or body.seed is not None
+        or body.max_tokens is not None
+        or any(
+            name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+            for name in _MUSIC_ONLY_FIELDS
+        )
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A saved connection only speaks text, in a voice, with instructions and speed.",
+        )
+    speech = await _external_tts_speech(
+        AudioSpeechRequest(
+            input = body.text,
+            model = body.model,
+            voice = body.voice,
+            speed = body.speed,
+            instructions = body.instructions,
+            provider_id = body.provider_id,
+        ),
+        request,
+    )
+    try:
+        with wave.open(io.BytesIO(speech.body)) as wav:
+            params = wav.getparams()
+            frames = wav.readframes(wav.getnframes())
+    except (wave.Error, EOFError):
+        raise HTTPException(
+            status_code = 502, detail = "The TTS endpoint did not return WAV audio."
+        ) from None
+    # OpenAI streams WAV with 0xFFFFFFFF sizes; rewrite the header from the frames received.
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setparams(params._replace(nframes = 0))
+        wav.writeframes(frames)
+    wav_bytes, sample_rate = out.getvalue(), params.framerate
+    settings = {"voice": body.voice, "instructions": body.instructions, "speed": body.speed}
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        body.model,
+        "connection",
+        {"settings": settings},
+        "speak",
+    )
+    return _audio_run_response(record, wav_bytes, sample_rate, body.model)
 
 
 # openai-compatible speech api: the router's dual mount also answers /v1/audio/speech
@@ -26102,6 +26215,7 @@ async def _external_stt_transcription(
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -26116,7 +26230,9 @@ async def _external_stt_transcription(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -26126,6 +26242,7 @@ async def _external_stt_transcription(
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         api_key = await asyncio.to_thread(
             resolve_provider_api_key_or_400,
             provider_id,
@@ -28352,16 +28469,20 @@ def _av_expected_samples(container, sample_rate: int, ceiling: int) -> int:
     return min(int(seconds * sample_rate) + 1, ceiling)
 
 
-def _av_open(av, source):
+# An upload probed as a concat playlist would otherwise decode the files it names.
+NO_PROTOCOLS = {"protocol_whitelist": "none"}
+
+
+def _av_open(av, source, **extra):
     """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", **extra)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
         # format = None is PyAV's own default (probe the container); spelling it keeps this call
         # distinguishable from Path.open for the text-encoding lint.
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, **extra)
 
 
 def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
@@ -28403,7 +28524,7 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
             joined = grown
         joined[sample_count - len(block) : sample_count] = block
 
-    with _av_open(av, io.BytesIO(raw)) as container:
+    with _av_open(av, io.BytesIO(raw), options = NO_PROTOCOLS) as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
         for frame in container.decode(audio = 0):
@@ -30267,6 +30388,9 @@ async def _proxy_to_external_provider(
         # A saved credential is scoped to this saved provider. Never pair it with
         # request-controlled routing metadata.
         saved_provider_snapshot = config
+        account_access.require_connection_model_allowed(
+            config, payload.external_model or payload.model
+        )
         provider_type = config["provider_type"]
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
@@ -30368,7 +30492,7 @@ async def _proxy_to_external_provider(
     # refused target never sees a credential. A managed upstream is Unsloth's own loopback.
     if managed is None:
         try:
-            base_url = validate_provider_base_url(base_url)
+            base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc)) from None
 
@@ -30832,7 +30956,10 @@ async def _proxy_to_external_provider(
     if managed is not None:
         api_key = managed.api_key
     elif saved_provider_snapshot is not None:
-        async with provider_config_guard(payload.provider_id):
+        async with provider_config_guard(
+            payload.provider_id,
+            shared_by_owner = bool(saved_provider_snapshot.get("shared_by_owner")),
+        ):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
             routing_fields = (
                 "provider_type",
@@ -30848,6 +30975,9 @@ async def _proxy_to_external_provider(
                     status_code = 409,
                     detail = "Provider changed while the request was starting; retry.",
                 )
+            account_access.require_connection_model_allowed(
+                current, payload.external_model or payload.model
+            )
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
@@ -30915,7 +31045,8 @@ async def _proxy_to_external_provider(
             subject = current_subject,
         )
 
-    client = ExternalProviderClient(
+    client = await asyncio.to_thread(
+        ExternalProviderClient,
         provider_type = provider_type,
         base_url = base_url,
         api_key = api_key,
@@ -31806,6 +31937,11 @@ def _resolve_openai_cloud_client(
             raise HTTPException(
                 status_code = 400,
                 detail = "OpenAI container management requires a saved OpenAI provider.",
+            )
+        if config.get("shared_by_owner"):
+            raise HTTPException(
+                status_code = 403,
+                detail = "OpenAI containers are not available on a connection shared by the owner.",
             )
 
         if not config["is_enabled"]:
@@ -51879,6 +52015,77 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
     return {}
 
 
+def _sd_controls_kwargs(generate: Any, request: Any) -> dict:
+    """``sd_controls`` (prompt weighting, CLIP skip, CFG rescale, variation seed) for an engine whose generate() takes
+    them (diffusers only). A value that changes the render, sent to another engine, is refused (ValueError -> 400)
+    rather than ignored, so a recipe never records a control that did not run."""
+    from core.inference.diffusion_sd_controls import SdControls
+
+    controls = SdControls(
+        prompt_weighting = getattr(request, "prompt_weighting", None),
+        clip_skip = getattr(request, "clip_skip", None),
+        cfg_rescale = getattr(request, "cfg_rescale", None),
+        variation_seed = getattr(request, "variation_seed", None),
+        variation_strength = getattr(request, "variation_strength", None),
+    )
+    try:
+        import inspect
+        if "sd_controls" in inspect.signature(generate).parameters:
+            return {"sd_controls": controls}
+    except (TypeError, ValueError):
+        pass
+    if controls.requested():
+        raise ValueError(
+            "Prompt weighting, CLIP skip, CFG rescale and variation seeds are supported on the "
+            "diffusers engine only."
+        )
+    if controls.prompt_weighting is False and getattr(
+        getattr(generate, "__self__", None), "parses_prompt_attention", False
+    ):
+        # sd.cpp reads (word:1.5) itself, so the prompt would still render weighted.
+        raise ValueError(
+            "Turning prompt weighting off is supported on the diffusers engine only: the native "
+            "sd.cpp engine always reads (word:1.2) attention syntax."
+        )
+    return {}
+
+
+def _shift_kwargs(generate: Any, request: Any) -> dict:
+    """``shift`` / ``base_shift`` / ``max_shift`` for an engine whose generate() takes them (diffusers only).
+
+    Omitted on every engine when unset, so an older call is unchanged; a value sent to another engine
+    is refused (ValueError -> 400) rather than silently ignored."""
+    values = {
+        "shift": getattr(request, "shift", None),
+        "base_shift": getattr(request, "base_shift", None),
+        "max_shift": getattr(request, "max_shift", None),
+    }
+    if all(v is None for v in values.values()):
+        return {}
+    try:
+        import inspect
+        if "shift" in inspect.signature(generate).parameters:
+            return values
+    except (TypeError, ValueError):
+        pass
+    raise ValueError("Shift is supported on the diffusers engine only.")
+
+
+def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
+    """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        return {}
+    out = {}
+    for name in ("mask_blur", "inpaint_only_masked", "inpaint_padding"):
+        value = getattr(request, name, None)
+        if value is not None and name in params:
+            out[name] = value
+    return out
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -51982,6 +52189,12 @@ async def _external_image_generation(
         or body.localized_edit
         or body.sampler
         or body.schedule_type
+        or body.shift is not None
+        or body.base_shift is not None
+        or body.max_shift is not None
+        or body.mask_blur is not None
+        or body.inpaint_only_masked is not None
+        or body.inpaint_padding is not None
     ):
         raise HTTPException(
             status_code = 400,
@@ -51991,6 +52204,7 @@ async def _external_image_generation(
     config = await asyncio.to_thread(providers_db.get_provider, provider_id)
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    account_access.require_connection_model_allowed(config, external_model)
     _refuse_decision_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
@@ -52005,7 +52219,9 @@ async def _external_image_generation(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -52015,6 +52231,7 @@ async def _external_image_generation(
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         api_key = await asyncio.to_thread(
             resolve_provider_api_key_or_400,
             provider_id,
@@ -52317,6 +52534,9 @@ async def _generate_diffusion_image_run(
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+                    **_sd_controls_kwargs(backend.generate, request),
+                    **_shift_kwargs(backend.generate, request),
+                    **_inpaint_mask_kwargs(backend.generate, request),
                 )
             break
         except ImageActivationShortfallError as exc:
@@ -52434,6 +52654,29 @@ async def _generate_diffusion_image_run(
                         "localized_edit": result.get("localized_edit"),
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
+                        "prompt_weighting": result.get("prompt_weighting"),
+                        "clip_skip": result.get("clip_skip"),
+                        "cfg_rescale": result.get("cfg_rescale"),
+                        "variation_seed": (
+                            result["variation_seeds"][index]
+                            if result.get("variation_seeds")
+                            and index < len(result["variation_seeds"])
+                            else None
+                        ),
+                        "variation_strength": result.get("variation_strength"),
+                        **{
+                            key: result[key]
+                            for key in (
+                                "shift",
+                                "base_shift",
+                                "max_shift",
+                                "embeddings",
+                                "mask_blur",
+                                "inpaint_only_masked",
+                                "inpaint_padding",
+                            )
+                            if result.get(key) not in (None, [])
+                        },
                         "created_at": created_at,
                     },
                 )

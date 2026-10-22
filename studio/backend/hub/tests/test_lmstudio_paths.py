@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The hub entry point onto local-model discovery.
-
-The behaviour itself is covered by tests/test_local_model_dir_discovery.py. This file
-exists because hub/tests/ is a separate conftest tree that stubs pydantic, fastapi and
-structlog, so it is the only place that proves the re-export still resolves once those
-stubs are in play.
-"""
+"""Checks the hub re-export of local-model discovery still resolves under the hub conftest stubs."""
 
 from __future__ import annotations
 

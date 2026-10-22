@@ -239,6 +239,19 @@ export async function fetchLoadModelOverride(
   if (ggufVariant) {
     query.set("gguf_variant", ggufVariant);
   }
+  // After queued writes: a read racing Forget re-saved the old row.
+  await Promise.all(
+    [loadId, aliasId].map((id) =>
+      writesByKey
+        .get(
+          modelOverrideKey(
+            normalizeModelIdentity(id),
+            normalizeGgufVariantIdentity(ggufVariant),
+          ),
+        )
+        ?.catch(() => {}),
+    ),
+  );
   const res = await authFetch(`${OVERRIDES_URL}?${query.toString()}`);
   if (!res.ok) {
     throw new Error(

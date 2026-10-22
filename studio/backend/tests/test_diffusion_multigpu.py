@@ -39,6 +39,7 @@ def _env(monkeypatch):
     # Keep make_selection's real-host filters from collapsing fake [0, 1] selections on a one-GPU host.
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
     monkeypatch.setattr(mg, "_capability", lambda o: None)
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     yield
 
 
@@ -963,7 +964,8 @@ def test_predicted_branch_hits_and_stays_exact():
     router, _replicas = _router(dit)
     out = _cfg_loop(dit, latents.clone(), steps = 6)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+    # the replica's first call (it may compile) runs unpredicted, after the primary branch
+    assert router.stats["predicted_hits"] == 4 and router.stats["predicted_misses"] == 0
     assert router.stats["replica_calls"] == 5
 
 
@@ -988,7 +990,7 @@ def test_mispredicted_branch_is_recomputed_exactly():
     router, _replicas = _router(dit)
     out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 3
     assert router.stats["replica_calls"] == 4
 
 
@@ -1012,7 +1014,7 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
     router, _replicas = _router(dit)
     out = loop(6)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+    assert router.stats["predicted_hits"] == 4 and router.stats["predicted_misses"] == 0
 
 
 def test_bitwise_equal_on_an_expanded_scalar():
@@ -1170,7 +1172,7 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         router, _replicas = _router(dit)
         out = loop(5)
     assert torch.equal(out, reference)
-    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 3
     router.prefetched = {id(uncond): (uncond, uncond)}
     router.pending = {
         "leaves": [],
@@ -1846,6 +1848,8 @@ def test_two_discrete_rocm_cards_split_like_cuda(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(mg, "_capability", lambda o: (11, 0))  # gfx1100, as ROCm reports it
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: True)
+    monkeypatch.setattr(mg, "_rocm_bf16", lambda o: True)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
     selection = mg.make_selection(0, [0, 1])
     assert selection == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
