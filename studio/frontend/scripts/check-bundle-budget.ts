@@ -353,8 +353,12 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  transferBytes: 2_072_012,
-  rawBytes: 6_879_589,
+  // Shortcut fixes (#14597): the stop action, isModEnter, zoom guard and their strings in the eager locales,
+  // plus the Shortcuts tab reading the send key splits chat-preferences-store into its own startup chunk:
+  // +3,133 B raw / +1,576 B transfer (6,879,345 -> 6,882,478 B raw, 2,071,823 -> 2,073,399 B transfer against
+  // 2749eeedaa, Node 26, 97 -> 98 chunks). Raised by that.
+  transferBytes: 2_073_588,
+  rawBytes: 6_882_722,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
