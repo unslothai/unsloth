@@ -1653,10 +1653,11 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
         options = [" " + o.replace(tok.mask_token, " ") for o in render_options(internal)]
         sizes = [1 + min(48, len(tok(o, add_special_tokens = False)["input_ids"])) for o in options]
         # build_sequence's rule: past this budget, each option keeps only its share of it.
-        share = max(4, (head_max_len - 16) // len(sizes))
-        if sum(sizes) > head_max_len - 16 and max(sizes) > share:
+        budget = head_max_len - 16
+        share = max(4, budget // len(sizes))
+        if sum(sizes) > budget and max(sizes) > share:
             raise ValueError(
-                f"options would be cut short to fit Laya's {head_max_len}-token option budget"
+                f"options would be cut short to fit Laya's {budget}-token option budget"
             )
         ids, markers = build_sequence(tok, "", internal, max_len, head_max_len)
         if len(markers) != len(sizes):

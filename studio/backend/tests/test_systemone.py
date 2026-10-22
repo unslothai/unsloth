@@ -1204,8 +1204,10 @@ _CHARGED = "the customer was charged twice and wants the money back"
     "options, description, status, refusal",
     [
         (14, _CHARGED, 200, None),
-        (15, _CHARGED, 422, "cut short"),
-        (40, _CHARGED, 422, "cut short"),
+        # 16 options of 11 tokens fill the budget exactly.
+        (16, _CHARGED.replace(" the money", " money"), 200, None),
+        (15, _CHARGED, 422, "cut short to fit Laya's 176-token option budget"),
+        (40, _CHARGED, 422, "cut short to fit Laya's 176-token option budget"),
         (40, None, 200, None),
         (100, None, 200, None),
         (255, None, 422, "context window"),
@@ -1230,16 +1232,16 @@ def test_choice_options_laya_would_cut_short_are_refused(
     monkeypatch.setattr(
         laya_runtime, "_forward", lambda agent, items: (np.zeros((len(items), 256)), 1)
     )
-    response = _post(
-        client,
-        questions = {
-            "route": {
-                "type": "choice",
-                "instructions": "Which queue should handle this ticket?",
-                "criteria": {f"team_{i}": description for i in range(options)},
-            }
-        },
-    )
+    question = {
+        "type": "choice",
+        "instructions": "Which queue should handle this ticket?",
+        "criteria": {f"team_{i}": description for i in range(options)},
+    }
+    internal = agent._to_internal(question)
+    build = laya_runtime._laya().common.build_sequence
+    cut = build(tok, "", internal, 10**6, 192)[0] != build(tok, "", internal, 10**6, 10**6)[0]
+    assert cut == ("cut short" in (refusal or ""))
+    response = _post(client, questions = {"route": question})
     assert response.status_code == status, response.text
     if refusal:
         message = response.json()["detail"]["message"]
