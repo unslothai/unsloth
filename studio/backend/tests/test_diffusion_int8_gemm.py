@@ -1333,6 +1333,7 @@ def _plan_cache_env(monkeypatch, tmp_path, mode):
     def first_tune():  # as _swap does after begin(): cuBLAS for one bucket, stored for the next load
         index = torch.cuda.current_device()
         key = g8.toolchain_key(index)
+        g8._PLAN_KEY[index] = g8._plan_key(index)
         g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}
         g8._save_plan(g8._tune_path(key), key, {(768, 1024, 2): g8._CUBLAS}, {})
 
@@ -1410,6 +1411,7 @@ def test_latency_gate_cublas_slots_key_the_compile_cache(monkeypatch, tmp_path):
     )
     index = torch.cuda.current_device()
     k_fused = fp()
+    g8._PLAN_KEY[index] = g8._plan_key(index)  # as tune() leaves it
     g8._DEVICE_PLAN[index] = {
         (768, 1024, 2): (128, 128, 64, 8, 4, 4)
     }  # another tile: same traced graph
