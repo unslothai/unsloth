@@ -3167,6 +3167,13 @@ def test_a_vulkan_device_lost_again_after_the_respawn_renders_this_load_on_cpu(m
     # First the same-build respawn on Vulkan, then the CPU backend.
     assert [s[2] for s in starts] == [(), ("--backend", "cpu")]
     assert b._cpu_backend_forced is True
+    # The published state follows the server to CPU: status() no longer reports a Vulkan renderer, and the flags are
+    # the ones the CPU server got (the Vulkan device pin dropped).
+    assert b._state.device == "cpu"
+    assert b._state.physical_gpu_id is None
+    assert "--backend" not in b._state.offload_flags
+    assert b._state.offload_flags == ("--offload-to-cpu",)
+    assert b.status()["device"] == "cpu"
     assert not persisted and not bk._accelerator_runtime_failures
     # The failure text is not a strike either, and the next load still prefers Vulkan.
     bk.note_accelerator_failure_from_output(
@@ -3186,6 +3193,7 @@ def test_a_single_vulkan_device_loss_stays_on_vulkan(monkeypatch):
     assert len(images) == 1
     assert [e[2] for e in events if e[0] == "start"] == [()]
     assert b._cpu_backend_forced is False
+    assert b._state.device == "vulkan"
     assert not persisted
 
 

@@ -159,6 +159,30 @@ def test_a_uhd_beside_an_arc_needs_the_arcs_own_node(monkeypatch, arc_node_reach
     assert r.image_install_accelerator("cpu") == expected
 
 
+@pytest.mark.parametrize(
+    "arc_node_reachable, drivers, expected",
+    [
+        # The Arc node is not mounted and only the Intel driver loads: Intel Vulkan sees the UHD alone and the AMD
+        # card has no driver, so the iGPU would render.
+        (False, {"intel"}, "auto"),
+        # The AMD card's own driver loads: it renders, whatever the Arc's node.
+        (False, {"amd"}, "vulkan"),
+        (False, {"amd", "intel"}, "vulkan"),
+        # The Arc's node is reachable: the Intel driver drives the Arc, a discrete GPU sd.cpp takes first.
+        (True, {"intel"}, "vulkan"),
+    ],
+)
+def test_an_arc_beside_an_amd_card_and_a_uhd_still_needs_its_own_node(
+    monkeypatch, arc_node_reachable, drivers, expected
+):
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_VEGA, _ARC_LINUX, _UHD_LINUX))
+    monkeypatch.setattr(
+        r, "_reachable_intel_arc_render_node", lambda: arc_node_reachable, raising = False
+    )
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: bool(set(vendors) & drivers))
+    assert r.image_install_accelerator("cpu") == expected
+
+
 @pytest.mark.parametrize("value", ["", "default"])
 def test_an_unset_equivalent_ze_mask_is_not_a_mask(monkeypatch, value):
     monkeypatch.setenv("ZE_AFFINITY_MASK", value)

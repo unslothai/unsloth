@@ -303,23 +303,24 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     masked = _masked_vendors()
     if not gpus or any(d.get("vendor") in masked for d in gpus):
         return False
-    if not all(_renders(d) for d in gpus):
+    rendering = [d for d in gpus if _renders(d)]
+    if len(rendering) < len(gpus):
         # A UHD iGPU beside an AMD card or an Arc: unpinned sd.cpp takes a discrete GPU before an iGPU
         # (get_default_backend_name), so the card renders. Alone, or under a GGML_VK_VISIBLE_DEVICES list
         # (whose ordinals may name the iGPU), the iGPU would.
-        if vk_mask is not None or not any(_renders(d) for d in gpus):
+        if vk_mask is not None or not rendering:
             return False
         if any(d.get("vendor") != "intel" for d in gpus if not _renders(d)):
             return False
-        # Only an Arc renders: the vendor-level node check above cannot tell its node from the iGPU's.
-        if (
-            sys.platform != "win32"
-            and not any(d.get("vendor") == "amd" for d in gpus)
-            and not _reachable_intel_arc_render_node()
-        ):
-            return False
+        # The vendor-level node check above cannot tell an Arc's node from the iGPU's: an Arc whose own node
+        # this process cannot open renders nothing, even beside an AMD card, so it cannot vouch for the Intel
+        # driver either (that driver would enumerate the iGPU alone).
+        if sys.platform != "win32" and not _reachable_intel_arc_render_node():
+            rendering = [d for d in rendering if d.get("vendor") != "intel"]
+            if not rendering:
+                return False
     # The driver must belong to a card that renders: beside an AMD card, an Intel-only ICD drives just the iGPU.
-    rendering_vendors = {d.get("vendor") for d in gpus if _renders(d)}
+    rendering_vendors = {d.get("vendor") for d in rendering}
     return _hardware_vulkan_driver(rendering_vendors) and _vulkan_loader_loads()
 
 

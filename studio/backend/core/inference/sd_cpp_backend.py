@@ -4880,6 +4880,7 @@ class SdCppDiffusionBackend:
                     # rung applies. Any other death propagates.
                     exc = first_exc
                     while True:
+                        moved_to_cpu = False
                         server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
                         if server is None and output_shows_vulkan_device_lost(str(exc)):
                             device_losses += 1
@@ -4891,6 +4892,7 @@ class SdCppDiffusionBackend:
                                     raise RuntimeError(
                                         f"{exc} {_REPEATED_DEVICE_LOSS_HINT}"
                                     ) from exc
+                                moved_to_cpu = True
                             elif not device_respawned:
                                 server = self._respawn_server_after_device_loss(
                                     state, str(exc), cancel
@@ -4900,6 +4902,17 @@ class SdCppDiffusionBackend:
                             raise exc
                         old_server = state.server
                         state = replace(state, server = server)
+                        if moved_to_cpu:
+                            # The load now renders on the CPU backend: status() and anything reading the placement
+                            # must say so, with the flags the CPU server actually got (no Vulkan device pin).
+                            state = replace(
+                                state,
+                                device = "cpu",
+                                offload_flags = tuple(
+                                    without_device_backend_flags(state.offload_flags)
+                                ),
+                                physical_gpu_id = None,
+                            )
                         self._hand_over_replacement(state, server, old_server)
                         # The old server's stop removed its scratch dir, and the staged adapters with it.
                         if lora_payload is not None:
