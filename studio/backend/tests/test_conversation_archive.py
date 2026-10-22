@@ -1780,8 +1780,50 @@ def test_archive_embed_caps_chunks_per_call(conn, monkeypatch):
     first = conversation_archive.archive_turns(thread_id, evicted)
     assert 0 < first < 10
     assert calls and calls[0] <= 4
-    rest = conversation_archive.archive_turns(thread_id, evicted)
-    assert first + rest == 10
+    # Each later request picks up the next capped slice until the backlog is gone.
+    total = first
+    for _ in range(10):
+        written = conversation_archive.archive_turns(thread_id, evicted)
+        if not written:
+            break
+        total += written
+    assert total == 10
+    assert all(n <= 4 for n in calls)
+    assert conversation_archive.archive_turns(thread_id, evicted) == 0
+
+
+def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
+    """A batch failing late in a long pass must not discard the batches before it (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "fail-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 2)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT", 10_000)
+
+    real = embeddings.encode_with_identity
+    calls = []
+
+    def flaky(texts, **kwargs):
+        calls.append(len(texts))
+        if len(calls) == 3:
+            raise TimeoutError("embedder timed out")
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", flaky)
+
+    evicted = []
+    for index in range(8):
+        evicted.append({"role": "user", "content": f"fail question {index} unique {index}"})
+        evicted.append({"role": "assistant", "content": f"fail answer {index} unique {index}"})
+
+    written = conversation_archive.archive_turns(thread_id, evicted)
+    assert 0 < written < 8
+    assert conversation_archive.degraded()
+    # The retry embeds only what the failure left behind.
+    calls.clear()
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8 - written
+    assert sum(calls) <= 8 - written
 
 
 # --- The subject of a conversation must not be the least findable thing in its archive ---

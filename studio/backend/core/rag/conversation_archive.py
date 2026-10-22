@@ -385,20 +385,28 @@ def _embed_pending_chunks(
     model_name: str,
     cancel_check: Optional[Callable[[], bool]] = None,
 ):
-    """``(vectors, identity, cancelled)`` for archive chunk texts, in batches.
+    """``(vectors, identity, cancelled, error)`` for archive chunk texts, in batches.
 
-    Returns whatever was completed before a cancel; callers must only write groups
-    whose chunks are fully covered by ``vectors``.
+    Returns whatever was completed before a cancel or a failed batch; callers must only
+    write groups whose chunks are fully covered by ``vectors``. A failure on the first
+    batch raises, so nothing is lost and the caller's error handling is unchanged.
     """
     vectors: list = []
     identity: Optional[str] = None
     for start in range(0, len(texts), _ARCHIVE_EMBED_BATCH):
         if cancel_check is not None and cancel_check():
-            return vectors, identity or embeddings.embedding_identity(model_name), True
+            return vectors, identity or embeddings.embedding_identity(model_name), True, None
         batch = texts[start : start + _ARCHIVE_EMBED_BATCH]
-        out, batch_identity = embeddings.encode_with_identity(
-            batch, model_name = model_name, normalize = True
-        )
+        try:
+            out, batch_identity = embeddings.encode_with_identity(
+                batch, model_name = model_name, normalize = True
+            )
+        except Exception as exc:
+            if not vectors:
+                raise
+            # Keep the batches already embedded: discarding them made the next request redo
+            # every one, and a timeout late in a long pass then repeated on every compaction.
+            return vectors, identity, False, exc
         if identity is None:
             identity = batch_identity
         elif batch_identity != identity:
@@ -410,7 +418,7 @@ def _embed_pending_chunks(
             )
             break
         vectors.extend(out)
-    return vectors, identity or embeddings.embedding_identity(model_name), False
+    return vectors, identity or embeddings.embedding_identity(model_name), False, None
 
 
 def archive_turns(
@@ -566,7 +574,7 @@ def archive_turns(
         )
         # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
         # with a space they were never in. Batched so Chat Stop can interrupt between batches.
-        vectors, identity, cancelled = _embed_pending_chunks(
+        vectors, identity, cancelled, embed_error = _embed_pending_chunks(
             texts, model_name = model, cancel_check = cancel_check
         )
         logger.info(
@@ -590,7 +598,7 @@ def archive_turns(
                 break
             complete.append((entry, vectors[offset : offset + n]))
             offset += n
-        if cancelled and len(complete) < len(pending):
+        if len(complete) < len(pending):
             logger.info(
                 "conversation_archive.embed_partial thread_id=%s written_groups=%s/%s",
                 thread_id,
@@ -724,6 +732,8 @@ def archive_turns(
                 written += 1
             if _INGEST_FAILED:
                 globals()["_INGEST_FAILED"] = False
+        if embed_error is not None:
+            raise embed_error
     except embeddings.EmbeddingModelDownloadRequiredError as exc:
         globals()["_INGEST_FAILED"] = True
         _log_embedder_pending(model, exc)
