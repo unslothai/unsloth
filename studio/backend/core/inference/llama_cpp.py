@@ -21374,7 +21374,7 @@ class LlamaCppBackend:
         from utils.models.model_config import mmproj_f16_unsafe, mmproj_order
 
         order = mmproj_order(hf_repo)
-        # A cached copy is reused before the listing is read; only a broken F16 must not be.
+        # A cached MiMo-VL F16 projector is the broken one, so do not reuse it.
         f16_unsafe = mmproj_f16_unsafe(hf_repo)
         outcome: dict = {}
         resolved = self._download_companion_gguf(
