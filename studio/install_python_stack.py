@@ -8760,10 +8760,15 @@ def _ensure_flash_attn() -> None:
 # The compiled extension each SSM kernel loads (kernel_install.KERNELS checks the same import).
 _SSM_KERNEL_EXTENSIONS = {"causal_conv1d": "causal_conv1d_cuda", "mamba_ssm": "selective_scan_cuda"}
 # Exit code of the probe below when torch imported and the extension raised ImportError / OSError.
+# No compiled module at all is the extension-free mamba_ssm wheel Studio's Triton route installs:
+# nothing in it was built against torch, so it is kept.
 _SSM_EXTENSION_BROKEN_EXIT = 87
 _SSM_EXTENSION_PROBE = (
+    "import importlib.util\n"
     "import sys\n"
     "import torch\n"
+    "if importlib.util.find_spec('{extension}') is None:\n"
+    "    sys.exit(0)\n"
     "try:\n"
     "    import {extension}\n"
     "except (ImportError, OSError) as exc:\n"

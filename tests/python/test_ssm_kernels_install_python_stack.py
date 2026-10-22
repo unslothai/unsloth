@@ -230,3 +230,57 @@ def test_an_inconclusive_re_probe_under_the_lock_keeps_the_kernel(monkeypatch):
     warnings = _run_stale_check(monkeypatch, host, lock = _lock_then_hang)
     assert host.removed == []
     assert any("kept it" in message for message in warnings)
+
+
+def _real_probe(extension, path):
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            ips._SSM_EXTENSION_PROBE.format(
+                extension = extension, code = ips._SSM_EXTENSION_BROKEN_EXIT
+            ),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        env = {**__import__("os").environ, "PYTHONPATH": str(path)},
+    )
+
+
+def test_the_probe_passes_an_extension_free_install_and_fails_a_broken_one(tmp_path):
+    pytest.importorskip("torch")
+    # The extension-free mamba_ssm wheel ships no selective_scan_cuda at all.
+    extension = "unsloth_probe_test_selective_scan_cuda"
+    assert _real_probe(extension, tmp_path).returncode == 0
+    # A build for another torch: the module is there but does not load.
+    (tmp_path / f"{extension}.py").write_text("raise ImportError('undefined symbol: _ZN3c10')\n")
+    broken = _real_probe(extension, tmp_path)
+    assert broken.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, broken.stderr
+    assert extension in broken.stderr
+
+
+def test_setup_keeps_the_extension_free_mamba_ssm(monkeypatch, tmp_path):
+    # Studio's Triton route installs mamba_ssm without selective_scan_cuda; setup must not
+    # uninstall it as stale on every update (offline, the next Mamba-2 load would lose it).
+    pytest.importorskip("torch")
+    import importlib.util
+
+    if importlib.util.find_spec("selective_scan_cuda") is not None:
+        pytest.skip("a CUDA mamba_ssm is installed here")
+    monkeypatch.setattr(ips, "NO_TORCH", False)
+    monkeypatch.setattr(ips, "IS_MACOS", False)
+    monkeypatch.setattr(
+        ips,
+        "_installed_distribution_version",
+        lambda d: "2.3.2.post1" if d == "mamba-ssm" else None,
+    )
+    removed = []
+    monkeypatch.setattr(ips, "_uninstall_distribution", lambda d: removed.append(d) or True)
+    monkeypatch.setattr(ips, "_count_install_action", lambda: None)
+    monkeypatch.setattr(ips, "kernel_install_lock", _free_lock)
+    messages = []
+    monkeypatch.setattr(ips, "_step", lambda label, value, color_fn = None: messages.append(value))
+    monkeypatch.setattr(ips, "_note", lambda message, color_fn = None: messages.append(message))
+    ips._remove_stale_ssm_kernels()
+    assert removed == [] and messages == []
