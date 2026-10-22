@@ -88,13 +88,13 @@ from utils.api_errors import (
     openai_error_body,
 )
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
-from utils.hidden_models import is_decision_api_model
 from utils.first_token_timeout import (
     finish_first_token_wait,
     socket_timeout,
     start_first_token_wait,
     timeout_seconds as configured_first_token_timeout_s,
 )
+from utils.hidden_models import is_decision_api_model
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_errors import modelscope_missing

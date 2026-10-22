@@ -95,41 +95,44 @@ def test_the_chat_picker_hides_decision_api_repos_by_exact_id():
     assert "unsloth/qwen3-0.6b-gguf" not in exact_ids
 
 
-def test_the_model_hub_keeps_a_decision_api_download_as_a_non_chat_row(monkeypatch, tmp_path):
+def _cache_repo(hub, repo_id, files):
+    repo = hub / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo / "snapshots" / "4a19"
+    snapshot.mkdir(parents = True)
+    (repo / "blobs").mkdir()
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("4a19")
+    for index, (name, data) in enumerate(files.items()):
+        blob = repo / "blobs" / f"blob{index}"
+        blob.write_bytes(data)
+        (snapshot / name).symlink_to(f"../../blobs/blob{index}")
+
+
+def test_model_hub_and_train_keep_decision_api_downloads_as_non_chat_rows(tmp_path):
+    from huggingface_hub import scan_cache_dir
+
     from hub.services.models import cache_inventory
 
-    snapshot = tmp_path / "models--ggml-org--Clef-Flash-GGUF" / "snapshots" / "4a19"
-    repo = SimpleNamespace(
-        repo_id = CLEF_GGUF, repo_type = "model", repo_path = snapshot.parents[1], revisions = []
-    )
-    monkeypatch.setattr(cache_inventory, "_repo_gguf_size_bytes", lambda _repo: 10)
-    monkeypatch.setattr(cache_inventory, "_repo_gguf_last_modified", lambda _repo: 1.0)
-    monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: None)
-    monkeypatch.setattr(
-        cache_inventory,
-        "_repo_gguf_payload_snapshots",
-        lambda _repo: (snapshot, frozenset({str(snapshot)})),
-    )
-    monkeypatch.setattr(cache_inventory, "_gguf_variant_state_summary", lambda *a, **k: (False, 0))
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan, "is_gguf_repo_partial", lambda *a, **k: False
-    )
-    monkeypatch.setattr(
-        cache_inventory.download_manifest, "build_variant_state_index", lambda *a, **k: None
-    )
-    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda *a, **k: "text-generation")
-    monkeypatch.setattr(
-        cache_inventory,
-        "_cache_inventory_fields",
-        lambda *a, hidden_infra = False, **k: {"capabilities": {"can_chat": not hidden_infra}},
-    )
+    gguf = b"GGUF\x03\x00\x00\x00" + b"\x00" * 4096
+    config = b'{"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}'
+    weights = {"config.json": config, "model.safetensors": b"\x00" * 4096}
+    _cache_repo(tmp_path, CLEF_GGUF, {"Clef-Flash-Q8_0.gguf": gguf})
+    _cache_repo(tmp_path, "unsloth/Qwen3-0.6B-GGUF", {"Qwen3-0.6B-Q4_K_M.gguf": gguf})
+    _cache_repo(tmp_path, "Cloudflare/clef-flash", weights)
+    _cache_repo(tmp_path, "unsloth/Qwen3-0.6B", weights)
+    scans = [scan_cache_dir(tmp_path)]
 
-    rows = cache_inventory._scan_cached_gguf(
-        cache_scans = [SimpleNamespace(repos = [repo])], active_hub_cache = tmp_path
-    )
+    rows = {
+        row["repo_id"]: row["capabilities"]
+        for scan in (cache_inventory._scan_cached_gguf, cache_inventory._scan_cached_models)
+        for row in scan(cache_scans = scans, active_hub_cache = tmp_path)
+    }
 
-    assert [row["repo_id"] for row in rows] == [CLEF_GGUF]
-    assert rows[0]["capabilities"]["can_chat"] is False
+    assert rows[CLEF_GGUF]["can_chat"] is False
+    assert rows["Cloudflare/clef-flash"]["can_chat"] is False
+    assert rows["Cloudflare/clef-flash"]["can_train"] is True
+    assert rows["unsloth/Qwen3-0.6B-GGUF"]["can_chat"] is True
+    assert rows["unsloth/Qwen3-0.6B"]["can_chat"] is True
 
 
 def _patch_load(monkeypatch):
@@ -168,10 +171,11 @@ def test_loading_a_decision_api_model_as_chat_is_refused(monkeypatch, model_path
     assert loaded == []
 
 
-def test_a_chat_model_still_loads(monkeypatch):
+@pytest.mark.parametrize("model_path", ["unsloth/Qwen3-0.6B-GGUF", f"{CLEF_GGUF}-finetune"])
+def test_a_chat_model_still_loads(monkeypatch, model_path):
     loaded = _patch_load(monkeypatch)
-    request = inference_route.LoadRequest(model_path = "unsloth/Qwen3-0.6B-GGUF")
+    request = inference_route.LoadRequest(model_path = model_path)
 
     asyncio.run(inference_route.load_model_gated(request, object(), "test"))
 
-    assert loaded == ["unsloth/Qwen3-0.6B-GGUF"]
+    assert loaded == [model_path]

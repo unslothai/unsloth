@@ -77,6 +77,7 @@ def is_audio_cpp_repo_id(value: str | None) -> bool:
 
 
 def decision_api_repo_ids() -> set[str]:
+    """Exact repos the Decision API serves. MLX adapter bases (Qwen3.5) are ordinary chat models and stay visible."""
     from core.systemone.catalog import CHECKPOINTS, GGUF_COMPANIONS, MLX_COMPANIONS
     return (
         {c.source.lower() for c in CHECKPOINTS.values()}
@@ -184,7 +185,7 @@ def _path_basename_is_default_embedder(value: str) -> bool:
 
 
 def is_hidden_model(*values: str | None) -> bool:
-    """True if any id/path is the RAG embedding model (the effective embedder or its GGUF companion repo), the llama.cpp install validation probe (ggml-org/models / stories260K), or a curated/custom Whisper dictation model, so pickers hide them (GGUF and non-GGUF). None are usable chat models, and the probe can be cached as a side effect of installing the prebuilt llama-server and otherwise sorts smallest, so it would be auto-selected.
+    """True if any id/path is the RAG embedding model (the effective embedder or its GGUF companion repo), the llama.cpp install validation probe (ggml-org/models / stories260K), a curated/custom Whisper dictation model, or a Decision API model, so pickers hide them (GGUF and non-GGUF). None are usable chat models, and the probe can be cached as a side effect of installing the prebuilt llama-server and otherwise sorts smallest, so it would be auto-selected.
 
     Hub repo ids are matched EXACTLY (case-insensitive full "owner/name"), so a custom embedder with a generic basename like "org/model" cannot substring hide unrelated cached repos such as "user/model-chat" or "org/model-GGUF". Existing paths take precedence over the identical ``owner/name`` repo shape, cache and LM Studio paths use exact repo-derived segments, and local copies of the static default embedder also use a boundary-aware basename fallback, which configured custom repos never do.
     """

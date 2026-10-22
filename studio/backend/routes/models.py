@@ -150,8 +150,8 @@ from utils.hidden_models import (
 
 
 def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
-    """Substring needles, exact repo ids, and exact resolved paths identifying infra models (the RAG embedder
-    and the llama.cpp install validation probe) that pickers hide. A configured HF-repo embedder is
+    """Substring needles, exact repo ids, and exact resolved paths identifying infra models (the RAG embedder,
+    the llama.cpp install validation probe, and Decision API models) that pickers hide. A configured HF-repo embedder is
     published as its exact lowercased repo id and a local-path embedder as its exact resolved path only: a
     generic basename like "model" must not substring-hide unrelated chat models."""
     from core.rag import config as rag_config
