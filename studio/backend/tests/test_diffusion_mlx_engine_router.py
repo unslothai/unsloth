@@ -493,6 +493,8 @@ def test_switching_away_from_mlx_unloads_it(monkeypatch):
     r._active_engine_name = ENGINE_MLX
     _host(monkeypatch)
     _device(monkeypatch, "mps")
+    # Off, so the result does not depend on whether this host has mlx installed (a real Mac would pick MLX).
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "0")
     assert _select() == ENGINE_DIFFUSERS
     assert unloaded == [True]
 
