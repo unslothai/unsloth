@@ -17,8 +17,7 @@ function sources(dir: string): string[] {
   });
 }
 
-// @streamdown/code 1.1.1 memoises every tokenisation in a module-level Map that never evicts
-// (unslothai/unsloth#9230); only its types may be imported.
+// @streamdown/code memoises tokenisations in a never-evicting Map; import its types only.
 test("no source module loads @streamdown/code at runtime", () => {
   const offenders = sources(SRC).filter((path) => {
     const text = readFileSync(path, "utf8");

@@ -272,7 +272,6 @@ def test_recording_forward_copies_the_cache_after_the_chosen_forward(fake_mx, ca
             raise RuntimeError("generation failed")
     assert type(language_model) is original_class
 
-    # A cache that cannot be copied still answers.
     opaque = [types.SimpleNamespace(advance = lambda _t: None)]
     with caplog.at_level("INFO"), RecordingForward(language_model) as recording:
         recording.record.capture_at = 1
@@ -331,7 +330,6 @@ def test_recording_forward_slices_per_layer_inputs_from_the_resume_offset(fake_m
                     per_layer_inputs = suffix,
                     other = 1,
                 )
-            # A single token: the model computes its own from the id.
             language_model([0], inputs_embeds = embeds(1), cache = cache, per_layer_inputs = suffix)
         seen = [kw.get("per_layer_inputs") for kw in language_model.seen_kwargs[-3:]]
         assert seen[0].rows == list(range(resumed, resumed + 256))
@@ -361,7 +359,6 @@ def test_recording_forward_withholds_prompt_wide_position_ids_only_after_a_resum
     shaped = types.SimpleNamespace
     wide = lambda cache: dict(cache = cache, position_ids = shaped(shape = (3, 1, 900)))
     embedded = dict(inputs = [1, 2, 3, 4, 5], inputs_embeds = shaped(shape = (1, 5, 8)))
-    # Unreused: mlx-vlm's own kwargs are the right ones and pass through untouched.
     with RecordingForward(language_model):
         language_model(shaped(shape = (1, 256)), **wide([]))
         language_model(**embedded, **wide([]))
@@ -395,7 +392,7 @@ def test_store_serves_the_longest_prefix_and_evicts_to_fit(fake_mx):
     store = VLMPromptSnapshotStore(max_bytes = 4 * 700)
     a, b, c = [1] * 256, [2] * 256, [3] * 256
     assert store.store("m", a, _snapshot(a)) and store.store("m", b, _snapshot(b))
-    store.lookup("m", a + [0], limit = 256)  # a is now the most recent
+    store.lookup("m", a + [0], limit = 256)
     assert store.store("m", c, _snapshot(c))
     assert store.lookup("m", b + [0], limit = 256) == (None, 0)
     assert store.lookup("m", a + [0], limit = 256)[1] == 256
@@ -440,8 +437,8 @@ def test_session_captures_the_boundary_and_resumes_leaving_a_copy_behind(fake_mx
     assert session.reused_tokens == 512 and cache is stored_entries
     kept = store.lookup("m", ids, limit = 512)[0]
     assert kept is not stored_entries and kept[0] is not cache[0]
-    assert kept[0].offset == 512 and kept[0].keys.rows == ids[:512]  # the copy never moved
-    assert kept[0].keys in fake_mx[0]  # the copy, evaluated at the first forward
+    assert kept[0].offset == 512 and kept[0].keys.rows == ids[:512]
+    assert kept[0].keys in fake_mx[0]
     assert cache[0].offset == 800 and cache[0].keys.rows == longer
     assert stored and store.lookup("m", longer + [-1], limit = 768)[1] == 768
 
@@ -468,9 +465,9 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx,
     store = VLMPromptSnapshotStore(max_bytes = 10**9)
     language_model = FakeLanguageModel()
     ids = list(range(1100))
-    _generate(store, language_model, ids)  # boundary 1024
+    _generate(store, language_model, ids)
     original = store.lookup("m", ids + [-1], limit = 1024)[0]
-    store.store("t", ids[:512], _snapshot(range(9000, 9512)))  # a decoy
+    store.store("t", ids[:512], _snapshot(range(9000, 9512)))
     fake_mx.clear()
     session, _cache, stored = _generate(store, language_model, ids + [1] * 300, honour_reuse = False)
     assert session.reused_tokens == 1024 and stored
@@ -481,7 +478,6 @@ def test_session_stores_what_the_snapshot_holds_when_reuse_was_declined(fake_mx,
     assert not list(snapshots._arrays(original, sys.modules["mlx.core"]))
     assert original[0].offset == 1024 and len(fake_mx) == 2
 
-    # A copy that cannot be made drops the snapshot it was taken from, too.
     store, ids = VLMPromptSnapshotStore(max_bytes = 10**9), list(range(700))
     _generate(store, language_model, ids)
 
@@ -560,7 +556,6 @@ def test_session_serves_and_stores_only_prefixes_past_the_last_media_token(fake_
         store, "m", language_model, make_cache, media_token_ids = (9,), **kw
     )
     assert session().find_prefix_length(prompt) == 768 and len(store) == 4
-    # A media request keeps only what serves it, and these three serve nothing.
     assert session(releases_unserved = True).find_prefix_length(prompt) == 768
     assert list(store._entries) == [("m", tuple(prompt[:768]))]
     assert session(releases_unserved = True).find_prefix_length(_media_prompt(700)) == 0
@@ -588,7 +583,6 @@ def test_a_batched_row_resumes_and_banks_what_the_single_path_does(fake_mx, medi
     prompts = [_media_prompt(n) if media else list(range(n)) for n in (700, 700, 900, 1000)]
     prompts.append(prompts[-1] + [1])
     for prompt in prompts:
-        # A media row keeps only what serves it, on both paths.
         for store in (single, batched):
             store.store("m", [-1], _snapshot([-1]))
         session, _cache, _stored = _generate(
@@ -599,7 +593,6 @@ def test_a_batched_row_resumes_and_banks_what_the_single_path_does(fake_mx, medi
         assert prefix == session.reused_tokens and cache[0].keys.rows == prompt[:-1]
         assert set(batched._entries) == set(single._entries)
         assert batched._replays == single._replays
-    # The row advanced a copy: what it resumed from stays as banked.
     entries, prefix = batched.lookup("m", prompts[-1] + [0], limit = 768)
     assert prefix == 768 and entries[0].keys.rows == prompts[-1][:768]
     cache, lengths = VLMBatchRowCache(None, "m", make_cache).open(prompts[-1])
@@ -654,14 +647,12 @@ def test_session_prefills_the_media_block_and_chains_from_it(fake_mx, caplog):
     session, _cache, stored = generate(300)
     assert session.reused_tokens == 100 and block.prefilled == 2 and stored
     assert [len(item[1]) for item in store._entries] == [100, 299]
-    # Declined and run from zero: the capture lands at 256, off the grid; block dropped.
     session, _cache, stored = generate(500, honour_reuse = False)
     assert session.reused_tokens == 100 and block.prefilled == 2
     assert not stored and len(store) == 0
     session, _cache, stored = generate(200, honour_reuse = False)
     assert session.reused_tokens == 100 and not stored
 
-    # A block that fails: prefilled by the caller as before, nothing captured.
     store, failing = VLMPromptSnapshotStore(max_bytes = 10**9), FakeMediaBlock(100)
     failing.fail = True
     fake_mx.clear()
@@ -846,7 +837,6 @@ def test_copy_shares_buffers_yet_keeps_what_the_live_cache_overwrites():
     for entry, keys in zip(saved, held):
         assert entry.offset == 16 and np.array_equal(np.array(entry.keys), keys)
 
-    # A state that is a slice of a larger buffer, as a convolution window can be.
     mx.synchronize()
     before = mx.get_active_memory()
     conv = cache.ArraysCache(size = 1)

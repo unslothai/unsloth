@@ -201,7 +201,6 @@ class TestSafetensorsGateHonorsStatedIntent:
         assert _sf_tools_on(payload) is True
 
     def test_cli_enable_tools_is_unchanged(self):
-        # Pre-existing --enable-tools behavior on this path is untouched.
         set_tool_policy_default(True)
         set_tool_policy(True)
         assert _sf_tools_on(_req(tools = [{"function": {"name": "f"}}])) is True

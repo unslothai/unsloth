@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inference dispatcher resilience.
-
-The dispatcher thread is the sole consumer of the response queue; if a malformed
-response killed it, every in-flight generation would hang forever. A bad response
-must be logged and skipped, not fatal. Fakes only.
-"""
+"""A malformed response must be skipped, not fatal, since the dispatcher is the sole queue consumer."""
 
 from __future__ import annotations
 
@@ -144,11 +139,8 @@ def _direct_reader_host():
 
 
 def test_rerouting_a_foreign_response_moves_worker_ownership():
-    # A _gen_lock reader already blocked on resp_queue can beat the compare dispatcher to
-    # that request's first response. The compare consumer passes mark_started=False, so if
-    # this path does not promote it nothing does: the direct request stays recorded as the
-    # executor, so the compare chat's Stop is ignored and a late reset from the direct one
-    # cancels the compare generation instead.
+    # A _gen_lock reader can beat the compare dispatcher; it must promote the request,
+    # or Stop targets the wrong generation.
     o = _direct_reader_host()
     mine, theirs = threading.Event(), threading.Event()
     o._request_cancel_events = {"mine": mine, "theirs": theirs}
@@ -169,8 +161,7 @@ def test_rerouting_a_foreign_response_moves_worker_ownership():
 
 
 def test_rerouting_a_foreign_gen_done_retires_that_request():
-    # The other half of the dispatcher's move: once its last response is routed, the
-    # request no longer owns the worker, or a Stop for it would end whatever starts next.
+    # Once its last response is routed the request no longer owns the worker.
     o = _direct_reader_host()
     mine, theirs = threading.Event(), threading.Event()
     o._request_cancel_events = {"mine": mine, "theirs": theirs}

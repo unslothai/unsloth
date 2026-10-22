@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 _kernel_config_cache: Dict[str, Any] = {}
 _autotune_completed: Dict[str, bool] = {}
 
+# Bump when a kernel change alters which tiles fit; other revisions / Triton versions are misses.
+_CACHE_SCHEMA_VERSION = 2
+
 
 def _get_cache_key(
     num_experts: int,
@@ -38,6 +41,7 @@ def _get_cache_key(
     dtype: torch.dtype,
     device_capability: Tuple[int, int],
     seq_len: int = 8192,  # Default sequence length for tuning
+    weight_dtype: Optional[torch.dtype] = None,
 ) -> str:
     """Generate a unique cache key based on model configuration."""
     key_data = {
@@ -48,7 +52,11 @@ def _get_cache_key(
         "dtype": str(dtype),
         "device_capability": device_capability,
         "seq_len": seq_len,
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "triton_version": getattr(triton, "__version__", None),
     }
+    if weight_dtype is not None and weight_dtype != dtype:
+        key_data["weight_dtype"] = str(weight_dtype)
     key_str = json.dumps(key_data, sort_keys = True)
     return hashlib.md5(key_str.encode()).hexdigest()
 
@@ -70,11 +78,20 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
         with open(cache_file, "r", encoding = "utf-8") as f:
             cached_data = json.load(f)
 
-        # Invalidate if device capability changed.
-        current_device_capability = torch.cuda.get_device_capability()
-        if cached_data.get("device_capability") != current_device_capability:
+        # Invalidate if device capability changed. JSON stores the tuple as a list, so compare as tuples.
+        current_device_capability = tuple(torch.cuda.get_device_capability())
+        cached_device_capability = cached_data.get("device_capability")
+        if not isinstance(cached_device_capability, (list, tuple)) or (
+            tuple(cached_device_capability) != current_device_capability
+        ):
             logger.info("Device capability changed, invalidating cache")
             os.remove(cache_file)
+            return None
+
+        if cached_data.get("schema_version") != _CACHE_SCHEMA_VERSION or cached_data.get(
+            "triton_version"
+        ) != getattr(triton, "__version__", None):
+            logger.info("MoE kernel cache schema or Triton version changed, ignoring cache")
             return None
 
         logger.info(f"Loaded cached MoE kernel config: {cache_key}")
@@ -101,6 +118,8 @@ def save_cached_config(
     cache_data = {
         "timestamp": time.time(),
         "device_capability": torch.cuda.get_device_capability(),
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "triton_version": getattr(triton, "__version__", None),
         "config_fwd": config_fwd.__dict__ if hasattr(config_fwd, "__dict__") else str(config_fwd),
         "config_bwd_dx": config_bwd_dx.__dict__
         if hasattr(config_bwd_dx, "__dict__")
@@ -119,6 +138,9 @@ def save_cached_config(
         logger.warning(f"Failed to save cache file {cache_file}: {e}")
 
 
+# Always eager: unsloth_zoo calls this from the MoE forward inside compiled decoder blocks, and a
+# Dynamo trace reads `.best_config` before any kernel ran, so every tuning silently fell back.
+@torch.compiler.disable
 def get_or_autotune_moe_kernels(
     num_experts: int,
     hidden_dim: int,
@@ -127,6 +149,7 @@ def get_or_autotune_moe_kernels(
     dtype: torch.dtype,
     force_autotune: bool = False,
     seq_len: int = 8192,
+    weight_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[Any, Any, Any]:
     """
     Get cached kernel configurations or run auto-tuning.
@@ -136,7 +159,8 @@ def get_or_autotune_moe_kernels(
         hidden_dim: Hidden dimension of the model
         intermediate_dim: Intermediate dimension for MoE MLP
         top_k: Number of experts to route to
-        dtype: Data type for computation
+        dtype: Data type of the activations (X and dY)
+        weight_dtype: Data type of the expert weights, if different from dtype
         force_autotune: Force re-running autotuning even if cache exists
         seq_len: Sequence length to use for tuning benchmarks
 
@@ -152,6 +176,7 @@ def get_or_autotune_moe_kernels(
         dtype,
         device_capability,
         seq_len,
+        weight_dtype,
     )
 
     # Env override to disable autotuning
@@ -159,7 +184,9 @@ def get_or_autotune_moe_kernels(
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
         )
-        return _get_heuristic_configs(n_dim = 2 * intermediate_dim, k_dim = hidden_dim)
+        return _get_heuristic_configs(
+            n_dim = 2 * intermediate_dim, k_dim = hidden_dim, dtype = dtype, weight_dtype = weight_dtype
+        )
     if not force_autotune and cache_key in _kernel_config_cache:
         logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
         return _kernel_config_cache[cache_key]
@@ -178,7 +205,11 @@ def get_or_autotune_moe_kernels(
                 config_bwd_dx = KernelConfigBackward_dX(**cached_data["config_bwd_dx"])
                 config_bwd_dw = KernelConfigBackward_dW(**cached_data["config_bwd_dw"])
 
-                configs = (config_fwd, config_bwd_dx, config_bwd_dw)
+                # A disk entry may predate a kernel change: refit to dims and SMEM.
+                configs = _fit_configs_to_dims(
+                    (config_fwd, config_bwd_dx, config_bwd_dw), 2 * intermediate_dim, hidden_dim
+                )
+                configs = _fit_configs_to_smem(configs, dtype, weight_dtype)
                 _kernel_config_cache[cache_key] = configs
                 return configs
             except Exception as e:
@@ -195,7 +226,7 @@ def get_or_autotune_moe_kernels(
 
     try:
         configs = _run_moe_autotuning(
-            num_experts, hidden_dim, intermediate_dim, top_k, dtype, seq_len
+            num_experts, hidden_dim, intermediate_dim, top_k, dtype, seq_len, weight_dtype
         )
 
         _kernel_config_cache[cache_key] = configs
@@ -224,7 +255,9 @@ def get_or_autotune_moe_kernels(
                 "Unsloth: Your Triton version might be incompatible with TMA features. Falling back to default configs."
             )
         logger.info("Falling back to default kernel configurations")
-        return _get_default_configs(n_dim = 2 * intermediate_dim, k_dim = hidden_dim)
+        return _get_default_configs(
+            n_dim = 2 * intermediate_dim, k_dim = hidden_dim, dtype = dtype, weight_dtype = weight_dtype
+        )
 
 
 def _run_moe_autotuning(
@@ -234,6 +267,7 @@ def _run_moe_autotuning(
     top_k: int,
     dtype: torch.dtype,
     seq_len: int,
+    weight_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[Any, Any, Any]:
     """Run the actual auto-tuning for MoE kernels."""
 
@@ -245,10 +279,11 @@ def _run_moe_autotuning(
     hidden_states = torch.randn(num_tokens, hidden_dim, device = device, dtype = dtype)
 
     gate_up_weights = torch.randn(
-        num_experts, 2 * intermediate_dim, hidden_dim, device = device, dtype = dtype
-    )
-    down_weights = torch.randn(
-        num_experts, hidden_dim, intermediate_dim, device = device, dtype = dtype
+        num_experts,
+        2 * intermediate_dim,
+        hidden_dim,
+        device = device,
+        dtype = dtype if weight_dtype is None else weight_dtype,
     )
 
     # Dummy routing data
@@ -267,17 +302,12 @@ def _run_moe_autotuning(
         _autotuner_for,
         grouped_gemm_forward,
         grouped_gemm_dX,
-        grouped_gemm_dW,
     )
     from .grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
-    from .grouped_gemm.kernels.backward import (
-        _autotuned_grouped_gemm_dX_kernel,
-        _autotuned_grouped_gemm_dW_kernel,
-    )
+    from .grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dX_kernel
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,
-        KernelConfigBackward_dW,
     )
 
     logger.info("Autotuning forward kernel (first GEMM)...")
@@ -334,6 +364,23 @@ def _run_moe_autotuning(
         use_tma_store = triton_config_bwd_dx.kwargs.get("USE_TMA_STORE", False),
     )
 
+    config_bwd_dw = _autotune_dw_config(
+        hidden_states, dummy_grad, m_sizes, gather_indices, top_k, num_experts
+    )
+
+    return config_fwd, config_bwd_dx, config_bwd_dw
+
+
+def _autotune_dw_config(hidden_states, dummy_grad, m_sizes, gather_indices, top_k, num_experts):
+    """Autotune the dW kernel the launcher dispatches to and read the config from that kernel's tuner."""
+    from .grouped_gemm.interface import _autotuner_for, _use_per_expert_dW_kernel, grouped_gemm_dW
+    from .grouped_gemm.kernels.backward import (
+        _autotuned_grouped_gemm_dW_kernel,
+        _autotuned_grouped_gemm_dW_per_expert_kernel,
+    )
+    from .grouped_gemm.kernels.tuning import KernelConfigBackward_dW
+
+    per_expert = _use_per_expert_dW_kernel()
     logger.info("Autotuning backward dW kernel...")
     _ = grouped_gemm_dW(
         X = hidden_states,
@@ -345,11 +392,16 @@ def _run_moe_autotuning(
         permute_y = False,
         autotune = True,
     )
-    triton_config_bwd_dw = _autotuner_for(
-        _autotuned_grouped_gemm_dW_kernel, hidden_states.device
-    ).best_config
+    if per_expert:
+        triton_config_bwd_dw = _autotuner_for(
+            _autotuned_grouped_gemm_dW_per_expert_kernel, hidden_states.device
+        ).best_config
+    else:
+        triton_config_bwd_dw = _autotuner_for(
+            _autotuned_grouped_gemm_dW_kernel, hidden_states.device
+        ).best_config
 
-    config_bwd_dw = KernelConfigBackward_dW(
+    return KernelConfigBackward_dW(
         BLOCK_SIZE_M = triton_config_bwd_dw.kwargs["BLOCK_SIZE_M"],
         BLOCK_SIZE_N = triton_config_bwd_dw.kwargs["BLOCK_SIZE_N"],
         BLOCK_SIZE_K = triton_config_bwd_dw.kwargs["BLOCK_SIZE_K"],
@@ -359,8 +411,6 @@ def _run_moe_autotuning(
         use_tma_load_x = triton_config_bwd_dw.kwargs.get("USE_TMA_LOAD_X", False),
         use_tma_store = triton_config_bwd_dw.kwargs.get("USE_TMA_STORE", False),
     )
-
-    return config_fwd, config_bwd_dx, config_bwd_dw
 
 
 _MIN_FALLBACK_BLOCK_SIZE = 16
@@ -389,14 +439,6 @@ def _fit_configs_to_dims(
     return configs
 
 
-# Triton metadata.shared (16-bit) of the 4-stage 64x64x256 dX: 122,880 B, over the 101,376 B of L4 / RTX PRO 6000;
-# 3 stages need 81,920 B. sm_75 needs 65,536 B (no cp.async multi-buffering), so it is excluded.
-# kind -> {(BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages): (bytes, fitting num_stages, its bytes)}
-_HEURISTIC_SMEM_STEP_DOWN = {
-    "dX": {(64, 64, 256, 4): (122880, 3, 81920)},
-}
-
-
 def _device_smem_per_block() -> Optional[int]:
     # Read per current device: the launching card on a mixed host.
     try:
@@ -414,30 +456,116 @@ def _device_smem_per_block() -> Optional[int]:
             return None
 
 
-def _fit_heuristic_configs_to_smem(configs: Tuple[Any, Any, Any]) -> Tuple[Any, Any, Any]:
+def _itemsize(dtype: Optional[torch.dtype], default: int = 2) -> int:
+    return default if dtype is None else dtype.itemsize
+
+
+def _estimate_smem(
+    kind: str, config: Any, act_bytes: int, weight_bytes: int, capability: Tuple[int, int]
+) -> int:
+    """Shared memory (B) per launch; matches compiled metadata.shared (Triton 3.6-3.8, sm_75..120) or exceeds it by <= 1 KiB."""
+    M, N, K = config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K
+    stages = max(int(config.num_stages), 1)
+    if kind == "fwd":
+        a, b, a_cast = M * K * act_bytes, N * K * weight_bytes, act_bytes != weight_bytes
+    elif kind == "dX":
+        a, b, a_cast = M * N * act_bytes, N * K * weight_bytes, act_bytes != weight_bytes
+    else:
+        # The launcher runs float32 X single stage.
+        a, b, a_cast = M * N * act_bytes, M * K * act_bytes, False
+        if act_bytes >= 4:
+            stages = 1
+    major = capability[0]
+    if major < 8:
+        # No cp.async multi-buffering; 16-bit dot operands add a 2x larger-tile scratch.
+        dot_bytes = act_bytes if kind == "dW" else weight_bytes
+        if dot_bytes >= 4:
+            return a + b
+        return max(a + b, 2 * max(a * dot_bytes // act_bytes, b))
+    hopper_like = major in (9, 10, 11)
+    if kind == "dW":
+        if stages > 4:
+            buffers = stages if hopper_like else stages - 1
+        else:
+            buffers = min(stages, 2) if hopper_like else 1
+        return buffers * (a + b) + (2048 if hopper_like else 1024)
+    if hopper_like:
+        # A cast operand keeps num_stages - 1 buffers plus one copy in the dot dtype.
+        if a_cast:
+            return max(stages - 1, 1) * a + stages * b + a * weight_bytes // act_bytes + 64
+        return stages * (a + b) + 64
+    return max(stages - 1, 1) * (a + b)
+
+
+_LOOP_DIM = {"fwd": "BLOCK_SIZE_K", "dX": "BLOCK_SIZE_N", "dW": "BLOCK_SIZE_M"}
+_MIN_SMEM_BLOCK = 16
+
+
+def _fit_config_to_smem(
+    kind: str,
+    config: Any,
+    act_bytes: int,
+    weight_bytes: int,
+    capability: Tuple[int, int],
+    smem: int,
+) -> Any:
+    # Halving a power-of-two tile keeps it dividing N / K.
+    def fits():
+        return _estimate_smem(kind, config, act_bytes, weight_bytes, capability) <= smem
+
+    before = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
+    loop_dim = _LOOP_DIM[kind]
+    while not fits():
+        if config.num_stages > 3:
+            config.num_stages -= 1
+        elif getattr(config, loop_dim) > 32:
+            setattr(config, loop_dim, getattr(config, loop_dim) // 2)
+        elif config.num_stages > 2:
+            config.num_stages -= 1
+        else:
+            name = max(
+                ("BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K"), key = lambda n: getattr(config, n)
+            )
+            if getattr(config, name) > _MIN_SMEM_BLOCK:
+                setattr(config, name, getattr(config, name) // 2)
+            elif config.num_stages > 1:
+                config.num_stages = 1
+            else:
+                break
+    after = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
+    if after != before:
+        logger.info(
+            f"MoE {kind} config (M, N, K, stages) {before} -> {after} to fit {smem} B shared memory"
+        )
+    return config
+
+
+def _fit_configs_to_smem(
+    configs: Tuple[Any, Any, Any],
+    dtype: Optional[torch.dtype] = None,
+    weight_dtype: Optional[torch.dtype] = None,
+) -> Tuple[Any, Any, Any]:
     try:
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
             return configs
-        if torch.cuda.get_device_capability()[0] < 8:
-            return configs
+        capability = tuple(torch.cuda.get_device_capability())
     except Exception:
         return configs
     smem = _device_smem_per_block()
     if smem is None:
         return configs
+    act_bytes = _itemsize(dtype)
+    weight_bytes = _itemsize(weight_dtype, act_bytes)
     for kind, config in zip(("fwd", "dX", "dW"), configs):
-        key = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
-        entry = _HEURISTIC_SMEM_STEP_DOWN.get(kind, {}).get(key)
-        if entry is not None and entry[2] <= smem < entry[0]:
-            config.num_stages = entry[1]
-            logger.info(
-                f"MoE heuristic {kind} config: num_stages {key[3]} -> {entry[1]} to fit {smem} B shared memory"
-            )
+        _fit_config_to_smem(kind, config, act_bytes, weight_bytes, capability, smem)
     return configs
 
 
 def _get_heuristic_configs(
-    n_dim: Optional[int] = None, k_dim: Optional[int] = None
+    n_dim: Optional[int] = None,
+    k_dim: Optional[int] = None,
+    dtype: Optional[torch.dtype] = None,
+    weight_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[Any, Any, Any]:
     """
     Get 'Safe Heuristic' kernel configurations.
@@ -490,11 +618,14 @@ def _get_heuristic_configs(
     )
 
     configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
-    return _fit_heuristic_configs_to_smem(configs)
+    return _fit_configs_to_smem(configs, dtype, weight_dtype)
 
 
 def _get_default_configs(
-    n_dim: Optional[int] = None, k_dim: Optional[int] = None
+    n_dim: Optional[int] = None,
+    k_dim: Optional[int] = None,
+    dtype: Optional[torch.dtype] = None,
+    weight_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[Any, Any, Any]:
     """Get default kernel configurations as fallback."""
     from .grouped_gemm.kernels.tuning import (
@@ -538,7 +669,8 @@ def _get_default_configs(
         use_tma_store = False,
     )
 
-    return _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
+    configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
+    return _fit_configs_to_smem(configs, dtype, weight_dtype)
 
 
 def clear_cache() -> None:

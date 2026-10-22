@@ -20,6 +20,44 @@ export function isCoalescedHistoryEvent(event: Event): boolean {
   return (event as CustomEvent<{ coalesce?: boolean }>).detail?.coalesce === true;
 }
 
+/** Debounces `run` on history events: chunk saves wait `streamMs` for a lull, a structural change
+ *  `structuralMs`. A chunk save joins a pending structural run instead of pushing it back, or a
+ *  generation would hold a rename or delete for its whole length. */
+export function createHistoryRefreshDebounce(
+  run: () => void,
+  structuralMs: number,
+  streamMs: number,
+): { onEvent: (event: Event) => void; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let structuralPending = false;
+  const cancel = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+    timer = null;
+    structuralPending = false;
+  };
+  return {
+    onEvent(event) {
+      const coalesced = isCoalescedHistoryEvent(event);
+      if (coalesced && structuralPending) {
+        return;
+      }
+      cancel();
+      structuralPending = !coalesced;
+      timer = setTimeout(
+        () => {
+          timer = null;
+          structuralPending = false;
+          run();
+        },
+        coalesced ? streamMs : structuralMs,
+      );
+    },
+    cancel,
+  };
+}
+
 function storage(): Storage | null {
   // no window under node, and the localStorage getter itself throws in some privacy modes
   try {

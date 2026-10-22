@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The provider-agnostic Unsloth tool loop.
-
-The transport is faked so these exercise the loop itself: turn cycling, the
-budget, approvals, and the text-form healing that self-hosted models need. The
-scripted streams are shaped like what llama.cpp, vLLM and Ollama actually emit,
-including the malformed cases that motivated the healing path.
-"""
+"""The tool loop over a faked transport, with scripted llama.cpp, vLLM and Ollama streams."""
 
 from __future__ import annotations
 
@@ -209,9 +203,6 @@ def _visible_text(lines) -> str:
     return "".join(text)
 
 
-# ── Structured tool calls (a well-behaved provider) ───────────────
-
-
 def test_structured_call_executes_and_continues(executed):
     transport = FakeTransport(
         [
@@ -244,7 +235,6 @@ def test_structured_call_executes_and_continues(executed):
     assert _events(lines, "tool_end")[0]["result"] == "RESULT<web_search>"
     assert "Here is what I found." in _visible_text(lines)
 
-    # The follow-up turn replays assistant tool_calls then the tool result.
     follow_up = transport.requests[1]["messages"]
     assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
     assert follow_up[-1]["content"] == "RESULT<web_search>"
@@ -407,11 +397,7 @@ def test_the_searched_branch_carries_replayed_results_as_the_model_saw_them(exec
 
 
 def test_a_conversation_search_here_gets_the_active_branch(executed):
-    """The provider loops share the local paths' tool catalogue.
-
-    So search_conversation is advertised here once a thread has an archive, and needs the
-    branch for the same reason: the stored rows are the whole DAG, Retry included.
-    """
+    """search_conversation needs the active branch, since stored rows are the whole DAG, Retry included."""
     branch = [
         {"role": "user", "content": "what was the code"},
         {"role": "assistant", "content": "let me look"},
@@ -445,9 +431,7 @@ def test_a_conversation_search_here_gets_the_active_branch(executed):
 
     assert [call["name"] for call in executed] == ["search_conversation"]
     assert executed[0]["conversation_branch"] == branch
-    # And a budget, or the tool's clamp is skipped and a model-chosen top_k of 8 appends
-    # roughly 4K tokens to a prompt this loop replays. Unsloth cannot measure an external
-    # model's window, so the cap is one ordinary recall's worth.
+    # Pass a budget, or a model-chosen top_k skips the tool's clamp and bloats the replayed prompt.
     from core.rag import config as rag_config
 
     assert (
@@ -477,9 +461,6 @@ def test_streamed_tool_name_fragments_are_not_concatenated(executed):
     assert executed[0]["arguments"] == {"query": "x"}
 
 
-# ── Text-form calls (what small self-hosted models actually emit) ──
-
-
 def test_text_form_tool_call_is_healed_and_executed(executed):
     transport = FakeTransport(
         [
@@ -500,7 +481,6 @@ def test_text_form_tool_call_is_healed_and_executed(executed):
 
     assert [call["name"] for call in executed] == ["web_search"]
     assert executed[0]["arguments"] == {"query": "unsloth"}
-    # The markup is consumed, the prose around it survives.
     visible = _visible_text(lines)
     assert "Let me look." in visible
     assert "<tool_call>" not in visible
@@ -528,11 +508,8 @@ def test_partial_marker_split_across_deltas_is_not_broken(executed):
 
 
 def test_unterminated_envelope_is_released_as_prose_and_terminates(executed):
-    """The vLLM hang: an envelope the model opens and never closes.
-
-    Nothing may be swallowed. The turn must end with the held text visible
-    rather than rendering an empty answer, and no call may be invented.
-    """
+    """An unclosed tool envelope must be released as visible prose, never swallowed or turned into a
+    call."""
     transport = FakeTransport(
         [
             [
@@ -548,7 +525,6 @@ def test_unterminated_envelope_is_released_as_prose_and_terminates(executed):
     assert executed == []
     visible = _visible_text(lines)
     assert "thinking..." in visible
-    # The unparseable residue is flushed verbatim, not held forever.
     assert "web_sea" in visible
 
 
@@ -638,11 +614,7 @@ def test_structured_call_makes_the_healer_dormant(executed):
     lines = _run(transport)
 
     assert [call["name"] for call in executed] == ["web_search"]
-    # Held text is flushed when the healer goes dormant, never dropped.
     assert "prefix <tool_c" in _visible_text(lines)
-
-
-# ── Budget ────────────────────────────────────────────────────────
 
 
 def test_zero_budget_withdraws_the_catalog(executed):
@@ -708,12 +680,8 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
         confirm_calls = True,
     )
 
-    # The denial consumed no budget, so the second call still had one left.
     assert [call["name"] for call in executed] == ["python"]
     assert executed[0]["arguments"] == {"query": "2"}
-
-
-# ── Permissions ───────────────────────────────────────────────────
 
 
 def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
@@ -756,7 +724,6 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
         confirm_calls = True,
     )
 
-    # web_search is not high-risk, so it runs without an approval card.
     assert slots == []
     assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
     assert [call["name"] for call in executed] == ["web_search"]
@@ -926,9 +893,6 @@ def test_only_an_approved_call_is_marked_approved(executed, monkeypatch, verdict
         assert executed == []
 
 
-# ── Forced tool choice ────────────────────────────────────────────
-
-
 def test_forced_choice_is_cleared_after_the_first_execution(executed):
     transport = FakeTransport(
         [
@@ -953,11 +917,7 @@ def test_forced_choice_is_cleared_after_the_first_execution(executed):
     _run(transport, tool_choice = "required")
 
     assert transport.requests[0]["tool_choice"] == "required"
-    # The result follow-up must be free to answer in prose.
     assert transport.requests[1]["tool_choice"] == "auto"
-
-
-# ── Behaviours carried over from the local loops (PR #8630) ───────
 
 
 def test_usage_is_summed_into_one_chunk(executed):
@@ -1021,7 +981,6 @@ def test_usage_is_summed_into_one_chunk(executed):
         if "usage" in payload:
             usages.append(payload["usage"])
 
-    # One chunk, carrying the sum, including the detail slices pricing reads.
     assert len(usages) == 1
     assert usages[0]["prompt_tokens"] == 30
     assert usages[0]["completion_tokens"] == 12
@@ -1434,7 +1393,6 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
-    # The nudge is a user turn appended after the stall.
     second = transport.requests[1]["messages"]
     assert second[-1]["role"] == "user"
 
@@ -1553,7 +1511,6 @@ def test_the_loop_terminates_against_an_endlessly_calling_model(executed):
     transport = Endless()
     _run(transport, max_calls = 3)
 
-    # Budget spent, catalog withdrawn, then one final no-tools pass.
     assert len(executed) == 3
     assert transport.turns <= 5
 
@@ -1633,12 +1590,7 @@ def test_conversation_roles_stay_alternating_for_a_strict_server(executed):
 
 
 def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
-    """Gemini 3 rejects a replayed functionCall without its thoughtSignature.
-
-    The native translator stows the part-level signature on the tool_call delta
-    as extra_content.google.thought_signature, so the accumulator has to carry
-    it onto the assistant message or the first post-tool turn is refused.
-    """
+    """Gemini 3 rejects a replayed functionCall lacking its thoughtSignature; keep it in the accumulator."""
     transport = FakeTransport(
         [
             [
@@ -1779,11 +1731,7 @@ def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
 
 
 def test_a_decoded_object_lands_where_its_string_spelling_would():
-    """Serializing puts the object on the path the accumulator already has for text, so the
-    object-boundary fork and the id that holds a snapshot to its own call read it the same
-    either way. Pinned as a pair: the one way this helper can mislead is by giving the two
-    dialects different answers.
-    """
+    """A decoded object must land where its string spelling would, or the dialects disagree."""
     streams = [
         (
             "one payload",
@@ -1827,13 +1775,7 @@ def test_a_decoded_object_lands_where_its_string_spelling_would():
 
 
 def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
-    """A tool result is only legal next to the call it answers.
-
-    With one slot left and two parallel calls the second is refused, but its
-    role="tool" note still goes back to the provider. Without the matching entry
-    in the assistant message that note is an orphan, and OpenAI, Anthropic and
-    Gemini all reject the follow-up rather than answering.
-    """
+    """A refused parallel call's role=tool result needs its tool_calls entry, or providers reject it."""
     transport = FakeTransport(
         [
             [
@@ -1926,12 +1868,7 @@ def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed,
 
 
 def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):
-    """ "Max" means max: the sentinel used to fall back to 25 provider turns.
-
-    Both local loops run an unlimited request for as many turns as the model
-    asks for, and the fruitless-turn guard already ends a run that executes
-    nothing, so a productive run must not stop short of its own answer.
-    """
+    """Unlimited means unlimited: the fruitless-turn guard already ends runs that execute nothing."""
     turns = [
         [
             _sse(
@@ -1951,13 +1888,8 @@ def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):
 
 
 def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(executed):
-    """The loop relays the provider's tool_calls delta, so the client paints a
-    card for every call. A repeat is answered with a nudge and never executed,
-    which used to leave that card running for the rest of the answer.
-
-    The event has to carry the id the provider streamed: a repeated call is
-    exactly the one the loop renames to keep the replayed history unambiguous.
-    """
+    """A skipped duplicate call must still emit its provider id, so the client closes the card it
+    painted."""
     repeat = [
         _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":"a"}')]}),
         _sse(finish = "tool_calls"),
@@ -1978,24 +1910,14 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     assert len(ends) == 2
     assert [end["tool_call_id"] for end in ends] == ["call_a", "call_a"]
     assert ends[1]["result"].startswith("Unsloth did not run this call")
-    # Opened as well as closed. The client retires a card id when it closes it,
-    # so a second tool_end on the same id resolves to no card and the adapter
-    # drops it -- the skip would be invisible again. Announcing it first draws
-    # the card the second event closes, and keeps the loop's invariant that
-    # every tool_end has a matching tool_start.
+    # Announce the card first: a second tool_end on a retired id is dropped by the client.
     starts = _events(lines, "tool_start")
     assert [start["tool_call_id"] for start in starts] == ["call_a", "call_a"]
 
 
 def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
-    """Two tool rounds in one response, both streamed at index 0.
-
-    Providers restart ``delta.tool_calls[].index`` at 0 for every round while
-    giving each call its own id, and the continuation fragments carrying the
-    rest of the arguments are sent bare. Routing those by index alone appended
-    round two's tail to round one, producing an unparseable blob and running
-    both tools on the wrong arguments.
-    """
+    """Providers restart tool_calls index at 0 each round, so route fragments by call id, not index
+    alone."""
     transport = FakeTransport(
         [
             [
@@ -2016,14 +1938,7 @@ def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
 
 
 def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
-    """Two calls at index 0 with the id repeated on every argument fragment.
-
-    The latest-index mapping only exists to place fragments that carry no id, so
-    a fragment that names the call the index opened first has to go back to it
-    rather than fork a third slot. Forking left that call with truncated JSON,
-    which reaches the tool as ``_raw``, and dropped the fragment for having no
-    function name.
-    """
+    """A fragment naming its call must return to that call, not fork a third slot with truncated JSON."""
     transport = FakeTransport(
         [
             [
@@ -2053,9 +1968,6 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
     _run(transport)
 
     assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
-
-
-# ── MCP images ────────────────────────────────────────────────────
 
 
 def _mcp_image_transport() -> FakeTransport:

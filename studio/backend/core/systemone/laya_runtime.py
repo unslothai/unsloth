@@ -569,6 +569,38 @@ def _gpu_taken() -> bool:
     return any(owner != gpu_arbiter.DECISIONS for owner in gpu_arbiter.residents())
 
 
+def _torch_gpu(checkpoint: Checkpoint) -> bool:
+    if _is_mlx(checkpoint) or _is_native(checkpoint):
+        return False
+    if checkpoint.layout == "clef":
+        return True
+    from utils.systemone_settings import get_device as preferred_device
+    from utils.hardware.hardware import DeviceType, get_device
+
+    return preferred_device() == "gpu" and get_device() in (DeviceType.CUDA, DeviceType.XPU)
+
+
+def _gpu_load_in_flight() -> bool:
+    from core.inference import gpu_arbiter
+    from core.inference.gpu_residency import chat_load_in_flight
+
+    if chat_load_in_flight():
+        return True
+    # Held by the acquire that may have just ended the idle worker.
+    if not gpu_arbiter._lock.acquire(blocking = False):
+        return True
+    try:
+        # A CPU-only image or video load releases its GPU claim, so it does not count.
+        return any(
+            owner in gpu_arbiter._residents and gpu_arbiter._media_loading(owner)
+            for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO)
+        )
+    except Exception:
+        return False
+    finally:
+        gpu_arbiter._lock.release()
+
+
 def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
     """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
     from .catalog import clef_unsupported_reason
@@ -1530,6 +1562,25 @@ def evict_for_gpu() -> None:
     _close(agent, release_gpu = False)
 
 
+def evict_idle_worker() -> None:
+    global _agent, _loaded, _device_name, _generation, _unloads
+    from .clef_runtime import ClefAgent
+
+    if not _run_lock.acquire(blocking = False):
+        return
+    try:
+        with _state_lock:
+            if _loading is not None or not isinstance(_agent, (LayaWorker, ClefAgent)):
+                return
+            agent, _agent, _loaded, _device_name = _agent, None, None, None
+            _generation += 1
+            _unloads += 1
+    finally:
+        _run_lock.release()
+    logger.info("System One unloaded the idle decision model to free the GPU")
+    _close(agent)
+
+
 def _holds_gpu() -> bool:
     # A worker that fell back to CPU still holds its CUDA or XPU context until it ends.
     return _device_name not in (None, "cpu") or isinstance(_agent, LayaWorker)
@@ -1598,6 +1649,16 @@ def _ensure_loading(checkpoint: Checkpoint, unloads: int | None = None) -> threa
         _loading = checkpoint
         if unloads is None:
             unloads = _unloads
+    # Checked after the claim, so an eviction that lands before it is still seen.
+    if _torch_gpu(checkpoint) and _gpu_load_in_flight():
+        with _state_lock:
+            _loading = None
+        raise Unavailable(
+            409,
+            "gpu_busy",
+            f"Another model is loading on the GPU; {checkpoint.name} loads once it has.",
+            retry_after = 1,
+        )
     # Outside _state_lock: the registry calls loading_repo_ids() while holding its own lock.
     if _hub_download_active(checkpoint):
         with _state_lock:
@@ -1661,9 +1722,19 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
     key = json.dumps(question, ensure_ascii = False)
     if key not in cache:
         internal = agent._to_internal(question)
-        ids, markers = build_sequence(agent.tok, "", internal, max_len, head_max_len)
-        if len(markers) != len(render_options(internal)):
-            raise ValueError("question options exceed head_max_len=%d" % head_max_len)
+        tok = agent.tok
+        options = [" " + o.replace(tok.mask_token, " ") for o in render_options(internal)]
+        sizes = [1 + min(48, len(tok(o, add_special_tokens = False)["input_ids"])) for o in options]
+        # build_sequence's rule: past this budget, each option keeps only its share of it.
+        budget = head_max_len - 16
+        share = max(4, budget // len(sizes))
+        if sum(sizes) > budget and max(sizes) > share:
+            raise ValueError(
+                f"options would be cut short to fit Laya's {budget}-token option budget"
+            )
+        ids, markers = build_sequence(tok, "", internal, max_len, head_max_len)
+        if len(markers) != len(sizes):
+            raise ValueError(f"options exceed the Laya context window ({max_len} tokens)")
         if len(cache) >= _HEAD_CACHE_SIZE:
             cache.clear()
         cache[key] = (ids, markers, internal)
@@ -1684,11 +1755,8 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
     for name in names:
         try:
             heads.append(_head(agent, questions[name], max_len, head_max_len))
-        except ValueError:
-            raise ValueError(
-                f"Question {name!r} options exceed the Laya context window ({max_len} tokens). "
-                "Use fewer or shorter criteria."
-            ) from None
+        except ValueError as exc:
+            raise ValueError(f"Question {name!r} {exc}. Use fewer or shorter criteria.") from None
     room = max(0, max_len - min(len(ids) for ids, _, _ in heads))
     state_ids, state_cut = _state_ids(agent.tok, state, room)
     items, truncated = [], False
@@ -2490,15 +2558,17 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
 
 
 def shutdown() -> None:
-    """Studio shutdown: end a llama.cpp decision server or Laya worker (in-process models go with the process)."""
+    """Studio shutdown: end a llama.cpp decision server, Laya or Clef worker (in-process models go with the process)."""
     global _agent, _loaded, _device_name, _generation, _unloads
+    from .clef_runtime import ClefAgent
+
     with _state_lock:
         timer = _idle_timer
     if timer is not None:
         timer.cancel()
     with _run_lock:
         _unloads += 1
-        if not _is_native(_loaded) and not isinstance(_agent, LayaWorker):
+        if not _is_native(_loaded) and not isinstance(_agent, (LayaWorker, ClefAgent)):
             return
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1

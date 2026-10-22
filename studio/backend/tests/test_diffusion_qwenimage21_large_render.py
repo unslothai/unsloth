@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Large Qwen-Image-2.1 renders on the device this runs on, MPS first.
-
-The pipeline packs 16x16 pixels per token, so 2048x2048 is 16384 image tokens, as for the real model. Stock MPS SDPA
-builds the full score matrix for that; the bounded processors keep each call to 512 query rows."""
+"""Stock MPS SDPA builds the full 16384-token score matrix, so the processors cap queries at 512."""
 
 from types import SimpleNamespace
 

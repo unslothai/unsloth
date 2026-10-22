@@ -14,7 +14,6 @@ def _img(page):
 
 
 def test_caption_images_runs_when_images_present(monkeypatch):
-    # Policy lives in ingestion (_run); caption_images captions given images + endpoint.
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: "a chart")
     out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
@@ -45,11 +44,10 @@ def test_caption_runaway_guard_applied(monkeypatch):
     # A looping vision model must not flood the index; captions pass _collapse_runaway.
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: "\n".join(["LOOP"] * 40))
     out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
-    assert out[1][0].splitlines().count("LOOP") == 3  # 40 -> 3
+    assert out[1][0].splitlines().count("LOOP") == 3
 
 
 def test_caption_prompt_and_token_budget(monkeypatch):
-    # Caption and OCR keep separate prompts + token caps over the shared _vision_complete.
     captured: dict = {}
 
     def fake_vision_complete(base_url, model, image_bytes, *, prompt, timeout, max_tokens):
@@ -61,7 +59,6 @@ def test_caption_prompt_and_token_budget(monkeypatch):
 
     captioner._caption_one("http://x", "local", b"img", 12.0)
     prompt = captured["prompt"].lower()
-    # Unified prompt: transcribe every label (recall) + axis/legend coverage + describe.
     assert "transcribe" in prompt
     assert ("axis" in prompt or "axes" in prompt) and "legend" in prompt
     assert "do not invent" in prompt
@@ -88,7 +85,7 @@ def test_pages_with_figures_and_tiles(tmp_path):
     capped = parsers.render_pdf_figure_tiles(
         str(pdf), pgs, rows = 2, cols = 2, fullpage = True, max_tiles = 3
     )
-    assert len(capped) == 3  # max_tiles budget honored
+    assert len(capped) == 3
 
 
 def test_render_pdf_figure_tiles_zero_grid_no_crash(tmp_path):
@@ -104,12 +101,10 @@ def test_render_pdf_figure_tiles_zero_grid_no_crash(tmp_path):
     doc.close()
 
     out = parsers.render_pdf_figure_tiles(str(pdf), [1], rows = 0, cols = 0, fullpage = True)
-    assert len(out) == 2  # full page + a single 1x1 tile, no crash
+    assert len(out) == 2  # full page + a single 1x1 tile
 
 
 def test_pages_with_figures_excludes_given_pages(tmp_path):
-    # Pages OCR already transcribed (passed as exclude_pages) are skipped; every other
-    # figure page is still returned for tiling.
     import pymupdf
 
     from core.rag import parsers
@@ -137,7 +132,6 @@ def test_pages_with_figures_excludes_given_pages(tmp_path):
 def test_run_skips_figure_work_without_vision_model(
     rag_conn, stub_embeddings, monkeypatch, tmp_path
 ):
-    # No vision model -> the whole figure pass (detection + rasterization) is skipped.
     from core.rag import parsers
 
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
@@ -152,8 +146,8 @@ def test_run_skips_figure_work_without_vision_model(
 
     pdf = tmp_path / "fig.pdf"
     _figure_pdf(pdf)
-    _ingest_with_caption(rag_conn, "t1", pdf, None)  # follow config (ON), but no model
-    assert touched == []  # neither figure detection nor tiling ran
+    _ingest_with_caption(rag_conn, "t1", pdf, None)
+    assert touched == []
 
 
 def test_vision_complete_sends_auth_header(monkeypatch):
@@ -186,7 +180,6 @@ def test_vision_complete_sends_auth_header(monkeypatch):
 
 
 def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
-    # No api-key configured -> no spurious Authorization header on plain llama-server.
     import httpx
 
     monkeypatch.setattr(captioner, "_vision_auth_headers", lambda: None)
@@ -213,7 +206,7 @@ def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
 def test_merge_page_captions_dedups():
     out = captioner.merge_page_captions({1: ["MatMul\nScale", "Scale\nSoftMax"]})
     text = out[1][0]
-    assert text.lower().count("scale") == 1  # repeated label from overlapping tiles dropped
+    assert text.lower().count("scale") == 1
     assert "MatMul" in text and "SoftMax" in text
 
 
@@ -256,9 +249,6 @@ def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
     finally:
         conn.close()
     assert hits, "spliced caption text should be retrievable via lexical search"
-
-
-# ── per-upload caption override (parallels test_rag_ocr_fallback.py) ──
 
 
 def _figure_pdf(path):
@@ -305,7 +295,6 @@ def _ingest_with_caption(rag_conn, thread_id, path, caption):
 def test_caption_override_true_runs_when_config_off(
     rag_conn, stub_embeddings, monkeypatch, tmp_path
 ):
-    # Config default OFF, but the per-upload toggle (caption=True) forces captioning.
     from core.rag import tool
 
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
@@ -317,13 +306,12 @@ def test_caption_override_true_runs_when_config_off(
     _ingest_with_caption(rag_conn, "t1", pdf, True)
 
     text, _ = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
-    assert "wombat-7" in text  # the spliced figure caption reached the index
+    assert "wombat-7" in text
 
 
 def test_caption_override_false_skips_when_config_on(
     rag_conn, stub_embeddings, monkeypatch, tmp_path
 ):
-    # Config default ON, but the per-upload toggle (caption=False) skips captioning.
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
     called = []
@@ -333,11 +321,10 @@ def test_caption_override_false_skips_when_config_on(
     _figure_pdf(pdf)
     _ingest_with_caption(rag_conn, "t1", pdf, False)
 
-    assert called == []  # no vision caption calls despite config ON
+    assert called == []
 
 
 def test_caption_none_follows_config(rag_conn, stub_embeddings, monkeypatch, tmp_path):
-    # Omitted override (None) falls back to config.CAPTION_IMAGES.
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://x", "local"))
     seen = []
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: seen.append(1) or "chart caption")
@@ -346,10 +333,10 @@ def test_caption_none_follows_config(rag_conn, stub_embeddings, monkeypatch, tmp
     pdf_off = tmp_path / "off.pdf"
     _figure_pdf(pdf_off)
     _ingest_with_caption(rag_conn, "t1", pdf_off, None)
-    assert seen == []  # config OFF + no override -> no captioning
+    assert seen == []
 
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", True)
     pdf_on = tmp_path / "on.pdf"
     _figure_pdf(pdf_on)
     _ingest_with_caption(rag_conn, "t2", pdf_on, None)
-    assert seen  # config ON + no override -> captioning runs
+    assert seen
