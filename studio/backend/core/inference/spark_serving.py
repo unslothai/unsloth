@@ -1767,6 +1767,21 @@ def extra_args_refuse_pipeline_groups(
     return None
 
 
+def extra_args_fit_off(extra_args: Optional[List[str]] = None) -> bool:
+    """Whether the pass-through arguments turn llama-server's memory fitting off (the last -fit wins)."""
+    args = [str(a).strip() for a in extra_args or []]
+    off = False
+    for i, arg in enumerate(args):
+        name, eq, value = arg.partition("=")
+        if name not in ("-fit", "--fit"):
+            continue
+        if not eq:
+            value = args[i + 1] if i + 1 < len(args) else ""
+        # llama.cpp common_arg_utils::is_falsey
+        off = value in ("off", "disabled", "false", "0")
+    return off
+
+
 def _from_hub_repo(model_file: Optional[str]) -> bool:
     """Whether the load can still fetch a companion the directory does not have yet."""
     parts = Path(str(model_file or "")).parts
@@ -1878,6 +1893,12 @@ def pipeline_groups_plan(
     if refused:
         out["reason"] = (
             f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with {refused}"
+        )
+        return out
+    if extra_args_fit_off(extra_args):
+        # Every group holds the full context's KV; only llama-server's fit pass reserves room for the extra ones.
+        out["reason"] = (
+            f"{PIPELINE_GROUPS_FLAG} not added: --fit off leaves the extra groups' KV unaccounted"
         )
         return out
     if not (
