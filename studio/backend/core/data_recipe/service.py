@@ -592,8 +592,9 @@ def recipe_has_stdio_mcp(recipe: dict[str, Any]) -> bool:
     )
 
 
-_ENV_CREDENTIAL_KEYS = {"api_key_env", "token_env", "hf_token_env"}
-_LITERAL_CREDENTIAL_KEYS = {"api_key", "token", "hf_token"}
+# Each env fallback is read only when its literal key is empty.
+_ENV_CREDENTIAL_KEYS = {"api_key_env": "api_key", "token_env": "token", "hf_token_env": "hf_token"}
+_LITERAL_CREDENTIAL_KEYS = set(_ENV_CREDENTIAL_KEYS.values())
 
 
 def _names_env_credential(value: Any) -> bool:
@@ -602,7 +603,7 @@ def _names_env_credential(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
     for key, item in value.items():
-        if key in _ENV_CREDENTIAL_KEYS and item:
+        if key in _ENV_CREDENTIAL_KEYS and item and not value.get(_ENV_CREDENTIAL_KEYS[key]):
             return True
         if key in _LITERAL_CREDENTIAL_KEYS and isinstance(item, str) and item in os.environ:
             return True

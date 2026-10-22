@@ -58,6 +58,7 @@ def test_env_credentials_are_detected(recipe):
     [
         _recipe(model_providers = [_model_provider(api_key = "sk-literal-key")]),
         _recipe(model_providers = [_model_provider(api_key_env = "")]),
+        _recipe(model_providers = [_model_provider(api_key = "sk-literal-key", api_key_env = SECRET)]),
         _recipe(model_providers = [_model_provider(api_key_env = SECRET, is_local = True)]),
         _recipe(),
     ],
