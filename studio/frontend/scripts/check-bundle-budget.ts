@@ -367,8 +367,10 @@ export const BUDGET = {
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
   // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_076_150,
-  rawBytes: 6_891_300,
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  transferBytes: 2_076_193,
+  rawBytes: 6_891_324,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
