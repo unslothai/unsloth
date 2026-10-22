@@ -3082,6 +3082,7 @@ export const ja = {
       relativeNever: "なし",
       relativeJustNow: "たった今",
       expired: "期限切れ",
+      expiredStatus: "期限切れ",
       today: "今日",
       created: "作成日時 {value}",
       used: "使用日時 {value}",

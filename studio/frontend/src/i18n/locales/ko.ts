@@ -3099,6 +3099,7 @@ export const ko = {
       relativeNever: "없음",
       relativeJustNow: "방금",
       expired: "만료됨",
+      expiredStatus: "만료됨",
       today: "오늘",
       created: "생성: {value}",
       used: "마지막 사용: {value}",

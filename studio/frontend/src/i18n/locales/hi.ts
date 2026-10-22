@@ -3120,6 +3120,7 @@ export const hi = {
       relativeNever: "कभी नहीं",
       relativeJustNow: "अभी",
       expired: "समाप्त",
+      expiredStatus: "समाप्त",
       today: "आज",
       created: "बनाया गया: {value}",
       used: "उपयोग किया गया: {value}",

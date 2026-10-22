@@ -3130,6 +3130,7 @@ export const ptBR = {
       relativeNever: "nunca",
       relativeJustNow: "agora mesmo",
       expired: "expirado",
+      expiredStatus: "Expirado",
       today: "hoje",
       created: "Criado {value}",
       used: "Usado {value}",

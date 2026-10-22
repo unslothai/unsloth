@@ -3111,6 +3111,7 @@ export const ar = {
       relativeNever: "لا يوجد",
       relativeJustNow: "للتوّ",
       expired: "منتهي الصلاحية",
+      expiredStatus: "منتهي الصلاحية",
       today: "اليوم",
       created: "أُنشئ {value}",
       used: "آخر استخدام: {value}",
