@@ -259,3 +259,17 @@ def test_lookalike_hub_hosts_still_go_through_the_guard(monkeypatch, url):
     with pytest.raises(OSError):
         _typed_image_dataset(url)[0]
     assert calls == [url]
+
+
+@pytest.mark.parametrize(
+    "url", ["ftp://127.0.0.1/a.png", "sftp://10.0.0.1/a.png", "smb://host/share/a.png"]
+)
+def test_other_remote_schemes_are_refused_before_fsspec(monkeypatch, url):
+    import fsspec
+
+    def no_open(*args, **kwargs):
+        raise AssertionError("refused scheme reached fsspec")
+
+    monkeypatch.setattr(fsspec, "open", no_open)
+    with pytest.raises(OSError, match = "unsupported scheme"):
+        _typed_image_dataset(url)[0]

@@ -7,6 +7,24 @@ import functools
 
 _MAX_IMAGE_BYTES = 64 * 1024 * 1024
 _IMAGE_TIMEOUT_S = 30
+# Left to datasets: local paths (no scheme), the Hub, and cloud object stores.
+_DATASETS_OWN_SCHEMES = {
+    "",
+    "file",
+    "hf",
+    "http",
+    "https",
+    "s3",
+    "gs",
+    "gcs",
+    "az",
+    "abfs",
+    "abfss",
+}
+
+
+def _scheme(url):
+    return url.split("://", 1)[0].lower() if "://" in url else ""
 
 
 def fetch_untrusted_image_bytes(url):
@@ -62,6 +80,9 @@ def install_guarded_image_decode():
                 if "::" in path:
                     raise OSError(f"Refusing a remote archive image path: {path}")
                 value = {"path": None, "bytes": fetch_untrusted_image_bytes(path)}
+            elif _scheme(source) not in _DATASETS_OWN_SCHEMES:
+                # ftp://, sftp://, smb:// ... would reach fsspec with no address checks.
+                raise OSError(f"Refusing an image URL with an unsupported scheme: {path}")
         return original(self, value, token_per_repo_id)
 
     decode_example._unsloth_guarded = True
