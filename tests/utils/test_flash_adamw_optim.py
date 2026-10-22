@@ -566,4 +566,4 @@ def test_adamw_flash_updates_each_param_on_its_own_device(stub_flashoptim, monke
 
     assert entered == ["cuda:1", "cuda:0", "cuda:1"]
     assert updated == [("p1", "cuda:1"), ("p0", "cuda:0"), ("p1", "cuda:1"), ("cpu", "cuda:0")]
-    assert current == ["cuda:0"]  # the caller's device is restored
+    assert current == ["cuda:0"]
