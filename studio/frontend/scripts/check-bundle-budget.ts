@@ -359,15 +359,19 @@ export const BUDGET = {
   // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
   // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
   // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
-  // Lighter system polling (#14592: hidden-tab gating, Vulkan retry backoff, idle export poll, request
-  // timeout): +1,899 B raw / +657 B transfer (6,881,340 -> 6,883,239 B raw,
-  // 2,072,543 -> 2,073,200 B transfer against cb2590f395, Node 26, 97 chunks). Raised by that.
-  // Floating panels (#14601, on top of #14592): loaded models sources, sizes and empty states, live
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Lighter system polling (#14592: hidden-tab gating, Vulkan retry backoff, idle export poll,
+  // request timeout):
+  // +1,903 B raw / +545 B transfer (6,881,936 -> 6,883,839 B raw,
+  // 2,073,188 -> 2,073,733 B transfer against b2ba86a514, Node 26, 97 chunks). Raised by that.
+  // Floating panels (#14601, on top of #14592): loaded models rows, sizes and empty states, live
   // monitor stale and keyboard handling, and their strings in the eager locales:
-  // +10,586 B raw / +2,861 B transfer (6,883,239 -> 6,893,825 B raw,
-  // 2,073,200 -> 2,076,061 B transfer against #14592 at f7cc09db67, Node 26, 97 chunks). Raised by that.
-  transferBytes: 2_076_200,
-  rawBytes: 6_894_039,
+  // +10,605 B raw / +2,878 B transfer (6,883,839 -> 6,894,444 B raw,
+  // 2,073,733 -> 2,076,611 B transfer against #14592 at 55c4ea6c06, Node 26, 97 chunks). Raised by that.
+  transferBytes: 2_076_732,
+  rawBytes: 6_894_619,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
