@@ -2740,6 +2740,78 @@ def test_mlx_text_reuses_prompt_cache_on_the_next_turn(monkeypatch):
     assert stats["usage"]["prompt_tokens"] == 7
 
 
+def _zoo_image_prefill(monkeypatch, **helpers):
+    zoo = types.ModuleType("unsloth_zoo.mlx.generate")
+    zoo.__dict__.update(helpers)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", zoo)
+
+
+def test_an_image_turn_through_mlx_lm_feeds_its_embeddings_outside_the_prompt_cache(monkeypatch):
+    """Two images of one size expand to the same ids, so an image turn neither reuses nor banks a cache."""
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured, seen = [], []
+    token_map = {"P2": [1, 2, 3, 7, 8, 9, 10], "generated": [7, 8]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+    backend._reads_vision = True
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _tok, messages, **_kw: messages[-1]["content"]
+        if isinstance(messages[-1]["content"], str)
+        else "P1 with an image",
+    )
+    _zoo_image_prefill(
+        monkeypatch,
+        image_prompt_embeddings = lambda _m, _t, prompt, images: (
+            seen.append((prompt, images)) or ([1, 2, 3], "embedded")
+        ),
+    )
+    image = object()
+    messages = [{"role": "user", "content": "P1"}]
+    list(backend.generate_chat_response(messages = messages, image = image, max_new_tokens = 4))
+    _run_turn(backend, "P2")
+    assert seen == [("P1 with an image", [image])]
+    assert captured[0]["prompt"] == [1, 2, 3] and captured[0]["input_embeddings"] == "embedded"
+    assert "prompt_cache" not in captured[0] and captured[1]["prompt"] == token_map["P2"]
+
+
+def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypatch):
+    from core.inference import mlx_inference
+
+    inserted, rendered = [], []
+    generator = SimpleNamespace(
+        insert = lambda prompts, **kw: inserted.append((prompts, kw)) or [len(inserted)],
+        remove = lambda *_a, **_k: {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    _zoo_image_prefill(monkeypatch, prefill_image_prompt = lambda *_a: [1, 5, 5, 2])
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm, backend._reads_vision = False, True
+    backend._make_row_cache = lambda: ["cache"]
+    backend._batch_prompt_row = lambda prompt, _state: ([], [9], ["text cache"], "key", [9])
+    plan = SimpleNamespace(
+        prompt = "P", max_tokens = 4, sampler = None, processors = (), detokenizes = False, think_prefix = ""
+    )
+    backend._plan_text_row = lambda messages, **_kw: rendered.append(messages) or plan
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "mlx_lm.generate", generate)
+        session = mlx_inference._TextBatchSession(backend, width = 2)
+    image, messages = object(), [{"role": "user", "content": "hi"}]
+    backend._unset_generation_budget = lambda prompt, tokens: 100 - len(tokens)
+    session.admit({"messages": messages}, 0)
+    session.admit({"messages": messages, "image": image, "max_new_tokens": None}, 1)
+    assert rendered[0] == messages and {"type": "image"} in rendered[1][-1]["content"]
+    assert [kw["max_tokens"] for _prompts, kw in inserted] == [[4], [96]]
+    assert [(prompts, kw["caches"], kw["all_tokens"]) for prompts, kw in inserted] == [
+        ([[9]], [["text cache"]], [[]]),
+        ([[2]], [["cache"]], [[1, 5, 5]]),
+    ]
+    assert session._rows[1].cache_key is None and session._rows[1].prompt_len == 4
+    session.close()
+
+
 def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
     from core.inference import mlx_inference
 
@@ -4327,6 +4399,68 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     with pytest.raises(RuntimeError, match = "GPU Timeout"):
         mlx_inference.MLXInferenceBackend().load_model(config, kv_quant = "tq-4")
     assert attempts == [(False, None)]
+
+
+def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_prefills_them(
+    monkeypatch,
+):
+    """unsloth-zoo builds an image checkpoint mlx-vlm lacks (Muse Spark) through mlx-lm."""
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    attempts, built_by_mlx_vlm, reads_images = [], [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            model = SimpleNamespace(config = {}, _is_vlm_model = bool(built_by_mlx_vlm))
+            if reads_images:
+                model._unsloth_supports_images = True
+            return model, SimpleNamespace(tokenizer = "inner")
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(
+        mlx_inference, "_classify_mlx_audio_type", lambda *a, config_audio_type: config_audio_type
+    )
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (2048, 2048, 2048)
+    )
+    vision = SimpleNamespace(
+        identifier = "org/vision", is_vision = True, is_lora = False, audio_type = "audio_vlm"
+    )
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(vision, kv_quant = "tq-4")
+    assert attempts == [False]
+    entry = backend.models["org/vision"]
+    assert entry["audio_type"] is None and entry["has_audio_input"] is False
+    assert backend._is_vlm is False and backend._processor is None
+    assert backend._reads_vision_input() is False
+    assert backend.models["org/vision"]["is_vision"] is False
+    assert backend._turboquant_refusal == mlx_inference.MLX_TURBOQUANT_TEXT_LOAD
+
+    reads_images.append(True)
+    generate = types.ModuleType("unsloth_zoo.mlx.generate")
+    for zoo_prefills in (False, True):
+        if zoo_prefills:
+            generate.prefill_image_prompt = object()
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", generate)
+        backend = mlx_inference.MLXInferenceBackend()
+        backend.load_model(vision, kv_quant = "tq-4")
+        assert backend._is_vlm is False and backend._reads_vision_input() is zoo_prefills
+        assert backend.models["org/vision"]["is_vision"] is zoo_prefills
+        assert backend.models["org/vision"]["audio_type"] is None
+        assert backend._turboquant_refusal == mlx_inference.MLX_TURBOQUANT_TEXT_LOAD
+
+    reads_images.clear()
+    built_by_mlx_vlm.append(True)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(vision)
+    assert backend._is_vlm is True and backend._reads_vision_input() is True
+    assert backend.models["org/vision"]["is_vision"] is True
 
 
 def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
