@@ -95,7 +95,8 @@ _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
-_URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"]+@")
+# Scheme capped at 32 chars: unbounded, every log string is scanned quadratically ("a." * 50000 took seconds).
+_URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]{0,31}://)[^/\s@'\"]+@")
 _EXCLUDED_PATHS = {
     "/api/train/status",
     "/api/train/metrics",
@@ -367,7 +368,7 @@ def filter_sensitive_data(logger, method_name, event_dict):
             except Exception:
                 pass
             value = _NATIVE_PATH_LEASE_RE.sub(r"\1<redacted native path lease>", value)
-            return _URL_CREDENTIAL_RE.sub(r"\1<redacted>@", value)
+            return _URL_CREDENTIAL_RE.sub(r"\1<redacted>@", value) if "://" in value else value
         elif isinstance(value, dict):
             return {
                 k: "<redacted native path lease>"

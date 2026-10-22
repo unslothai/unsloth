@@ -102,3 +102,11 @@ class TestNativePathLeaseRedactionStillWorks:
         )
         assert "hunter2" not in repr(out)
         assert "http://<redacted>@127.0.0.1:9/v1/models" in out["event"]
+
+    def test_url_credential_scan_stays_linear_on_long_unbroken_text(self):
+        import time
+
+        start = time.perf_counter()
+        out = _run({"event": "a." * 50000 + " s3://key:secret@bucket/k"})
+        assert time.perf_counter() - start < 1.0
+        assert out["event"].endswith(" s3://<redacted>@bucket/k")
