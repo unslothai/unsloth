@@ -137,8 +137,7 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     ids = ["fullgraph", "default", "suppress_errors"],
 )
 def test_outer_compile_owns_the_block(monkeypatch, fullgraph, suppress):
-    """A user's torch.compile around a wrapped layer: no maybe_mark_dynamic inside the trace (forbidden),
-    no nested compiled call, one graph with no break, same output and grads as the stock forward."""
+    """Enclosing compile: no maybe_mark_dynamic or nested compile, one graph, stock output and grads."""
     from torch._dynamo.utils import counters
 
     M = _load()
@@ -182,14 +181,12 @@ def test_outer_compile_owns_the_block(monkeypatch, fullgraph, suppress):
     assert counters["stats"]["unique_graphs"] == 1
     torch._dynamo.reset()
 
-    # Standalone still runs the block's own compiled region.
     layer(x.clone().requires_grad_()).sum().backward()
     assert inner
 
 
 def _install_blocks(M, model, monkeypatch):
-    """patch_block_compile on CPU (install gate spoofed) with the block's own compile on the eager
-    backend; every class and hook it touches is restored at teardown. Returns the inner-call log."""
+    """patch_block_compile on CPU with an eager inner compile, restored at teardown."""
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
     for cls in {type(m) for m in model.modules()}:
@@ -237,9 +234,7 @@ def _outer_loss(model, ids, fullgraph, backend = "aot_eager"):
 
 
 def _stock_modeling(monkeypatch, name):
-    """Reload transformers' modeling module for `name` so the test sees stock classes (zoo's
-    temporary patches, applied when the suite imports it, swap Qwen MoE experts for an eager loop
-    that is torch.compiler.disable'd on CPU). The module namespace is restored at teardown."""
+    """Reload stock modeling classes: zoo patches swap Qwen MoE experts for a compiler-disabled loop."""
     import importlib
 
     module = importlib.import_module(f"transformers.models.{name}.modeling_{name}")
@@ -272,8 +267,7 @@ def _tiny_qwen3_moe(request, monkeypatch):
 
 @pytest.mark.parametrize("fullgraph", [True, False], ids = ["fullgraph", "default"])
 def test_outer_compile_traces_decode_aware_moe(request, monkeypatch, fullgraph):
-    """Qwen3-MoE's sparse block is torch_compiler_disable_unless_decode: inside a block it is traced
-    (UNSLOTH_DECODE_COMPILE set), so an enclosing compile must see the same flag or it breaks."""
+    """Qwen3-MoE sparse block is disable_unless_decode: an enclosing compile needs the same flag."""
     import unsloth_zoo.temporary_patches.utils as zoo_utils
 
     M = _load()
@@ -296,8 +290,7 @@ def test_outer_compile_traces_decode_aware_moe(request, monkeypatch, fullgraph):
 
 
 def test_outer_compile_keeps_selective_experts_eager(request, monkeypatch):
-    """UNSLOTH_MOE_SELECTIVE_DEQUANT plans on the host: a first call through an enclosing compile
-    still moves the 4-bit experts out of the graph (one break, then whole) instead of tracing them."""
+    """Selective dequant under an enclosing compile still moves 4-bit experts out (one break)."""
     M = _load()
     torch.manual_seed(0)
     model = _tiny_qwen3_moe(request, monkeypatch)
@@ -332,8 +325,7 @@ def test_outer_compile_keeps_selective_experts_eager(request, monkeypatch):
 
 
 def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
-    """A GatedDeltaNet layer first reached through an enclosing compile runs _prepare_gdn eagerly
-    (fla self-check, sm-count routing) before the trace enters the layer; later traces stay whole."""
+    """GDN first reached under an enclosing compile runs _prepare_gdn eagerly; later traces stay whole."""
     from transformers import AutoModelForCausalLM
 
     M = _load()
@@ -366,7 +358,6 @@ def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
     loss, _, _ = _outer_loss(model, ids, fullgraph = False, backend = "eager")
     torch.testing.assert_close(loss, want)
     assert calls == [False] and M._GDN_OP[0] is not None and inner == []
-    # Warm: no eager detour left, so the enclosing fullgraph compile holds the whole model.
     loss, breaks, graphs = _outer_loss(model, ids, fullgraph = True, backend = "eager")
     torch.testing.assert_close(loss, want)
     assert breaks == {} and graphs == 1 and calls == [False]

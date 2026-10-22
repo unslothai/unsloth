@@ -940,8 +940,7 @@ def _experts_outside(layer):
 
 
 def _experts_may_move(layer):
-    """At patch time: could _experts_outside move this layer's experts? Read while an enclosing
-    torch.compile traces the layer, where the decision itself (bytecode scan) cannot run."""
+    """Could _experts_outside move these experts? Precomputed: its bytecode scan cannot run while tracing."""
     if os.environ.get("UNSLOTH_BLOCK_MOE", "auto") == "inside":
         return False
     for module in layer.modules():
@@ -956,7 +955,6 @@ def _experts_may_move(layer):
 
 
 def _eager_setup_pending(layer):
-    # Traceable: only flags and attributes. Dense layers never take the eager detour.
     return (
         not layer.__dict__.get("_unsloth_block_moe_done", False)
         and layer.__dict__.get("_unsloth_block_moe_may_move", False)
@@ -965,9 +963,7 @@ def _eager_setup_pending(layer):
 
 @torch.compiler.disable
 def _eager_setup(layer, hidden_states):
-    """The block's first-call setup when that call comes through an enclosing torch.compile:
-    moving experts out of the graph and fla's GDN self-check need real tensors and eager code.
-    One graph break on the first trace; the flags it sets keep later traces whole."""
+    """Eager first-call setup under an enclosing compile (expert move, GDN self-check): one break, once."""
     if not layer.__dict__.get("_unsloth_block_moe_done", False):
         _experts_outside(layer)
     if _GDN_OP[0] is None and hasattr(layer, "linear_attn"):
