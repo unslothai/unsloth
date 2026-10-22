@@ -209,34 +209,55 @@ def _bias_router_model(model_type):
 
 
 @pytest.mark.parametrize("model_type", ["minimax_m2", "hy_v3", "lfm2_moe"])
-def test_correction_bias_routers_are_primed_and_compile_cold(replay, model_type):
+def test_sigmoid_correction_bias_routers_route_naturally_with_a_warning(replay, model_type):
     # MiniMax-M2 / HY-V3: TopKRouter.forward(hidden_states, e_score_correction_bias), the bias a
-    # buffer of the parent MoE block; LFM2-MoE: forward(hidden_states, expert_bias = None).
+    # buffer of the parent MoE block; LFM2-MoE: forward(hidden_states, expert_bias = None). All three
+    # take sigmoid(logits) top-k weights, which no zoo replay formula reproduces: priming must reach
+    # the router (no TypeError), then take the hooks off and say so.
     model = _bias_router_model(model_type)
-    _run_post_init(model)
-    pairs = [
-        (parent, child) for parent in model.modules() for child in parent.children()
-        if "TopKRouter" in type(child).__name__
-    ]
-    assert pairs
-    for parent, router in pairs:
-        assert router._forward_hooks, type(router).__name__
-        assert getattr(router, "_unsloth_replay_formula", None) is not None, type(router).__name__
-    parent, router = pairs[0]
-    bias_name = "expert_bias" if model_type == "lfm2_moe" else "e_score_correction_bias"
-    bias = getattr(parent, bias_name)
-    x = torch.randn(5, 32, generator = torch.Generator().manual_seed(1))
+    routers = [m for m in model.modules() if "TopKRouter" in type(m).__name__]
+    if not routers:
+        pytest.skip(f"{model_type} has no TopKRouter module in this transformers (gate inside the MoE block)")
+    ids = [5, 6, 7, 30, 31, 32]
     with torch.no_grad():
-        natural = router.forward(x, bias)[2]
-    rr._STATE.in_forward, rr._STATE.record = True, None
-    rr._STATE.current = ((natural + 3) % EXPERTS)[:, None, :].expand(-1, LAYERS, -1).contiguous()
-    try:
-        compiled = torch.compile(router, backend = "eager", fullgraph = True)
-        compiled(x, bias)
-    finally:
-        rr._STATE.in_forward, rr._STATE.current = False, None
+        natural = model(input_ids = torch.tensor([ids])).logits
+    name = type(routers[0]).__name__
+    with pytest.warns(UserWarning, match = rf"routing replay is off for {len(routers)} router.*{name} \(routing replay has no weight formula"):
+        _run_post_init(model)
+    assert all(not r._forward_hooks for r in routers)
+    # A recorded rollout with other experts no longer changes anything.
+    layers = model.config.num_hidden_layers
+    forced = np.full((len(ids) - 1, layers, TOP_K), 0, dtype = np.int16)
+    forced[..., 1] = 1
+    rr.record_routed_experts([SimpleNamespace(
+        prompt_token_ids = ids[:3], outputs = [SimpleNamespace(token_ids = ids[3:], routed_experts = forced)],
+    )], pad_token_id = PAD)
     with torch.no_grad():
-        model(input_ids = torch.tensor([[5, 6, 7, 8]]))
+        torch.testing.assert_close(model(input_ids = torch.tensor([ids])).logits, natural)
+
+
+def test_formula_that_only_fits_the_priming_input_is_rejected(replay):
+    # A sigmoid router with tiny logits: on the priming input every weight is ~1 / k, so the zoo's
+    # softmax_renorm fits there; on spread logits it does not reproduce the router's weights.
+    import torch.nn.functional as F
+
+    model = _moe()
+    original = type(model.model.layers[0].mlp.gate)
+
+    class SigmoidTopKRouter(original):
+        def forward(self, hidden_states):
+            hidden_states = hidden_states.reshape(-1, self.hidden_dim)
+            logits = F.linear(hidden_states, self.weight)
+            weights, ids = logits.float().sigmoid().topk(self.top_k, dim = -1)
+            return logits, (weights / weights.sum(-1, keepdim = True)).to(logits.dtype), ids
+
+    gate = model.model.layers[0].mlp.gate
+    gate.__class__ = SigmoidTopKRouter
+    gate.weight.data.normal_(0, 1e-4)
+    with pytest.warns(UserWarning, match = r"SigmoidTopKRouter \(the softmax_renorm weight formula does not reproduce"):
+        _run_post_init(model)
+    assert not gate._forward_hooks
+    assert model.model.layers[1].mlp.gate._forward_hooks  # the real softmax router passes the check
 
 
 def test_router_that_cannot_be_primed_loses_its_hook_with_a_warning(replay):

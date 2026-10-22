@@ -107,8 +107,6 @@ def _prime_formula(rr, module, hook, layers, parent = None):
     """Run the zoo hook once, eagerly, on a synthetic router call whose replay is the natural
     routing: it picks and caches module._unsloth_replay_formula exactly as the first real call
     would. Returns None when primed, else why it could not be."""
-    if getattr(module, "_unsloth_replay_formula", None) is not None:
-        return None
     weight = getattr(module, "weight", None)
     hidden = getattr(module, "hidden_dim", None) or getattr(module, "in_features", None)
     if hidden is None and torch.is_tensor(weight) and weight.dim() == 2:
@@ -124,6 +122,8 @@ def _prime_formula(rr, module, hook, layers, parent = None):
     fields = ("current", "in_forward", "record", "pending", "recomputed", "changed")
     old = {f: getattr(state, f) for f in fields}
     old_stats = dict(state.stats)
+    if getattr(module, "_unsloth_replay_formula", None) is not None:
+        return _check_formula(rr, module, x, extra)  # already picked (an earlier install)
     try:
         with torch.no_grad():
             output = module.forward(x, **extra)  # no hooks: the zoo hook is called by hand below
@@ -143,6 +143,44 @@ def _prime_formula(rr, module, hook, layers, parent = None):
         state.stats.update(old_stats)
     if getattr(module, "_unsloth_replay_formula", None) is None:
         return "the routing replay hook did not pick a weight formula"
+    return _check_formula(rr, module, x, extra)
+
+
+# The check also runs with the input scaled so the router logits spread to these standard
+# deviations: near-zero logits make every formula give ~1 / k, so the priming input alone can let a
+# wrong formula through (sigmoid routing matched by softmax).
+_CHECK_LOGIT_STDS = (1.0, 4.0)
+
+
+def _check_formula(rr, module, x, extra):
+    """None when the cached zoo formula reproduces this router's own top-k weights, else why not.
+    The zoo stores False when it found none (sigmoid / correction bias routers, MiniMax-M2, HY-V3,
+    LFM2-MoE): replay would silently keep natural routing there, so it counts as a failure too."""
+    formula = getattr(module, "_unsloth_replay_formula", None)
+    if formula is False or formula is None:
+        return "routing replay has no weight formula for this router (e.g. sigmoid routing)"
+    fn = rr._formulas().get(formula) if hasattr(rr, "_formulas") else None
+    if fn is None:
+        return f"unknown routing replay weight formula {formula!r}"
+    with torch.no_grad():
+        output = module.forward(x, **extra)
+        positions = rr._split_router_output(output)
+        if positions is None:
+            return "its outputs are not (logits, weights, ids)"
+        spread = float(output[positions[0]].float().std())
+        scales = [1.0] + ([min(t / spread, 1e6) for t in _CHECK_LOGIT_STDS] if spread > 0 else [])
+        for scale in scales:
+            output = module.forward(x * scale, **extra)
+            positions = rr._split_router_output(output)
+            if positions is None:
+                return "its outputs are not (logits, weights, ids)"
+            li, wi, ii, dense = positions
+            logits = output[li].reshape(-1, output[li].shape[-1])
+            ids = output[ii].reshape(-1, output[ii].shape[-1]).long()
+            weights = output[wi].reshape(logits.shape).gather(-1, ids) if dense else output[wi].reshape(ids.shape)
+            candidate = fn(logits, ids).to(weights.dtype).float()
+            if not torch.allclose(candidate, weights.float(), rtol = 2e-2, atol = 2e-3):
+                return f"the {formula} weight formula does not reproduce its routing weights"
     return None
 
 
