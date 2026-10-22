@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useLoginMode } from "@/features/auth/account-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,38 +10,53 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
+import { useLoginMode } from "@/features/auth/account-session";
 import {
   loadRemoteAccess,
   startRemoteAccess,
   stopRemoteAccess,
   updateRemoteAccessAutoStart,
+  updateRemoteAccessConfig,
 } from "@/features/settings/api/remote-access";
 import {
   type RemoteAccessStatus,
+  type TunnelMode,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
   remoteAccessPollDelay,
   remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
 } from "@/features/settings/api/remote-access-state";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
-  QrCodeIcon,
   HomeWifiIcon,
+  QrCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
+import {
+  NamedTunnelSettings,
+  namedTunnelErrorMessage,
+} from "./named-tunnel-settings";
 import { SettingsRow } from "./settings-row";
 
-type RemoteAccessOperation = "start" | "stop" | "auto";
+type RemoteAccessOperation = "start" | "stop" | "auto" | "config" | "named";
 
 const STATE_LABEL: Record<RemoteAccessStatus["state"], string> = {
   off: "Off",
@@ -222,10 +236,12 @@ function RemotePasswordRow({
 }
 
 export function RemoteAccessSection() {
+  const t = useT();
   const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
   const [busy, setBusy] = useState<RemoteAccessOperation | null>(null);
   const [pollRevision, setPollRevision] = useState(0);
   const [pollEnabled, setPollEnabled] = useState(true);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const mutationEpoch = useRef(0);
   const pollSuppressed = useRef(false);
   const selfStopDisconnectExpected = useRef(false);
@@ -307,16 +323,24 @@ export function RemoteAccessSection() {
     request: () => Promise<RemoteAccessStatus>,
     pausePollingAfterSuccess = false,
   ) => {
+    if (pollSuppressed.current) {
+      return false;
+    }
     mutationEpoch.current += 1;
     pollSuppressed.current = true;
     setBusy(operation);
+    setRequestError(null);
     try {
       applyStatus(await request());
       if (pausePollingAfterSuccess) {
         selfStopDisconnectExpected.current = true;
       }
-    } catch {
-      // Polling resumes below and reconciles the visible state.
+      return true;
+    } catch (error) {
+      setRequestError(
+        namedTunnelErrorMessage(error instanceof Error ? error.message : "", t),
+      );
+      return false;
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
@@ -381,8 +405,11 @@ export function RemoteAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices through a secure,
-              temporary Cloudflare URL.
+              {t(
+                status?.mode === "named"
+                  ? "settings.namedTunnel.namedDescription"
+                  : "settings.namedTunnel.quickDescription",
+              )}
             </p>
           </div>
         </div>
@@ -399,17 +426,54 @@ export function RemoteAccessSection() {
       </div>
 
       <StatusMessage
-        message={blockMessage ?? status?.error}
+        message={
+          requestError ??
+          blockMessage ??
+          status?.error ??
+          (status?.configurationError
+            ? namedTunnelErrorMessage(status.configurationError, t)
+            : null)
+        }
         destructive={!blockMessage}
       />
       <RemoteUrlPanel url={status?.url ?? null} />
 
       <div className="border-t border-border/60 px-4 py-1">
+        <SettingsRow label={t("settings.namedTunnel.mode")}>
+          <Select
+            value={status?.mode ?? "quick"}
+            disabled={busy !== null || !status?.canConfigure}
+            onValueChange={(mode) =>
+              void perform("config", () =>
+                updateRemoteAccessConfig({ mode: mode as TunnelMode }),
+              )
+            }
+          >
+            <SelectTrigger
+              className="w-52 max-w-full"
+              aria-label={t("settings.namedTunnel.mode")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="quick">
+                {t("settings.namedTunnel.quick")}
+              </SelectItem>
+              <SelectItem value="named">
+                {t("settings.namedTunnel.named")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
         <RemotePasswordRow status={status} onDone={refreshStatus} />
 
         <SettingsRow
           label="Start automatically"
-          description="Create a new remote URL each time Unsloth starts. Stopping remote access now won’t turn this off."
+          description={t(
+            status?.mode === "named"
+              ? "settings.namedTunnel.namedAutoStart"
+              : "settings.namedTunnel.quickAutoStart",
+          )}
         >
           <Switch
             checked={status?.autoStart ?? false}
@@ -419,6 +483,13 @@ export function RemoteAccessSection() {
           />
         </SettingsRow>
       </div>
+      {status?.mode === "named" ? (
+        <NamedTunnelSettings
+          status={status}
+          busy={busy !== null}
+          perform={(request) => perform("named", request)}
+        />
+      ) : null}
     </section>
   );
 }

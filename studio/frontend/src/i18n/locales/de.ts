@@ -3107,10 +3107,86 @@ export const de = {
       title: "Verbindungen",
       description: "Verwalten Sie Anbieter und externe Verbindungen.",
     },
+    namedTunnel: {
+      mode: "Verbindungsart",
+      quick: "Temporärer Link",
+      named: "Eigene Domain",
+      method: "Einrichtung",
+      automatic: "Automatisch",
+      existing: "Mit Cloudflare-Token verbinden",
+      hostname: "Domain",
+      token: "Cloudflare-Token",
+      keepToken: "Leer lassen, um das gespeicherte Token zu behalten.",
+      originHint:
+        "Leite diesen Hostnamen im Cloudflare-Dashboard an {origin} weiter. Studio ändert diese Weiterleitung nicht.",
+      prepareHint:
+        "Richte hier die Verbindung ein und aktiviere sie anschließend mit Start. Autostart bleibt unverändert.",
+      remove: "Entfernen",
+      removeTitle: "Zugriff über eigene Domain entfernen?",
+      removeAuto:
+        "Cloudflare-Verbindung für {hostname} entfernen? Der DNS-Eintrag bleibt in deinem Cloudflare-Konto bestehen und muss manuell entfernt werden.",
+      removeToken:
+        "Lokale Zugangsdaten für {hostname} entfernen? Deine Cloudflare-Verbindung und der DNS-Eintrag bleiben im Konto erhalten.",
+      authorizeAgain: "Erneut autorisieren",
+      setup: "Einrichten",
+      openLogin: "Cloudflare-Anmeldung öffnen",
+      dnsCleanup:
+        "Der DNS-Eintrag {hostname} bleibt bei Cloudflare bestehen. Entferne ihn manuell, wenn er nicht mehr benötigt wird.",
+      dnsConflictTitle: "DNS-Eintrag bereits vorhanden",
+      dnsConflict:
+        "Für {hostname} existiert bereits ein DNS-Eintrag. Durch eine Weiterleitung zu Unsloth ersetzen? Der bisherige Eintrag wird nicht wiederhergestellt.",
+      overwrite: "Überschreiben",
+      quickDescription:
+        "Erhalte einen öffentlichen Link. Bei einem Neustart kann sich die Adresse ändern.",
+      namedDescription:
+        "Nutze eine feste Adresse wie studio.example.com. Dafür benötigst du eine Domain bei Cloudflare.",
+      quickAutoStart:
+        "Beim Start von Unsloth eine neue Remote-URL erstellen. Stoppen deaktiviert Autostart nicht.",
+      namedAutoStart:
+        "Beim Start von Unsloth automatisch mit deiner Domain verbinden.",
+      states: {
+        preparing: "Cloudflare wird vorbereitet…",
+        awaiting_login:
+          "Autorisiere die Verbindung im Browser. Falls sich kein Tab geöffnet hat, nutze den Anmeldelink.",
+        configuring: "Verbindung und Domain-Weiterleitung werden eingerichtet…",
+        dns_conflict:
+          "Deine Entscheidung zum bestehenden DNS-Eintrag wird erwartet.",
+        ready: "Eingerichtet. Mit Start verbinden.",
+        removing: "Cloudflare-Verbindung wird entfernt…",
+        removed: "Zugriff über eigene Domain entfernt.",
+        error: "Einrichtung fehlgeschlagen.",
+      },
+      errors: {
+        hostname:
+          "Gib einen DNS-Hostnamen ohne Schema, Port, Pfad, IP-Adresse oder Wildcard ein.",
+        token: "Gib ein gültiges Cloudflare-Tunnel-Token ein.",
+        removeFirst:
+          "Entferne die gespeicherte Domain-Verbindung, bevor du die Adresse oder Einrichtungsart änderst.",
+        busy: "Beende zuerst den Fernzugriff und warte, bis der laufende Vorgang abgeschlossen ist.",
+        login:
+          "Cloudflare-Autorisierung fehlgeschlagen oder abgelaufen. Autorisiere die Verbindung erneut.",
+        timeout:
+          "Zeitüberschreitung. Wiederhole den Vorgang, um die gespeicherte Einrichtung fortzusetzen.",
+        cancelled:
+          "Einrichtung abgebrochen. Eine bereits erstellte Verbindung bleibt erhalten.",
+        dns: "DNS-Weiterleitung fehlgeschlagen. Prüfe Hostnamen und Cloudflare-Zone und versuche es erneut.",
+        zone: "Prüfe vor dem Wiederholen die ausgewählte Cloudflare-Zone und gegebenenfalls den DNS-Bereinigungshinweis.",
+        remove:
+          "Die Verbindung konnte nicht entfernt werden. Versuche es erneut.",
+        stillActive:
+          "Cloudflare meldet die Verbindung noch als aktiv. Warte ein paar Minuten und versuche es erneut.",
+        statusUnavailable:
+          "Der Verbindungsstatus konnte bei Cloudflare nicht geprüft werden. Versuche es später erneut.",
+        credentials:
+          "Die gespeicherten Zugangsdaten sind nicht lesbar oder ungültig.",
+        generic:
+          "Vorgang fehlgeschlagen. Prüfe die Verbindung und versuche es erneut.",
+      },
+    },
     remoteLan: {
       title: "Remote & LAN",
       description:
-        "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
+        "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine Cloudflare-URL.",
     },
     apiKeys: {
       title: "API",

@@ -341,6 +341,87 @@ def test_stop_terminates_process():
     t.stop()
 
 
+def test_named_connector_keeps_lease_until_process_exit(monkeypatch):
+    from utils import cloudflare_named_tunnel as named
+
+    releases, popen_calls = [], []
+    bundle = {"hostname": "studio.example.com", "configuration_id": "configuration"}
+    monkeypatch.setattr(
+        named,
+        "prepare_connector",
+        lambda *args: (
+            ["cloudflared", "tunnel", "run"],
+            {"TUNNEL_TOKEN": "private"},
+            lambda: releases.append(True),
+        ),
+    )
+    proc = _FakePopen()
+    monkeypatch.setattr(ct, "_spawn_child", lambda spawn: spawn())
+    monkeypatch.setattr(ct, "_adopt_pid", lambda pid: None)
+    monkeypatch.setattr(ct, "_forget_pid", lambda pid: None)
+    monkeypatch.setattr(
+        ct.subprocess, "Popen", lambda cmd, **kwargs: (popen_calls.append((cmd, kwargs)), proc)[1]
+    )
+    tunnel = ct.CloudflareTunnel(9123, "cloudflared", origin_host = "::1", named_tunnel = bundle)
+    monkeypatch.setattr(tunnel, "_reader", lambda p: None)
+    tunnel.start()
+    assert tunnel.url == "https://studio.example.com"
+    assert popen_calls[0][1]["env"] == {"TUNNEL_TOKEN": "private"}
+    monkeypatch.setattr(proc, "terminate", lambda: (_ for _ in ()).throw(OSError()))
+    assert tunnel.stop() is False
+    assert releases == []
+    proc._alive = False
+    assert tunnel.stop() is True
+    assert releases == [True]
+
+
+def test_quick_connector_cannot_inherit_named_tunnel_options(monkeypatch):
+    calls = []
+    monkeypatch.setenv("TUNNEL_TOKEN", "parent-token")
+    monkeypatch.setenv("TUNNEL_FORCE_PROVISIONING_DNS", "true")
+    monkeypatch.setattr(ct, "_spawn_child", lambda spawn: spawn())
+    monkeypatch.setattr(ct, "_adopt_pid", lambda pid: None)
+    monkeypatch.setattr(ct, "_forget_pid", lambda pid: None)
+    monkeypatch.setattr(
+        ct.subprocess, "Popen", lambda cmd, **kwargs: (calls.append(kwargs), _FakePopen())[1]
+    )
+    tunnel = ct.CloudflareTunnel(8888, "cloudflared")
+    monkeypatch.setattr(tunnel, "_reader", lambda proc: None)
+    try:
+        tunnel.start()
+        assert "TUNNEL_TOKEN" not in calls[0]["env"]
+        assert "TUNNEL_FORCE_PROVISIONING_DNS" not in calls[0]["env"]
+    finally:
+        tunnel.stop()
+
+
+@pytest.mark.parametrize(
+    "served_id,expected",
+    [("local-installation", True), ("other-installation", False), (None, False)],
+)
+def test_verify_public_url_named_requires_same_installation(monkeypatch, served_id, expected):
+    import json
+
+    edges = []
+    monkeypatch.setattr(ct, "_verify_through_edge", lambda *args: (edges.append(True), True)[1])
+    _patch_urlopen(
+        monkeypatch,
+        lambda req: _FakeResponse(
+            json.dumps({"service": ct._PUBLIC_PROBE_MARKER, "studio_root_id": served_id}).encode()
+        ),
+    )
+    assert (
+        ct.verify_public_url(
+            "https://studio.example.com",
+            timeout = 0,
+            expected_root_id = "local-installation",
+            named = True,
+        )
+        is expected
+    )
+    assert edges == []
+
+
 def test_runtime_callback_covers_process_start_through_stop(monkeypatch):
     events = []
     starts_admitted = []

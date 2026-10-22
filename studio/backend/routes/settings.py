@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     StrictBool,
     StrictInt,
     StrictStr,
@@ -194,8 +195,11 @@ from utils.lan_access_settings import (
 )
 from utils.remote_access_settings import (
     DEFAULT_REMOTE_ACCESS_AUTO_START,
+    configure_remote_access_tunnel,
     remote_access_status,
+    remove_named_remote_access,
     set_remote_access_auto_start,
+    setup_named_remote_access,
     start_remote_access,
     stop_remote_access,
 )
@@ -4131,6 +4135,64 @@ class RemoteAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
 
+class RemoteAccessConfigPayload(BaseModel):
+    mode: Literal["quick", "named"]
+    hostname: Optional[str] = None
+    token: Optional[SecretStr] = None
+
+
+class NamedTunnelSetupPayload(BaseModel):
+    hostname: str
+    reauthenticate: StrictBool = False
+
+
+class NamedTunnelOperationPayload(BaseModel):
+    operation_id: str
+
+
+class NamedTunnelDnsPayload(NamedTunnelOperationPayload):
+    hostname: str
+    tunnel_id: str
+
+
+class NamedTunnelRemovePayload(BaseModel):
+    configuration_id: str
+
+
+class NamedTunnelConfiguration(BaseModel):
+    configuration_id: str
+    method: Literal["automatic", "token"]
+    hostname: str
+    ready: bool
+    tunnel_id: Optional[str] = None
+    dns_cleanup_hostname: Optional[str] = None
+
+
+class NamedTunnelSetupStatus(BaseModel):
+    operation_id: str
+    state: Literal[
+        "preparing",
+        "awaiting_login",
+        "configuring",
+        "dns_conflict",
+        "ready",
+        "removing",
+        "removed",
+        "error",
+    ]
+    hostname: str
+    tunnel_id: Optional[str] = None
+    auth_url: Optional[str] = None
+    error: Optional[str] = None
+    dns_cleanup_hostname: Optional[str] = None
+    active: bool
+
+
+class NamedTunnelStatus(BaseModel):
+    configuration: Optional[NamedTunnelConfiguration] = None
+    setup: Optional[NamedTunnelSetupStatus] = None
+
+
 class RemoteAccessResponse(BaseModel):
     state: Literal["off", "starting", "online", "stopping", "error"]
     url: Optional[str] = None
@@ -4144,6 +4206,11 @@ class RemoteAccessResponse(BaseModel):
     block_reason: Optional[str] = None
     password_pending: bool = False
     streaming_supported: bool = True
+    mode: Literal["quick", "named"] = "quick"
+    named: NamedTunnelStatus = Field(default_factory = NamedTunnelStatus)
+    can_configure: bool = False
+    configuration_error: Optional[str] = None
+    local_origin: Optional[str] = None
 
 
 def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
@@ -4217,6 +4284,93 @@ def update_remote_access_auto_start(
         payload.enabled,
     )
     return _remote_access_response(request)
+
+
+@_owner_settings_router.put("/remote-access/config", response_model = RemoteAccessResponse)
+def update_remote_access_config(
+    request: Request,
+    payload: RemoteAccessConfigPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = configure_remote_access_tunnel(
+            request.app.state,
+            mode = payload.mode,
+            hostname = payload.hostname,
+            token = payload.token.get_secret_value() if payload.token is not None else None,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code = 409 if isinstance(exc, RuntimeError) else 422, detail = str(exc)
+        ) from exc
+    return RemoteAccessResponse(**status)
+
+
+@_owner_settings_router.post("/remote-access/named/setup", response_model = RemoteAccessResponse)
+def setup_named_tunnel(
+    request: Request,
+    payload: NamedTunnelSetupPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = setup_named_remote_access(
+            request.app.state, payload.hostname, reauthenticate = payload.reauthenticate
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code = 409 if isinstance(exc, RuntimeError) else 422, detail = str(exc)
+        ) from exc
+    return RemoteAccessResponse(**status)
+
+
+@_owner_settings_router.post(
+    "/remote-access/named/setup/confirm-dns", response_model = RemoteAccessResponse
+)
+def confirm_named_tunnel_dns(
+    request: Request,
+    payload: NamedTunnelDnsPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    from utils.cloudflare_named_tunnel import confirm_dns
+    try:
+        confirm_dns(payload.operation_id, payload.hostname, payload.tunnel_id)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return _remote_access_response(request)
+
+
+@_owner_settings_router.post(
+    "/remote-access/named/setup/cancel", response_model = RemoteAccessResponse
+)
+def cancel_named_tunnel_setup(
+    request: Request,
+    payload: NamedTunnelOperationPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    from utils.cloudflare_named_tunnel import cancel_setup
+    try:
+        cancel_setup(payload.operation_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return _remote_access_response(request)
+
+
+@_owner_settings_router.delete("/remote-access/named", response_model = RemoteAccessResponse)
+def remove_named_tunnel(
+    request: Request,
+    payload: NamedTunnelRemovePayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = remove_named_remote_access(request.app.state, payload.configuration_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return RemoteAccessResponse(**status)
 
 
 class LanAccessAutoStartPayload(BaseModel):

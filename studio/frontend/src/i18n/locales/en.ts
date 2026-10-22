@@ -3117,10 +3117,82 @@ export const en = {
       title: "Connections",
       description: "Manage providers and external connections.",
     },
+    namedTunnel: {
+      mode: "Connection type",
+      quick: "Temporary link",
+      named: "Custom domain",
+      method: "Setup method",
+      automatic: "Automatic",
+      existing: "Connect with a Cloudflare token",
+      hostname: "Domain",
+      token: "Cloudflare token",
+      keepToken: "Leave empty to keep the saved token.",
+      originHint:
+        "In the Cloudflare dashboard, route this hostname to {origin}. Studio does not change that route.",
+      prepareHint:
+        "Set up the connection here, then use Start to connect. Auto-start is unchanged.",
+      remove: "Remove",
+      removeTitle: "Remove custom domain access?",
+      removeAuto:
+        "Remove the Cloudflare connection for {hostname}? The DNS record stays in your Cloudflare account and must be removed manually.",
+      removeToken:
+        "Remove the local credentials for {hostname}? Your Cloudflare connection and DNS record stay in your account.",
+      authorizeAgain: "Authorize again",
+      setup: "Set up",
+      openLogin: "Open Cloudflare login",
+      dnsCleanup:
+        "The DNS record {hostname} remains in Cloudflare. Remove it manually if it is no longer needed.",
+      dnsConflictTitle: "DNS record already exists",
+      dnsConflict:
+        "{hostname} already has a DNS record. Replace it with a route to Unsloth? The previous record will not be restored.",
+      overwrite: "Overwrite",
+      quickDescription:
+        "Get a public link. The address may change when you restart.",
+      namedDescription:
+        "Use a permanent address such as studio.example.com. You need a domain managed by Cloudflare.",
+      quickAutoStart:
+        "Create a new remote URL when Unsloth starts. Stopping now does not disable auto-start.",
+      namedAutoStart:
+        "Connect your custom domain automatically when Unsloth starts.",
+      states: {
+        preparing: "Preparing Cloudflare…",
+        awaiting_login:
+          "Authorize the connection in your browser. If no tab opened, use the login link.",
+        configuring: "Setting up your connection and domain routing…",
+        dns_conflict:
+          "Waiting for your decision about the existing DNS record.",
+        ready: "Configured. Use Start to connect.",
+        removing: "Removing the Cloudflare connection…",
+        removed: "Custom domain access removed.",
+        error: "Setup failed.",
+      },
+      errors: {
+        hostname:
+          "Enter a DNS hostname without a scheme, port, path, IP address or wildcard.",
+        token: "Enter a valid Cloudflare Tunnel token.",
+        removeFirst:
+          "Remove the saved domain connection before changing its address or setup method.",
+        busy: "Stop remote access and wait for the current operation to finish.",
+        login:
+          "Cloudflare authorization failed or expired. Authorize again to continue.",
+        timeout: "The operation timed out. Retry to continue the saved setup.",
+        cancelled:
+          "Setup cancelled. Any connection already created has been kept.",
+        dns: "DNS routing failed. Check the hostname and Cloudflare zone, then retry.",
+        zone: "Check the selected Cloudflare zone and any DNS cleanup information before retrying.",
+        remove: "The connection could not be removed. Try again.",
+        stillActive:
+          "Cloudflare still reports this connection as active. Wait a few minutes and try again.",
+        statusUnavailable:
+          "The connection status could not be checked with Cloudflare. Try again later.",
+        credentials: "The saved credentials cannot be read or are invalid.",
+        generic: "The operation failed. Check your connection and retry.",
+      },
+    },
     remoteLan: {
       title: "Remote & LAN",
       description:
-        "Reach this Unsloth from your other devices, over your local network or a temporary public URL.",
+        "Reach this Unsloth from your other devices over your local network or a Cloudflare URL.",
     },
     apiKeys: {
       title: "API",

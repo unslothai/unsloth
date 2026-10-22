@@ -28,7 +28,96 @@ if str(_BACKEND) not in sys.path:
 import cloudflare_tunnel  # noqa: E402
 import routes.settings as routes  # noqa: E402
 import utils.remote_access_settings as remote_access  # noqa: E402
+from utils import cloudflare_named_tunnel as named  # noqa: E402
 from storage import studio_db  # noqa: E402
+
+
+@pytest.fixture(autouse = True)
+def isolate_named_credentials(tmp_path, monkeypatch):
+    from auth import storage
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(storage, "_credential_encryption_key_cache", None)
+
+
+def test_named_configuration_and_start_use_existing_worker(monkeypatch):
+    _shared_setup_1(monkeypatch)
+    cloudflare_tunnel.stop_studio_tunnel()
+    cloudflare_tunnel.open_studio_tunnel_lifecycle()
+    state = _state(request_host = "::1")
+    remote_access.configure_remote_access_tunnel(
+        state, mode = "named", hostname = "studio.example.com", token = "secret-token"
+    )
+    status = remote_access.remote_access_status(state)
+    assert status["mode"] == "named" and status["can_start"]
+    assert status["named"]["configuration"]["hostname"] == "studio.example.com"
+    assert "secret-token" not in str(status)
+    started = []
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+    remote_access.start_remote_access(state)
+    remote_access._start_worker.join(3)
+    assert started[0][1]["named_tunnel"]["token"] == "secret-token"
+    assert started[0][1]["origin_host"] == "::1"
+    assert started[0][0] == (8888,)
+    assert remote_access.get_remote_access_auto_start() is False
+
+
+def test_bad_named_configuration_blocks_start_without_quick_fallback(monkeypatch):
+    _shared_setup_1(monkeypatch)
+    cloudflare_tunnel.stop_studio_tunnel()
+    cloudflare_tunnel.open_studio_tunnel_lifecycle()
+    named.set_mode("named")
+    status = remote_access.remote_access_status(_state())
+    assert status["can_start"] is False
+    assert status["configuration_error"] == "named_setup_required"
+    with pytest.raises(RuntimeError, match = "named_setup_required"):
+        remote_access.start_remote_access(_state())
+
+
+def test_configuration_changes_require_confirmed_stop(monkeypatch):
+    _shared_setup_1(monkeypatch)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": "error",
+            "managed_by": "settings",
+            "url": None,
+            "error": None,
+            "stop_pending": True,
+        },
+    )
+    with pytest.raises(RuntimeError, match = "stop_tunnel_first"):
+        remote_access.configure_remote_access_tunnel(_state(), mode = "named")
+    assert named.get_mode() == "quick"
+
+
+def test_named_start_cannot_fall_back_to_quick_after_concurrent_removal(monkeypatch):
+    _shared_setup_1(monkeypatch)
+    cloudflare_tunnel.stop_studio_tunnel()
+    cloudflare_tunnel.open_studio_tunnel_lifecycle()
+    monkeypatch.setattr(
+        remote_access,
+        "remote_access_status",
+        lambda state: {
+            "state": "off",
+            "managed_by": None,
+            "can_start": True,
+            "block_reason": None,
+            "mode": "named",
+        },
+    )
+    monkeypatch.setattr(named, "load_bundle", lambda: None)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda *args, **kwargs: pytest.fail("started Quick after Named was removed"),
+    )
+    with pytest.raises(RuntimeError, match = "named_setup_required"):
+        remote_access.start_remote_access(_state())
 
 
 def _state(
@@ -299,7 +388,7 @@ def test_management_rejects_api_keys():
             continue
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
-    assert len(gated) == 4, f"expected 4 remote-access handlers, found {sorted(gated)}"
+    assert len(gated) == 9, f"expected 9 remote-access handlers, found {sorted(gated)}"
     assert all(
         gated.values()
     ), f"ungated remote-access handlers: {sorted(k for k, v in gated.items() if not v)}"
