@@ -99,11 +99,25 @@ def _dense(monkeypatch, dtype, mask):
     return out, seen, (Q, K, V, attention_mask)
 
 
+def _efficient_takes_gqa(Q, K, V):
+    """torch 2.14+ CUDA: the memory-efficient kernel runs GQA itself; older torch and ROCm reject it."""
+    bias = torch.zeros(Q.shape[0], 1, Q.shape[2], K.shape[2], device = Q.device, dtype = Q.dtype)
+    try:
+        with torch.nn.attention.sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION]):
+            torch.nn.functional.scaled_dot_product_attention(
+                Q, K, V, attn_mask = bias, enable_gqa = True
+            )
+    except RuntimeError:
+        return False
+    return True
+
+
 @needs_cuda
 def test_fp32_masked_gqa_expands_instead_of_math(monkeypatch):
-    # fp32 (DoRA) with a padding mask: flash cannot run, the memory-efficient kernel rejects GQA.
+    # fp32 (DoRA) with a padding mask: flash cannot run. A memory-efficient kernel that rejects GQA
+    # (before torch 2.14) gets expanded K/V; one that takes it keeps the two KV heads. Never math.
     out, seen, (Q, K, V, mask) = _dense(monkeypatch, torch.float32, True)
-    assert seen == [(8, False)]
+    assert seen == ([(2, True)] if _efficient_takes_gqa(Q, K, V) else [(8, False)])
     with torch.nn.attention.sdpa_kernel([SDPBackend.MATH]):
         ref = torch.nn.functional.scaled_dot_product_attention(
             Q,
