@@ -566,6 +566,40 @@ def test_the_model_own_folder_or_file_still_names_the_video_family():
     assert name("unsloth/LTX-2.3-GGUF/ltx-2.3-22b-dev-Q4_K_M.gguf") == "ltx-2"
 
 
+@pytest.mark.parametrize(
+    "path, family, defaults",
+    [
+        # Wan2.2 A14B's original layout keeps each expert in its own folder under the model's.
+        ("/models/Wan2.2-T2V-A14B/high_noise_model", "wan2.2-t2v-a14b", (20, 3.5)),
+        (
+            "/models/Wan2.2-T2V-A14B/low_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors",
+            "wan2.2-t2v-a14b",
+            (20, 3.5),
+        ),
+        # HunyuanVideo-1.5's original layout: transformer/<resolution>_<task>[_distilled...]; the tier still routes.
+        (
+            "/models/HunyuanVideo-1.5/transformer/720p_t2v/diffusion_pytorch_model.safetensors",
+            "hunyuanvideo-1.5-720p",
+            (20, 6.0),
+        ),
+        ("/models/HunyuanVideo-1.5/transformer/480p_t2v", "hunyuanvideo-1.5", None),
+        (
+            "C:\\models\\HunyuanVideo-1.5\\transformer\\720p_i2v_distilled",
+            "hunyuanvideo-1.5-720p",
+            (8, 1.0),
+        ),
+    ],
+)
+def test_an_original_layout_expert_or_variant_folder_keeps_the_family_name(path, family, defaults):
+    fam = detect_video_family(path)
+    assert fam is not None and fam.name == family
+    if defaults is not None:
+        assert default_video_generation_params(path, fallback = (7, 7.0)) == defaults
+    # The variant folder only climbs to the folder naming the model, never past it to a keyword parent.
+    assert detect_video_family("/home/wan/my-videos/high_noise_model") is None
+    assert detect_video_family("/data/h3_backup/plain/transformer/720p_t2v") is None
+
+
 def test_a_parent_folder_keyword_does_not_pick_the_video_defaults():
     plain = default_video_generation_params("/data/plain/model.gguf", fallback = (7, 7.0))
     assert plain == (7, 7.0)
