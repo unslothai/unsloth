@@ -2092,8 +2092,6 @@ export const ptBR = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana de {date} · {tokens}",
-        chartToggle: "Gráfico",
-        chartToggleHint: "Mostrar Semanal e Acumulada como gráfico com eixos rotulados",
         less: "Menos",
         more: "Mais",
         insightsTitle: "Análise de atividade",

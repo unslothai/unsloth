@@ -2172,8 +2172,6 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
-        chartToggle: "תרשים",
-        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
