@@ -93,6 +93,10 @@ def hub_cache(tmp_path, monkeypatch):
         return real(repo_id, filename, cache_dir = str(root), **kw)
 
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", only_tmp)
+    # The size HEAD the index fetch makes first: a small index unless a test says otherwise.
+    monkeypatch.setattr(
+        huggingface_hub, "get_hf_file_metadata", lambda *a, **k: types.SimpleNamespace(size = 400)
+    )
     evidence._HEADER_VERDICTS.clear()
 
     def put(
@@ -462,3 +466,45 @@ def test_the_load_route_passes_user_initiated_to_the_prefetch():
         k.value.id for k in calls[0].keywords if isinstance(k.value, ast.Name)
     ]
     assert "user_initiated" in passed
+
+
+# ---- review round 2 ----------------------------------------------------------------------------
+
+FLUX1_DEV_KEYS = [
+    "transformer_blocks.0.attn.to_q.weight",
+    "single_transformer_blocks.0.attn.to_q.weight",
+    "x_embedder.weight",
+    "context_embedder.weight",
+    "time_text_embed.timestep_embedder.linear_1.weight",
+    "time_text_embed.guidance_embedder.linear_1.weight",
+]
+
+
+@pytest.mark.parametrize("size", [50_000_000, None])
+def test_an_oversized_or_unsized_index_is_never_downloaded(hub_cache, monkeypatch, size):
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub, "get_hf_file_metadata", lambda *a, **k: types.SimpleNamespace(size = size)
+    )
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *a, **k: pytest.fail("sized past the cap")
+    )
+    evidence.prefetch_for_pick(NOOB, None, None, None)
+    assert detect_family_for_pick(NOOB) is None
+
+
+def test_a_flux_dev_header_is_not_evidence_for_an_unnamed_pick(hub_cache, monkeypatch):
+    # FLUX.1 dev and schnell share one layout; resolved by family alone it would get schnell's base and defaults.
+    _stub_header(monkeypatch, [FLUX1_DEV_KEYS])
+    evidence.prefetch_for_pick("someone/neutral-ft", "model.safetensors", None, None)
+    assert detect_family_for_pick("someone/neutral-ft", "model.safetensors") is None
+    hub_cache.put("someone/cached-ft", "model.safetensors", keys = FLUX1_DEV_KEYS)
+    assert detect_family_for_pick("someone/cached-ft", "model.safetensors") is None
+
+
+def test_a_transformer_family_index_is_not_evidence_for_an_unnamed_pick(hub_cache):
+    hub_cache.put(
+        "someone/neutral-pipe", "model_index.json", payload = {"_class_name": "FluxPipeline"}
+    )
+    assert detect_family_for_pick("someone/neutral-pipe") is None

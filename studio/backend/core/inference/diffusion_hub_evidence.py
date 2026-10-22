@@ -7,6 +7,8 @@ Fine-tunes ship under their own names (``Laxhar/noobai-XL-Vpred-1.0``,
 ``OnomaAIResearch/Illustrious-xl-early-release-v0``), so the name matcher answers None and the pick
 is refused as an unknown family although the repo states what it is: its ``model_index.json``
 names the pipeline class, and the picked checkpoint's tensor names give the denoiser layout.
+Only whole-pipeline families (SDXL) are answered this way: their checkpoint is self-contained,
+while a transformer-only family resolves its base and defaults from the name.
 
 ``cached_family`` reads only what is already on disk (the HF cache, plus header verdicts fetched
 earlier in this process), so ``detect_family_for_pick`` stays network-free.
@@ -69,19 +71,29 @@ def _cached_file(repo_id: str, filename: str) -> Optional[str]:
     return _local_gguf_path(repo_id, filename)
 
 
+def _self_contained(family: Optional[str]) -> Optional[str]:
+    """``family`` when its checkpoint carries everything the load needs (a whole-pipeline family:
+    SDXL), else None. A transformer-only family takes its config, companions and step / guidance /
+    shift defaults from a base picked BY NAME (FLUX.1 dev vs schnell share one header layout), and a
+    pick named for nothing would get the family default's, so header or index evidence alone never
+    vouches for one."""
+    if not family:
+        return None
+    from .diffusion_families import detect_family
+
+    fam = detect_family("", override = family)
+    return family if fam is not None and fam.single_file_is_pipeline else None
+
+
 def _dit_family(info: Any) -> Optional[str]:
     """The family a header classifies as, or None. A whole-pipeline family (SDXL) loads a single file
     through the WHOLE pipeline's ``from_single_file``, so a denoiser-only file (a bare UNet with no
     text encoders or VAE) is not evidence for it."""
     from .diffusion_content import ROLE_DIT
-    from .diffusion_families import detect_family
 
-    if info.role != ROLE_DIT or not info.family:
+    if info.role != ROLE_DIT or not info.whole_pipeline:
         return None
-    fam = detect_family("", override = info.family)
-    if fam is not None and fam.single_file_is_pipeline and not info.whole_pipeline:
-        return None
-    return info.family
+    return _self_contained(info.family)
 
 
 def _verdict(key: tuple[str, str]) -> tuple[bool, Optional[str]]:
@@ -108,7 +120,18 @@ def _family_from_index(path: str) -> Optional[str]:
         return None
     value = payload.get("_class_name") if isinstance(payload, dict) else None
     fam = detect_family_by_pipeline_class(value if isinstance(value, str) else None)
-    return fam.name if fam is not None else None
+    return _self_contained(fam.name) if fam is not None else None
+
+
+def _remote_index_fits(repo_id: str, token: Optional[str]) -> bool:
+    """True when the Hub reports the repo's ``model_index.json`` within ``_INDEX_MAX_BYTES``. The
+    route runs before the trusted-repo check, so an arbitrary repo's index is sized by a HEAD before
+    any byte of it lands in the shared cache; an unknown size is refused, not fetched."""
+    from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
+    meta = get_hf_file_metadata(hf_hub_url(repo_id, _INDEX), token = token)
+    size = getattr(meta, "size", None)
+    return isinstance(size, int) and 0 < size <= _INDEX_MAX_BYTES
 
 
 def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Optional[str]:
@@ -189,6 +212,8 @@ def fetch_family_evidence(
 
             # Bytes land in the shared cache under a credential: record which one, as every other credentialed
             # fetch does, so the cache-authorization check never reads the repo as an old host-owned entry.
+            if not _remote_index_fits(repo_id, token):
+                return None
             with recording_a_request_token_fetch(token, repo_id, "model"):
                 hf_hub_download(repo_id, _INDEX, token = token, cache_dir = active_hf_hub_cache())
         except Exception:  # noqa: BLE001 - no index (a single-file repo), offline or gated
