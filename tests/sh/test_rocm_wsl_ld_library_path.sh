@@ -91,7 +91,7 @@ _stale_dropin() {
 }
 # $1 = NOPASSWD rule, $2 = a terminal to ask on, $3 = the password is typed.
 _run_writer_nonroot() {
-    env -i PATH="$_tmp/fakebin:$PATH" FAKE_SUDO_LOG="$_tmp/sudo.log" FAKE_SUDO_OK="$1" FAKE_TTY="${2:-0}" FAKE_SUDO_PW="${3:-0}" \
+    env -i PATH="$_tmp/fakebin:$PATH" FAKE_SUDO_LOG="$_tmp/sudo.log" FAKE_SUDO_OK="$1" FAKE_TTY="${2:-0}" FAKE_SUDO_PW="${3:-0}" TAURI_MODE="${4:-false}" \
         bash -c 'id() { echo 1000; }; substep() { printf "%s\n" "$1"; }; _can_read_tty() { [ "$FAKE_TTY" = "1" ]; }; eval "$1"; _persist_rocm_wsl_dropin' _ "$_fns"
 }
 _stale_dropin; : > "$_tmp/sudo.log"
@@ -114,6 +114,11 @@ assert_eq "repaired drop-in: a re-run asks nothing" "" "$_out"
 _stale_dropin; : > "$_tmp/sudo.log"
 _out="$(_run_writer_nonroot 0 1 0)"
 assert_contains "terminal, password refused: hint printed" "$_out" "re-run the installer"
+# Desktop (--tauri) runs the installer in a background process group: an inherited terminal cannot answer.
+_stale_dropin; : > "$_tmp/sudo.log"
+_out="$(_run_writer_nonroot 0 1 1 true)"
+assert_not_contains "--tauri with a terminal: no interactive sudo" "$(cat "$_tmp/sudo.log")" "PROMPTED"
+assert_contains "--tauri with a terminal: hint printed" "$_out" "re-run the installer"
 
 echo "=== install.sh repairs an old helper's ~/.bashrc block ==="
 mkdir -p "$_tmp/dotfiles" "$_tmp/home2"

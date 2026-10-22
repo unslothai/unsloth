@@ -6695,10 +6695,11 @@ _persist_rocm_wsl_dropin() {
         if [ "$(id -u)" = "0" ]; then
             sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
         # A re-install never stops at an unexplained password prompt: passwordless sudo first, then (only
-        # on a terminal) say why before sudo asks; with no terminal, say how to finish it instead.
+        # on a terminal) say why before sudo asks; with no terminal, say how to finish it instead. Never under
+        # --tauri: Desktop runs us in a background process group, so a terminal it inherited would stop us.
         elif ! { command -v sudo >/dev/null 2>&1 && {
             sudo -n sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh </dev/null >/dev/null 2>&1 ||
-                { _can_read_tty &&
+                { [ "${TAURI_MODE:-false}" != true ] && _can_read_tty &&
                     substep "Fixing an old LD_LIBRARY_PATH line in /etc/profile.d/unsloth-rocm-wsl.sh (sudo may ask for your password)." &&
                     sudo sed --follow-symlinks -i "$_rw_fix" /etc/profile.d/unsloth-rocm-wsl.sh </dev/null >/dev/null; }
         }; }; then
