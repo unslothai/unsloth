@@ -1964,6 +1964,7 @@ export async function ensureThreadRecord({
   }
 }
 
+/** Parents before children, so every saved message's parent already exists. */
 function parentsFirst(
   items: readonly ExportedMessageRepositoryItem[],
 ): ExportedMessageRepositoryItem[] {

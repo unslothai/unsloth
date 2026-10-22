@@ -2087,7 +2087,7 @@ function ProjectLanding({
           return;
         }
       }
-      // Rotate the nonce so the runtime switches to a fresh thread instead of appending to the old one.
+      // Leaving a created chat for a new one: rotate the nonce so the runtime switches to a fresh thread.
       if (pendingNewThreadId) {
         rotateNewThreadNonce();
         setPendingNewThreadId(null);

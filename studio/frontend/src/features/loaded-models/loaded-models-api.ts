@@ -211,6 +211,7 @@ async function ejectRuntimeRow(
     : { status: "ejected" };
 }
 
+/** Release one row, after checking the runtime still holds what the row names. */
 export async function ejectLoadedModel(
   entry: LoadedModelEntry,
 ): Promise<EjectOutcome> {
