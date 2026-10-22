@@ -50,6 +50,7 @@ const { wantsDownloadManagerStaging } = await import(
 const notice = atDefaultUiScale(readText("../src/features/chat/components/chat-model-notice.tsx"));
 const page = atDefaultUiScale(readText("../src/features/chat/chat-page.tsx"));
 const runtimeProvider = atDefaultUiScale(readText("../src/features/chat/runtime-provider.tsx"));
+const runtimeHook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
 const adapter = atDefaultUiScale(readText("../src/features/chat/api/chat-adapter.ts"));
 const chatApi = atDefaultUiScale(readText("../src/features/chat/api/chat-api.ts"));
 const types = atDefaultUiScale(readText("../src/features/chat/types.ts"));
@@ -96,7 +97,7 @@ test("the notice never loads a model on its own", () => {
   // The one automatic switch is to a slot that is already loaded.
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
   assert.match(body, /chatModelLoadedTarget\(createdModel, loadedModels\)/);
-  assert.match(body, /if \(switchTo\) onSwitch\(switchTo\);/);
+  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo\);/);
 });
 
 test("a chat goes back to its model when that model is still loaded", () => {
@@ -198,13 +199,25 @@ test("the automatic switch runs once per chat open", () => {
   assert.equal(stepChatModelAutoSwitch({ settled: false }, open(undefined)).switchTo, null);
 
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  assert.match(body, /if \(switchTo\) onSwitch\(switchTo\);/);
+  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo\);/);
   // With Keep models loaded off, picking another model unloads the selected one.
   assert.match(body, /createdModel && !resident && keepModelsLoaded\s*\?/);
   assert.match(
     page,
-    /loadedModels=\{loadedModels\}\s*onSwitch=\{handleSwitchBackToChatModel\}/,
+    /loadedModels=\{loadedModels\}\s*onSwitch=\{handleSwitchBackToChatModel\}\s*onAutoSwitch=\{handleAutoSwitchToChatModel\}/,
   );
+});
+
+test("the automatic switch only adopts a slot, it never reaches /load", () => {
+  const auto = slice(page, "const handleAutoSwitchToChatModel", "\n  );\n");
+  assert.match(auto, /isDownloaded: true,\s*adoptOnly: true,/);
+  assert.match(page, /adoptOnly: meta\?\.adoptOnly,\s*\};\s*await stageOrLoad\(selection\);/);
+  // Bails after the adopt check and before the lease that every /load holds.
+  const select = slice(runtimeHook, "const selectModel = useCallback", "let lifecycleLease");
+  const adopted = select.lastIndexOf("void refreshContextUsage({ afterModelLoad: true });");
+  const bail = select.indexOf("if (adoptOnly) {");
+  assert.ok(adopted !== -1 && bail > adopted, "adoptOnly bails after the adopt path");
+  assert.match(select.slice(bail), /restorePreviousConfig\(\);[\s\S]*?return;/);
 });
 
 test("the notice stays quiet when it has nothing to offer", () => {

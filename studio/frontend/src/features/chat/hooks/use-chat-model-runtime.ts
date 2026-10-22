@@ -289,6 +289,8 @@ export type SelectedModelInput = {
   /** Keep the current speculative-decoding choice across the model switch instead of resetting it
    *  to the standing preference. */
   keepSpeculative?: boolean;
+  /** Only take a model already serving exactly as this pick would load it; never reach /load. */
+  adoptOnly?: boolean;
   config?: PerModelConfig;
   previousConfig?: PerModelConfig;
 };
@@ -1318,6 +1320,8 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
+      const adoptOnly =
+        typeof selection === "string" ? false : selection.adoptOnly ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       const initiallyLoadingSamePick =
         loadingModelRef.current?.id === modelId &&
@@ -1790,6 +1794,16 @@ export function useChatModelRuntime() {
             return;
           }
         }
+      }
+      if (adoptOnly) {
+        // Same unwind as a declined confirmation: nothing was unloaded.
+        if (modelSelectionIntentEpoch === loadIntentId) {
+          restorePreviousConfig();
+          if (pendingReplacementRollback?.residentUnloaded === false) {
+            pendingReplacementRollback = null;
+          }
+        }
+        return;
       }
 
       // Hold the lifecycle lease through confirmation and loading. A PREFLIGHT holder (parked on

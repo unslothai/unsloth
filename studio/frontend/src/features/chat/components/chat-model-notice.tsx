@@ -82,6 +82,7 @@ type ChatModelNoticeProps = {
   selectableModelIds: ReadonlySet<string>;
   loadedModels: readonly LoadedChatModelSlot[];
   onSwitch: (target: ChatModelSwitchTarget) => void;
+  onAutoSwitch: (target: ChatModelSwitchTarget) => void;
 };
 
 /** Puts a chat back on its last used model: at once when that model is still loaded alongside,
@@ -94,6 +95,7 @@ export function ChatModelNotice({
   selectableModelIds,
   loadedModels,
   onSwitch,
+  onAutoSwitch,
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
   // Off, picking another model unloads the selected one.
@@ -118,8 +120,8 @@ export function ChatModelNotice({
       modelLoading: useChatRuntimeStore.getState().modelLoading,
     });
     autoSwitchRef.current = state;
-    if (switchTo) onSwitch(switchTo);
-  }, [active, threadId, resident, loadedTarget, onSwitch]);
+    if (switchTo) onAutoSwitch(switchTo);
+  }, [active, threadId, resident, loadedTarget, onAutoSwitch]);
   // Drop the portaled UI off-route, retaining the successful read and history subscription.
   if (!active) return null;
   if (!createdModel || resident) return null;

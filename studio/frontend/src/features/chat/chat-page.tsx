@@ -3847,7 +3847,7 @@ export function ChatPage({
     (
       value: string,
       // Partial: the switch-back carries only what the resolver cannot recover.
-      meta?: Partial<ModelSelectorChangeMeta>,
+      meta?: Partial<ModelSelectorChangeMeta> & { adoptOnly?: boolean },
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
@@ -4118,6 +4118,7 @@ export function ChatPage({
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
           forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
+          adoptOnly: meta?.adoptOnly,
         };
         await stageOrLoad(selection);
       })();
@@ -4511,6 +4512,17 @@ export function ChatPage({
     },
     [handleCheckpointChange, loraModels],
   );
+  // Opening a chat may only take a slot that already serves its model as is: a reload stays a click.
+  const handleAutoSwitchToChatModel = useCallback(
+    (target: ChatModelSwitchTarget) => {
+      handleCheckpointChange(target.modelId, {
+        ...chatModelSwitchMeta(target, loraModels),
+        isDownloaded: true,
+        adoptOnly: true,
+      });
+    },
+    [handleCheckpointChange, loraModels],
+  );
 
   const inventoryRefreshStartedRef = useRef(false);
   const refreshDeferredModelInventories = useCallback(() => {
@@ -4807,6 +4819,7 @@ export function ChatPage({
                 selectableModelIds={selectableModelIds}
                 loadedModels={loadedModels}
                 onSwitch={handleSwitchBackToChatModel}
+                onAutoSwitch={handleAutoSwitchToChatModel}
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
