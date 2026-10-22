@@ -39,7 +39,6 @@ import { drawGrid, gridInfotext, gridLayout, withPngText } from "./compose-grid"
 
 export interface ComparePanelProps {
   context: CompareContext;
-  // Generate is busy (any run, load or compare).
   busy: boolean;
   seedFieldEmpty: boolean;
   modelName: string | null;
@@ -138,7 +137,6 @@ export default function ComparePanel(props: ComparePanelProps) {
   const mounted = useRef(true);
 
   const defs = useMemo(() => availableAxes(context), [context]);
-  // An axis the newly loaded model lacks falls back to Nothing.
   const effective = axes.map((a) => (defs.some((d) => d.id === a.axisId) ? a : { axisId: NOTHING, text: "" }));
   // Cheap (at most 64 cells), so it runs every render; the real plan is drawn again on click for fresh seeds.
   const preview = planCompare(effective, context, { keepRandomSeeds: keepRandom, rng: () => 0 });

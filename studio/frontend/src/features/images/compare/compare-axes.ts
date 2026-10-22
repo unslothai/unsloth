@@ -15,8 +15,7 @@ const GUIDANCE_MAX = 20;
 const LORA_WEIGHT_MAX = 2;
 const SEED_MAX = Number.MAX_SAFE_INTEGER;
 
-/** PR-gated SD controls (CLIP skip, CFG rescale, variation seed). Read structurally from status so the axes appear
- *  as soon as a backend reports them, with no change here. */
+/** PR-gated SD controls, read structurally so axes appear once a backend reports them. */
 export interface CompareSdControls {
   clip_skip?: { min: number; max: number } | null;
   cfg_rescale?: { min: number; max: number } | null;
@@ -262,13 +261,11 @@ export function cellCoords(plan: CompareGridPlan, index: number): [number, numbe
   return [index % nx, Math.floor(index / nx) % ny, Math.floor(index / (nx * ny))];
 }
 
-/** A1111 runs the costliest axis outermost (Z, then Y, then X by default). On top of that, a costly axis's values
- *  run grouped by shape key, so e.g. every CFG-off cell runs before any CFG-on one and the model switches shape at
- *  most once per key. The grid layout is unaffected: cells are placed by index, not by when they ran. */
+/** Costliest axis outermost (A1111), and a costly axis's values grouped by shape key so the model switches shape
+ *  at most once per key. Cells are placed by index, not run order. */
 export function executionOrder(axes: readonly ResolvedAxis[]): number[] {
   const n = axes.map((a) => a.values.length);
   const total = n[0] * n[1] * n[2];
-  // Outer first: higher cost first, ties keep A1111's z, y, x.
   const priority = [2, 1, 0].sort((a, b) => axes[b].def.cost - axes[a].def.cost);
   const rank = axes.map((axis) => {
     const keys: string[] = [];

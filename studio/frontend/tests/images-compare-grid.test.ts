@@ -109,7 +109,6 @@ test("capability gating: the axis list follows what the loaded model exposes", (
   assert.deepEqual(ids(zimage()), ["nothing", "seed", "steps", "shift", "prompt_sr"]);
   // ComfyUI ModelSamplingFlux: base and max shift.
   assert.ok(ids(zimage({ shift: { node: "flux", base_shift: 0.5, max_shift: 1.15 } })).includes("max_shift"));
-  // LoRA weight per active row, only when the load can apply LoRA.
   const loras = [
     { id: "a/style", weight: 1, label: "style" },
     { id: "b/detail", weight: 0.5, label: "detail" },
@@ -329,7 +328,6 @@ test("run order: A1111's z, y, x nesting; costly axes outermost, grouped by shap
   );
   const prompts = sr.order.map((i) => cellCoords(sr, i)[1]);
   assert.deepEqual(prompts, [0, 0, 0, 0, 1, 1, 1, 1]);
-  // Every cell runs exactly once.
   assert.deepEqual([...sr.order].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7]);
   assert.deepEqual(executionOrder(sr.axes).length, 8);
 });
@@ -383,10 +381,8 @@ test("grid layout: A1111 font size and bands, labels wrapped, cells placed row-m
   assert.equal(layout.colText.length, 3);
   assert.equal(layout.rowText[1].x, padLeft / 2);
   assert.equal(layout.title, null);
-  // Legend off: cells only.
   const bare = gridLayout({ cols: 2, rows: 1, cellWidth: 64, cellHeight: 32, colLabels: ["a", "b"], rowLabels: [""], title: "Z", legend: false, margin: 0 }, measure);
   assert.deepEqual([bare.width, bare.height, bare.cells[1].x, bare.cells[0].y], [128, 32, 64, 0]);
-  // A Z title adds its own band on top.
   const titled = gridLayout({ cols: 1, rows: 1, cellWidth: 256, cellHeight: 256, colLabels: ["x"], rowLabels: [""], title: "Seed: 1", legend: true, margin: 0 }, measure);
   assert.ok(titled.title && titled.colText[0].y > titled.title.y);
   assert.deepEqual(wrapText("one two three four", 40, 10, measure), ["one two", "three", "four"]);
@@ -403,7 +399,6 @@ test("grid layout shrinks cells to fit a browser canvas", () => {
 });
 
 test("the grid PNG carries an A1111-style parameters chunk the metadata reader parses", () => {
-  // 1x1 PNG.
   const png = Uint8Array.from(
     atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),
     (c) => c.charCodeAt(0),

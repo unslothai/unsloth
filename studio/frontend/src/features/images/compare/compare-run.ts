@@ -16,7 +16,6 @@ import {
 export interface CompareRun {
   readonly cellCount: number;
   request(run: number, base: DiffusionGenerateRequest, baseSeed: number): DiffusionGenerateRequest;
-  // Overlay title while run `done` (0-based) is in flight.
   title(done: number): string;
   onImages(run: number, images: readonly GalleryImage[]): void;
 }
