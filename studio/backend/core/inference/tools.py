@@ -10178,11 +10178,26 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
 _with_session_packages = os_sandbox.with_session_packages
 
 
+def _script_top_level_imports(script: str) -> "list[str]":
+    """Top-level module names an approved script imports by absolute name; none if it does not parse."""
+    try:
+        tree = ast.parse(script)
+    except (SyntaxError, ValueError):
+        return []
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return sorted(names)
+
+
 def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]":
     """argv and env for an approved host-access launch: nothing it loads comes from the sandbox-writable workdir.
 
     HOME and (for the python tool) the script move to a private per-call directory outside every workdir, and the
-    session packages and the workdir only ever go last on sys.path/PATH; earlier sandboxed calls can write all of those in the workdir. The
+    session packages and the helpers the script imports only ever go last on sys.path/PATH; earlier sandboxed calls can write all of those in the workdir. The
     cwd stays the workdir, so relative paths in the approved code resolve as before.
     """
     private = tempfile.mkdtemp(prefix = "unsloth-host-call-")
@@ -10200,9 +10215,13 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             # Chat-installed CLIs resolve too, but only after every system executable.
             scripts = os.path.join(packages, "Scripts" if os.name == "nt" else "bin")
             env["PATH"] = os.pathsep.join(part for part in (env.get("PATH", ""), scripts) if part)
-        # Helper modules written into the chat folder stay importable, appended after the session packages.
-        env["_UNSLOTH_HOST_WORKDIR"] = plan.workdir
         if script is not None and argv:
+            # Helper modules the approved script itself imports stay importable from the chat folder, after
+            # everything else. Only those names: a library probing an optional import never reaches the folder.
+            helpers = _script_top_level_imports(script)
+            if helpers:
+                env["_UNSLOTH_HOST_WORKDIR"] = plan.workdir
+                env["_UNSLOTH_HOST_WORKDIR_MODULES"] = ",".join(helpers)
             # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
             path = os.path.join(private, os.path.basename(argv[-1]))
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

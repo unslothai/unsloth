@@ -313,14 +313,16 @@ if _host_packages and _host_packages not in sys.path:
     sys.path.append(_host_packages)
 
 
-# The chat folder comes after everything, so helper modules written there import but never shadow
-# anything. Served by a last-resort finder rather than sys.path: site imports `usercustomize` after
-# this file, and a sandboxed call could have planted one there.
+# Helper modules the approved script imports by name come from the chat folder, after everything
+# else, so they never shadow anything. Served by a last-resort finder for exactly those names rather
+# than sys.path: site imports `usercustomize` after this file, and a library probing an optional
+# import must not find a module an earlier sandboxed call planted there.
 class _HostWorkdirFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
-    def __init__(self, workdir):
+    def __init__(self, workdir, names):
         self._workdir = workdir
+        self._names = frozenset(names) - self._skip
 
     def find_spec(
         self,
@@ -328,12 +330,17 @@ class _HostWorkdirFinder:
         path = None,
         target = None,
     ):
-        if path is not None or name in self._skip:
+        if path is not None or name not in self._names:
             return None
         import importlib.machinery
         return importlib.machinery.PathFinder.find_spec(name, [self._workdir])
 
 
 _host_workdir = os.environ.get("_UNSLOTH_HOST_WORKDIR")
-if _host_workdir and not any(isinstance(f, _HostWorkdirFinder) for f in sys.meta_path):
-    sys.meta_path.append(_HostWorkdirFinder(_host_workdir))
+_host_modules = [n for n in os.environ.get("_UNSLOTH_HOST_WORKDIR_MODULES", "").split(",") if n]
+if (
+    _host_workdir
+    and _host_modules
+    and not any(isinstance(f, _HostWorkdirFinder) for f in sys.meta_path)
+):
+    sys.meta_path.append(_HostWorkdirFinder(_host_workdir, _host_modules))
