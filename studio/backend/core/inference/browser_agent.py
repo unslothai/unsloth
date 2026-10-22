@@ -338,6 +338,9 @@ _LOCAL_SUFFIXES = (
     ".intranet",
 )
 _FENCE = "untrusted_web_content"
+# Google's own country domains (google.com, google.de, google.co.uk, google.com.au), not
+# google.com.evil.example; mirrored in features/browser/address.ts.
+_GOOGLE_HOST = r"google\.(?:[a-z]{2,3}|co\.[a-z]{2}|com\.[a-z]{2})"
 
 
 def is_browser_tool(name: Any) -> bool:
@@ -436,7 +439,7 @@ def _redirect_target(url: str) -> Optional[str]:
     target = None
     if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
         target = (query.get("uddg") or [None])[0]
-    elif re.fullmatch(r"google\.[a-z.]+", host) and path == "/url":
+    elif re.fullmatch(_GOOGLE_HOST, host) and path == "/url":
         target = (query.get("q") or query.get("url") or [None])[0]
     return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
 
@@ -528,7 +531,13 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             value = arguments.get("value")
             if isinstance(value, bool):
                 value = "true" if value else "false"
-            request["value"] = ("" if value is None else str(value))[:500]
+            value = ("" if value is None else str(value)).strip()
+            # The tab matches an empty value to the first option, which the model never meant.
+            if not value:
+                raise ValueError(
+                    'value is empty. Give the option text, or "true"/"false" for a checkbox.'
+                )
+            request["value"] = value[:500]
         return request
     if name == "browser_scroll":
         direction = str(arguments.get("direction") or "down").lower()
@@ -584,7 +593,11 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
     url = _one_line(_clip(result.get("url"), _MAX_URL_CHARS))
     if url.lower().startswith(("http://", "https://")):
         # A followed link or a redirect can land where browser_navigate would refuse to go.
-        problem = _host_problem(urlsplit(url).hostname or "")
+        try:
+            hostname = urlsplit(url).hostname or ""
+        except ValueError:
+            return "Error: the page's address could not be read, so its content is withheld."
+        problem = _host_problem(hostname)
         if problem:
             return (
                 f"Error: the page went to {problem}, so its content is withheld. "
@@ -666,6 +679,7 @@ def execute_browser_tool(
 ) -> str:
     from state.browser_actions import (
         begin_browser_action,
+        discard_browser_action,
         new_action_id,
         wait_browser_action,
     )
@@ -695,21 +709,26 @@ def execute_browser_tool(
         if timeout is None
         else max(_MIN_ACTION_TIMEOUT_S, min(float(timeout), _ACTION_TIMEOUT_S))
     )
-    output_callback(
-        {
-            "browser_action": {
-                "id": action_id,
-                "session_id": session_id or "",
-                **request,
-                # The tab keeps clicks and form posts to the same limits a navigation is held to.
-                "allowed_domains": list(policy["allowedDomains"]),
-                "blocked_domains": list(policy["blockedDomains"]),
-                # The tab drops a question still open when this side stops waiting, so a late
-                # Allow can't run an action nobody is waiting for.
-                "timeout_s": wait,
+    try:
+        output_callback(
+            {
+                "browser_action": {
+                    "id": action_id,
+                    "session_id": session_id or "",
+                    **request,
+                    # The tab keeps clicks and form posts to the same limits a navigation is held to.
+                    "allowed_domains": list(policy["allowedDomains"]),
+                    "blocked_domains": list(policy["blockedDomains"]),
+                    # The tab drops a question still open when this side stops waiting, so a late
+                    # Allow can't run an action nobody is waiting for.
+                    "timeout_s": wait,
+                }
             }
-        }
-    )
+        )
+    except BaseException:
+        # A stream that is gone never answers: the slot would otherwise stay registered.
+        discard_browser_action(action_id, slot)
+        raise
     outcome, result = wait_browser_action(slot, action_id, cancel_event, wait)
     if outcome == "cancelled":
         return "Error: the browser action was stopped."

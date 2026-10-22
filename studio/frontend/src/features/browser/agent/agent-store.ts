@@ -22,11 +22,35 @@ export type AgentPrompt = Question & { id: number; always: boolean };
 /** `always`: allowed, and not asked again for this kind of action on this site in this chat. */
 export type Answer = false | "once" | "always";
 
+/** What the action in flight does, for the agent bar: `detail` is a host, a query, a key, or an
+ *  element's words (first its ref, then its name once the page described it). */
+export type AgentStep = {
+  kind:
+    | "open"
+    | "back"
+    | "forward"
+    | "reload"
+    | "read"
+    | "find"
+    | "click"
+    | "type"
+    | "select"
+    | "press"
+    | "scroll"
+    | "screenshot"
+    | "evaluate"
+    | "history"
+    | "move"
+    | "drag";
+  detail: string;
+};
+
 /** One chat's use of the browser tools; chats run theirs side by side, each in its own tab. */
 export type AgentChat = {
   /** The tab the agent drives in this chat; the model can't reach any other. */
   tabId: string | null;
   working: boolean;
+  step: AgentStep | null;
   question: AgentPrompt | null;
   /** The chat run the agent is acting for, until it ends; Stop applies to it. */
   runKey: string | null;
@@ -36,7 +60,7 @@ export type AgentChat = {
   endedAt: number;
 };
 
-export const IDLE_AGENT: AgentChat = { tabId: null, working: false, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
+export const IDLE_AGENT: AgentChat = { tabId: null, working: false, step: null, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
 
 type BrowserAgentState = {
   /** The composer's Browser tool: offer the model the browser tools. */
@@ -235,7 +259,7 @@ export function endBrowserAgentRun(runKey: string): void {
 /** The agent bar's Stop: the action running now ends too, not just the ones after it. */
 export function stopBrowserAgent(chat: string): void {
   const { runKey, question } = agentChat(chat);
-  patchAgentChat(chat, { stoppedRun: runKey, working: false });
+  patchAgentChat(chat, { stoppedRun: runKey, working: false, step: null });
   if (question) answers.get(question.id)?.(false);
   activeActions.get(liveChat(chat))?.abort();
 }

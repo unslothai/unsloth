@@ -5,6 +5,7 @@
 isolated, opaque-origin shell that a page cannot navigate out from under the proxy."""
 
 import asyncio
+import codecs
 import json
 import threading
 import time
@@ -340,6 +341,31 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
     )
 
 
+def test_prepare_page_leaves_inert_base_and_refresh_tags_alone():
+    # Google and many apps ship a refresh for no-JS clients in <noscript>; a browser running
+    # scripts never follows it, and a base or meta in a comment, script string or textarea is text.
+    page = (
+        '<noscript><meta http-equiv="refresh" content="0; url=/nojs"></noscript>'
+        '<!-- <meta http-equiv="refresh" content="0; url=/old"> -->'
+        "<script>var s = \"<base href='https://evil.example/'>\";</script>"
+        '<textarea><base href="https://evil.example/"></textarea>'
+        '<template><meta http-equiv="refresh" content="0; url=/tpl"></template>'
+        '<meta http-equiv="refresh" content="1; url=/live"><p>x</p>'
+    )
+    html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base is None
+    assert refresh == {"delay": 1.0, "url": "https://example.com/live"}
+    assert "url=/nojs" in html and "url=/old" in html and "url=/tpl" in html
+    assert "<base href='https://evil.example/'>" in html
+    assert '<textarea><base href="https://evil.example/"></textarea>' in html
+    assert "url=/live" not in html
+    # A live base after an inert one still applies, at its own offset once the inert text is kept.
+    page = '<textarea><base href="https://evil.example/"></textarea><base href="/docs/"><p>y</p>'
+    html, base, _ = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert html == '<textarea><base href="https://evil.example/"></textarea><p>y</p>'
+
+
 def test_a_failed_fetch_of_an_unparseable_address_still_answers_502():
     from fastapi import HTTPException
 
@@ -464,6 +490,31 @@ def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
     response = _call(url = "https://example.com/c.csv")
     assert response.body.decode("utf-8") == "a,café\n"
     assert response.headers["content-type"] == "text/csv; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "body, text",
+    [
+        # Unlabelled: UTF-8 when it decodes, else windows-1252, as a browser reads it.
+        ("a,café\n".encode("utf-8"), "a,café\n"),
+        ("a,caf\xe9\n".encode("cp1252"), "a,café\n"),
+        (codecs.BOM_UTF8 + "a,café\n".encode("utf-8"), "a,café\n"),
+        (codecs.BOM_UTF16_LE + "a,café\n".encode("utf-16-le"), "a,café\n"),
+    ],
+)
+def test_unlabelled_raw_text_is_read_as_a_browser_would(monkeypatch, body, text):
+    _fetch(monkeypatch, (None, body, "text/plain"), {"url": "https://example.com/x.txt"})
+    response = _call(url = "https://example.com/x.txt")
+    assert response.body == text.encode("utf-8")
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+def test_html_behind_a_bom_without_a_content_type_is_a_page(monkeypatch):
+    body = codecs.BOM_UTF8 + b"<!DOCTYPE html><html><body><p>hi</p></body></html>"
+    _fetch(monkeypatch, (None, body, ""), {"url": "https://example.com/"})
+    response = _call(url = "https://example.com/")
+    assert response.headers[browser_mod.KIND_HEADER] == "html"
+    assert "<p>hi</p>" in json.loads(response.body)["html"]
 
 
 @pytest.mark.parametrize(

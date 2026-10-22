@@ -17,7 +17,18 @@ import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
-import { type Answer, adoptAgentChat, agentChat, askUser, liveChat, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
+import {
+  type AgentStep,
+  type Answer,
+  adoptAgentChat,
+  agentChat,
+  askUser,
+  liveChat,
+  onBrowserAgentRunEnd,
+  patchAgentChat,
+  setActiveAction,
+  useBrowserAgentStore,
+} from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
@@ -198,8 +209,10 @@ function admit(url: string, gate: Gate, context: Run): void {
 
 const TEXT_ROLES = new Set(["textbox", "searchbox", "password", "combobox", "spinbutton"]);
 
-// A replayed stream frame must not click twice.
+// A replayed stream frame must not click twice. Ids are unguessable, so a replay is only ever
+// recent: the oldest go once the set is this big.
 const seen = new Set<string>();
+const MAX_SEEN = 4_000;
 
 export function runBrowserAction(action: BrowserAction, actionContext: ActionContext): Promise<void> {
   const session = sessionFor(chatOf(actionContext));
@@ -207,6 +220,10 @@ export function runBrowserAction(action: BrowserAction, actionContext: ActionCon
   const { chat } = session;
   if (seen.has(action.id)) return session.queue;
   seen.add(action.id);
+  for (const old of seen) {
+    if (seen.size <= MAX_SEEN) break;
+    seen.delete(old);
+  }
   // The server's wait starts when it sends the action, not when an earlier one lets this one run.
   const expires = action.timeoutS ? Date.now() + (action.timeoutS - 2) * 1000 : null;
   const next = session.queue.then(async () => {
@@ -234,7 +251,7 @@ export function runBrowserAction(action: BrowserAction, actionContext: ActionCon
       if (deadline) clearTimeout(deadline);
       context.signal?.removeEventListener("abort", abort);
       setActiveAction(chat, null);
-      patchAgentChat(chat, { working: false });
+      patchAgentChat(chat, { working: false, step: null });
     }
     if (expired && !result.ok) result = { ok: false, error: EXPIRED };
     if (agentChat(chat).stoppedRun === context.runKey) result = { ok: false, error: STOPPED };
@@ -313,7 +330,7 @@ const AGENT_ERRORS = [
   /^r\d{1,9} is covered by an overlay; snapshot to find its close button, or scroll first\.$/,
   /^r\d{1,9} is not a text field\.$/,
   /^r\d{1,9} is disabled or read-only\.$/,
-  /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11)\.$/,
+  /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11|a number such as 42)\.$/,
   /^r\d{1,9} is a radio button; select another option in its group instead\.$/,
   /^r\d{1,9} is a (checkbox|radio|switch); value must be "true", "false" or its own label\. Pick the ref of the option to choose\.$/,
   /^that key does nothing in this field; click or type instead\.$/,
@@ -604,6 +621,42 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   return waitForLoad(tabId, context.signal);
 }
 
+/** What the agent bar says the action is doing, before the page is asked anything about it. */
+function stepOf(action: BrowserAction): AgentStep {
+  switch (action.op) {
+    case "navigate":
+      return { kind: "open", detail: hostOfUrl(action.url ?? "") };
+    case "back":
+    case "forward":
+    case "reload":
+      return { kind: action.op, detail: "" };
+    case "find":
+      return { kind: "find", detail: action.query ?? "" };
+    case "click":
+    case "type":
+    case "select":
+      return { kind: action.op, detail: action.ref ?? "" };
+    case "press":
+      return { kind: "press", detail: action.key ?? "" };
+    case "scroll":
+    case "screenshot":
+    case "evaluate":
+    case "history":
+    case "move":
+    case "drag":
+      return { kind: action.op, detail: "" };
+    default:
+      return { kind: "read", detail: "" };
+  }
+}
+
+/** The element's words once the page described it: "Clicking “Search”" rather than "Clicking r12". */
+function nameStep(chat: string, info: ElementInfo): void {
+  const current = agentChat(chat).step;
+  if (!current) return;
+  patchAgentChat(chat, { step: { ...current, detail: info.name || info.role || current.detail } });
+}
+
 function permissions(context: Pick<ActionContext, "fullAccess">) {
   const saved = useBrowserAgentStore.getState().permissions;
   if (!context.fullAccess) return saved;
@@ -663,7 +716,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (owner && owner !== context.runKey) {
     return { ok: false, error: "Another reply in this chat is using the browser right now. Wait for it to finish, or tell the user." };
   }
-  patchAgentChat(chat, { working: true, runKey: context.runKey });
+  patchAgentChat(chat, { working: true, runKey: context.runKey, step: stepOf(action) });
 
   if (action.op === "navigate") {
     const url = redirectEnd(action.url ?? "");
@@ -707,6 +760,12 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
           : entry?.kind === "web"
             ? entry.url
             : "";
+    // Nowhere to go: the store's move is a no-op, which would read as the page it is on, "moved to".
+    if (action.op !== "reload" && !nativeMove && !entry) {
+      const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
+      if (!ready) return { ok: false, error: "the browser tab closed." };
+      return observe(ready, context, `There is no ${action.op === "back" ? "previous" : "next"} page in this tab's history; this is still the same page.`);
+    }
     if (destination) {
       const blocked = navigationBlocks(destination, action.policy, permissions(context));
       const gate: Gate = blocked
@@ -782,6 +841,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     return { ok: false, error: described.error ?? (point ? "nothing is at that point." : `${ref} could not be found.`) };
   }
   const info: ElementInfo = described.info;
+  if (action.op !== "press") nameStep(chat, action.op === "select" && info.option ? { ...info, name: info.option } : info);
   const gates: Gate[] = [];
   if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions(context)));
   const opaque = point ? opaqueGate(info, here, context) : null;
@@ -1296,6 +1356,10 @@ async function readHistory(action: BrowserAction, context: Run): Promise<Result>
       return terms.every((term) => haystack.includes(term));
     })
     .slice(0, limit);
-  const lines = visits.map((visit) => `${new Date(visit.visitedAt).toISOString().slice(0, 16).replace("T", " ")}  ${visit.title || "(untitled)"}  ${visit.url}`);
+  const when = (at: number) => {
+    const date = new Date(at);
+    return Number.isNaN(date.getTime()) ? "(unknown time)" : date.toISOString().slice(0, 16).replace("T", " ");
+  };
+  const lines = visits.map((visit) => `${when(visit.visitedAt)}  ${visit.title || "(untitled)"}  ${visit.url}`);
   return { ok: true, text: lines.length ? lines.join("\n") : "No pages in the browsing history match." };
 }

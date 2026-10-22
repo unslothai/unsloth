@@ -6,17 +6,25 @@ import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useCallback, useState } from "react";
 import { useBrowserStore } from "../store";
-import { IDLE_AGENT, answerQuestion, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
+import { type AgentStep, IDLE_AGENT, answerQuestion, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
+
+// Steps whose line names something: without it (a click at a point before the page said what is
+// there) the generic line reads better than an empty quote.
+const NAMED_STEPS = new Set<AgentStep["kind"]>(["open", "find", "click", "type", "select", "press"]);
 
 /** Above the agent's tab while it works in the chat on screen: what it is doing, its questions, and Stop. */
 export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
   const t = useT();
   const chat = useBrowserStore((state) => state.chat);
-  const { tabId, working, runKey, stoppedRun, question } = useBrowserAgentStore((state) => state.chats[chat] ?? IDLE_AGENT);
+  const { tabId, working, step, runKey, stoppedRun, question } = useBrowserAgentStore((state) => state.chats[chat] ?? IDLE_AGENT);
   // The whole run, not just each action: Stop between calls stops the next one before it starts.
   const running = working || (!!runKey && stoppedRun !== runKey);
   const [readId, setReadId] = useState<number | null>(null);
   const script = question?.ask === "script";
+  const doing =
+    working && step && (step.detail || !NAMED_STEPS.has(step.kind))
+      ? t(`browser.agent.step.${step.kind}`, { detail: step.detail })
+      : t("browser.agent.working");
   if (!question && !(running && tabId === activeTabId)) return null;
   return (
     <div
@@ -27,7 +35,7 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
       {question ? null : <Spinner className="size-3.5 text-primary" />}
       <div className="min-w-0 flex-[1_1_12rem]">
         <p className="truncate font-medium text-foreground">
-          {question ? t(`browser.agent.ask.${question.ask}`, { host: question.host, name: question.name }) : t("browser.agent.working")}
+          {question ? t(`browser.agent.ask.${question.ask}`, { host: question.host, name: question.name }) : doing}
         </p>
         {question && script ? (
           <ScriptPreview key={question.id} code={question.detail} onRead={() => setReadId(question.id)} />

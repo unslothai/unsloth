@@ -20,7 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 from urllib.parse import quote, urljoin, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -118,7 +118,8 @@ _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 _INERT_START_RE = re.compile(
     r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
     + _TAG_BODY
-    + r"|<[a-z][^\s/>]*"
+    # No "<" in a tag name: with it, an unclosed "<meta<base<meta..." run backtracked quadratically.
+    + r"|<[a-z][^\s/<>]*"
     + _TAG_BODY,
     re.IGNORECASE,
 )
@@ -1656,23 +1657,43 @@ def _join(base: str, href: str) -> Optional[str]:
         return None
 
 
+def _live_tags(page: str) -> Callable[["re.Match[str]"], bool]:
+    """Whether a tag match is markup the parser acts on, not text inside a comment, script,
+    textarea, noscript or template (``_inert_spans``), where a browser leaves it inert."""
+    spans = _inert_spans(page, tags = False)
+    starts = [begin for begin, _ in spans]
+
+    def live(match: "re.Match[str]") -> bool:
+        at = bisect.bisect_right(starts, match.start()) - 1
+        return at < 0 or match.start() >= spans[at][1]
+
+    return live
+
+
 def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dict]]:
     """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed; ``base_url``
     is None when the page declares no base."""
     base_url = None
-    for tag in _BASE_TAG_RE.findall(page):
-        href = _attr(_ATTR_HREF_RE.search(tag))
+    live = _live_tags(page)
+    for match in _BASE_TAG_RE.finditer(page):
+        if not live(match):
+            continue
+        href = _attr(_ATTR_HREF_RE.search(match.group(0)))
         # href="" is a base too, frozen at the document's URL (HTML: the base element).
         if href is not None:
             base_url = _join(url, href) or url
             break
-    page = _BASE_TAG_RE.sub("", page)
+    page = _BASE_TAG_RE.sub(lambda match: "" if live(match) else match.group(0), page)
+    # Offsets moved with the removals above.
+    live = _live_tags(page)
 
     refresh = None
 
     def strip_meta(match: "re.Match[str]") -> str:
         nonlocal refresh
         tag = match.group(0)
+        if not live(match):
+            return tag
         equiv = _HTTP_EQUIV_RE.search(tag)
         if not equiv:
             return tag
@@ -1812,8 +1833,9 @@ def _fetch_module(
     return code
 
 
-def _inert_spans(page: str) -> list[tuple[int, int]]:
-    """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does."""
+def _inert_spans(page: str, tags: bool = True) -> list[tuple[int, int]]:
+    """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does.
+    ``tags``: count every tag's own span too (its attributes are text, not markup)."""
     spans: list[tuple[int, int]] = []
     at = 0
     while match := _INERT_START_RE.search(page, at):
@@ -1823,7 +1845,8 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
             spans.append((match.start(), end))
         elif match.group(1) is None:
             end = match.end()
-            spans.append((match.start(), end))
+            if tags:
+                spans.append((match.start(), end))
         elif match.group(1).lower() == "template":
             depth, close = 1, None
             for tag in _TEMPLATE_TAG_RE.finditer(page, match.end()):
@@ -1965,9 +1988,9 @@ def _build_response(
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
     """build the panel response in the fetch pool to keep large pages off the event loop."""
-    looks_html = not content_type and body[:512].lstrip().lower().startswith(
-        (b"<!doctype html", b"<html")
-    )
+    looks_html = not content_type and body[:512].removeprefix(
+        codecs.BOM_UTF8
+    ).lstrip().lower().startswith((b"<!doctype html", b"<html"))
     is_html = content_type in _HTML_TYPES or looks_html
     if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
         # log the host only because page URLs can carry sign-in tokens.
@@ -2008,6 +2031,15 @@ def _build_response(
     textual = content_type.startswith("text/") or content_type.endswith(
         ("json", "xml", "javascript")
     )
+    if textual and codec is None:
+        # The response is labelled UTF-8 below, so unlabelled text is read as a browser would
+        # (BOM, else UTF-8, else windows-1252) and re-encoded to match the label.
+        codec = next((bom_codec for bom, bom_codec in _BOMS if body.startswith(bom)), None)
+        if codec is None:
+            try:
+                body.decode("utf-8")
+            except UnicodeDecodeError:
+                codec = "cp1252"
     if textual and codec and codec != "utf-8":
         # transcode text to UTF-8 to match the response label.
         try:
