@@ -7973,13 +7973,7 @@ def _eligible_layer_placements(model, filter_fn):
 
 
 def _microscaling_qat_filter(
-    model,
-    qat_scheme,
-    base_config,
-    block_size,
-    dtypes,
-    dtype_msg,
-    gemm_msg,
+    model, qat_scheme, base_config, block_size, dtypes, dtype_msg, gemm_msg
 ):
     """NVFP4 / MX QAT layer filter; raises at prepare time if this GPU / dtype cannot run the GEMM."""
     candidates = _block_linear_filter(model, block_size, qat_scheme, skip_output_head = True)
@@ -8047,7 +8041,6 @@ def _microscaling_qat_filter(
 def _mx_autocast_forward(self, x):
     # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
     from torchao.prototype.qat import MXFakeQuantizedLinear
-
     if x.dtype != torch.bfloat16 and torch.is_autocast_enabled(x.device.type):
         x = x.to(torch.bfloat16)
     return MXFakeQuantizedLinear.forward(self, x)
@@ -8065,6 +8058,7 @@ def _nvfp4_any_rank_forward(self, x):
 
 def _patch_microscaling_qat_forwards(model) -> None:
     import types
+
     try:
         from torchao.prototype import qat as prototype_qat
     except Exception:
