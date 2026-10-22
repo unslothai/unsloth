@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { useIsAccountOwner } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import {
@@ -27,6 +28,7 @@ type EngineRow = {
 export function EngineVersionsSection() {
   const t = useT();
   const hw = useHardwareInfo();
+  const isOwner = useIsAccountOwner();
   const { status, applying, apply, refresh } = useLlamaUpdateCheck({
     onReloadRequired: resyncInferenceStatusAfterServerModelChange,
   });
@@ -146,16 +148,19 @@ export function EngineVersionsSection() {
           >
             {t("settings.about.engines.checkForUpdates")}
           </Button>
-          <Button
-            size="sm"
-            disabled={!offered || !supported || applying || checking}
-            onClick={() => void handleUpdate()}
-            data-testid="engine-update"
-          >
-            {applying
-              ? t("settings.about.engines.updating")
-              : t("settings.about.engines.update")}
-          </Button>
+          {/* POST /api/llama/update is owner-only; a managed account can read versions, not install. */}
+          {isOwner ? (
+            <Button
+              size="sm"
+              disabled={!offered || !supported || applying || checking}
+              onClick={() => void handleUpdate()}
+              data-testid="engine-update"
+            >
+              {applying
+                ? t("settings.about.engines.updating")
+                : t("settings.about.engines.update")}
+            </Button>
+          ) : null}
         </div>
       </SettingsRow>
 

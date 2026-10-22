@@ -44,6 +44,14 @@ test("the Engines section lists llama.cpp, whisper.cpp and audio.cpp", () => {
   );
 });
 
+test("only the owner gets the engine Update button, which the update route requires", () => {
+  const section = read(
+    "features/settings/components/engine-versions-section.tsx",
+  );
+  assert.match(section, /const isOwner = useIsAccountOwner\(\);/);
+  assert.match(section, /\{isOwner \? \(\s*<Button[^]*?data-testid="engine-update"/);
+});
+
 test("every locale labels the audio.cpp row", () => {
   const locales = readdirSync(new URL("i18n/locales/", SRC)).filter((name) =>
     name.endsWith(".ts"),
