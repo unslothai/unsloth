@@ -18,8 +18,7 @@ from typing import Any, Optional
 
 SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST"
 HOST_RAM_CHECK_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_CHECK"
-# test hook: cap the host RAM the diffusion guards see (total and available), the Windows counterpart of
-# the cgroup ceiling the Linux reading already honours
+# test hook: caps every host reading the guards take (total, available, commit)
 HOST_RAM_LIMIT_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB"
 SMALL_HOST_ATTR = "_unsloth_small_host"
 
@@ -197,7 +196,6 @@ class SmallHostDecision:
     total_mib: Optional[int] = None
     dense_host_mib: int = 0
     route_host_mib: int = 0
-    # Windows commit headroom at the decision and the dense load's commit need (source views + converted copy)
     commit_mib: Optional[int] = None
     dense_commit_mib: int = 0
     # component -> stored dtype it loads at (memory-mapped)
@@ -247,9 +245,8 @@ def decide_small_host(
         for n, c in converted.items()
     )
     reserve = host_reserve_mib(host_total_mib)
-    # Windows charges each copy-on-write safetensors view to commit for the whole load, so a converting load
-    # commits the stored bytes next to the converted copy (measured 2.06x dense on a Qwen-Image encoder).
-    # Linux / macOS do not enforce commit: there the physical check alone decides.
+    # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
+    # converted copy (measured 2.06x dense, Qwen-Image encoder). Linux / macOS do not enforce commit.
     dense_commit = dense + int(sum(c.mib for c in converted.values()) * _CONVERT_MARGIN)
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()

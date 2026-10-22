@@ -1009,7 +1009,7 @@ def _windows_commit_headroom_mib() -> Optional[int]:
             return None
         headroom = (int(info.CommitLimit) - int(info.CommitTotal)) * int(info.PageSize)
         return max(0, headroom // (1024 * 1024))
-    except Exception:  # noqa: BLE001 - an unreadable commit leaves the physical reading in force
+    except Exception:  # noqa: BLE001
         return None
 
 

@@ -11120,7 +11120,6 @@ class DiffusionBackend:
                 decision.storage_dtypes,
             )
         elif decision.available_mib is not None:
-            # a measured dense decision logs too: a crash after it then shows what the guard saw
             logger.info("diffusion.small_host: engaged=False (%s)", decision.reason)
         if decision.refuse:
             raise RuntimeError(decision.refuse)
