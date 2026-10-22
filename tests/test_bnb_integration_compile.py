@@ -532,7 +532,9 @@ def test_fast_linear_forward_sees_lora_updates(nf4_kernels):
 
 
 @pytest.mark.parametrize("bnb_gemm", [True, False])
-def test_fast_linear_forward_lora_under_a_different_autocast_dtype(nf4_kernels, monkeypatch, bnb_gemm):
+def test_fast_linear_forward_lora_under_a_different_autocast_dtype(
+    nf4_kernels, monkeypatch, bnb_gemm
+):
     # fp16 activations under bf16 autocast: every base path must hand the LoRA update X.dtype.
     if not torch.cuda.is_bf16_supported():
         pytest.skip("needs bf16")
@@ -544,7 +546,9 @@ def test_fast_linear_forward_lora_under_a_different_autocast_dtype(nf4_kernels, 
         monkeypatch.setattr(U, "_BNB_GEMM_4BIT_DEVICE", {})
         monkeypatch.setattr(U, "_BNB_GEMM_4BIT_ARCHS", {torch.cuda.get_device_capability()})
         matmul_4bit = U.bnb.matmul_4bit
-        monkeypatch.setattr(U.bnb, "matmul_4bit", lambda *a, **k: calls.append(1) or matmul_4bit(*a, **k))
+        monkeypatch.setattr(
+            U.bnb, "matmul_4bit", lambda *a, **k: calls.append(1) or matmul_4bit(*a, **k)
+        )
     _, block = _lora_block(dtype = torch.float16)
     proj = block.o_proj
     X = torch.randn(4, 1, 256, dtype = torch.float16, device = DEVICE)
