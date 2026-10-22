@@ -1377,10 +1377,13 @@ def test_requested_language_reaches_the_decoder(
     assistant_messages = [m for m in payload["messages"] if m["role"] == "assistant"]
     if expected_language is None:
         assert assistant_messages == []
+        assert "continue_final_message" not in payload and "add_generation_prompt" not in payload
     else:
         assert assistant_messages == [
             {"role": "assistant", "content": f"language {expected_language}<asr_text>"}
         ]
+        assert payload["continue_final_message"] is True
+        assert payload["add_generation_prompt"] is False
     if stream:
         assert progress, "prefilled responses still need to publish transcription progress"
         assert progress[-1] == {"text": "Hello world"}

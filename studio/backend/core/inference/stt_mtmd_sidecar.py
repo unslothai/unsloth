@@ -84,8 +84,7 @@ class MtmdSttModel:
     transcript_marker: Optional[str] = None
 
 
-# All entries use Qwen3-ASR's assistant-prefill language protocol. Revisit
-# language conditioning in _post_transcribe before adding another model family.
+# Every entry takes Qwen3-ASR's assistant-prefill language hint; see _post_transcribe before adding another family.
 MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
     "qwen3-asr-0.6b": MtmdSttModel(
         repo = "unslothai/Qwen3-ASR-0.6B-GGUF",
@@ -1260,12 +1259,13 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
-        # Qwen3-ASR selects a forced language from the assistant prefill.
         forced_language = QWEN3_ASR_LANGUAGE_NAMES.get(normalize_whisper_language(language) or "")
         assistant_prefix = ""
         if forced_language:
             assistant_prefix = f"language {forced_language}<asr_text>"
             payload["messages"].append({"role": "assistant", "content": assistant_prefix})
+            # Explicit, so a server-wide --no-prefill-assistant cannot close the prefix as a finished turn.
+            payload.update({"continue_final_message": True, "add_generation_prompt": False})
         if on_progress is not None:
             payload["stream"] = True
         connection = http.client.HTTPConnection(
@@ -1292,8 +1292,7 @@ class MtmdSttSidecar:
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:
-                    # Prefill tokens are not echoed in the stream. Keep the marker
-                    # locally so progress can publish the generated transcript immediately.
+                    # llama-server does not echo the prefill, so seed it to publish progress from the first token.
                     text = assistant_prefix
                     finished = False
                     for line in response:
