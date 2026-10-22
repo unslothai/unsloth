@@ -4774,20 +4774,18 @@ class SdCppDiffusionBackend:
         seeds: list[int] = []
         # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request's adapters cannot
         # leak in); removed after.
-        lora_payload: Optional[list[dict]] = None
-        lora_stage: Optional[Path] = None
-        if lora_resolved:
-            server_lora_dir = state.server.lora_dir
-            if server_lora_dir:
-                lora_stage = Path(server_lora_dir) / f"gen_{os.urandom(6).hex()}"
-                materialized = diffusion_lora.materialize_native_dir(lora_resolved, lora_stage)
-                lora_payload = [
-                    {
-                        "path": f"{lora_stage.name}/{Path(m.path).name}",
-                        "multiplier": float(m.weight),
-                    }
-                    for m in materialized
-                ]
+        def _stage_loras(server) -> tuple[Optional[Path], Optional[list[dict]]]:
+            server_lora_dir = server.lora_dir if lora_resolved else None
+            if not server_lora_dir:
+                return None, None
+            stage = Path(server_lora_dir) / f"gen_{os.urandom(6).hex()}"
+            materialized = diffusion_lora.materialize_native_dir(lora_resolved, stage)
+            return stage, [
+                {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
+                for m in materialized
+            ]
+
+        lora_stage, lora_payload = _stage_loras(state.server)
         # One deadline for the whole request, shared by its chunks: a batch is chunked only because the server caps
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
@@ -4843,9 +4841,13 @@ class SdCppDiffusionBackend:
                     if server is None:
                         raise
                     state = replace(state, server = server)
-                    with self._lock:
-                        if self._state is not None and self._state.server is not None:
-                            self._state = state
+                    self._hand_over_replacement(state, server)
+                    # The old server's stop removed its scratch dir, and the staged adapters with it.
+                    if lora_payload is not None:
+                        if lora_stage is not None:
+                            shutil.rmtree(lora_stage, ignore_errors = True)
+                        lora_stage, lora_payload = _stage_loras(server)
+                        payload["lora"] = lora_payload
                     blobs = server.img_gen(
                         payload,
                         on_step = self._on_log,
@@ -4871,6 +4873,22 @@ class SdCppDiffusionBackend:
             if lora_stage is not None:
                 shutil.rmtree(lora_stage, ignore_errors = True)
         return images, seeds
+
+    def _hand_over_replacement(self, state: _SdState, server: SdCppServer) -> None:
+        """Publish a restarted sd-server into ``_state`` in the same locked step that drops it from
+        ``_pending_server``, so an unload always sees it in one of the two. When the unload already
+        cleared the state, stop the replacement and cancel instead of generating on an untracked process."""
+        with self._lock:
+            if self._pending_server is server:
+                self._pending_server = None
+            published = self._state is not None and self._state.server is not None
+            if published:
+                self._state = state
+            else:
+                self._reserve_stop()
+        if not published:
+            self._stop_reserved(server)
+            raise SdCppCancelled("sd-server generation was cancelled.")
 
     def _respawn_server_after_device_loss(
         self, state: _SdState, error_text: str, cancel: threading.Event
@@ -4901,12 +4919,12 @@ class SdCppDiffusionBackend:
                 env = state.spawn_env(),
             )
         except Exception:  # noqa: BLE001 -- the lost device is the more useful error
-            server.stop()
-            return None
-        finally:
             with self._lock:
                 if self._pending_server is server:
                     self._pending_server = None
+            server.stop()
+            return None
+        # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
         return server
 
     def _restart_server_on_cpu_backend(
@@ -4961,12 +4979,12 @@ class SdCppDiffusionBackend:
                 extra_args = list(CPU_BACKEND_FLAGS),
             )
         except Exception:  # noqa: BLE001 -- the original abort is the more useful error
-            server.stop()
-            return None
-        finally:
             with self._lock:
                 if self._pending_server is server:
                     self._pending_server = None
+            server.stop()
+            return None
+        # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
         return server
 
     def _generate_oneshot(

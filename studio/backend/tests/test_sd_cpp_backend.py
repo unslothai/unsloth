@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import threading
 import types
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -3106,3 +3109,92 @@ def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, 
         e[0] == "start" and "--offload-to-cpu" in (e[1] or ()) for e in events
     )
     assert not bk._accelerator_runtime_failures
+
+
+def _device_loss_backend(monkeypatch, tmp_path, *, on_start = None):
+    """A loaded backend whose first job loses its Vulkan device; each server gets its own lora dir."""
+    servers: list = []
+    payloads: list = []
+
+    class _FakeServer:
+        def __init__(self, binary):
+            self.binary = binary
+            self.lora_dir = str(tmp_path / f"srv{len(servers)}")
+            os.makedirs(self.lora_dir, exist_ok = True)
+            self.stopped = False
+            servers.append(self)
+
+        def start(self, files, **kwargs):
+            if on_start is not None:
+                on_start(self)
+
+        def stop(self):
+            self.stopped = True
+            shutil.rmtree(self.lora_dir, ignore_errors = True)
+
+        def img_gen(self, payload, **_kw):
+            payloads.append((self, dict(payload)))
+            if len(payloads) == 1:
+                raise RuntimeError("sd-server job failed: vk::Queue::submit: ErrorDeviceLost")
+            return [_png_bytes()]
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = (), device = "vulkan")
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server-vulkan"))
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+    bk._accelerator_runtime_failures.clear()
+    return b, servers, payloads
+
+
+def _gen_kwargs(lora_resolved = ()):
+    return dict(
+        prompt = "a fox",
+        negative_prompt = None,
+        width = 64,
+        height = 64,
+        steps = 2,
+        seed = 1,
+        batch_size = 1,
+        cfg_scale = None,
+        flux_guidance = None,
+        lora_resolved = list(lora_resolved),
+        cancel = threading.Event(),
+    )
+
+
+def test_a_device_loss_retry_restages_the_loras_under_the_new_server(monkeypatch, tmp_path):
+    # The old server's stop removes its scratch dir and the staged adapters: the retry must stage them again.
+    from core.inference import diffusion_lora
+
+    def _materialize(resolved, stage):
+        os.makedirs(stage, exist_ok = True)
+        (Path(stage) / "adapter.gguf").write_bytes(b"x")
+        return [types.SimpleNamespace(path = str(Path(stage) / "adapter.gguf"), weight = 0.8)]
+
+    monkeypatch.setattr(diffusion_lora, "materialize_native_dir", _materialize)
+    b, servers, payloads = _device_loss_backend(monkeypatch, tmp_path)
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs(lora_resolved = ["adapter"]))
+    assert len(images) == 1 and len(servers) == 2
+    retry_server, retry_payload = payloads[-1]
+    assert retry_server is servers[1]
+    (entry,) = retry_payload["lora"]
+    # Staged under the replacement's own lora dir (the file exists there when the retry runs).
+    assert entry["path"] != payloads[0][1]["lora"][0]["path"]
+    assert entry["multiplier"] == 0.8
+
+
+def test_an_unload_during_the_respawn_leaves_no_live_server(monkeypatch, tmp_path):
+    # unload() racing the restart must find the replacement (pending) or the handover must stop it.
+    holder: dict = {}
+
+    def _unload_mid_start(server):
+        holder["backend"].unload()
+
+    b, servers, _payloads = _device_loss_backend(monkeypatch, tmp_path, on_start = _unload_mid_start)
+    holder["backend"] = b
+    monkeypatch.setattr(b, "status", lambda: {})
+    with pytest.raises(SdCppCancelled):
+        b._generate_server(b._state, **_gen_kwargs())
+    assert len(servers) == 2
+    assert all(s.stopped for s in servers)
+    assert b._state is None and b._pending_server is None
