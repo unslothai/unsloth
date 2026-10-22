@@ -706,7 +706,6 @@ def _count_calls(monkeypatch, module, name: str) -> dict:
 
 @pytest.mark.parametrize("hold", [True, False], ids = ["held_frames", "two_decode_passes"])
 def test_gif_export_uses_one_clip_wide_palette(monkeypatch, hold):
-    """One clip-wide palette (no local colour tables), infinite loop, 12 fps, for both memory strategies."""
     from core.inference import video_gallery as vg
 
     pytest.importorskip("PIL.Image")
@@ -747,7 +746,6 @@ def test_gif_export_palette_path_caps_frames_and_edge(monkeypatch):
 
 
 def test_gif_export_falls_back_to_pillow_without_the_palette_filters(monkeypatch):
-    """A PyAV build without palettegen / paletteuse still exports, through Pillow, with the same loop and timing."""
     import av.filter
 
     from core.inference import video_gallery as vg
@@ -771,7 +769,6 @@ def test_gif_export_falls_back_to_pillow_without_the_palette_filters(monkeypatch
 
 
 def test_gif_export_falls_back_to_pillow_without_a_gif_encoder(monkeypatch):
-    """A build with the GIF decoder but no encoder takes the Pillow path instead of failing in add_stream."""
     import av.codec
 
     from core.inference import video_gallery as vg

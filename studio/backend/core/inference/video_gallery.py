@@ -477,7 +477,6 @@ def _gif_plan(in_v) -> tuple[Fraction, int, int, int]:
 
 
 def _gif_scaled_frames(path: Path, step: int, width: int, height: int):
-    """Yield the kept frames of ``path`` as rgb24 at (width, height), scaled by swscale."""
     import av
     with av.open(str(path)) as src:
         in_v = src.streams.video[0]
@@ -495,7 +494,6 @@ def _gif_scaled_frames(path: Path, step: int, width: int, height: int):
 
 
 def _gif_palette_supported() -> bool:
-    """True when this PyAV build has the palettegen / paletteuse filters and the GIF encoder."""
     try:
         import av
         import av.filter
