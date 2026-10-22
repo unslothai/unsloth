@@ -6007,6 +6007,7 @@ def _mixed_drafter_launch(
     *,
     speculative_type,
     slots = 1,
+    apu_free = 60_000,
 ):
     """14 GiB target and a sidecar drafter; the dGPU holds the target alone at native context."""
     gb, mib = 1024**3, 1024 * 1024
@@ -6016,7 +6017,7 @@ def _mixed_drafter_launch(
         "_INTEGRATED_CUDA_IDS",
         {LlamaCppBackend._integrated_cuda_mask_key(): set()},
     )
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 60_000, 0), (1, 24_576, 24_576)])
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, apu_free, 0), (1, 24_576, 24_576)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
     backend._get_gguf_size_bytes = lambda path: (
@@ -6063,6 +6064,25 @@ def test_the_drafter_probe_does_not_give_up_what_the_base_walk_keeps(tmp_path, m
     assert ctx == ctx_off == 32_768
     assert "--model-draft" in cmd
     assert int(cmd[cmd.index("--parallel") + 1]) == slots
+
+
+def test_the_drafter_probe_keeps_the_placement_with_more_slots(tmp_path, monkeypatch):
+    # Neither card holds the drafter at four slots at full context; the APU keeps it at three,
+    # the dGPU only at one. Both score (32K, no drafter) at four slots, so the slot count
+    # decides: the APU, as the pick before #14372, not the dGPU at one slot.
+    dev, ctx, cmd = _mixed_drafter_launch(
+        tmp_path, monkeypatch, speculative_type = "auto", slots = 4, apu_free = 26_000
+    )
+    assert dev == "0"
+    assert ctx == 32_768
+    assert "--model-draft" in cmd
+    assert int(cmd[cmd.index("--parallel") + 1]) == 3
+    # Where both keep the same single slot, the tier still wins.
+    dev, _ctx, cmd = _mixed_drafter_launch(
+        tmp_path, monkeypatch, speculative_type = "auto", slots = 4, apu_free = 25_000
+    )
+    assert dev == "1"
+    assert int(cmd[cmd.index("--parallel") + 1]) == 1
 
 
 def test_cuda_integrated_ids_join_pci_rows_only_under_pci_bus_order(tmp_path, monkeypatch):
@@ -6877,6 +6897,28 @@ def test_an_explicit_pick_discounts_only_a_vetted_dgpu_subset():
     )
 
 
+def test_an_explicit_pick_tries_each_discounted_card_before_spreading():
+    # The APU ranks first but cannot hold the full footprint; the dGPU holds its discounted
+    # size alone. The cumulative walk would spread onto both; the dGPU alone is the pick.
+    # Without a vetted discount the walk is exactly main's.
+    gib = 1024**3
+    full, discrete = 14 * gib, 12 * gib
+    gpus = [(0, 13_000), (1, 14_000)]
+    kw = dict(
+        total_by_idx = {0: 16_384, 1: 0},
+        integrated = frozenset({1}),
+        prefer_discrete = False,
+        usable_fraction = 1.0,
+        discrete_size_bytes = discrete,
+    )
+    vetted = frozenset({frozenset({0}), frozenset({0, 1})})
+    assert LlamaCppBackend._select_gpus(full, gpus, discount_prefixes = vetted, **kw) == ([0], False)
+    assert LlamaCppBackend._select_gpus(full, gpus, **kw) == ([0, 1], False)
+    assert LlamaCppBackend._select_gpus(
+        full, gpus, discount_prefixes = frozenset({frozenset({0, 1})}), **kw
+    ) == ([0, 1], False)
+
+
 def _host_projector_explicit_launch(tmp_path, monkeypatch, *, extra, **layout):
     backend, gguf = _explicit_pick_backend(tmp_path, monkeypatch, **layout)
     proj = _write_gguf(tmp_path / "mmproj.gguf")
@@ -6930,13 +6972,32 @@ def test_the_explicit_device_ordinals_needed_reads_flags_and_env(monkeypatch):
     assert need([]) == 0
     assert need(["--device", "ROCm0"]) == 1
     assert need(["--device", "Vulkan0,Vulkan2"]) == 3
-    assert need(["--device", "none"]) == 0
+    assert need(["--device", "none"]) is None
+    assert need(["--device", "NONE"]) is None
     assert need(["-mg", "1"]) == 2
     assert need(["--tensor-split", "3,1"]) == 2
     assert need(["--device", "weird"]) is None
     monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "2")
     assert need([]) == 3
     assert need(["--main-gpu", "0"]) == 1
+    monkeypatch.delenv("LLAMA_ARG_MAIN_GPU")
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", "none")
+    assert need([]) is None
+
+
+@pytest.mark.parametrize("via_env", [False, True])
+def test_a_cpu_only_device_pick_gets_no_host_discount(tmp_path, monkeypatch, via_env):
+    # "--device none" (or LLAMA_ARG_DEVICE=none) runs the child on the CPU, like "--device cpu":
+    # no GPU subset may be priced lighter, so the load is not pinned onto the dGPU.
+    if via_env:
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", "none")
+    extra = [] if via_env else ["--device", "none"]
+    assert _host_projector_explicit_launch(tmp_path, monkeypatch, extra = extra) == (None, "on")
+    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
+    assert _host_projector_explicit_launch(tmp_path, monkeypatch, extra = ["--device", "ROCm0"]) == (
+        "0",
+        "off",
+    )
 
 
 def test_the_checkpoint_discount_removes_only_the_checkpoints():

@@ -5108,7 +5108,8 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
 
 def _explicit_device_ordinals_needed(extra_args: Optional[Iterable[str]]) -> Optional[int]:
     """Leading child ordinals the user's device flags name (highest ordinal + 1, tensor-split
-    length), 0 when none; None when a value cannot be read. argv wins over LLAMA_ARG_*."""
+    length), 0 when no flag names one; None when a value cannot be read or the pick is CPU only.
+    argv wins over LLAMA_ARG_*."""
     try:
         device = _last_flag_value(extra_args, frozenset({"--device", "-dev"}))
         main_gpu = _last_flag_value(extra_args, frozenset({"--main-gpu", "-mg"}))
@@ -5121,8 +5122,11 @@ def _explicit_device_ordinals_needed(extra_args: Optional[Iterable[str]]) -> Opt
     need = 0
     for token in (device or "").split(","):
         token = token.strip()
-        if not token or token.lower() == "none":
+        if not token:
             continue
+        # CPU only ("none", like "cpu"): the child uses no GPU, so no GPU subset may be priced lighter.
+        if token.lower() == "none":
+            return None
         match = re.fullmatch(r"[A-Za-z]+(\d+)", token)
         if match is None:
             return None
@@ -17868,6 +17872,12 @@ class LlamaCppBackend:
                 if idx not in shared and _usable(idx, free_mib) >= _size_mib([idx]):
                     return [idx], False
             return [ranked[0][0]], False
+        # A discounted dGPU can hold its lighter size alone even when the top-ranked APU cannot
+        # hold the full one: try each card at its own price before spreading.
+        if min_gpus <= 1 and _discount:
+            fits = [idx for idx, free_mib in ranked if _usable(idx, free_mib) >= _size_mib([idx])]
+            if fits:
+                return [next((idx for idx in fits if idx not in shared), fits[0])], False
 
         # Try N GPUs (most-free first); each past the first adds per-device overhead.
         # Require at least min_gpus devices before accepting a fit.
@@ -28263,9 +28273,82 @@ class LlamaCppBackend:
                                     return None
                             return _ctx_wo
 
+                        _slots_reducible = (
+                            n_parallel > 1
+                            and intent.n_parallel_from_default
+                            and _extra_args_n_parallel(extra_args, env = {}) is None
+                        )
+
+                        def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
+                            ub = _ubatch_for_slots(s)
+                            return (
+                                _probe_base(True, n, s)
+                                + self._estimate_kv_cache_bytes(
+                                    ctx,
+                                    cache_type_kv,
+                                    n_parallel = s,
+                                    swa_full = swa_full,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = ub,
+                                    flash_attn = planned_flash_attn,
+                                )
+                                + _cc_bytes(ctx, n, s)
+                                + _mtp_bytes(ctx, s, ub)
+                            ) / (1024 * 1024)
+
+                        def _ctx_with_drafter(
+                            n: int, ctx: int, budget: float, s: int, ckpts: int
+                        ) -> int:
+                            if explicit_ctx:
+                                return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
+                            ub = _ubatch_for_slots(s)
+                            fitted = self._fit_context_to_vram(
+                                ctx,
+                                budget,
+                                _probe_base(True, n, s),
+                                cache_type_kv,
+                                swa_full = swa_full,
+                                n_parallel = s,
+                                kv_unified = planned_kv_unified,
+                                n_ubatch = ub,
+                                flash_attn = planned_flash_attn,
+                                mtp_engaged = True,
+                                mtp_overhead_fn = (
+                                    functools.partial(mtp_overhead_fn, _np = s, _n_ubatch = ub)
+                                    if mtp_overhead_fn is not None
+                                    else None
+                                ),
+                                compute_ctx_bytes_fn = lambda c: _cc_bytes(c, n, s),
+                                budget_frac = 1.0,
+                                pooled = True,
+                                total_mib = None,
+                                ctx_checkpoints = ckpts,
+                            )
+                            return (
+                                fitted
+                                if fitted > 0 and _mtp_foot_mib(n, fitted, s) <= budget
+                                else 0
+                            )
+
+                        def _probe_slots(_n: int, _subset, _ctx: int) -> int:
+                            # Most slots the slot search below can keep the drafter at here (ctx
+                            # kept, less the trim at one slot), 0 if none or slots are pinned.
+                            if not _slots_reducible:
+                                return 0
+                            _budget = _pool_budget_mib(_subset, _probe_frac(True))
+                            _ckpts = _subset_ckpts(_subset)
+                            for _s in range(n_parallel - 1, 0, -1):
+                                _keep = 1 - (
+                                    _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
+                                )
+                                _c = _ctx_with_drafter(_n, _ctx, _budget, _s, _ckpts)
+                                if _c > 0 and _c >= _ctx * _keep:
+                                    return _s
+                            return 0
+
                         def _probe_score(_n: int, _subset):
-                            # (target context, drafter fits beside it at that context); explicit
-                            # context is the same everywhere, so only the drafter term can differ.
+                            # (target context, drafter fits beside it at that context, slots it
+                            # keeps); explicit context is the same everywhere.
                             _ctx = _probe_target_ctx(_n, _subset)
                             if _ctx is None:
                                 return None
@@ -28275,10 +28358,11 @@ class LlamaCppBackend:
                                 + _cc_bytes(_ctx, _n)
                                 + _mtp_bytes(_ctx)
                             ) / (1024 * 1024)
-                            return (
-                                _ctx,
-                                int(_need <= _pool_budget_mib(_subset, _probe_frac(True))),
-                            )
+                            if _need <= _pool_budget_mib(_subset, _probe_frac(True)):
+                                return (_ctx, 1, n_parallel)
+                            # No drafter at the requested slots: the placement keeping more
+                            # slots for it wins, so the tier cannot cost the base walk slots.
+                            return (_ctx, 0, _probe_slots(_n, _subset, _ctx))
 
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
@@ -28375,62 +28459,8 @@ class LlamaCppBackend:
                         if (
                             _target_fits_somewhere
                             and not _both_fit_somewhere
-                            and n_parallel > 1
-                            and intent.n_parallel_from_default
-                            and _extra_args_n_parallel(extra_args, env = {}) is None
+                            and _slots_reducible
                         ):
-
-                            def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
-                                ub = _ubatch_for_slots(s)
-                                return (
-                                    _probe_base(True, n, s)
-                                    + self._estimate_kv_cache_bytes(
-                                        ctx,
-                                        cache_type_kv,
-                                        n_parallel = s,
-                                        swa_full = swa_full,
-                                        kv_unified = planned_kv_unified,
-                                        n_ubatch = ub,
-                                        flash_attn = planned_flash_attn,
-                                    )
-                                    + _cc_bytes(ctx, n, s)
-                                    + _mtp_bytes(ctx, s, ub)
-                                ) / (1024 * 1024)
-
-                            def _ctx_with_drafter(
-                                n: int, ctx: int, budget: float, s: int, ckpts: int
-                            ) -> int:
-                                if explicit_ctx:
-                                    return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
-                                ub = _ubatch_for_slots(s)
-                                fitted = self._fit_context_to_vram(
-                                    ctx,
-                                    budget,
-                                    _probe_base(True, n, s),
-                                    cache_type_kv,
-                                    swa_full = swa_full,
-                                    n_parallel = s,
-                                    kv_unified = planned_kv_unified,
-                                    n_ubatch = ub,
-                                    flash_attn = planned_flash_attn,
-                                    mtp_engaged = True,
-                                    mtp_overhead_fn = (
-                                        functools.partial(mtp_overhead_fn, _np = s, _n_ubatch = ub)
-                                        if mtp_overhead_fn is not None
-                                        else None
-                                    ),
-                                    compute_ctx_bytes_fn = lambda c: _cc_bytes(c, n, s),
-                                    budget_frac = 1.0,
-                                    pooled = True,
-                                    total_mib = None,
-                                    ctx_checkpoints = ckpts,
-                                )
-                                return (
-                                    fitted
-                                    if fitted > 0 and _mtp_foot_mib(n, fitted, s) <= budget
-                                    else 0
-                                )
-
                             _mtp_slots = _mtp_slots_ctx = 0
                             for _s in range(n_parallel - 1, 0, -1):
                                 _keep = 1 - (
