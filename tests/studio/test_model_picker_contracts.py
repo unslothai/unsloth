@@ -1423,8 +1423,7 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     before = src.split("<Checkbox id={rememberId}", 1)[0]
-    # The footer, then the Remember column and its row: the status line under the box sits in
-    # the column, which is why the footer is the third <div back.
+    # Footer is the third <div back: the status line sits in the Remember column.
     footer = before.rsplit("<div", 3)[1]
     assert "flex-wrap" not in footer, footer[:200]
     assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]

@@ -353,9 +353,7 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  // The Run settings save-state line, Advanced groups and the post-write override read (#14589) live in the
-  // eager chat chunk with the rest of the page: 6,719.6 KB raw / 2,023.9 KB transfer at 77e742c8e2 (Node 24,
-  // 97 chunks), about +1.3 KB raw / +0.5 KB transfer. Raised to that plus about 200 B.
+  // #14589 Run settings save state: +1.3 KB raw / +0.5 KB transfer in the eager chat chunk.
   transferBytes: 2_072_700,
   rawBytes: 6_881_100,
 };

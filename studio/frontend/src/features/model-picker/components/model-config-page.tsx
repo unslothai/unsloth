@@ -1799,8 +1799,6 @@ function GgufAdvancedSettings({
         moeLayersInputRef={moeLayersInputRef}
       />
 
-      {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
-          and the runner never reads it, so the switch would flip back under the pointer. */}
       {!isDiffusion && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -2129,8 +2127,7 @@ function GgufAdvancedSettings({
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
       </AdvancedGroup>
 
-      {/* Host-side knobs, after the ones that shape the model itself. All of them are llama-server's
-          own, and the diffusion runner launches no llama-server, so the group is hidden for it. */}
+      {/* llama-server-only knobs; the diffusion runner launches no llama-server. */}
       {!isDiffusion && (
         <AdvancedGroup title="Server">
           <LoadModeRow config={config} update={update} />
@@ -2211,8 +2208,7 @@ function GgufAdvancedSettings({
             />
           </div>
 
-          {/* Last, because it is the escape hatch for everything the rows above do not cover, and
-              llama.cpp's last-wins parsing means these really are appended after them. */}
+          {/* Last: llama.cpp parsing is last-wins, and these are appended after the rows above. */}
           <ExtraArgsRow
             config={config}
             update={update}
@@ -3486,7 +3482,6 @@ export function ModelConfigPage({
     });
 
   const rememberChanged = remember !== savedRemember;
-  // Judged on what Save would write, so a just-saved panel never reads as having unsaved edits.
   const storedRecord = useStoredPerModelConfig(configId, target.ggufVariant);
   const matchesStored =
     storedRecord.remembered &&
@@ -3494,7 +3489,7 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  // Always one line of text, never mounted on demand: the click that saves would move Load.
+  // Never mounted on demand: the click that saves would move Load.
   const saveStatus = savedRemember
     ? remember
       ? matchesStored
@@ -3598,9 +3593,7 @@ export function ModelConfigPage({
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
     const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    // Only a Remember that was on can be forgotten. An unticked box that never was is no decision:
-    // a compare pane seeded off its snapshot, or an overrides read that failed, deleted settings
-    // (CLI-set flags included) this editor had never shown.
+    // Only a Remember that was on can be forgotten: an unticked seeded/failed-read box deleted unseen rows.
     const forgets = !remember && savedRemember;
     const saved = remember
       ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)

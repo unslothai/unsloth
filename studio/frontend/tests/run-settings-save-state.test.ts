@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Run settings say whether they are saved, never forget a server row they did not read, and
-// group the Advanced rows by purpose.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -59,8 +57,6 @@ test("an unticked Load forgets only a Remember that was on", () => {
     CONFIG_PAGE.indexOf("const persistConfig = "),
     CONFIG_PAGE.indexOf("const finishPersist = "),
   );
-  // A compare pane seeded off its snapshot, or a failed overrides read, opens unticked over a
-  // record that exists; deleting it then removed settings the editor never showed.
   assert.match(persist, /const forgets = !remember && savedRemember;/);
   assert.match(
     persist,
@@ -70,8 +66,7 @@ test("an unticked Load forgets only a Remember that was on", () => {
 });
 
 test("a fresh editor adopts the server row when nothing changed in flight", () => {
-  // The first render's fallback and the primed draft are distinct objects, so an identity
-  // check here refused every row and settings saved on another origin never came back.
+  // Identity check refused every row: fallback and primed draft are distinct objects.
   assert.match(
     CONFIG_PAGE,
     /!isModelConfigDraftEdited\(draftKey\) &&\s*perModelConfigsEqual\(configRef\.current, configAtStart\) &&/,
