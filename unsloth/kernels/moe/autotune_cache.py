@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 _kernel_config_cache: Dict[str, Any] = {}
 _autotune_completed: Dict[str, bool] = {}
 
+# Bump when a kernel change alters which tiles fit; other revisions / Triton versions are misses.
+_CACHE_SCHEMA_VERSION = 2
+
 
 def _get_cache_key(
     num_experts: int,
@@ -49,6 +52,8 @@ def _get_cache_key(
         "dtype": str(dtype),
         "device_capability": device_capability,
         "seq_len": seq_len,
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "triton_version": getattr(triton, "__version__", None),
     }
     if weight_dtype is not None and weight_dtype != dtype:
         key_data["weight_dtype"] = str(weight_dtype)
@@ -83,6 +88,12 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
             os.remove(cache_file)
             return None
 
+        if cached_data.get("schema_version") != _CACHE_SCHEMA_VERSION or cached_data.get(
+            "triton_version"
+        ) != getattr(triton, "__version__", None):
+            logger.info("MoE kernel cache schema or Triton version changed, ignoring cache")
+            return None
+
         logger.info(f"Loaded cached MoE kernel config: {cache_key}")
         return cached_data
     except Exception as e:
@@ -107,6 +118,8 @@ def save_cached_config(
     cache_data = {
         "timestamp": time.time(),
         "device_capability": torch.cuda.get_device_capability(),
+        "schema_version": _CACHE_SCHEMA_VERSION,
+        "triton_version": getattr(triton, "__version__", None),
         "config_fwd": config_fwd.__dict__ if hasattr(config_fwd, "__dict__") else str(config_fwd),
         "config_bwd_dx": config_bwd_dx.__dict__
         if hasattr(config_bwd_dx, "__dict__")
@@ -192,7 +205,11 @@ def get_or_autotune_moe_kernels(
                 config_bwd_dx = KernelConfigBackward_dX(**cached_data["config_bwd_dx"])
                 config_bwd_dw = KernelConfigBackward_dW(**cached_data["config_bwd_dw"])
 
-                configs = (config_fwd, config_bwd_dx, config_bwd_dw)
+                # A disk entry may predate a kernel change: refit to dims and SMEM.
+                configs = _fit_configs_to_dims(
+                    (config_fwd, config_bwd_dx, config_bwd_dw), 2 * intermediate_dim, hidden_dim
+                )
+                configs = _fit_configs_to_smem(configs, dtype, weight_dtype)
                 _kernel_config_cache[cache_key] = configs
                 return configs
             except Exception as e:

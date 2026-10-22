@@ -60,7 +60,7 @@ export function InstructionsField({
                 ? "A warm, low female voice, speaking slowly and calmly…"
                 : "Warm, measured delivery with a calm conversational tone…"
         }
-        className="min-h-24"
+        className="min-h-24 rounded-lg"
       />
     </Field>
   );

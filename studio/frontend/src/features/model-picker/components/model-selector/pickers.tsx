@@ -26,14 +26,10 @@ import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
-  type ScanFolderInfo,
-  addScanFolder,
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
-  listScanFolders,
   listLoras,
-  removeScanFolder,
   revealFineTunedModel,
 } from "@/features/chat";
 import {
@@ -87,6 +83,11 @@ import {
   HubFailureHint,
   useHubAvailability,
   useOnlineStatus,
+  type ScanFolderInfo,
+  addScanFolderToStore,
+  folderDisplayName,
+  removeScanFolderFromStore,
+  useScanFolders,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
@@ -120,6 +121,7 @@ import {
   ggufVariantFitSizeBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
+import { formatGiB } from "@/lib/memory/format";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -143,6 +145,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -164,6 +167,7 @@ import {
 } from "react";
 import {
   audioCppHubPath,
+  audioCppModelFor,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
@@ -603,6 +607,34 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
   null,
 );
 
+/** `GpuInfo.unifiedLoadBudgetGb` of the inventory GGUF chat loads into: non-null only on an Apple
+ *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
+const UnifiedLoadBudget = createContext<number | null>(null);
+
+/** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
+ *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
+function loadsOnAudioCpp(repoId: string): boolean {
+  return audioCppModelFor(repoId) !== null || isAudioCppFolderId(repoId);
+}
+
+function PickerScopes({
+  capabilityScope,
+  unifiedLoadBudgetGb,
+  children,
+}: {
+  capabilityScope: readonly (keyof ModelCapabilities)[] | null;
+  unifiedLoadBudgetGb: number | null;
+  children: ReactNode;
+}) {
+  return (
+    <CapabilityScope.Provider value={capabilityScope}>
+      <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
+        {children}
+      </UnifiedLoadBudget.Provider>
+    </CapabilityScope.Provider>
+  );
+}
+
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every column after it lined up.
 const MAX_CAPABILITY_BADGES = 3;
 
@@ -847,7 +879,18 @@ function VramBadge({
   status?: GgufFitClass | VramFitStatus | null;
   revealOnHover?: boolean;
 }) {
-  const verdict = status ? VRAM_VERDICT[status] : null;
+  const t = useT();
+  const unifiedLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const verdict =
+    status === "marginal" && unifiedLoadBudgetGb !== null
+      ? {
+          label: t("picker.unifiedTightFit"),
+          tone: AMBER,
+          hint: t("picker.unifiedTightFitHint"),
+        }
+      : status
+        ? VRAM_VERDICT[status]
+        : null;
   if (!verdict) return null;
   return (
     <Tooltip delayDuration={0}>
@@ -1240,10 +1283,10 @@ function ModelRow({
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
         ? vramBudget
           ? curatedBudgetText(vramEst, gpuGb, vramBudget)
-          : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
+          : `Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`
         : vramStatus === "tight" || vramStatus === "marginal"
-          ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
-          : `~${vramEst}GB VRAM`
+          ? `~${formatGiB(vramEst)} VRAM (tight fit on ${formatGiB(gpuGb)})`
+          : `~${formatGiB(vramEst)} VRAM`
       : null;
 
   const { owner, name } = splitRepoLabel(label);
@@ -1960,6 +2003,10 @@ function GgufVariantExpander({
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   const capabilityScope = useContext(CapabilityScope);
+  // Diffusion loads never read it; keeping it out stops memory drift from re-planning downloads.
+  const chatLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const unifiedLoadBudgetGb =
+    diffusionLoad || loadsOnAudioCpp(repoId) ? null : chatLoadBudgetGb;
   const visionInScope =
     capabilityScope === null || capabilityScope.includes("vision");
   const showVision = hasVision === true && visionInScope;
@@ -2128,6 +2175,7 @@ function GgufVariantExpander({
         systemRamGb: systemRamGb ?? 0,
         budgetFraction,
         gpuCount,
+        unifiedLoadBudgetGb,
       });
     },
     [
@@ -2136,6 +2184,7 @@ function GgufVariantExpander({
       gpuGb,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
       diffusionLoad,
       hostPooledMemory,
       gpuCount,
@@ -2811,7 +2860,6 @@ let _cachedModelsCache: CachedModelRepo[] = [];
 let _lmStudioCache: LocalModelInfo[] = [];
 let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
-let _scanFoldersCache: ScanFolderInfo[] = [];
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or custom-folder model)
  * is known. Reads the module caches, which persist across popover mounts, so the selector can
@@ -3170,6 +3218,14 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
+  // The loader frees the resident model before reading free memory, so only the ceiling holds then.
+  // Not chatModelLoaded: it counts a remote API model, which frees nothing. Keep-loaded mode may
+  // leave the resident beside the new load, so the live budget stays in force there.
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const loadFreesResident =
+    !keepModelsLoaded &&
+    typeof residentCheckpoint === "string" &&
+    residentCheckpoint !== "";
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufVariant =
@@ -3548,8 +3604,7 @@ export function HubModelPicker({
     setUpdateConflictKey(null);
   }, [updateConflictKey]);
 
-  const [scanFolders, setScanFolders] =
-    useState<ScanFolderInfo[]>(_scanFoldersCache);
+  const { folders: scanFolders } = useScanFolders();
   const [folderInput, setFolderInput] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
@@ -3561,15 +3616,8 @@ export function HubModelPicker({
     void pickerInventory.refreshInventory();
   }, [pickerInventory.refreshInventory]);
 
-  const refreshScanFolders = useCallback(() => {
-    listScanFolders()
-      .then((v) => {
-        _scanFoldersCache = v;
-        setScanFolders(v);
-      })
-      .catch(() => {});
-  }, []);
-
+  // The store's mutations bump the inventory version, which refetches every inventory reader
+  // (this picker's included); a forced refresh on top would scan twice.
   const handleAddFolder = useCallback(
     async (overridePath?: string) => {
       // An explicit path lets the folder browser submit in the same tick it calls `setFolderInput`;
@@ -3582,20 +3630,15 @@ export function HubModelPicker({
       // From the folder browser's "Use this folder": the typed-input panel is closed, so surface failures via toast.
       const fromBrowser = overridePath !== undefined;
       try {
-        const created = await addScanFolder(trimmed);
-        // Backend returns the existing row for duplicates, so dedupe.
-        const next = _scanFoldersCache.some(
-          (f) => f.id === created.id || f.path === created.path,
-        )
-          ? _scanFoldersCache
-          : [..._scanFoldersCache, created];
-        _scanFoldersCache = next;
-        setScanFolders(next);
+        const { folder, alreadyAdded } = await addScanFolderToStore(trimmed);
         setFolderInput("");
         setShowFolderInput(false);
-        refreshLocalModelsList();
+        if (alreadyAdded) {
+          toast.info("Already in your folders", {
+            description: folderDisplayName(folder.path),
+          });
+        }
         onFoldersChange?.();
-        void refreshScanFolders();
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to add folder";
         setFolderError(message);
@@ -3606,13 +3649,7 @@ export function HubModelPicker({
         setFolderLoading(false);
       }
     },
-    [
-      folderInput,
-      folderLoading,
-      refreshScanFolders,
-      refreshLocalModelsList,
-      onFoldersChange,
-    ],
+    [folderInput, folderLoading, onFoldersChange],
   );
 
   const isOwner = useIsAccountOwner();
@@ -3628,22 +3665,30 @@ export function HubModelPicker({
   }, [handleAddFolder, isOwner]);
 
   const handleRemoveFolder = useCallback(
-    async (id: number) => {
+    async (folder: ScanFolderInfo) => {
       try {
-        await removeScanFolder(id);
-        // Optimistic: drop it immediately.
-        const next = _scanFoldersCache.filter((f) => f.id !== id);
-        _scanFoldersCache = next;
-        setScanFolders(next);
-        refreshScanFolders();
-        refreshLocalModelsList();
+        await removeScanFolderFromStore(folder.id);
         onFoldersChange?.();
+        toast.success("Folder removed", {
+          description: folderDisplayName(folder.path),
+          action: {
+            label: "Undo",
+            onClick: () => {
+              addScanFolderToStore(folder.path, Boolean(folder.recursive))
+                .then(() => onFoldersChange?.())
+                .catch((e) =>
+                  toast.error("Couldn't restore folder", {
+                    description: e instanceof Error ? e.message : undefined,
+                  }),
+                );
+            },
+          },
+        });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Failed to remove folder");
-        refreshScanFolders();
       }
     },
-    [refreshScanFolders, refreshLocalModelsList, onFoldersChange],
+    [onFoldersChange],
   );
 
   const refreshCachedLists = useCallback(() => {
@@ -3685,11 +3730,10 @@ export function HubModelPicker({
   );
 
   useEffect(() => {
-    refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
-  }, [refreshScanFolders]);
+  }, []);
 
   useEffect(() => {
     if (!shouldRefreshPickerInventoryOnMount(cachedReadyAtMount.current)) {
@@ -4209,6 +4253,7 @@ export function HubModelPicker({
     const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
+      repoId: string,
     ): GgufFitClass | VramFitStatus | null => {
       const anyBudget =
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
@@ -4232,6 +4277,11 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
+            unifiedLoadBudgetGb: loadsOnAudioCpp(repoId)
+              ? null
+              : loadFreesResident
+                ? budget.unifiedLoadCeilingGb
+                : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
@@ -4290,7 +4340,7 @@ export function HubModelPicker({
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
           // to the device the load LANDS on: unscoped, a downloaded media parent read as safe while
           // every variant inside it read as oom.
-          status: ggufRowFit(sizeBytes, rowInferenceGpu),
+          status: ggufRowFit(sizeBytes, rowInferenceGpu, r.id),
           // The figure the verdict was reached with, not the raw file size: classifyGgufFit scores
           // weights plus activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit" beside
           // "~20GB VRAM". The media rule scores the raw size and keeps it.
@@ -4336,6 +4386,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    loadFreesResident,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -7323,7 +7374,14 @@ export function HubModelPicker({
     (!showHfSection || npuBrowseRows.length > 0);
 
   return (
-    <CapabilityScope.Provider value={capabilityScope}>
+    <PickerScopes
+      capabilityScope={capabilityScope}
+      unifiedLoadBudgetGb={
+        (loadFreesResident
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null
+      }
+    >
       <div className="relative space-y-2">
         {/* A small right inset shortens the search bar so Search Hub lands on the last dropdown's right edge. */}
         <div
@@ -7819,7 +7877,7 @@ export function HubModelPicker({
                           icon={Folder02Icon}
                           className="size-3.5"
                         />
-                        Custom Folders
+                        Custom folders
                       </button>
                       <div className="flex items-center gap-0.5">
                         <button
@@ -7913,7 +7971,7 @@ export function HubModelPicker({
                             </div>
                             <button
                               type="button"
-                              onClick={() => handleRemoveFolder(f.id)}
+                              onClick={() => void handleRemoveFolder(f)}
                               aria-label={`Remove folder ${f.path}`}
                               className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                             >
@@ -8961,7 +9019,7 @@ export function HubModelPicker({
           reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
-    </CapabilityScope.Provider>
+    </PickerScopes>
   );
 }
 

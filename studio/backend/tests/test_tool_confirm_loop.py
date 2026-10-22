@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Integration tests for the confirmation gate inside the real tool loop.
-
-These drive ``run_safetensors_tool_loop`` (no model -- hand-crafted fake
-generators) with ``confirm_tool_calls=True`` and resolve each pending
-decision inline. The slot is registered before ``tool_start`` is yielded,
-so resolving right after receiving that event always lands before the
-loop blocks. Covers: allow executes once, deny skips execution and feeds
-back the rejection, disabled/duplicate calls are not prompted, and a
-denied call does not pollute duplicate detection.
-"""
+"""Each decision is resolved right after tool_start, since the slot already exists by then."""
 
 import pytest
 
@@ -79,12 +70,7 @@ def _drive(
     *,
     tools = None,
 ):
-    """Run the loop, resolving each gated tool_start with the next decision.
-
-    The advertised ``tools`` list drives the loop's enabled-tool filter
-    (pass a list omitting a tool to make a call to it "disabled").
-    Returns (events, execute_calls).
-    """
+    """Omitting a tool from the advertised tools list makes calls to it disabled, so no prompt."""
     decision_iter = iter(decisions)
     exec_fn = _FakeExecuteTool()
     gen = run_safetensors_tool_loop(
@@ -94,16 +80,14 @@ def _drive(
         execute_tool = exec_fn,
         session_id = _SESSION,
         confirm_tool_calls = True,
-        # The confirm-gate mechanics (allow/deny/reissue/dedup) need every call to
-        # prompt; unset defaults to "auto", which only gates high-risk calls.
+        # Confirm-gate mechanics need every call to prompt; "auto" only gates high-risk calls.
         permission_mode = "ask",
     )
     events = []
     for ev in gen:
         events.append(ev)
         if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
-            # Slot is already registered (begin ran before this yield), so
-            # the decision lands before the loop enters its blocking wait.
+            # The slot is registered before this yield, so the decision lands before the wait.
             resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = _SESSION)
     return events, exec_fn.calls
 
@@ -134,7 +118,7 @@ def test_deny_skips_execution_and_feeds_rejection():
         [_tool_call("python", '{"code": "print(1)"}'), "final answer"],
         ["deny"],
     )
-    assert calls == []  # tool never ran
+    assert calls == []
     assert _tool_ends(events)[0]["result"] == TOOL_REJECTED_MESSAGE
 
 
@@ -160,16 +144,14 @@ def test_duplicate_call_is_not_prompted():
 
 
 def test_denied_call_can_be_reissued_and_approved():
-    # Deny, then the model re-issues the identical call -> approving it must
-    # execute, not get suppressed as a duplicate (denied calls are not added
-    # to the duplicate-detection history).
+    # Denied calls are not in duplicate history, so a re-issued identical call must run.
     same = _tool_call("python", '{"code": "print(1)"}')
     events, calls = _drive([same, same, "final answer"], ["deny", "allow"])
     starts = _tool_starts(events)
     assert len(starts) == 2
     assert starts[0]["awaiting_confirmation"] is True
-    assert starts[1]["awaiting_confirmation"] is True  # not treated as dup
-    assert calls == [("python", {"code": "print(1)"})]  # ran once, on approve
+    assert starts[1]["awaiting_confirmation"] is True
+    assert calls == [("python", {"code": "print(1)"})]
     ends = _tool_ends(events)
     assert ends[0]["result"] == TOOL_REJECTED_MESSAGE
     assert ends[1]["result"] == "RESULT[python]"

@@ -10,7 +10,6 @@ import pytest
 
 _BACKEND = Path(__file__).resolve().parents[1]
 _PATH_MODULES = ("utils.paths", "hub.utils.paths")
-# Shared by every account, so a value captured at import cannot leak between them.
 _INSTALL_WIDE = ("studio_root", "auth_db_path", "bin_root", "cache_root", "logs_root")
 
 

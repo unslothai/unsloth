@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""qat_scheme = "nvfp4" shorthand and saving torchao NVFP4 / MX QAT linears, CPU only."""
+"""qat_scheme = "nvfp4" / "mxfp8" shorthands and saving torchao NVFP4 / MX QAT linears, CPU only."""
 
 from __future__ import annotations
 
@@ -84,7 +84,62 @@ def test_nvfp4_plain_module_without_hf_heads(monkeypatch):
 
 def test_unknown_scheme_still_rejected():
     with pytest.raises(ValueError, match = "Unexpected QAT scheme"):
-        _prepare_model_for_qat(_tiny_qwen3(), "mxfp8")
+        _prepare_model_for_qat(_tiny_qwen3(), "mxfp6")
+
+
+def test_mxfp8_scheme_refuses_without_mx_gemm():
+    model = _tiny_qwen3()
+    with pytest.raises(RuntimeError, match = "MX tensor cores"):
+        _prepare_model_for_qat(model, "mxfp8")
+    assert not any(isinstance(m, _mx_linear()) for m in model.modules())
+
+
+def test_mxfp8_scheme_layers_where_mx_gemm_runs(monkeypatch):
+    from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
+
+    monkeypatch.setattr(qat_utils, "_qat_forward_runs", lambda *a: True)
+    model = _tiny_qwen3()
+    model.model.layers[0].odd = torch.nn.Linear(128, 48, bias = False)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "mxfp8")
+    ((base_config, _),) = model._torchao_config.base_config_and_filter_fns
+    assert isinstance(base_config, MXDynamicActivationMXWeightConfig)
+    assert base_config.activation_dtype == base_config.weight_dtype == torch.float8_e4m3fn
+    layer = model.model.layers[0]
+    for proj in (layer.self_attn.q_proj, layer.self_attn.k_proj, layer.mlp.down_proj):
+        assert isinstance(proj, _mx_linear())
+    assert type(model.lm_head) is torch.nn.Linear
+    assert type(layer.odd) is torch.nn.Linear  # 48 is not a multiple of the 32-element block
+    assert any("32-element scale blocks" in str(w.message) for w in caught)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_mxfp8_refuses_non_bfloat16_layers(monkeypatch, dtype):
+    _probe_ok(monkeypatch)
+    model = _tiny_qwen3().to(dtype)
+    with pytest.raises(RuntimeError, match = "bfloat16 layers only"):
+        _prepare_model_for_qat(model, "mxfp8")
+    assert not any(isinstance(m, _mx_linear()) for m in model.modules())
+
+
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_mx_qat_linear_takes_float32_activations_under_autocast(weight_dtype):
+    # Autocast feeds float32 activations into bfloat16 (or float32) linears.
+    # torchao's CPU fake-quant backward cannot mix a float32 weight with bfloat16 activations.
+    device = "cpu" if weight_dtype == torch.bfloat16 else "cuda"
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("float32 weights under autocast need the CUDA MX path")
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(device, weight_dtype)
+    model = _prepare_model_for_qat(model, _mx_torchao_config())
+    assert isinstance(model[0], _mx_linear())
+    x = torch.randn(2, 3, 64, device = device, requires_grad = True)
+    with torch.autocast(device, dtype = torch.bfloat16):
+        out = model(x)
+    assert out.dtype == torch.bfloat16 and out.shape == (2, 3, 128)
+    out.float().sum().backward()
+    assert x.grad is not None and x.grad.dtype == torch.float32
+    assert model[0].weight.grad is not None
 
 
 def _mx_torchao_config():
@@ -222,17 +277,19 @@ def test_nvfp4_probes_opted_in_adapter_placements(monkeypatch):
     assert ("cpu", torch.float32) in calls
 
 
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
 @pytest.mark.parametrize("bias_grad", [False, True])
-def test_nvfp4_biased_layers_need_bias_grad(monkeypatch, bias_grad):
+def test_nvfp4_biased_layers_need_bias_grad(monkeypatch, bias_grad, scheme):
     _probe_ok(monkeypatch, bias_grad = bias_grad)
+    linear_cls = _nvfp4_linear() if scheme == "nvfp4" else _mx_linear()
     model = _tiny_qwen3()
     layer = model.model.layers[0]
     layer.self_attn.q_proj = torch.nn.Linear(128, 128, bias = True).to(torch.bfloat16)
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
-        model = _prepare_model_for_qat(model, "nvfp4")
-    assert isinstance(layer.self_attn.q_proj, _nvfp4_linear()) is bias_grad
-    assert isinstance(layer.mlp.down_proj, _nvfp4_linear())
+        model = _prepare_model_for_qat(model, scheme)
+    assert isinstance(layer.self_attn.q_proj, linear_cls) is bias_grad
+    assert isinstance(layer.mlp.down_proj, linear_cls)
     assert any("no bias" in str(w.message) for w in caught) is not bias_grad
 
 

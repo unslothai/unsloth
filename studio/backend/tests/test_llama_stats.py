@@ -23,7 +23,7 @@ def _drive(snaps):
     """Run _run() synchronously over `snaps`, then stop deterministically."""
     cap = _Capture()
     lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap)
-    lg._interval = 0.001  # bypass the 1s floor for a fast, synchronous run
+    lg._interval = 0.001  # bypass the 1s floor
     state = {"i": 0}
 
     def fake_scrape():
@@ -40,8 +40,6 @@ def _drive(snaps):
 
 
 def test_gen_tok_s_uses_token_metrics_not_decode_calls():
-    # tokens_predicted_total jumps 95 while n_decode_total only moves 9; the
-    # gauge reports 95 tok/s. Decode-call rate (9) must not be reported.
     snaps = [
         {
             "tokens_predicted_total": 0.0,
@@ -67,7 +65,6 @@ def test_gen_tok_s_uses_token_metrics_not_decode_calls():
 
 
 def test_kv_cache_pct_not_emitted_when_metric_absent():
-    # llama.cpp does not expose kv_cache_usage_ratio, so it must not appear.
     snaps = [
         {
             "tokens_predicted_total": 0.0,
@@ -88,7 +85,6 @@ def test_kv_cache_pct_not_emitted_when_metric_absent():
 
 
 def test_scrape_parses_labelled_and_bare_metrics(monkeypatch):
-    # Prometheus samples may carry labels; both labelled and bare lines parse.
     import core.inference.llama_stats as ls
 
     body = (
@@ -118,10 +114,7 @@ def test_scrape_parses_labelled_and_bare_metrics(monkeypatch):
 
 
 def test_counters_without_gauges_still_report_what_is_measurable():
-    # Older binaries expose only the counters. The generation pair is not a rate (the
-    # seconds time n_gen - 1 steps while the tokens count n_gen), so no gen_tok_s is
-    # claimed; running=1 keeps the line going out with the fields that are measured.
-    # /metrics renders one table, so a build with prompt_tokens_total has the seconds too.
+    # Older builds: generation pair is not a rate (n_gen - 1 steps vs n_gen tokens).
     snaps = [
         {
             "tokens_predicted_total": 100.0,

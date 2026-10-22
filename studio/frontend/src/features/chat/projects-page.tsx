@@ -49,6 +49,7 @@ import {
   useChatNavigationStore,
   useChatPreferencesStore,
   useChatProjects,
+  projectActivityAt,
   useChatRuntimeStore,
   usePinnedChatsStore,
   usePinnedProjectsStore,
@@ -97,6 +98,7 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import { createHistoryRefreshDebounce } from "./utils/chat-history-revision";
 import { groupThreads, type SidebarItem } from "./hooks/use-chat-sidebar-items";
 import { ProjectMenuItems } from "./components/project-menu-items";
 import { SectionNameDialog } from "./components/section-name-dialog";
@@ -111,6 +113,8 @@ import { runChatImport } from "./utils/import-chats";
 const PROJECTS_PAGE_STEP = 12;
 // A streaming chat fires the history event per chunk; one reload per quiet window is enough.
 const PROJECT_CHATS_REFRESH_DEBOUNCE_MS = 300;
+// Chunk saves are spaced wider than that on a slow CPU model, so they wait for a longer lull.
+const PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS = 2000;
 // Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
 // Approx list row height in px, used to estimate how many rows fit the page.
@@ -264,11 +268,8 @@ export function ProjectsPage() {
     openProjectIdsRef.current = openProjectIds;
   }, [openProjectIds]);
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const refresh = () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
+    const debounce = createHistoryRefreshDebounce(
+      () => {
         const open = openProjectIdsRef.current;
         // A closed project's load may still be in flight; its answer must not refill the cache.
         for (const [id, seq] of loadSeqRef.current) {
@@ -280,12 +281,14 @@ export function ProjectsPage() {
           return kept;
         });
         for (const id of open) loadProjectChats(id, true);
-      }, PROJECT_CHATS_REFRESH_DEBOUNCE_MS);
-    };
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+      },
+      PROJECT_CHATS_REFRESH_DEBOUNCE_MS,
+      PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS,
+    );
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, debounce.onEvent);
     return () => {
-      if (timer !== null) clearTimeout(timer);
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, refresh);
+      debounce.cancel();
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, debounce.onEvent);
     };
   }, [loadProjectChats]);
 
@@ -310,7 +313,7 @@ export function ProjectsPage() {
     try {
       const selected = await pickNativeChatImport();
       if (!selected) return;
-      setImportTargetId(projects[0]?.id ?? null);
+      setImportTargetId(null);
       setImportFile(nativeImportSource(selected));
     } catch (error) {
       toast.error("Import failed.", {
@@ -332,8 +335,11 @@ export function ProjectsPage() {
     const filtered = trimmed
       ? projects.filter((p) => p.name.toLowerCase().includes(trimmed))
       : projects.slice();
+    // By last use, as the sidebar orders them: a project's updatedAt only moves on an edit.
     filtered.sort((a, b) =>
-      sortDir === "asc" ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt,
+      sortDir === "asc"
+        ? projectActivityAt(a) - projectActivityAt(b)
+        : projectActivityAt(b) - projectActivityAt(a),
     );
     return filtered;
   }, [projects, query, sortDir]);
@@ -447,18 +453,12 @@ export function ProjectsPage() {
     merged: boolean,
   ) {
     try {
-      let threads;
-      if (scope === "projects") {
-        threads = (
-          await Promise.all(
-            projects.map((p) =>
-              listStoredChatThreads({ projectId: p.id, includeArchived: false }),
-            ),
-          )
-        ).flat();
-      } else {
-        threads = await listStoredChatThreads({ includeArchived: false });
-      }
+      const listed = await listStoredChatThreads({ includeArchived: false });
+      const projectIds = new Set(projects.map((p) => p.id));
+      const threads =
+        scope === "projects"
+          ? listed.filter((t) => t.projectId && projectIds.has(t.projectId))
+          : listed;
       const ids = [...new Set(threads.map((t) => t.id))];
       if (ids.length === 0) { toast.info("No conversations to export."); return; }
       const ts = new Date().toISOString().slice(0, 10);
@@ -563,6 +563,10 @@ export function ProjectsPage() {
     setDeleteFilesOnDelete(false);
     try {
       await deleteChatProject(target.id, { deleteFiles });
+      // As the sidebar's delete: its chats went with it, and the runtime must not reopen it.
+      notifyChatHistoryUpdated();
+      const runtime = useChatRuntimeStore.getState();
+      if (runtime.activeProjectId === target.id) runtime.setActiveProjectId(null);
     } catch (err) {
       toast.error("Failed to delete project", {
         description: err instanceof Error ? err.message : undefined,
@@ -582,7 +586,7 @@ export function ProjectsPage() {
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) {
-            setImportTargetId(projects[0]?.id ?? null);
+            setImportTargetId(null);
             setImportFile(fileImportSource(file));
           }
           e.target.value = "";
@@ -603,6 +607,12 @@ export function ProjectsPage() {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && query) {
+                  e.preventDefault();
+                  setQuery("");
+                }
+              }}
               placeholder="Search projects"
               className="h-9 w-full rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card"
               aria-label="Search projects"
@@ -716,14 +726,24 @@ export function ProjectsPage() {
               ? "No projects yet."
               : "No projects match your search."}
           </p>
-          {projects.length === 0 && (
-            <Button
-              variant="outline"
-              className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
-              onClick={() => setCreating(true)}
-            >
-              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
-              Create your first project
+          {projects.length === 0 ? (
+            <>
+              <p className="max-w-sm text-sm">
+                A project keeps related chats together, with shared instructions and sources
+                every chat in it can use.
+              </p>
+              <Button
+                variant="outline"
+                className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
+                onClick={() => setCreating(true)}
+              >
+                <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                Create your first project
+              </Button>
+            </>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
+              Clear search
             </Button>
           )}
         </div>
@@ -821,7 +841,7 @@ export function ProjectsPage() {
                 />
               </span>
               <span className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block">
-                {formatUpdated(project.updatedAt)}
+                {formatUpdated(projectActivityAt(project))}
               </span>
               {/* Pinning is one click here, as it is on a sidebar row. */}
               <button
@@ -924,7 +944,15 @@ export function ProjectsPage() {
                             strokeWidth={1.75}
                             className="size-4 shrink-0"
                           />
-                          <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+                          <span className="min-w-0 truncate">{chat.title}</span>
+                          {chatUnread ? (
+                            <span
+                              role="img"
+                              aria-label="Unread"
+                              className="size-2 shrink-0 rounded-full bg-primary"
+                            />
+                          ) : null}
+                          <span className="flex-1" />
                           {/* Same widths as a project row, so the columns line up under it, and
                               gone with it below sm, where a nested row has no room for both. */}
                           <span className="hidden w-40 shrink-0 sm:block">
@@ -1078,7 +1106,6 @@ export function ProjectsPage() {
       {/* Create project (name + drag-and-drop sources) */}
       <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
-      {/* Edit project (name + instructions + source folders), the sidebar's dialog. */}
       <SectionNameDialog
         open={sectionFor !== null}
         mode="create"
@@ -1090,6 +1117,7 @@ export function ProjectsPage() {
           }
         }}
       />
+      {/* Edit project (name + instructions + source folders), the sidebar's dialog. */}
       <EditProjectDialog
         project={editing}
         onOpenChange={(open) => {

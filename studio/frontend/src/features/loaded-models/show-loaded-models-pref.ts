@@ -41,6 +41,8 @@ export function setShowLoadedModels(show: boolean): void {
     // a pre-update tab does not flip the card back on through the storage event. Absent still means
     // off here, so the default is unaffected.
     localStorage.setItem(STORAGE_KEY, show ? "true" : "false");
+    // Switching it on asks to see the card, so an earlier X must not keep it hidden.
+    if (show) localStorage.removeItem(DISMISSED_KEY);
   } catch {
     // storage unavailable
   }

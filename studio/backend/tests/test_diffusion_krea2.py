@@ -21,9 +21,6 @@ from core.inference.diffusion_krea2 import (
 )
 
 
-# ── rope_parameters (transformers 5.x) -> rope_scaling (4.x) remap ──────────
-
-
 def test_remap_rope_parameters_copies_5x_values():
     cfg = SimpleNamespace(
         rope_scaling = None,
@@ -36,7 +33,6 @@ def test_remap_rope_parameters_copies_5x_values():
         },
     )
     remap_rope_parameters(cfg)
-    # rope_theta is hoisted to the top-level slot, the rest lands in rope_scaling.
     assert cfg.rope_theta == 5000000
     assert cfg.rope_scaling == {
         "mrope_interleaved": True,
@@ -46,19 +42,14 @@ def test_remap_rope_parameters_copies_5x_values():
 
 
 def test_remap_rope_parameters_noop_on_5x_runtime_or_plain_4x_config():
-    # rope_scaling already parsed (a 5.x runtime exposing the alias): untouched.
     parsed = {"rope_type": "default", "mrope_section": [1, 2, 3]}
     cfg = SimpleNamespace(rope_scaling = parsed, rope_theta = 7.0, rope_parameters = {"x": 1})
     remap_rope_parameters(cfg)
     assert cfg.rope_scaling is parsed
     assert cfg.rope_theta == 7.0
-    # No rope_parameters at all (a plain 4.x-exported config): untouched.
     cfg = SimpleNamespace(rope_scaling = None, rope_theta = 7.0)
     remap_rope_parameters(cfg)
     assert cfg.rope_scaling is None
-
-
-# ── model_index.json resolution ──────────────────────────────────────────────
 
 
 def test_load_model_index_from_local_path(tmp_path):
@@ -94,7 +85,6 @@ def test_load_model_index_accepts_utf8_bom(tmp_path):
     "payload", ["[]", "null", "3", "2.5", '"str"', "true", "false", '[{"a": 1}]']
 )
 def test_load_model_index_rejects_non_object_json(tmp_path, payload):
-    # All of these parsed and reached the caller, which then died on ``.get`` one frame away.
     (tmp_path / "model_index.json").write_text(payload, encoding = "utf-8")
 
     with pytest.raises(
@@ -106,8 +96,7 @@ def test_load_model_index_rejects_non_object_json(tmp_path, payload):
 
 
 def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
-    # Present but unreadable (0600, EIO, a Windows AV lock): the OSError used to be swallowed and
-    # re-reported as "not found". Faulted at the read because chmod is a no-op as root.
+    # Faulted at the read because chmod is a no-op as root.
     (tmp_path / "model_index.json").write_text('{"patch_size": 2}', encoding = "utf-8")
     original = Path.read_text
 
@@ -125,8 +114,7 @@ def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
 
 
 def test_load_model_index_wraps_a_nesting_bomb(monkeypatch, tmp_path):
-    # Valid JSON and valid UTF-8, so neither guard above sees it; the parser blows the stack.
-    # Faulted directly because the depth is not portable: 3.14 parses what 3.10-3.13 reject.
+    # Faulted directly: max JSON depth is not portable (3.14 parses what 3.10-3.13 reject).
     (tmp_path / "model_index.json").write_text('{"a": 1}', encoding = "utf-8")
     monkeypatch.setattr(
         json, "loads", lambda *args, **kwargs: (_ for _ in ()).throw(RecursionError("too deep"))
@@ -157,9 +145,6 @@ def test_load_model_index_wraps_malformed_hub_cache_content(monkeypatch, tmp_pat
 
     assert str(downloaded) in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
-
-
-# ── pipeline assembly threads the model_index init config ────────────────────
 
 
 def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
@@ -196,8 +181,7 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
     monkeypatch.setattr(
         "core.inference.diffusion_krea2.load_krea2_tokenizer",
-        # Hand-written fakes with EXACT signatures, so they have to follow the production one:
-        # load_krea2_pipeline now passes local_files_only down to every component load.
+        # Fakes use exact signatures so they must track the production one.
         lambda repo_id,
         hf_token = None,
         local_files_only = False,
@@ -214,12 +198,11 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
 
     pipe = load_krea2_pipeline(str(tmp_path), "bf16")
 
-    # Turbo's fixed-mu schedule rides on is_distilled and dropping any of these silently degrades generations, so the ctor kwargs are asserted exactly.
+    # Turbo's fixed-mu schedule rides on is_distilled; a dropped kwarg silently degrades output.
     assert captured["pipeline"]["is_distilled"] is True
     assert captured["pipeline"]["patch_size"] == 2
     assert captured["pipeline"]["text_encoder_select_layers"] == [2, 5, 8]
     assert pipe.transformer.tag == "transformer"
-    # A prebuilt transformer (single-file/quant path) must be used as-is.
     prebuilt = SimpleNamespace(tag = "prebuilt")
     pipe = load_krea2_pipeline(str(tmp_path), "bf16", transformer = prebuilt)
     assert pipe.transformer is prebuilt
@@ -265,11 +248,7 @@ def test_a_corrupt_index_is_rejected_before_any_component_is_built(monkeypatch, 
     assert built == []
 
 
-# ── registry / trust / int8 exclusion wiring ─────────────────────────────────
-
-
 def test_load_krea2_pipeline_requires_krea_capable_diffusers(monkeypatch):
-    # On diffusers < 0.39 (no Krea2Pipeline) the loader must fail fast with the upgrade hint, not a bare AttributeError mid-load.
     import pytest
 
     fake = SimpleNamespace(__version__ = "0.38.0")
@@ -289,21 +268,16 @@ def test_krea2_family_wiring():
 
     fam = detect_family("krea/Krea-2-Turbo")
     assert fam is not None and fam.name == KREA2_FAMILY_NAME
-    # Both vendor repos are non-GGUF allowlisted (Turbo for inference, Raw for training); no sd.cpp mapping, so diffusers fallback.
     assert _is_trusted_diffusion_repo("krea/Krea-2-Turbo")
     assert _is_trusted_diffusion_repo("krea/Krea-2-Raw")
     assert not family_sd_cpp_supported(fam)
-    # Krea2TimestepEmbedding runs at M = batch; int8 (torch._int_mm, M above 16) must skip it.
+    # Krea2TimestepEmbedding runs at M = batch; int8 _int_mm needs M above 16.
     assert "time_embed" in exclude_tokens_for_scheme(TQ_INT8)
-    # Adapters train on Raw but run on Turbo, so the family carries a deploy override.
+    # Adapters train on Raw but run on Turbo.
     assert fam.deploy_base_repo == "krea/Krea-2-Turbo"
-    # The OpenAI /v1/images/generations route reads (steps, guidance) from this table. Krea Turbo is distilled (8 steps, no
-    # CFG); Raw is the undistilled base at 52 steps / CFG 3.5, so its more specific key must beat "krea".
+    # Raw's more specific key must beat "krea".
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
-
-
-# ── training wiring ──────────────────────────────────────────────────────────
 
 
 def test_krea2_training_registry(dit_train_host):
@@ -317,18 +291,15 @@ def test_krea2_training_registry(dit_train_host):
 
     assert "krea-2" in trainable_family_names()
     assert get_trainer("krea-2") is run_dit_lora_training
-    # The Krea 2 authors' recommended starting point (their reference script defaults).
     assert train_defaults("krea-2") == {
         "lora_rank": 32,
         "learning_rate": 3e-4,
         "resolution": 512,
     }
     info = {i["name"]: i for i in family_train_infos()}["krea-2"]
-    # Krea's guidance: train LoRAs on the undistilled Raw model and run them on Turbo, so Raw leads the training bases.
     assert info["default_base"] == "krea/Krea-2-Raw"
     assert info["base_repos"] == ["krea/Krea-2-Raw", "krea/Krea-2-Turbo"]
     assert info["supports_compile"] is True
-    # Deploy previews the adapter on Turbo, not the Raw checkpoint it trained on, so the UI loads the distilled recipe; other families leave this None.
     assert info["deploy_base"] == "krea/Krea-2-Turbo"
     assert {i["name"]: i for i in family_train_infos()}["flux.1"]["deploy_base"] is None
 
@@ -339,19 +310,17 @@ def test_krea2_spec_registered_with_authors_targets():
     spec = _SPECS["krea-2"]
     assert spec.force_bf16 is True
     assert spec.lora_targets == _KREA2_TARGETS
-    # The authors' full recommended set: attention + SwiGLU + text fusion + embedders.
     for t in ("to_q", "to_gate", "ff.up", "text_fusion.projector", "time_mod_proj"):
         assert t in _KREA2_TARGETS
 
 
 def test_krea2_collate_and_forward_roundtrip():
-    # spec.forward imports Krea2Pipeline (prepare_position_ids), so this needs a real diffusers install; CI runs without one.
+    # spec.forward imports Krea2Pipeline, so this needs a real diffusers install; CI has none.
     pytest.importorskip("diffusers")
     import torch
     from core.training.diffusion_dit_trainer import _SPECS
 
     spec = _SPECS["krea-2"]
-    # Two fixed-length embed entries collate to a plain concat with the mask batched.
     entries = [
         (torch.randn(1, 8, 12, 16), torch.ones(1, 8, dtype = torch.int64)),
         (torch.randn(1, 8, 12, 16), torch.ones(1, 8, dtype = torch.int64)),
@@ -365,7 +334,7 @@ def test_krea2_collate_and_forward_roundtrip():
     class _FakeTransformer:
         def __call__(self, **kwargs):
             captured.update(kwargs)
-            # Echo the packed sequence: unpack(pack(x)) == x proves the inlined packing mirrors Krea2Pipeline exactly.
+            # Echo the packed sequence: unpack(pack(x)) == x proves the packing mirrors Krea2Pipeline.
             return (kwargs["hidden_states"],)
 
     noisy = torch.randn(2, 16, 1, 8, 8)
@@ -374,7 +343,7 @@ def test_krea2_collate_and_forward_roundtrip():
         _FakeTransformer(), noisy, timesteps, None, (pe_b, mask_b), None, "cpu", torch.float32
     )
     assert torch.equal(pred, noisy)
-    # [B, (H/2)*(W/2), C*4] patches, one shared [(txt+img), 3] position grid, and the [0, 1] timestep convention.
+    # [B, (H/2)*(W/2), C*4] patches, one shared [(txt+img), 3] position grid, [0, 1] timesteps.
     assert captured["hidden_states"].shape == (2, 16, 64)
     assert captured["position_ids"].shape == (8 + 16, 3)
     assert torch.allclose(captured["timestep"], torch.tensor([0.25, 0.75]))
