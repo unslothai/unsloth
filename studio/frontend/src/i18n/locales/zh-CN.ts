@@ -739,7 +739,6 @@ export const zhCN = {
       videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",
       customizeSidebar: "自定义侧边栏",
-      customizeProfileMenu: "自定义菜单",
       newBadge: "新",
       export: "导出",
       recents: "最近",
@@ -3081,6 +3080,14 @@ export const zhCN = {
         autoSwitchOff:
           "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
         useViaApi: "通过 API 使用",
+      },
+      mediaApi: {
+        title: "图像和视频 API",
+        description: "通过兼容 OpenAI 的端点，在你自己的代码中生成图像和视频。",
+        images: "图像",
+        video: "视频",
+        placeholderModel: "显示的模型只是示例。在图像或视频页面加载模型，再从该页面的 API 按钮打开此处即可填入。",
+        autoSwitchOff: "媒体自动切换已关闭，因此请求无论指定哪个模型，都会在页面已加载的模型上运行。",
       },
       decisionApi: {
         title: "决策 API",

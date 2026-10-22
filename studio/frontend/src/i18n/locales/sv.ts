@@ -843,7 +843,6 @@ export const sv = {
       videoChecking: "Kontrollerar om denna dator stöder video …",
       more: "Mer",
       customizeSidebar: "Anpassa sidofältet",
-      customizeProfileMenu: "Anpassa menyn",
       newBadge: "Ny",
       export: "Exportera",
       recents: "Senaste",
@@ -3357,6 +3356,14 @@ export const sv = {
         autoSwitchOff:
           "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
         useViaApi: "Använd via API",
+      },
+      mediaApi: {
+        title: "API för bild och video",
+        description: "Skapa bilder och videor från din egen kod med de OpenAI-kompatibla slutpunkterna.",
+        images: "Bilder",
+        video: "Video",
+        placeholderModel: "Modellen som visas är ett exempel. Läs in en modell på sidan Bilder eller Video och öppna det här från dess API-knapp för att fylla i den.",
+        autoSwitchOff: "Automatiskt mediabyte är av, så förfrågningar körs på modellen som sidan har läst in, oavsett vilken de anger.",
       },
       decisionApi: {
         title: "Decision API",

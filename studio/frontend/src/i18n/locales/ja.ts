@@ -743,7 +743,6 @@ export const ja = {
       videoChecking: "このマシンの動画生成対応を確認しています...",
       more: "その他",
       customizeSidebar: "サイドバーをカスタマイズ",
-      customizeProfileMenu: "メニューをカスタマイズ",
       newBadge: "新機能",
       export: "エクスポート",
       recents: "履歴",
@@ -3107,6 +3106,14 @@ export const ja = {
         autoSwitchOff:
           "モデルの自動切り替えがオンのときだけ、名前でモデルが読み込まれます。オンにするか、先にそのモデルをオーディオページで読み込んでください。",
         useViaApi: "API で使う",
+      },
+      mediaApi: {
+        title: "画像と動画の API",
+        description: "OpenAI 互換のエンドポイントで、自分のコードから画像と動画を生成できます。",
+        images: "画像",
+        video: "動画",
+        placeholderModel: "表示中のモデルは例です。画像または動画ページでモデルを読み込み、そのページの API ボタンからここを開くと入力されます。",
+        autoSwitchOff: "メディアの自動切り替えがオフのため、リクエストは指定した名前にかかわらず、ページで読み込まれているモデルで実行されます。",
       },
       decisionApi: {
         title: "判定 API",

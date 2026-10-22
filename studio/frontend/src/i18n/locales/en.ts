@@ -795,7 +795,6 @@ export const en = {
       more: "More",
       // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",
-      customizeProfileMenu: "Customize menu",
       // Rendered uppercase in a pill beside a recently shipped tab.
       newBadge: "New",
       export: "Export",
@@ -3194,6 +3193,14 @@ export const en = {
         autoSwitchOff:
           "The model loads by name only while Model auto-switch is on. Turn it on, or load the model on its Audio page first.",
         useViaApi: "Use via API",
+      },
+      mediaApi: {
+        title: "Image and video API",
+        description: "Generate images and videos from your own code with the OpenAI-compatible endpoints.",
+        images: "Images",
+        video: "Video",
+        placeholderModel: "The model shown is an example. Load a model on the Images or Video page and open this from its API button to fill it in.",
+        autoSwitchOff: "Media auto-switch is off, so requests run on the model the page has loaded, whatever they name.",
       },
       decisionApi: {
         title: "Decision API",

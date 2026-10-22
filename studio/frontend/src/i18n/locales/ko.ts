@@ -741,7 +741,6 @@ export const ko = {
       videoChecking: "이 컴퓨터의 비디오 지원 여부를 확인하는 중...",
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
-      customizeProfileMenu: "메뉴 사용자 지정",
       newBadge: "신규",
       export: "내보내기",
       recents: "최근 항목",
@@ -3123,6 +3122,14 @@ export const ko = {
         autoSwitchOff:
           "모델 자동 전환이 켜져 있을 때만 이름으로 모델을 불러옵니다. 자동 전환을 켜거나 먼저 오디오 페이지에서 모델을 불러오세요.",
         useViaApi: "API로 사용",
+      },
+      mediaApi: {
+        title: "이미지 및 동영상 API",
+        description: "OpenAI 호환 엔드포인트로 직접 작성한 코드에서 이미지와 동영상을 생성하세요.",
+        images: "이미지",
+        video: "동영상",
+        placeholderModel: "표시된 모델은 예시입니다. 이미지 또는 동영상 페이지에서 모델을 로드한 뒤 그 페이지의 API 버튼으로 여기를 열면 채워집니다.",
+        autoSwitchOff: "미디어 자동 전환이 꺼져 있어 요청은 이름과 관계없이 페이지에 로드된 모델에서 실행됩니다.",
       },
       decisionApi: {
         title: "판단 API",

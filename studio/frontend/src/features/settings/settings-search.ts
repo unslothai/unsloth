@@ -24,6 +24,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.appearance.language.spellCheck",
+    "settings.about.engines.title",
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLoadedModels",
     "settings.general.notifications.updateReminders",

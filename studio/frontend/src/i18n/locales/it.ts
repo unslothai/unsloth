@@ -648,7 +648,6 @@ export const it = {
       videoChecking: "Verifica del supporto video su questa macchina...",
       more: "Altro",
       customizeSidebar: "Personalizza la barra laterale",
-      customizeProfileMenu: "Personalizza menu",
       newBadge: "Novità",
       export: "Esporta",
       recents: "Recenti",
@@ -3088,6 +3087,14 @@ export const it = {
         autoSwitchOff:
           "Il modello si carica per nome solo con il cambio automatico del modello attivo. Attivalo, oppure carica prima il modello dalla sua pagina Audio.",
         useViaApi: "Usa via API",
+      },
+      mediaApi: {
+        title: "API per immagini e video",
+        description: "Genera immagini e video dal tuo codice con gli endpoint compatibili con OpenAI.",
+        images: "Immagini",
+        video: "Video",
+        placeholderModel: "Il modello mostrato è un esempio. Carica un modello nella pagina Immagini o Video e apri questa sezione dal suo pulsante API per compilarlo.",
+        autoSwitchOff: "Il cambio automatico dei media è disattivato, quindi le richieste usano il modello caricato nella pagina, qualunque nome indichino.",
       },
       decisionApi: {
         title: "API decisionale",

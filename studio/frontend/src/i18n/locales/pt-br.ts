@@ -744,7 +744,6 @@ export const ptBR = {
       videoChecking: "Verificando se esta máquina oferece suporte a vídeo...",
       more: "Mais",
       customizeSidebar: "Personalizar barra lateral",
-      customizeProfileMenu: "Personalizar menu",
       newBadge: "Novo",
       export: "Exportar",
       recents: "Recentes",
@@ -3154,6 +3153,14 @@ export const ptBR = {
         autoSwitchOff:
           "O modelo só é carregado pelo nome com a troca automática de modelo ativada. Ative-a ou carregue antes o modelo na página de Áudio dele.",
         useViaApi: "Usar via API",
+      },
+      mediaApi: {
+        title: "API de imagem e vídeo",
+        description: "Gere imagens e vídeos no seu próprio código com os endpoints compatíveis com a OpenAI.",
+        images: "Imagens",
+        video: "Vídeo",
+        placeholderModel: "O modelo mostrado é um exemplo. Carregue um modelo na página Imagens ou Vídeo e abra isto pelo botão de API dela para preenchê-lo.",
+        autoSwitchOff: "A troca automática de mídia está desligada, então as solicitações usam o modelo carregado na página, seja qual for o nome enviado.",
       },
       decisionApi: {
         title: "API de decisões",

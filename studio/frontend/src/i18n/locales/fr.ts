@@ -745,7 +745,6 @@ export const fr = {
       videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
       customizeSidebar: "Personnaliser la barre latérale",
-      customizeProfileMenu: "Personnaliser le menu",
       newBadge: "Nouveau",
       export: "Exporter",
       recents: "Discussions récentes",
@@ -3183,6 +3182,14 @@ export const fr = {
         autoSwitchOff:
           "Le modèle ne se charge par son nom que si le changement automatique de modèle est activé. Activez-le, ou chargez d'abord le modèle sur sa page Audio.",
         useViaApi: "Utiliser via l'API",
+      },
+      mediaApi: {
+        title: "API image et vidéo",
+        description: "Générez des images et des vidéos depuis votre propre code avec les points de terminaison compatibles OpenAI.",
+        images: "Images",
+        video: "Vidéo",
+        placeholderModel: "Le modèle affiché est un exemple. Chargez un modèle sur la page Images ou Vidéo et ouvrez ceci depuis son bouton API pour le renseigner.",
+        autoSwitchOff: "Le changement automatique de média est désactivé : les requêtes utilisent le modèle chargé par la page, quel que soit celui qu'elles nomment.",
       },
       decisionApi: {
         title: "API de décision",

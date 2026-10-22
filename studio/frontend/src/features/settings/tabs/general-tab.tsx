@@ -85,6 +85,7 @@ import {
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
@@ -715,6 +716,8 @@ export function GeneralTab() {
           ) : null}
         </SettingsSection>
       ) : null}
+
+      <EngineVersionsSection />
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
