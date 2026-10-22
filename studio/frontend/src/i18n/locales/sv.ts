@@ -1204,6 +1204,10 @@ export const sv = {
       alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
+      metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
+      altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
+      desktopOnly: "Endast i skrivbordsappen",
+      builtInKey: "Inbyggt: {key}",
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1404,6 +1408,10 @@ export const sv = {
         steerMessage: {
           label: "Styr svaret",
           description: "Stoppa det aktuella svaret och skicka utkastet härnäst",
+        },
+        stopGeneration: {
+          label: "Stoppa genereringen",
+          description: "Stoppa svaret som skrivs",
         },
         cycleReasoningEffort: {
           label: "Växla resonemangsnivå",
@@ -1981,20 +1989,14 @@ export const sv = {
       },
       notifications: {
         sectionTitle: "Aviseringar",
-        showLlamaUpdates: "Uppdateringsaviseringar för llama.cpp",
-        showLlamaUpdatesDescription:
-          "Avisera när en nyare llama.cpp-version finns för att köra nya modeller. Stäng av om du endast tränar.",
-        showLoadedModels: "Indikator för inlästa modeller",
-        showLoadedModelsDescription:
-          "Visa ett litet kort i nedre högra hörnet med alla modeller som för närvarande finns i minnet (chatt, tal, bild, video), med en knapp för att mata ut var och en.",
-        showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
-        showAudioCppUpdatesDescription:
-          "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
-        showUnslothUpdates: "Uppdateringsaviseringar för Unsloth",
-        showUnslothUpdatesDescription:
-          "Meddela när en nyare version av Unsloth finns att installera.",
+        showLoadedModels: "Kort för inlästa modeller",
+        showLoadedModelsDescription: "Ett hörnkort med varje inläst modell, mata ut med ett klick.",
+        updateReminders: "Uppdateringspåminnelser",
+        updateRemindersDescription: "Hur ofta en ny version erbjuds när den är klar.",
+        llamaHint: "Chatt- och GGUF-modeller",
+        audioHint: "Tal, musik och transkribering",
         frequency: {
-          always: "Alltid",
+          always: "Så fort den finns",
           daily: "En gång om dagen",
           weekly: "En gång i veckan",
           biweekly: "Varannan vecka",
@@ -2233,9 +2235,9 @@ export const sv = {
         longestStreak: "Längsta svit",
         activityTitle: "Tokenaktivitet",
         activityDescription: {
-          daily: "{total} under de senaste {weeks}",
-          weekly: "Toppvecka {total} · senaste {weeks}",
-          cumulative: "{total} sammanlagt under de senaste {weeks}",
+          daily: "{total} sedan {since}",
+          weekly: "Mest aktiva veckan {total} · sedan {since}",
+          cumulative: "{total} totalt sedan {since}",
         },
         mode: {
           daily: "Dagligen",
@@ -2244,8 +2246,9 @@ export const sv = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Veckan som börjar {date} · {tokens}",
-        chartToggle: "Diagram",
-        chartToggleHint: "Visa Veckovis och Kumulativt som ett diagram med märkta axlar",
+        emptyDayTooltip: "{date} · Ingen aktivitet",
+        apiRequests: "{count} via API",
+        cumulativeTooltip: "Till veckan {date} · {tokens} totalt",
         less: "Mindre",
         more: "Mer",
         insightsTitle: "Aktivitetsinsikter",
@@ -3435,6 +3438,14 @@ export const sv = {
           "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
         useViaApi: "Använd via API",
       },
+      mediaApi: {
+        title: "API för bild och video",
+        description: "Skapa bilder och videor från din egen kod med de OpenAI-kompatibla slutpunkterna.",
+        images: "Bilder",
+        video: "Video",
+        placeholderModel: "Modellen som visas är ett exempel. Läs in en modell på sidan Bilder eller Video och öppna det här från dess API-knapp för att fylla i den.",
+        autoSwitchOff: "Automatiskt mediabyte är av, så förfrågningar körs på modellen som sidan har läst in, oavsett vilken de anger.",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Dokumentation",
@@ -3519,6 +3530,24 @@ export const sv = {
       desktopAppVersionUnavailable: "Inte tillgänglig",
       llamaCppVersion: "llama.cpp-version",
       audioCppVersion: "audio.cpp-version",
+      whisperCppVersion: "whisper.cpp-version",
+      engines: {
+        title: "Motorer",
+        description: "Körmiljöerna som Unsloth använder för att köra modeller. Uppdateringar installeras i bakgrunden, utan omstart.",
+        updatesLabel: "Motoruppdateringar",
+        notInstalled: "Inte installerad",
+        available: "{version} tillgänglig",
+        upToDate: "Uppdaterad",
+        updatesAvailable: "Uppdateringar tillgängliga",
+        checking: "Söker efter uppdateringar...",
+        checkFailed: "Det gick inte att söka efter uppdateringar. Försök igen senare.",
+        unsupported: "Den här installationens motorer hanteras utanför Unsloth.",
+        checkForUpdates: "Sök efter uppdateringar",
+        update: "Uppdatera",
+        updating: "Uppdaterar...",
+        updated: "Motorerna har uppdaterats.",
+        updateFailed: "Uppdateringen misslyckades: {error}",
+      },
       hardware: "Maskinvara",
       gpu: "GPU",
       gpuIntegrated: "integrerad",
@@ -3604,6 +3633,9 @@ export const sv = {
         docsUpdating: "Uppdatering",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

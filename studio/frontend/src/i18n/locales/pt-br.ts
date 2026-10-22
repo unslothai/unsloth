@@ -1088,6 +1088,10 @@ export const ptBR = {
       alternateSlot: "Atalho alternativo",
       browserReserved:
         "Seu navegador pode reservar essa combinação. No app para desktop ela funciona.",
+      metaUnsupported: "A tecla Windows não pode ser usada em atalhos.",
+      altGraphUnsupported: "Combinações com AltGr não podem ser usadas como atalhos.",
+      desktopOnly: "Somente no app para desktop",
+      builtInKey: "Integrado: {key}",
       actions: {
         findInPage: {
           label: "Localizar na página",
@@ -1288,6 +1292,10 @@ export const ptBR = {
         steerMessage: {
           label: "Direcionar a resposta",
           description: "Parar a resposta atual e enviar o rascunho em seguida",
+        },
+        stopGeneration: {
+          label: "Parar geração",
+          description: "Parar a resposta em andamento",
         },
         cycleReasoningEffort: {
           label: "Alternar esforço de raciocínio",
@@ -1816,20 +1824,14 @@ export const ptBR = {
       },
       notifications: {
         sectionTitle: "Notificações",
-        showLlamaUpdates: "Notificações de atualização do llama.cpp",
-        showLlamaUpdatesDescription:
-          "Notifica quando uma versão mais recente do llama.cpp está disponível para executar novos modelos. Desative se você só treina modelos.",
-        showLoadedModels: "Indicador de modelos carregados",
-        showLoadedModelsDescription:
-          "Mostra um pequeno cartão no canto inferior direito listando todos os modelos atualmente na memória (chat, fala, imagem, vídeo), com um botão para liberar cada um.",
-        showAudioCppUpdates: "Notificações de atualização do audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Notifica quando o runtime do audio.cpp precisa de uma atualização para as páginas de Áudio. Desative se você nunca usa Áudio.",
-        showUnslothUpdates: "Notificações de atualização do Unsloth",
-        showUnslothUpdatesDescription:
-          "Avisar quando houver uma versão mais recente do Unsloth para instalar.",
+        showLoadedModels: "Cartão de modelos carregados",
+        showLoadedModelsDescription: "Um cartão no canto com cada modelo carregado, para descarregá-lo com um clique.",
+        updateReminders: "Lembretes de atualização",
+        updateRemindersDescription: "Com que frequência oferecer uma versão nova quando estiver pronta.",
+        llamaHint: "Modelos de chat e GGUF",
+        audioHint: "Voz, música e transcrição",
         frequency: {
-          always: "Sempre",
+          always: "Assim que houver",
           daily: "Uma vez por dia",
           weekly: "Uma vez por semana",
           biweekly: "A cada duas semanas",
@@ -2081,9 +2083,9 @@ export const ptBR = {
         longestStreak: "Maior sequência",
         activityTitle: "Atividade de tokens",
         activityDescription: {
-          daily: "Período: {weeks} · {total}",
-          weekly: "Semana de pico {total} · últimas {weeks}",
-          cumulative: "{total} acumulados nas últimas {weeks}",
+          daily: "{total} desde {since}",
+          weekly: "Semana mais ativa {total} · desde {since}",
+          cumulative: "{total} no total desde {since}",
         },
         mode: {
           daily: "Diária",
@@ -2092,8 +2094,9 @@ export const ptBR = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana de {date} · {tokens}",
-        chartToggle: "Gráfico",
-        chartToggleHint: "Mostrar Semanal e Acumulada como gráfico com eixos rotulados",
+        emptyDayTooltip: "{date} · Sem atividade",
+        apiRequests: "{count} via API",
+        cumulativeTooltip: "Até a semana de {date} · {tokens} no total",
         less: "Menos",
         more: "Mais",
         insightsTitle: "Análise de atividade",
@@ -3232,6 +3235,14 @@ export const ptBR = {
           "O modelo só é carregado pelo nome com a troca automática de modelo ativada. Ative-a ou carregue antes o modelo na página de Áudio dele.",
         useViaApi: "Usar via API",
       },
+      mediaApi: {
+        title: "API de imagem e vídeo",
+        description: "Gere imagens e vídeos no seu próprio código com os endpoints compatíveis com a OpenAI.",
+        images: "Imagens",
+        video: "Vídeo",
+        placeholderModel: "O modelo mostrado é um exemplo. Carregue um modelo na página Imagens ou Vídeo e abra isto pelo botão de API dela para preenchê-lo.",
+        autoSwitchOff: "A troca automática de mídia está desligada, então as solicitações usam o modelo carregado na página, seja qual for o nome enviado.",
+      },
       decisionApi: {
         title: "API de decisões",
         docs: "Documentação",
@@ -3312,6 +3323,24 @@ export const ptBR = {
       desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
       audioCppVersion: "Versão do audio.cpp",
+      whisperCppVersion: "Versão do whisper.cpp",
+      engines: {
+        title: "Motores",
+        description: "Os runtimes que o Unsloth usa para executar modelos. As atualizações são instaladas em segundo plano, sem reiniciar.",
+        updatesLabel: "Atualizações dos motores",
+        notInstalled: "Não instalado",
+        available: "{version} disponível",
+        upToDate: "Atualizado",
+        updatesAvailable: "Atualizações disponíveis",
+        checking: "Procurando atualizações...",
+        checkFailed: "Não foi possível procurar atualizações. Tente novamente mais tarde.",
+        unsupported: "Os motores desta instalação são gerenciados fora do Unsloth.",
+        checkForUpdates: "Procurar atualizações",
+        update: "Atualizar",
+        updating: "Atualizando...",
+        updated: "Motores atualizados.",
+        updateFailed: "Falha na atualização: {error}",
+      },
       hardware: "Hardware",
       gpu: "GPU",
       gpuIntegrated: "integrada",
@@ -3399,6 +3428,9 @@ export const ptBR = {
         docsUpdating: "Atualização",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
