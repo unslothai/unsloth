@@ -247,7 +247,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   // absent, never raw. `data:`/`blob:` keep going through exactly as they were.
   const resolved =
     file === null
-      ? src && backendPathUrl(src)
+      ? src
       : sandbox.state.status === "loaded"
         ? sandbox.state.url
         : undefined;
