@@ -190,7 +190,6 @@ _peer_discovery_cache: Optional[Tuple[float, Optional[str]]] = None
 
 
 def reset_peer_discovery_cache() -> None:
-    """Forget the discovered peer, so the next call re-walks the rails."""
     global _peer_discovery_cache
     _peer_discovery_cache = None
 
@@ -367,7 +366,6 @@ def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
 
 
 def _local_dir_gguf(directory: str, variant: Optional[str]) -> Optional[str]:
-    """The GGUF the loader would open out of a local directory, or None."""
     try:
         from utils.models.model_config import list_local_gguf_variants
         variants, _has_vision = list_local_gguf_variants(directory)
@@ -647,7 +645,6 @@ async def ssh_run(
 
 
 def peer_path(path: Path) -> str:
-    """``path`` as the peer's shell should expand it."""
     sc = _cluster()
     relative = getattr(sc, "_peer_relative_path", None)
     if callable(relative):
@@ -765,7 +762,6 @@ def sidecar_files(args: Sequence[str], *, cwd: Optional[str] = None) -> List[str
 
 
 def sidecar_bytes(args: Sequence[str], *, cwd: Optional[str] = None) -> Tuple[int, bool]:
-    """``(bytes, unknown)`` for the sidecars ``args`` names."""
     total = 0
     unknown = False
     for path in sidecar_files(args, cwd = cwd):
