@@ -386,6 +386,7 @@ def queue(studio, monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_ALIASES", {})
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
     monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", False)
     monkeypatch.setattr(openai_fine_tuning, "_ensure_drainer", lambda: None)
     gpu = {"busy": True}
@@ -494,6 +495,7 @@ def _forget_aliases(monkeypatch):
     # What a Studio restart leaves: nothing in memory, the database as it was.
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
     monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", False)
 
 
@@ -624,3 +626,62 @@ def test_a_job_cancelled_before_it_started_does_not_hide_newer_jobs(queue, monke
     old, newer, listed, retrieved = _run(flow())
     assert listed.data[0].id == newer.id
     assert retrieved.status == "cancelled"
+
+
+def test_a_queued_job_keeps_its_creation_time_and_event_cursor(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+        job = await _create(client, uploaded.id)
+        events = await client.fine_tuning.jobs.list_events(job.id)
+        again = await client.fine_tuning.jobs.list_events(job.id, after = events.data[0].id)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        _forget_aliases(monkeypatch)
+        return job, again, await client.fine_tuning.jobs.retrieve(job.id)
+
+    job, again, started = _run(flow())
+    assert again.data == []
+    assert started.created_at == job.created_at == 1_700_000_000
+
+
+def test_an_inference_request_in_flight_never_fails_a_queued_job(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    async def chat_in_flight(request, current_subject, via_api_key):
+        raise openai_fine_tuning.HTTPException(
+            status_code = 409,
+            detail = "Cannot start training over the API while an inference request is in progress.",
+        )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "start_training", chat_in_flight)
+        gpu["busy"] = False
+        for _ in range(openai_fine_tuning.QUEUE_IDLE_CONFLICTS + 2):
+            await openai_fine_tuning._drain_once()
+        return await client.fine_tuning.jobs.retrieve(job.id)
+
+    assert _run(flow()).status == "queued"
+
+
+def test_a_job_id_store_failure_keeps_the_started_job(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+
+    def locked():
+        raise studio_db.sqlite3.OperationalError("database is locked")
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.list()  # load the id table before it locks
+        monkeypatch.setattr(openai_fine_tuning, "_alias_db", locked)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return job, await client.fine_tuning.jobs.retrieve(job.id)
+
+    job, started = _run(flow())
+    assert started.id == job.id and started.status == "validating_files"

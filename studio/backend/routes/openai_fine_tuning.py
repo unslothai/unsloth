@@ -210,10 +210,13 @@ def _job_object(
     hyperparameters = _hyperparameters(config)
     datasets = config.get("local_datasets") or []
     eval_datasets = config.get("local_eval_datasets") or []
+    alias = _RUN_ALIAS.get(run_id)
     return {
-        "id": _RUN_ALIAS.get(run_id) or _job_id(run_id),
+        "id": alias or _job_id(run_id),
         "object": "fine_tuning.job",
-        "created_at": created_at or int(datetime.now(timezone.utc).timestamp()),
+        "created_at": _ALIAS_CREATED.get(alias)
+        or created_at
+        or int(datetime.now(timezone.utc).timestamp()),
         "error": {"code": "training_failed", "message": error, "param": None} if error else None,
         "fine_tuned_model": fine_tuned_model,
         "finished_at": finished_at,
@@ -417,6 +420,8 @@ QUEUE_POLL_S = 5.0
 QUEUE_IDLE_CONFLICTS = 12
 _TERMINAL_KEEP = 256
 _BUSY_ERRORS = ("Training already active", "Diffusion training already active")
+# 409s that clear by themselves (a chat request in flight, a transformers install): never give up on these.
+_TRANSIENT_CONFLICTS = ("inference request is in progress", "installation is in progress")
 _ALIAS_TABLE = "openai_fine_tuning_aliases"
 
 
@@ -440,6 +445,8 @@ _QUEUE: list[_Queued] = []
 _ALIASES: dict[str, _Queued] = {}
 _ALIAS_RUN: dict[str, tuple[str, Optional[str]]] = {}
 _RUN_ALIAS: dict[str, str] = {}
+# A queued job keeps the creation time it was given, not the later time its run started.
+_ALIAS_CREATED: dict[str, int] = {}
 _aliases_loaded = False
 _drainer: Optional[asyncio.Task] = None
 _start_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
@@ -464,7 +471,7 @@ def _alias_db():
     conn = get_connection()
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {_ALIAS_TABLE} "
-        "(alias TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT)"
+        "(alias TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT, created_at INTEGER)"
     )
     return conn
 
@@ -475,27 +482,37 @@ def _load_aliases() -> None:
         return
     conn = _alias_db()
     try:
-        rows = conn.execute(f"SELECT alias, run_id, account_id FROM {_ALIAS_TABLE}").fetchall()
+        rows = conn.execute(
+            f"SELECT alias, run_id, account_id, created_at FROM {_ALIAS_TABLE}"
+        ).fetchall()
     finally:
         conn.close()
-    for alias, run_id, account_id in rows:
+    for alias, run_id, account_id, created_at in rows:
         _ALIAS_RUN[alias] = (run_id, account_id)
         _RUN_ALIAS[run_id] = alias
+        if created_at:
+            _ALIAS_CREATED[alias] = created_at
     _aliases_loaded = True
 
 
-def _save_alias(alias: str, run_id: str, account_id: Optional[str]) -> None:
+def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: int) -> None:
     _ALIAS_RUN[alias] = (run_id, account_id)
     _RUN_ALIAS[run_id] = alias
-    conn = _alias_db()
+    _ALIAS_CREATED[alias] = created_at
     try:
-        conn.execute(
-            f"INSERT OR REPLACE INTO {_ALIAS_TABLE} (alias, run_id, account_id) VALUES (?, ?, ?)",
-            (alias, run_id, account_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        conn = _alias_db()
+        try:
+            conn.execute(
+                f"INSERT OR REPLACE INTO {_ALIAS_TABLE} (alias, run_id, account_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (alias, run_id, account_id, created_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        # The run is already training: keep it reachable by its id in this process rather than fail it.
+        logger.exception("Could not persist fine-tuning job id %s", alias)
 
 
 def _training_busy() -> bool:
@@ -554,7 +571,8 @@ async def _start_queued(entry: _Queued) -> bool:
             )
         except HTTPException as exc:
             entry.status = "queued"
-            entry.idle_conflicts += 1
+            transient = any(text in str(exc.detail) for text in _TRANSIENT_CONFLICTS)
+            entry.idle_conflicts += 0 if transient else 1
             if exc.status_code == 409 and entry.idle_conflicts < QUEUE_IDLE_CONFLICTS:
                 return False
             _finish(entry, "failed", str(exc.detail))
@@ -565,7 +583,9 @@ async def _start_queued(entry: _Queued) -> bool:
                 return False
             _finish(entry, "failed", started.message or started.error or "Training did not start")
             return True
-        await asyncio.to_thread(_save_alias, entry.alias, started.job_id, entry.account.account_id)
+        await asyncio.to_thread(
+            _save_alias, entry.alias, started.job_id, entry.account.account_id, entry.created_at
+        )
         _remember_start(started.job_id, entry.request.model_dump(), entry.created_at)
         _finish(entry, "started")
     if entry.cancel_requested:
@@ -866,7 +886,7 @@ async def list_fine_tuning_events(
 ):
     entry = _own_alias(job_id)
     if entry is not None:
-        return {"object": "list", "data": [_queue_event(entry, via_api_key)], "has_more": False}
+        return _paged([_queue_event(entry, via_api_key)], after, limit)
     run_id = await _resolve(job_id)
     run = await asyncio.to_thread(get_run, run_id)
     if run is None:
@@ -912,7 +932,7 @@ def _checkpoints(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "created_at": int(path.stat().st_mtime) or started,
                 # The "<run folder>/<checkpoint>" name Studio loads and exports a checkpoint by.
                 "fine_tuned_model_checkpoint": f"{Path(output_dir).name}/{path.name}",
-                "fine_tuning_job_id": _job_id(run_id),
+                "fine_tuning_job_id": _RUN_ALIAS.get(run_id) or _job_id(run_id),
                 "metrics": {"step": step, "train_loss": loss, "valid_loss": eval_loss},
                 "step_number": step,
             }
