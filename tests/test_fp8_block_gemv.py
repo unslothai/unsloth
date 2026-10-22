@@ -135,3 +135,22 @@ def test_compiled_call_is_one_opaque_op():
         eager = f(X)
         compiled = torch.compile(f, fullgraph = True)(X)
     torch.testing.assert_close(compiled, eager, atol = 0, rtol = 0)
+
+
+@pytest.mark.parametrize("block", [(64, 64), (128, 64), (64, 256)])
+def test_non_128_blocks(block):
+    bn, bk = block
+    N, K = 384, 1024
+    g = torch.Generator(device = "cuda").manual_seed(1)
+    W = torch.randn(N, K, device = "cuda", generator = g)
+    blocks = W.view(N // bn, bn, K // bk, bk)
+    s = (blocks.abs().amax(dim = (1, 3)) / 448.0).float().contiguous()
+    q = (blocks / s[:, None, :, None]).view(N, K).to(torch.float8_e4m3fn).contiguous()
+    q.block_size = [bn, bk]
+    X = torch.randn(4, 1, K, device = "cuda", generator = g).to(torch.bfloat16)
+    assert F8.can_use_fp8_block_gemv(X, q, s)
+    with torch.no_grad():
+        y = F8.fp8_block_gemv(X, q, s)
+    S = s.double().repeat_interleave(bn, 0).repeat_interleave(bk, 1)
+    ref = X.double().reshape(4, K) @ (q.double() * S).T
+    assert _rel_err(y, ref) <= torch.finfo(torch.bfloat16).eps
