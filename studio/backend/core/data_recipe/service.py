@@ -612,12 +612,9 @@ def _names_env_credential(value: Any) -> bool:
 
 
 def recipe_names_host_env_credential(recipe: Any) -> bool:
-    """True when the recipe would have the backend fill a credential from its own environment:
-    an ``api_key_env``-style field, or a bare variable name in ``api_key``/``token`` (Data
-    Designer resolves those from the environment before treating them as literals). The value
-    then goes out as a bearer token to whatever endpoint the same recipe names. Only top-level
-    ``model_providers`` entries marked ``is_local`` are skipped: the routes rewire exactly those
-    to this server's /v1 and drop their external auth."""
+    """True when a credential would come from this host's environment (Data Designer resolves a bare
+    variable name in api_key/token from the environment first). Only top-level local model providers
+    are exempt: the routes rewire exactly those to this server and drop their external auth."""
     if isinstance(recipe, dict) and isinstance(recipe.get("model_providers"), list):
         rest = {key: value for key, value in recipe.items() if key != "model_providers"}
         external = [
@@ -630,8 +627,7 @@ def recipe_names_host_env_credential(recipe: Any) -> bool:
 
 
 def _hf_seed_sends_host_token_elsewhere(recipe: Any) -> bool:
-    """An HF seed with no token of its own falls back to this host's Hugging Face token, which then
-    goes to whatever endpoint the seed names. Only this server's own endpoint is safe for that."""
+    """A tokenless HF seed sends the host's HF token to whatever endpoint it names."""
     if not isinstance(recipe, dict):
         return False
     seed_config = recipe.get("seed_config")
@@ -649,9 +645,7 @@ def _hf_seed_sends_host_token_elsewhere(recipe: Any) -> bool:
 
 
 def require_ui_session_for_host_env_credentials(recipe: Any, via_api_key: bool) -> None:
-    """Refuse an API key or keyless caller that asks the backend to supply a credential from its
-    environment (HF_TOKEN, provider keys). A UI session keeps the lookup; API callers pass the
-    credential itself."""
+    """API key / keyless callers bring their own credentials; UI sessions keep the env lookup."""
     if via_api_key and (
         recipe_names_host_env_credential(recipe) or _hf_seed_sends_host_token_elsewhere(recipe)
     ):

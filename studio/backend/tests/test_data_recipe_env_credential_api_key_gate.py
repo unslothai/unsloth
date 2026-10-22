@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An sk-unsloth API key (or a keyless caller) must not make a Data Recipe read a credential from
-the backend's environment. The recipe also names the endpoint the credential is sent to, so
-``api_key_env: HF_TOKEN`` (or ``api_key: "HF_TOKEN"``, which Data Designer resolves from the
-environment first) posted the host's token to wherever the caller chose. A UI session keeps the
-lookup; that is what the provider dialog's env-var field is for.
-"""
+"""API key / keyless recipes must not send a host env credential to an endpoint they choose."""
 
 import pytest
 from fastapi import HTTPException
