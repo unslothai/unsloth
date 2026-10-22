@@ -41,3 +41,19 @@ export function vulkanRetryDelayMs(attempt: number): number {
     VULKAN_RETRY_MAX_MS,
   );
 }
+
+export const STALE_AFTER_FAILED_POLLS = 2;
+
+export function nextFailedPolls(previous: number, ok: boolean): number {
+  return ok ? 0 : previous + 1;
+}
+
+export function isReadingStale(
+  status: SystemInfoStatus,
+  failedPolls: number,
+  polling: boolean,
+): boolean {
+  return (
+    polling && status === "ready" && failedPolls >= STALE_AFTER_FAILED_POLLS
+  );
+}

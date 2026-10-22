@@ -9,6 +9,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
 import { useMonitorOverlayStore } from "@/features/settings";
+import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { useChatSettingsWidth } from "@/hooks/use-chat-settings-width";
@@ -136,6 +137,7 @@ function FloatingMonitorPanel({
   const t = useT();
   const [constraintsElement, setConstraintsElement] =
     useState<HTMLDivElement | null>(null);
+  const cornerCard = useCornerCardFrameStore((state) => state.frame);
   const {
     monitorRef,
     scrollRef,
@@ -144,16 +146,18 @@ function FloatingMonitorPanel({
     startDrag,
     updateDrag,
     finishDrag,
+    resetPosition,
+    nudge,
   } = useFloatingPanelLayout(
     constraintsElement,
     dockedBesideRunSettings || suppressed,
     suppressed,
     undefined,
     FLOATING_PANEL_POSITION_KEYS.liveMonitor,
+    cornerCard,
   );
 
-  // offsetWidth, not the bounding rect: the panel animates in from scale 0.94, and
-  // a rect read through that transform is short of the width it settles at.
+  // offsetWidth, not the bounding rect: a drag's transform skews the rect.
   useEffect(() => {
     const monitor = monitorRef.current;
     if (!monitor) {
@@ -181,6 +185,7 @@ function FloatingMonitorPanel({
   const ramPercent = clampPercent(systemInfo.memory?.percent_used ?? 0);
   // The placeholder's zeros are not a reading: loading or a failed first request shows "--".
   const ramKnown = systemInfo.status === "ready";
+  const stale = systemInfo.stale === true;
 
   const displayedGpu = systemInfo.gpu?.available
     ? systemInfo.gpu
@@ -231,11 +236,11 @@ function FloatingMonitorPanel({
     (displayedGpu?.devices.length ?? 0) > 0;
 
   // The container sits on the floating panel layer, above the bottom-right overlay stack. The stack
-  // is anchored to that same corner and does not move for this monitor, so the two can overlap. The
-  // stack is passive status; this is a window being dragged, resized and closed, so it wins. Still
-  // below the startup screen and tooltips. See lib/z-layers. The API monitor panel shares this
-  // layer rather than sitting under it, and whichever of the two the user touched last is the one
-  // in front.
+  // is anchored to that same corner and does not move for this monitor; at its default corner the
+  // monitor rests above the Loaded models card instead (useCornerCardFrameStore), and anywhere it
+  // overlaps it wins, since this is a window being dragged, resized and closed. Still below the
+  // startup screen and tooltips. See lib/z-layers. The API monitor panel shares this layer rather
+  // than sitting under it, and whichever of the two the user touched last is the one in front.
   return (
     <div
       ref={setConstraintsElement}
@@ -270,6 +275,14 @@ function FloatingMonitorPanel({
         data-testid="floating-monitor"
         // Takes its own clicks over a macOS browser page (native-view.ts).
         data-native-clickable=""
+        // biome-ignore lint/a11y/useSemanticElements: a floating panel landmark on the shared layout hook's div.
+        role="region"
+        aria-label={t("settings.resources.liveMonitor.title")}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          onClose();
+        }}
         style={
           layout
             ? {
@@ -289,16 +302,32 @@ function FloatingMonitorPanel({
             <span className="truncate">
               {t("settings.resources.liveMonitor.title")}
             </span>
+            {stale && (
+              <span
+                className="truncate font-normal text-muted-foreground"
+                aria-live="polite"
+                data-testid="floating-monitor-stale"
+              >
+                {t("floatingPanels.monitor.reconnecting")}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <div
               data-testid="floating-monitor-drag-handle"
+              // biome-ignore lint/a11y/useSemanticElements: a pointer-captured drag grip, not a pressable control.
+              role="button"
+              tabIndex={0}
+              aria-label={t("floatingPanels.monitor.dragHandleLabel")}
+              title={t("floatingPanels.monitor.dragHandleLabel")}
               onPointerDown={startDrag}
               onPointerMove={updateDrag}
               onPointerUp={finishDrag}
               onPointerCancel={finishDrag}
               onLostPointerCapture={finishDrag}
-              className="touch-none cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground active:cursor-grabbing"
+              onDoubleClick={resetPosition}
+              onKeyDown={(event) => void nudge(event)}
+              className="touch-none cursor-grab rounded-md px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
             >
               <GripVerticalIcon className="size-3.5" />
             </div>
@@ -320,7 +349,7 @@ function FloatingMonitorPanel({
           <div
             ref={contentRef}
             data-testid="floating-monitor-content"
-            className="space-y-3"
+            className={cn("space-y-3 transition-opacity", stale && "opacity-50")}
           >
             <div className="space-y-1">
               <div className="flex justify-between text-ui-11 font-medium font-mono">
