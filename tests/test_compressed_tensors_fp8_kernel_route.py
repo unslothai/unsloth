@@ -285,8 +285,9 @@ def test_decode_gemv_refuses_what_it_cannot_compute():
     X = torch.randn(1, 16384, device = dev, dtype = torch.bfloat16)
     with torch.no_grad():
         assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = dev))
+        # Up to 16 decode rows take the multi-row GEMV; more go to the GEMM paths.
         assert not can_use_fp8_rowwise_gemv(
-            torch.randn(2, 16384, device = dev, dtype = torch.bfloat16), W, s
+            torch.randn(17, 16384, device = dev, dtype = torch.bfloat16), W, s
         )
         assert not can_use_fp8_rowwise_gemv(X.float(), W, s)
         assert not can_use_fp8_rowwise_gemv(X[:, :2048], W.t(), s)

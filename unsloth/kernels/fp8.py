@@ -565,12 +565,131 @@ def _fp8_rowwise_gemv_kernel(
     tl.store(y_ptr + offs_n, y.to(y_ptr.dtype.element_ty), mask = offs_n < N)
 
 
+# Batched decode (2..16 tokens): one program per BLOCK_N outputs reads its weight tile once for every row.
+# Main's path for these sizes dequantizes the whole weight to 16 bits per call; both skip activation quant.
+# UNSLOTH_FP8_GEMV_ROWS=0 restores it.
+_FP8_GEMV_MAX_ROWS = 16
+_FP8_GEMV_ROWS = os.environ.get("UNSLOTH_FP8_GEMV_ROWS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+@triton.jit
+def _fp8_rowwise_gemv_rows_kernel(
+    x_ptr,
+    w_ptr,
+    s_ptr,
+    y_ptr,
+    p_ptr,
+    M,
+    N,
+    K,
+    stride_wn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    SPLIT_K: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
+):
+    pid = tl.program_id(0)
+    pid_k = tl.program_id(1)
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    offs_m = tl.arange(0, BLOCK_M)
+    offs_n = pid * BLOCK_N + tl.arange(0, BLOCK_N)
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.float32)
+    k_per = tl.cdiv(tl.cdiv(K, SPLIT_K), BLOCK_K) * BLOCK_K
+    k_lo = pid_k * k_per
+    for k0 in range(k_lo, tl.minimum(k_lo + k_per, K), BLOCK_K):
+        offs_k = k0 + tl.arange(0, BLOCK_K)
+        x = tl.load(
+            x_ptr + offs_m[:, None] * K + offs_k[None, :],
+            mask = (offs_m[:, None] < M) & (offs_k[None, :] < K),
+            other = 0.0,
+        )
+        # e4m3 values are exact in bf16 / fp16, so the dot sees the stored weights unrounded.
+        w = tl.load(
+            w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :],
+            mask = (offs_n[:, None] < N) & (offs_k[None, :] < K),
+            other = 0.0,
+        ).to(x.dtype)
+        acc = tl.dot(x, tl.trans(w), acc)
+    mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+    if SPLIT_K == 1:
+        s = tl.load(s_ptr + offs_n, mask = offs_n < N, other = 0.0).to(tl.float32)
+        y = acc * s[None, :]
+        tl.store(y_ptr + offs_m[:, None] * N + offs_n[None, :], y.to(y_ptr.dtype.element_ty), mask = mask)
+    else:
+        # fp32 partials, summed in a fixed order by the reduce kernel: deterministic, no atomics.
+        tl.store(p_ptr + (pid_k * M + offs_m[:, None]) * N + offs_n[None, :], acc, mask = mask)
+
+
+@triton.jit
+def _fp8_rowwise_gemv_rows_reduce(p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < M * N
+    acc = tl.zeros((BLOCK,), dtype = tl.float32)
+    for k in tl.static_range(SPLIT_K):
+        acc += tl.load(p_ptr + k * M * N + offs, mask = mask, other = 0.0)
+    s = tl.load(s_ptr + offs % N, mask = mask, other = 0.0).to(tl.float32)
+    tl.store(y_ptr + offs, (acc * s).to(y_ptr.dtype.element_ty), mask = mask)
+
+
+def _fp8_rows_config(N, K, dtype):
+    """(BLOCK_N, BLOCK_K, SPLIT_K, num_warps, num_stages), from a sweep over 8B / 1.7B / 0.6B projections.
+    Split K only when K is long or N too narrow to fill the GPU: the reduce launch costs more elsewhere."""
+    if _FP8_ROWS_CONFIG_OVERRIDE is not None:
+        return _FP8_ROWS_CONFIG_OVERRIDE
+    if K >= 8192:
+        return (64 if dtype == torch.float16 else 32), 128, 8, 4, 4
+    if N <= 1024 and K >= 4096:
+        return 32, 128, 8, 4, 4
+    block_n = 16 if N <= 2048 else (64 if N >= 12288 and dtype == torch.float16 else 32)
+    return block_n, 256, 1, 4, 4
+
+
+_FP8_ROWS_CONFIG_OVERRIDE = None
+
+
+def _fp8_rowwise_gemv_rows(X, weight, scale, out, rows):
+    N, K = weight.shape
+    block_n, block_k, split_k, warps, stages = _fp8_rows_config(N, K, X.dtype)
+    partials = (
+        torch.empty((split_k, rows, N), device = X.device, dtype = torch.float32) if split_k > 1 else out
+    )
+    with _fp8_triton_device_context(X, static_device_count = True):
+        _fp8_rowwise_gemv_rows_kernel[(triton.cdiv(N, block_n), split_k)](
+            X,
+            weight,
+            scale,
+            out,
+            partials,
+            rows,
+            N,
+            K,
+            weight.stride(0),
+            BLOCK_M = _FP8_GEMV_MAX_ROWS,
+            BLOCK_N = block_n,
+            BLOCK_K = block_k,
+            SPLIT_K = split_k,
+            LONG_INDEXING = long_indexing(weight),
+            num_warps = warps,
+            num_stages = stages,
+        )
+        if split_k > 1:
+            _fp8_rowwise_gemv_rows_reduce[(triton.cdiv(rows * N, 1024),)](
+                partials, scale, out, rows, N, SPLIT_K = split_k, BLOCK = 1024
+            )
+    return out
+
+
 def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
     if not (X.is_cuda and weight.is_cuda and X.dtype in (torch.bfloat16, torch.float16)):
         return False
     if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
         return False
-    if X.numel() != X.shape[-1] or X.shape[-1] != weight.shape[1]:
+    if X.shape[-1] != weight.shape[1]:
+        return False
+    rows = X.numel() // X.shape[-1]
+    if rows != 1 and not (2 <= rows <= _FP8_GEMV_MAX_ROWS and _FP8_GEMV_ROWS):
         return False
     # Exactly one scale per output row: a block grid can have N elements by coincidence.
     if (
@@ -584,6 +703,8 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if not _fp8_gemv_miscompiles(weight.device):
         return True
+    if rows != 1:
+        return False
     # Triton 3.3 is exact at BLOCK_N 1 (N <= 4096); beats dequant + matmul when N >= 256 or K <= 4096 (RTX PRO 6000).
     N, K = weight.shape
     return N <= 4096 and (N >= 256 or K <= 4096) and _triton_builds_blackwell()
@@ -599,12 +720,15 @@ def _triton_builds_blackwell():
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
-    """X @ (weight * weight_scale).T for one token without a 16-bit weight copy."""
+    """X @ (weight * weight_scale).T for up to _FP8_GEMV_MAX_ROWS tokens without a 16-bit weight copy."""
     N, K = weight.shape
     out = torch.empty((*X.shape[:-1], N), device = X.device, dtype = X.dtype)
     if not X.is_contiguous():
         X = X.contiguous()
     scale = weight_scale if weight_scale.is_contiguous() else weight_scale.contiguous()
+    rows = X.numel() // K
+    if rows != 1:
+        return _fp8_rowwise_gemv_rows(X, weight, scale, out, rows)
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
