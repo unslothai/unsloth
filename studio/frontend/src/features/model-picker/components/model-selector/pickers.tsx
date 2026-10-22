@@ -3210,9 +3210,13 @@ export function HubModelPicker({
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
   // The loader frees the resident model before reading free memory, so only the ceiling holds then.
-  // Not chatModelLoaded: it counts a remote API model, which frees nothing.
-  const chatModelResident =
-    typeof residentCheckpoint === "string" && residentCheckpoint !== "";
+  // Not chatModelLoaded: it counts a remote API model, which frees nothing. Keep-loaded mode may
+  // leave the resident beside the new load, so the live budget stays in force there.
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const loadFreesResident =
+    !keepModelsLoaded &&
+    typeof residentCheckpoint === "string" &&
+    residentCheckpoint !== "";
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufVariant =
@@ -4263,7 +4267,7 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
-            unifiedLoadBudgetGb: chatModelResident
+            unifiedLoadBudgetGb: loadFreesResident
               ? budget.unifiedLoadCeilingGb
               : budget.unifiedLoadBudgetGb,
           });
@@ -4370,7 +4374,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
-    chatModelResident,
+    loadFreesResident,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -7361,7 +7365,7 @@ export function HubModelPicker({
     <PickerScopes
       capabilityScope={capabilityScope}
       unifiedLoadBudgetGb={
-        (chatModelResident
+        (loadFreesResident
           ? inferenceGpu.unifiedLoadCeilingGb
           : inferenceGpu.unifiedLoadBudgetGb) ?? null
       }

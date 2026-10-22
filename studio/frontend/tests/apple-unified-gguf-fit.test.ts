@@ -180,3 +180,19 @@ test("a loader budget floored to zero still warns rather than reading as unknown
   });
   assert.equal(fit, "marginal");
 });
+
+test("keep-loaded mode keeps the live budget: the resident may stay beside the new load", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /const loadFreesResident =\s*!keepModelsLoaded &&\s*typeof residentCheckpoint === "string"/,
+  );
+  assert.equal(src.match(/loadFreesResident\s*\?/g)?.length, 2);
+});
