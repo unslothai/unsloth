@@ -256,3 +256,60 @@ def test_a_weight_written_on_the_device_after_a_chunk_onload_is_copied_back(monk
     module._hf_hook.init_hook(module)
     assert module[2].weight.device.type == "cpu"
     assert torch.equal(module[2].weight.detach(), before + 1)
+
+
+def test_overlapping_re_enables_restore_the_real_device_cache(monkeypatch):
+    module, calls = _fake_pipeline_utils(monkeypatch)
+    original = module.empty_device_cache
+    lin = torch.nn.Linear(2, 2)
+    lin.__dict__[dm._KEEP_ATTR] = {"pin_layout": [object()]}
+    pipe = types.SimpleNamespace(components = {"t": lin})
+    first, second = dm._keep_device_cache(pipe), dm._keep_device_cache(pipe)
+    first.__enter__()
+    second.__enter__()
+    first.__exit__(None, None, None)  # the first out must not end the second's patch ...
+    module.empty_device_cache("cuda")
+    assert calls == []
+    second.__exit__(None, None, None)  # ... nor may the last out leave a no-op behind
+    assert module.empty_device_cache is original
+
+
+def test_a_replaced_weight_leaves_no_stale_hole_in_the_chunk_upload(fake_pin):
+    module = _stack()
+    host = {n: p.data for n, p in module.named_parameters()}
+    owner = dict(module.named_parameters())
+    layout: list = []
+    assert dm._pin_host_weights(module, host, layout = layout) > 0
+    buf, entries = layout[0]
+    assert len(entries) > 1
+    first, last = entries[0][0], entries[-1][0]
+    expect = {n: p.detach().clone() for n, p in module.named_parameters()}
+    prefix, _, leaf = first.rpartition(".")
+    setattr(module.get_submodule(prefix), leaf, torch.nn.Parameter(torch.zeros_like(expect[first])))
+    copied = dm._upload_pinned_chunks(module, layout[:1], host, owner, {}, torch.device("cpu"))
+    live = [view for name, _, view in entries if name != first]
+    assert copied < max(start + view.nbytes for _, start, view in entries)
+    assert copied <= sum(-(-v.nbytes // dm._PIN_ALIGN) * dm._PIN_ALIGN for v in live)
+    params = dict(module.named_parameters())
+    assert params[last].data_ptr() != host[last].data_ptr()  # re-pointed at the device chunk
+    for name, _, _ in entries[1:]:
+        assert torch.equal(params[name].detach(), expect[name])
+
+
+def test_an_instance_level_mover_is_kept_and_used(fake_pin):
+    pipe = _pipe("meta", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    module = pipe.transformer
+    calls: list = []
+    stock = type(module).to
+
+    def mover(*args, **kwargs):
+        calls.append(args)
+        return stock(module, *args, **kwargs)
+
+    module.__dict__["to"] = mover  # e.g. a stable arena's placement
+    _onload(pipe)
+    assert module.__dict__[dm._KEEP_ATTR]["pin_layout"]  # the chunk path was armed ...
+    assert calls  # ... yet the onload went through the installed mover
+    assert module.__dict__.get("to") is mover

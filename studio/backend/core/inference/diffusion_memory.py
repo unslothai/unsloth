@@ -21,6 +21,7 @@ import contextvars
 import functools
 import os
 import sys
+import threading
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
@@ -443,11 +444,29 @@ def _keep_device_cache(pipe: Any):
     if not engaged or not callable(original):
         yield
         return
-    module.empty_device_cache = lambda *args, **kwargs: None
+    # Process-global patch: overlapping enables share one count, and the last one out restores the real function.
+    with _cache_patch_lock:
+        if not _cache_patch:
+            _cache_patch.update(module = module, original = original, depth = 0)
+            module.empty_device_cache = _skip_empty_device_cache
+        _cache_patch["depth"] += 1
     try:
         yield
     finally:
-        module.empty_device_cache = original
+        with _cache_patch_lock:
+            _cache_patch["depth"] -= 1
+            if _cache_patch["depth"] <= 0:
+                if _cache_patch["module"].empty_device_cache is _skip_empty_device_cache:
+                    _cache_patch["module"].empty_device_cache = _cache_patch["original"]
+                _cache_patch.clear()
+
+
+_cache_patch_lock = threading.Lock()
+_cache_patch: dict = {}
+
+
+def _skip_empty_device_cache(*args: Any, **kwargs: Any) -> None:
+    return None
 
 
 def _fast_upload_enabled() -> bool:
@@ -507,16 +526,31 @@ def _upload_pinned_chunks(
                     live.append((name, start, view))
             if not live:
                 continue
-            used = max(start + view.nbytes for _, start, view in live)
+            if len(live) == len(entries):
+                used = max(start + view.nbytes for _, start, view in live)
+                slots = [(name, start, view, start) for name, start, view in live]
+            else:
+                # Replaced weights left holes: pack the survivors so the stale bytes are neither allocated nor copied.
+                used, slots = 0, []
+                for name, start, view in sorted(live, key = lambda e: e[1]):
+                    used = -(-used // _PIN_ALIGN) * _PIN_ALIGN
+                    slots.append((name, start, view, used))
+                    used += view.nbytes
             # Same stream as the forward that follows, so no sync: kernels queue behind the copy.
             dev_buf = torch.empty(used, dtype = torch.uint8, device = device)
             if not torch._has_compatible_shallow_copy_type(buf, dev_buf):
                 # e.g. meta: the stock move hands back new Parameters there instead of re-pointing them.
                 raise TypeError("device tensors cannot back host parameters")
-            dev_buf.copy_(buf[:used], non_blocking = True)
+            if len(live) == len(entries):
+                dev_buf.copy_(buf[:used], non_blocking = True)
+            else:
+                for _, start, view, at in slots:
+                    dev_buf[at : at + view.nbytes].copy_(
+                        buf[start : start + view.nbytes], non_blocking = True
+                    )
             copied += used
-            for name, start, view in live:
-                dev = dev_buf[start : start + view.nbytes].view(view.dtype)
+            for name, _, view, at in slots:
+                dev = dev_buf[at : at + view.nbytes].view(view.dtype)
                 dev = (
                     dev.view(view.shape)
                     if view.is_contiguous()
@@ -675,6 +709,9 @@ def _wrap_cpu_offload_hook(
                     type(mod).__name__,
                 )
         layout = state.get("pin_layout") if onload and _fast_upload_enabled() else None
+        if layout and "to" in mod.__dict__:
+            # An instance-level mover is already installed (stable arena, pinned swap): defer to it.
+            layout = None
         if not layout:
             out = pre_forward(mod, *args, **kwargs)
         else:
