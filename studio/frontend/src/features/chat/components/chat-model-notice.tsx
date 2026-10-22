@@ -103,8 +103,8 @@ type ChatModelNoticeProps = {
   ) => void;
 };
 
-/** Puts a chat back on its last used model: at once when that model is still loaded alongside,
- *  else only as an offer, since a local load would evict the resident model. */
+/** Puts a chat back on its last used model: at once when that model is still loaded (adopted,
+ *  never reloaded), else only as an offer, since a local load would evict the resident model. */
 export function ChatModelNotice({
   active,
   threadId,
@@ -116,17 +116,15 @@ export function ChatModelNotice({
   onAutoSwitch,
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
-  // Off, picking another model unloads the selected one.
-  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const resident =
     createdModel != null &&
     chatModelIsResident(createdModel, checkpoint, activeGgufVariant);
   const loadedTarget = useMemo(
     () =>
-      createdModel && !resident && keepModelsLoaded
+      createdModel && !resident
         ? chatModelLoadedTarget(createdModel, loadedModels)
         : null,
-    [createdModel, resident, keepModelsLoaded, loadedModels],
+    [createdModel, resident, loadedModels],
   );
   // A send that moves the chat to another model before the switch lands drops the switch.
   const createdKey = createdModel

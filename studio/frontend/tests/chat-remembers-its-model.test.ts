@@ -219,8 +219,9 @@ test("the automatic switch runs once per chat open", () => {
     body,
     /onAutoSwitch\(\s*switchTo,\s*\(\) => autoSwitchRef\.current === state && createdKeyRef\.current === key,\s*\);/,
   );
-  // With Keep models loaded off, picking another model unloads the selected one.
-  assert.match(body, /createdModel && !resident && keepModelsLoaded\s*\?/);
+  // Any loaded slot counts, Keep models loaded on or off: the switch only ever adopts it.
+  assert.match(body, /createdModel && !resident\s*\?\s*chatModelLoadedTarget/);
+  assert.doesNotMatch(body, /keepModelsLoaded/);
   // A cross-tab revision carries no thread, so the saved model is read again rather than kept stale.
   // Only the plain cross-tab Event re-reads (streamed chunks are CustomEvents), and a slower read
   // never lands over a newer answer.
