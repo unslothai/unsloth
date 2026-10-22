@@ -14,6 +14,10 @@ export const DETAILER_TARGETS_HINT =
 export const DETAILER_PROMPT_HINT =
   "Prompt for the redraw. Empty uses the image's prompt; [PROMPT] inserts it; [SEP] gives the next faces their own text.";
 
+export type DetailerGuideSizeFor = "bbox" | "crop_region";
+
+const isGuideSizeFor = (v: unknown): v is DetailerGuideSizeFor => v === "bbox" || v === "crop_region";
+
 export interface DetailerOptions {
   targets: string;
   prompt: string;
@@ -21,9 +25,13 @@ export interface DetailerOptions {
   confidence: number;
   cropFactor: number;
   guideSize: number;
+  /** What guide size measures: the detection box or the whole crop (FaceDetailer's guide_size_for). */
+  guideSizeFor: DetailerGuideSizeFor;
   maxSize: number;
   dilation: number;
   feather: number;
+  /** Detections with a box side at or below this many pixels are skipped. */
+  dropSize: number;
   /** null = the image's own steps. */
   steps: number | null;
   /** Empty = the image's own negative prompt. */
@@ -40,9 +48,11 @@ export const DETAILER_DEFAULTS: DetailerOptions = {
   confidence: 0.5,
   cropFactor: 3.0,
   guideSize: 512,
+  guideSizeFor: "bbox",
   maxSize: 1024,
   dilation: 10,
   feather: 5,
+  dropSize: 10,
   steps: null,
   negativePrompt: "",
   guidance: null,
@@ -56,9 +66,11 @@ export interface DetailerRequest {
   confidence?: number;
   crop_factor?: number;
   guide_size?: number;
+  guide_size_for?: DetailerGuideSizeFor;
   max_size?: number;
   dilation?: number;
   feather?: number;
+  drop_size?: number;
   steps?: number;
   negative_prompt?: string;
   guidance?: number;
@@ -142,12 +154,15 @@ export function detailerRequestField(
     ["max_size", options.maxSize, DETAILER_DEFAULTS.maxSize, 64, 2048],
     ["dilation", options.dilation, DETAILER_DEFAULTS.dilation, -128, 128],
     ["feather", options.feather, DETAILER_DEFAULTS.feather, 0, 100],
+    ["drop_size", Math.round(options.dropSize), DETAILER_DEFAULTS.dropSize, 1, 1024],
   ];
   for (const [key, value, fallback, lo, hi] of numeric) {
     if (!Number.isFinite(value)) continue;
     const bounded = clamp(value, lo, hi);
     if (bounded !== fallback) (out as unknown as Record<string, number>)[key] = bounded;
   }
+  if (isGuideSizeFor(options.guideSizeFor) && options.guideSizeFor !== DETAILER_DEFAULTS.guideSizeFor)
+    out.guide_size_for = options.guideSizeFor;
   if (options.steps !== null && Number.isFinite(options.steps)) out.steps = clamp(Math.round(options.steps), 1, 200);
   const negative = (options.negativePrompt ?? "").trim();
   if (negative) out.negative_prompt = negative;
@@ -206,10 +221,14 @@ export function restoredDetailer(image: { detailer?: unknown }): {
     ["maxSize", record.max_size],
     ["dilation", record.dilation],
     ["feather", record.feather],
+    ["dropSize", record.drop_size],
   ];
   for (const [key, value] of pairs) {
     if (value !== undefined) (options as Record<string, unknown>)[key] = value;
   }
+  // FaceDetailer's geometry: absent means its default, so a restore never keeps a stale stored value.
+  options.guideSizeFor = isGuideSizeFor(record.guide_size_for) ? record.guide_size_for : DETAILER_DEFAULTS.guideSizeFor;
+  options.dropSize ??= DETAILER_DEFAULTS.dropSize;
   options.steps = record.steps ?? null;
   // ADetailer's separate negative prompt and CFG: absent means the image's own, so a restore clears a stale override.
   options.negativePrompt = record.negative_prompt ?? "";
@@ -287,6 +306,7 @@ export function readDetailerOptions(): DetailerOptions {
       const v = (value as Record<string, unknown>)[key];
       if (key === "steps" || key === "guidance")
         out[key] = typeof v === "number" && Number.isFinite(v) ? v : null;
+      else if (key === "guideSizeFor") out.guideSizeFor = isGuideSizeFor(v) ? v : DETAILER_DEFAULTS.guideSizeFor;
       else if (typeof v === typeof DETAILER_DEFAULTS[key] && (typeof v !== "number" || Number.isFinite(v)))
         (out as Record<string, unknown>)[key] = v;
     }

@@ -123,6 +123,10 @@ class DetailerSettings:
         settings = cls(**values)
         if not target_concepts(settings.targets):
             raise ValueError("Name what the Detailer should fix, for example: face")
+        from core.inference import diffusion_segment
+
+        # SAM 3's own limits (at most MAX_CONCEPTS concepts), checked before the render instead of after it.
+        diffusion_segment.parse_prompt(segment_prompt(settings.targets))
         return settings
 
 
@@ -359,14 +363,18 @@ def detail_image(
     current = np.array(image.convert("RGB"), dtype = np.uint8)
     height, width = current.shape[:2]
     done: list[dict] = []
-    skipped = 0
-    for index, det in enumerate(detections[:MAX_DETECTIONS]):
+    capped = detections[:MAX_DETECTIONS]
+    # Undersized boxes go before the loop, as Impact-Pack's detectors drop them: they take no [SEP] prompt or seed.
+    sized = [
+        d
+        for d in capped
+        if d.box[2] - d.box[0] > settings.drop_size and d.box[3] - d.box[1] > settings.drop_size
+    ]
+    skipped = len(capped) - len(sized)
+    for index, det in enumerate(sized):
         if stop is not None and stop():
             raise DetailerCancelled("cancelled")
         x1, y1, x2, y2 = det.box
-        if not (x2 - x1 > settings.drop_size and y2 - y1 > settings.drop_size):
-            skipped += 1
-            continue
         det_prompt = detection_prompt(settings.prompt, prompt, index)
         if det_prompt is None:
             skipped += 1
@@ -526,6 +534,22 @@ def _plane_to_mask(plane: Any, height: int, width: int) -> Any:
         return (up > 0).numpy()
 
 
+def _take_generation_slot(stop: Optional[Callable[[], bool]] = None) -> Any:
+    """The active image engine's generation lock, acquired (waiting out a render or load that holds it), or None when
+    the engine has none. Raises DetailerCancelled when ``stop`` is set while waiting."""
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        lock = getattr(get_active_diffusion_engine(), "_generate_lock", None)
+    except Exception:  # noqa: BLE001 -- no engine: no render to collide with
+        return None
+    if lock is None or not hasattr(lock, "acquire"):
+        return None
+    while not lock.acquire(timeout = 0.1):
+        if stop is not None and stop():
+            raise DetailerCancelled("cancelled")
+    return lock
+
+
 def detect(
     images: list,
     settings: DetailerSettings,
@@ -537,12 +561,15 @@ def detect(
     from core.inference import diffusion_segment
 
     prompt = segment_prompt(settings.targets)
-    segmenter = diffusion_segment.get_segmenter()
     out: list[list[Detection]] = []
     found: list[int] = []
     info: dict = {}
     started = time.perf_counter()
+    # The image engine's generation slot through detection and the park: a queued render waits for SAM 3 to leave
+    # the GPU instead of denoising beside it.
+    slot = _take_generation_slot(stop)
     try:
+        segmenter = diffusion_segment.get_segmenter()
         for image in images:
             if stop is not None and stop():
                 raise DetailerCancelled("cancelled")
@@ -560,12 +587,39 @@ def detect(
             info = {"device": result.device, "precision": result.precision}
             del result, pairs
     finally:
-        # Parked in host RAM: the next pass moves it back instead of reading the weights again.
-        diffusion_segment.release_segmenter("detailer", wait = True, park = True)
+        try:
+            # Parked in host RAM: the next pass moves it back instead of reading the weights again.
+            diffusion_segment.release_segmenter("detailer", wait = True, park = True)
+        finally:
+            if slot is not None:
+                slot.release()
     info["model"] = diffusion_segment.active_variant().id
     info["found"] = found
     info["detect_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
     return out, info
+
+
+# What a render result names as its build (diffusion.py generate): a same-repo reload differing in any is another model.
+BUILD_KEYS = (
+    "repo_id",
+    "model_kind",
+    "gguf_filename",
+    "transformer_quant",
+    "text_encoder_quant",
+    "baked_loras",
+)
+
+
+def same_build(render: dict, inpaint: dict) -> bool:
+    """True when ``inpaint`` ran on the build ``render`` did; a key either result does not report is not compared."""
+    for key in BUILD_KEYS:
+        if key in render and key in inpaint:
+            a, b = render[key], inpaint[key]
+            if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+                a, b = list(a), list(b)
+            if a != b:
+                return False
+    return True
 
 
 def _png_b64(image: Any) -> str:
@@ -664,6 +718,9 @@ def _detail_images(
                 strength = settings.denoise,
                 **generate_kwargs,
             )
+            if not same_build(result, out):
+                # Same repo, other build (GGUF file, quantization, baked adapters): not the render's weights.
+                raise ValueError("the model changed")
             return out["images"][0]
 
         try:

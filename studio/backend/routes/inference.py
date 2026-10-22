@@ -52427,6 +52427,7 @@ async def _external_image_generation(
         or body.inpaint_padding is not None
         or body.hires is not None
         or body.upscale_model
+        or body.detailer is not None
     ):
         raise HTTPException(
             status_code = 400,

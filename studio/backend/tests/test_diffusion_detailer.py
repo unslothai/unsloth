@@ -312,10 +312,121 @@ def test_small_skipped_and_empty_detections():
         negative_prompt = None,
         inpaint = fake,
     )
-    # The seed and the [SEP] part follow the detection's index, skipped ones included (as ADetailer counts them).
-    assert [c["seed"] for c in fake.calls] == [11]
+    # Undersized boxes are dropped before indexing (Impact-Pack's detectors); an empty mask still takes its index.
+    assert [c["seed"] for c in fake.calls] == [10]
     assert fake.calls[0]["prompt"] == "b"
     assert out.record["skipped"] == 2 and out.record["detections"][0]["prompt"] == "b"
+
+
+def test_undersized_detections_take_no_prompt_or_seed():
+    fake = _FakeInpaint()
+    det.detail_image(
+        _scene(),
+        [_face((10, 10, 20, 40)), _face((150, 60, 200, 120))],
+        det.DetailerSettings(prompt = "a [SEP] b"),
+        base_seed = 9,
+        prompt = "p",
+        negative_prompt = None,
+        inpaint = fake,
+    )
+    assert [(c["seed"], c["prompt"]) for c in fake.calls] == [(9, "a")]
+
+
+def test_too_many_targets_are_refused_before_the_render():
+    from models.inference import DiffusionDetailerSpec
+
+    targets = ", ".join(f"thing{i}" for i in range(17))
+    with pytest.raises(ValueError, match = "At most 16"):
+        det.DetailerSettings.from_request(DiffusionDetailerSpec(targets = targets))
+    sixteen = ", ".join(f"thing{i}" for i in range(16))
+    assert (
+        det.DetailerSettings.from_request(DiffusionDetailerSpec(targets = sixteen)).targets == sixteen
+    )
+
+
+def test_an_inpaint_on_another_build_of_the_same_repo_is_discarded(monkeypatch):
+    _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
+    image = _scene()
+
+    def _generate(**kwargs):
+        # Another tab reloaded the same repo with a different GGUF file while SAM 3 ran.
+        return {"images": [_scene(64, 64)], "repo_id": "org/m", "gguf_filename": "q8.gguf"}
+
+    result = {"images": [image], "seeds": [1], "repo_id": "org/m", "gguf_filename": "q4.gguf"}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+    )
+    assert result["images"][0] is image
+    assert result["detailer"][0]["error"] == "the model changed"
+
+
+def test_same_build_compares_every_build_field():
+    base = {"repo_id": "r", "model_kind": "gguf", "gguf_filename": "a", "baked_loras": ["x"]}
+    assert det.same_build(base, {**base, "baked_loras": ("x",), "seed": 4})
+    assert det.same_build(base, {"images": []})
+    for key, value in [("gguf_filename", "b"), ("transformer_quant", "int8"), ("baked_loras", [])]:
+        assert not det.same_build(
+            {**base, "transformer_quant": None}, {**base, "transformer_quant": None, key: value}
+        )
+
+
+def test_detection_holds_the_engine_generation_slot(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_engine_router as router
+    from core.inference import diffusion_segment
+
+    lock = threading.Lock()
+    monkeypatch.setattr(
+        router, "get_active_diffusion_engine", lambda: types.SimpleNamespace(_generate_lock = lock)
+    )
+    held = []
+
+    class _Seg:
+        def segment(self, *a, **k):
+            held.append(("segment", lock.locked()))
+            return types.SimpleNamespace(
+                instances = [], instance_logits = [], device = "cpu", precision = "fp32"
+            )
+
+    monkeypatch.setattr(diffusion_segment, "get_segmenter", lambda: _Seg())
+    monkeypatch.setattr(
+        diffusion_segment,
+        "release_segmenter",
+        lambda reason, wait = False, park = False: held.append(("park", lock.locked())),
+    )
+    monkeypatch.setattr(
+        diffusion_segment, "active_variant", lambda: types.SimpleNamespace(id = "sam3.1")
+    )
+    det.detect([_scene()], det.DetailerSettings())
+    # A queued render cannot take the slot until SAM 3 is parked.
+    assert held == [("segment", True), ("park", True)] and not lock.locked()
+
+
+def test_detection_waiting_for_the_slot_honours_stop(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_engine_router as router
+    from core.inference import diffusion_segment
+
+    lock = threading.Lock()
+    lock.acquire()  # a queued render denoises
+    monkeypatch.setattr(
+        router, "get_active_diffusion_engine", lambda: types.SimpleNamespace(_generate_lock = lock)
+    )
+    monkeypatch.setattr(
+        diffusion_segment, "get_segmenter", lambda: pytest.fail("SAM 3 loaded beside a render")
+    )
+    with pytest.raises(det.DetailerCancelled):
+        det.detect([_scene()], det.DetailerSettings(), stop = lambda: True)
+    lock.release()
 
 
 def test_detections_beyond_the_cap_are_dropped():

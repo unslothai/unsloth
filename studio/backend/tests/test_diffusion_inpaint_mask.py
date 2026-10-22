@@ -276,7 +276,13 @@ def test_status_flag_false_when_nothing_loaded():
 
 
 @pytest.mark.parametrize(
-    "field", [{"mask_blur": 4}, {"inpaint_only_masked": True}, {"inpaint_padding": 48}]
+    "field",
+    [
+        {"mask_blur": 4},
+        {"inpaint_only_masked": True},
+        {"inpaint_padding": 48},
+        {"detailer": {"targets": "face"}},
+    ],
 )
 def test_external_connection_refuses_inpaint_mask_fields(client, monkeypatch, field):
     import routes.inference as inference_routes

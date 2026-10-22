@@ -70,6 +70,18 @@ test("changed options are sent, bounded to the request schema", () => {
   });
 });
 
+test("a recipe's non-default guide_size_for and drop_size survive restore and are sent again", () => {
+  const restored = restoredDetailer({ detailer: { ...record, guide_size_for: "crop_region", drop_size: 32 } });
+  assert.equal(restored.options.guideSizeFor, "crop_region");
+  assert.equal(restored.options.dropSize, 32);
+  const field = detailerRequestField(true, true, { ...DETAILER_DEFAULTS, ...restored.options });
+  assert.equal(field.detailer?.guide_size_for, "crop_region");
+  assert.equal(field.detailer?.drop_size, 32);
+  // A record without them restores FaceDetailer's defaults, never a stale stored value.
+  const plain = restoredDetailer({ detailer: { targets: "face" } });
+  assert.deepEqual([plain.options.guideSizeFor, plain.options.dropSize], ["bbox", 10]);
+});
+
 test("the frontend defaults are the backend's", () => {
   const source = readFileSync(
     new URL("../../backend/core/inference/diffusion_detailer.py", import.meta.url),
@@ -83,6 +95,8 @@ test("the frontend defaults are the backend's", () => {
   assert.equal(constant("DEFAULT_MAX_SIZE"), DETAILER_DEFAULTS.maxSize);
   assert.equal(constant("DEFAULT_DILATION"), DETAILER_DEFAULTS.dilation);
   assert.equal(constant("DEFAULT_FEATHER"), DETAILER_DEFAULTS.feather);
+  assert.equal(constant("DEFAULT_DROP_SIZE"), DETAILER_DEFAULTS.dropSize);
+  assert.match(source, new RegExp(`^DEFAULT_GUIDE_SIZE_FOR = "${DETAILER_DEFAULTS.guideSizeFor}"`, "m"));
 });
 
 const record = {
@@ -116,6 +130,8 @@ test("a gallery record restores the pass and turns the switch on; one without tu
     maxSize: 1024,
     dilation: 10,
     feather: 5,
+    dropSize: 10,
+    guideSizeFor: "bbox",
     steps: 12,
     negativePrompt: "",
     guidance: null,

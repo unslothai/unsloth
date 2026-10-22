@@ -226,6 +226,16 @@ export function DetailerField({
           />
           <ParamSlider
             inline={true}
+            label="Drop size"
+            info="Faces whose box is this many pixels or fewer on a side are left alone."
+            value={options.dropSize}
+            min={1}
+            max={128}
+            step={1}
+            onChange={(v) => set("dropSize", v)}
+          />
+          <ParamSlider
+            inline={true}
             label="Confidence"
             info="SAM 3 score a face needs to be fixed."
             value={options.confidence}
