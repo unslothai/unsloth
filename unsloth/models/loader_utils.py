@@ -2049,7 +2049,7 @@ def _drop_fp8_dequantize_conversions(model):
         return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
 
     plain = None
-    kept, changed = [], 0
+    kept, kept_ids, changed = [], set(), 0
     for conversion in conversions:
         operations = getattr(conversion, "operations", None) or []
         if not any(isinstance(op, Fp8Dequantize) for op in operations):
@@ -2066,22 +2066,27 @@ def _drop_fp8_dequantize_conversions(model):
                 plain = get_model_conversion_mapping(model, None, None)
             except Exception:
                 plain = []
-        match = next(
-            (
-                c
-                for c in plain
-                if type(c) is type(conversion) and _targets(c) == _targets(conversion)
-            ),
-            None,
-        )
-        if match is None:
+        # A composite model scopes one converter per submodel; the dequantizing copy can lose its
+        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart.
+        scope = getattr(conversion, "scope_prefix", None)
+        matches = [
+            c
+            for c in plain
+            if type(c) is type(conversion)
+            and _targets(c) == _targets(conversion)
+            and (scope is None or getattr(c, "scope_prefix", None) == scope)
+        ]
+        if not matches:
             print(
                 "Unsloth: an fp8 load conversion has no 16bit counterpart; save_pretrained may write fp8 "
                 f"weights for {list(_targets(conversion))}."
             )
             kept.append(conversion)
             continue
-        kept.append(match)
+        for match in matches:
+            if id(match) not in kept_ids:
+                kept_ids.add(id(match))
+                kept.append(match)
         changed += 1
     if changed:
         model._weight_conversions = kept
