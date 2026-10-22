@@ -839,7 +839,6 @@ def test_gate_up_shorthand_with_down_proj_reaches_split_gate_and_up_experts(leav
     assert _expert_counts(names, widened) == {"gate_proj": 8, "up_proj": 8, "down_proj": 8}
     assert "gate_proj" in found and "up_proj" in found
     assert "model.layers.0.mlp.gate" not in {n for n in names if re.fullmatch(widened, n)}
-    # Already widened: nothing left to add, so the regex is kept as is.
     kept, _, found = U.widen_target_regex_to_expert_submodules(
         model, widened, leaves, auto_regex = True, explicit_leaves = True
     )

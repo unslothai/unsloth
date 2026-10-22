@@ -10356,8 +10356,7 @@ def widen_target_regex_to_expert_submodules(
     if not leaves:
         return target_modules, detect_targets, []
     expert_regex = moe_expert_submodule_regex(leaves, parents)
-    # Skip only when every eligible expert already matches: Zoo can reach experts.<i>.down_proj
-    # alone, and gate_up_proj + down_proj must still add the split gate_proj / up_proj.
+    # Skip only if every expert matches: Zoo may reach down_proj alone, gate_proj / up_proj still need adding.
     eligible = [name for name, _ in model.named_modules() if re.fullmatch(expert_regex, name)]
     if eligible and all(re.fullmatch(target_modules, name) for name in eligible):
         return target_modules, detect_targets, []
