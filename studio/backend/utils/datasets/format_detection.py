@@ -975,7 +975,8 @@ def detect_vlm_dataset_structure(dataset):
             return True
 
         if not sample_value.startswith(("http://", "https://")):
-            return os.path.exists(sample_value)
+            from .remote_images import is_network_share
+            return not is_network_share(sample_value) and os.path.exists(sample_value)
 
         try:
             import time

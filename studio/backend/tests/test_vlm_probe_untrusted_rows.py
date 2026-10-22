@@ -68,3 +68,19 @@ def test_public_image_urls_go_through_the_guarded_fetch(monkeypatch):
         ("https://example.com/bad.png", "HEAD"),
         ("https://example.com/good.png", "HEAD"),
     ]
+
+
+def test_network_share_paths_are_not_probed(monkeypatch):
+    import os
+
+    def no_touch(*args, **kwargs):
+        raise AssertionError(f"probed {args[:1]}")
+
+    monkeypatch.setattr(os.path, "exists", no_touch)
+    row = {
+        "image": "\\\\attacker\\share\\a.png",
+        "photo": "//attacker/share/b.png",
+        "caption": "a cat",
+    }
+
+    detect_vlm_dataset_structure([row])

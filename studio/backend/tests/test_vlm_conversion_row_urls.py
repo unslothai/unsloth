@@ -344,3 +344,20 @@ def test_network_share_paths_are_refused(monkeypatch, path):
 def test_local_and_hub_paths_still_reach_datasets(monkeypatch, path):
     with pytest.raises(AssertionError, match = "reached"):
         _decode_without_io(monkeypatch, path)
+
+
+def test_string_rows_naming_a_network_share_never_touch_it(monkeypatch):
+    import PIL.Image
+
+    from utils.datasets import format_conversion
+
+    def no_touch(*args, **kwargs):
+        raise AssertionError(f"touched {args[:1]}")
+
+    monkeypatch.setattr(PIL.Image, "open", no_touch)
+    monkeypatch.setattr(format_conversion.os.path, "exists", no_touch)
+    ds = Dataset.from_list([{"image": "\\\\attacker\\share\\a.png", "caption": "x"}])
+
+    with pytest.raises((OSError, ValueError)) as err:
+        convert_to_vlm_format(ds, instruction = "Describe.", text_column = "caption")
+    assert "touched" not in str(err.value)

@@ -7,7 +7,7 @@ import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
-from .remote_images import fetch_untrusted_image_bytes
+from .remote_images import fetch_untrusted_image_bytes, is_network_share
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +28,8 @@ def _own_image_path(path, account):
     from utils.account_context import run_as
     from utils.security.dataset_media import require_readable_media
 
+    if isinstance(path, str) and is_network_share(path):
+        raise OSError(f"Refusing an image path on a network share: {path}")
     run_as(account, require_readable_media, path)
     return path
 
@@ -513,6 +515,7 @@ def convert_to_vlm_format(
     if (
         not has_urls
         and isinstance(first_image, str)
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -780,6 +783,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     if (
         isinstance(first_image, str)
         and not first_image.startswith(("http://", "https://"))
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):

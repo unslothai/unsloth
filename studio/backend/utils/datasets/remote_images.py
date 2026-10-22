@@ -35,7 +35,7 @@ def _scheme(url):
     return url.split("://", 1)[0].lower() if "://" in url else ""
 
 
-def _is_network_share(path):
+def is_network_share(path):
     """UNC and network ``file:`` paths: Windows would open an SMB connection to the host."""
     p = path.replace("\\", "/")
     if p[:5].lower() == "file:":
@@ -98,7 +98,7 @@ def install_guarded_image_decode():
             # fsspec opens every hop of a chained path, so each one is checked.
             hops = path.split("::")
             for hop in hops:
-                if _is_network_share(hop):
+                if is_network_share(hop):
                     raise OSError(f"Refusing an image path on a network share: {path}")
                 if _scheme(hop) not in _DATASETS_OWN_SCHEMES:
                     # ftp://, sftp://, smb:// ... would reach fsspec with no address checks.
