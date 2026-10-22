@@ -859,6 +859,59 @@ class TestListing:
         with gv._lookup_arch_lock:
             assert ("arch", "o/late", "fp") not in gv._lookup_inflight
 
+    def test_work_the_deadline_drops_never_runs_if_a_worker_reaches_it_late(self, monkeypatch):
+        """A worker can pick up queued work before the cancel reaches the executor; run the
+        captured calls after the deadline, as that worker would, and nothing reads the Hub."""
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        captured = []
+        reads = []
+
+        async def queued(fn, *args):
+            captured.append((fn, args))
+            await asyncio.sleep(10)
+
+        def read(
+            repo,
+            name,
+            token,
+            identity = None,
+            **k,
+        ):
+            reads.append(name)
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        monkeypatch.setattr(gv, "_lookup_thread", queued)
+        monkeypatch.setattr(gv, "_LOOKUP_DEADLINE_S", 0.1)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(glt, "remote_lookup_info", read)
+        rows = [
+            GgufVariantDetail(filename = f"q{i}/m.gguf", quant = f"Q{i}", size_bytes = 40 * GIB + i)
+            for i in range(3)
+        ]
+
+        async def main():
+            await gv._with_lookup_tables(
+                _answer(rows),
+                "o/late",
+                hf_token = None,
+                offline = False,
+                prefer_local_cache = False,
+            )
+            loop = asyncio.get_running_loop()
+            got = await gv._lookup_await_once(
+                ("arch", "o/late", "fp"), loop.time() + 0.1, read, "o/late", "arch", None
+            )
+            return got
+
+        assert asyncio.run(main()) is None
+        assert len(captured) == 4
+        for fn, args in captured:
+            fn(*args)
+        assert reads == []
+
     def test_a_capability_read_never_falls_back_to_a_torch_context(self, monkeypatch):
         from core.inference import llama_cpp as lc
 

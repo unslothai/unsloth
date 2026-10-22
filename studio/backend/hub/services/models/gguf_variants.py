@@ -1399,11 +1399,14 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
         _lookup_inflight.add(key)
 
     started: list = []
+    # Set at the deadline: a worker that frees up as the cancel is still propagating to
+    # the executor sees it and skips the call instead of starting it late.
+    expired = threading.Event()
 
     def _run():
         started.append(True)
         try:
-            return fn(*args)
+            return None if expired.is_set() else fn(*args)
         finally:
             with _lookup_arch_lock:
                 _lookup_inflight.discard(key)
@@ -1416,6 +1419,7 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
     if task not in done:
         # Unstarted, it is dropped (key released) rather than left in the shared queue;
         # started, it keeps running and lands in the cache.
+        expired.set()
         task.cancel()
         return None
     if task.cancelled() or task.exception() is not None:
@@ -1618,6 +1622,7 @@ async def _with_lookup_tables(
                         )
                 if lazy_architecture(arch):
                     _fingerprint = hf_cache_scan.token_fingerprint(hf_token)
+                    expired = threading.Event()
                     tasks = {}
                     for index, v in unresolved:
                         identity = int(v.size_bytes or 0)
@@ -1647,6 +1652,10 @@ async def _with_lookup_tables(
                         ):
                             ran.append(True)
                             try:
+                                # Past the deadline: skipped, as the cancel may not have
+                                # reached the executor before a worker freed up.
+                                if expired.is_set():
+                                    return 0
                                 return _remote_lookup_bytes(repo_id, name, hf_token, ident, mode)
                             finally:
                                 with _lookup_arch_lock:
@@ -1665,6 +1674,7 @@ async def _with_lookup_tables(
                             tasks,
                             timeout = max(0.0, deadline - asyncio.get_running_loop().time()),
                         )
+                        expired.set()
                         for task in pending:
                             task.cancel()
                         for task in done:
