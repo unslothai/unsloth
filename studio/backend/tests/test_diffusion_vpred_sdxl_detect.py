@@ -508,3 +508,84 @@ def test_a_transformer_family_index_is_not_evidence_for_an_unnamed_pick(hub_cach
         "someone/neutral-pipe", "model_index.json", payload = {"_class_name": "FluxPipeline"}
     )
     assert detect_family_for_pick("someone/neutral-pipe") is None
+
+
+# ---- review round 3 ----------------------------------------------------------------------------
+
+
+def test_the_anonymous_token_sentinel_reaches_every_hub_call(hub_cache, monkeypatch):
+    import huggingface_hub
+
+    seen = []
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        seen.append(("header", token))
+        raise OSError("not a safetensors")
+
+    def size(
+        url,
+        token = None,
+        **kw,
+    ):
+        seen.append(("size", token))
+        return types.SimpleNamespace(size = 400)
+
+    def download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        **kw,
+    ):
+        seen.append(("download", token))
+        return str(hub_cache.put(repo_id, filename, payload = SDXL_INDEX))
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", size)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, False)
+    assert seen == [("header", False), ("size", False), ("download", False)]
+
+
+def test_a_positive_verdict_is_reread_when_the_hub_file_changes(hub_cache, monkeypatch):
+    calls = _stub_header(monkeypatch, [SDXL_UNET_KEYS, SD15_UNET_KEYS])
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+    # The repo replaced the SDXL checkpoint with an SD 1.5 one: the next request must see it.
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    assert len(calls) == 2
+    assert detect_family_for_pick(NOOB, NOOB_FILE) is None
+
+
+def test_a_cached_copy_is_rechecked_against_the_current_hub_header(hub_cache, monkeypatch):
+    hub_cache.put(NOOB, NOOB_FILE, keys = SDXL_UNET_KEYS)
+    assert _name(detect_family_for_pick(NOOB, NOOB_FILE)) == "sdxl"
+    calls = _stub_header(monkeypatch, [SD15_UNET_KEYS])
+    evidence.prefetch_for_pick(NOOB, NOOB_FILE, None, None)
+    assert len(calls) == 1
+    assert detect_family_for_pick(NOOB, NOOB_FILE) is None
+
+
+def test_a_named_pick_never_reads_hub_evidence(hub_cache, monkeypatch):
+    calls = _stub_header(monkeypatch, [SDXL_UNET_KEYS])
+    evidence.prefetch_for_pick("someone/my-sdxl-ft", "model.safetensors", None, None)
+    assert calls == []
+
+
+def test_root_single_file_extensions_match_case_insensitively(tmp_path):
+    root = _pipeline_dir(
+        tmp_path,
+        NOOB_SCHEDULER,
+        {"NOOBAI-XL-VPRED.SAFETENSORS": SDXL_UNET_KEYS + ["v_pred", "ztsnr"]},
+    )
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(root)) == {
+        "prediction_type": "v_prediction",
+        "rescale_betas_zero_snr": True,
+        "timestep_spacing": "trailing",
+    }

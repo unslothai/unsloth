@@ -138,18 +138,19 @@ def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Opt
     """The family a Hub pick's own files declare, from disk only; None when nothing is known.
 
     The picked checkpoint outranks the repo index: a header that was read and names no family
-    (an SD 1.5 UNet, a LoRA) answers None even beside an SDXL index."""
+    (an SD 1.5 UNet, a LoRA) answers None even beside an SDXL index. A header this request read off
+    the Hub outranks a cached copy, which may be an older revision of the file the load will fetch."""
     if not is_hub_id(repo_id) or not _applies(filename):
         return None
     repo_id = str(repo_id).strip()
     if filename:
+        known, family = _verdict(_key(repo_id, filename))
+        if known:
+            return family
         local = _cached_file(repo_id, filename)
         if local:
             from .diffusion_content import inspect_checkpoint
             return _dit_family(inspect_checkpoint(local))
-        known, family = _verdict(_key(repo_id, filename))
-        if known:
-            return family
     if _index_speaks_for(filename):
         index = _cached_file(repo_id, _INDEX)
         if index:
@@ -183,8 +184,10 @@ def fetch_family_evidence(
     if not is_hub_id(repo_id) or not _applies(filename):
         return None
     repo_id = str(repo_id).strip()
-    token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
-    if filename and _cached_file(repo_id, filename) is None:
+    # Strings are trimmed, but ``False`` (a managed account with no token of its own: anonymous) must stay False;
+    # None would let huggingface_hub fall back to the installation's ambient token.
+    token = (hf_token.strip() or None) if isinstance(hf_token, str) else hf_token
+    if filename:
         key = _key(repo_id, filename)
         _forget(key)
         try:
@@ -234,8 +237,14 @@ def prefetch_for_pick(
     if not allow_network or family_override or not is_hub_id(repo_id) or not _applies(filename):
         return
     try:
-        from .diffusion_families import detect_family_for_pick
-        if detect_family_for_pick(str(repo_id), filename, None) is not None:
+        from .diffusion_families import _family_from_hub_evidence, detect_family_for_pick
+
+        # Skip only when the name, a local path or the content answered. An answer that came from Hub evidence is
+        # re-read below, so a file replaced on the Hub is judged by its current header in either direction.
+        if (
+            detect_family_for_pick(str(repo_id), filename, None) is not None
+            and _family_from_hub_evidence(str(repo_id), filename) is None
+        ):
             return
         fetch_family_evidence(repo_id, filename, hf_token)
     except Exception:  # noqa: BLE001 - evidence is best effort; validation still decides

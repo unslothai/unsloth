@@ -196,7 +196,7 @@ def _safetensors_top_level_keys(path: str) -> frozenset[str]:
 def checkpoint_prediction_overrides(path: Optional[str]) -> dict[str, Any]:
     """Scheduler overrides a single-file checkpoint asks for through its ``v_pred`` / ``ztsnr`` marker
     tensors (ComfyUI's detection, comfy/supported_models.py SDXL.model_type). Empty when unmarked."""
-    if not path or not str(path).endswith(".safetensors"):
+    if not path or not str(path).lower().endswith(".safetensors"):
         return {}
     try:
         keys = _safetensors_top_level_keys(str(path))
@@ -227,7 +227,9 @@ def pipeline_prediction_overrides(config: Any, root: Optional[str]) -> dict[str,
     try:
         folder = Path(str(root)) if root else None
         singles = (
-            sorted(p for p in folder.glob("*.safetensors") if p.is_file())
+            sorted(
+                p for p in folder.iterdir() if p.suffix.lower() == ".safetensors" and p.is_file()
+            )
             if folder is not None and folder.is_dir()
             else []
         )
