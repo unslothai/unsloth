@@ -1131,7 +1131,6 @@ export function UsageExamples({
               {t("settings.agents.vscodeNote")}
             </span>
           )}
-          {/* The agent buttons already switch the command, so there is no generic swap hint. */}
           {detectedAgents.length > 0 ? (
             <span className="text-ui-11 leading-snug text-muted-foreground">
               {t("settings.apiKeys.codingAgentsDetectedHint", {

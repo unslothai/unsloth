@@ -402,9 +402,8 @@ def _container_network_address(address: str) -> bool:
 
 
 def _veth_addresses(sysfs: str = "/sys/class/net") -> set[str]:
-    """Addresses on a link whose peer is in another namespace: a bridged container's veth eth0. A real NIC's iflink
-    is its own ifindex and a VLAN's is its parent's, both visible here, so host networking keeps a 172.16/12 LAN
-    (Documentation/ABI/testing/sysfs-class-net)."""
+    """Addresses on a link whose peer (iflink) is outside this namespace: a bridged container's veth. A NIC or VLAN
+    links to an index visible here, so host networking keeps a 172.16/12 LAN (kernel ABI sysfs-class-net)."""
 
     def read(name: str, attr: str) -> str:
         with open(f"{sysfs}/{name}/{attr}") as handle:
