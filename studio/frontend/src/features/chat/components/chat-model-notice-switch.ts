@@ -81,7 +81,11 @@ export function chatModelLoadedTarget(
 ): ChatModelSwitchTarget | null {
   for (const slot of loadedModels) {
     const checkpoint = slot.checkpoint ?? slot.id;
-    if (!sameHfCacheIdentity(checkpoint, createdModel.modelId)) {
+    // undefined = the slot's quant is still being looked up: wait for it rather than guess.
+    if (
+      slot.quant === undefined ||
+      !sameHfCacheIdentity(checkpoint, createdModel.modelId)
+    ) {
       continue;
     }
     if (createdModel.ggufVariant != null) {

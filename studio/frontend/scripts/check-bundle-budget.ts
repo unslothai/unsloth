@@ -370,10 +370,10 @@ export const BUDGET = {
   // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
   // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
-  // adopt-only pick in the chat runtime, +1,487 B raw / +559 B transfer (6,891,248 -> 6,892,735 B raw,
-  // 2,076,155 -> 2,076,714 B transfer against 458190c9b, Node 24, 98 chunks). Raised by that.
-  transferBytes: 2_076_752,
-  rawBytes: 6_892_811,
+  // adopt-only pick in the chat runtime, +1,543 B raw / +581 B transfer (6,891,248 -> 6,892,791 B raw,
+  // 2,076,155 -> 2,076,736 B transfer against 458190c9b, Node 24, 98 chunks). Raised by that.
+  transferBytes: 2_076_774,
+  rawBytes: 6_892_867,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

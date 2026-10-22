@@ -1379,8 +1379,9 @@ export function useChatModelRuntime() {
       let hfToken = useChatRuntimeStore.getState().hfToken || null;
       // Credential prompts must complete before cancelling a pending run: a decline must not
       // strand the resident that run already unloaded while preparing its own Hub load.
+      // An adopt-only pick downloads nothing, so it never opens the token prompt.
       const mayReachHub =
-        !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
+        !adoptOnly && !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
       if (mayReachHub) {
         const preparedToken = await prepareHfTokenForUse(hfToken);
         if (!preparedToken.proceed) {

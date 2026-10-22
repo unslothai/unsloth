@@ -144,6 +144,14 @@ test("a chat is not switched to a loaded slot that would need another load", () 
     ),
     null,
   );
+  // Nor a chat saved without a variant: the slot may serve another quant until its lookup lands.
+  assert.equal(
+    chatModelLoadedTarget(
+      { modelId: "unsloth/Model-A-GGUF" },
+      [{ id: "unsloth/Model-A-GGUF", checkpoint: "unsloth/Model-A-GGUF" }],
+    ),
+    null,
+  );
   assert.equal(
     chatModelLoadedTarget({ modelId: "unsloth/Model-C" }, slots),
     null,
@@ -233,6 +241,16 @@ test("the automatic switch only adopts a slot, it never reaches /load", () => {
       select.indexOf("const loadIntentId = ++modelSelectionIntentEpoch;"),
   );
   assert.match(select, /if \(adoptOnly && \(inFlightLoad \|\| activeRun\)\) \{\s*restorePreviousConfig\(\);\s*return;/);
+  // Downloads nothing, so it never opens the Hub token prompt.
+  assert.match(select, /const mayReachHub =\s*!adoptOnly &&/);
+  // NPU picks always reach /load, and an external pick is never a loaded slot.
+  assert.match(
+    page,
+    /if \(meta\?\.adoptOnly && \(isNpuModelId\(value\) \|\| isExternalModelId\(value\)\)\) \{\s*return;\s*\}/,
+  );
+  assert.ok(
+    page.indexOf("if (meta?.adoptOnly && (isNpuModelId(value)") < page.indexOf("void loadNpuModel(value"),
+  );
   assert.ok(
     select.indexOf("if (adoptOnly && (inFlightLoad || activeRun))") <
       select.indexOf("await cancelLoadRun(activeRun, true)"),

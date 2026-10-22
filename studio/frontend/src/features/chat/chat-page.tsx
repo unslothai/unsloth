@@ -3856,6 +3856,10 @@ export function ChatPage({
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
+      // NPU picks have no adopt path: loadNpuModel always reaches /load.
+      if (meta?.adoptOnly && (isNpuModelId(value) || isExternalModelId(value))) {
+        return;
+      }
       setPendingHubAutoLoad(null);
       const isExternalSelection =
         meta?.source === "external" || isExternalModelId(value);
