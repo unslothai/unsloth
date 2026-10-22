@@ -374,8 +374,11 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
-  transferBytes: 2_076_895,
-  rawBytes: 6_893_216,
+  // Browser use step names in the agent bar (#14681): the step strings in the eager en locale, the executor's step
+  // bookkeeping and the tool card's fence strip: +941 B raw / +386 B transfer (6,893,056 -> 6,893,997 B raw,
+  // 2,076,713 -> 2,077,099 B transfer against b4f3e06940, Node 26, one machine and build). Raised by that.
+  transferBytes: 2_077_281,
+  rawBytes: 6_894_157,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
