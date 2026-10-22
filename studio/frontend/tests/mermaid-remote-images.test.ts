@@ -88,6 +88,8 @@ test("a style statement after a semicolon cannot fetch either", () => {
     [`stateDiagram-v2\n  [*] --> A\tclassDef x mask:${url}\n  class A x`, "stateDiagram-v2\n  [*] --> A\t\n  class A x"],
     // A statement after a label that mentions the word is still caught.
     [`stateDiagram-v2\n  state "a style x" as A\n  A --> B classDef x fill:${url}`, 'stateDiagram-v2\n  state "a style x" as A\n  A --> B '],
+    // The diagram type is read after a directive on the same line.
+    [`%%{init: {}}%%stateDiagram-v2\n  A --> B classDef x fill:${url}\n  class B x`, "%%{init: {}}%%stateDiagram-v2\n  A --> B \n  class B x"],
     // State ids may hold brackets; they are not labels there.
     [`stateDiagram-v2\n  A( --> B classDef x fill:${url}\n  class B x`, "stateDiagram-v2\n  A( --> B \n  class B x"],
   ]) {

@@ -147,7 +147,8 @@ export function stripRemoteDiagramImages(source: string): string {
   }
   out += source.slice(at);
   if (SEQUENCE.test(scanned)) out = out.replace(DETAILS_LINE, "");
-  const midLine = MIDLINE_STYLE.test(scanned);
+  // Mermaid reads the diagram type after dropping directives: `%%{init}%%stateDiagram` counts.
+  const midLine = MIDLINE_STYLE.test(scanned.replace(DIRECTIVE, ""));
   return out
     .replace(DIRECTIVE, (block) => (STYLE_FETCH.test(block) ? "" : block))
     .replace(FRONT_MATTER, (block) => (STYLE_FETCH.test(block) ? "" : block))
