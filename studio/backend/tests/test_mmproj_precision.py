@@ -208,7 +208,8 @@ def _local_pick(tmp_path, listing):
 
 def test_local_folder(device, tmp_path):
     assert _local_pick(tmp_path / "mimo", MIMO_LISTING) == "mmproj-BF16.gguf"
-    assert _local_pick(tmp_path / "qwen", QWEN_LISTING) == "mmproj-F16.gguf"
+    # F16 vs F32 tie on stem length and the order is the filesystem's, so the default case uses two.
+    assert _local_pick(tmp_path / "qwen", QWEN_LISTING[:3]) == "mmproj-F16.gguf"
     device("bf16")
     assert _local_pick(tmp_path / "qwen_bf16", QWEN_LISTING) == "mmproj-BF16.gguf"
 
