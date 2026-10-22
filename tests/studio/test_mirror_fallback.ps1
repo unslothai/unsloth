@@ -214,10 +214,16 @@ try {
     foreach ($v in 'UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY') {
         Run @{ astral = 'blocked' } @{ $v = $proj }; Check "$v points discovery at a project whose uv.toml has a Python mirror" (-not $env:UV_PYTHON_INSTALL_MIRROR)
     }
+    $other = Join-Path $home_ 'other'; New-Item -ItemType Directory -Force -Path $other | Out-Null
+    Push-Location $home_
+    try {
+        Run @{ astral = 'blocked' } @{ UV_PROJECT = 'proj'; UV_WORKING_DIR = $other }; Check "a relative UV_PROJECT resolves from where uv runs, not from UV_WORKING_DIR" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    } finally { Pop-Location }
     Run @{ astral = 'blocked' }; Check "without it, that project's uv.toml is not in scope" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pythonMirror)
     Set-Content -Path (Join-Path $env:APPDATA 'uv/uv.toml') -Value 'python-install-mirror = "https://corp.example/pbs"'
     Set-Content -Path $customUv -Value 'python-install-mirror = "https://corp.example/pbs"'
     Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = $customUv }; Check "a Python mirror in UV_CONFIG_FILE is kept" (-not $env:UV_PYTHON_INSTALL_MIRROR)
+    Run @{ astral = 'blocked' } @{ UV_CONFIG_FILE = $customUv; UV_NO_CONFIG = '1' }; Check "UV_CONFIG_FILE is still read with UV_NO_CONFIG" (-not $env:UV_PYTHON_INSTALL_MIRROR)
     Remove-Item -LiteralPath (Join-Path $env:APPDATA 'uv/uv.toml')
     $uvDown = "error: Failed to fetch: ``https://pypi.org/simple/numpy/```n  Caused by: error sending request for url (https://pypi.org/simple/numpy/)"
     $torchDown = "error: Failed to fetch: ``https://download.pytorch.org/whl/cu128/torch/```n  Caused by: operation timed out"
