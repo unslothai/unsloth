@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+from types import SimpleNamespace
 import weakref
 
 from core.inference import llama_cpp as llama_mod
@@ -183,3 +184,87 @@ class TestTheRetryPricesItsOwnWeights:
             window = source[spawn - 900 : spawn]
             assert "_drop_exact_for_no_flash(env, _exact_setting)" in window
             assert "_bound_parking_off_exact(_fa_cmd)" in window, label
+
+
+class _CpuPlacedBackend(_Backend):
+    """Prices a GPU launch's 12 GiB model into 16 GiB of VRAM, a CPU-placed one onto the host."""
+
+    def _planned_host_weights_mib(self, cmd, detected_gpus, env = None, **kwargs) -> int:
+        return 12 * 1024 if kwargs.get("child_has_no_gpu") else 0
+
+
+class TestACpuReplayIsPricedOnTheHost:
+    def test_the_vulkan_cpu_replay_charges_its_weights_and_rebounds_the_budget(self, host):
+        launched = llama_mod._host_bounded_parking_mib(40_000, None)
+        backend = _CpuPlacedBackend(planned_mib = 0)
+        backend._parking_reserving_mib = launched
+        reserved = [0]
+        replay = ["llama-server", "--kv-unified", "--preempt-ram", str(launched)]
+        replay += ["--gpu-layers", "0", "--fit", "off", "--device", "none"]
+        _spawned(backend, budget = launched, exact_wanted = False, reserved = reserved)(replay)
+        assert reserved == [12 * 1024], "the CPU replay kept the GPU launch's zero host weights"
+        bounded = llama_mod._host_bounded_parking_mib(launched, backend, 12 * 1024)
+        assert bounded < launched
+        assert replay[replay.index("--preempt-ram") + 1] == str(bounded), replay
+        assert backend._parking_reserving_mib == bounded + 12 * 1024
+
+    def test_a_gpu_launch_is_left_as_priced(self, host):
+        backend = _CpuPlacedBackend(planned_mib = 0)
+        reserved = [0]
+        cmd = ["llama-server", "--kv-unified", "--preempt-ram", "25000"]
+        _spawned(backend, budget = 25_000, exact_wanted = False, reserved = reserved)(cmd)
+        assert reserved == [0] and cmd[-1] == "25000"
+
+
+def _lift_mtp_rejudge(namespace: dict):
+    """The post-launch block that judges exact parking again once the drafter dropped."""
+    tree = ast.parse(textwrap.dedent(_load_source()))
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for i, stmt in enumerate(body):
+            if isinstance(stmt, ast.Assign) and ast.unparse(stmt) == (
+                "_exact_short = getattr(self, '_exact_parking_short', None)"
+            ):
+                end = next(
+                    j
+                    for j in range(i + 1, len(body))
+                    if "_exact_pool_unknown" in ast.unparse(getattr(body[j], "test", ast.Pass()))
+                )
+                module = ast.Module(body = body[i:end], type_ignores = [])
+                return lambda: exec(compile(module, "<load_model>", "exec"), namespace)
+    raise AssertionError("the post-launch parking judgement is gone from load_model")
+
+
+class TestARestoredSlotCountIsJudgedAgain:
+    def test_the_drafterless_retry_restoring_slots_is_a_shortfall(self):
+        # A 4 GiB target pool and 1 GiB of draft at 2 slots name (5120 + 64) * 2 = 10368 MiB,
+        # which held; the drafterless retry restored 4 slots, needing (4096 + 64) * 4.
+        gib = 1024 * 1024 * 1024
+        named = llama_mod._exact_parking_need_mib(4 * gib, draft_bytes = gib, parallel = 2)
+        assert named == 10_368
+        backend = SimpleNamespace(
+            _exact_parking_short = None,
+            _exact_parking_writes = named,
+            _exact_host_short = None,
+            _record_load_warning = lambda msg: None,
+        )
+        namespace = dict(vars(llama_mod))
+        namespace.update(
+            self = backend,
+            _mtp_will_engage = True,
+            _mtp_active_for_launched_server = False,
+            _exact_kv_bytes = 4 * gib,
+            _kv_bytes = lambda ctx: 4 * gib,
+            effective_ctx = 32768,
+            n_parallel = 4,
+            _last_spawn_cmd = ["llama-server", "--kv-unified", "--preempt-ram", str(named)],
+            cmd = ["llama-server"],
+            env = {},
+            extra_args = None,
+            _exact_host_free_mib = lambda _backend: 100_000,
+        )
+        _lift_mtp_rejudge(namespace)()
+        assert namespace["_exact_short"] == (named, 4096, 16_640)
+        assert backend._exact_parking_short == (named, 4096, 16_640)

@@ -34299,13 +34299,27 @@ class LlamaCppBackend:
                     """Price the weights a spawn leaves in host RAM off ITS argv: a retry re-places
                     them (CPU replay, arch fallback, no-flash fit, projector on CPU), and a peer
                     certifying exact parks reads the reservation, not the launch it replaced."""
+                    # A CPU replay runs --device none: no VRAM credit, the whole model on the host.
                     _planned = self._planned_host_weights_mib(
                         launch_cmd,
                         _reachable_gpus,
                         env,
-                        child_has_no_gpu = _child_has_no_gpu,
+                        child_has_no_gpu = (
+                            _child_has_no_gpu or _device_selection_is_cpu(launch_cmd, env)
+                        ),
                         shared_gpu_ids = _shared_gpu_ids,
                     )
+                    if (
+                        not _parking_bound.get("named")
+                        and _planned
+                        and _exact_budget is not None
+                        and not _exact_wanted
+                        and _named_preempt_ram_mib(launch_cmd, {}) == _exact_budget
+                    ):
+                        # Bounded for a launch that left nothing on the host; this one does.
+                        _parking_bound.update(
+                            required = _exact_budget, named = _exact_budget, weights = 0
+                        )
                     if (
                         _parking_bound.get("named")
                         and _planned != _parking_bound["weights"]
@@ -36315,12 +36329,18 @@ class LlamaCppBackend:
                 _preemption.note_server_parking(self._server_preempts_kv and kv_cache_unified, self)
                 self._requested_exact_concurrency = _exact_setting
                 _exact_short = getattr(self, "_exact_parking_short", None)
-                if (
+                # The drafterless retry can restore the slots (and context) the drafter cut.
+                _exact_repriced = (
                     _mtp_will_engage
                     and not _mtp_active_for_launched_server
                     and getattr(self, "_exact_parking_writes", None) is not None
                     and _exact_kv_bytes > 0
-                ):
+                )
+                if _exact_repriced:
+                    try:
+                        _exact_kv_bytes = int(_kv_bytes(effective_ctx) or 0) or _exact_kv_bytes
+                    except Exception:
+                        pass
                     _writes = _exact_parking_need_mib(_exact_kv_bytes, parallel = n_parallel)
                     _cap = _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
                     if _cap is not None and _cap >= 0:
@@ -36339,13 +36359,11 @@ class LlamaCppBackend:
                     if _exact_host_short is not None:
                         self._exact_host_short = _exact_host_short
                         self._record_load_warning(_exact_host_short_warning(_exact_host_short))
-                if (
-                    _exact_short is not None
-                    and _mtp_will_engage
-                    and not _mtp_active_for_launched_server
+                if (_exact_short is not None or _exact_repriced) and (
+                    _mtp_will_engage and not _mtp_active_for_launched_server
                 ):
                     # Priced with a drafter the server came up without, so judged again for what it
-                    # parks.
+                    # parks, at the slots and context it came up with.
                     try:
                         _exact_short = _exact_parking_shortfall_mib(
                             _exact_kv_bytes,
