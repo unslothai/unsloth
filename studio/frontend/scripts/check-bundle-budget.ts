@@ -385,8 +385,10 @@ export const BUDGET = {
   // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
   // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
-  transferBytes: 2_082_421,
-  rawBytes: 6_912_887,
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
+  transferBytes: 2_084_696,
+  rawBytes: 6_920_821,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
