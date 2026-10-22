@@ -5515,7 +5515,8 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
         replan_calls.append(True)
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            # above the capacity margin, 0.85 * (183,359 - 4,096 capped reserve) = 152,373
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
@@ -5562,7 +5563,7 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
             return dataclasses.replace(real, offload_policy = "model")
         return types.SimpleNamespace(
             offload_policy = "model",
-            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            estimates = {"resident_required_mib": 160_000, "safe_device_budget_mib": 40_000},
             device_memory = types.SimpleNamespace(
                 total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
             ),
