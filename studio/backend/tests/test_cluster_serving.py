@@ -591,6 +591,38 @@ def test_a_worker_cancelled_while_starting_is_stopped(monkeypatch):
     assert cs.state().workers == {}
 
 
+def test_a_worker_start_cancelled_mid_plan_restores_the_served_split(monkeypatch):
+    """Regression: a cancel during worker startup left in_flight set and the served plan and block cleared."""
+    _serve(monkeypatch)
+    state = cs.state()
+    served = (state.topology, state.plan, list(state.block))
+    assert served[0] == "layer_split" and served[2]
+    monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: "/b/ggml-rpc-server")
+
+    async def fake_ssh(target, remote, **kw):
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    async def fake_start(self):
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def fake_stop(self, timeout = 10.0):
+        self.proc = SimpleNamespace(returncode = 0)
+
+    async def cancelled_while_waiting(process, host, port, timeout, **kw):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss.PeerProcess, "stop", fake_stop)
+    monkeypatch.setattr(ss, "wait_for_own_port", cancelled_while_waiting)
+    with pytest.raises(asyncio.CancelledError):
+        run(ss.before_load(_request(force_reload = True), 4))
+    assert not state.in_flight and state._pre_load is None
+    assert (state.topology, state.plan, state.block) == served
+
+
 def test_ssh_takes_a_nodes_own_login_and_keeps_the_spark_one(monkeypatch):
     monkeypatch.setattr(ss, "_ssh_user", lambda: "studio")
     assert ss.ssh_argv("10.0.0.2", "true")[-2] == "studio@10.0.0.2"
@@ -2987,10 +3019,63 @@ def test_shares_host_memory_reads_metal_and_the_host_size(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 128 * 1024)
     )
+    monkeypatch.setattr(cs, "_backend_says_integrated", lambda device: None)
     gpu = lambda name, gib: cs.Device(name, name, gib * GIB, gib * GIB)  # noqa: E731
     assert cs._shares_host_memory(gpu("MTL0", 8))
     assert cs._shares_host_memory(gpu("CUDA0", 120))  # a GB10 in a 128 GiB Spark
     assert not cs._shares_host_memory(gpu("CUDA0", 24))  # a discrete card
+
+
+def _fake_cuda(
+    monkeypatch,
+    *,
+    rocm = False,
+    **props,
+):
+    import torch
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    props.setdefault("name", "gpu")
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda ordinal: SimpleNamespace(**props)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda torch: rocm))
+
+
+def test_a_large_discrete_card_in_a_small_host_does_not_share_host_memory(monkeypatch):
+    """Regression: a 24 GiB RTX in a 32 GiB host passed the half-the-host-RAM ratio as unified."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 32 * 1024)
+    )
+    _fake_cuda(monkeypatch, is_integrated = 0, name = "NVIDIA GeForce RTX 4090")
+    rtx = cs.Device("CUDA0", "NVIDIA GeForce RTX 4090", 24 * GIB, 23 * GIB)
+    assert not cs._shares_host_memory(rtx)
+
+
+def test_unified_memory_parts_are_still_detected(monkeypatch):
+    """Detection only widens: a GB10, a Strix Halo and an unclassifiable Vulkan APU stay unified."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_memory_capacity_mib", staticmethod(lambda: 128 * 1024)
+    )
+    _fake_cuda(monkeypatch, is_integrated = 1, name = "NVIDIA GB10")
+    assert cs._shares_host_memory(cs.Device("CUDA0", "NVIDIA GB10", 8 * GIB, 8 * GIB))
+    _fake_cuda(monkeypatch, rocm = True, is_integrated = 0, gcnArchName = "gfx1151")
+    assert cs._shares_host_memory(cs.Device("ROCm0", "Radeon 8060S", 96 * GIB, 96 * GIB))
+    # An old wheel without the field: the backend cannot answer, so the name decides.
+    _fake_cuda(monkeypatch, name = "NVIDIA GB10")
+    assert cs._shares_host_memory(cs.Device("CUDA0", "NVIDIA GB10", 8 * GIB, 8 * GIB))
+    vulkan = cs.Device("Vulkan0", "AMD Radeon 8060S Graphics (RADV GFX1151)", 8 * GIB, 8 * GIB)
+    assert cs._shares_host_memory(vulkan)
+    assert not cs._shares_host_memory(
+        cs.Device("Vulkan0", "AMD Radeon RX 7900 XTX", 24 * GIB, 24 * GIB)
+    )
 
 
 def test_an_unread_hub_projector_listing_keeps_the_load_local(monkeypatch):
@@ -3002,6 +3087,23 @@ def test_an_unread_hub_projector_listing_keeps_the_load_local(monkeypatch):
     request = _request(model_path = "org/vision-GGUF")
     assert run(ss.before_load(request, 4)) is request and seen == []
     assert "cannot be sized" in ss.status()["reason"]
+
+
+def test_a_config_error_reload_with_new_load_settings_does_not_reuse_the_split(monkeypatch):
+    """Regression: the served block was planned for 4 slots; a config-error reload at 2 must not reuse it."""
+    _serve(monkeypatch)
+    block = list(cs.state().block)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 2))
+    state = cs.state()
+    assert state.block == block and state.topology == "layer_split"
+    assert not state.in_flight and state._pre_load is None
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(max_seq_length = 65536), 4))
+    # The settings it was served with still reuse it.
+    out = run(ss.before_load(_request(), 4))
+    assert out.llama_extra_args == block
 
 
 def test_a_config_error_does_not_lend_the_split_to_another_model(monkeypatch):

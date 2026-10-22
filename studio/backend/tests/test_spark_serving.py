@@ -4551,7 +4551,9 @@ def test_the_route_hands_its_reload_gate_to_the_split_teardown(monkeypatch):
         raise HTTPException(status_code = 409, detail = "active generations")
 
     async def _before(request, slots, **k):
-        k["confirm_teardown"]()
+        confirmed = k["confirm_teardown"]()
+        if hasattr(confirmed, "__await__"):
+            await confirmed
         return request
 
     monkeypatch.setattr(ss, "enabled", lambda: True)
@@ -4564,6 +4566,61 @@ def test_the_route_hands_its_reload_gate_to_the_split_teardown(monkeypatch):
     with pytest.raises(HTTPException) as raised:
         run(ri._run_tracked_load_model_impl(request, None, "someone", on_reload_confirmed = _gate))
     assert raised.value.status_code == 409 and gate_calls == [False]
+
+
+def test_a_forced_split_reload_cancels_and_drains_chats_before_the_teardown(
+    cluster, monkeypatch, tmp_path
+):
+    """Regression: force_cancel_active must stop and drain the served chats before detach()."""
+    import routes.inference as ri
+
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    first = ss.state().peer_process
+    events = []
+
+    def _gate(*, cancel):
+        events.append(("gate", cancel, first.alive))
+
+    async def _drain(**k):
+        events.append(("drain", first.alive))
+
+    real_detach = ss.SparkServing.detach
+
+    async def _detach(self):
+        events.append(("detach",))
+        await real_detach(self)
+
+    async def _impl(*a, **k):
+        return {"status": "loaded"}
+
+    async def _after(*a, **k):
+        return False
+
+    monkeypatch.setattr(ss.SparkServing, "detach", _detach)
+    monkeypatch.setattr(ss, "after_load", _after)
+    monkeypatch.setattr(ri, "_load_model_impl", _impl)
+    monkeypatch.setattr(ri, "_wait_for_model_switch_idle", _drain)
+    monkeypatch.setattr(ri, "_spark_inherited_extra_args", lambda request: None)
+    monkeypatch.setattr(ri, "_resolve_parallel_slots", lambda request, fastapi_request: 4)
+    monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(ri.account_access, "require_idle_other_accounts", lambda: None)
+    request = _FakeRequest(str(model), force_reload = True)
+    request.engine, request.load_request_id = "auto", None
+    request.force_cancel_active = True
+    run(ri._run_tracked_load_model_impl(request, None, "someone", on_reload_confirmed = _gate))
+    assert len(started) == 2
+    assert events[:4] == [
+        ("gate", False, True),
+        ("gate", True, True),
+        ("drain", True),
+        ("detach",),
+    ], events
+    run(ss.shutdown())
 
 
 def test_a_load_cancelled_during_the_replica_startup_is_undone_and_refused(monkeypatch):
@@ -4947,3 +5004,18 @@ def test_kv_estimate_prices_hybrid_and_per_layer_kv_like_the_loader(tmp_path):
         },
     )
     assert ss.estimate_kv_bytes(lfm, 262144, "f16") == 22 * 8 * 256 * 4 * 262144
+
+
+def test_an_async_teardown_gate_is_awaited_on_every_cluster_teardown_path():
+    """Regression: the route's gate is async since a forced reload drains there; a sync call drops its 409."""
+    from fastapi import HTTPException
+
+    async def _refuse():
+        raise HTTPException(status_code = 409, detail = "active generations")
+
+    with pytest.raises(HTTPException):
+        run(ss._confirm(_refuse))
+    calls = []
+    run(ss._confirm(lambda: calls.append(1)))
+    run(ss._confirm(None))
+    assert calls == [1]

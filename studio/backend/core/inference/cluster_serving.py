@@ -341,9 +341,58 @@ def _ctx_compute_bytes(
                 pass
 
 
+# Unified-memory parts named by llama.cpp's description, for a backend torch cannot classify (Vulkan, SYCL).
+_UNIFIED_NAME_MARKERS = ("gb10", "jetson", "orin", "thor")
+# Strix Point / Strix Halo / Krackan Point, as core.training.worker._rocm_classify_unified_memory names them.
+_RADEON_APU_MARKERS = ("890m", "880m", "8065s", "8060s", "8050s", "860m", "840m")
+
+
+def _backend_says_integrated(device: Device) -> Optional[bool]:
+    """The driver's integrated flag for a local CUDA / ROCm device; None when it cannot answer."""
+    match = re.fullmatch(r"(?:CUDA|ROCm|HIP)(\d+)", device.name.strip(), re.IGNORECASE)
+    if match is None:
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        ordinal = int(match.group(1))
+        if ordinal >= torch.cuda.device_count():
+            return None
+        props = torch.cuda.get_device_properties(ordinal)
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if LlamaCppBackend._torch_is_rocm(torch):
+            from core.training.worker import _rocm_classify_unified_memory
+            if _rocm_classify_unified_memory(props)[1]:
+                return True
+        elif getattr(props, "is_integrated", False) or getattr(props, "integrated", False):
+            return True
+        if not (hasattr(props, "is_integrated") or hasattr(props, "integrated")):
+            return None  # a wheel without the field says nothing about the hardware
+        return False
+    except Exception:
+        return None
+
+
 def _shares_host_memory(device: Device) -> bool:
-    """Whether a local accelerator's memory is the host RAM pool: Metal, or a device holding >= half the host RAM."""
+    """Whether a local accelerator's memory is the host RAM pool.
+
+    Metal always; a CUDA / ROCm device by the driver's integrated flag (DGX Spark GB10, Jetson,
+    Strix Halo), never by its size, since a 24 GiB card in a 32 GiB host is still discrete. Only
+    a device the backend cannot classify falls back to known names, then to holding >= half the
+    host RAM, so a unified part this cannot name is still treated as one.
+    """
     if device.name.upper().startswith("MTL"):
+        return True
+    said = _backend_says_integrated(device)
+    if said is not None:
+        return said
+    described = f"{device.name} {device.description}".lower()
+    if any(m in described for m in _UNIFIED_NAME_MARKERS) or (
+        "radeon" in described and any(m in described for m in _RADEON_APU_MARKERS)
+    ):
         return True
     try:
         from core.inference.llama_cpp import LlamaCppBackend
@@ -1650,6 +1699,9 @@ class ClusterServing:
         self._internal_pre: Optional[Tuple[Any, ...]] = None
         self._requested_model: Tuple[str, Any] = ("", None)
         self._served_model: Tuple[str, Any] = ("", None)
+        # What the served block was planned for, so a config-error reload only reuses it unchanged.
+        self._requested_settings: Optional[Tuple[Any, ...]] = None
+        self._served_settings: Optional[Tuple[Any, ...]] = None
         self._attention_layers: int = 0
         self._nextn_bytes: float = 0.0
         self._projector_file: Optional[str] = None
@@ -1826,16 +1878,33 @@ class ClusterServing:
             settle = discovery_settle_s()
             if settle:
                 await asyncio.sleep(settle)
-        out = await self._plan_load(
-            request,
-            n_parallel,
-            inherited_extra_args = inherited_extra_args,
-            cancel_event = cancel_event,
-        )
+        try:
+            out = await self._plan_load(
+                request,
+                n_parallel,
+                inherited_extra_args = inherited_extra_args,
+                cancel_event = cancel_event,
+            )
+        except BaseException:
+            # No load follows a failed plan and the route calls load_failed only for the load itself:
+            # put the served split back, or the next plan saves this cleared one as the state to restore.
+            self._abandon_plan()
+            raise
         if not self._passthrough and self.topology != "layer_split" and self._serving_split():
             # The route strips the old block, so equal arguments would keep the primary on remote buffers.
             out = ss.SparkServing._request_with(out, {"force_reload": True})
         return out
+
+    def _abandon_plan(self) -> None:
+        """Undo ``_plan_load`` for a plan that raised: nothing was loaded, so the pre-load state stands."""
+        self.in_flight = False
+        self._passthrough = False
+        self._cancel_event = None
+        pre, self._pre_load = self._pre_load, None
+        if pre is not None:
+            self.topology, self.reason, self.plan, self.block = pre
+            if self.block:
+                _remember_block(self.block)
 
     async def _plan_load(
         self,
@@ -1861,6 +1930,13 @@ class ClusterServing:
             str(getattr(request, "model_path", "") or ""),
             getattr(request, "gguf_variant", None),
         )
+        _explicit = getattr(request, "llama_extra_args", None)
+        self._requested_settings = _load_settings(
+            request,
+            n_parallel,
+            list(_explicit if _explicit is not None else (inherited_extra_args or [])),
+            self.block,
+        )
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         self.plan, self.block = None, []
         self._down = set()
@@ -1877,6 +1953,21 @@ class ClusterServing:
                     self.topology = "single"
                     self.reason = f"cluster config: {self.config_error}; {owner}"
                     return request
+                if (
+                    self._served_settings is not None
+                    and self._requested_settings != self._served_settings
+                ):
+                    # The served block (pipeline groups, speculation) was planned for the old settings and
+                    # cannot be replanned: refuse rather than relaunch with a block llama-server may reject.
+                    why = (
+                        f"the cluster config is invalid ({self.config_error}), so the split serving "
+                        "this model cannot be replanned for new load settings; fix the cluster "
+                        "config, or reload with the settings it was loaded with"
+                    )
+                    self._pre_load, self.in_flight = None, False
+                    self._cancel_event = None
+                    self.last_error = why
+                    raise ss.SparkLoadDoesNotFit(why)
                 if not _contains([str(a) for a in effective], self.block):
                     effective += self.block
                 return ss.SparkServing._request_with(request, {"llama_extra_args": effective})
@@ -2631,6 +2722,7 @@ class ClusterServing:
         self._cancel_event = None
         self._backend = llama_backend
         self._served_model = self._requested_model
+        self._served_settings = self._requested_settings
         self._started = set()
         plan = self.plan
         local_count = sum(1 for d in plan.devices if not d.remote) if plan is not None else 0
@@ -2784,6 +2876,64 @@ class ClusterServing:
             "last_error": self.last_error,
             "link_dropped": dict(LINK_DROPPED) or None,
         }
+
+
+# Sampling-only pass-through flags (each takes one value): they change no buffer a split block was planned for.
+_SAMPLING_ONLY_FLAGS = frozenset(
+    {
+        "-s",
+        "--seed",
+        "--temp",
+        "--temperature",
+        "--top-k",
+        "--top-p",
+        "--min-p",
+        "--typical",
+        "--repeat-penalty",
+        "--repeat-last-n",
+        "--presence-penalty",
+        "--frequency-penalty",
+    }
+)
+_LOAD_SETTING_FIELDS = (
+    "max_seq_length",
+    "cache_type_kv",
+    "speculative_type",
+    "spec_draft_n_max",
+    "n_batch",
+    "n_ubatch",
+    "disable_vision",
+    "gpu_ids",
+    "tensor_split",
+)
+
+
+def _load_settings(
+    request: Any, n_parallel: int, effective: Sequence[str], block: Sequence[str]
+) -> Tuple[Any, ...]:
+    """Everything a split block is planned from: slots, the memory fields and the pass-through args."""
+    tokens = strip_managed_block(_normalized(effective))
+    block = [str(t) for t in block]
+    n = len(block)
+    if n:
+        for i in range(0, max(0, len(tokens) - n) + 1):
+            if tokens[i : i + n] == block:
+                tokens = tokens[:i] + tokens[i + n :]
+                break
+    kept: List[str] = []
+    i = 0
+    while i < len(tokens):
+        name, sep, _ = tokens[i].partition("=")
+        if name in _SAMPLING_ONLY_FLAGS:
+            i += 1 if sep else 2
+            continue
+        kept.append(tokens[i])
+        i += 1
+    fields = []
+    for name in _LOAD_SETTING_FIELDS:
+        value = getattr(request, name, None)
+        fields.append(tuple(value) if isinstance(value, (list, tuple)) else value)
+    return (int(n_parallel), tuple(fields), tuple(kept))
 
 
 def _contains(argv: List[str], block: List[str]) -> bool:
