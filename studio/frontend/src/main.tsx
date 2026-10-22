@@ -28,6 +28,7 @@ import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
+import { watchMacArrowBoundary } from "./lib/mac-arrow-boundary";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 import { watchSpellCheck } from "./lib/spellcheck";
 
@@ -75,6 +76,11 @@ watchInputModality(window);
 
 // Before the first render, so a disabled spell check never flashes underlines.
 watchSpellCheck(window);
+
+// The macOS app types an arrow's private-use character when the caret cannot move (#14764).
+if (isTauri && /Mac/.test(navigator.platform)) {
+  watchMacArrowBoundary(window);
+}
 
 function renderApp(): void {
   root.render(
