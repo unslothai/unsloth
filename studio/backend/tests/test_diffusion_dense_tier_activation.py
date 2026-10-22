@@ -210,3 +210,44 @@ def test_measured_target_needs_nvidia_and_a_subquadratic_kernel(monkeypatch):
 
     monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", boom)
     assert diffusion._measured_target(nvidia) is False
+
+
+def test_unpriced_reference_request_sizes_from_the_flat_estimate(monkeypatch):
+    """A FLUX.2 Klein reference render adds the source image's latents to the denoiser's sequence, which the guard does
+    not count in condition_pixels and the text-to-image tier seed never measured: it falls back to the flat estimate,
+    so the resident DiT groups stream again exactly as the flat plan would have placed them."""
+    for name in ENVS:
+        monkeypatch.delenv(name, raising = False)
+    pipe = types.SimpleNamespace(
+        _unsloth_measured_reserve = (3072, "flux.2-klein", "default", 7393, 2),
+        _unsloth_dense_tier_seeds = True,
+    )
+    flat = dm.estimate_image_runtime_mib(width = 1024, height = 1024, family = "flux.2-klein")
+    assert flat == 8192
+    extra = dm.measured_request_extra_mib
+    assert extra(pipe, width = 1024, height = 1024, unpriced_references = True) == flat - 3072
+    # text-to-image keeps the seed
+    assert extra(pipe, width = 1024, height = 1024) == 0
+    # the eager dense table is main's behaviour, untouched
+    eager = types.SimpleNamespace(
+        _unsloth_measured_reserve = (3072, "flux.2-klein", "off", 7393, 2),
+        _unsloth_dense_tier_seeds = True,
+    )
+    assert extra(eager, width = 1024, height = 1024, unpriced_references = True) == 0
+
+
+def test_generate_passes_unpriced_references_to_the_guard():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    at = src.index("guard_unpriced_refs = bool(")
+    window = src[at : at + 400]
+    for part in (
+        'getattr(fam, "reference", False)',
+        "init_pil is not None",
+        "ref_resolution is None",
+        "not is_flux3_family(fam)",
+    ):
+        assert part in window, part
+    call = src.index("extra_mib = measured_request_extra_mib(", at)
+    assert "unpriced_references = guard_unpriced_refs," in src[call : call + 500]

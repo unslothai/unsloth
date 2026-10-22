@@ -3884,9 +3884,13 @@ def measured_request_extra_mib(
     batch_size: int = 1,
     condition_pixels: int = 0,
     cfg: Optional[bool] = None,
+    unpriced_references: bool = False,
 ) -> int:
     """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``cfg``:
-    whether the request runs classifier-free guidance (None: unknown, treated as running it)."""
+    whether the request runs classifier-free guidance (None: unknown, treated as running it). ``unpriced_references``:
+    the request carries reference images whose latents join the denoiser's sequence but are not in
+    ``condition_pixels`` (FLUX.2 Klein's primary reference): a placement made from a dense default / max tier seed,
+    measured on text-to-image, then sizes the request from the flat estimate."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
@@ -3911,10 +3915,19 @@ def measured_request_extra_mib(
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
-    if (learned or need is None) and (
-        getattr(pipe, "_unsloth_peak_static", False)
-        or getattr(pipe, "_unsloth_loras", None)
-        or cfg_unmeasured
+    # the dense tier seeds were measured on text-to-image: a reference the guard cannot size is not covered
+    tier_seeded = (
+        dense_mib is not None
+        and sized["dense_tier_seeds"]
+        and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+    )
+    if (unpriced_references and tier_seeded) or (
+        (learned or need is None)
+        and (
+            getattr(pipe, "_unsloth_peak_static", False)
+            or getattr(pipe, "_unsloth_loras", None)
+            or cfg_unmeasured
+        )
     ):
         # the learned peak no longer describes this pipeline (runtime LoRA adapters, a planned VAE saver that did not
         # engage): requests size from the flat estimate
