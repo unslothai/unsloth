@@ -2503,10 +2503,12 @@ def test_vulkan_opt_in_routes_windows_arm64_to_vulkan(monkeypatch, env, flag):
     assert persist == "vulkan"
 
 
-_ADRENO = (ilp._VulkanGpuName("Qualcomm(R) Adreno(TM) X1-85 GPU", 0x5143),)
-_MALI = (ilp._VulkanGpuName("Mali-G720", 0x13B5),)
-# A Windows arm64 Vulkan GPU from a vendor the automatic route takes.
-_ARM64_GPU = (ilp._VulkanGpuName("Arm64 Vulkan GPU", 0x13B5),)
+# VK_DRIVER_ID_QUALCOMM_PROPRIETARY = 8, VK_DRIVER_ID_ARM_PROPRIETARY = 9, VK_DRIVER_ID_MESA_TURNIP = 18.
+_ADRENO = (ilp._VulkanGpuName("Qualcomm(R) Adreno(TM) X1-85 GPU", 0x5143, 8),)
+_TURNIP = (ilp._VulkanGpuName("Turnip Adreno (TM) 750", 0x5143, 18),)
+_MALI = (ilp._VulkanGpuName("Mali-G720", 0x13B5, 9),)
+# A Windows arm64 Vulkan GPU on a driver the automatic route takes.
+_ARM64_GPU = (ilp._VulkanGpuName("Arm64 Vulkan GPU", 0x13B5, 9),)
 
 
 def _no_vulkan_probe():
@@ -2545,7 +2547,8 @@ def test_windows_arm64_adreno_stays_on_cpu_unless_vulkan_is_requested(monkeypatc
     )
     assert routed is host and routed.vulkan_routed is False
     assert (repo, tag, persist) == (FORK, "pin", None)
-    assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in capsys.readouterr().out
+    captured = capsys.readouterr()  # log() writes to stdout or stderr depending on _LOG_TO_STDOUT
+    assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in captured.out + captured.err
 
 
 @pytest.mark.parametrize(
@@ -2565,11 +2568,12 @@ def test_windows_arm64_adreno_takes_vulkan_when_requested(monkeypatch, env, flag
     assert persist == "vulkan"
 
 
-def test_linux_arm64_mali_still_auto_routes_to_vulkan(monkeypatch):
+@pytest.mark.parametrize("devices", [_MALI, _TURNIP], ids = ["mali", "turnip"])
+def test_linux_arm64_mesa_and_mali_still_auto_route_to_vulkan(monkeypatch, devices):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising = False)
-    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: _MALI)
+    monkeypatch.setattr(ilp, "_vulkan_gpu_devices", lambda: devices)
     routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
         _cpu_bound_host("Linux", "arm64"), FORK, "pin", force_cpu = False
     )
@@ -2577,11 +2581,14 @@ def test_linux_arm64_mali_still_auto_routes_to_vulkan(monkeypatch):
     assert persist is None
 
 
-def test_the_probe_keeps_each_device_vendor(monkeypatch):
-    probe = _probe_result(monkeypatch, [_vk_device("Adreno X1-85"), _vk_device("Mali", vendor = 0x13B5)])
+def test_the_probe_keeps_each_device_vendor_and_driver(monkeypatch):
+    probe = _probe_result(
+        monkeypatch, [_vk_device("Adreno X1-85"), _vk_device("Mali", vendor = 0x13B5, driver = 9)]
+    )
     devices = probe()
     assert devices == ("Adreno X1-85", "Mali")
     assert [d.vendor for d in devices] == [0x5143, 0x13B5]
+    assert [d.driver for d in devices] == [8, 9]
 
 
 @pytest.mark.parametrize("has_intel_gpu", [False, True])

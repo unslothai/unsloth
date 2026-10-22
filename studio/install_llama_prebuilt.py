@@ -10530,20 +10530,23 @@ print(json.dumps(devices))
 """
 # VK_DRIVER_ID_GOOGLE_SWIFTSHADER, _MESA_LLVMPIPE (software), _MESA_DOZEN (Vulkan over D3D12).
 _VULKAN_SKIPPED_DRIVER_IDS = frozenset({10, 13, 23})
-# Qualcomm Adreno: llama.cpp's Vulkan backend was reported to produce garbage on Snapdragon X Elite
-# (ggml-org/llama.cpp#28290, closed stale with no fix) and the fork keeps that bundle opt-in, so the
-# automatic route leaves these to UNSLOTH_LLAMA_CPP_BACKEND=vulkan until a Snapdragon X check passes.
-_VULKAN_AUTO_OPT_IN_VENDORS = frozenset({0x5143})
+# VK_DRIVER_ID_QUALCOMM_PROPRIETARY (Snapdragon X on Windows): llama.cpp's Vulkan backend was reported
+# to produce garbage there (ggml-org/llama.cpp#28290, closed stale with no fix) and the fork keeps that
+# bundle opt-in, so the automatic route leaves it to UNSLOTH_LLAMA_CPP_BACKEND=vulkan until a Snapdragon X
+# check passes. Mesa Turnip on the same Adreno hardware is a different driver and is not affected.
+_VULKAN_AUTO_OPT_IN_DRIVER_IDS = frozenset({8})
 
 
 class _VulkanGpuName(str):
-    """A Vulkan device name that also carries its vendor id (``vendor`` is None when unknown)."""
+    """A Vulkan device name that also carries its vendor and driver ids (None when unknown)."""
 
     vendor = None
+    driver = None
 
-    def __new__(cls, name, vendor = None):
+    def __new__(cls, name, vendor = None, driver = None):
         self = super().__new__(cls, name)
         self.vendor = vendor
+        self.driver = driver
         return self
 
 
@@ -10583,16 +10586,16 @@ def _vulkan_gpu_devices() -> tuple[str, ...]:
                 and device["driver"] not in _VULKAN_SKIPPED_DRIVER_IDS
                 and device["vendor"] not in hidden_vendors
             ):
-                names.append(_VulkanGpuName(str(device["name"]), device["vendor"]))
+                names.append(_VulkanGpuName(str(device["name"]), device["vendor"], device["driver"]))
         except (KeyError, TypeError):
             continue
     return tuple(names)
 
 
 def _vulkan_auto_gpu_devices() -> tuple[str, ...]:
-    """The GPUs the automatic route may pick: every accepted one except opt-in-only vendors."""
+    """The GPUs the automatic route may pick: every accepted one except opt-in-only drivers."""
     devices = _vulkan_gpu_devices()
-    auto = tuple(d for d in devices if getattr(d, "vendor", None) not in _VULKAN_AUTO_OPT_IN_VENDORS)
+    auto = tuple(d for d in devices if getattr(d, "driver", None) not in _VULKAN_AUTO_OPT_IN_DRIVER_IDS)
     if devices and not auto:
         log(
             f"Vulkan GPU found ({', '.join(dict.fromkeys(devices))}) but llama.cpp's Vulkan backend "
@@ -11183,8 +11186,8 @@ def _route_to_vulkan_prebuilt(
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
         has_intel_gpu probe;
       * any other non-macOS host that would get the CPU bundle, when the Vulkan loader
-        enumerates a GPU llama.cpp accepts (Linux arm64 GPUs, nouveau); Qualcomm Adreno
-        (Snapdragon X) stays behind the explicit request above.
+        enumerates a GPU llama.cpp accepts (Linux arm64 GPUs, nouveau); Qualcomm's proprietary
+        driver (Snapdragon X) stays behind the explicit request above.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
     available" answer matches what actually gets installed.
 
