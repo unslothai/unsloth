@@ -287,7 +287,9 @@ def _expected_fake_quantized_lookup(emb, ids):
 
 def _direct_weight_forward(self, input_ids):
     # unsloth_zoo's UNSLOTH_FORCE_FLOAT32 Gemma3 / Gemma4 embedding forward: reads self.weight, no super().
-    embeds = torch.nn.functional.embedding(input_ids, weight = self.weight, padding_idx = self.padding_idx)
+    embeds = torch.nn.functional.embedding(
+        input_ids, weight = self.weight, padding_idx = self.padding_idx
+    )
     return embeds.to(torch.float32) * self.embed_scale
 
 

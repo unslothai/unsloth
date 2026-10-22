@@ -7620,7 +7620,6 @@ def _move_dispatch_hook(dst: torch.nn.Module, src: torch.nn.Module) -> None:
         return  # offload hooks own the weights map; they are not rebuilt here
     try:
         from accelerate.hooks import add_hook_to_module
-
         add_hook_to_module(dst, hook)
     except Exception as exc:
         warnings.warn(
