@@ -7981,7 +7981,7 @@ def _microscaling_qat_filter(
     dtype_msg,
     gemm_msg,
 ):
-    """Layer filter for NVFP4 / MX QAT, raising at prepare time when this GPU / dtype cannot run the low precision GEMM."""
+    """NVFP4 / MX QAT layer filter; raises at prepare time if this GPU / dtype cannot run the GEMM."""
     candidates = _block_linear_filter(model, block_size, qat_scheme, skip_output_head = True)
     placements = _eligible_layer_placements(model, candidates)
     unsupported = sorted({str(dtype) for _, dtype in placements if dtype not in dtypes})

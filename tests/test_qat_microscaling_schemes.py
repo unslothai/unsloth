@@ -116,7 +116,6 @@ def test_mxfp8_scheme_layers_where_mx_gemm_runs(monkeypatch):
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_mxfp8_refuses_non_bfloat16_layers(monkeypatch, dtype):
-    # torchao's MX matmul returns bfloat16 whatever the input dtype, then asserts the dtypes match.
     _probe_ok(monkeypatch)
     model = _tiny_qwen3().to(dtype)
     with pytest.raises(RuntimeError, match = "bfloat16 layers only"):
@@ -125,7 +124,7 @@ def test_mxfp8_refuses_non_bfloat16_layers(monkeypatch, dtype):
 
 
 def test_mx_qat_linear_takes_float32_activations_under_autocast():
-    # Mixed precision feeds float32 hidden states into bfloat16 linears; torchao asserts out dtype == x dtype.
+    # Autocast feeds float32 activations into bfloat16 linears.
     model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
     model = _prepare_model_for_qat(model, _mx_torchao_config())
     assert isinstance(model[0], _mx_linear())
