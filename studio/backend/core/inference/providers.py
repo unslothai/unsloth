@@ -385,6 +385,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # Remote so users see live availability; loadModels() merges defaults
         # so they stay visible if the remote call fails.
         "model_list_mode": "remote",
+        # The router's /models answers without a key, so only this proves the token works.
+        "key_check_url": "https://huggingface.co/api/whoami-v2",
         # Scope to trusted first-party org repos (the response is otherwise
         # hundreds of community fine-tunes, mirrors, fp8 variants).
         "model_id_allowlist": re.compile(
@@ -527,6 +529,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         },
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
+        # /models answers without a key, so only this proves the key works.
+        "key_check_url": "https://openrouter.ai/api/v1/key",
     },
     "typesafe": {
         "display_name": "TypeSafe",

@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -64,6 +74,7 @@ import {
   type CustomReasoningConfig,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
+import { stripEndpointPath } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
@@ -313,6 +324,10 @@ export function ChatProvidersSettings({
   // Only the newest Codex catalog request may write to the form.
   const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [manualModelIds, setManualModelIds] = useState("");
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [customProviderName, setCustomProviderName] = useState(
@@ -684,6 +699,7 @@ export function ChatProvidersSettings({
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("Base URL must use http or https.");
     }
+    parsed.pathname = stripEndpointPath(parsed.pathname) || "/";
     if (options.appendOpenAiVersionPath) {
       const pathname = parsed.pathname.replace(/\/+$/, "");
       if (!pathname) {
@@ -2505,7 +2521,9 @@ export function ChatProvidersSettings({
                         variant="ghost"
                         className="size-7 hover:text-destructive"
                         disabled={mutatingProvider}
-                        onClick={() => void deleteProvider(provider.id)}
+                        onClick={() =>
+                          setPendingDelete({ id: provider.id, name: provider.name })
+                        }
                         title="Delete connection"
                         aria-label={`Delete ${provider.name}`}
                       >
@@ -2520,6 +2538,36 @@ export function ChatProvidersSettings({
           )}
         </div>
       </section>
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {pendingDelete?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Its saved API key is removed and chats using it stop working.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (pendingDelete) {
+                  void deleteProvider(pendingDelete.id);
+                }
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

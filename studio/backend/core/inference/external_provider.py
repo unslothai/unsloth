@@ -7671,8 +7671,15 @@ class ExternalProviderClient:
             raise
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
+        # Gemini pages at 50 and Anthropic at 20 by default; both cap a page at 1000.
+        params = {"gemini": {"pageSize": 1000}, "anthropic": {"limit": 1000}}.get(
+            self.provider_type
+        )
         response = await _client().get(
-            f"{self.base_url}/models", headers = self._auth_headers(), timeout = timeout
+            f"{self.base_url}/models",
+            params = params,
+            headers = self._auth_headers(),
+            timeout = timeout,
         )
         response.raise_for_status()
         data = response.json()
@@ -7894,6 +7901,11 @@ class ExternalProviderClient:
             names = capabilities.get(model.get("id", ""))
             merged.append(model if names is None else {**model, "capabilities": names})
         return merged
+
+    async def verify_api_key(self, url: str) -> None:
+        """GET an endpoint that needs a valid key; raises httpx.HTTPStatusError when it is refused."""
+        response = await _client().get(url, headers = self._auth_headers(), timeout = self._timeout)
+        response.raise_for_status()
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """Confirm GET /models returns 200 without buffering the full response body. Used for

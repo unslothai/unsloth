@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import errno
 import ipaddress
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -156,8 +158,13 @@ def _wsl_networking_mode() -> Optional[str]:
 
 
 def _is_host_only_interface(name: str) -> bool:
-    """True for Windows Hyper-V switches that do not face the physical LAN."""
+    """True for virtual switches (Hyper-V, Docker, libvirt, VirtualBox, VMware) that do not face the physical LAN."""
     normalized = name.strip().casefold()
+    # br-<12 hex> is a Docker network; a plain br0 is often the host's real LAN bridge, so it stays.
+    if normalized.startswith(("docker0", "virbr", "vboxnet", "vmnet")) or re.fullmatch(
+        r"br-[0-9a-f]{12}", normalized
+    ):
+        return True
     if not normalized.startswith("vethernet ("):
         return False
     return any(
@@ -212,8 +219,20 @@ def is_public_address(address: str) -> bool:
         return False
 
 
+def _already_served(address: str, port: int) -> bool:
+    try:
+        with socket.create_connection((address, port), timeout = 0.2):
+            return True
+    except OSError:
+        return False
+
+
 def _bind_listener(address: str, port: int) -> socket.socket:
     """A listening socket on exactly ``address:port``."""
+    if sys.platform == "darwin" and _already_served(address, port):
+        # BSD lets SO_REUSEADDR bind an exact address under another app's 0.0.0.0 listener and steal
+        # its LAN traffic (Jupyter on 8888); refuse so the port fallback moves on instead.
+        raise OSError(errno.EADDRINUSE, f"{address}:{port} is already served")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         # skipped on Windows, where SO_REUSEADDR lets a socket take over a live listener

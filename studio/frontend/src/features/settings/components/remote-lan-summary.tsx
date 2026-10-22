@@ -17,6 +17,7 @@ import {
   type RemoteAccessStatus,
   loadRemoteAccess,
 } from "../api/remote-access";
+import { remoteAccessPollDelay } from "../api/remote-access-state";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 type AccessState = "off" | "starting" | "online" | "stopping" | "error";
@@ -82,15 +83,23 @@ export function RemoteLanSummary() {
 
   useEffect(() => {
     let cancelled = false;
-    loadRemoteAccess()
-      .then((next) => {
-        if (cancelled) return;
-        setRemote(next);
-        usePlatformStore.setState({ cloudflareUrl: next.url });
-      })
-      .catch(() => {
-        if (!cancelled) setRemoteFailed(true);
-      });
+    let timer: number | undefined;
+    // Re-read only mid-transition: a Start left on another tab would otherwise read "Starting" forever.
+    const readRemote = () => {
+      loadRemoteAccess()
+        .then((next) => {
+          if (cancelled) return;
+          setRemote(next);
+          usePlatformStore.setState({ cloudflareUrl: next.url });
+          if (next.state === "starting" || next.state === "stopping") {
+            timer = window.setTimeout(readRemote, remoteAccessPollDelay(next));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setRemoteFailed(true);
+        });
+    };
+    readRemote();
     loadLanAccess()
       .then((next) => {
         if (cancelled) return;
@@ -102,6 +111,7 @@ export function RemoteLanSummary() {
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, []);
 

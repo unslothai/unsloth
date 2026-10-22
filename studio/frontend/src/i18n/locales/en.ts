@@ -3124,7 +3124,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
@@ -3169,6 +3169,7 @@ export const en = {
       relativeNever: "never",
       relativeJustNow: "just now",
       expired: "expired",
+      expiredStatus: "Expired",
       today: "today",
       created: "Created {value}",
       used: "Used {value}",

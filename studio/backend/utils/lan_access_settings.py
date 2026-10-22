@@ -393,7 +393,11 @@ def _launch_urls(app_state) -> list[str]:
     """Where a launch-managed bind answers on this network. A wildcard launch cannot rely only on ``server_url``: run.py gives that direct base one LAN-reachable address, while Settings must show every currently reachable address in each family the launch serves."""
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
+        from utils.paths.file_manager import _in_container
 
+        if _in_container():
+            # The container's own bridge IP (172.17.0.x) reaches nothing outside it; peers use the host's published port.
+            return []
         addresses = []
         for ip_version in getattr(app_state, "lan_access_wildcard_ip_versions", ()) or (4,):
             for address in detect_lan_addresses(ip_version):

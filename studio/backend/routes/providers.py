@@ -79,6 +79,22 @@ _MAX_RESPONSES_CONNECTIVITY_MODELS = 5
 _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 
 
+def _upstream_reason(exc: Exception) -> Optional[str]:
+    """What went wrong talking to a provider, in words that carry no URL (it can hold a credential)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (401, 403):
+            return f"The server refused the API key (HTTP {status})."
+        return f"The server answered HTTP {status}."
+    if isinstance(exc, httpx.TimeoutException):
+        return "The server did not answer in time."
+    if isinstance(exc, httpx.HTTPError):
+        return "Couldn't reach the server. Check the base URL."
+    if isinstance(exc, json.JSONDecodeError):
+        return "The server did not return JSON. The base URL usually ends in /v1."
+    return None
+
+
 _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
 
 
@@ -744,11 +760,12 @@ async def _test_custom_provider_connectivity(
                 message = f"Connected successfully. Found {len(models)} model(s).",
                 models_count = len(models),
             )
+        reason = _upstream_reason(models_error) or safe_curated_detail(models_error)
         return ProviderTestResult(
             success = False,
             message = (
-                "Connection failed: could not reach /models and no model ID was "
-                f"provided to test further. {safe_curated_detail(models_error)}"
+                f"Connection failed: {reason} Listing models did not work and no model ID "
+                "was given to try another endpoint."
             ),
             models_count = None,
         )
@@ -834,7 +851,7 @@ async def _test_custom_provider_connectivity(
     except Exception as exc:
         return ProviderTestResult(
             success = False,
-            message = f"Connection failed: {safe_curated_detail(exc)}",
+            message = f"Connection failed: {_upstream_reason(exc) or safe_curated_detail(exc)}",
             models_count = None,
         )
 
@@ -955,6 +972,8 @@ async def test_provider(
             return await _test_custom_provider_connectivity(
                 client, payload.model_id or "", payload.api_type
             )
+        if info.get("key_check_url") and base_url == validate_provider_base_url(info["base_url"]):
+            await client.verify_api_key(info["key_check_url"])
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             return ProviderTestResult(
@@ -980,7 +999,7 @@ async def test_provider(
         )
         return ProviderTestResult(
             success = False,
-            message = f"Connection failed: {safe_curated_detail(exc)}",
+            message = f"Connection failed: {_upstream_reason(exc) or safe_curated_detail(exc)}",
             models_count = None,
         )
     finally:
@@ -1275,7 +1294,7 @@ async def list_provider_models(
         raise log_and_http_error(
             exc,
             502,
-            f"Failed to list models from {payload.provider_type}.",
+            _upstream_reason(exc) or f"Failed to list models from {payload.provider_type}.",
             event = "providers.list_models_failed",
             log = logger,
         )

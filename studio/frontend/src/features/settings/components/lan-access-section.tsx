@@ -43,6 +43,7 @@ import {
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
   sameLanAccessAddresses,
+  staleLanUrls,
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
@@ -203,6 +204,11 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
     return null;
   }
   const single = status.urls.length === 1;
+  const stale = new Set(staleLanUrls(status));
+  const keylessInference =
+    status.keylessScope !== "off" &&
+    status.keylessLanEligible &&
+    status.publicUrls.length === 0;
   return (
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
@@ -214,11 +220,19 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
         ) : null}
       </div>
       {status.urls.map((url) => (
-        <div key={url} className="flex items-center gap-2">
-          <code className="block w-full min-w-0 break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-            {url}
-          </code>
-          {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
+        <div key={url} className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <code className="block w-full min-w-0 break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+              {url}
+            </code>
+            {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
+          </div>
+          {stale.has(url) ? (
+            <span className="text-xs text-destructive leading-snug">
+              This address is no longer on this computer, so nothing reaches it.
+              Stop and start LAN access to use the current one.
+            </span>
+          ) : null}
         </div>
       ))}
       {status.publicUrls.length > 0 ? (
@@ -229,11 +243,19 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
         </span>
       ) : (
         <span className="text-xs text-muted-foreground leading-snug">
+          {keylessInference
+            ? "Anyone on this network can use the inference API without a key. "
+            : ""}
           {status.servesWebUi
             ? "Anyone on this network who has the password or an API key can sign in and run code on this machine."
             : "This launch serves the API only, so devices on the network can call the API but not open the web UI."}
         </span>
       )}
+      <span className="text-xs text-muted-foreground leading-snug">
+        Can't connect from another device? Allow Unsloth through this computer's
+        firewall, and check both devices are on the same network (guest Wi-Fi
+        often keeps devices apart).
+      </span>
     </div>
   );
 }

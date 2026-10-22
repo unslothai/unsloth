@@ -13,7 +13,12 @@ const LAN_API = readSrc("features/settings/api/lan-access.ts");
 test("the API tab shows Remote & LAN as a status line, not a second set of polling panels", () => {
   assert.doesNotMatch(TAB, /<RemoteAccessSection|<LanAccessSection/);
   assert.match(TAB, /<RemoteLanSummary \/>/);
-  assert.doesNotMatch(SUMMARY, /setInterval|setTimeout/);
+  assert.doesNotMatch(SUMMARY, /setInterval/);
+  // It re-reads only while a Start or Stop is still settling, never as a steady poll.
+  assert.match(
+    SUMMARY,
+    /next\.state === "starting" \|\| next\.state === "stopping"\) \{\s*timer = window\.setTimeout/,
+  );
   assert.match(SUMMARY, /setActiveTab\("remote-lan"\)/);
 });
 
@@ -55,6 +60,9 @@ test("LAN URLs publish only when they change", () => {
 test("the API page marks one served row as the primary, found by checkpoint first", () => {
   const page = readSrc("features/api-monitor/api-monitor-page.tsx");
   assert.match(page, /active: index === activeIndex,/);
-  assert.match(page, /\(model\.checkpoint \?\? model\.id\) === residentCheckpoint/);
+  assert.match(
+    page,
+    /\(model\.checkpoint \?\? model\.id\) === residentCheckpoint/,
+  );
   assert.match(page, /\(model\.active && !canEditSettings\)/);
 });

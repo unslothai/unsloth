@@ -28,6 +28,7 @@ import lan_access  # noqa: E402
 import routes.settings as routes  # noqa: E402
 import utils.host_policy as host_policy  # noqa: E402
 import utils.lan_access_settings as lan_settings  # noqa: E402
+import utils.paths.file_manager as file_manager  # noqa: E402
 from storage import studio_db  # noqa: E402
 
 # captured before the autouse fixture swaps in the dict stand-in
@@ -709,6 +710,7 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 ):
     """The status refreshes every LAN address instead of relying on server_url's
     single direct base, and never leaks an obsolete public-address value."""
+    monkeypatch.setattr(file_manager, "_in_container", lambda: False)
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["192.168.1.24"])
     state = _app(
         lan_access_launch_managed = True,
@@ -721,6 +723,38 @@ def test_a_wildcard_launch_refreshes_lan_addresses_instead_of_showing_the_public
 
     monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["10.0.0.7"])
     assert lan_settings.lan_access_status(state)["urls"] == ["http://10.0.0.7:8888"]
+
+
+def test_a_wildcard_launch_in_a_container_advertises_no_bridge_address(monkeypatch):
+    # docker/studio_run.sh binds 0.0.0.0 inside the container; 172.17.0.x reaches nothing outside it.
+    monkeypatch.setattr(file_manager, "_in_container", lambda: True)
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: ["172.17.0.2"])
+    state = _app(lan_access_launch_managed = True, lan_access_wildcard_bind = True)
+    assert lan_settings.lan_access_status(state)["urls"] == []
+
+
+@pytest.mark.parametrize(
+    ("name", "host_only"),
+    [
+        ("docker0", True),
+        ("br-0123456789ab", True),
+        ("virbr0", True),
+        ("vboxnet0", True),
+        ("vmnet8", True),
+        ("br0", False),
+        ("en0", False),
+        ("eth0", False),
+    ],
+)
+def test_virtual_switches_are_not_offered_as_lan_addresses(name, host_only):
+    assert lan_access._is_host_only_interface(name) is host_only
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "BSD SO_REUSEADDR semantics")
+def test_lan_bind_does_not_take_a_port_another_app_serves(monkeypatch):
+    monkeypatch.setattr(lan_access, "_already_served", lambda address, port: True)
+    with pytest.raises(OSError):
+        lan_access._bind_listener("127.0.0.1", 0)
 
 
 def test_listener_urls_bracket_ipv6_literals():

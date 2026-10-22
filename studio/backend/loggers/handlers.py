@@ -95,6 +95,8 @@ _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
+# A provider base URL may carry user:password; httpx errors quote the full URL.
+_URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"]+@")
 _EXCLUDED_PATHS = {
     "/api/train/status",
     "/api/train/metrics",
@@ -366,7 +368,7 @@ def filter_sensitive_data(logger, method_name, event_dict):
             except Exception:
                 pass
             value = _NATIVE_PATH_LEASE_RE.sub(r"\1<redacted native path lease>", value)
-            return value
+            return _URL_CREDENTIAL_RE.sub(r"\1<redacted>@", value)
         elif isinstance(value, dict):
             return {
                 k: "<redacted native path lease>"
@@ -376,6 +378,10 @@ def filter_sensitive_data(logger, method_name, event_dict):
             }
         elif isinstance(value, list):
             return [filter_value(item) for item in value]
+        elif type(value) is tuple:
+            return tuple(filter_value(item) for item in value)
+        elif isinstance(value, BaseException) and _URL_CREDENTIAL_RE.search(str(value)):
+            return filter_value(str(value))
         return value
 
     return {
