@@ -324,6 +324,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.sendMessage.label",
     "settings.keyboardShortcuts.actions.queueMessage.label",
     "settings.keyboardShortcuts.actions.steerMessage.label",
+    "settings.keyboardShortcuts.actions.stopGeneration.label",
     "settings.keyboardShortcuts.actions.toggleFastMode.label",
     "settings.keyboardShortcuts.actions.copyChatAsMarkdown.label",
     "settings.keyboardShortcuts.actions.copySessionId.label",

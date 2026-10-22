@@ -1088,6 +1088,10 @@ export const ptBR = {
       alternateSlot: "Atalho alternativo",
       browserReserved:
         "Seu navegador pode reservar essa combinação. No app para desktop ela funciona.",
+      metaUnsupported: "A tecla Windows não pode ser usada em atalhos.",
+      altGraphUnsupported: "Combinações com AltGr não podem ser usadas como atalhos.",
+      desktopOnly: "Somente no app para desktop",
+      builtInKey: "Integrado: {key}",
       actions: {
         findInPage: {
           label: "Localizar na página",
@@ -1288,6 +1292,10 @@ export const ptBR = {
         steerMessage: {
           label: "Direcionar a resposta",
           description: "Parar a resposta atual e enviar o rascunho em seguida",
+        },
+        stopGeneration: {
+          label: "Parar geração",
+          description: "Parar a resposta em andamento",
         },
         cycleReasoningEffort: {
           label: "Alternar esforço de raciocínio",

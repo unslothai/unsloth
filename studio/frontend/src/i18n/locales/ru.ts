@@ -1088,6 +1088,10 @@ export const ru = {
       alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
+      metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
+      altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
+      desktopOnly: "Только в настольном приложении",
+      builtInKey: "Встроено: {key}",
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1288,6 +1292,10 @@ export const ru = {
         steerMessage: {
           label: "Скорректировать ответ",
           description: "Остановить текущий ответ и отправить черновик следующим",
+        },
+        stopGeneration: {
+          label: "Остановить генерацию",
+          description: "Остановить текущий ответ",
         },
         cycleReasoningEffort: {
           label: "Переключать усилие рассуждения",

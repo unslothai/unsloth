@@ -4110,66 +4110,81 @@ export function AppSidebar() {
       isSurfaceBackgrounded("#root")
     );
   };
-  useShortcut("archiveChat", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("archiveChat", () => void archiveSelected());
-      return;
-    }
-    if (followsSelectionAction("archiveChat")) return;
-    withActiveChat((item) => void handleArchiveThread(item));
-  });
-  useShortcut("markChatUnread", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("markChatUnread", markSelectedUnread);
-      return;
-    }
-    if (followsSelectionAction("markChatUnread")) return;
-    withActiveChat((item) =>
-      markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
-    );
-  });
-  useShortcut("togglePinChat", () => {
-    if (sidebarCovered()) return;
-    if (projectsOnlySelected()) return;
-    if (selectionCount > 0) {
-      actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
-      return;
-    }
-    if (followsSelectionAction("togglePinChat")) return;
-    withActiveChat((item) => togglePinnedChat(item.id));
-  });
+  const sidebarUncovered = () => !sidebarCovered();
+  useShortcut(
+    "archiveChat",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("archiveChat", () => void archiveSelected());
+        return;
+      }
+      if (followsSelectionAction("archiveChat")) return;
+      withActiveChat((item) => void handleArchiveThread(item));
+    },
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "markChatUnread",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("markChatUnread", markSelectedUnread);
+        return;
+      }
+      if (followsSelectionAction("markChatUnread")) return;
+      withActiveChat((item) =>
+        markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
+      );
+    },
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "togglePinChat",
+    () => {
+      if (projectsOnlySelected()) return;
+      if (selectionCount > 0) {
+        actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
+        return;
+      }
+      if (followsSelectionAction("togglePinChat")) return;
+      withActiveChat((item) => togglePinnedChat(item.id));
+    },
+    { claims: sidebarUncovered },
+  );
   // A selection made behind a dialog is invisible and still what the mutating chords hit once the
   // dialog closes, which is the thing those chords being guarded was meant to prevent.
-  useShortcut("selectAllChats", () => {
-    if (sidebarCovered()) return;
-    selectAllChats();
+  useShortcut("selectAllChats", () => selectAllChats(), {
+    claims: sidebarUncovered,
   });
   useShortcut("clearChatSelection", clearSelection);
-  useShortcut("deleteSelectedChats", () => {
-    if (sidebarCovered()) return;
-    if (selectionCount > 0) deleteSelected();
-  });
+  useShortcut(
+    "deleteSelectedChats",
+    () => {
+      if (selectionCount > 0) deleteSelected();
+    },
+    { claims: sidebarUncovered },
+  );
   // Through the dialog: the row's inline pill is rendered by the row, and the open chat may be behind
   // a collapsed section, past a folder's "show more", or on a route with no chat list at all, where
   // the chord would look dead and leave a rename waiting to appear when the row came back.
-  useShortcut("renameChat", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => openRenameChat(item));
-  });
+  useShortcut(
+    "renameChat",
+    () => withActiveChat((item) => openRenameChat(item)),
+    { claims: sidebarUncovered },
+  );
   // The clipboard is outside the app, so writing a hidden chat's contents into it from behind a
   // dialog is not something the user can take back by closing the dialog.
-  useShortcut("copyChatAsMarkdown", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => void copyChatItemAsMarkdown(item));
-  });
-  useShortcut("copySessionId", () => {
-    if (sidebarCovered()) return;
-    withActiveChat((item) => void copyChatSessionId(item));
-  });
+  useShortcut(
+    "copyChatAsMarkdown",
+    () => withActiveChat((item) => void copyChatItemAsMarkdown(item)),
+    { claims: sidebarUncovered },
+  );
+  useShortcut(
+    "copySessionId",
+    () => withActiveChat((item) => void copyChatSessionId(item)),
+    { claims: sidebarUncovered },
+  );
 
   // The chat header's menu acts on the open chat through the same handlers as its row's menu and
   // the chords above. Every render, so the handlers it calls are never stale.
@@ -4255,18 +4270,33 @@ export function AppSidebar() {
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
-  // No undo and no menu item anywhere, so it says what it did.
-  useShortcut("clearAllUnreads", () => {
-    if (sidebarCovered()) return;
-    const state = useChatNavigationStore.getState();
-    const cleared = countUnreadRows(state);
-    if (state.unreadThreadIds.size === 0) {
-      toast.info("No unread chats");
-      return;
-    }
-    state.clearAllUnreads();
-    toast.success(`Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`);
-  });
+  useShortcut(
+    "clearAllUnreads",
+    () => {
+      const state = useChatNavigationStore.getState();
+      const cleared = countUnreadRows(state);
+      if (state.unreadThreadIds.size === 0) {
+        toast.info("No unread chats");
+        return;
+      }
+      const threadIds = [...state.unreadThreadIds];
+      const rowIds = { ...state.unreadRowIds };
+      state.clearAllUnreads();
+      toast.success(
+        `Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`,
+        {
+          action: {
+            label: t("shell.sections.undo"),
+            onClick: () =>
+              useChatNavigationStore
+                .getState()
+                .markThreadsUnread(threadIds, rowIds),
+          },
+        },
+      );
+    },
+    { claims: sidebarUncovered },
+  );
 
   // The six slots register as <Shortcut> elements: a loop of hooks would break the rules of hooks.
   const slotShortcuts = (
