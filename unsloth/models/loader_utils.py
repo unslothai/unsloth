@@ -4250,12 +4250,21 @@ def gpt_oss_checkpoint_has_fused_experts(
         # Anything not named *-unsloth-bnb-4bit may be a fused save; guessing split loads random experts.
         if "unsloth-bnb-4bit" in str(model_name).lower():
             return False
+        # The single .bin outranks any pytorch_model.bin.index.json (transformers' order), so adding
+        # an index cannot help: only re-saving or replacing that file does.
+        unreadable = str(exc)
+        fix = (
+            "Re-save it with `safe_serialization = True` (safetensors), or re-save "
+            f"`{os.path.basename(unreadable)}` with a recent torch (zip serialization) so it can be "
+            "memory-mapped."
+        )
+        if not os.path.isfile(unreadable):
+            fix += " Downloading it locally first also lets its tensor names be read."
         raise GptOssUnknownExpertLayoutError(
-            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint saved as a single "
-            f"`{os.path.basename(str(exc))}` with no index, so its expert layout (fused or Unsloth's split "
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint whose weights load from a "
+            f"single `{os.path.basename(unreadable)}`, so its expert layout (fused or Unsloth's split "
             "pre-quantized layout) cannot be read without loading the weights, and a wrong guess loads "
-            "random experts. Re-save it with `safe_serialization = True` (safetensors), add its "
-            "`pytorch_model.bin.index.json`, or download it locally first."
+            f"random experts. {fix}"
         ) from None
     layout = _gpt_oss_bnb_checkpoint_expert_layout(dtypes)
     if layout == "fused_unknown_dtype":
