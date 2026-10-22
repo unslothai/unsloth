@@ -17,15 +17,30 @@ _VERSION_STRINGS = {"torch.version.hip", "torch.version.cuda"}
 
 
 def _string_operands(condition: ast.expr) -> list[str]:
-    values = condition.values if isinstance(condition, ast.BoolOp) else [condition]
-    return [ast.unparse(v) for v in values if ast.unparse(v) in _VERSION_STRINGS]
+    """Operands a condition can evaluate to: ``and`` / ``or`` return one of their operands, nested ones included."""
+    if isinstance(condition, ast.BoolOp):
+        return [found for value in condition.values for found in _string_operands(value)]
+    text = ast.unparse(condition)
+    return [text] if text in _VERSION_STRINGS else []
+
+
+def test_nested_boolean_operands_are_inspected():
+    tree = ast.parse(
+        "torch.cuda.is_available() and (torch.cuda.device_count() < 2 or torch.version.hip)",
+        mode = "eval",
+    )
+    assert _string_operands(tree.body) == ["torch.version.hip"]
+    assert _string_operands(ast.parse("bool(torch.version.hip)", mode = "eval").body) == []
 
 
 def test_no_skip_condition_can_evaluate_to_a_version_string():
     offenders = []
     for path in sorted(_TESTS.rglob("*.py")):
+        source = path.read_text(encoding = "utf-8", errors = "replace")
+        if "torch.version" not in source:
+            continue
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(source)
         except SyntaxError:
             continue
         for node in ast.walk(tree):
