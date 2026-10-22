@@ -152,6 +152,28 @@ def test_a_distributed_launch_keeps_the_weakest_card_for_bf16(monkeypatch, chain
     assert run(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
 
 
+
+@pytest.mark.parametrize("current", [0, 1])
+def test_a_distributed_launch_keeps_the_public_bf16_probe_on_the_weakest_card(monkeypatch, current):
+    # torch.cuda.is_bf16_supported() must agree with SUPPORTS_BFLOAT16 on every rank (save.py reads
+    # it for merged 16-bit saves), whichever card is current. One process stays dynamic.
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    fake = _fake_torch([SM90, SM75])
+    fake.cuda.set_device(current)
+    namespace = _run_gpu_init_chain(fake, monkeypatch)
+    assert namespace["SUPPORTS_BFLOAT16"] is False
+    assert fake.cuda.is_bf16_supported(False) is False
+    fake.cuda.set_device(1 - current)
+    assert fake.cuda.is_bf16_supported(False) is False
+    assert fake.cuda.is_bf16_supported(including_emulation = True) is True
+
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    fake = _fake_torch([SM90, SM75])
+    _run_gpu_init_chain(fake, monkeypatch)
+    assert fake.cuda.is_bf16_supported(False) is True
+    fake.cuda.set_device(1)
+    assert fake.cuda.is_bf16_supported(False) is False
+
 def test_capability_cache_follows_set_device(monkeypatch):
     fake = _fake_torch([SM86, SM75])
     _run_model_utils_chain(fake, monkeypatch)
@@ -251,6 +273,18 @@ def test_pre_volta_switch_reads_the_current_device(monkeypatch, capsys, caps, cu
             "torch.compile - training without it.\n"
         )
 
+
+
+@pytest.mark.parametrize("world_size,major", [("2", 6), ("1", 9)])
+def test_a_distributed_launch_keeps_the_weakest_card_for_the_compile_switch(
+    monkeypatch, capsys, world_size, major
+):
+    # Ranks import before set_device and the Trainer may place a rank on the GTX 1080 later
+    # (device_map = None): keep the weakest card there, the same rule as bf16.
+    monkeypatch.setenv("WORLD_SIZE", world_size)
+    fake = _fake_torch([SM90, SM61])
+    applied, _ = _run_pre_volta(fake, monkeypatch, capsys)
+    assert applied == [major]
 
 def test_pre_volta_switch_skips_an_unreadable_card(monkeypatch, capsys):
     fake = _fake_torch([SM61, SM90])
@@ -384,6 +418,35 @@ def test_an_unreadable_card_does_not_matter(monkeypatch, capsys, caps, current, 
     assert _run_model_utils_chain(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
 
 
+
+@pytest.mark.parametrize("world_size,applied", [("2", True), ("1", False)])
+def test_a_distributed_launch_keeps_every_card_for_the_gfx906_switch(
+    monkeypatch, capsys, world_size, applied
+):
+    monkeypatch.setenv("WORLD_SIZE", world_size)
+    archs = ["gfx1100", "gfx906:sramecc+:xnack-"]
+    fake = _fake_torch([SM90] * len(archs), archs = archs)
+    environ = {}
+    dynamo_config = types.SimpleNamespace(disable = False)
+    body = _block(
+        DEVICE_TYPE_PY,
+        "# gfx906 (MI50",
+        '\n\nif DEVICE_TYPE == "cuda" and torch.cuda.is_available():',
+    )
+    namespace = _module_namespace(
+        dt,
+        fake,
+        monkeypatch,
+        DEVICE_TYPE = "hip",
+        os = types.SimpleNamespace(environ = environ),
+        apply_pre_volta_compile_workaround = lambda major: dt.apply_pre_volta_compile_workaround(
+            major, environ = environ, dynamo_config = dynamo_config
+        ),
+    )
+    exec(compile(body, str(DEVICE_TYPE_PY), "exec"), namespace)
+    capsys.readouterr()
+    assert dynamo_config.disable is applied
+
 class _Placed:
     def __init__(self, device_map):
         self.hf_device_map = device_map
@@ -396,6 +459,7 @@ def _check_placement(
     dtype,
     current = 0,
     model = None,
+    at_train_start = False,
 ):
     import torch
 
@@ -415,7 +479,12 @@ def _check_placement(
         "apply_pre_volta_compile_workaround",
         lambda major: disabled.append(major) or True,
     )
-    model_utils.check_mixed_gpu_placement(_Placed(device_map) if model is None else model, dtype)
+    model = _Placed(device_map) if model is None else model
+    if at_train_start:
+        # The once-per-train() hook every Unsloth trainer path runs (plain Trainer loop, SFT, RL).
+        model_utils._unsloth_reset_stray_compile_cache(types.SimpleNamespace(model = model))
+    else:
+        model_utils.check_mixed_gpu_placement(model, dtype)
     return disabled
 
 
@@ -623,3 +692,35 @@ def test_text_only_composite_loads_check_the_retained_core():
             checked += 1
             assert min(check) > min(core), "check the placement of the retained core, not the composite"
     assert checked
+
+
+class _MovedAfterLoad(_ParamsOn):
+    """Loaded with device_map = {"": 0} on the H100, then moved with .to("cuda:1"): the stale
+    hf_device_map still names GPU 0."""
+
+    hf_device_map = {"": 0}
+
+
+@pytest.mark.parametrize("model_cls", [_ParamsOn, _MovedAfterLoad], ids = ["cpu_load", "to_after"])
+def test_a_model_moved_onto_a_pre_volta_card_after_loading_is_checked_at_train_start(
+    monkeypatch, capsys, model_cls
+):
+    import torch
+
+    model = model_cls("cuda:1", "cuda:1")
+    disabled = _check_placement(
+        monkeypatch, [SM90, SM61], None, torch.float16, model = model, at_train_start = True
+    )
+    assert disabled == [0]
+    assert "GPU 1 (card1)" in capsys.readouterr().out
+
+
+def test_train_start_on_capable_cards_changes_nothing(monkeypatch, capsys):
+    import torch
+
+    model = _MovedAfterLoad("cuda:0", "cpu")
+    disabled = _check_placement(
+        monkeypatch, [SM90, SM61], None, torch.float16, model = model, at_train_start = True
+    )
+    assert disabled == []
+    assert capsys.readouterr().out == ""

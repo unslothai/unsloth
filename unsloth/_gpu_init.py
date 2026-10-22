@@ -331,6 +331,7 @@ try:
         apply_gfx101x_triton_workaround,
         cuda_bf16_capability,
         cuda_order_mismatch_names,
+        distributed_launch,
         hip_visible_archs,
         xpu_supports_native_bf16,
         zoo_shares_xpu_bf16,
@@ -575,11 +576,17 @@ elif DEVICE_TYPE == "cuda":
     SUPPORTS_BFLOAT16 = _cuda_cap is not None and _cuda_cap[0] >= 8
     del _cuda_cap
 
+    # The public probe gives the same answer: dynamic for one process, the weakest card for a
+    # distributed launch, else e.g. a merged 16-bit save would pick bf16 for an fp16 run.
+    _bf16_from_weakest = distributed_launch()
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
-            return old_is_bf16_supported(including_emulation)
+            supported = old_is_bf16_supported(including_emulation)
+            if including_emulation or not _bf16_from_weakest:
+                return supported
+            return supported and SUPPORTS_BFLOAT16
 
         torch.cuda.is_bf16_supported = is_bf16_supported
     else:

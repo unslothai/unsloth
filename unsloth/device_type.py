@@ -226,15 +226,21 @@ def cuda_current_capability():
         return None
 
 
-def cuda_bf16_capability():
-    """Capability the process-wide bf16 answer is judged on. One process: the current device, as torch
-    answers. A distributed launch (WORLD_SIZE > 1): the weakest visible card, as before, since every
-    rank must pick the same dtype and a rank's own card is not current yet at import."""
+def distributed_launch():
+    """True under a distributed launcher (WORLD_SIZE > 1): ranks import before set_device, so the
+    current device is not yet the rank's own card and process-wide gates keep the weakest one."""
     try:
-        distributed = int(os.environ.get("WORLD_SIZE", "1") or "1") > 1
+        return int(os.environ.get("WORLD_SIZE", "1") or "1") > 1
     except ValueError:
-        distributed = False
-    if distributed:
+        return False
+
+
+def cuda_bf16_capability():
+    """Capability the process-wide bf16 answer and the pre-Volta compile switch are judged on. One
+    process: the current device, as torch answers. A distributed launch: the weakest visible card,
+    as before, since every rank must pick the same dtype and a rank's own card is not current yet
+    at import (a rank later moved onto an older card would otherwise keep Dynamo on)."""
+    if distributed_launch():
         caps = cuda_gate_capabilities()
         return min(caps) if caps else None
     return cuda_current_capability()
@@ -356,13 +362,17 @@ def apply_pre_volta_compile_workaround(
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
 # (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
 # The current device decides here; a load placing layers on another gfx906 is checked after loading.
+# A distributed launch keeps every visible card, as for bf16: ranks import before set_device.
 # Same switch as pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
 def arch_breaks_compile(arch):
     return str(arch or "").split(":")[0].strip().lower() == "gfx906"
 
 
 if DEVICE_TYPE == "hip":
-    if arch_breaks_compile(hip_current_arch()):
+    if any(
+        arch_breaks_compile(arch)
+        for arch in (hip_visible_archs() if distributed_launch() else [hip_current_arch()])
+    ):
         os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
         os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
         os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
@@ -374,8 +384,9 @@ if DEVICE_TYPE == "hip":
 
 
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
-    # The current device; a load placing layers on an older card is checked after loading.
-    _cuda_major = (cuda_current_capability() or (None,))[0]
+    # The current device; a load placing layers on an older card is checked after loading, and again
+    # when training starts. A distributed launch keeps the weakest visible card, the same rule as bf16.
+    _cuda_major = (cuda_bf16_capability() or (None,))[0]
     if apply_pre_volta_compile_workaround(_cuda_major):
         print(
             "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "

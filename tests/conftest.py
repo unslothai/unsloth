@@ -170,6 +170,7 @@ def _install_device_type_stub(name: str) -> None:
     stub.cuda_gate_capabilities = lambda: []
     stub.cuda_current_capability = lambda: None
     stub.cuda_bf16_capability = lambda: None
+    stub.distributed_launch = lambda: False
     stub.apply_pre_volta_compile_workaround = lambda *a, **k: False
     stub.hip_current_arch = lambda: ""
     stub.arch_breaks_compile = lambda arch: False

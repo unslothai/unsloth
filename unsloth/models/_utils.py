@@ -417,6 +417,12 @@ def _unsloth_reset_stray_compile_cache(self):
     model = getattr(self, "model", None)
     if model is None:
         return
+    # Once per train(): a model loaded on CPU or on another card and moved since (.to("cuda:1"),
+    # Trainer placement) was not on that card when the load-time check ran. No-op on one GPU.
+    try:
+        check_mixed_gpu_placement(model, live = True)
+    except Exception:
+        pass
     # The detector hook can sit on any wrapper in the chain, and the probe may have run on a different one than self.model, so walk the chain.
     markers = []
     seen = False
@@ -1677,18 +1683,21 @@ def _pre_ampere_cuda_devices(model):
     return sorted({indices[k] for k in attention if indices.get(k) in pre_ampere})
 
 
-def _placed_gpu_indices(model):
+def _placed_gpu_indices(model, live = False):
     """GPU indices a loaded model's weights sit on: its hf_device_map, else every parameter's device
-    (an extracted text core carries no hf_device_map but may still span cards)."""
+    (an extracted text core carries no hf_device_map but may still span cards). live: the map plus
+    the parameters, since a later .to() / Trainer placement moves weights without updating the map."""
+    indices = set()
     device_map = getattr(model, "hf_device_map", None)
     if isinstance(device_map, dict):
-        return {i for i in (_cuda_index(v) for v in device_map.values()) if i is not None}
+        indices = {i for i in (_cuda_index(v) for v in device_map.values()) if i is not None}
+        if not live:
+            return indices
     try:
         devices = {p.device for p in model.parameters()}
     except Exception:
-        return set()
+        return indices
     current = None
-    indices = set()
     for device in devices:
         if device.type != "cuda":
             continue
@@ -1701,15 +1710,16 @@ def _placed_gpu_indices(model):
     return indices
 
 
-def check_mixed_gpu_placement(model, dtype = None):
+def check_mixed_gpu_placement(model, dtype = None, live = False):
     """bf16 and the compile switches answer for the current device; check where the load really
     put the weights. A card that cannot compile turns Dynamo off before the first forward, and
     bf16 weights on a card without bf16 get a warning. A sole current-device placement is checked
     too: the current device may have changed since import. One-GPU hosts never walk anything; the
-    capability reads hit the per-device cache."""
+    capability reads hit the per-device cache. live: called when training starts, after a later
+    .to() or Trainer placement, so the parameters are read too (see _placed_gpu_indices)."""
     if DEVICE_TYPE not in ("cuda", "hip") or DEVICE_COUNT <= 1:
         return
-    indices = sorted(_placed_gpu_indices(model))
+    indices = sorted(_placed_gpu_indices(model, live = live))
     if not indices:
         return
 
