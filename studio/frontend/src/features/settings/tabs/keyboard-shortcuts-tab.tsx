@@ -310,7 +310,6 @@ export function KeyboardShortcutsTab() {
     );
   };
 
-  /** What a row with no chord still answers to, from outside this registry. */
   const builtInKey = (id: ShortcutId): string | null => {
     if (id === "clearChatSelection") return "Esc";
     if (id !== "sendMessage") return null;
@@ -320,7 +319,6 @@ export function KeyboardShortcutsTab() {
       : send;
   };
 
-  /** The other actions on any of `id`'s chords. */
   const conflictingLabels = (id: ShortcutId): string => {
     const values = new Set(
       SHORTCUT_SLOTS.map((slot) => resolveBinding(overrides, id, slot)).filter(

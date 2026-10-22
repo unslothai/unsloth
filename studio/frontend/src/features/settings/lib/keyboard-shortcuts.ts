@@ -380,8 +380,7 @@ export function isBrowserReservedBinding(
     : NON_MAC_RESERVED_VALUES.has(value);
 }
 
-/** Reserved chords a page never sees at all: tab and window management. Only the desktop app
- *  can run an action bound to one. */
+/** Tab and window chords a page never sees; only the desktop app can run them. */
 const BROWSER_UNREACHABLE_VALUES = new Set<string>([
   "Mod+KeyN",
   "Mod+Shift+KeyN",
@@ -459,11 +458,7 @@ export function isMacPlatform(): boolean {
   return macPlatform;
 }
 
-/**
- * ⌘⏎ on macOS, Ctrl+Enter elsewhere, for a field's own submit chord. Not while an IME is composing:
- * that Enter commits a candidate. React events carry isComposing on nativeEvent only. keyCode 229
- * is not enough on its own: idle macOS Pinyin reports it on every key, ⌘⏎ included.
- */
+/** Not while an IME composes (isComposing, on nativeEvent for React); keyCode 229 alone is idle macOS Pinyin. */
 export function isModEnter(
   event: {
     key: string;
@@ -481,7 +476,6 @@ export function isModEnter(
     : event.ctrlKey && !event.metaKey;
 }
 
-/** "⌘↵" or "Ctrl+Enter", the label for isModEnter's chord. */
 export function modEnterLabel(mac = isMacPlatform()): string {
   return mac ? "⌘↵" : "Ctrl+Enter";
 }
@@ -534,8 +528,7 @@ export function parseBinding(
   return binding;
 }
 
-/** Why a keydown with a real key in it cannot be recorded, off macOS: the Windows (Super) key, or
- *  AltGr. bindingFromEvent returns null for both, which reads as "still assembling" otherwise. */
+/** Off macOS, Super or AltGr: bindingFromEvent returns null for both, which otherwise reads as "still assembling". */
 export function unrecordableModifier(
   event: Parameters<typeof bindingFromEvent>[0],
   mac = isMacPlatform(),
@@ -770,7 +763,6 @@ export function formatBindingLabel(
   return parts.join("+");
 }
 
-/** Every word a search may use for `binding`: its label, plus each modifier's names and glyph. */
 function bindingSearchText(binding: ShortcutBinding, mac: boolean): string {
   const words = [formatBindingLabel(binding, mac)];
   if (binding.mod) words.push(mac ? "⌘ cmd command" : "ctrl control");
@@ -782,10 +774,7 @@ function bindingSearchText(binding: ShortcutBinding, mac: boolean): string {
 
 const MODIFIER_GLYPHS = new Set(["⌘", "⌃", "⌥", "⇧"]);
 
-/**
- * Whether a typed search names this chord: "cmd k", "ctrl+shift+n", "⌥⌘r". Every word has to
- * match; a one-letter word is a key, so "k" finds ⌘K and not every chord spelled with a k.
- */
+/** Every word must match; a one-letter word is the key, so "k" finds ⌘K, not every chord with a k. */
 export function bindingMatchesQuery(
   binding: ShortcutBinding,
   query: string,

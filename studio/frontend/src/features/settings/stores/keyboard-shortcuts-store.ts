@@ -269,8 +269,7 @@ export const useKeyboardShortcutsStore = create<KeyboardShortcutsState>(
   }),
 );
 
-// An edit in another tab lands here too, or the next edit in this one would write its stale copy
-// over it. A null key is localStorage.clear(), which "Reset all local preferences" can be.
+// Else this tab's next edit writes its stale copy over another tab's. A null key is localStorage.clear().
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === STORAGE_KEY || event.key === null) {

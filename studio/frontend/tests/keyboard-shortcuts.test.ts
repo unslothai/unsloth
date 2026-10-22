@@ -41,7 +41,6 @@ const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
 const KEYBOARD_SHORTCUTS_TAB = readSrc("features/settings/tabs/keyboard-shortcuts-tab.tsx");
 const EN = readSrc("i18n/locales/en.ts");
 
-/** A sidebar chord's useShortcut call, handler and options, or "" when it is gone. */
 function sidebarShortcut(id: string): string {
   const at = APP_SIDEBAR.indexOf(`useShortcut(\n    "${id}",`);
   return at === -1
@@ -535,7 +534,6 @@ test("no default takes a chord the browser owns without a reason", () => {
     "Mod+KeyF",
     // The command palette takes Print the same way.
     "Mod+KeyP",
-    // Rename chat: Firefox's Reader View, flagged so a web user is told.
     "Mod+Alt+KeyR",
   ]);
   for (const def of SHORTCUT_DEFS) {
@@ -1901,7 +1899,6 @@ test("a selection chord does not fall through to the open chat", async () => {
   assert.doesNotMatch(del, /withActiveChat\(/);
 });
 
-// The only action with no menu item anywhere, so it must not wipe silently.
 test("clearing every unread says what it cleared", async () => {
   const body = sidebarShortcut("clearAllUnreads");
   // Counted before the wipe, or the toast reports zero every time. Rows, not

@@ -50,7 +50,6 @@ const ZOOM_CODES = new Set([
   "Numpad0",
 ]);
 
-/** A zoom press on a key that is not a zoom key: "-" typed on the German Slash key. */
 export function zoomTypedOffZoomKey(
   event: ZoomKeyEvent,
   code: string,

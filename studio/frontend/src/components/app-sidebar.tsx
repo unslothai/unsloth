@@ -4275,7 +4275,6 @@ export function AppSidebar() {
   useShortcut("nextChatNeedingAttention", () =>
     goToChat(nextAttentionChatItem),
   );
-  // No menu item anywhere, so it says what it did and offers it back.
   useShortcut(
     "clearAllUnreads",
     () => {
