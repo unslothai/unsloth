@@ -220,12 +220,7 @@ def _install_blocks(M, model, monkeypatch):
     return inner
 
 
-def _outer_loss(
-    model,
-    ids,
-    fullgraph,
-    backend = "aot_eager",
-):
+def _outer_loss(model, ids, fullgraph, backend = "aot_eager"):
     from torch._dynamo.utils import counters
 
     torch._dynamo.reset()
@@ -282,9 +277,7 @@ def test_outer_compile_traces_decode_aware_moe(request, monkeypatch, fullgraph):
     want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
     block = type(model.model.layers[0].mlp)
     monkeypatch.setattr(
-        block,
-        "forward",
-        zoo_utils.torch_compiler_disable_unless_decode(recursive = True)(block.forward),
+        block, "forward", zoo_utils.torch_compiler_disable_unless_decode(recursive = True)(block.forward)
     )
     monkeypatch.setattr(M, "_lora_would_fold", lambda experts: False)
     inner = _install_blocks(M, model, monkeypatch)
