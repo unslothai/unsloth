@@ -502,5 +502,5 @@ def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
             Q, K, Wq.contiguous(), Wk.contiguous(), cos2, sin2, rope_indices,
             float(_eps(q_norm)), float(_eps(k_norm)), True, _eager_kernel,
         )  # fmt: skip
-    _sync_if_split(Q)
+    # No host drain (see decode_rope_inplace).
     return Qo.transpose(1, 2), Ko.transpose(1, 2)
