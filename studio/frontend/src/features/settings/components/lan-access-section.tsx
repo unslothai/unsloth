@@ -21,9 +21,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
 import {
   loadLanAccess,
+  publishLanUrls,
   startLanAccess,
   stopLanAccess,
   updateLanAccessAddresses,
@@ -42,7 +42,6 @@ import {
   lanAccessErrorMessage,
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
-  lanApiUrls,
   sameLanAccessAddresses,
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
@@ -259,7 +258,7 @@ export function LanAccessSection() {
 
   const applyStatus = useCallback((next: LanAccessStatus) => {
     setStatus(next);
-    usePlatformStore.setState({ lanUrls: lanApiUrls(next) });
+    publishLanUrls(next);
   }, []);
 
   useEffect(() => {
@@ -293,6 +292,10 @@ export function LanAccessSection() {
     };
     const poll = () => {
       if (pollSuppressed.current) {
+        return;
+      }
+      if (document.hidden) {
+        schedule();
         return;
       }
       const epoch = mutationEpoch.current;

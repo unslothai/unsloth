@@ -77,11 +77,11 @@ class LoadRequest(BaseModel):
         ge = 0.05,
         le = 0.99,
         description = "Upper bound on the share of each selected GPU the managed engine may claim "
-        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+        "(vLLM --gpu-memory-utilization). Unset lets Unsloth size it from free memory.",
     )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
-        description = "Inference engine to use. 'auto' selects Studio's default backend; "
+        description = "Inference engine to use. 'auto' selects Unsloth's default backend; "
         "'vllm' and 'sglang' require an installed optional engine.",
     )
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -629,7 +629,7 @@ class ValidateModelRequest(BaseModel):
         ge = 0.05,
         le = 0.99,
         description = "Upper bound on the share of each selected GPU the managed engine may claim "
-        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+        "(vLLM --gpu-memory-utilization). Unset lets Unsloth size it from free memory.",
     )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -1287,7 +1287,7 @@ class EstimateMemoryResponse(BaseModel):
 class MemoryEstimate(BaseModel):
     """The canonical answer to "what would this load occupy".
 
-    Studio grew two routes that answer this -- ``POST /inference/estimate-memory``
+    Unsloth grew two routes that answer this -- ``POST /inference/estimate-memory``
     for the Load Model panel and ``GET /models/kv-cache-estimate`` for the Hub
     memory bar. They share the ``_gguf_memory_breakdown`` planner, so their
     arithmetic already agrees; this is the shared CONTRACT, so their vocabulary
@@ -1477,7 +1477,7 @@ class _InferenceRuntimeFields(BaseModel):
     engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
-        description = "Active inference engine. 'auto' denotes Studio's default backend; "
+        description = "Active inference engine. 'auto' denotes Unsloth's default backend; "
         "'vllm' and 'sglang' denote optional managed engines.",
     )
 
@@ -1862,7 +1862,7 @@ class _InferenceRuntimeFields(BaseModel):
     gpu_backend_unavailable: bool = Field(
         False,
         description = (
-            "Studio detected a GPU for this load but llama.cpp's own device table "
+            "Unsloth detected a GPU for this load but llama.cpp's own device table "
             "reported none, meaning its GPU backend did not initialise. Separates a "
             "backend failure from a fit that placed no layers; both log 0/M."
         ),
@@ -2969,7 +2969,7 @@ class ChatCompletionRequest(BaseModel):
     compact_context: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "[x-unsloth] Compact now (Unsloth's /compact). A local GGUF or MLX chat starts "
             "a checkpoint on this request even when it still fits: older turns are "
             "archived and searchable, and the model keeps the newest turn plus standing "
             "instructions until the chat outgrows the window again. Needs "
@@ -5070,6 +5070,86 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
         "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
     )
+    prompt_weighting: Optional[bool] = Field(
+        None,
+        description = "AUTOMATIC1111 prompt syntax on SDXL: (word:1.2), (word), [word], \\( escapes and "
+        "BREAK. Omitted: on. A prompt without that syntax that fits in 75 CLIP tokens renders exactly "
+        "as before; a longer one is encoded in 75-token chunks instead of truncated. false reads "
+        "brackets literally (long prompts still chunk). "
+        "true is refused for a model without the control.",
+    )
+    clip_skip: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 12,
+        description = "CLIP skip in AUTOMATIC1111 numbering: 1 = the model's own layer. On SDXL 1 and 2 "
+        "both read the penultimate layer the model already uses (as in A1111 and Forge), 3 reads one "
+        "layer earlier. Values above 1 are refused for models without the control.",
+    )
+    cfg_rescale: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "CFG rescale (diffusers guidance_rescale, arXiv 2305.08891): 0 = off. Mostly for "
+        "v-prediction / zero-terminal-SNR checkpoints, where 0.7 is the paper's value. Above 0 is "
+        "refused for models without the control.",
+    )
+    variation_seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**32 - 1,
+        description = "Variation seed (AUTOMATIC1111 subseed): the seed's noise is slerped toward this "
+        "seed's noise by variation_strength. Omitted with a strength: random. Text-to-image only.",
+    )
+    variation_strength: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "How far toward the variation seed's noise: 0 = off, 1 = the variation seed alone. "
+        "With a batch, every image keeps the seed and image i uses variation_seed + i.",
+    )
+    shift: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 100.0,
+        description = "Static flow shift for this generation, as ComfyUI's ModelSamplingSD3 / "
+        "ModelSamplingAuraFlow `shift`, on models whose status `shift_control.node` is 'sd3'. "
+        "Omitted keeps the model's schedule.",
+    )
+    base_shift: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 100.0,
+        description = "ComfyUI ModelSamplingFlux `base_shift` (default 0.5) for models whose status "
+        "`shift_control.node` is 'flux'. Omitted with `max_shift` keeps the model's schedule.",
+    )
+    max_shift: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 100.0,
+        description = "ComfyUI ModelSamplingFlux `max_shift` (default 1.15), applied at the output "
+        "size, for models whose status `shift_control.node` is 'flux'.",
+    )
+    mask_blur: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 64,
+        description = "Inpaint only: Gaussian blur radius (px) applied to the mask before inpainting "
+        "(AUTOMATIC1111 'Mask blur'). Omitted or 0 uses the mask as painted.",
+    )
+    inpaint_only_masked: Optional[bool] = Field(
+        None,
+        description = "Inpaint only: render just the masked region (plus `inpaint_padding`) at full "
+        "resolution and paste it back (AUTOMATIC1111 'Inpaint area: Only masked', diffusers "
+        "padding_mask_crop). Requires status `supports_inpaint_only_masked`; omitted or false "
+        "inpaints the whole picture.",
+    )
+    inpaint_padding: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 256,
+        description = "Padding (px) around the mask when `inpaint_only_masked` is set; omitted = 32.",
+    )
     provider_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
@@ -5171,6 +5251,10 @@ class GalleryImage(BaseModel):
     )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
+    engine: Optional[str] = Field(
+        None,
+        description = "Engine that ran it (diffusers, sd_cpp or mlx); the same seed draws different noise on each",
+    )
     model_kind: Optional[str] = Field(
         None, description = "How the model was loaded: gguf, single_file or pipeline"
     )
@@ -5261,6 +5345,43 @@ class GalleryImage(BaseModel):
     )
     schedule_type: Optional[str] = Field(
         None, description = "Schedule type the sampler ran with (resolved); null = the config's"
+    )
+    prompt_weighting: Optional[bool] = Field(
+        None,
+        description = "True when AUTOMATIC1111 weight syntax was applied; false when the request turned "
+        "it off (literal prompt); null = nothing to weight",
+    )
+    clip_skip: Optional[int] = Field(
+        None, description = "CLIP skip (AUTOMATIC1111 numbering) above 1; null = the model's layer"
+    )
+    cfg_rescale: Optional[float] = Field(None, description = "CFG rescale; null = off")
+    variation_seed: Optional[int] = Field(
+        None, description = "Variation seed THIS image used; null = no variation"
+    )
+    variation_strength: Optional[float] = Field(
+        None, description = "Variation strength; null = no variation"
+    )
+    shift: Optional[float] = Field(
+        None, description = "Requested static flow shift; null = the model's"
+    )
+    base_shift: Optional[float] = Field(
+        None, description = "Requested ModelSamplingFlux base shift; null = the model's"
+    )
+    max_shift: Optional[float] = Field(
+        None, description = "Requested ModelSamplingFlux max shift; null = the model's"
+    )
+    embeddings: Optional[list[str]] = Field(
+        None, description = "Textual-inversion embeddings the prompts used (filename stems)"
+    )
+    mask_blur: Optional[int] = Field(
+        None, description = "Inpaint mask blur radius (px) applied; null = none"
+    )
+    inpaint_only_masked: Optional[bool] = Field(
+        None,
+        description = "True when the inpaint rendered only the masked area; null = whole picture",
+    )
+    inpaint_padding: Optional[int] = Field(
+        None, description = "Padding (px) around the mask for an only-masked inpaint"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
@@ -5624,6 +5745,11 @@ class DiffusionStatusResponse(BaseModel):
     transformer_cache: Optional[str] = Field(
         None, description = "Step cache engaged: fbcache | static | null"
     )
+    baked_loras: list[str] = Field(
+        default_factory = list,
+        description = "Adapter ids baked into the transformer at load time, as GalleryImage.baked_loras "
+        "records them; empty when the load baked none",
+    )
     transformer_cache_stats: Optional[dict] = Field(
         None,
         description = "Static step skip only: mode, schedule and the last generation's "
@@ -5674,6 +5800,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "LoRA is unavailable on the current engine for this GGUF, but reloading it on the "
         "native sd.cpp engine would apply LoRAs.",
     )
+    lora_after_reload: bool = Field(
+        False,
+        description = "LoRA is off only because Speed=Auto compiled the model on its 3rd image; "
+        "reloading it (still Speed=Auto) brings LoRAs back until then.",
+    )
     supports_lora: bool = Field(
         False,
         description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "
@@ -5688,6 +5819,12 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
+    supports_inpaint_only_masked: bool = Field(
+        False,
+        description = "Whether the loaded model's inpaint pipeline can render only the masked area "
+        "(`inpaint_only_masked`, diffusers padding_mask_crop). Diffusers only; False for the "
+        "native and MLX engines and when nothing is loaded.",
+    )
     supports_negative_prompt: bool = Field(
         True,
         description = "Whether the loaded model applies a negative prompt on this engine "
@@ -5696,7 +5833,7 @@ class DiffusionStatusResponse(BaseModel):
     )
     negative_prompt_min_guidance: Optional[float] = Field(
         None,
-        description = "The guidance Studio passes a negative prompt above (1 for classifier-free guidance, 0 "
+        description = "The guidance Unsloth passes a negative prompt above (1 for classifier-free guidance, 0 "
         "for Z-Image and Krea 2 on diffusers); null when guidance does not gate it. Drives the Negative prompt hint.",
     )
     supports_guidance: bool = Field(
@@ -5720,6 +5857,25 @@ class DiffusionStatusResponse(BaseModel):
         description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
         "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
         "models, the native and MLX engines, or nothing loaded.",
+    )
+    sd_controls: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "SDXL prompt weighting, CLIP skip, CFG rescale and variation seed: "
+        "{prompt_weighting, clip_skip {min, max, default, same_as_default_through}, cfg_rescale "
+        "{min, max, default, recommended}, variation_seed, vary_strength, prediction_type}. Null when "
+        "the loaded model has none of them (every non-SDXL family, the native and MLX engines).",
+    )
+    shift_control: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "The Shift control the loaded flow-matching model takes, or null to hide it: "
+        "{node: 'sd3', shift} (one static shift, ComfyUI ModelSamplingSD3 / AuraFlow; shift = the "
+        "loaded value or null when resolution-dependent) or {node: 'flux', base_shift, max_shift} "
+        "(ComfyUI ModelSamplingFlux defaults). Diffusers engine only.",
+    )
+    textual_inversion: Optional[str] = Field(
+        None,
+        description = "Textual-inversion embedding format the loaded model takes ('sdxl'), or null when "
+        "it takes none. Embeddings are listed by GET /api/models/diffusion-embeddings.",
     )
     # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(

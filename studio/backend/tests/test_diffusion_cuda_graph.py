@@ -14,6 +14,7 @@ import contextlib
 import inspect
 import json
 import sys
+import threading
 import types
 import weakref
 
@@ -1469,3 +1470,208 @@ def test_the_every_length_switch_keeps_block_graphs(stub_torch, monkeypatch):
     assert cg.prompt_length_reason(pipe) is not None
     monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
     assert cg.prompt_length_reason(pipe) is None
+
+
+def test_real_cuda_new_length_eager_step_hands_blocks_the_recorded_tensor_kind():
+    """A new-length eager step must not recompile compiled blocks by passing them inference tensors."""
+    torch = pytest.importorskip("torch")
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    import torch.nn as nn
+    from torch._dynamo.testing import CompileCounter
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+
+    class Block(nn.Module):
+        def forward(self, x, mod):
+            return x * (1 + mod) + mod
+
+    class LenDiT(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.proj = nn.Linear(dim, dim)
+            self.block = torch.compile(Block(), backend = counter, dynamic = False)
+
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            mod,
+            return_dict = True,
+        ):
+            x = self.proj(hidden_states) + encoder_hidden_states.mean()
+            out = self.block(x, mod)
+            return types.SimpleNamespace(sample = out) if return_dict else (out,)
+
+    dim = 32
+    torch.manual_seed(0)
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})(dim).to("cuda").eval()
+    handle = cg.GraphedForward(module).enable()
+    assert handle.length_varies
+    hidden = torch.randn(1, 16, dim, device = "cuda")
+
+    def render(text_len):
+        outs = []
+        with torch.inference_mode():
+            txt = torch.randn(1, text_len, dim, device = "cuda")
+            mod = torch.randn(1, 16, dim, device = "cuda")
+            x = module.proj(hidden) + txt.mean()
+            want = x * (1 + mod) + mod
+            for _ in range(3):
+                outs.append((module(hidden, txt, mod, return_dict = False)[0], want))
+        cg.seal_lengths([handle])
+        return outs
+
+    try:
+        render(5)
+        assert handle.stats["captures"] == 1 and handle.stats["replays"] == 3
+        frames = counter.frame_count
+        for got, want in render(9):
+            assert torch.allclose(got, want)
+        assert handle.stats["length_eager"] == 3 and handle.stats["captures"] == 1
+        # Before: the block recompiled for an inference ``mod``.
+        assert counter.frame_count == frames
+    finally:
+        cg.uninstall_all([handle])
+
+
+def test_new_length_eager_step_hands_blocks_normal_tensors_on_cpu(monkeypatch):
+    """CPU twin of the CUDA test above, through the real ``__call__``."""
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "_dynamo"):
+        pytest.skip("needs torch._dynamo")
+    import torch.nn as nn
+    from torch._dynamo.testing import CompileCounter
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    seen: list = []
+
+    class Block(nn.Module):
+        def forward(self, x, mod):
+            return x * (1 + mod) + mod
+
+    block = torch.compile(Block(), backend = counter, dynamic = False)
+
+    class LenDiT(nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            mod,
+            return_dict = True,
+        ):
+            seen.append(mod.is_inference())
+            return (block(hidden_states + encoder_hidden_states.mean(), mod),)
+
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
+    handle = _armed(module)
+    assert handle.length_varies and handle.plan is None
+    hidden = torch.randn(1, 16, 8)
+    try:
+        with torch.inference_mode():
+            txt, mod = torch.randn(1, 9, 8), torch.randn(1, 16, 8)
+            statics = handle._statics([hidden, txt, mod])
+            handle.orig(*statics, return_dict = False)
+            frames = counter.frame_count
+            handle._sealed_scopes.add(cg._image_scope((hidden,), {}))
+            got = module(hidden, txt, mod, return_dict = False)[0]
+        assert handle.stats["length_eager"] == 1 and handle.stats["captures"] == 0
+        # Before: the block recompiled for an inference ``mod``.
+        assert counter.frame_count == frames
+        assert seen == [False, False]
+        assert torch.equal(got, (hidden + txt.mean()) * (1 + mod) + mod)
+    finally:
+        cg.uninstall_all([handle])
+
+
+def test_eager_as_recorded_runs_the_original_call_when_the_copies_do_not_fit(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    seen: list = []
+
+    class LenDiT(nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            return_dict = True,
+        ):
+            seen.append(encoder_hidden_states.is_inference())
+            return (hidden_states + encoder_hidden_states.mean(),)
+
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
+    handle = _armed(module)
+
+    def no_room(tensors):
+        raise torch.cuda.OutOfMemoryError("no room")
+
+    monkeypatch.setattr(handle, "_statics", no_room)
+    try:
+        with torch.inference_mode():
+            hidden, txt = torch.randn(1, 4, 8), torch.randn(1, 3, 8)
+            got = handle._eager_as_recorded((hidden, txt), {"return_dict": False})[0]
+        assert seen == [True]
+        assert torch.equal(got, hidden + txt.mean())
+    finally:
+        cg.uninstall_all([handle])
+
+
+def test_a_refused_capture_runs_eager_and_records_on_a_later_call(stub_torch, monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    retired = []
+    real_retire = cg.retire_failed_capture
+    monkeypatch.setattr(
+        cg, "retire_failed_capture", lambda *a, **k: retired.append(a) or real_retire(*a, **k)
+    )
+    module = _FakeDiT()
+    handle = _armed(module)
+    cg.capture_hold()  # replica-side work that does not drain
+    try:
+        handle(_t(), timestep = _t((1,)), return_dict = False)
+        assert handle.poisoned is False and handle.stats["captures"] == 0
+        assert handle.stats["capture_refusals"] == 1 and handle.stats["eager_calls"] == 1
+        assert retired == [] and not handle.cache and cg._CAPTURE_DEPTH == 0
+        calls = module.calls
+        # while the count stands a capture is refused up front, warm-ups included
+        handle(_t(), timestep = _t((1,)), return_dict = False)
+        assert handle.stats["capture_refusals"] == 2 and module.calls == calls + 1
+    finally:
+        cg.capture_release()
+    calls = module.calls
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned is False and handle.stats["captures"] == 1
+    assert module.calls == calls + cg.WARMUP_ITERS + 1
+    assert retired == []
+
+
+def test_capture_warmups_wait_for_held_replica_work(stub_torch):
+    seen = []
+
+    class Dit(_FakeDiT):
+        def forward(self, *args, **kwargs):
+            seen.append(cg._OUTSIDE_JOBS)
+            return super().forward(*args, **kwargs)
+
+    handle = _armed(Dit())
+    held, release = threading.Event(), threading.Event()
+
+    def replica_job():
+        with cg.outside_capture():
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target = replica_job)
+    worker.start()
+    assert held.wait(5)
+    timer = threading.Timer(0.3, release.set)
+    timer.start()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    worker.join(5)
+    timer.join(5)
+    assert handle.stats["captures"] == 1
+    assert seen == [0] * (cg.WARMUP_ITERS + 1)
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0

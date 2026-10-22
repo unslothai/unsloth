@@ -309,6 +309,26 @@ def test_render_grad_mode(policy, transformer_quant, text_encoder_quant, no_grad
     assert dmod._torchao_render_needs_no_grad(state) is no_grad
 
 
+@pytest.mark.parametrize(
+    "policy, no_grad",
+    [(OFFLOAD_NONE, False), (OFFLOAD_MODEL, True), (OFFLOAD_GROUP, True)],
+)
+def test_offloaded_stored_fp8_renders_under_no_grad(policy, no_grad):
+    """Stored fp8 codes are plain buffers: moved under inference_mode they are inference tensors the keep-host
+    offload cannot version, so each offload would copy 12 GB back to fresh host memory (Krea 2)."""
+    transformer = types.SimpleNamespace(_unsloth_fp8_stored = 256)
+    state = types.SimpleNamespace(
+        offload_policy = policy,
+        transformer_quant = None,
+        text_encoder_quant = None,
+        pipe = types.SimpleNamespace(transformer = transformer),
+    )
+    assert dmod._torchao_render_needs_no_grad(state) is no_grad
+    from core.inference import video as vid
+
+    assert vid._render_under_no_grad(state) is no_grad
+
+
 def test_render_uses_the_widened_switch():
     import inspect
 

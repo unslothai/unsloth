@@ -216,7 +216,7 @@ export const es = {
     importBookmarksDoneOne: "Se importó {count} marcador.",
     importBookmarksDoneMany: "Se importaron {count} marcadores.",
     importBookmarksNone: "No hay marcadores nuevos en ese archivo.",
-    importBookmarksPartial: "Se importaron {count}, pero {leftOut} más no cupieron: Studio guarda hasta {max} marcadores.",
+    importBookmarksPartial: "Se importaron {count}, pero {leftOut} más no cupieron: Unsloth guarda hasta {max} marcadores.",
     importBookmarksFailed: "No se pudo leer ese archivo. Elige un archivo HTML de marcadores exportado desde un navegador.",
     downloadsTitle: "Descargas",
     askWhereToSaveSetting: "Preguntar dónde guardar cada archivo",
@@ -267,7 +267,7 @@ export const es = {
     annotationScreenshotsAlways: "Incluir siempre",
     annotationScreenshotsNever: "No incluir nunca",
     clearDataSetting: "Borrar datos de navegación",
-    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas guardan cookies y datos de sitios solo hasta que se recarga Studio.",
+    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas guardan cookies y datos de sitios solo hasta que se recarga Unsloth.",
     manage: "Administrar",
     fullView: {
       enter: "Vista completa",
@@ -850,6 +850,7 @@ export const es = {
       byProject: "Por proyecto",
       inOneList: "En una sola lista",
       sortChatsBy: "Ordenar chats por",
+      projectsHome: "Inicio de proyectos",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
       switchedToManual: "Orden manual: arrastra las filas para reordenarlas",
@@ -1091,6 +1092,10 @@ export const es = {
       alternateSlot: "Atajo alternativo",
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
+      metaUnsupported: "La tecla Windows no se puede usar en atajos.",
+      altGraphUnsupported: "Las combinaciones con AltGr no se pueden usar como atajos.",
+      desktopOnly: "Solo en la app de escritorio",
+      builtInKey: "Integrado: {key}",
       actions: {
         findInPage: {
           label: "Buscar en la página",
@@ -1292,6 +1297,10 @@ export const es = {
           label: "Dirigir la respuesta",
           description: "Detener la respuesta actual y enviar el borrador a continuación",
         },
+        stopGeneration: {
+          label: "Detener generación",
+          description: "Detener la respuesta en curso",
+        },
         cycleReasoningEffort: {
           label: "Alternar esfuerzo de razonamiento",
           description: "Recorrer los niveles de esfuerzo de razonamiento",
@@ -1452,15 +1461,15 @@ export const es = {
       dictation: {
         audioUploadTitle: "Dictar con una grabación",
         audioUploadDescription:
-          "Tu navegador necesita una conexión segura (HTTPS) para grabar directamente en Studio. Con esta conexión HTTP, usa la grabadora de tu teléfono o elige una grabación guardada. Tu servidor de Studio transcribirá el audio y añadirá el texto a tu mensaje.",
+          "Tu navegador necesita una conexión segura (HTTPS) para grabar directamente en Unsloth. Con esta conexión HTTP, usa la grabadora de tu teléfono o elige una grabación guardada. Tu servidor de Unsloth transcribirá el audio y añadirá el texto a tu mensaje.",
         audioUploadChooseFile: "Elegir grabación",
         audioUploadRecord: "Grabar audio",
         audioUploadIphoneHint:
           "En iPhone, guarda una grabación de Notas de Voz o de otra aplicación de grabación y elígela aquí.",
         audioUploadServerModelNote:
-          "Esta grabación usa el modelo local que se muestra arriba en el servidor de Studio, aunque el dictado normal use un motor diferente.",
+          "Esta grabación usa el modelo local que se muestra arriba en el servidor de Unsloth, aunque el dictado normal use un motor diferente.",
         audioUploadAutomatic: "Automático",
-        audioUploadModelReady: "Listo en este servidor de Studio",
+        audioUploadModelReady: "Listo en este servidor de Unsloth",
         audioUploadRetryTitle: "No se pudo transcribir {file}",
         audioUploadRetry: "Reintentar la transcripción",
         audioUploadChooseModel:
@@ -1833,9 +1842,6 @@ export const es = {
         showLoadedModels: "Indicador de modelos cargados",
         showLoadedModelsDescription:
           "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
-        showWhisperUpdates: "Notificaciones de actualización de whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Avisa cuando haya una compilación más reciente de whisper.cpp para los modelos de voz a texto. Desactívalo si nunca transcribes audio.",
         showAudioCppUpdates: "Notificaciones de actualización de audio.cpp",
         showAudioCppUpdatesDescription:
           "Avisa cuando el entorno de ejecución de audio.cpp necesite una actualización para las páginas de Audio. Desactívalo si nunca usas Audio.",
@@ -1988,7 +1994,7 @@ export const es = {
         menuSubtitle: "Para buscar en archivos",
         device: "Dispositivo de embeddings",
         deviceDescription:
-          "Dónde se ejecuta el modelo de embeddings, para todos los modelos. La GPU indexa grandes conjuntos de documentos más rápido, pero mantiene algo de VRAM en uso hasta que Studio se reinicie.",
+          "Dónde se ejecuta el modelo de embeddings, para todos los modelos. La GPU indexa grandes conjuntos de documentos más rápido, pero mantiene algo de VRAM en uso hasta que Unsloth se reinicie.",
         deviceAuto: "Automático",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2094,9 +2100,9 @@ export const es = {
         longestStreak: "Racha más larga",
         activityTitle: "Actividad de tokens",
         activityDescription: {
-          daily: "Período: {weeks} · {total}",
-          weekly: "Semana pico {total} · últimas {weeks}",
-          cumulative: "{total} acumulados en las últimas {weeks}",
+          daily: "{total} desde el {since}",
+          weekly: "Semana más activa {total} · desde el {since}",
+          cumulative: "{total} en total desde el {since}",
         },
         mode: {
           daily: "Diaria",
@@ -2105,8 +2111,9 @@ export const es = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semana del {date} · {tokens}",
-        chartToggle: "Gráfico",
-        chartToggleHint: "Mostrar Semanal y Acumulada como gráfico con ejes etiquetados",
+        emptyDayTooltip: "{date} · Sin actividad",
+        apiRequests: "{count} vía API",
+        cumulativeTooltip: "Hasta la semana del {date} · {tokens} en total",
         less: "Menos",
         more: "Más",
         insightsTitle: "Análisis de actividad",
@@ -2427,7 +2434,7 @@ export const es = {
         multiModelHint: "Se aplica a los modelos de chat, voz, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
         allowOversizedLoad: "Permitir cargar modelos demasiado grandes",
         allowOversizedLoadDescription: "Cargar modelos de imagen y vídeo aunque la comprobación de memoria indique que no caben.",
-        allowOversizedLoadHint: "Se aplica cuando la CPU y la GPU comparten una sola memoria (Apple Silicon, GPU integradas). Studio rechaza la carga cuando su estimación de los pesos del modelo supera la memoria que queda tras reservar espacio para el sistema operativo. Con esta opción activada, se intenta cargar de todos modos. La estimación puede fallar en ambos sentidos: una carga demasiado grande puede fallar, agotar la memoria, hacer que el equipo use mucho la memoria de intercambio o deje de responder, o cerrar Studio. Desactivado de forma predeterminada.",
+        allowOversizedLoadHint: "Se aplica cuando la CPU y la GPU comparten una sola memoria (Apple Silicon, GPU integradas). Unsloth rechaza la carga cuando su estimación de los pesos del modelo supera la memoria que queda tras reservar espacio para el sistema operativo. Con esta opción activada, se intenta cargar de todos modos. La estimación puede fallar en ambos sentidos: una carga demasiado grande puede fallar, agotar la memoria, hacer que el equipo use mucho la memoria de intercambio o deje de responder, o cerrar Unsloth. Desactivado de forma predeterminada.",
         mediaIdleUnloadDescription:
           "Libera la VRAM descargando los modelos de imagen y vídeo después de este número de segundos de inactividad. El valor 0 los mantiene cargados; el mínimo es 60.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
@@ -2797,6 +2804,22 @@ export const es = {
         visibilityDescription:
           "Cómo se abre el razonamiento. Puedes expandir o contraer cualquier bloque por tu cuenta.",
       },
+      memory: {
+        title: "Memoria",
+        description: "Notas que lee cada chat, con cualquier modelo, local o en la nube. Los chats de un proyecto también leen el AGENTS.md de ese proyecto.",
+        enable: "Usar memoria en los chats",
+        enableDescription: "Enviar estas notas con cada chat.",
+        locked: "Desactivado en esta instalación por UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Notas de memoria",
+        placeholder: "Por ejemplo:\n- Escribo Python y uso uv.\n- Responde de forma breve.",
+        hint: "Se guarda en {path}. También puedes editar ese archivo con cualquier editor de texto.",
+        size: "{used} / {max} KB",
+        save: "Guardar",
+        saved: "Memoria guardada",
+        loadError: "No se pudo cargar la memoria.",
+        saveError: "No se pudo guardar la memoria.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md memoria recordar personalización perfil notas",
+      },
       currentDate: {
         label: "Indicar al modelo la fecha de hoy",
         description:
@@ -2876,7 +2899,7 @@ export const es = {
       importFailed: "La importación falló.",
       importFromSource: "Importar desde {source}",
       importFromSourceDescription:
-        "Copia tus conversaciones de {source} a Studio, agrupadas por proyecto.",
+        "Copia tus conversaciones de {source} a Unsloth, agrupadas por proyecto.",
       importingAction: "Importando...",
       importedSourceOneChat: "Se importó 1 conversación desde {source}.",
       importedSourceChatCount:
@@ -3311,7 +3334,7 @@ export const es = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación se conectó a un servidor de Studio que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
+          "La aplicación se conectó a un servidor de Unsloth que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudo buscar actualizaciones",
@@ -3927,7 +3950,7 @@ export const es = {
         decisionColumnsMissing:
           "Los modelos de decisión necesitan las columnas state, questions y gold (o answers). Faltan: {columns}.",
         decisionOwnerOnly:
-          "Solo el propietario de Studio puede ajustar modelos de decisión.",
+          "Solo el propietario de Unsloth puede ajustar modelos de decisión.",
         hfDatasetRequired:
           "Selecciona primero un conjunto de datos de Hugging Face.",
         hfDatasetSplitRequired:

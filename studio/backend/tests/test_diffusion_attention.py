@@ -393,7 +393,7 @@ def test_a_hidden_xformers_is_not_reinstalled_in_the_same_process(monkeypatch):
 
     assert reason and "requires a different torch" in reason
     assert run.calls == []
-    assert any("restart Studio" in line for line in logger.lines)
+    assert any("restart Unsloth" in line for line in logger.lines)
 
 
 def test_the_hidden_xformers_refusal_records_no_attempt(monkeypatch):

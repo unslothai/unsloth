@@ -1859,6 +1859,49 @@ def get_model_name(
     return new_model_name
 
 
+def _refuse_unless_private(path, what):
+    """On POSIX, refuse a path that is a symlink, not ours, or writable by group/other."""
+    import stat
+
+    if not hasattr(os, "getuid"):
+        return
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError(
+            f"Unsloth: refusing {what} that is a symlink or owned by another user: {path}"
+        )
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        raise RuntimeError(
+            f"Unsloth: refusing a group- or world-writable {what} "
+            f"(mode {stat.S_IMODE(info.st_mode):04o}): {path}"
+        )
+
+
+def _private_fp8_cache_dir():
+    """Per-user 0700 root for fp8 artifacts. The shared /tmp lets another account pre-create
+    a predictable artifact name and have it loaded (with trust_remote_code) as this user."""
+    if hasattr(os, "getuid"):
+        directory = os.path.join(tempfile.gettempdir(), "unsloth-fp8-%d" % os.getuid())
+    else:
+        # No owner check on Windows, and TEMP can be shared (services, build agents), so use the
+        # profile's LocalAppData, which Windows ACLs to this account.
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        directory = os.path.join(base, "unsloth", "fp8-cache")
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
+    if hasattr(os, "getuid"):
+        info = os.lstat(directory)
+        # exist_ok does not apply mode, so tighten one of ours; anyone else's is refused below.
+        if not os.path.islink(directory) and info.st_uid == os.getuid() and info.st_mode & 0o077:
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
+    _refuse_unless_private(directory, "an fp8 cache directory")
+    return directory
+
+
 def _offline_quantize_to_fp8(
     model_name: str,
     fp8_mode: str,
@@ -1904,7 +1947,7 @@ def _offline_quantize_to_fp8(
             text_config = candidate
             is_vlm = False
 
-    temp_dir = tempfile.gettempdir()
+    temp_dir = _private_fp8_cache_dir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     # The basename alone would let org-a/model and org-b/model share one artifact.
@@ -1919,6 +1962,8 @@ def _offline_quantize_to_fp8(
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
     print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    if os.path.lexists(new_model_name):
+        _refuse_unless_private(new_model_name, "a cached fp8 artifact")
 
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
@@ -1985,6 +2030,89 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
     import vllm
 
     return Version(vllm.__version__) < Version("0.12.0")
+
+
+def _drop_fp8_dequantize_conversions(model):
+    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
+    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
+    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    conversions = getattr(model, "_weight_conversions", None)
+    if not conversions:
+        return 0
+    try:
+        from transformers.integrations.finegrained_fp8 import Fp8Dequantize
+    except Exception:
+        return 0
+
+    def _targets(conversion):
+        patterns = getattr(conversion, "_original_target_patterns", None) or []
+        return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
+
+    plain = None
+    kept, changed = [], 0
+    for conversion in conversions:
+        operations = getattr(conversion, "operations", None) or []
+        if not any(isinstance(op, Fp8Dequantize) for op in operations):
+            kept.append(conversion)
+            continue
+        if all(isinstance(op, Fp8Dequantize) for op in operations):
+            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
+            changed += 1
+            continue
+        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
+        if plain is None:
+            try:
+                from transformers.conversion_mapping import get_model_conversion_mapping
+                plain = get_model_conversion_mapping(model, None, None)
+            except Exception:
+                plain = []
+        match = next(
+            (
+                c
+                for c in plain
+                if type(c) is type(conversion) and _targets(c) == _targets(conversion)
+            ),
+            None,
+        )
+        if match is None:
+            print(
+                "Unsloth: an fp8 load conversion has no 16bit counterpart; save_pretrained may write fp8 "
+                f"weights for {list(_targets(conversion))}."
+            )
+            kept.append(conversion)
+            continue
+        kept.append(match)
+        changed += 1
+    if changed:
+        model._weight_conversions = kept
+    return changed
+
+
+def _fp8_dequantize_quantization_config(model_config):
+    """The checkpoint's fine-grained fp8 config with `dequantize = True` for an explicit 16bit load, else None.
+    On FP8-capable GPUs transformers otherwise keeps FP8Linear layers; FastModel passes the same flag."""
+    quantization_config = getattr(model_config, "quantization_config", None)
+    if quantization_config is None:
+        return None
+    as_dict = (
+        quantization_config
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "to_dict", lambda: {})()
+    )
+    quant_method = as_dict.get("quant_method", "")
+    # A config object's to_dict() can keep the QuantizationMethod enum, whose str() is not its value.
+    if str(getattr(quant_method, "value", quant_method)).lower() != "fp8":
+        return None
+    try:
+        from transformers import FineGrainedFP8Config
+    except Exception:
+        return None
+    if "dequantize" not in inspect.signature(FineGrainedFP8Config).parameters:
+        return None
+    try:
+        return FineGrainedFP8Config.from_dict(dict(as_dict), dequantize = True)
+    except Exception:
+        return None
 
 
 def _fp8_load_as_is(
@@ -3053,6 +3181,8 @@ def _checkpointed_layer_forward(original):
             not self.training
             or holder is None
             or not getattr(holder, "gradient_checkpointing", False)
+            # gradient_checkpointing_enable(every_n_layers = N) marks the layers it leaves out.
+            or self.__dict__.get("_unsloth_every_n_skip", False)
             or not torch.is_grad_enabled()
             # A cache would be written a second time by the recompute.
             or kwargs.get("past_key_value") is not None
@@ -3869,11 +3999,330 @@ def quantization_config_selects_bnb_4bit(quantization_config):
     return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
 
 
-def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):
+_FUSED_EXPERT_SUFFIX = ".experts.gate_up_proj"
+
+
+def _safetensors_dtypes(path, names = None):
+    from safetensors import safe_open
+    with safe_open(path, framework = "pt") as f:
+        keys = f.keys() if names is None else names
+        return {k: f.get_slice(k).get_dtype() for k in keys}
+
+
+class GptOssUnknownExpertLayoutError(RuntimeError):
+    """A bitsandbytes gpt-oss checkpoint whose expert layout cannot be read without loading its weights."""
+
+
+class _UnreadableCheckpointNames(Exception):
+    """The checkpoint is a lone pytorch_model.bin whose tensor names cannot be read without loading it."""
+
+
+def _with_variant(filename, variant):
+    # Mirrors transformers' _add_variant.
+    if not variant:
+        return filename
+    parts = filename.split(".")
+    return ".".join(parts[:-1] + [variant, parts[-1]])
+
+
+def _index_weight_map(path):
+    import json
+    with open(path, "r", encoding = "utf-8") as f:
+        return json.load(f).get("weight_map", {}) or {}
+
+
+def _bin_dtypes(path):
+    # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
+    state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
+    return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}
+
+
+def _hub_safetensors_header_dtypes(
+    repo_id,
+    filename,
+    revision = None,
+    token = None,
+):
+    """Range-reads one safetensors header from the Hub (never the tensor bytes)."""
+    import json
+    import struct
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem(token = token)
+    with fs.open(f"{repo_id}/{filename}", "rb", revision = revision, block_size = 0) as f:
+        (size,) = struct.unpack("<Q", f.read(8))
+        header = json.loads(f.read(size))
+    return {k: v.get("dtype") for k, v in header.items() if k != "__metadata__"}
+
+
+def _checkpoint_tensor_dtypes(
+    model_name,
+    token = None,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+    local_files_only = False,
+    variant = None,
+    use_safetensors = None,
+):
+    """{tensor name: dtype} (dtype only for fused experts) without downloading weights; mirrors transformers'
+    file order, `variant` and `use_safetensors`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
+    if not isinstance(model_name, str) or not model_name:
+        return None
+    st_index, st_single = (
+        _with_variant(f, variant) for f in ("model.safetensors.index.json", "model.safetensors")
+    )
+    bin_index, bin_single = (
+        _with_variant(f, variant) for f in ("pytorch_model.bin.index.json", "pytorch_model.bin")
+    )
+    if use_safetensors is False:
+        st_index = st_single = None
+    elif use_safetensors:
+        bin_index = bin_single = None
+    index_files = [f for f in (st_index, bin_index) if f]
+
+    def _local_shard_dtypes(path, names):
+        if path.endswith(".safetensors"):
+            return _safetensors_dtypes(path, names)
+        found = _bin_dtypes(path)
+        return {n: found.get(n) for n in names}
+
+    def _fill_fused_dtypes(weight_map, shard_dtypes):
+        out = dict.fromkeys(weight_map)
+        shards = {}
+        for name, shard in weight_map.items():
+            if name.endswith(_FUSED_EXPERT_SUFFIX):
+                shards.setdefault(shard, []).append(name)
+        for shard, names in shards.items():
+            try:
+                found = shard_dtypes(shard, names)
+            except Exception:
+                continue
+            out.update({n: found.get(n) for n in names})
+        return out
+
+    try:
+        if os.path.isdir(model_name):
+            root = os.path.join(model_name, subfolder) if subfolder else model_name
+            for index_file in index_files:
+                index_path = os.path.join(root, index_file)
+                if not os.path.exists(index_path):
+                    continue
+                weight_map = _index_weight_map(index_path)
+                return _fill_fused_dtypes(
+                    weight_map,
+                    lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
+                )
+            single_path = os.path.join(root, st_single) if st_single else None
+            if single_path and os.path.exists(single_path):
+                return _safetensors_dtypes(single_path)
+            single_path = os.path.join(root, bin_single) if bin_single else None
+            if single_path and os.path.exists(single_path):
+                try:
+                    return _bin_dtypes(single_path)
+                except Exception:
+                    raise _UnreadableCheckpointNames(single_path)
+            return None
+
+        if not local_files_only and not subfolder and not variant and st_single:
+            try:
+                from huggingface_hub import get_safetensors_metadata
+
+                metadata = get_safetensors_metadata(model_name, revision = revision, token = token)
+                out = dict.fromkeys(metadata.weight_map)
+                for file_metadata in metadata.files_metadata.values():
+                    for name, info in file_metadata.tensors.items():
+                        out[name] = info.dtype
+                return out
+            except Exception:
+                pass
+        from huggingface_hub import hf_hub_download
+
+        hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
+        for index_file in index_files:
+            try:
+                index_path = hf_hub_download(
+                    model_name, index_file, local_files_only = local_files_only, **hub
+                )
+            except Exception:
+                continue
+            weight_map = _index_weight_map(index_path)
+
+            def _hub_shard_dtypes(shard, names):
+                try:
+                    path = hf_hub_download(model_name, shard, local_files_only = True, **hub)
+                except Exception:
+                    path = None
+                if path is not None:
+                    return _local_shard_dtypes(path, names)
+                if local_files_only or not shard.endswith(".safetensors"):
+                    return {}
+                remote = f"{subfolder}/{shard}" if subfolder else shard
+                return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+
+            return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
+        if st_single:
+            try:
+                return _safetensors_dtypes(
+                    hf_hub_download(model_name, st_single, local_files_only = True, **hub)
+                )
+            except Exception:
+                pass
+            if not local_files_only:
+                remote = f"{subfolder}/{st_single}" if subfolder else st_single
+                try:
+                    return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                except Exception:
+                    pass
+        if not bin_single:
+            return None
+        try:
+            cached_bin = hf_hub_download(model_name, bin_single, local_files_only = True, **hub)
+        except Exception:
+            cached_bin = None
+        if cached_bin is not None:
+            try:
+                return _bin_dtypes(cached_bin)
+            except Exception:
+                raise _UnreadableCheckpointNames(cached_bin)
+        if not local_files_only:
+            from huggingface_hub import file_exists
+
+            remote = f"{subfolder}/{bin_single}" if subfolder else bin_single
+            try:
+                exists = file_exists(model_name, remote, revision = revision, token = token)
+            except Exception:
+                exists = False
+            if exists:
+                raise _UnreadableCheckpointNames(f"{model_name}/{remote}")
+        return None
+    except _UnreadableCheckpointNames:
+        raise
+    except Exception:
+        return None
+
+
+def _gpt_oss_bnb_checkpoint_expert_layout(dtypes):
+    """'split', 'fused', 'fused_no_quant_state' (packed bytes, no quant state), 'fused_unknown_dtype' or None."""
+    if not dtypes:
+        return None
+    if any(".experts.gate_up_projs." in n or ".experts.down_projs." in n for n in dtypes):
+        return "split"
+    fused = [n for n in dtypes if n.endswith(_FUSED_EXPERT_SUFFIX)]
+    if not fused:
+        return None
+    for name in fused:
+        if name + ".absmax" in dtypes:
+            continue
+        if dtypes[name] is None:
+            return "fused_unknown_dtype"
+        if dtypes[name] in ("U8", "I8", "torch.uint8", "torch.int8"):
+            return "fused_no_quant_state"
+    return "fused"
+
+
+def gpt_oss_checkpoint_has_fused_experts(
+    config,
+    model_name = None,
+    **hub_kwargs,
+):
+    """True when a gpt-oss checkpoint stores fused experts (zoo's bnb split classes cannot load them); None if unknown."""
+    if config is None:
+        return None
+    quantization_config = getattr(config, "quantization_config", None)
+    if not quantization_config:
+        return True
+    if model_name is None:
+        return False
+    get = (
+        quantization_config.get
+        if isinstance(quantization_config, dict)
+        else lambda key, default = None: getattr(quantization_config, key, default)
+    )
+    quant_method = get("quant_method", None)
+    quant_method = getattr(quant_method, "value", quant_method)
+    if str(quant_method).lower() != "bitsandbytes":
+        return False
+    try:
+        dtypes = _checkpoint_tensor_dtypes(model_name, **hub_kwargs)
+    except _UnreadableCheckpointNames as exc:
+        # Anything not named *-unsloth-bnb-4bit may be a fused save; guessing split loads random experts.
+        if "unsloth-bnb-4bit" in str(model_name).lower():
+            return False
+        raise GptOssUnknownExpertLayoutError(
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint saved as a single "
+            f"`{os.path.basename(str(exc))}` with no index, so its expert layout (fused or Unsloth's split "
+            "pre-quantized layout) cannot be read without loading the weights, and a wrong guess loads "
+            "random experts. Re-save it with `safe_serialization = True` (safetensors), add its "
+            "`pytorch_model.bin.index.json`, or download it locally first."
+        ) from None
+    layout = _gpt_oss_bnb_checkpoint_expert_layout(dtypes)
+    if layout == "fused_unknown_dtype":
+        raise GptOssUnknownExpertLayoutError(
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint with fused experts and no "
+            "4-bit quantization state, and the dtype of its expert weights cannot be read without "
+            "downloading them, so packed 4-bit bytes (unrestorable) cannot be told apart from 16-bit "
+            "weights. Download it locally first, or re-save it with `safe_serialization = True`."
+        )
+    if layout == "fused_no_quant_state":
+        raise RuntimeError(
+            f"Unsloth: `{model_name}` is a 4-bit gpt-oss checkpoint whose fused expert weights were saved "
+            "without their bitsandbytes quantization state, so the experts cannot be restored. Reload the "
+            "original 16-bit checkpoint with `load_in_4bit = True` instead."
+        )
+    return layout == "fused"
+
+
+def quantization_config_is_bnb_4bit(quantization_config):
+    """True only for a present bitsandbytes 4-bit config (dict or BitsAndBytesConfig)."""
+    if quantization_config is None or (
+        isinstance(quantization_config, dict) and not quantization_config
+    ):
+        return False
+    return quantization_config_selects_bnb_4bit(quantization_config)
+
+
+def refuse_gpt_oss_fused_4bit_float16(dtype):
+    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32)."""
+    if dtype != torch.float16:
+        return
+    raise NotImplementedError(
+        "Unsloth: this gpt-oss checkpoint stores fused experts, and in float16 (this GPU has no bfloat16, "
+        "or dtype = torch.float16) its fused 4-bit experts would overflow. Use the pre-quantized "
+        "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
+    )
+
+
+def gpt_oss_keeps_checkpoint_quantization(model_name, config, load_in_4bit):
+    """True when gpt-oss ignores load_in_4bit / load_in_8bit. Unquantized still takes bnb 4-bit, not 8-bit
+    (bnb 8-bit only replaces nn.Linear, leaving fused experts 16-bit)."""
+    name = str(model_name).lower()
+    if "gpt-oss-20b" not in name and "gpt-oss-120b" not in name:
+        return False
+    return bool(getattr(config, "quantization_config", None)) or not load_in_4bit
+
+
+def sync_unsloth_model_name_bnb_flags(
+    load_in_4bit,
+    load_in_8bit,
+    config = None,
+    model_name = None,
+    **hub_kwargs,
+):
     """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss."""
     name = os.environ.get("UNSLOTH_MODEL_NAME", "")
     if "gpt_oss" not in name.replace("-", "_"):
         return
+    if load_in_4bit and gpt_oss_checkpoint_has_fused_experts(config, model_name, **hub_kwargs):
+        if os.environ.get("UNSLOTH_GPT_OSS_BNB4BIT_PATCHED", "0") == "1":
+            raise RuntimeError(
+                "Unsloth: this gpt-oss checkpoint is not quantized (fused experts), but the 4-bit gpt-oss "
+                "classes for pre-quantized checkpoints were already installed, so its experts and router "
+                "would load randomly initialised. Load the base model directly, use "
+                "`load_in_4bit = False`, or use a pre-quantized checkpoint such as "
+                "unsloth/gpt-oss-20b-unsloth-bnb-4bit."
+            )
+        load_in_4bit = False
     for flag, present in (
         ("_load_in_4bit_", bool(load_in_4bit)),
         ("_load_in_8bit_", bool(load_in_8bit)),

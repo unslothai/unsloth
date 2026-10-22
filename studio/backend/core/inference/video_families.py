@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
-from .family_name_match import normalize_family_name, token_in_name, token_length
+from .family_name_match import model_identity, normalize_family_name, token_in_name, token_length
 from .family_profile import AutoPrefer, ConvRotSpec, FamilyProfile, UntiledVae
 
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
@@ -82,7 +82,7 @@ def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
 
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
-        f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
+        f"{subject} is LTX-{version}, which Unsloth does not support yet. Unsloth runs LTX-2.0 / LTX-2.3 "
         "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers or "
         "unsloth/LTX-2.5-GGUF)."
     )
@@ -211,7 +211,7 @@ def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> 
 
 def ltx25_training_message(subject: str) -> str:
     return (
-        f"{subject} is LTX-2.5, which Studio can run on the Video page but cannot train yet. "
+        f"{subject} is LTX-2.5, which Unsloth can run on the Video page but cannot train yet. "
         "Train on LTX-2 (Lightricks/LTX-2) instead."
     )
 
@@ -386,7 +386,7 @@ _LTX_VIDEO_09_RE = (
     r"(?=.*(?<![a-z0-9])ltx(?:[-_ ]?video|v)(?:$|[-_ /.](?!2(?:$|[-_ /.]|\.\d))))"
 )
 _LTX_VIDEO_09_REFUSAL = (
-    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
+    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Unsloth does not "
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
 # Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
@@ -398,19 +398,19 @@ _LTX_VIDEO_09_REFUSAL = (
 _H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
 H3_PDD_WITHOUT_HEADS_REFUSAL = (
     "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
-    "external PDD head bank applied per step by a custom node, which Studio does not have, so it would render "
+    "external PDD head bank applied per step by a custom node, which Unsloth does not have, so it would render "
     "wrong output. Load the matching '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead, which carries "
     "the 32 video and audio heads in the file."
 )
 _H3_PDD_BANK_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*(?:lora|_comfyui\.safetensors$)"
 _H3_PDD_BANK_REFUSAL = (
     "This is a MiniMax-H3 PDD acceleration LoRA with an external head bank for a companion custom node, not a "
-    "denoiser Studio can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
+    "denoiser Unsloth can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
 )
 _HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
-    "transformer and SigLIP image encoder, which Studio does not load yet. Load a HunyuanVideo-1.5 "
+    "transformer and SigLIP image encoder, which Unsloth does not load yet. Load a HunyuanVideo-1.5 "
     "text-to-video checkpoint (hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v or "
     "720p_t2v) instead."
 )
@@ -977,14 +977,14 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
         "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
         "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
-        "ship), so Studio cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
+        "ship), so Unsloth cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
         "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
         "This is an NVIDIA AnyFlow checkpoint. AnyFlow is a flow-map distillation of Wan2.1 whose "
         "transformer takes a second (delta) timestep and samples through AnyFlowPipeline with "
-        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Studio loads cannot run it "
+        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Unsloth loads cannot run it "
         "faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
@@ -994,7 +994,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"[^/\\]*[/\\]*$",
         "This is a Wan2.1 image-to-video checkpoint (I2V-14B 480P / 720P or FLF2V). It generates "
         "from a start frame through its own image-conditioned transformer and a CLIP vision "
-        "encoder, which Studio does not load yet; image-to-video support is coming. Load a Wan2.1 "
+        "encoder, which Unsloth does not load yet; image-to-video support is coming. Load a Wan2.1 "
         "text-to-video checkpoint (Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
         "Wan-AI/Wan2.1-T2V-14B-Diffusers) instead.",
     ),
@@ -1006,7 +1006,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"(?![a-z0-9]))[^/\\]*[/\\]*$",
         "This is a Wan2.1 conditioning variant (VACE, Fun, MAGREF, Phantom, talking-head, "
         "ControlNet or ReCamMaster). Its transformer takes extra control inputs the text-to-video "
-        "pipeline does not provide, so Studio cannot run it. Load a plain Wan2.1 text-to-video "
+        "pipeline does not provide, so Unsloth cannot run it. Load a plain Wan2.1 text-to-video "
         "checkpoint instead.",
     ),
 )
@@ -1062,7 +1062,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
-    needle = repo_id.lower()
+    needle = model_identity(repo_id).lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
@@ -1706,7 +1706,7 @@ def video_generation_variant(
     ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults. Family-scoped
     keys (``_FAMILY_SCOPED_DEFAULT_KEYS``) match only for their own family."""
     for identifier in identifiers:
-        whole = (identifier or "").lower()
+        whole = model_identity(identifier).lower()
         name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             scope = _FAMILY_SCOPED_DEFAULT_KEYS.get(key)

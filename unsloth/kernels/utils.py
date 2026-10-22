@@ -695,6 +695,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         quant_state = None,
         out = None,
         use_global_buffer = False,
+        dtype = None,
     ):
         # TODO: After adding XPU BNB support, check this function
         if isinstance(W, Float8Tensor):
@@ -702,7 +703,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            return weight_dequant(W, quant_state)
+            return weight_dequant(W, quant_state, dtype or torch.bfloat16)
         if type(quant_state) is NVFP4QuantState:
             return nvfp4_dequantize(
                 W, quant_state.scale, quant_state.global_scale, quant_state.dtype
@@ -872,13 +873,14 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         quant_state = None,
         out = None,
         use_global_buffer = False,
+        dtype = None,
     ):
         if isinstance(W, Float8Tensor):
             return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            return weight_dequant(W, quant_state)
+            return weight_dequant(W, quant_state, dtype or torch.bfloat16)
         if type(quant_state) is NVFP4QuantState:
             return nvfp4_dequantize(
                 W, quant_state.scale, quant_state.global_scale, quant_state.dtype
@@ -979,13 +981,14 @@ else:
         quant_state = None,
         out = None,
         use_global_buffer = False,
+        dtype = None,
     ):
         if isinstance(W, Float8Tensor):
             return W.dequantize()
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
-            return weight_dequant(W, quant_state)
+            return weight_dequant(W, quant_state, dtype or torch.bfloat16)
         if type(quant_state) is NVFP4QuantState:
             return nvfp4_dequantize(
                 W, quant_state.scale, quant_state.global_scale, quant_state.dtype
@@ -1171,7 +1174,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         )
         if shape[1] % blocksize != 0:
             # The gemv kernels assume each weight row starts a new quantization block.
-            return torch_matmul(X, fast_dequantize(W, quant_state).t(), out = out)
+            return torch_matmul(X, fast_dequantize(W, quant_state, dtype = X.dtype).t(), out = out)
         device = W.device
         CUDA_STREAM = c_void_p(_gpu_getCurrentRawStream(device.index))
 
@@ -1283,7 +1286,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         )
         if shape[1] % blocksize != 0:
             # The gemv kernels assume each weight row starts a new quantization block.
-            return torch_matmul(X, fast_dequantize(W, quant_state).t(), out = out)
+            return torch_matmul(X, fast_dequantize(W, quant_state, dtype = X.dtype).t(), out = out)
         try:
             if (
                 eager
@@ -1432,14 +1435,18 @@ def fast_dequantize(
     quant_state = None,
     out = None,
     use_global_buffer = False,
+    dtype = None,
 ):
+    # dtype only steers the FP8 dequant (default bf16); every other format keeps its own dtype.
     quant_type = type(quant_state)
     if quant_type is Int4QuantState:
         return _int4_dequantize_weight(W, quant_state)
     # A packed MXFP4 base hands in weight_packed (or its .t()) with a decoder as the quant state.
     if getattr(quant_type, "_unsloth_packed_weight_state", False):
         return quant_state.dequantize(W)
-    return _fast_dequantize_bnb(W, quant_state, out = out, use_global_buffer = use_global_buffer)
+    return _fast_dequantize_bnb(
+        W, quant_state, out = out, use_global_buffer = use_global_buffer, dtype = dtype
+    )
 
 
 def fast_gemv(
@@ -1514,6 +1521,9 @@ def _bnb_gemm_4bit_device_ok(device):
 
 def _bnb_gemm_4bit_ok(X, W, quant_state):
     global _BNB_GEMM_4BIT, _BNB_GEMM_4BIT_DTYPES
+    # Before the lazy setup: dynamo cannot trace torch.cuda.device_count().
+    if _is_compiling() or torch.is_grad_enabled():
+        return False
     if _BNB_GEMM_4BIT is None:
         if os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1":
             _BNB_GEMM_4BIT_DTYPES = (torch.float16, torch.bfloat16)
@@ -1541,8 +1551,6 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         and quant_state.shape[-1] % quant_state.blocksize == 0
         # matmul_4bit raises for any other nested blocksize.
         and (not quant_state.nested or quant_state.state2.blocksize == 256)
-        and not torch.is_grad_enabled()
-        and not _is_compiling()
     )
 
 
@@ -1702,7 +1710,7 @@ def fast_linear_forward(
     ):
         out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
+        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True, dtype = X.dtype)
         out = torch_matmul(X, W, out = out)
 
     if lora_A is not None:
@@ -1793,7 +1801,7 @@ def matmul_lora(
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer)
+        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer, dtype = dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

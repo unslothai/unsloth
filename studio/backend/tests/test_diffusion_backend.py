@@ -1248,6 +1248,47 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     backend.unload()
 
 
+def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # #14114: the 3rd-image compile turns LoRA off. Status must say a reload restores it, or the picker just vanishes.
+    from core.inference import diffusion as dmod
+    from models.inference import DiffusionStatusResponse
+
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {"compiled": k.get("speed_mode") in ("default", "max")},
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    load = dict(gguf_filename = "model.safetensors", family_override = "qwen-image")
+
+    backend = DiffusionBackend()
+    status = _load_into(backend, tmp_path, **load)
+    assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    status = backend.status()
+    assert "compiled" in status["speed_optims"]
+    assert (status["supports_lora"], status["lora_after_reload"]) == (False, True)
+    assert DiffusionStatusResponse(**status).lora_after_reload is True
+
+    # The reload defers again, so LoRA is back.
+    backend.unload()
+    status = _load_into(backend, tmp_path, **load)
+    assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+
+    # An explicit compiled tier compiles at load: a reload would not help, so no hint.
+    backend.unload()
+    status = _load_into(backend, tmp_path, speed_mode = "default", **load)
+    assert "compiled" in status["speed_optims"]
+    assert (status["supports_lora"], status["lora_after_reload"]) == (False, False)
+    backend.unload()
+    assert backend.status()["lora_after_reload"] is False
+
+
 def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
     fake_runtime, tmp_path, monkeypatch
 ):
@@ -7189,6 +7230,28 @@ def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
         family = SimpleNamespace(denoiser_attr = "transformer"),
     )
     assert dmod._transformer_quant_backend(hostile) is None
+
+
+def test_status_reports_the_load_time_baked_loras(fake_runtime, tmp_path):
+    # Vary compares a gallery record's baked_loras with the load's, so status must carry the same ids, and an
+    # unbaked or unloaded state must say none rather than omit the key.
+    from models.inference import DiffusionStatusResponse
+
+    assert DiffusionBackend().status()["baked_loras"] == []
+    backend = DiffusionBackend()
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    _load_into(backend, tmp_path, gguf_filename = "z-image-turbo-Q8_0.gguf", base_repo = None)
+    assert backend.status()["baked_loras"] == []
+    pipe = backend._state.pipe
+    pipe._unsloth_loras = (
+        ("sloth", "/adapters/sloth.safetensors", 0.8),
+        ("ink", "/adapters/ink.safetensors", 0.5),
+    )
+    pipe._unsloth_loras_baked = True
+    status = backend.status()
+    assert status["baked_loras"] == ["sloth", "ink"]
+    assert DiffusionStatusResponse(**status).model_dump()["baked_loras"] == ["sloth", "ink"]
+    assert DiffusionStatusResponse(loaded = True).model_dump()["baked_loras"] == []
 
 
 def test_the_unloaded_status_declares_the_quant_backend_key():

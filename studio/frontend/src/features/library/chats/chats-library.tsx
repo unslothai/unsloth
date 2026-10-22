@@ -41,6 +41,7 @@ import {
   removeCustomSectionWithUndo,
   renameChatItem,
   showForkCreatedToast,
+  showForkFailedToast,
   unarchiveChatItem,
   useChatPreferencesStore,
   useChatProjects,
@@ -775,13 +776,9 @@ export function ChatsLibrary({
     try {
       const result = await forkChatRow(chat);
       notifyChatHistoryUpdated();
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (err) {
-      if ((err as { unslothForkRefused?: boolean } | null)?.unslothForkRefused) {
-        toast.info(err instanceof Error ? err.message : t("library.chats.toast.forkFailed"));
-      } else {
-        toast.error(t("library.chats.toast.forkFailed"), { description: errorDescription(err) });
-      }
+      showForkFailedToast(err, t("library.chats.toast.forkFailed"));
     } finally {
       inFlight.setForking(false);
     }

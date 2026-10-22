@@ -581,6 +581,7 @@ def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
         _wav,
         _seconds = None,
         *,
+        language = None,
         cancel_event = None,
     ):
         nonlocal started
@@ -1288,3 +1289,102 @@ def test_a_build_without_api_key_file_still_starts_keyless(spawned, monkeypatch)
     sidecar.load("qwen3-asr-0.6b")
     assert "--api-key-file" not in commands[0] and sidecar._api_key is None
     sidecar.unload()
+
+
+@pytest.mark.parametrize("model_id", ["qwen3-asr-0.6b", "qwen3-asr-1.7b"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "language, expected_language",
+    [
+        ("en", "English"),
+        ("zh", "Chinese"),
+        ("en-GB", "English"),
+        ("cmn-Hans", "Chinese"),
+        (None, None),
+        ("auto", None),
+        ("", None),
+        ("xx", None),
+    ],
+)
+def test_requested_language_reaches_the_decoder(
+    spawned, monkeypatch, model_id, stream, language, expected_language
+):
+    import json
+
+    _shared_setup_2(monkeypatch)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sent, progress = [], []
+    # llama-server returns only newly generated text for an assistant prefill.
+    chunks = ["Hello ", "world"]
+    if expected_language is None:
+        chunks.insert(0, "language English<asr_text>")
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "".join(chunks)}}]}).encode()
+
+        def __iter__(self):
+            for chunk in chunks:
+                event = {"choices": [{"delta": {"content": chunk}, "finish_reason": None}]}
+                yield b"data: " + json.dumps(event).encode() + b"\n"
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+            yield b"data: [DONE]\n"
+
+    class _Connection:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(
+            self,
+            method,
+            path,
+            body = None,
+            headers = None,
+        ):
+            assert method == "POST" and path == "/v1/chat/completions"
+            sent.append(json.loads(body))
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mtmd_mod.http.client, "HTTPConnection", _Connection)
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    try:
+        result = sidecar.transcribe(
+            b"audio",
+            model = model_id,
+            language = language,
+            on_progress = progress.append if stream else None,
+        )
+    finally:
+        sidecar.unload()
+
+    assert result["text"] == "Hello world"
+    (payload,) = sent
+    assert payload.get("stream", False) is stream
+    assert payload["messages"][0]["role"] == "user"
+    assistant_messages = [m for m in payload["messages"] if m["role"] == "assistant"]
+    if expected_language is None:
+        assert assistant_messages == []
+        assert "continue_final_message" not in payload and "add_generation_prompt" not in payload
+    else:
+        assert assistant_messages == [
+            {"role": "assistant", "content": f"language {expected_language}<asr_text>"}
+        ]
+        assert payload["continue_final_message"] is True
+        assert payload["add_generation_prompt"] is False
+    if stream:
+        assert progress, "prefilled responses still need to publish transcription progress"
+        assert progress[-1] == {"text": "Hello world"}
+        assert all("language " not in event["text"] for event in progress)

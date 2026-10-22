@@ -1542,6 +1542,45 @@ def test_audio_options_reach_the_request_validated():
     }
 
 
+def test_supertonic_gets_the_language_top_level_as_a_code():
+    # Supertonic reads only the top-level language (audio.cpp supertonic/session.cpp), never options.
+    for keys in (None, frozenset({"speed", "num_inference_steps", "text_chunk_size", "seed"})):
+        model = _speech_model("supertonic", request_keys = keys)
+        b, srv = _backend_with(model, SPEECH_WAV)
+        for given, sent in (
+            ("de", "de"),
+            (" de-DE ", "de"),
+            ("German", "de"),
+            ("hindi", "hi"),
+            ("auto", None),
+        ):
+            b.generate_audio_response("Hallo", language = given)
+            body = srv.calls[-1][1]
+            assert body.get("language") == sent and "language" not in body.get("options", {})
+        if keys is not None:
+            assert audio_cpp_backend.model_info_fields(model)["audio_request_inputs"] == [
+                "language"
+            ]
+
+
+def test_a_refused_top_level_language_is_retried_without_it():
+    from core.inference.audio_cpp_server import AudioCppRequestError
+
+    b, srv = _backend_with(_speech_model("supertonic"), SPEECH_WAV)
+    calls = []
+
+    def post_json(path, payload, **kwargs):
+        calls.append(json.loads(json.dumps(payload)))
+        if len(calls) == 1:
+            raise AudioCppRequestError(500, "invalid Supertonic language: xx")
+        return SPEECH_WAV
+
+    srv.post_json = post_json
+    b.generate_audio_response("hi", language = "xx")
+    assert calls[0]["language"] == "xx" and "language" not in calls[1]
+    assert calls[1]["voice"] == "M1"
+
+
 def test_speech_retry_keeps_package_defaults_and_user_options_and_covers_500():
     from core.inference.audio_cpp_server import AudioCppRequestError
 
