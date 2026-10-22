@@ -118,6 +118,7 @@ export const ko = {
     reload: "새로고침",
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
+    local: "로컬",
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -468,6 +469,8 @@ export const ko = {
       downloadFailed: "{name}을(를) 다운로드할 수 없습니다",
       notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
       blocked: "이 주소는 브라우저 패널에서 열 수 없습니다. 공개 웹사이트만 열 수 있습니다.",
+      blockedLocal: "이 로컬 주소는 여기에서 열 수 없습니다. 열려면 주소 표시줄에 입력하세요.",
+      studioAddress: "Unsloth 자체의 주소이므로 브라우저 패널에서 열 수 없습니다.",
       clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제합니다. 사이트에서 로그아웃됩니다.",
       clearDataDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",

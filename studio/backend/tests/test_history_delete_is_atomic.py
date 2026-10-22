@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deleting a run must not be able to half-happen.
-
-``DELETE /runs/{run_id}?delete_artifacts=true`` is new in this PR -- on ``b41b819a4`` the
-endpoint only calls ``delete_run(run_id)`` and never touches the filesystem. As first
-written it removed the output directory and *then* the database row, so a failing row
-delete left the artifacts destroyed and the row alive with ``output_dir`` still
-populated. ``storage/studio_db.py`` opens SQLite with Python's default 5 s busy timeout
-and no explicit ``busy_timeout`` pragma, so a writer holding the database for longer than
-that is enough to trigger it.
-
-The state that leaves behind is the real problem: a row whose artifacts are silently gone
-is indistinguishable from the legitimate "history kept, files kept" outcome the same
-endpoint produces for a shared output directory. The user cannot tell which happened.
-
-Staging the directory with a same-parent rename makes the destructive step wait until the
-row is actually gone, so a failure rolls the whole thing back.
-"""
+"""Artifacts are removed only after the row is gone; a same-parent rename stages the directory first."""
 
 import shutil
 from pathlib import Path
@@ -66,7 +50,6 @@ def test_a_failed_row_delete_leaves_the_artifacts_intact(outputs):
     assert outcome == "deleted"
     assert original is not None and staged is not None
 
-    # The DB delete blows up; the endpoint rolls the staging back.
     training_history._restore_staged_output_dir(original, staged)
 
     assert run_dir.is_dir(), (

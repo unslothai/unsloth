@@ -1,17 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The arm `residentModelMatchesPick` takes when the status reports no `model_identifier`.
- *
- * The raw-identifier arm above settles which revision is resident. This one has no raw
- * identifier to compare, so all that is left is a public id every snapshot of the repo
- * shares, and adopting on it leaves the user on weights they did not pick.
- *
- * Reachable from a backend predating the field, and from a native lease, which withholds
- * the raw path by design. Found by fuzzing this function against the server's own
- * already-loaded test, `LlamaCppBackend.matches_load_source`.
- */
+/** Without model_identifier only the shared public id is left, so adopting picks wrong weights. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -28,12 +18,10 @@ const Q = "Q4_K_M";
 const RESIDENT_SHA = "50968a4468ef4233ed78cd7c3de230dd1d61a56b";
 const NEWER_SHA = "d7f544eead698dbd1f15126ef60b45a1e1933222";
 
-/** The cache dir holding one repo, spelled the way each host spells it. */
 const CACHE_ROOTS: Record<string, string> = {
   linux:
     "/home/dev/.cache/huggingface/hub/models--unsloth--Qwen3-0.6B-GGUF/snapshots/",
-  // A second disk at /mnt/<letter> is ordinary on Linux and indistinguishable from WSL
-  // to a string comparator, so it is its own host here.
+  // A second disk at /mnt/<letter> looks like WSL to a string comparator.
   linuxMounted: "/mnt/d/hf/hub/models--unsloth--Qwen3-0.6B-GGUF/snapshots/",
   mac: "/Users/dev/.cache/huggingface/hub/models--unsloth--Qwen3-0.6B-GGUF/snapshots/",
   wsl: "/mnt/c/Users/dev/hf/hub/models--unsloth--Qwen3-0.6B-GGUF/snapshots/",
@@ -50,8 +38,6 @@ for (const [host, root] of Object.entries(CACHE_ROOTS)) {
   test(`[${host}] a status with no raw identifier does not adopt a different snapshot`, () => {
     assert.equal(
       residentModelMatchesPick(
-        // What an install predating model_identifier publishes: the repo id, the same
-        // string for every revision in the cache.
         { active_model: REPO, gguf_variant: Q },
         { id: REPO, loadPath: newer, ggufVariant: Q },
       ),
@@ -99,8 +85,6 @@ for (const [host, root] of Object.entries(CACHE_ROOTS)) {
 }
 
 test("an unpinned pick is its own load id, so the public id still answers", () => {
-  // No loadPath: the repo id is what the server was given, so there is no revision the
-  // comparison could be wrong about.
   assert.equal(
     residentModelMatchesPick(
       { active_model: REPO, gguf_variant: Q },
@@ -111,8 +95,6 @@ test("an unpinned pick is its own load id, so the public id still answers", () =
 });
 
 test("a native lease keeps matching on the label it was granted under", () => {
-  // What the public-id arm exists for: a bare label is not a cache snapshot, so the
-  // refusal above must not reach it.
   assert.equal(
     residentModelMatchesPick(
       { active_model: "Qwen3-0.6B-Q4_K_M.gguf", model_identifier: null },
@@ -123,8 +105,7 @@ test("a native lease keeps matching on the label it was granted under", () => {
 });
 
 test("a standalone .gguf is not adopted on its stem alone", () => {
-  // Two directories can each hold a Qwen3-0.6B-Q4_K_M.gguf, so the stem is shareable and
-  // residentModelIdMatches takes its public pass only for a namespaced repo id.
+  // Two directories can hold the same .gguf name, so the public pass needs a namespaced repo id.
   assert.equal(
     residentModelMatchesPick(
       { active_model: "Qwen3-0.6B-Q4_K_M", gguf_variant: Q },
@@ -132,7 +113,6 @@ test("a standalone .gguf is not adopted on its stem alone", () => {
     ),
     false,
   );
-  // With the raw identifier there is nothing to guess about, and it adopts.
   assert.equal(
     residentModelMatchesPick(
       {
@@ -147,8 +127,7 @@ test("a standalone .gguf is not adopted on its stem alone", () => {
 });
 
 test("a models-- dir that is not the cache layout is not treated as a snapshot", () => {
-  // hf_cache_repo_id only recognises models--*/snapshots/*, so a blobs dir has no revision
-  // to be wrong about and the public-id arm still applies.
+  // hf_cache_repo_id only recognizes models--*/snapshots/*.
   assert.equal(
     residentModelMatchesPick(
       { active_model: "unsloth/Qwen3-0.6B-GGUF", gguf_variant: Q },

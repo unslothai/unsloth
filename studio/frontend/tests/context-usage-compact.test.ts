@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The context usage shows its counts beside a ring; squeezed, the ring alone.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -11,11 +9,8 @@ import { deriveContextUsageBar } from "../src/features/chat/lib/context-usage-ba
 import { readSrc } from "./helpers/kit.ts";
 
 test("the compact face is the ring, unless there is no window to fill", () => {
-  // a known window: the ring alone, with no percent label
   assert.equal(deriveContextUsageBar({ used: 16384, total: 32768 })?.compactFace, null);
-  // nothing counted yet: the empty ring
   assert.equal(deriveContextUsageBar({ used: null, total: 32768 })?.compactFace, null);
-  // no window: the token count stands in for the ring
   assert.equal(deriveContextUsageBar({ used: 4096, total: null })?.compactFace, "4.1k");
 });
 
