@@ -194,6 +194,43 @@ def test_cache_calls_keep_the_stock_forward(monkeypatch):
     assert calls  # no cache: compiled
 
 
+@pytest.mark.parametrize("key", ["packed_seq_lengths", "prefix_seg_info"])
+def test_unsloth_host_metadata_calls_keep_the_stock_forward(monkeypatch, key):
+    """Unsloth's own layer forwards read packed lengths and GRPO PrefixGrouper segment tables on
+    the host; compiled, a block guarded on them and recompiled at every new length (Llama GRPO:
+    9 recompiles in 2 steps, 17 in 6, growing with each new completion length)."""
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    class UnslothDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.proj(hidden_states)
+
+    UnslothDecoderLayer.forward.__module__ = "unsloth.models.llama"
+    M._wrap(UnslothDecoderLayer, {})
+    layer = UnslothDecoderLayer()
+    x = torch.randn(1, 4, 8)
+    with torch.no_grad():
+        layer(x, **{key: object()})
+    assert calls == []
+    with torch.no_grad():
+        layer(x, **{key: None})
+    assert calls  # no host metadata: compiled
+
+
 def test_gemma4_band_fast_path_in_blocks(monkeypatch):
     M = _load()
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS

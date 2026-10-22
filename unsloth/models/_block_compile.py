@@ -690,7 +690,8 @@ def _layer_kind(layer):
 
 def _wrap(cls, compile_options):
     original = cls.forward
-    # Unsloth layer forwards read packed lengths on the host (packing.py): packed calls stay stock.
+    # Unsloth layer forwards read packed lengths / PrefixGrouper segments on the host: those calls
+    # stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
     try:
@@ -727,6 +728,9 @@ def _wrap(cls, compile_options):
             or _forced_float32(self)
             or _zero3_partitioned(self)
             or (unsloth_forward and kwargs.get("packed_seq_lengths") is not None)
+            # GRPO PrefixGrouper rides the same route: its segment table (lengths as Python ints)
+            # and block-mask cache are guarded, so a block recompiled at every new GRPO length.
+            or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
         ):
             return original(self, hidden_states, *args, **kwargs)
         if not self.__dict__.get("_unsloth_block_moe_done", False):
