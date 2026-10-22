@@ -166,3 +166,16 @@ test("an owner-shared connection lists only the models the owner allowed", () =>
   assert.deepEqual(connectionTranscribeModels(shared, "gpt-4o-transcribe"), ["whisper-1"]);
   assert.deepEqual(connectionTranscribeModels({ ...shared, models: ["gpt-5.5"] }), []);
 });
+
+test("an OpenAI-typed Azure connection offers its deployments, not OpenAI's model IDs", () => {
+  const azure = {
+    providerType: "openai",
+    baseUrl: "https://contoso.openai.azure.com/openai/v1",
+    models: ["gpt-5.5", "whisper-deploy"],
+  };
+  assert.deepEqual(connectionTranscribeModels(azure), ["whisper-deploy"]);
+  assert.deepEqual(
+    connectionTranscribeModels({ ...azure, baseUrl: "https://api.openai.com/v1", models: [] }),
+    ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"],
+  );
+});

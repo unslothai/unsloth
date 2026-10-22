@@ -1595,18 +1595,24 @@ export function AudioPage({
     });
   };
   const startTranscriptionRef = useRef(startTranscription);
+  const transcribeTarget = transcribeConnection?.id ?? transcribeRepo;
+  const transcribeTargetRef = useRef(transcribeTarget);
   useEffect(() => {
     startTranscriptionRef.current = startTranscription;
+    transcribeTargetRef.current = transcribeTarget;
   });
   const handleTranscribe = () => {
     const source = useAudioTranscribeStore.getState().source;
     if (!source) return;
+    const target = transcribeTarget;
     alignerDownload.runWithAligner(transcribeOptions.request.timestamps, () => {
-      // The download can outlast the click: run only while Transcribe still shows the same audio.
+      // The download can outlast the click: run only while Transcribe still shows the same audio
+      // and model, so a connection picked meanwhile never receives audio nobody sent it.
       if (
         !activeRef.current ||
         modeRef.current !== "transcribe" ||
-        useAudioTranscribeStore.getState().source?.id !== source.id
+        useAudioTranscribeStore.getState().source?.id !== source.id ||
+        transcribeTargetRef.current !== target
       )
         return;
       // A run would be refused while a model loads or another task runs: say so instead of dropping it.
@@ -1989,7 +1995,7 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              {connection ? null : (
+              {connection || (mode === "transcribe" && transcribeConnection) ? null : (
                 <UseViaApiButton
                   workflow={pageWorkflow}
                   model={selectorValue ?? null}

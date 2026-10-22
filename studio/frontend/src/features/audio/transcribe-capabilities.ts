@@ -71,9 +71,21 @@ const OPENAI_TRANSCRIBE_MODELS = [
   "gpt-4o-mini-transcribe",
 ];
 
+// Azure and other OpenAI-typed endpoints name models by deployment (as speak-connection-models.ts).
+function isOpenAIApi(connection: { providerType: string; baseUrl?: string }): boolean {
+  if (connection.providerType !== "openai") return false;
+  if (!connection.baseUrl) return true;
+  try {
+    return new URL(connection.baseUrl).hostname.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
 export function connectionTranscribeModels(
   connection: {
     providerType: string;
+    baseUrl?: string;
     models: readonly string[];
     availableModels?: readonly string[];
     sharedByOwner?: boolean;
@@ -81,7 +93,7 @@ export function connectionTranscribeModels(
   dictationModel?: string,
 ): string[] {
   const ids = [
-    ...(connection.providerType === "openai" ? OPENAI_TRANSCRIBE_MODELS : []),
+    ...(isOpenAIApi(connection) ? OPENAI_TRANSCRIBE_MODELS : []),
     ...connection.models,
     ...(connection.availableModels ?? []),
   ].filter((id) => TRANSCRIBE_MODEL_ID.test(id));

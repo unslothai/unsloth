@@ -90,11 +90,11 @@ test("only a timestamped Transcribe waits for the aligner download", () => {
   // The run reads the page as it is when the download ends, and only while it is still showing.
   assert.match(
     page,
-    /const startTranscriptionRef = useRef\(startTranscription\);\s*useEffect\(\(\) => \{\s*startTranscriptionRef\.current = startTranscription;\s*\}\);/,
+    /const startTranscriptionRef = useRef\(startTranscription\);[\s\S]*?useEffect\(\(\) => \{\s*startTranscriptionRef\.current = startTranscription;\s*transcribeTargetRef\.current = transcribeTarget;\s*\}\);/,
   );
   assert.match(
     page,
-    /alignerDownload\.runWithAligner\(transcribeOptions\.request\.timestamps, \(\) => \{[\s\S]*?!activeRef\.current \|\|\s*modeRef\.current !== "transcribe" \|\|\s*useAudioTranscribeStore\.getState\(\)\.source\?\.id !== source\.id\s*\)\s*return;[\s\S]*?startTranscriptionRef\.current\(source\);/,
+    /alignerDownload\.runWithAligner\(transcribeOptions\.request\.timestamps, \(\) => \{[\s\S]*?!activeRef\.current \|\|\s*modeRef\.current !== "transcribe" \|\|\s*useAudioTranscribeStore\.getState\(\)\.source\?\.id !== source\.id \|\|\s*transcribeTargetRef\.current !== target\s*\)\s*return;[\s\S]*?startTranscriptionRef\.current\(source\);/,
   );
   // A download ending while a model loads cannot start the run; the user is told, not left waiting.
   assert.match(

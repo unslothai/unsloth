@@ -287,7 +287,7 @@ test("leaving Audio during the residency read skips the transcription load", () 
 });
 
 test("Use via API is hidden while Speak runs through a connection", () => {
-  assert.match(source, /\{connection \? null : \(\s*<UseViaApiButton\s+workflow=\{pageWorkflow\}/);
+  assert.match(source, /\{connection \|\|[^?]*\? null : \(\s*<UseViaApiButton\s+workflow=\{pageWorkflow\}/);
 });
 
 test("picking a connection retires a local Speak pick still downloading or planning", () => {
@@ -298,5 +298,17 @@ test("picking a connection retires a local Speak pick still downloading or plann
   assert.match(
     source,
     /const invalidatePendingTtsSelection = useCallback\(\(\) => \{\s*ttsPickGeneration\.current \+= 1;\s*pendingRoutedTtsPick\.current = null;\s*invalidatePendingStagedTts\(\);/,
+  );
+});
+
+test("a transcription waiting on the aligner runs only on the model picked at click time", () => {
+  assert.match(source, /const target = transcribeTarget;/);
+  assert.match(source, /\|\|\s*transcribeTargetRef\.current !== target\s*\)\s*return;/);
+});
+
+test("Use via API is hidden while Transcribe runs through a connection", () => {
+  assert.match(
+    source,
+    /\{connection \|\| \(mode === "transcribe" && transcribeConnection\) \? null : \(\s*<UseViaApiButton/,
   );
 });
