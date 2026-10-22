@@ -2564,6 +2564,23 @@ const GeneratedImageViewportOverlay: FC<{
   );
 };
 
+// From the end: the footer follows every message row, and a forward walk costs O(rows) where Chromium's `:scope >` is O(1).
+const childWithClass = (
+  parent: Element | null | undefined,
+  className: string,
+): HTMLElement | null => {
+  for (
+    let child = parent?.lastElementChild ?? null;
+    child;
+    child = child.previousElementSibling
+  ) {
+    if (child instanceof HTMLElement && child.classList.contains(className)) {
+      return child;
+    }
+  }
+  return null;
+};
+
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
@@ -2622,17 +2639,13 @@ const ThreadComposerDock: FC<{
   useLayoutEffect(() => {
     const dock = dockRef.current;
     const inner = dockInnerRef.current;
-    const viewport = dock?.parentElement?.querySelector<HTMLElement>(
-      ":scope > .aui-thread-viewport",
-    );
+    const viewport = childWithClass(dock?.parentElement, "aui-thread-viewport");
     if (!dock || !inner || !viewport) return;
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
-      const footer = viewport.querySelector(
-        ":scope > .aui-thread-viewport-footer",
-      );
+      const footer = childWithClass(viewport, "aui-thread-viewport-footer");
       if (footer && footer !== observedFooter) {
         if (observedFooter) resizeObserver.unobserve(observedFooter);
         resizeObserver.observe(footer);
