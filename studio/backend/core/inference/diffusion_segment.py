@@ -156,8 +156,8 @@ ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
 # for the next call before it is dropped; 0 never parks.
 ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
 PARK_SECONDS = 600.0
-# "1" keeps the parked copy in page-locked (pinned) host memory, so moving it back is a DMA a busy CPU does not slow
-# down. Off by default: pinning SAM 3's ~1,500 tensors one by one costs far more, once per load, than it saves.
+# The parked copy is one page-locked (pinned) host buffer, so moving it back is a DMA a busy CPU does not slow down;
+# "0" keeps it pageable.
 ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
@@ -1025,80 +1025,117 @@ def _free_device_cache(device: Optional[str]) -> None:
             torch.mps.empty_cache()
 
 
-def _pinned(tensor: Any) -> Any:
-    """``tensor`` (on the CPU) in page-locked memory; a tensor subclass (torchao's quantized weights) pins its inner
-    tensors. The tensor itself when it cannot be pinned."""
-    try:
-        return tensor.pin_memory()
-    except Exception:  # noqa: BLE001 -- a subclass without pin_memory
-        pass
-    flatten = getattr(tensor, "__tensor_flatten__", None)
-    if flatten is not None:
-        try:
-            names, ctx = flatten()
-            inner = {name: _pinned(getattr(tensor, name)) for name in names}
-            return type(tensor).__tensor_unflatten__(inner, ctx, tensor.size(), tensor.stride())
-        except Exception:  # noqa: BLE001
-            pass
-    return tensor
-
-
-class _StaleHostCopy(Exception):
-    pass
-
-
-def _tensor_kind(tensor: Any) -> type:
-    """The tensor's class, with nn.Parameter read as a plain Tensor (Module._apply hands parameters to ``fn``)."""
-    import torch
-    return torch.Tensor if isinstance(tensor, torch.nn.Parameter) else type(tensor)
-
-
 class _HostWeights:
-    """The parked model's weights in host RAM, kept across parks: SAM 3 never changes its weights, so after the first
-    park a later one only drops the GPU copy (no device-to-host copy), and moving back is a host-to-device copy from
-    the same (pinned) tensors. Tensors are matched in Module._apply's order, checked by type, shape, dtype and
-    device; any mismatch rebuilds the copy."""
+    """The parked model's weights as one host buffer (pinned unless ENV_PARK_PIN is "0") and, on the device, one
+    storage that every weight tensor views. Moving ~1,500 separate tensors costs one device allocation each (after
+    the cache is emptied, a cudaMalloc each), which on a busy host is slower than reading the file again; with one
+    storage, park is a single device-to-host copy and a free, and unpark a single allocation and host-to-device copy.
+
+    The first park repacks: each weight storage is copied to its slice of the host buffer, freed, and its tensors are
+    re-pointed (``Tensor.set_``, same sizes and strides) at the matching offset of the one device storage. The
+    modules and tensor objects stay as they are; a tensor subclass (torchao's quantized weights) is handled through
+    its inner tensors."""
+
+    _ALIGN = 256
 
     def __init__(self, pin: bool) -> None:
         self.pin = pin
-        self.tensors: Optional[list] = None
+        self.buffer: Any = None
+        self.storage: Any = None
+        self.total = 0
 
-    def park(self, model: Any) -> None:
-        cached = self.tensors
+    @staticmethod
+    def _leaves(model: Any) -> list:
+        """Every plain tensor behind the module's parameters and buffers (a subclass's inner tensors)."""
+        import torch
+
         out: list = []
 
-        def _to_host(t: Any) -> Any:
-            index = len(out)
-            if cached is not None:
-                host = cached[index] if index < len(cached) else None
-                if (
-                    host is None
-                    or _tensor_kind(host) is not _tensor_kind(t)
-                    or host.shape != t.shape
-                    or host.dtype != t.dtype
-                    or host.device.type != "cpu"
-                ):
-                    raise _StaleHostCopy()
-            else:
-                host = t.detach().to("cpu")
-                if self.pin:
-                    host = _pinned(host)
-            out.append(host)
-            # A fresh alias: Module._apply swaps a tensor subclass's contents with what this returns, which must not
-            # be the kept copy.
-            return host.detach()
+        def _visit(t: Any) -> None:
+            if type(t) not in (torch.Tensor, torch.nn.Parameter):
+                flatten = getattr(t, "__tensor_flatten__", None)
+                if flatten is None:
+                    raise TypeError(f"cannot park a {type(t).__name__} tensor")
+                names, _ctx = flatten()
+                for name in names:
+                    _visit(getattr(t, name))
+                return
+            out.append(t)
 
-        try:
-            model._apply(_to_host)
-        except _StaleHostCopy:
-            self.tensors = None
-            self.park(model)
-            return
-        self.tensors = out
+        # The registered objects themselves, not ``.data`` aliases: set_ has to re-point the tensor the module uses.
+        for param in model.parameters():
+            _visit(param)
+        for buffer in model.buffers():
+            _visit(buffer)
+        return out
+
+    def _bytes(
+        self,
+        storage: Any,
+        nbytes: int,
+        offset: int = 0,
+    ) -> Any:
+        import torch
+        view = torch.empty(0, dtype = torch.uint8, device = storage.device)
+        return view.set_(storage, offset, (nbytes,), (1,))
+
+    def _repack(self, model: Any) -> None:
+        import torch
+
+        leaves = self._leaves(model)
+        slots: dict = {}
+        offset = 0
+        for leaf in leaves:
+            storage = leaf.untyped_storage()
+            key = storage.data_ptr()
+            if key in slots or storage.nbytes() == 0:
+                continue
+            slots[key] = (storage, offset)
+            offset += -(-storage.nbytes() // self._ALIGN) * self._ALIGN
+        self.total = offset
+        self.buffer = torch.empty(self.total, dtype = torch.uint8, pin_memory = self.pin)
+        storages = [st for st, _off in slots.values()]
+        if storages:
+            torch._foreach_copy_(
+                [self.buffer[off : off + st.nbytes()] for st, off in slots.values()],
+                [self._bytes(st, st.nbytes()) for st in storages],
+                non_blocking = self.pin,
+            )
+            if storages[0].device.type == "cuda":
+                torch.cuda.synchronize(storages[0].device)
+        device = storages[0].device if storages else torch.device("cpu")
+        packed = torch.empty(self.total, dtype = torch.uint8, device = device).untyped_storage()
+        placed = []
+        for leaf in leaves:
+            storage = leaf.untyped_storage()
+            slot = slots.get(storage.data_ptr())
+            if slot is None:
+                continue
+            size, stride, start = leaf.size(), leaf.stride(), leaf.storage_offset()
+            placed.append((leaf, slot[1] // leaf.element_size() + start, size, stride))
+        # Re-pointed only once every offset is known; the old storages go with their last reference.
+        for leaf, start, size, stride in placed:
+            with torch.no_grad():
+                leaf.set_(packed, start, size, stride)
+        del storages, slots, placed
+        self.storage = packed
+
+    def park(self, model: Any) -> None:
+        import torch
+        if self.storage is None:
+            self._repack(model)
+        elif self.total:
+            self.buffer.copy_(self._bytes(self.storage, self.total), non_blocking = self.pin)
+            if self.storage.device.type == "cuda":
+                torch.cuda.synchronize(self.storage.device)
+        self.storage.resize_(0)
 
     def unpark(self, model: Any, device: str) -> None:
         import torch
-        model.to(device, non_blocking = True)
+
+        self.storage.resize_(self.total)
+        if self.total:
+            self._bytes(self.storage, self.total).copy_(self.buffer, non_blocking = self.pin)
         if device.startswith("cuda"):
             torch.cuda.synchronize(device)
 
@@ -1347,7 +1384,7 @@ class MaskSegmenter:
                 self._timer = None
         started = time.perf_counter()
         model = self._model
-        host = self._host or _HostWeights(pin = (os.environ.get(ENV_PARK_PIN) or "").strip() == "1")
+        host = self._host or _HostWeights(pin = (os.environ.get(ENV_PARK_PIN) or "1").strip() != "0")
         try:
             host.park(model)
         except Exception as exc:  # noqa: BLE001 -- a module that will not move is simply unloaded
