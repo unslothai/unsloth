@@ -55,6 +55,10 @@ const ORDINARY = [
   "pie title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85",
   "flowchart LR; A[Start]-->B[End]; style A fill:#f96; style B fill:#bbf",
   "stateDiagram-v2\n  A --> B; classDef x fill:#f96\n  class A x",
+  // The word in a label is text, even next to a backslash or `url(`.
+  'flowchart LR\n  A["Style transfer\\nmodel"] --> B',
+  'flowchart LR\n  A["see; style C:\\temp"] --> B',
+  "flowchart LR\n  A(style url(x)) --> B",
 ];
 
 for (const source of ORDINARY) {
@@ -80,6 +84,8 @@ test("a style statement after a semicolon cannot fetch either", () => {
     // A stateDiagram also takes a statement after a space, with no `;` before it.
     [`stateDiagram-v2\n  A --> B classDef x fill:${url}\n  class A x`, "stateDiagram-v2\n  A --> B \n  class A x"],
     [`stateDiagram-v2\n  [*] --> A\tclassDef x mask:${url}\n  class A x`, "stateDiagram-v2\n  [*] --> A\t\n  class A x"],
+    // A statement after a label that mentions the word is still caught.
+    [`stateDiagram-v2\n  state "a style \\x" as A\n  A --> B classDef x fill:${url}`, 'stateDiagram-v2\n  state "a style \\x" as A\n  A --> B '],
   ]) {
     const out = stripRemoteDiagramImages(source);
     assert.equal(out, kept);

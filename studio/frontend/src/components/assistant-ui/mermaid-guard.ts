@@ -21,8 +21,8 @@ const FETCHING_TAG =
 // A style rule that could name a resource: CSS functions that load one, or an escape hiding one.
 // A statement can also start after `;`, or mid-line after a space in a stateDiagram, and a
 // stateDiagram classDef runs to the end of the line, so everything from the keyword to the line's
-// end is checked; the text before it stays.
-const STYLE_LINE = /(^|[;\s])[^\S\n]*(?:classDef|style|linkStyle)\b.*$/gim;
+// end is checked; the text before it stays. Inside a quoted or bracketed label the word is text.
+const STYLE_START = /(^|[;\s])[^\S\n]*(?:classDef|style|linkStyle)\b/gi;
 const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import/i;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
@@ -107,6 +107,27 @@ function withoutRemoteIcon(json: string): string | null {
 }
 
 /** The diagram source with every image or style that would load from elsewhere taken out. */
+/** The line cut before its first style statement that could fetch. */
+function withoutFetchingStyle(line: string): string {
+  for (const match of line.matchAll(STYLE_START)) {
+    const start = match.index + match[1].length;
+    if (start > 0 && insideLabel(line.slice(0, start))) continue;
+    if (STYLE_FETCH.test(line.slice(start))) return line.slice(0, start);
+  }
+  return line;
+}
+
+function insideLabel(prefix: string): boolean {
+  let depth = 0;
+  let quoted = false;
+  for (const ch of prefix) {
+    if (ch === '"') quoted = !quoted;
+    else if (!quoted && "[({".includes(ch)) depth++;
+    else if (!quoted && ")]}".includes(ch)) depth = Math.max(0, depth - 1);
+  }
+  return quoted || depth > 0;
+}
+
 export function stripRemoteDiagramImages(source: string): string {
   let out = "";
   let at = 0;
@@ -131,7 +152,7 @@ export function stripRemoteDiagramImages(source: string): string {
       });
       return CSS_FETCH.test(decoded) ? `#lt;${tag}` : whole;
     })
-    .replace(STYLE_LINE, (line, lead: string) => (STYLE_FETCH.test(line) ? lead : line))
+    .replace(/^.*$/gm, withoutFetchingStyle)
     .replace(ACTOR_PROPERTIES, (whole, lead: string, head: string, json: string) => {
       const replaced = withoutRemoteIcon(json);
       return replaced === null ? whole : `${lead}${head}${replaced}`;
