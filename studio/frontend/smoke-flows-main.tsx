@@ -2,14 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness for tests/studio/playwright_flows_editor.py: the real Flows gallery and editor against an
-// in-memory backend (catalog from catalog.snapshot.json, simulated runs streaming real SSE frames).
+// in-memory backend (catalog from tests/fixtures/flows-catalog.json, simulated runs streaming real SSE frames).
 // No auth, GPU or model. `?flow=perf&nodes=1000` opens a generated 1000-node / 1500-edge graph for
 // the frame-rate and render-isolation measurements; `?flow=story` opens the story template.
 
 import "@/index.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { setFlowsTransport } from "@/features/flows/api";
-import catalogSnapshot from "@/features/flows/catalog.snapshot.json";
+import catalogSnapshot from "./tests/fixtures/flows-catalog.json";
 import { FlowsEditorPage } from "@/features/flows/editor/flows-editor-page";
 import { FlowsGalleryPage } from "@/features/flows/gallery/flows-gallery-page";
 import { templateDocument } from "@/features/flows/gallery/templates";

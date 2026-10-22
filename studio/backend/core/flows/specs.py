@@ -5,8 +5,8 @@
 
 Handlers live in `core/flows/nodes/*` and attach by `type`. `GET /api/flows/nodes` publishes this catalog,
 and the editor renders every node and its inspector form from it, so adding a node is one spec here plus
-one handler. `python -m core.flows.specs > ../frontend/src/features/flows/catalog.snapshot.json` refreshes
-the snapshot the frontend tests and the offline harness use."""
+one handler. `python -m core.flows.specs > ../frontend/tests/fixtures/flows-catalog.json` refreshes
+the snapshot the frontend tests and the offline harness use (tests/test_flows_catalog_snapshot.py keeps it equal)."""
 
 from __future__ import annotations
 
@@ -1197,4 +1197,4 @@ assert len(SPECS_BY_TYPE) == len(NODE_SPECS), "duplicate node type"
 
 
 if __name__ == "__main__":
-    print(json.dumps(catalog(), indent = 1))
+    print(json.dumps(catalog(), separators = (",", ":")))

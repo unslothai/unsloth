@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Builds the bundled example flows (`*.json` beside this file). Edit here, then run
-`python -m core.flows.examples.build_examples` from studio/backend; the JSON files are what ships."""
+"""The bundled example flows, built in code so the editor's Examples shelf and the tests read one source.
+`python -m core.flows.examples.build_examples` prints each example's id and node count."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import copy
+import functools
 from typing import Any, Optional
 
 from core.flows.schema import FlowDocument
-
-HERE = Path(__file__).parent
 
 CHAT = {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "variant": "Q4_K_M"}
 VISION = {"repo": "unsloth/Qwen3.5-4B-GGUF", "variant": "Q4_K_M"}
@@ -1391,13 +1389,23 @@ def build() -> list[dict]:
     return docs
 
 
+@functools.lru_cache(maxsize = 1)
+def _examples() -> dict[str, dict]:
+    return {doc["id"]: doc for doc in build()}
+
+
+def example_ids() -> list[str]:
+    return list(_examples())
+
+
+def example(example_id: str) -> dict | None:
+    """A fresh copy of one example document, or None."""
+    doc = _examples().get(example_id)
+    return copy.deepcopy(doc) if doc is not None else None
+
+
 def main() -> None:
-    for old in HERE.glob("*.json"):
-        old.unlink()
     for doc in build():
-        (HERE / f"{doc['id']}.json").write_text(
-            json.dumps(doc, indent = 1, ensure_ascii = False) + "\n", encoding = "utf-8"
-        )
         print(doc["id"], len(doc["nodes"]), "nodes")
 
 

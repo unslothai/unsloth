@@ -215,16 +215,27 @@ def test_import_export_assets_round_trip(client, monkeypatch):
     assert client.get("/api/flows/withimg/export", params = {"mode": "evil"}).status_code == 400
 
 
-def test_examples_list_and_copy(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(flows_routes, "EXAMPLES_DIR", tmp_path)
-    assert client.get("/api/flows/examples").json() == {"examples": []}
-    (tmp_path / "hello.json").write_text(json.dumps(_simple("example-hello")))
-    (tmp_path / "broken.json").write_text("{nope")
+def test_examples_list_and_copy(client, monkeypatch):
+    hello = {**_simple("hello"), "kind": "pipeline"}
+    monkeypatch.setattr(flows_routes.examples, "example_ids", lambda: ["hello"])
+    monkeypatch.setattr(
+        flows_routes.examples,
+        "example",
+        lambda i: json.loads(json.dumps(hello)) if i == "hello" else None,
+    )
     examples = client.get("/api/flows/examples").json()["examples"]
     assert [e["id"] for e in examples] == ["hello"] and examples[0]["example"] is True
     copied = client.post("/api/flows/examples/hello/copy").json()
-    assert copied["id"] != "example-hello"
+    assert copied["id"] != "hello"
+    assert copied["doc"]["meta"]["derived_from"][0]["id"] == "hello"
     assert client.post("/api/flows/examples/missing/copy").status_code == 404
+
+
+def test_bundled_examples_are_listed_and_copy(client):
+    listed = client.get("/api/flows/examples").json()["examples"]
+    assert len(listed) == 10 and "lantern-picnic" in {e["id"] for e in listed}
+    copied = client.post("/api/flows/examples/lantern-picnic/copy").json()
+    assert copied["doc"]["kind"] == "story"
 
 
 def test_invoke_entrypoint_errors(client):

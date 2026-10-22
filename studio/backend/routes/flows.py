@@ -23,6 +23,7 @@ from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
 from core.flows import compiler, package
+from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
 from core.flows.registry import FlowNodeError
@@ -36,7 +37,6 @@ logger = get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
-EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "core" / "flows" / "examples"
 KEEPALIVE_S = 15.0
 _SLOT = r"^[A-Za-z0-9_-]{1,64}$"
 _TIME = Field(default = None, ge = 0, le = 2**53)
@@ -120,24 +120,11 @@ def validate_flow(body: ValidateBody) -> dict:
     return compiler.validate(body.doc)
 
 
-def _example_files() -> list[Path]:
-    if not EXAMPLES_DIR.is_dir():
-        return []
-    return sorted(
-        p for p in EXAMPLES_DIR.iterdir() if p.is_file() and p.suffix in (".json", ".unslothflow")
-    )
-
-
-def _example_summary(path: Path) -> Optional[dict]:
-    try:
-        doc, _files, _report = package.read_package(path.read_bytes())
-    except (package.PackageError, OSError) as exc:
-        logger.warning("flows.example_unreadable: %s: %s", path.name, exc)
-        return None
+def _example_summary(doc: dict) -> dict:
     meta = doc.get("meta") or {}
     cover = meta.get("cover")
     return {
-        "id": path.stem,
+        "id": doc["id"],
         "name": doc["name"],
         "kind": doc["kind"],
         "description": doc.get("description") or "",
@@ -156,9 +143,7 @@ def _example_summary(path: Path) -> Optional[dict]:
 
 @router.get("/examples")
 def list_examples() -> dict:
-    return {
-        "examples": [s for s in (_example_summary(p) for p in _example_files()) if s is not None]
-    }
+    return {"examples": [_example_summary(examples.example(i)) for i in examples.example_ids()]}
 
 
 def _import_doc(data: bytes, name: Optional[str] = None) -> tuple[dict, dict]:
@@ -177,10 +162,10 @@ def _import_doc(data: bytes, name: Optional[str] = None) -> tuple[dict, dict]:
 
 @router.post("/examples/{example_id}/copy")
 def copy_example(example_id: str) -> dict:
-    match = next((p for p in _example_files() if p.stem == example_id), None)
-    if match is None:
+    doc = examples.example(example_id)
+    if doc is None:
         raise HTTPException(status_code = 404, detail = "Example not found")
-    record, _report = _import_doc(match.read_bytes())
+    record, _report = _import_doc(json.dumps(doc).encode())
     return record
 
 

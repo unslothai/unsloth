@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Mirror of studio/backend/core/flows/schema.py and specs.py. Keep the two in sync;
-// tests/flows-contract-parity.test.ts checks the snapshot against these types.
+// Mirror of studio/backend/core/flows/schema.py and specs.py; keep the two in sync.
 
 export const FLOW_FORMAT = "unsloth-flow";
 export const FLOW_FORMAT_VERSION = 1;

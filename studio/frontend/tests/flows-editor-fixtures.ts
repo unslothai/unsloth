@@ -13,7 +13,7 @@ import type {
 export const catalog = JSON.parse(
   readFileSync(
     fileURLToPath(
-      new URL("../src/features/flows/catalog.snapshot.json", import.meta.url),
+      new URL("./fixtures/flows-catalog.json", import.meta.url),
     ),
     "utf8",
   ),
