@@ -10375,14 +10375,13 @@ def widen_target_regex_to_expert_submodules(
     leaves = sorted(set(get_moe_expert_submodule_leaves(model, detect_targets)) | named_leaves)
     if not leaves:
         return target_modules, detect_targets, []
-    if any(
-        re.fullmatch(target_modules, name)
-        for name, _ in model.named_modules()
-        if ".experts." in name
-    ):
+    expert_regex = moe_expert_submodule_regex(leaves, parents)
+    # Skip only if every expert matches: Zoo may reach down_proj alone, gate_proj / up_proj still need adding.
+    eligible = [name for name, _ in model.named_modules() if re.fullmatch(expert_regex, name)]
+    if eligible and all(re.fullmatch(target_modules, name) for name in eligible):
         return target_modules, detect_targets, []
     detect_was_the_regex = detect_targets is target_modules
-    target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(leaves, parents)})"
+    target_modules = f"(?:{target_modules})|(?:{expert_regex})"
     if detect_was_the_regex:
         detect_targets = target_modules
     return target_modules, detect_targets, leaves
