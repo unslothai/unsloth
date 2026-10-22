@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Callers of the fused NVFP4 GEMM under mixed autocast (X.dtype != autocast dtype).
-
-nvfp4_linear returns the autocast dtype, like the dense matmul it replaces. The decode callers
-(fast_linear_forward with LoRA, Llama attention decode) update that output in place or write it
-into X.dtype buffers, and in-place / out= ops do not autocast, so they must get X.dtype back."""
+"""NVFP4 decode callers must get X.dtype back under mixed autocast (in-place / out= ops do not autocast)."""
 
 import os
 import types
@@ -36,7 +32,6 @@ def mods():
 
 @pytest.fixture(autouse = True)
 def fused(mods, monkeypatch):
-    # nvfp4 reads its flags once per process; force the fused path as the other NVFP4 tests do.
     nvfp4, _ = mods
     monkeypatch.setattr(nvfp4, "_fused_env", nvfp4._read_fused_env)
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
@@ -103,8 +98,7 @@ def test_fast_linear_forward_lora_decode_under_mixed_autocast(mods, bsz, dtype, 
     Xd = X.double()
     ref = Xd @ W.t() + proj.scaling["default"] * (Xd @ A.t()) @ B.t()
 
-    # The LoRA scratch is X.dtype, as the decode buffers are. Without one, torch.mv / torch.mm
-    # autocast the LoRA product for every weight type, which is a separate, older limitation.
+    # Without an X.dtype LoRA scratch, torch.mv / torch.mm autocast the LoRA product (separate, older limitation).
     temp_lora = torch.empty((8,) if bsz == 1 else (bsz, 8), device = "cuda", dtype = dtype)
     before = _fwd_calls(nvfp4)
     with torch.no_grad(), torch.autocast("cuda", dtype = amp):
