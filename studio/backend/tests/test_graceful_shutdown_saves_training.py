@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shutdown order: both trainers are asked to stop and save before anything is torn down.
-
-Measured on the published Docker image, a save that overlapped uvicorn's lifespan teardown
-lost the worker mid-write, so the wait has to come before should_exit and the force-kill.
-"""
+"""Trainers must finish saving before should_exit and the force-kill, or the worker dies mid-write."""
 
 from types import SimpleNamespace
 

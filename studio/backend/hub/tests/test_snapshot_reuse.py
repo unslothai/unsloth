@@ -248,7 +248,6 @@ def test_a_copy_cut_short_by_a_cancel_is_removed_by_the_next_reuse(tmp_path):
 
 
 def test_a_retry_does_not_preflight_files_an_earlier_attempt_already_placed(tmp_path, monkeypatch):
-    # Preflight must not count a file an earlier cancelled attempt already placed.
     from huggingface_hub import constants
 
     from hub.workers import hf_download
@@ -747,7 +746,7 @@ def test_hard_linked_revisions_are_counted_once_in_cache_usage(tmp_path):
     assert repo_unique_size_bytes(repo) == len(gguf) + len(b"v1") + len(b"v2")
 
     (new / "model-Q4_K_M.gguf").unlink()
-    (new / "model-Q4_K_M.gguf").write_bytes(gguf)  # a real second copy still counts twice
+    (new / "model-Q4_K_M.gguf").write_bytes(gguf)
     (repo,) = scan_cache_dir(tmp_path / "hub").repos
     assert _repo_gguf_size_bytes(repo) == 2 * len(gguf)
     assert repo_unique_size_bytes(repo) == 2 * len(gguf) + len(b"v1") + len(b"v2")
@@ -758,7 +757,7 @@ def test_a_plan_asks_the_hub_about_at_most_a_few_old_commits(tmp_path):
     for i in range(6):
         snap = repo_dir / "snapshots" / (f"{i:x}" * 40)[:40]
         snap.mkdir(parents = True)
-        (snap / "w.safetensors").write_bytes(_blob(70 + i, 1024))  # same size, new bytes each time
+        (snap / "w.safetensors").write_bytes(_blob(70 + i, 1024))
         os.utime(snap, (1_000 + i, 1_000 + i))
     asked = []
 
@@ -784,7 +783,7 @@ def test_a_partial_is_only_removed_while_holding_the_blob_lock(tmp_path):
     lock = tmp_path / "hub" / ".locks" / repo_dir.name / f"{digest}.lock"
     lock.parent.mkdir(parents = True)
 
-    with FileLock(str(lock)):  # a peer's download in progress
+    with FileLock(str(lock)):
         snapshot_reuse._drop_superseded_partial(repo_dir, digest, frozenset())
         assert partial.exists()
     snapshot_reuse._drop_superseded_partial(repo_dir, digest, frozenset())

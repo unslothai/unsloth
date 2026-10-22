@@ -47,7 +47,8 @@ const KEYS: Array<[string, string, Handling]> = [
   ["Version", "v1.10.1", "ignored"],
   ["User", "someone", "ignored"],
   // extra_generation_params (modules, scripts, extensions-builtin)
-  ["Hires upscale", "2", "reported"],
+  // Maps onto Hires fix (lib/hires-choice.ts); the others need a factor beside them, so alone they are reported.
+  ["Hires upscale", "2", "applied"],
   ["Hires steps", "10", "reported"],
   ["Hires upscaler", "Latent", "reported"],
   ["Hires resize", "1024x1024", "reported"],

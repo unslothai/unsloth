@@ -815,6 +815,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
+                load_kwargs["offload"] = tuple(config.get("mlx_offload") or (None, None))
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
@@ -903,6 +904,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
+            # MLX serves a vision config mlx-lm built as text; the parent must stop accepting images.
+            if model_info["is_mlx"] and _entry.get("is_vision") is False:
+                model_info["is_vision"] = False
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
@@ -919,6 +923,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_int8_prefill",
                         "mlx_int8_prefill_requested",
                         "mlx_int8_prefill_reason",
+                        "mlx_offload",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                         "speculative_type",

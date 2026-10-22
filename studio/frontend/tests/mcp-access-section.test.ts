@@ -101,7 +101,7 @@ test("the setup snippet shows only while on, targets the usage examples' address
   assert.match(SECTION, /buildMcpSnippet\(agent, settings\.url, os, apiKey\)/);
   assert.match(
     SECTION,
-    /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*\(serverUrl \?\? origin\)/,
+    /useTunnel && cloudflareUrl\s*\?\s*cloudflareUrl\s*:\s*isTauri\s*\?\s*\(serverUrl \?\? origin\)\s*:\s*origin/,
   );
   // tunnel preference changes must notify this section immediately.
   assert.match(

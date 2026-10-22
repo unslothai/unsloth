@@ -488,7 +488,6 @@ test("editing one LoRA field does not freeze the other two on a model switch", a
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   const state = useTrainingConfigStore.getState();
-  // The rank edit is protected; the two untouched fields follow the new model.
   assert.equal(state.loraRank, 8);
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
@@ -589,12 +588,10 @@ test("leaving CPT does not report untouched adapter params as modified", async (
       }),
     ),
   );
-  // Chosen inside CPT, so the baseline freezes there: the regressing case.
   useTrainingConfigStore.getState().setTrainingMethod("cpt");
   useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
   await waitForModelDefaults("old/llama");
 
-  // Inside CPT the summary reads CPT's own values, so nothing is modified there.
   const inCpt = useTrainingConfigStore.getState();
   assert.equal(
     countNonDefaultAdvancedSettings(inCpt, inCpt.advancedSettingsBaseline),
@@ -611,10 +608,8 @@ test("leaving CPT does not report untouched adapter params as modified", async (
   );
 });
 
-// load_model_defaults returns {} when its YAML read raises or default.yaml is gone,
-// so the patch carries no target modules and cptTargetModules falls back to live state.
-// The baseline has to follow that fallback or the summary compares the all-linear set
-// the UI is showing against the generic CPT list and reports a phantom edit.
+// load_model_defaults returns {} on a YAML failure, so cptTargetModules falls back to live
+// state; the baseline must follow or the summary reports a phantom edit.
 test("an empty model config does not invent a modified target-modules setting", async () => {
   useTrainingConfigStore.getState().reset();
   useTrainingConfigStore
@@ -750,7 +745,6 @@ test("a cache-reference restart does not forget an edit made before it", async (
 
   useTrainingConfigStore.getState().setTrainingMethod("qlora");
   const state = useTrainingConfigStore.getState();
-  // The edit predates the restart, so its guard has to survive the new request.
   assert.equal(state.loraRank, 8);
   assert.equal(state.loraAlpha, 128);
   assert.equal(state.loraVariant, "dora");
@@ -783,7 +777,6 @@ test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", asyn
     );
   });
 
-  // The shape a rehydrate leaves: CPT active, pre-CPT values persisted, defaults applied.
   useTrainingConfigStore.setState({
     selectedModel: "org/reload-model",
     modelDefaultsAppliedFor: "org/reload-model",
@@ -1084,7 +1077,6 @@ test("a cache refetch inside CPT keeps the train on completions the user turned 
   useTrainingConfigStore.getState().selectTrainingModel("org/chat", "text");
   await waitForModelDefaults("org/chat");
   useTrainingConfigStore.getState().setTrainOnCompletions(false);
-  // A dataset pick clears the manual-toggle flag.
   useTrainingConfigStore.getState().setDataset("org/text");
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (!useTrainingConfigStore.getState().isCheckingDataset) break;

@@ -1266,9 +1266,28 @@ def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
 
 def build_replica(module: Any, device: Any) -> Any:
     """A copy of ``module`` whose parameters and buffers are created directly on ``device`` (never staged on the
-    source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built."""
+    source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built.
+
+    Built outside inference mode: inside it, torchao weights made outside raise "Cannot set version_counter for
+    inference tensor" and ones made inside silently stay on the source card."""
     torch = _torch()
     device = torch.device(device)
+    with torch.inference_mode(False), torch.no_grad():
+        replica = _copy_module(module, device)
+    stray = sorted(
+        {
+            str(t.device)
+            for t in (*replica.parameters(), *replica.buffers())
+            if t.device.type == "cuda" and t.device != device
+        }
+    )
+    if stray:
+        raise RuntimeError(f"replica weights stayed on {', '.join(stray)}, not {device}")
+    return replica
+
+
+def _copy_module(module: Any, device: Any) -> Any:
+    torch = _torch()
     memo: dict[int, Any] = {}
     keep: list[Any] = []
     for _name, param in module.named_parameters(remove_duplicate = True):
@@ -1291,8 +1310,13 @@ def build_replica(module: Any, device: Any) -> Any:
     for sub in module.modules():
         offload_keys = set(_offload_attr_keys(sub))
         for key, value in sub.__dict__.items():
-            if isinstance(value, CfgParallelRouter) or key in offload_keys:
-                # never traversed: offload state holds pinned host copies a deepcopy would duplicate
+            if (
+                isinstance(value, CfgParallelRouter)
+                or key in offload_keys
+                or key in _SOURCE_ONLY_ATTRS
+            ):
+                # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
+                # source-only cache holds source-card tensors
                 memo[id(value)] = _DROP
         for attr in ("_forward_hooks", "_forward_pre_hooks"):
             for hook in (getattr(sub, attr, None) or {}).values():
@@ -1306,6 +1330,15 @@ def build_replica(module: Any, device: Any) -> Any:
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
+    # A baked LoRA's scale pinned as a 0-d device tensor (diffusion._pin_baked_lora_scales) lives in a plain dict,
+    # not a buffer: the copy needs its own on ``device``.
+    for sub in module.modules():
+        scaling = sub.__dict__.get("scaling")
+        if isinstance(scaling, dict):
+            for value in scaling.values():
+                if isinstance(value, torch.Tensor) and id(value) not in memo:
+                    memo[id(value)] = value.detach().to(device)
+                    keep.append(value)
     memo[id(memo)] = keep
     replica = copy.deepcopy(module, memo)
     router = module.__dict__.get("forward")
@@ -1353,6 +1386,9 @@ def build_replica(module: Any, device: Any) -> Any:
 
 
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
+# Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
+# forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
+_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache"})
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:
@@ -1399,9 +1435,67 @@ def weights_fingerprint(module: Any) -> int:
     for name, sub in module.named_modules():
         for attr in _ADAPTER_ATTRS:
             value = sub.__dict__.get(attr)
+            if isinstance(value, dict):
+                # A pinned scale tensor: identity + version (an in-place write bumps it), no device read per call.
+                value = {
+                    k: (id(v), v._version) if hasattr(v, "_version") else v
+                    for k, v in value.items()
+                }
             if value is not None and not callable(value):
                 parts.append((name, attr, repr(value)))
     return hash(tuple(parts))
+
+
+_PROBE_SAMPLES = 64
+
+
+def _dense_leaves(t: Any, depth: int = 0) -> Iterator[Any]:
+    """The plain tensors holding ``t``'s values: ``t`` itself, or a torchao subclass's inner tensors (qdata, scales)."""
+    flatten = getattr(type(t), "__tensor_flatten__", None)
+    if flatten is None or depth > 4:
+        yield t
+        return
+    try:
+        names, _ctx = t.__tensor_flatten__()
+    except Exception:  # noqa: BLE001 - an opaque subclass: probe the outer tensor
+        yield t
+        return
+    for name in names:
+        inner = getattr(t, name, None)
+        if inner is not None:
+            yield from _dense_leaves(inner, depth + 1)
+
+
+def weights_probe(module: Any, index_cache: Optional[dict] = None) -> Optional[bytes]:
+    """Sampled bytes of every inference tensor (no version counter, so invisible to :func:`weights_fingerprint`),
+    read back in one host sync; None when there are none. Edits missing every sampled byte go unseen."""
+    torch = _torch()
+    cache = {} if index_cache is None else index_cache
+    by_device: dict = {}
+    with torch.no_grad():
+        for _name, t in (*module.named_parameters(), *module.named_buffers()):
+            if not t.is_inference():
+                continue
+            for leaf in _dense_leaves(t):
+                if not isinstance(leaf, torch.Tensor) or leaf.numel() == 0 or leaf.is_meta:
+                    continue
+                # bytes, not elements: a gather is not implemented for every weight dtype (fp8, packed fp4)
+                flat = _as_bytes(leaf)
+                n = flat.numel()
+                key = (n, flat.device)
+                idx = cache.get(key)
+                if idx is None:
+                    idx = torch.linspace(
+                        0, n - 1, steps = min(n, _PROBE_SAMPLES), device = flat.device
+                    ).long()
+                    cache[key] = idx
+                by_device.setdefault(flat.device, []).append(flat.index_select(0, idx))
+    if not by_device:
+        return None
+    return b"".join(
+        torch.cat(chunks).cpu().numpy().tobytes()
+        for _dev, chunks in sorted(by_device.items(), key = lambda kv: str(kv[0]))
+    )
 
 
 _LATENT_KEYS = ("hidden_states", "sample", "x", "latents", "img", "latent")
@@ -1717,21 +1811,38 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
+def _autocast_state(torch: Any) -> tuple:
+    try:
+        return (
+            torch.is_autocast_cache_enabled(),
+            *(
+                (dev, torch.get_autocast_dtype(dev))
+                if torch.is_autocast_enabled(dev)
+                else (dev, None)
+                for dev in ("cuda", "cpu")
+            ),
+        )
+    except Exception:  # noqa: BLE001 - torch without per-device autocast queries
+        return ()
+
+
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """What a compiled forward's guards mostly key on: tensor layout, flags and modes (never per-step scalars)."""
+    """What a compiled forward's guards key on, numbers by value: 0 / 1 and ``dynamic=False`` compiles stay specialised."""
     torch = _torch()
     sig: list = []
     for path, leaf in _leaves((args, kwargs)):
         if isinstance(leaf, torch.Tensor):
             try:
                 stride = tuple(leaf.stride())
+                offset = leaf.storage_offset()
             except Exception:  # noqa: BLE001 - layouts without strides
-                stride = None
+                stride = offset = None
             sig.append(
                 (
                     path,
                     tuple(leaf.shape),
                     stride,
+                    offset,
                     leaf.dtype,
                     leaf.requires_grad,
                     leaf.is_inference(),
@@ -1739,9 +1850,16 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
             )
         elif leaf is None or isinstance(leaf, (bool, str)):
             sig.append((path, leaf))
+        elif isinstance(leaf, (int, float)):
+            sig.append((path, type(leaf), leaf))
         else:
             sig.append((path, type(leaf)))
-    return tuple(sig), torch.is_inference_mode_enabled(), torch.is_grad_enabled()
+    return (
+        tuple(sig),
+        torch.is_inference_mode_enabled(),
+        torch.is_grad_enabled(),
+        _autocast_state(torch),
+    )
 
 
 def _note_warm(seen: set, sig: tuple) -> None:
@@ -1822,6 +1940,9 @@ class CfgParallelRouter:
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
+        self.probe: Optional[bytes] = None
+        self.probe_index: dict = {}
+        self.probed_this_render = False
         self.pairs: list = []
         # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
         self.warm_primary: set = set()
@@ -1874,6 +1995,7 @@ class CfgParallelRouter:
         # the next render shows its own guidance shape: no speculative branch before its first odd call
         self.cfg_seen = False
         self.singles = 0
+        self.probed_this_render = False
 
     def _note_refusal(self, exc: BaseException) -> None:
         from .diffusion_cuda_graph import OutsideWorkRefused
@@ -2163,6 +2285,20 @@ class CfgParallelRouter:
         except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
             self.disable(f"cannot fingerprint the denoiser: {exc}")
             return
+        if current == self.fingerprint and not self.probed_this_render:
+            from .diffusion_cuda_graph import OutsideWorkRefused, outside_capture
+            try:
+                with outside_capture():
+                    probe = weights_probe(module, self.probe_index)
+            except OutsideWorkRefused:
+                probe = self.probe  # another pipeline is recording: re-read on the next step
+            except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
+                self.disable(f"cannot probe the denoiser weights: {exc}")
+                return
+            else:
+                self.probed_this_render = True
+            if probe != self.probe:
+                current = None
         if current != self.fingerprint:
             if self.logger is not None:
                 self.logger.info(
@@ -2206,7 +2342,9 @@ class CfgParallelRouter:
             self.fingerprint = weights_fingerprint(module)
             # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
             with outside_capture(), _device_context(self.secondary):
+                self.probe = weights_probe(module, self.probe_index)
                 self.replica = self.replica_factory()
+            self.probed_this_render = True
             self.pairs = list(zip(module.modules(), self.replica.modules()))
             self.worker = _ReplicaWorker(self.secondary)
             weakref.finalize(self, self.worker.close)
