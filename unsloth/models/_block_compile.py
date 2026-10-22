@@ -568,6 +568,19 @@ _DEMOTION = (_FULL, _SPLIT, _OFF)
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
 
 
+def _training_flex_options(options):
+    """Blocks run training forwards only. Inductor lowers a query shorter than 128 to the flex
+    decoding kernel, whose tile picks fail there (GQA, head_dim 256: torch 2.14 rejects BLOCK_M 512
+    against SPARSE_Q_BLOCK_SIZE 128, torch 2.10 runs out of shared memory), so short training
+    batches (GRPO completions) demoted every block to the stock forward. The main flex kernel takes
+    any length; a caller's explicit choice is kept."""
+    if options is None:
+        return {"FORCE_USE_FLEX_ATTENTION": True}
+    if isinstance(options, dict) and "FORCE_USE_FLEX_ATTENTION" not in options:
+        return {**options, "FORCE_USE_FLEX_ATTENTION": True}
+    return options
+
+
 def _flex_split_hook():
     """Lets a block keep flex_attention out of its graph. Some masks do not lower inside a larger
     graph (torch 2.13, Gemma-4 12B blockwise mask: `unsupported operand type(s) for &:
@@ -583,6 +596,8 @@ def _flex_split_hook():
 
     @functools.wraps(flex)
     def flex_attention_forward(*args, **kwargs):
+        if _IN_BLOCK[0] != _OFF:
+            kwargs["kernel_options"] = _training_flex_options(kwargs.get("kernel_options"))
         if _IN_BLOCK[0] == _SPLIT and torch.compiler.is_compiling():
             return outside(*args, **kwargs)
         return flex(*args, **kwargs)

@@ -506,6 +506,124 @@ def test_qwen3_block_matches_stock():
     _check_block(layers, run, x, modeling.Qwen3DecoderLayer)
 
 
+def test_block_flex_forces_the_main_kernel(monkeypatch):
+    """Inside a block every flex call asks for the main kernel; a caller's choice is kept."""
+    M = _load()
+    seen = []
+    funcs = {"flex_attention": lambda *a, **kw: seen.append(kw.get("kernel_options"))}
+    tmu = types.ModuleType("transformers.modeling_utils")
+    tmu.ALL_ATTENTION_FUNCTIONS = funcs
+    monkeypatch.setitem(sys.modules, "transformers.modeling_utils", tmu)
+    M._flex_split_hook()
+    flex = funcs["flex_attention"]
+    flex(None, None, None, None)
+    for mode in (M._FULL, M._SPLIT):
+        monkeypatch.setattr(M, "_IN_BLOCK", [mode])
+        flex(None, None, None, None)
+        flex(None, None, None, None, kernel_options = {"BLOCK_M": 32})
+        flex(None, None, None, None, kernel_options = {"FORCE_USE_FLEX_ATTENTION": False})
+    forced = {"FORCE_USE_FLEX_ATTENTION": True}
+    assert seen == [None] + 2 * [
+        forced,
+        {"BLOCK_M": 32, **forced},
+        {"FORCE_USE_FLEX_ATTENTION": False},
+    ]
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "flex_attention kernels need CUDA")
+def test_block_flex_options_lower_short_gqa_training_queries():
+    """Qwen3.5 GRPO shapes (84 tokens, 8 query / 2 kv heads, head_dim 256): with the options the
+    block hook adds, compiled flex forward + backward lower and match eager. Without them torch
+    2.14 picks the flex decoding kernel and fails to lower it (BLOCK_M 512 vs
+    SPARSE_Q_BLOCK_SIZE 128), torch 2.10 runs out of shared memory."""
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+    M = _load()
+    gen = torch.Generator(device = "cuda").manual_seed(0)
+    mk = lambda *s: torch.randn(*s, device = "cuda", dtype = torch.bfloat16, generator = gen)
+    q, k, v = mk(4, 8, 84, 256), mk(4, 2, 84, 256), mk(4, 2, 84, 256)
+    bm = create_block_mask(lambda b, h, qi, ki: qi >= ki, 4, None, 84, 84, device = "cuda")
+    ins = [t.clone().requires_grad_() for t in (q, k, v)]
+    torch._dynamo.reset()
+    try:
+        fn = torch.compile(flex_attention, dynamic = False)
+        got = fn(
+            *ins,
+            block_mask = bm,
+            enable_gqa = True,
+            scale = 1 / 16,
+            kernel_options = M._training_flex_options(None),
+        )
+        got.float().sum().backward()
+    finally:
+        torch._dynamo.reset()
+    ref_ins = [t.detach().float().requires_grad_() for t in (q, k, v)]
+    ref = flex_attention(*ref_ins, block_mask = bm, enable_gqa = True, scale = 1 / 16)
+    ref.sum().backward()
+    torch.testing.assert_close(got.float(), ref, atol = 2e-2, rtol = 2e-2)
+    for a, b in zip(ins, ref_ins):
+        torch.testing.assert_close(a.grad.float(), b.grad, atol = 5e-2, rtol = 5e-2)
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+def test_short_gqa_flex_block_stays_compiled():
+    """GRPO-length batches (< 128 tokens) with GQA and head_dim 256 (Qwen3.5): Inductor picked
+    the flex decoding kernel, failed to lower it, and every block fell back to the stock forward
+    (34 graph breaks per GRPO step on Qwen3.5-0.8B)."""
+    pytest.importorskip("unsloth")
+    from transformers.models.qwen3 import modeling_qwen3 as modeling
+    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+
+    import unsloth.models._block_compile as M
+
+    cfg = Qwen3Config(
+        vocab_size = 64,
+        hidden_size = 256,
+        intermediate_size = 256,
+        num_hidden_layers = 2,
+        num_attention_heads = 8,
+        num_key_value_heads = 2,
+        head_dim = 256,
+    )
+    cfg._attn_implementation = "flex_attention"
+    torch.manual_seed(0)
+    layers = [
+        modeling.Qwen3DecoderLayer(cfg, layer_idx = i).cuda().to(torch.bfloat16) for i in range(2)
+    ]
+    rotary = modeling.Qwen3RotaryEmbedding(cfg).cuda()
+    M._flex_split_hook()
+    from torch.nn.attention.flex_attention import create_block_mask
+
+    def run(layer, h):
+        B, L = h.shape[0], h.shape[1]
+        pos = torch.arange(L, device = h.device)[None].expand(B, -1)
+        mask = create_block_mask(lambda b, hd, q, k: q >= k, B, None, L, L, device = h.device)
+        out = layer(h, attention_mask = mask, position_embeddings = rotary(h, pos), position_ids = pos)
+        return out[0] if isinstance(out, tuple) else out
+
+    from torch._dynamo.utils import counters
+
+    x = [torch.randn(4, L, 256, device = "cuda", dtype = torch.bfloat16) for L in (84, 100)]
+    cls = modeling.Qwen3DecoderLayer
+    original = cls.forward
+    want = [_grads_after_step(layers, run, xi.clone().requires_grad_()) for xi in x]
+    try:
+        M._wrap(M._rebind_class(cls) or cls, M._COMPILE_OPTIONS)
+        counters.clear()
+        got = [_grads_after_step(layers, run, xi.clone().requires_grad_()) for xi in x]
+        modes = [layer.__dict__.get("_unsloth_block_mode") for layer in layers]
+        assert modes == [M._FULL, M._FULL], modes
+        assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
+    finally:
+        cls.forward = original
+        torch._dynamo.reset()
+    for (lw, gw), (lg, gg) in zip(want, got):
+        torch.testing.assert_close(lg, lw, rtol = 2e-2, atol = 1e-3)
+        for k in gw:
+            num = (gg[k].float() - gw[k].float()).norm()
+            assert num <= 0.05 * gw[k].float().norm() + 1e-4, (k, float(num))
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "fla kernels need CUDA")
 def test_qwen3_5_gdn_block_has_no_break():
     pytest.importorskip("unsloth")
