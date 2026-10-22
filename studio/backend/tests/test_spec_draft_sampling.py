@@ -531,7 +531,12 @@ def test_gguf_stateful_sampler_defaults_keep_greedy(monkeypatch, gguf):
         {"general.sampling.mirostat": "0"},
         {"general.sampling.mirostat": "true"},
         {"general.sampling.mirostat": "0.900000"},
-        {"general.sampling.mirostat": "4294967296"},
+        # strtol is 64-bit outside Windows, so this narrows to int32 0; Windows' 32-bit long
+        # saturates it to a nonzero 2147483647 (the stateful case below).
+        pytest.param(
+            {"general.sampling.mirostat": "4294967296"},
+            marks = pytest.mark.skipif(sys.platform == "win32", reason = "32-bit long"),
+        ),
         {"general.sampling.sequence": "top_k;top_p;temperature"},
         {"general.sampling.sequence": ""},
         {"general.sampling.sequence": "top_k;" + "x" * 600 + ";adaptive_p"},
@@ -686,9 +691,9 @@ def test_request_stateful_sampler_detection(body, stateful):
 def test_load_records_whether_drafts_are_sampled(monkeypatch, probabilistic):
     backend = _backend(monkeypatch, sampling = probabilistic)
     _flags(backend, "mtp")
-    assert backend._spec_draft_probabilistic is probabilistic
+    assert backend._spec_draft_sampling_emitted is probabilistic
     _flags(backend, "off")
-    assert backend._spec_draft_probabilistic is False
+    assert backend._spec_draft_sampling_emitted is False
 
 
 class _Reached(Exception):
@@ -752,3 +757,45 @@ def test_completions_refuses_a_stateful_sampler_against_sampled_drafts(monkeypat
 def test_completions_forwards_what_the_server_verifies_exactly(monkeypatch, body, probabilistic):
     with pytest.raises(_Reached):
         _run_completions(monkeypatch, body, probabilistic = probabilistic)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "64-bit long")
+def test_gguf_mirostat_overflow_saturates_on_windows(monkeypatch):
+    assert not _emits_with_gguf(monkeypatch, {"general.sampling.mirostat": "4294967296"})
+
+
+def _spec_prob_mtp_backend(tmp_path):
+    import test_llama_cpp_placement as placement
+
+    backend, gguf = placement._per_slot_mtp_backend(tmp_path, gb_per_slot = 0.0)
+    caps = dict(backend.probe_server_capabilities())
+    caps["supports_spec_draft_sampling"] = True
+    backend.probe_server_capabilities = lambda _binary = None: caps
+    read = backend._read_gguf_metadata
+
+    def read_metadata(path):
+        read(path)
+        backend._gguf_header_parsed = True
+        backend._gguf_path = path
+        backend._gguf_sampling = {}
+        backend._architecture = backend._architecture or "qwen35"
+
+    backend._read_gguf_metadata = read_metadata
+    return placement, backend, gguf
+
+
+def test_a_recovery_without_speculation_clears_the_sampled_draft_marker(tmp_path):
+    placement, backend, gguf = _spec_prob_mtp_backend(tmp_path)
+    cmds = placement._launch_with_failing_drafter(backend, gguf)
+    assert "probabilistic" in cmds[0]
+    assert "draft-mtp" not in cmds[-1] and "--spec-draft-sampling" not in cmds[-1]
+    assert backend._spec_draft_probabilistic is False
+
+
+def test_a_launch_with_sampled_drafts_sets_the_marker_and_unload_clears_it(tmp_path):
+    placement, backend, gguf = _spec_prob_mtp_backend(tmp_path)
+    cmd = placement._launch_auto_spec(backend, gguf)["cmd"]
+    assert cmd[cmd.index("--spec-draft-sampling") + 1] == "probabilistic"
+    assert backend._spec_draft_probabilistic is True
+    backend.unload_model()
+    assert backend._spec_draft_probabilistic is False

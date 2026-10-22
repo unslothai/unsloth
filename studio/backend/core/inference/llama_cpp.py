@@ -8970,7 +8970,9 @@ class LlamaCppBackend:
         self._layer_preserves_tensor_intent: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
-        # Studio launched llama-server with --spec-draft-sampling probabilistic.
+        # Studio's speculative flags chose --spec-draft-sampling probabilistic, and the
+        # running child was spawned with it (a recovery without speculation clears it).
+        self._spec_draft_sampling_emitted: bool = False
         self._spec_draft_probabilistic: bool = False
         # Canonical UI-facing mode the user requested
         # (auto/mtp/ngram/mtp+ngram/off/ngram-simple). Round-tripped through the
@@ -33278,6 +33280,11 @@ class LlamaCppBackend:
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
                         _last_spawn_cmd = list(run_cmd)
+                        self._spec_draft_probabilistic = (
+                            self._spec_draft_sampling_emitted
+                            and _last_flag_value(run_cmd, frozenset({"--spec-draft-sampling"}))
+                            == "probabilistic"
+                        )
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
                         self._idle_slot_clearing_active = _idle_slot_clearing_active(
@@ -35475,7 +35482,7 @@ class LlamaCppBackend:
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
         self._speculative_type = None
-        self._spec_draft_probabilistic = False
+        self._spec_draft_sampling_emitted = False
         self._spec_fallback_reason = None
         # A drafter trained with the fine-tune and exported beside this GGUF (drafter.json).
         trained_steps = None
@@ -35829,7 +35836,7 @@ class LlamaCppBackend:
                     _gguf_sampling = dict(getattr(self, "_gguf_sampling", None) or {})
                 _draft_sampling = _spec_draft_sampling_flags(caps, extra_args, _gguf_sampling)
                 flags.extend(_draft_sampling)
-                self._spec_draft_probabilistic = bool(_draft_sampling)
+                self._spec_draft_sampling_emitted = bool(_draft_sampling)
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
@@ -36425,6 +36432,8 @@ class LlamaCppBackend:
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
+            self._spec_draft_sampling_emitted = False
+            self._spec_draft_probabilistic = False
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
             self._n_layers = None
