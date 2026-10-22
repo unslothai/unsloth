@@ -490,12 +490,13 @@ def test_stale_check_uses_the_display_name_for_a_local_env_model(client, monkeyp
     assert response.status_code == 204
 
 
-def test_settings_change_waits_for_a_running_load(client, monkeypatch):
+def test_settings_change_cancels_a_running_load(client, monkeypatch, runtime):
     release = threading.Event()
 
     def slow(checkpoint):
+        runtime.append(checkpoint.name)
         release.wait(5)
-        return FakeAgent(), "cpu"
+        return FakeAgent(checkpoint.name), "cpu"
 
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
     monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
@@ -509,15 +510,18 @@ def test_settings_change_waits_for_a_running_load(client, monkeypatch):
                 "expected_model": "laya-multilingual",
             },
         ).status_code
-        == 409
+        == 204
     )
-    assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 409
-    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+    assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 200
     release.set()
     laya_runtime._loader.join(5)
+    assert laya_runtime.status()["loaded_model"] is None
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 5.0)
+    assert _post(client).json()["model"] == "laya-english"
+    assert runtime == ["laya-multilingual", "laya-english"]
 
 
-def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
+def test_turning_it_off_cancels_a_claimed_load(client, monkeypatch, runtime):
     probing, release = threading.Event(), threading.Event()
 
     def probe(checkpoint):
@@ -531,11 +535,192 @@ def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
     )
     claim.start()
     assert probing.wait(5)
-    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 409
+    response = client.put("/api/settings/systemone", json = {"enabled": False})
+    assert response.status_code == 200 and response.json()["enabled"] is False
     release.set()
     claim.join(5)
     laya_runtime._loader.join(5)
-    assert client.get("/api/settings/systemone").json()["enabled"] is True
+    assert laya_runtime.status()["loaded_model"] is None
+    assert runtime == []
+
+
+def test_a_load_turned_off_while_it_downloads_never_builds(client, monkeypatch, tmp_path):
+    downloading, release, built = threading.Event(), threading.Event(), []
+
+    def download(checkpoint, **kwargs):
+        downloading.set()
+        release.wait(5)
+        return tmp_path
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", download)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cpu")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert downloading.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    release.set()
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_waiting_behind_a_decision_sees_the_unload_that_ran_first(
+    client, monkeypatch, tmp_path
+):
+    downloaded, built = threading.Event(), []
+
+    def download(checkpoint, **kwargs):
+        downloaded.set()
+        return tmp_path
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", download)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cpu")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    with laya_runtime._run_lock:
+        assert _post(client).status_code == 503
+        assert downloaded.wait(5)
+        time.sleep(0.5)
+        laya_runtime._unloads += 1
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_turned_off_while_it_builds_stops_its_worker(client, monkeypatch, tmp_path):
+    building, stopped = threading.Event(), []
+
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            building.set()
+            deadline = time.monotonic() + 5
+            while not cancelled() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stopped.append(cancelled())
+            if stopped[-1]:
+                raise laya_runtime.LayaWorkerError("stopped")
+            self.device = device
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cuda")
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert building.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    laya_runtime._loader.join(5)
+    assert stopped == [True]
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_turned_off_during_training_never_falls_back_to_cpu(client, monkeypatch, tmp_path):
+    building, go, training, built = threading.Event(), threading.Event(), [False], []
+
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            building.set()
+            go.wait(5)
+            if cancelled():
+                raise laya_runtime.LayaWorkerError("stopped")
+            self.device = device
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cuda")
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: training[0])
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert building.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    training[0] = True
+    go.set()
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_unloaded_while_it_builds_in_process_frees_its_memory(client, monkeypatch, tmp_path):
+    agents, freed = [], []
+
+    def build(*args, **kwargs):
+        agent = FakeAgent()
+        agents.append(weakref.ref(agent))
+        laya_runtime.unload()
+        return agent, "mps"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mps")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(
+        laya_runtime, "_release_memory", lambda: freed.append(bool(agents) and agents[0]() is None)
+    )
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    _post(client)
+    laya_runtime._loader.join(5)
+    assert laya_runtime.status()["loaded_model"] is None
+    assert freed[-1] is True
+
+
+def test_a_load_unloaded_as_it_publishes_stays_fenced_until_it_has_closed(
+    client, monkeypatch, tmp_path
+):
+    fenced = []
+
+    class Closing(FakeAgent):
+        def close(self):
+            fenced.append(laya_runtime._loading is not None)
+
+    def build(*args, **kwargs):
+        laya_runtime.unload()
+        return Closing(), "mps"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mps")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    _post(client)
+    laya_runtime._loader.join(5)
+    assert fenced == [True]
+    assert laya_runtime._loading is None
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_an_unload_waits_for_a_load_that_is_publishing(client):
+    done = threading.Event()
+    unloading = threading.Thread(target = lambda: (laya_runtime.unload(), done.set()), daemon = True)
+    with laya_runtime._state_lock:
+        unloading.start()
+        assert not done.wait(0.2)
+    assert done.wait(5)
 
 
 def test_keyless_callers_only_reach_the_configured_model(client, monkeypatch, runtime):
