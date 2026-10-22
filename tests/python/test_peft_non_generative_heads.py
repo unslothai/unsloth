@@ -81,3 +81,42 @@ def test_causal_lms_keep_the_generation_hook():
         num_key_value_heads = 1,
     )
     assert hasattr(transformers.LlamaForCausalLM(config), "prepare_inputs_for_generation")
+
+
+def _helper(name):
+    import torch
+
+    tree = ast.parse(VISION_PATH.read_text(encoding = "utf-8"))
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    ns = {"torch": torch}
+    exec(compile(ast.Module([node], []), str(VISION_PATH), "exec"), ns)
+    return ns[name]
+
+
+def test_ctc_and_classifier_heads_are_trained_and_saved():
+    transformers = pytest.importorskip("transformers")
+    peft = pytest.importorskip("peft")
+    heads = _helper("_trainable_head_modules")
+    assert heads(_tiny_ctc()) == ["lm_head"]
+
+    config = transformers.ASTConfig(
+        hidden_size = 16,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 32,
+        num_mel_bins = 16,
+        max_length = 32,
+        num_labels = 3,
+    )
+    classifier = transformers.ASTForAudioClassification(config)
+    assert heads(classifier) == ["classifier"]
+
+    model = peft.get_peft_model(
+        _tiny_ctc(),
+        peft.LoraConfig(r = 4, target_modules = r".*\.attention\.q_proj", modules_to_save = ["lm_head"]),
+    )
+    trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+    assert any("lm_head" in n for n in trainable)
+    source = _get_peft_model_source()
+    assert "modules_to_save = _trainable_head_modules(model) or None" in source
+    assert "type(model) is PeftModel" in source  # a generic PeftModel is not wrapped twice

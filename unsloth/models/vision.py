@@ -234,7 +234,7 @@ except ImportError:  # older unsloth_zoo
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM, PeftModelForSeq2SeqLM
+from peft import PeftModel, PeftModelForCausalLM, PeftModelForSeq2SeqLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -2079,6 +2079,20 @@ def _missing_torchvision_error(error = None):
             "requires the torchvision" in error_str or "no module named 'torchvision'" in error_str
         )
     return False
+
+
+def _trainable_head_modules(model):
+    """Top-level heads beside the backbone (CTC lm_head, audio classifier / projector) that hold unquantized weights."""
+    prefix = getattr(model, "base_model_prefix", None)
+    backbone = getattr(model, prefix, None) if prefix else None
+    heads = []
+    for name, child in model.named_children():
+        if child is backbone or next(child.parameters(), None) is None:
+            continue
+        if any(type(m).__name__ in ("Linear4bit", "Linear8bitLt") for m in child.modules()):
+            continue
+        heads.append(name)
+    return heads
 
 
 def _is_speech_forward(model):
@@ -4595,9 +4609,9 @@ class FastBaseModel:
         patch_gradient_accumulation_fix(Trainer)
 
         _padding_side = _generation_padding_side(getattr(model, "config", None))
-        # A bare audio feature extractor pads waveforms, which must stay right padded.
-        if not _is_bare_feature_extractor(tokenizer):
-            tokenizer.padding_side = _padding_side
+        # A bare audio feature extractor pads waveforms, which must stay right padded (AutoProcessor's
+        # fallback to it keeps the padding_side = "left" we passed).
+        tokenizer.padding_side = "right" if _is_bare_feature_extractor(tokenizer) else _padding_side
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
@@ -4741,20 +4755,28 @@ class FastBaseModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
+        if (
+            isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM))
+            or type(model) is PeftModel
+        ):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
         if task_type == TaskType.CAUSAL_LM and _is_seq2seq_lm_config(
             getattr(model, "config", None)
         ):
             # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
             task_type = TaskType.SEQ_2_SEQ_LM
+        _cannot_generate = task_type == TaskType.CAUSAL_LM and not hasattr(
+            model, "prepare_inputs_for_generation"
+        )
         if task_type in (TaskType.CAUSAL_LM, TaskType.SEQ_2_SEQ_LM) and (
-            _is_speech_forward(model)
-            or (task_type == TaskType.CAUSAL_LM and not hasattr(model, "prepare_inputs_for_generation"))
+            _is_speech_forward(model) or _cannot_generate
         ):
             # Speech / CTC / audio classification models: the task wrappers pass input_ids = None (it reaches
             # Whisper's decoder twice), and PeftModelForCausalLM reads prepare_inputs_for_generation in __init__.
             task_type = None
+            if _cannot_generate and modules_to_save is None:
+                # The generic PeftModel neither trains nor saves the (often freshly initialized) head.
+                modules_to_save = _trainable_head_modules(model) or None
         if _is_text_seq2seq_config(getattr(model, "config", None)):
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
             finetune_vision_layers = True

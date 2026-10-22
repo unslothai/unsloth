@@ -37,8 +37,9 @@ def test_bare_feature_extractor_detection():
 def test_last_resort_tries_feature_extractor_and_keeps_padding():
     source = VISION_PATH.read_text(encoding = "utf-8")
     assert "AutoFeatureExtractor.from_pretrained(" in source
+    # AutoProcessor's fallback keeps the padding_side = "left" it was given; waveforms stay right padded.
     assert (
-        "if not _is_bare_feature_extractor(tokenizer):\n            tokenizer.padding_side = _padding_side"
+        'tokenizer.padding_side = "right" if _is_bare_feature_extractor(tokenizer) else _padding_side'
         in source
     )
 
