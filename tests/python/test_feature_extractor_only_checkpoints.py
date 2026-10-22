@@ -109,10 +109,22 @@ def test_default_auto_model_loads_the_checkpoints_own_audio_head():
         ),
         (transformers.WavLMConfig(architectures = ["WavLMModel"]), "AutoModel"),
         (transformers.WavLMConfig(architectures = ["WavLMForXVector"]), "AutoModelForAudioXVector"),
+        (
+            transformers.WhisperConfig(architectures = ["WhisperForAudioClassification"]),
+            "AutoModelForAudioClassification",
+        ),
     ]
     for config, expected in cases:
         assert resolve(config).__name__ == expected, config.architectures
     assert resolve(transformers.LlamaConfig(architectures = ["LlamaForCausalLM"])) is None
+    # with a causal-LM mapping, a bare checkpoint keeps today's route (Qwen2Model embedding repos)
+    assert (
+        resolve(transformers.LlamaConfig(architectures = ["LlamaModel"]), include_bare = False) is None
+    )
     assert resolve(transformers.Wav2Vec2Config()) is None  # no architectures: keep today's route
     source = LOADER_PATH.read_text(encoding = "utf-8")
-    assert "_resolve_audio_auto_model(model_config, **_probe_hub_kwargs) or auto_model" in source
+    assert "_resolve_audio_auto_model(model_config, **_probe_hub_kwargs)" in source
+    assert (
+        "include_bare = resolve_model_class(auto_model, model_config, **_probe_hub_kwargs)"
+        in source
+    )

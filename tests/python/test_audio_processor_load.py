@@ -74,6 +74,7 @@ def test_processor_loads_use_the_retry():
     assert "auto_processor.from_pretrained(" not in body
 
 
+@pytest.mark.slow
 def test_real_dia_processor_rejects_padding_side():
     """The defect being worked around, against the installed transformers (skipped offline)."""
     transformers = pytest.importorskip("transformers")

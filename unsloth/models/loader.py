@@ -772,15 +772,21 @@ _AUDIO_HEAD_AUTO_CLASS_NAMES = (
 )
 
 
-def _resolve_audio_auto_model(model_config, **hub_kwargs):
+def _resolve_audio_auto_model(
+    model_config,
+    include_bare = True,
+    **hub_kwargs,
+):
     """The auto class whose mapped class is the checkpoint's own architecture (Wav2Vec2ForCTC,
-    ASTForAudioClassification, a bare WavLMModel), for audio configs no causal-LM class maps; else None."""
+    ASTForAudioClassification, a bare WavLMModel), else None."""
     import transformers
 
     architectures = getattr(model_config, "architectures", None) or ()
     if not architectures:
         return None
     for name in _AUDIO_HEAD_AUTO_CLASS_NAMES:
+        if name == "AutoModel" and not include_bare:
+            continue
         auto_class = getattr(transformers, name, None)
         try:
             model_class = auto_class and resolve_model_class(auto_class, model_config, **hub_kwargs)
@@ -3168,11 +3174,19 @@ class FastModel(FastBaseModel):
                         )
             else:
                 auto_model = AutoModelForCausalLM
-                # CTC / audio classification / bare audio encoders have no causal-LM class: load their own head.
-                if resolve_model_class(auto_model, model_config, **_probe_hub_kwargs) is None:
-                    auto_model = (
-                        _resolve_audio_auto_model(model_config, **_probe_hub_kwargs) or auto_model
+                # CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
+                # (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names.
+                auto_model = (
+                    _resolve_audio_auto_model(
+                        model_config,
+                        include_bare = resolve_model_class(
+                            auto_model, model_config, **_probe_hub_kwargs
+                        )
+                        is None,
+                        **_probe_hub_kwargs,
                     )
+                    or auto_model
+                )
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
