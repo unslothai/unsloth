@@ -144,6 +144,7 @@ function sanitizeSeedForShare(payload: unknown): unknown {
       ui.seed_columns = [];
       ui.seed_drop_columns = [];
       ui.seed_preview_rows = [];
+      delete ui.seed_total_rows;
       ui.local_file_name = "";
       ui.unstructured_upload_uid = "";
       ui.unstructured_file_ids = [];
@@ -166,6 +167,7 @@ function sanitizeSeedForShare(payload: unknown): unknown {
       ui.seed_columns = [];
       ui.seed_drop_columns = [];
       ui.seed_preview_rows = [];
+      delete ui.seed_total_rows;
       ui.local_file_name = "";
       ui.unstructured_upload_uid = "";
       ui.unstructured_file_ids = [];

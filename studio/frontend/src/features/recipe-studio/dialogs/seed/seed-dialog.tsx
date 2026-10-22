@@ -698,6 +698,8 @@ export function SeedDialog({
             unstructured_file_ids: okFiles.map((f) => f.id),
             unstructured_file_names: okFiles.map((f) => f.name),
             unstructured_file_sizes: okFiles.map((f) => f.size),
+            // The total is only valid for the files and chunking it was counted with.
+            seed_total_rows: undefined,
           });
         });
         return next;
@@ -851,6 +853,7 @@ export function SeedDialog({
             resolved_paths: response.resolved_paths ?? [],
             seed_columns: response.columns,
             seed_preview_rows: response.preview_rows ?? [],
+            seed_total_rows: response.total_rows ?? undefined,
             unstructured_file_ids: fileIds,
             unstructured_file_names: fileNames,
             unstructured_file_sizes: unstructuredFiles
@@ -1202,6 +1205,7 @@ export function SeedDialog({
                       onChange={(event) =>
                         onUpdate({
                           unstructured_chunk_size: event.target.value,
+                          seed_total_rows: undefined,
                         })
                       }
                     />
@@ -1223,6 +1227,7 @@ export function SeedDialog({
                       onChange={(event) =>
                         onUpdate({
                           unstructured_chunk_overlap: event.target.value,
+                          seed_total_rows: undefined,
                         })
                       }
                     />
@@ -1319,6 +1324,9 @@ export function SeedDialog({
             <div className="space-y-2">
               <div className="text-xs text-muted-foreground">
                 Loaded columns: {previewColumns.join(", ") || "None"}
+                {mode === "unstructured" && config.seed_total_rows
+                  ? ` - ${config.seed_total_rows} chunks in total, ${previewRows.length} shown`
+                  : null}
               </div>
               <div className="max-h-[calc(360px*var(--ui-space-scale,1))] overflow-y-auto overflow-x-hidden scroll-rounded rounded-xl corner-squircle border border-border/60">
                 <Table className="corner-squircle min-w-max">

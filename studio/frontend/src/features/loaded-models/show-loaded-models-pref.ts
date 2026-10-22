@@ -36,6 +36,8 @@ export function setShowLoadedModels(show: boolean): void {
   try {
     // Both values are written, never removed: an older tab reads a stored false as off.
     localStorage.setItem(STORAGE_KEY, show ? "true" : "false");
+    // Switching it on asks to see the card, so an earlier X must not keep it hidden.
+    if (show) localStorage.removeItem(DISMISSED_KEY);
   } catch {
     // storage unavailable
   }

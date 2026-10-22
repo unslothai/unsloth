@@ -13,6 +13,8 @@ export interface GgufFitInput {
   budgetFraction?: number;
   /** Only the reserve floor uses it; absent means one card. */
   gpuCount?: number;
+  /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`): past it, `fits` becomes `marginal`. */
+  unifiedLoadBudgetGb?: number | null;
 }
 
 /** Shared with the memory bar; the loader's `_CTX_FIT_VRAM_FRACTION`. 0.90 was tried and
@@ -37,7 +39,13 @@ export function requiredGgufMemoryGb(
 
 export function classifyGgufFit(
   sizeBytes: number,
-  { gpuGb, systemRamGb, budgetFraction, gpuCount }: GgufFitInput,
+  {
+    gpuGb,
+    systemRamGb,
+    budgetFraction,
+    gpuCount,
+    unifiedLoadBudgetGb,
+  }: GgufFitInput,
 ): GgufFitClass {
   const required = requiredGgufMemoryGb(sizeBytes);
   if (!gpuGb || gpuGb <= 0) {
@@ -65,8 +73,18 @@ export function classifyGgufFit(
       (1 - DEFAULT_VRAM_BUDGET_FRACTION) * (gpuGb / cards),
     );
   const budget = gpuGb - Math.max((1 - fraction) * gpuGb, reserveFloorGb);
-  if (required <= budget) return "fits";
-  // Raw card on purpose: "over budget but card-sized" is a warning tier, unreachable against `budget`.
+  if (required <= budget) {
+    // A warning, not a refusal: llama.cpp still loads it with a shorter context or slower.
+    return typeof unifiedLoadBudgetGb === "number" &&
+      unifiedLoadBudgetGb >= 0 &&
+      required > unifiedLoadBudgetGb
+      ? "marginal"
+      : "fits";
+  }
+  // Raw card, deliberately. This band means "over your budget, still card-sized", which is the only
+  // thing that distinguishes it from `fits`: scoring it against `budget` too would make it
+  // unreachable, since `required <= budget` has already returned above. It is a warning tier, not a
+  // claim that the load will be admitted.
   if (required <= gpuGb) return "marginal";
   // Once layers spill, the GPU contributes only its budget; the reserve is off-limits
   // (vram_budget_settings.py).

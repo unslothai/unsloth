@@ -1215,6 +1215,8 @@ export interface DeviceBudget {
   budgetFraction?: number;
   /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. Absent means one. */
   gpuCount?: number;
+  /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`); past it a GGUF reads `marginal`. */
+  unifiedLoadBudgetGb?: number | null;
   /** Dense quant schemes this host runs, best first; empty keeps the bf16 sizing rule. */
   denseQuantSchemes?: readonly string[];
   /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
@@ -1245,8 +1247,11 @@ export function classifyGgufFit(
   return classifyGgufFitForDevice(sizeBytes, budget);
 }
 
-/** Fit rule for media GGUFs: the diffusion backend cannot offload and budgets free memory at a
- *  0.85 margin (`diffusion_memory.py`), so the llama.cpp formula must not judge them. */
+/** Fit rule for a GGUF the IMAGES / VIDEO / AUDIO pickers offer, the one case the shared llama.cpp
+ *  formula must not judge: those loads go through the diffusion backend, which cannot offload and
+ *  budgets free memory minus a reserve at a 0.85 margin (`diffusion_memory.py`). On a 64 GiB Mac
+ *  that planner allows ~43.5 GiB and this rule 44.8: not the planner, just closer. The llama.cpp
+ *  rule's 62.1 is total RAM; its loader caps at `min(working set, free) * 0.85`, ~44 at best. */
 export function classifyMediaGgufFit(
   sizeBytes: number,
   gpuGb: number,

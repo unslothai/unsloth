@@ -11,6 +11,7 @@ import {
 import { type Locale, formatRelativeTime, useLocale, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
   Delete02Icon,
@@ -21,13 +22,21 @@ import type { ApiKey } from "../api/api-keys";
 
 type SettingsT = ReturnType<typeof useT>;
 
-function relative(iso: string | null, t: SettingsT, locale: Locale): string {
+export function relative(
+  iso: string | null,
+  t: SettingsT,
+  locale: Locale,
+): string {
   if (!iso) return t("settings.apiKeys.relativeNever");
   const diff = Date.now() - new Date(iso).getTime();
   const days = Math.floor(diff / 86400000);
   if (days < 1) {
     const hours = Math.floor(diff / 3600000);
-    if (hours < 1) return t("settings.apiKeys.relativeJustNow");
+    if (hours < 1) {
+      const minutes = Math.floor(diff / 60000);
+      if (minutes < 1) return t("settings.apiKeys.relativeJustNow");
+      return formatRelativeTime(locale, -minutes, "minute");
+    }
     return formatRelativeTime(locale, -hours, "hour");
   }
   if (days < 30) return formatRelativeTime(locale, -days, "day");
@@ -39,13 +48,21 @@ function relative(iso: string | null, t: SettingsT, locale: Locale): string {
   return formatRelativeTime(locale, -years, "year");
 }
 
-function expiresText(iso: string | null, t: SettingsT, locale: Locale): string {
+export function isExpired(iso: string | null): boolean {
+  return iso !== null && new Date(iso).getTime() <= Date.now();
+}
+
+export function expiresText(
+  iso: string | null,
+  t: SettingsT,
+  locale: Locale,
+): string {
   if (!iso) return t("settings.apiKeys.relativeNever");
   const diff = new Date(iso).getTime() - Date.now();
   if (diff < 0) return t("settings.apiKeys.expired");
-  const days = Math.floor(diff / 86400000);
-  if (days < 1) return t("settings.apiKeys.today");
-  return formatRelativeTime(locale, days, "day");
+  if (diff < 86400000) return t("settings.apiKeys.today");
+  // ceil: a fresh 7-day token still has 7 days, not "6 days" from 6.99
+  return formatRelativeTime(locale, Math.ceil(diff / 86400000), "day");
 }
 
 export function ApiKeyRow({
@@ -58,15 +75,22 @@ export function ApiKeyRow({
   const t = useT();
   const locale = useLocale();
   const prefix = `sk-unsloth-${apiKey.key_prefix}`;
+  const expired = isExpired(apiKey.expires_at);
   return (
     <div className="group flex items-center gap-3 border-b border-border/60 px-1 py-3 last:border-b-0 transition-colors hover:bg-accent/40">
       <span
-        className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          expired ? "bg-muted-foreground/40" : "bg-emerald-500",
+        )}
         aria-hidden="true"
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-center justify-between gap-3">
-          <span className="truncate text-sm font-medium text-foreground" title={apiKey.name}>
+          <span
+            className="truncate text-sm font-medium text-foreground"
+            title={apiKey.name}
+          >
             {apiKey.name}
           </span>
           <code className="shrink-0 font-mono text-ui-11 text-muted-foreground">
@@ -87,14 +111,16 @@ export function ApiKeyRow({
           </span>
           <span>·</span>
           <span>
-            {t("settings.apiKeys.expires", {
-              value: expiresText(apiKey.expires_at, t, locale),
-            })}
+            {expired
+              ? t("settings.apiKeys.expiredStatus")
+              : t("settings.apiKeys.expires", {
+                  value: expiresText(apiKey.expires_at, t, locale),
+                })}
           </span>
         </div>
       </div>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+        <DropdownMenuTrigger asChild={true}>
           <Button
             variant="ghost"
             size="sm"

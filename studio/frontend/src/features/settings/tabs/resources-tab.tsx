@@ -510,13 +510,15 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
   const vramCapacityLabel =
-    metrics.vramShared > 0
+    metrics.vramShared > 0 && !unifiedPool
       ? t("settings.resources.environment.vramWithShared", {
           vram: formatGiB(metrics.vramDedicated),
           shared: formatGiB(metrics.vramShared),
         })
-      : formatGiB(metrics.vramTotal);
+      : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
+  // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
   // inventory, hiding the training problem.
@@ -669,11 +671,15 @@ export function ResourcesTab() {
                 : hasGpu
                   ? memoryDisplay.sharedOnly
                     ? t("settings.resources.gpu.sharedWithSystemRam")
-                    : metrics.vramUsageKnown
-                      ? t("settings.resources.liveMonitor.free", {
-                          value: formatGiB(metrics.vramFree),
+                    : unifiedPool && memoryDisplay.unifiedAvailableGb !== null
+                      ? t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(memoryDisplay.unifiedAvailableGb),
                         })
-                      : unknownLabel
+                      : metrics.vramUsageKnown
+                        ? t("settings.resources.liveMonitor.free", {
+                            value: formatGiB(metrics.vramFree),
+                          })
+                        : unknownLabel
                   : gpuMismatch
                     ? t("settings.resources.liveMonitor.gpuUnusableDetail")
                     : backendLabel
@@ -683,7 +689,9 @@ export function ResourcesTab() {
               !memoryDisplay.sharedOnly &&
               memoryDisplay.sharedDevices.length > 0
                 ? `${t("settings.resources.gpu.sharedWithSystemRam")}\n${t("settings.resources.gpu.estimatedAvailable", { value: memoryDisplay.sharedAvailableGb === null ? unknownLabel : formatGiB(memoryDisplay.sharedAvailableGb) })}`
-                : undefined
+                : unifiedPool && !memoryDisplay.sharedOnly
+                  ? t("settings.resources.gpu.sharedWithSystemRam")
+                  : undefined
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />

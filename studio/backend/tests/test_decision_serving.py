@@ -223,6 +223,23 @@ def test_shutdown_ends_a_gpu_worker(home, client, gpu):
     assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
+def test_a_chat_load_ends_an_idle_gpu_worker(home, client, gpu, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT)
+    with laya_runtime._run_lock:
+        gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 0
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+    assert _post(client).status_code == 200
+    assert gpu.placed == ["cuda", "cuda"]
+
+
 def test_training_takes_the_gpu_from_a_load_in_flight_or_a_model_it_missed(home, client, gpu):
     def training_starts():
         gpu.training, gpu.on_build = True, None
@@ -639,6 +656,127 @@ def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, mo
     assert len(clef.agents) == 2
 
 
+def test_an_image_load_ends_an_idle_clef_worker(home, client, clef):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+
+
+def test_a_load_claimed_as_the_eviction_starts_keeps_the_idle_worker(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    run_lock, claimed = laya_runtime._run_lock, laya_runtime._loaded
+
+    class ClaimedInTheGap:
+        def acquire(self, *args, **kwargs):
+            laya_runtime._loading = claimed
+            return run_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            run_lock.release()
+
+    monkeypatch.setattr(laya_runtime, "_loading", None)
+    monkeypatch.setattr(laya_runtime, "_run_lock", ClaimedInTheGap())
+    unloads = laya_runtime._unloads
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert not clef.agents[0].closed
+    assert laya_runtime._unloads == unloads
+
+
+@pytest.mark.parametrize("owner", ["chat", "diffusion"])
+@pytest.mark.parametrize("policy, ends", [("off", True), ("fit", False), ("always", False)])
+def test_only_off_ends_an_idle_worker_on_a_load(
+    home, client, clef, monkeypatch, owner, policy, ends
+):
+    from core.inference import gpu_arbiter
+
+    for name in ("_residents", "_media_needs", "_accounts"):
+        monkeypatch.setattr(gpu_arbiter, name, {})
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(owner, lambda: None, policy = policy)
+    assert clef.agents[0].closed is ends
+    assert (client.get("/api/settings/systemone").json()["loaded_model"] is None) is ends
+    if not ends:
+        assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
+@pytest.mark.parametrize("loading", ["chat", "diffusion", "video"])
+def test_a_decision_waits_for_a_gpu_load_in_flight_after_the_eviction(
+    home, client, clef, monkeypatch, loading
+):
+    from core.inference import gpu_arbiter, gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: loading == "chat")
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: owner == loading)
+    if loading != "chat":
+        monkeypatch.setitem(gpu_arbiter._residents, loading, None)
+    response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert len(clef.agents) == 1
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: False)
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: False)
+    assert _post(client).status_code == 200 and len(clef.agents) == 2
+
+
+def test_a_cpu_media_load_or_a_settled_gpu_leaves_a_decision_load_alone(
+    home, client, clef, monkeypatch
+):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_media_loading", lambda owner: True)
+    for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO):
+        monkeypatch.delitem(gpu_arbiter._residents, owner, raising = False)
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
+def test_a_decision_load_waits_while_the_arbiter_is_mid_acquire(home, client, clef, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    with gpu_arbiter._lock:
+        response = _post(client)
+    assert response.status_code == 409 and response.json()["detail"]["error_type"] == "gpu_busy"
+    assert not clef.agents and laya_runtime._loading is None
+    assert _post(client).status_code == 200
+
+
+def test_a_resident_worker_answers_during_a_gpu_load(home, client, clef, monkeypatch):
+    from core.inference import gpu_residency
+
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
+    assert _post(client).status_code == 200
+    monkeypatch.setattr(gpu_residency, "chat_load_in_flight", lambda: True)
+    assert _post(client).status_code == 200 and len(clef.agents) == 1
+
+
 def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
     from core.systemone import clef_runtime
 
@@ -727,7 +865,7 @@ def test_a_chat_model_that_takes_the_gpu_during_the_warm_up_retires_the_reload(
     assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
-def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
+def test_a_settings_change_during_the_reloads_lookup_never_starts_its_worker(
     home, client, clef, monkeypatch
 ):
     from core.systemone import clef_runtime
@@ -762,7 +900,7 @@ def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
     laya_runtime.unload(reload_after_training = True)
     clef.training = False
     _reload_finished()
-    assert stopped == [True]
+    assert stopped == [] and len(clef.agents) == 1
     settings = client.get("/api/settings/systemone").json()
     assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
 

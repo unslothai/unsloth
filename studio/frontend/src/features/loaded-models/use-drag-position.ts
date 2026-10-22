@@ -3,7 +3,10 @@
 
 // Absolute viewport coordinates, not a transform, so the position survives reloads and can be clamped.
 
-import { isDegenerateBox } from "../../hooks/floating-panel-position.ts";
+import {
+  isDegenerateBox,
+  nudgeDelta,
+} from "../../hooks/floating-panel-position.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type DragPosition = { left: number; top: number };
@@ -43,6 +46,11 @@ export function passedDragThreshold(dx: number, dy: number): boolean {
   return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
 }
 
+/** Non-button handles get no click, so they must clear the sentinel here or the pill's next click is swallowed. */
+export function sentinelAfterSettle(moved: boolean, clickFollows: boolean): boolean {
+  return moved && clickFollows;
+}
+
 function viewport(): Viewport {
   return { width: window.innerWidth, height: window.innerHeight };
 }
@@ -80,6 +88,8 @@ export type UseDragPosition = {
   dragging: boolean;
   /** True once, for the click ending a drag; reading clears it so keyboard activation still works. */
   justDragged: () => boolean;
+  element: HTMLDivElement | null;
+  nudge: (event: React.KeyboardEvent<HTMLElement>) => boolean;
 };
 
 
@@ -124,6 +134,7 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     height: number;
     lastLeft: number;
     lastTop: number;
+    clickFollows: boolean;
   } | null>(null);
   // Drag paints via the DOM, not state, so a frame costs no render.
   const frameRef = useRef(0);
@@ -187,6 +198,7 @@ export function useDragPosition(storageKey: string): UseDragPosition {
         height: box.height,
         lastLeft: box.left,
         lastTop: box.top,
+        clickFollows: event.currentTarget instanceof HTMLButtonElement,
       };
       movedRef.current = false;
       setPressing(true);
@@ -245,6 +257,10 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       // Persist only user-chosen positions; persisting a reclamp let a small window overwrite a large one's.
       store(storageKey, landed);
     }
+    movedRef.current = sentinelAfterSettle(
+      movedRef.current,
+      session?.clickFollows ?? false,
+    );
     sessionRef.current = null;
     setPressing(false);
     setDragging(false);
@@ -312,5 +328,33 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     return moved;
   }, []);
 
-  return { position, panelRef: attachPanel, startDrag, dragging, justDragged };
+  const nudge = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      const delta = nudgeDelta(event.key, event.shiftKey);
+      const panel = panelRef.current;
+      if (!(delta && panel)) return false;
+      event.preventDefault();
+      const box = panel.getBoundingClientRect();
+      const next = clampToViewport(
+        { left: box.left + delta.dx, top: box.top + delta.dy },
+        box.width,
+        box.height,
+        viewport(),
+      );
+      setPosition(next);
+      store(storageKey, next);
+      return true;
+    },
+    [storageKey],
+  );
+
+  return {
+    position,
+    panelRef: attachPanel,
+    element: panelEl,
+    startDrag,
+    dragging,
+    justDragged,
+    nudge,
+  };
 }

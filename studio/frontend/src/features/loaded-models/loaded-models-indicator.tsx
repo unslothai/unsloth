@@ -13,6 +13,7 @@ import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
@@ -20,8 +21,10 @@ import { SparkleIcon } from "@/lib/sparkle-icon";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
+  DatabaseIcon,
   DragDropVerticalIcon,
   Image01Icon,
+  LockIcon,
   Message01Icon,
   Mic01Icon,
   RemoveCircleIcon,
@@ -30,13 +33,15 @@ import {
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type LoadedModelEntry,
   type LoadedModelKind,
+  formatResidentMib,
   loadedModelKindLabel,
+  loadedModelLabel,
   loadedModelTarget,
-  shortModelLabel,
+  loadedModelsCardState,
 } from "./loaded-models-sources";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
@@ -45,6 +50,7 @@ import {
   useShowLoadedModels,
 } from "./show-loaded-models-pref";
 import { useDragPosition } from "./use-drag-position";
+import { usePublishedCornerFrame } from "./use-published-corner-frame";
 import { useLoadedModels } from "./use-loaded-models";
 
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
@@ -55,9 +61,16 @@ const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   image: Image01Icon,
   video: Video01Icon,
   stt: Mic01Icon,
+  embedding: DatabaseIcon,
 };
 
-// Desktop auto-authenticates; in the browser, polling before a token exists is all 401s.
+const EMPTY_HINT_MS = 5000;
+
+const ROW_ICON_CLASS =
+  "flex size-7 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground";
+
+// Nothing to report on auth screens. Desktop auto-authenticates, so only the
+// browser needs the token check: polling before one exists is all 401s.
 const HIDDEN_ROUTES = new Set(["/login", "/signup", "/change-password"]);
 
 function canShowIndicator(pathname: string): boolean {
@@ -66,9 +79,50 @@ function canShowIndicator(pathname: string): boolean {
   return hasAuthToken() && !mustChangePassword();
 }
 
-function rowSubtitle(entry: LoadedModelEntry): string {
+type Translate = ReturnType<typeof useT>;
+
+function rowSubtitle(entry: LoadedModelEntry, t: Translate): string {
   const kind = loadedModelKindLabel(entry);
-  return entry.detail ? `${kind} · ${entry.detail}` : kind;
+  const detail = entry.loading
+    ? t("floatingPanels.loadedModels.loading")
+    : entry.inactive
+      ? t("floatingPanels.loadedModels.stillInMemory")
+      : entry.servingCheckpoint
+        ? t("floatingPanels.loadedModels.alsoServing")
+        : entry.detail;
+  return [kind, detail, formatResidentMib(entry.residentMib)]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function NoteRow({
+  icon,
+  title,
+  detail,
+}: {
+  icon: typeof SparkleIcon;
+  title: string;
+  detail: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1">
+      <span className={ROW_ICON_CLASS}>
+        <HugeiconsIcon
+          icon={icon}
+          strokeWidth={1.75}
+          className="size-[calc(15px*var(--ui-space-scale,1))]"
+        />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-ui-12p5 font-medium text-foreground">
+          {title}
+        </span>
+        <span className="block truncate text-ui-11 text-muted-foreground">
+          {detail}
+        </span>
+      </span>
+    </div>
+  );
 }
 
 function LoadedModelRow({
@@ -82,7 +136,8 @@ function LoadedModelRow({
   onEject: () => void;
   onOpen: () => void;
 }) {
-  const label = shortModelLabel(entry.name);
+  const t = useT();
+  const label = loadedModelLabel(entry);
   const target = loadedModelTarget(entry.source, entry.workflows);
   return (
     <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
@@ -91,11 +146,14 @@ function LoadedModelRow({
         <TooltipTrigger asChild={true}>
           <button
             type="button"
-            aria-label={`${label}. Open ${target.label}`}
+            aria-label={t("floatingPanels.loadedModels.rowLabel", {
+              model: label,
+              target: target.label,
+            })}
             onClick={onOpen}
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
-            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground">
+            <span className={ROW_ICON_CLASS}>
               <HugeiconsIcon
                 icon={KIND_ICONS[entry.kind]}
                 strokeWidth={1.75}
@@ -107,34 +165,44 @@ function LoadedModelRow({
                 {label}
               </span>
               <span className="block truncate text-ui-11 text-muted-foreground">
-                {rowSubtitle(entry)}
+                {rowSubtitle(entry, t)}
               </span>
             </span>
           </button>
         </TooltipTrigger>
         <TooltipContent side="left" sideOffset={6}>
-          <span className="block">{entry.name}</span>
+          <span className="block">{entry.label || entry.name}</span>
           <span className="block text-muted-foreground">
-            Open {target.label}
+            {t("floatingPanels.loadedModels.openTarget", {
+              target: target.label,
+            })}
           </span>
         </TooltipContent>
       </Tooltip>
       {entry.loading ? (
         <span className="flex size-6 shrink-0 items-center justify-center">
-          <Spinner className="size-3.5" label="Loading" />
+          <Spinner
+            className="size-3.5"
+            label={t("floatingPanels.loadedModels.loading")}
+          />
         </span>
       ) : (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <button
               type="button"
-              aria-label={`Eject ${label}`}
+              aria-label={t("floatingPanels.loadedModels.ejectLabel", {
+                model: label,
+              })}
               disabled={ejecting}
               onClick={onEject}
               className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
             >
               {ejecting ? (
-                <Spinner className="size-3.5" label="Ejecting" />
+                <Spinner
+                  className="size-3.5"
+                  label={t("floatingPanels.loadedModels.ejecting")}
+                />
               ) : (
                 // Eject releases weights, unlike the header's X.
                 <HugeiconsIcon
@@ -146,7 +214,7 @@ function LoadedModelRow({
             </button>
           </TooltipTrigger>
           <TooltipContent side="left" sideOffset={6}>
-            Eject to free memory
+            {t("floatingPanels.loadedModels.ejectToFree")}
           </TooltipContent>
         </Tooltip>
       )}
@@ -157,17 +225,30 @@ function LoadedModelRow({
 export function LoadedModelsIndicator({
   positioned = true,
 }: { positioned?: boolean } = {}) {
+  const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const showIndicator = useShowLoadedModels();
+  const [wasShown, setWasShown] = useState(showIndicator);
+  const [justEnabled, setJustEnabled] = useState(false);
+  if (wasShown !== showIndicator) {
+    setWasShown(showIndicator);
+    setJustEnabled(showIndicator);
+  }
+  useEffect(() => {
+    if (!justEnabled) return;
+    const timer = window.setTimeout(() => setJustEnabled(false), EMPTY_HINT_MS);
+    return () => window.clearTimeout(timer);
+  }, [justEnabled]);
   const dismissed = useLoadedModelsDismissed();
   const reachable = canShowIndicator(pathname);
   const enabled = showIndicator && !dismissed && reachable;
-  // Reachability carries the auth gate: polling on /login would trigger authFetch's refresh-redirect
-  // ladder. Dismissal is excluded so a closed card still hears the next load.
-  const { entries, polledEntries, ejecting, eject } = useLoadedModels(
-    enabled,
-    showIndicator && reachable,
-  );
+  // Dismissal is not part of this: a card the user closed must still hear the
+  // load that brings it back. Reachability is, because it carries the auth gate
+  // -- tracking on /login polls four protected endpoints every 5s, and each 401
+  // runs authFetch's refresh-then-redirect ladder against a session that does
+  // not exist yet.
+  const { entries, polledEntries, ejecting, heldByOther, eject } =
+    useLoadedModels(enabled, showIndicator && reachable);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
   const navigate = useNavigate();
   const openEntry = useCallback(
@@ -187,8 +268,16 @@ export function LoadedModelsIndicator({
     },
     [navigate],
   );
-  const { position, panelRef, startDrag, dragging, justDragged } =
-    useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
+  const {
+    position,
+    panelRef,
+    element,
+    startDrag,
+    dragging,
+    justDragged,
+    nudge,
+  } = useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
+  usePublishedCornerFrame(position ? null : element);
 
   // Subscribed above the early return so a dismissed card still hears the load that reopens it.
   useEffect(
@@ -221,9 +310,23 @@ export function LoadedModelsIndicator({
     }
   }, [dismissed, polledEntries]);
 
-  if (!enabled || entries.length === 0) return null;
+  const cardState = enabled
+    ? loadedModelsCardState(entries.length, heldByOther, justEnabled)
+    : null;
+  if (cardState === null) return null;
 
-  const countLabel = `${entries.length} ${entries.length === 1 ? "model" : "models"} loaded`;
+  const countLabel = t(
+    entries.length === 1
+      ? "floatingPanels.loadedModels.countOne"
+      : "floatingPanels.loadedModels.countMany",
+    { count: entries.length },
+  );
+  const showPill = collapsed && cardState !== "empty";
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    event.preventDefault();
+    setLoadedModelsDismissed(true);
+  };
 
   return (
     <div
@@ -238,32 +341,47 @@ export function LoadedModelsIndicator({
         dragging && "select-none",
       )}
       style={position ? { left: position.left, top: position.top } : undefined}
+      // biome-ignore lint/a11y/useSemanticElements: a floating panel landmark; the drag hook measures this div.
+      role="region"
+      aria-label={t("floatingPanels.loadedModels.title")}
+      onKeyDown={onKeyDown}
     >
-      {collapsed ? (
+      {showPill ? (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <button
               type="button"
-              aria-label={`${countLabel}. Show details, or drag to move`}
+              aria-label={t("floatingPanels.loadedModels.pillLabel", {
+                count:
+                  cardState === "otherAccount"
+                    ? t("floatingPanels.loadedModels.otherAccount")
+                    : countLabel,
+              })}
               onPointerDown={startDrag}
-              // The pill is its own drag handle, so a press that moved must not also expand the card.
+              onKeyDown={(event) => void nudge(event)}
+              // The pill is its own drag handle, so a press that moved is a
+              // drag and must not also expand the card.
               onClick={() => {
                 if (!justDragged()) setCollapsed(false);
               }}
               className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
-                icon={SparkleIcon}
+                icon={cardState === "otherAccount" ? LockIcon : SparkleIcon}
                 strokeWidth={1.75}
                 className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
-              <span className="text-ui-12p5 font-medium tabular-nums">
-                {entries.length}
-              </span>
+              {cardState === "rows" && (
+                <span className="text-ui-12p5 font-medium tabular-nums">
+                  {entries.length}
+                </span>
+              )}
             </button>
           </TooltipTrigger>
           <TooltipContent side="left" sideOffset={6}>
-            {countLabel}
+            {cardState === "otherAccount"
+              ? t("floatingPanels.loadedModels.otherAccount")
+              : countLabel}
           </TooltipContent>
         </Tooltip>
       ) : (
@@ -275,15 +393,19 @@ export function LoadedModelsIndicator({
               className="size-[calc(15px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
             />
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
-              Loaded models
+              {t("floatingPanels.loadedModels.title")}
             </span>
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <div
-                  aria-label="Drag to move"
-                  // Not a button, so no click consumes the drag sentinel; without this the next click is refused.
+                  // biome-ignore lint/a11y/useSemanticElements: a <button> click would consume the drag sentinel meant for the pill.
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t("floatingPanels.loadedModels.dragHandleLabel")}
+                  // Not a button element, so useDragPosition clears the drag sentinel itself.
                   onPointerDown={startDrag}
-                  className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground active:cursor-grabbing"
+                  onKeyDown={(event) => void nudge(event)}
+                  className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
                 >
                   <HugeiconsIcon
                     icon={DragDropVerticalIcon}
@@ -293,14 +415,14 @@ export function LoadedModelsIndicator({
                 </div>
               </TooltipTrigger>
               <TooltipContent side="left" sideOffset={6}>
-                Drag to move
+                {t("floatingPanels.loadedModels.dragToMove")}
               </TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
                   type="button"
-                  aria-label="Collapse loaded models"
+                  aria-label={t("floatingPanels.loadedModels.collapseLabel")}
                   onClick={() => setCollapsed(true)}
                   className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                 >
@@ -312,14 +434,14 @@ export function LoadedModelsIndicator({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="left" sideOffset={6}>
-                Collapse
+                {t("floatingPanels.loadedModels.collapse")}
               </TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
                   type="button"
-                  aria-label="Close loaded models"
+                  aria-label={t("floatingPanels.loadedModels.closeLabel")}
                   onClick={() => setLoadedModelsDismissed(true)}
                   className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                 >
@@ -331,14 +453,30 @@ export function LoadedModelsIndicator({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="left" sideOffset={6}>
-                <span className="block">Close</span>
+                <span className="block">
+                  {t("floatingPanels.loadedModels.close")}
+                </span>
                 <span className="block text-muted-foreground">
-                  Back on the next model load
+                  {t("floatingPanels.loadedModels.backOnNextLoad")}
                 </span>
               </TooltipContent>
             </Tooltip>
           </div>
           <div className="flex max-h-[min(272px,42dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto">
+            {cardState === "otherAccount" && (
+              <NoteRow
+                icon={LockIcon}
+                title={t("floatingPanels.loadedModels.otherAccount")}
+                detail={t("floatingPanels.loadedModels.otherAccountDetail")}
+              />
+            )}
+            {cardState === "empty" && (
+              <NoteRow
+                icon={SparkleIcon}
+                title={t("floatingPanels.loadedModels.noneLoaded")}
+                detail={t("floatingPanels.loadedModels.noneLoadedDetail")}
+              />
+            )}
             {entries.map((entry) => (
               <LoadedModelRow
                 key={entry.id}

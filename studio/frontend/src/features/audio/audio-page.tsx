@@ -17,8 +17,11 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
 import {
   type InferenceStatusResponse,
+  buildExternalModelId,
   getInferenceStatus,
+  isDecisionConnection,
   syncKeepModelsLoaded,
+  useExternalProvidersStore,
 } from "@/features/chat";
 import { useHubInventory } from "@/features/hub";
 import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
@@ -26,7 +29,11 @@ import { ModelSelector } from "@/features/model-picker/components/model-selector
 import { ggufQuantLabel } from "@/features/model-picker/model-config/model-identity";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
+import type {
+  ExternalModelOption,
+  ModelOption,
+} from "@/features/model-picker/components/model-selector/types";
+import { useVoiceSettingsStore } from "@/features/settings";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -121,7 +128,12 @@ import type { AudioSourceStatus } from "./hooks/audio-source-state";
 import { useAlignerDownload } from "./hooks/use-aligner-download";
 import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
 import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
-import { SPEAKERS_MODEL_NAME, transcribeSwitches } from "./transcribe-capabilities";
+import {
+  SPEAKERS_MODEL_NAME,
+  connectionTranscribeModels,
+  connectionTranscribeSwitches,
+  transcribeSwitches,
+} from "./transcribe-capabilities";
 import {
   transcribeLanguageFor,
   transcribeLanguagesFor,
@@ -1427,18 +1439,52 @@ export function AudioPage({
     string | null
   >(null);
   const transcribeRepo = (selectedSttRepo ?? lastSttRepo) || null;
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const dictationProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
+  const dictationModel = useVoiceSettingsStore((s) => s.sttProviderModel);
+  const transcribeExternalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      connectionsEnabled
+        ? connections
+            .filter((c) => !isDecisionConnection(c))
+            .flatMap((c) =>
+              connectionTranscribeModels(
+                c,
+                c.id === dictationProviderId ? dictationModel.trim() : undefined,
+              ).map((model) => ({
+                id: buildExternalModelId(c.id, model),
+                name: model,
+                providerId: c.id,
+                providerName: c.name,
+                providerType: c.providerType,
+              })),
+            )
+        : [],
+    [connections, connectionsEnabled, dictationProviderId, dictationModel],
+  );
+  const connectionModel = useAudioTranscribeStore(
+    (state) => state.connectionModel,
+  );
+  const transcribeConnection =
+    transcribeExternalModels.find((model) => model.id === connectionModel) ??
+    null;
   const transcribeCaps = useTranscribeCapabilities(
-    transcribeRepo,
+    transcribeConnection ? null : transcribeRepo,
     transcribeRepo ? sttEngineFor(transcribeRepo) : null,
   );
-  const transcribeOptions = transcribeSwitches(
-    transcribeCaps.caps,
-    transcribePrefs,
-    { loading: transcribeCaps.loading, hasModel: transcribeRepo !== null },
-  );
-  const transcribeModelName = transcribeRepo?.split("/").pop() ?? "";
+  const transcribeOptions = transcribeConnection
+    ? connectionTranscribeSwitches(transcribePrefs, transcribeConnection.name)
+    : transcribeSwitches(transcribeCaps.caps, transcribePrefs, {
+        loading: transcribeCaps.loading,
+        hasModel: transcribeRepo !== null,
+      });
+  const transcribeModelName =
+    transcribeConnection?.name ?? transcribeRepo?.split("/").pop() ?? "";
   const transcribeLoadsFirst = Boolean(
-    transcribeRepo && !(sttSelected && sttReady),
+    !transcribeConnection && transcribeRepo && !(sttSelected && sttReady),
   );
   const transcribeNotice = !transcribeLoadsFirst
     ? transcribeOptions.notice
@@ -1449,7 +1495,7 @@ export function AudioPage({
           .filter(Boolean)
           .join(" ");
   const transcribeLanguages = transcribeLanguagesFor(
-    audioCppModelFor(transcribeRepo)?.languages,
+    transcribeConnection ? null : audioCppModelFor(transcribeRepo)?.languages,
   );
   const transcribeLanguage = transcribeLanguageFor(
     transcribePrefs.language,
@@ -1478,15 +1524,18 @@ export function AudioPage({
     transcribeCaps.refresh,
     transcribeOptions.request.timestamps,
   );
+  // A connection never uses the local aligner, so its download does not hold Transcribe.
   const alignerBlocks =
-    alignerDownload.staging && transcribeOptions.request.timestamps;
+    !transcribeConnection &&
+    alignerDownload.staging &&
+    transcribeOptions.request.timestamps;
   const transcribeBlocker: GenerateBlocker | null = alignerBlocks
     ? { reason: "Downloading the timing aligner…" }
     : busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }
       : busy !== null
         ? null
-        : !transcribeRepo
+        : !transcribeRepo && !transcribeConnection
           ? {
               reason: "Pick a speech-to-text model to transcribe.",
               actions: [chooseModelAction, ...recommendedSttActions],
@@ -1525,7 +1574,13 @@ export function AudioPage({
   const canTranscribe =
     mode === "transcribe" && busy === null && transcribeBlocker === null;
   const startTranscription = (source: AudioSourceSelection) => {
-    const { request } = transcribeOptions;
+    const request = {
+      ...transcribeOptions.request,
+      connection: transcribeConnection && {
+        providerId: transcribeConnection.providerId,
+        modelId: transcribeConnection.name,
+      },
+    };
     void runTranscription(
       source,
       { language: transcribeLanguage, ...request },
@@ -1538,18 +1593,24 @@ export function AudioPage({
     });
   };
   const startTranscriptionRef = useRef(startTranscription);
+  const transcribeTarget = transcribeConnection?.id ?? transcribeRepo;
+  const transcribeTargetRef = useRef(transcribeTarget);
   useEffect(() => {
     startTranscriptionRef.current = startTranscription;
+    transcribeTargetRef.current = transcribeTarget;
   });
   const handleTranscribe = () => {
     const source = useAudioTranscribeStore.getState().source;
     if (!source) return;
+    const target = transcribeTarget;
     alignerDownload.runWithAligner(transcribeOptions.request.timestamps, () => {
-      // The download can outlast the click: run only while Transcribe still shows the same audio.
+      // The download can outlast the click: run only while Transcribe still shows the same audio
+      // and model, so a connection picked meanwhile never receives audio nobody sent it.
       if (
         !activeRef.current ||
         modeRef.current !== "transcribe" ||
-        useAudioTranscribeStore.getState().source?.id !== source.id
+        useAudioTranscribeStore.getState().source?.id !== source.id ||
+        transcribeTargetRef.current !== target
       )
         return;
       // A run would be refused while a model loads or another task runs: say so instead of dropping it.
@@ -1657,13 +1718,17 @@ export function AudioPage({
     (id: string, meta: Parameters<typeof handleModelSelect>[1]) => {
       if (meta.source === "external") {
         if (busyRef.current === null) {
-          invalidatePendingTtsSelection();
-          setSpeakConnectionId(id);
+          if (modeRef.current === "transcribe") {
+            useAudioTranscribeStore.setState({ connectionModel: id });
+          } else {
+            invalidatePendingTtsSelection();
+            setSpeakConnectionId(id);
+          }
         }
         return;
       }
       if (modeRef.current === "speak") setSpeakConnectionId(null);
-      handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta));
+      return handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta));
     },
     [
       audioCatalog.byId,
@@ -1756,11 +1821,13 @@ export function AudioPage({
                 : ttsWorkflow === "convert"
                   ? "No voice conversion model loaded."
                   : "No TTS model loaded."
-      : sttSelected
-        ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
-        : transcribeRepo
-          ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
-          : "No transcription model selected.";
+      : transcribeConnection
+        ? `Transcribes through ${transcribeConnection.providerName}.`
+        : sttSelected
+          ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
+          : transcribeRepo
+            ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
+            : "No transcription model selected.";
 
   return (
     <div
@@ -1824,9 +1891,11 @@ export function AudioPage({
                     )
               }
               externalModels={
-                mode === "speak" && ttsWorkflow === "speak"
-                  ? speakConnection.models
-                  : undefined
+                mode === "transcribe"
+                  ? transcribeExternalModels
+                  : mode === "speak" && ttsWorkflow === "speak"
+                    ? speakConnection.models
+                    : undefined
               }
               rowFilter={selectorRowFilter}
               moreModels={selectorMoreModels}
@@ -1847,7 +1916,11 @@ export function AudioPage({
                     ? false
                     : undefined
               }
-              value={(connection && speakConnection.modelId) || selectorValue}
+              value={
+                mode === "transcribe" && transcribeConnection
+                  ? transcribeConnection.id
+                  : (connection && speakConnection.modelId) || selectorValue
+              }
               onValueChange={selectModel}
               onEject={
                 !connection &&
@@ -1918,7 +1991,7 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              {connection ? null : (
+              {connection || (mode === "transcribe" && transcribeConnection) ? null : (
                 <UseViaApiButton
                   workflow={pageWorkflow}
                   model={selectorValue ?? null}

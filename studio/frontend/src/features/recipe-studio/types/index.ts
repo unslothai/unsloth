@@ -355,6 +355,9 @@ export type SeedConfig = {
   github_max_comments_per_item?: string;
   resolved_paths?: string[];
   seed_preview_rows?: Record<string, unknown>[];
+  // ui-only
+  seed_total_rows?: number;
+  // ui-only (string for input ergonomics)
   unstructured_chunk_size?: string;
   unstructured_chunk_overlap?: string;
   seed_splits?: string[];

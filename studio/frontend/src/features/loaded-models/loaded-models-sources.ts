@@ -18,9 +18,22 @@ import type { InferenceStatusResponse } from "@/features/chat/types/api";
 import type { DiffusionStatus } from "@/features/images/api";
 import type { VideoStatus } from "@/features/video/api";
 
-export type LoadedModelKind = "text" | "tts" | "image" | "video" | "stt";
+/** What the row is, for the icon and label. */
+export type LoadedModelKind =
+  | "text"
+  | "tts"
+  | "image"
+  | "video"
+  | "stt"
+  | "embedding";
 
-export type LoadedModelSource = "chat" | "image" | "video" | "stt";
+/** Which runtime holds the weights, so which endpoint releases them. */
+export type LoadedModelSource =
+  | "chat"
+  | "image"
+  | "video"
+  | "stt"
+  | "embedding";
 
 export type SttEngine = "transformers" | "mtmd" | "gguf" | "audiocpp";
 
@@ -30,6 +43,10 @@ export type LoadedModelEntry = {
   kind: LoadedModelKind;
   source: LoadedModelSource;
   name: string;
+  label?: string;
+  servingCheckpoint?: string;
+  residentMib?: number;
+  /** One short line: quantisation, family, device. */
   detail: string;
   /** Only on a `tts` row: the Audio page workflows that run the model, first one first. */
   workflows?: AudioWorkflowId[];
@@ -75,7 +92,7 @@ export type LoadedModelTarget =
       search?: { workflow: AudioWorkflowId };
       label: string;
     }
-  | { open: "settings"; tab: "voice"; label: string };
+  | { open: "settings"; tab: "voice" | "data"; label: string };
 
 export function loadedModelTarget(
   source: LoadedModelSource,
@@ -102,6 +119,8 @@ export function loadedModelTarget(
       return { open: "route", to: "/video", label: "Video" };
     case "stt":
       return { open: "settings", tab: "voice", label: "Voice settings" };
+    case "embedding":
+      return { open: "settings", tab: "data", label: "Data settings" };
     default:
       return { open: "route", to: "/chat", label: "Chat" };
   }
@@ -113,6 +132,7 @@ export const LOADED_MODEL_KIND_LABELS: Record<LoadedModelKind, string> = {
   image: "Image",
   video: "Video",
   stt: "Dictation",
+  embedding: "Embeddings",
 };
 
 const AUDIO_WORKFLOW_KIND_LABELS: Partial<Record<AudioWorkflowId, string>> = {
@@ -159,7 +179,26 @@ export function shortModelLabel(name: string): string {
   return segments.slice(-2).join("/");
 }
 
-/** `audio_type` splits TTS and whisper out of the chat row. */
+export function loadedModelLabel(
+  entry: Pick<LoadedModelEntry, "name" | "label">,
+): string {
+  return shortModelLabel(entry.label || entry.name);
+}
+
+export function formatResidentMib(mib: number | null | undefined): string | null {
+  if (typeof mib !== "number" || !Number.isFinite(mib) || mib <= 0) return null;
+  const gib = mib / 1024;
+  return `${gib >= 10 ? gib.toFixed(0) : gib.toFixed(1)} GiB`;
+}
+
+function residentMib(value: unknown): { residentMib?: number } {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? { residentMib: value }
+    : {};
+}
+
+/** Rows for whatever the chat runtime holds. `audio_type` splits TTS and whisper
+ *  out of the chat row: same picker, but neither answers prompts. */
 export function describeInferenceStatus(
   status: InferenceStatusResponse | null,
 ): LoadedModelEntry[] {
@@ -204,6 +243,7 @@ export function describeInferenceStatus(
         status.gguf_variant,
         status.is_vision ? "Vision" : null,
       ),
+      ...residentMib(status.resident_mib),
     });
   }
   // /status reports the whole load, so loads started in another tab still show.
@@ -218,7 +258,31 @@ export function describeInferenceStatus(
       loading: true,
     });
   }
-  // Only Transformers caches past the active model, and nothing else surfaces that memory.
+  // Matched by checkpoint, which /unload routes on: two local files can share a label.
+  const serving = status.serving ?? [];
+  const checkpoints = status.serving_checkpoints ?? [];
+  const activeCheckpoint = status.model_identifier || active;
+  for (let i = 0; i < serving.length; i++) {
+    const name = serving[i];
+    const checkpoint = checkpoints[i] || name;
+    // By checkpoint when both are known: a kept model may share the active one's label.
+    const isActive =
+      checkpoints[i] && status.model_identifier
+        ? checkpoint === status.model_identifier
+        : checkpoint === activeCheckpoint || name === active;
+    if (!name || (active && isActive)) continue;
+    if (entries.some((entry) => entry.id === `chat:${checkpoint}`)) continue;
+    entries.push({
+      id: `chat:${checkpoint}`,
+      kind: "text",
+      source: "chat",
+      name,
+      detail: "Also serving",
+      servingCheckpoint: checkpoint,
+    });
+  }
+  // Only the Transformers backend caches past the active model, but it is memory
+  // nothing else surfaces or releases.
   for (const name of status.loaded ?? []) {
     if (name === active) continue;
     if (entries.some((entry) => entry.name === name)) continue;
@@ -270,6 +334,8 @@ export function describeDiffusionStatus(
       kind: "image",
       source: "image",
       name: status.repo_id,
+      ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
+      ...residentMib(status.resident_mib),
       detail: joinDetail(
         status.family,
         // Only when the GGUF ran: a dense fast path replaces it with a torchao build.
@@ -295,6 +361,8 @@ export function describeVideoStatus(
       kind: "video",
       source: "video",
       name: status.repo_id,
+      ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
+      ...residentMib(status.resident_mib),
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,
@@ -422,4 +490,78 @@ const PENDING_KINDS: Record<LoadedModelSource, LoadedModelKind> = {
   image: "image",
   video: "video",
   stt: "stt",
+  embedding: "embedding",
 };
+
+export type EmbeddingStatusResponse = {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_model?: string;
+  loaded?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  backend_loaded?: boolean;
+};
+
+export function describeEmbeddingStatus(
+  status: EmbeddingStatusResponse | null,
+): LoadedModelEntry[] {
+  const resident = status?.backend_loaded ?? status?.loaded ?? false;
+  if (!resident) return [];
+  return [
+    {
+      id: "embedding:rag",
+      kind: "embedding",
+      source: "embedding",
+      name: embeddingRowName(status),
+      detail: "Documents",
+    },
+  ];
+}
+
+export function embeddingRowName(
+  status: EmbeddingStatusResponse | null,
+): string {
+  return (status?.loaded ? status.embedding_model : undefined) || "Embedding model";
+}
+
+export function heldByAnotherAccount(
+  statuses: readonly ({ yours?: boolean } | null | undefined)[],
+): boolean {
+  return statuses.some((status) => status?.yours === false);
+}
+
+export function sameLoadedModels(
+  left: readonly LoadedModelEntry[],
+  right: readonly LoadedModelEntry[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((entry, i) => {
+    const other = right[i];
+    return (
+      entry.id === other.id &&
+      entry.kind === other.kind &&
+      entry.source === other.source &&
+      entry.name === other.name &&
+      entry.label === other.label &&
+      entry.detail === other.detail &&
+      entry.inactive === other.inactive &&
+      entry.loading === other.loading &&
+      entry.sttEngine === other.sttEngine &&
+      entry.servingCheckpoint === other.servingCheckpoint &&
+      entry.residentMib === other.residentMib &&
+      (entry.workflows ?? []).join() === (other.workflows ?? []).join()
+    );
+  });
+}
+
+export type LoadedModelsCardState = "rows" | "otherAccount" | "empty" | null;
+
+export function loadedModelsCardState(
+  rowCount: number,
+  heldByOther: boolean,
+  justEnabled: boolean,
+): LoadedModelsCardState {
+  if (rowCount > 0) return "rows";
+  if (heldByOther) return "otherAccount";
+  return justEnabled ? "empty" : null;
+}

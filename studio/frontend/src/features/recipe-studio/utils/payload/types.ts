@@ -65,6 +65,7 @@ export type RecipePayload = {
     seed_columns?: string[];
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
+    seed_total_rows?: number;
     local_file_name?: string;
     // biome-ignore lint/style/useNamingConvention: api schema
     unstructured_upload_uid?: string;

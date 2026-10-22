@@ -29,6 +29,7 @@ export interface DiffusionStatus {
   loaded: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
+  resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];
   // Of those, the families shipped as Modular Diffusers pipelines (the family override classes an opaque folder).

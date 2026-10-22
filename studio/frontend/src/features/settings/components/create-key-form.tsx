@@ -8,6 +8,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useId, useState } from "react";
 import { createApiKey } from "../api/api-keys";
+import { apiKeyActionMessage } from "./api-key-action-message";
 
 const EXPIRY_PRESETS = [
   { label: "Never", value: null as number | null },
@@ -21,7 +22,8 @@ export function CreateKeyForm({
   onError,
 }: {
   onCreated: (rawKey: string) => void;
-  onError: (message: string) => void;
+  /** null clears an earlier failure */
+  onError: (message: string | null) => void;
 }) {
   const t = useT();
   const pillId = useId();
@@ -33,13 +35,13 @@ export function CreateKeyForm({
     e.preventDefault();
     if (!name.trim() || loading) return;
     setLoading(true);
+    onError(null);
     try {
       const result = await createApiKey(name.trim(), expiry);
       onCreated(result.key);
       setName("");
-    } catch {
-      // api-keys.ts throws English messages; show the translated one.
-      onError(t("settings.apiKeys.createError"));
+    } catch (cause) {
+      onError(apiKeyActionMessage(t("settings.apiKeys.createError"), cause));
     } finally {
       setLoading(false);
     }

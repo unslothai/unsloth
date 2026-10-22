@@ -164,6 +164,8 @@ export type SeedInspectResponse = {
   subset?: string | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   resolved_paths?: string[] | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  total_rows?: number | null;
 };
 
 export type ValidateError = {

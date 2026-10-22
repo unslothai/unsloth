@@ -54,6 +54,7 @@ export interface VideoStatus {
   loaded: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
+  resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];
   modular_families?: string[];

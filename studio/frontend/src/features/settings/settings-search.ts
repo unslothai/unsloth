@@ -140,6 +140,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
     "settings.chat.inlineEditResponse",
+    "settings.chat.showReplyTimes",
     "settings.chat.groups.menu.title",
   ],
   browser: [
@@ -454,6 +455,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
   "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
   "settings.chat.replyNotification": "settings.chat.replyNotificationKeywords",
+  "settings.chat.showReplyTimes": "settings.chat.showReplyTimesKeywords",
   // match protocol and agent names omitted from the title.
   "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
   // the intro names only some agents; every listed one has to find this page.
