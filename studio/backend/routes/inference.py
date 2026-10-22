@@ -10651,11 +10651,18 @@ async def _maybe_auto_download_model(
     unknown id like "gpt-4" still falls through to the resident model.
     """
     from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
-    from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
+    from core.inference.openai_auto_download import (
+        is_downloadable_ref,
+        maybe_auto_download,
+        split_model_ref,
+    )
 
     if not requested_model or not get_openai_auto_download_enabled():
         return
     if not is_downloadable_ref(requested_model):
+        return
+    # The resolver never serves a Decision API repo, so fetching one would only fill the disk.
+    if is_decision_api_model(split_model_ref(requested_model)[0]):
         return
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
     if await asyncio.to_thread(_loaded_satisfies, requested_model):
