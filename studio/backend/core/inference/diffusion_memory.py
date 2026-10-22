@@ -23,6 +23,7 @@ import os
 import sys
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
+from .rocm_bf16 import is_rocm_torch
 
 
 MEMORY_MODE_AUTO = "auto"
@@ -937,10 +938,7 @@ def _torch_is_rocm(torch) -> bool:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._torch_is_rocm(torch)
     except Exception:  # noqa: BLE001 - the answer still has to be right
-        return (
-            getattr(getattr(torch, "version", None), "hip", None) is not None
-            or "rocm" in getattr(torch, "__version__", "").lower()
-        )
+        return is_rocm_torch(torch)
 
 
 def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int, int]:
@@ -1207,6 +1205,10 @@ def calibrated_image_activation(
     )
 
 
+DISCRETE_RESERVE_CAP_MIB = 4096
+_ROCM_APU_POOL = "rocm_apu_pool"
+
+
 def _reserve_mib(memory_kind: str, base: int) -> int:
     if memory_kind == METAL_WORKING_SET:
         # Only other apps' growth during the load: the working set already sits below RAM. At least as strict as
@@ -1216,7 +1218,15 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         return max(2048, int(base * 0.20))  # OS + CPU share this pool
     if memory_kind == "system_memory":
         return max(1024, int(base * 0.10))
-    return max(2048, int(base * 0.10))
+    if memory_kind == _ROCM_APU_POOL:
+        # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
+        # keeps the uncapped 10%.
+        return max(2048, int(base * 0.10))
+    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations (the
+    # runtime headroom prices those). 10% of the TOTAL grew with the card: 17.8 GiB on a 178 GiB card, which refused
+    # a resident or companion-split plan on a partly used big card with plenty free. Capped near ComfyUI's fixed
+    # reserve (~1.2 GiB plus its activation estimate); cards up to 40 GiB keep 10% (the 2 GiB floor below 20 GiB).
+    return max(2048, min(int(base * 0.10), DISCRETE_RESERVE_CAP_MIB))
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
@@ -1243,7 +1253,7 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
 def _budget_reserve_kind(memory: DeviceMemory) -> str:
     if getattr(memory, "metal_working_set_mib", None) is not None:
         return METAL_WORKING_SET
-    return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
+    return _ROCM_APU_POOL if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -2644,10 +2654,39 @@ _MEASURED_DENSE_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
     "qwen-image": (4248, 40900),
 }
 _MEASURED_DENSE_SPEED_MODES = ("off",)
+# Dense fp16 / fp32 denoisers (pre-Ampere cards: T4, V100, Turing) on the default and max tiers, seeded from the
+# family's measured peaks instead of the flat 8 GiB per megapixel estimate. "0" restores the flat estimate.
+MEASURED_ACTIVATION_DENSE_TIERS_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_DENSE_TIERS"
 
 
 def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _dense_seed_mib(
+    family: str, speed_mode: str, dense_mib: int, widen: int, tier_seeds: bool
+) -> Optional[int]:
+    """Seed MiB for a dense fp16 / fp32 denoiser (``widen`` = its element size), or None. Eager: the dense table. Default
+    / max: the larger of the dense table and the tier's worst phase (encoder, denoise, untiled decode), only for a
+    family the dense table measured at this DiT size. Families it lacks keep the flat estimate: on a T4, Z-Image's 11.5
+    GiB DiT would then be kept partly resident, which ran slower per step than streaming it whole (3.8-4.4 vs 3.2-3.6
+    s/step). ``tier_seeds``: the target is where the phase table was measured (NVIDIA with a sub-quadratic attention
+    kernel, ``diffusion._measured_target``); elsewhere (math-only attention, ROCm) the tiers keep the flat estimate."""
+    entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(family)
+    if entry is None or not 0 < dense_mib <= entry[1] * widen // 2:
+        return None
+    peak = entry[0] * widen // 2
+    if speed_mode in _MEASURED_DENSE_SPEED_MODES:
+        return peak
+    phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(family)
+    if (
+        speed_mode not in _MEASURED_PEAK_SPEED_MODES
+        or not tier_seeds
+        or phases is None
+        or _env_off(MEASURED_ACTIVATION_DENSE_TIERS_ENV)
+    ):
+        return None
+    return max(peak, max(phases[1 if speed_mode == "max" else 0][:3]) * widen // 2)
 
 
 def measured_image_runtime_mib(
@@ -2662,6 +2701,7 @@ def measured_image_runtime_mib(
     quant: Optional[str] = None,
     phase_seeds: bool = False,
     static_seed: bool = True,
+    dense_tier_seeds: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
@@ -2672,20 +2712,21 @@ def measured_image_runtime_mib(
     peak this machine recorded for (family, quant, speed tier, resolution bucket) at an earlier render
     (diffusion_measured_peaks): it raises a seed and stands in for a missing one, never lowers a seed.
     ``static_seed=False`` (a denoiser no static table was measured on: bf16 or GGUF / int8 packed dense weights)
-    answers from the learned peak alone."""
+    answers from the learned peak alone. ``dense_tier_seeds`` enables the dense default / max tier seeds (``_dense_seed_mib``)
+    on the target the phase table was measured on."""
     if _env_off(MEASURED_ACTIVATION_ENV):
         return None
     seed: Optional[int] = None
     if dense_transformer_mib is not None and _env_off(MEASURED_ACTIVATION_DENSE_ENV):
         return None
     if static_seed and dense_transformer_mib is not None:
-        entry = _MEASURED_DENSE_EAGER_PEAK_MIB.get(str(family or "").lower())
-        if entry is not None and str(speed_mode or "") in _MEASURED_DENSE_SPEED_MODES:
-            peak, max_dit = entry
-            widen = max(2, int(compute_bytes or 2))
-            peak, max_dit = peak * widen // 2, max_dit * widen // 2
-            if 0 < int(dense_transformer_mib) <= max_dit:
-                seed = peak
+        seed = _dense_seed_mib(
+            str(family or "").lower(),
+            str(speed_mode or ""),
+            int(dense_transformer_mib),
+            max(2, int(compute_bytes or 2)),
+            dense_tier_seeds,
+        )
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if seed is None and phase_seeds:
@@ -3203,6 +3244,7 @@ def refine_plan_from_loaded_weights(
             compute_bytes = compute_bytes or 2,
             quant = read_quant,
             phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
+            dense_tier_seeds = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False)),
             static_seed = static_seed,
         )
         if headroom is None:
@@ -3931,9 +3973,13 @@ def measured_request_extra_mib(
     batch_size: int = 1,
     condition_pixels: int = 0,
     cfg: Optional[bool] = None,
+    unpriced_references: bool = False,
 ) -> int:
     """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``cfg``:
-    whether the request runs classifier-free guidance (None: unknown, treated as running it)."""
+    whether the request runs classifier-free guidance (None: unknown, treated as running it). ``unpriced_references``:
+    the request carries reference images whose latents join the denoiser's sequence but are not in
+    ``condition_pixels`` (FLUX.2 Klein's primary reference): a placement made from a dense default / max tier seed,
+    measured on text-to-image, then sizes the request from the flat estimate."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
     if not reserve:
         return 0
@@ -3952,15 +3998,25 @@ def measured_request_extra_mib(
     # after the load only places the NEXT load, it must not stream resident groups for a request the same size as one
     # that just completed. An unseeded family was placed from its learned peak, which is all there is to check against.
     sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
+    sized["dense_tier_seeds"] = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False))
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
-    if (learned or need is None) and (
-        getattr(pipe, "_unsloth_peak_static", False)
-        or getattr(pipe, "_unsloth_loras", None)
-        or cfg_unmeasured
+    # the dense tier seeds were measured on text-to-image: a reference the guard cannot size is not covered
+    tier_seeded = (
+        dense_mib is not None
+        and sized["dense_tier_seeds"]
+        and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+    )
+    if (unpriced_references and tier_seeded) or (
+        (learned or need is None)
+        and (
+            getattr(pipe, "_unsloth_peak_static", False)
+            or getattr(pipe, "_unsloth_loras", None)
+            or cfg_unmeasured
+        )
     ):
         # the learned peak no longer describes this pipeline (runtime LoRA adapters, a planned VAE saver that did not
         # engage): requests size from the flat estimate
@@ -4529,7 +4585,7 @@ def _fast_pin_supported() -> bool:
     try:
         import torch
 
-        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+        if is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
         cudart = torch.cuda.cudart()
         return hasattr(cudart, "cudaHostRegister") and hasattr(cudart, "cudaHostUnregister")

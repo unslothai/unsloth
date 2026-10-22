@@ -35,7 +35,9 @@ def _restore_fp8_integration(monkeypatch):
             if not name.startswith("__"):
                 monkeypatch.setattr(cls, name, value)
     if hasattr(fp8_integration, "replace_with_fp8_linear"):
-        monkeypatch.setattr(fp8_integration, "replace_with_fp8_linear", fp8_integration.replace_with_fp8_linear)
+        monkeypatch.setattr(
+            fp8_integration, "replace_with_fp8_linear", fp8_integration.replace_with_fp8_linear
+        )
 
 
 def _helper():
