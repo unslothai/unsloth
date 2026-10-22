@@ -5597,7 +5597,7 @@ export function ImagesPage({
   const canVary =
     !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null &&
     canVaryImage(selected, status?.display_repo_id ?? status?.repo_id ?? null);
-  const varyBlocked = canVary && selected ? varyBlockedReason(selected, loraCapable, sdCaps) : null;
+  const varyBlocked = canVary && selected ? varyBlockedReason(selected, loraCapable, sdCaps, status ?? {}) : null;
   // Vary runs the SELECTED image's recipe (prompt, size, guidance, LoRAs, ...), not whatever the form holds now:
   // restore it (the exact caption it ran with), then generate once the restored form has rendered.
   const [varyQueued, setVaryQueued] = useState(false);

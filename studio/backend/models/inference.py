@@ -5252,6 +5252,10 @@ class GalleryImage(BaseModel):
     )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
+    engine: Optional[str] = Field(
+        None,
+        description = "Engine that ran it (diffusers, sd_cpp or mlx); the same seed draws different noise on each",
+    )
     model_kind: Optional[str] = Field(
         None, description = "How the model was loaded: gguf, single_file or pipeline"
     )

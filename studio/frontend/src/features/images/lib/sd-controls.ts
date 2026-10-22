@@ -112,9 +112,31 @@ export function canVaryImage(
   return !image.model || image.model === loadedModel;
 }
 
+type VaryBuild = {
+  engine?: string | null;
+  model_kind?: string | null;
+  gguf_filename?: string | null;
+  transformer_quant?: string | null;
+  text_encoder_quant?: string | null;
+};
+const VARY_BUILD_KEYS = ["engine", "model_kind", "gguf_filename", "transformer_quant", "text_encoder_quant"] as const;
+
+/** Why `image` did not provably come off the loaded build, else null. The same seed only gives a nearby image on the
+ *  same engine, checkpoint file and quants; a record without the engine (or from before the build was stored, no
+ *  schema_version) cannot be verified, so it is blocked rather than guessed. */
+export function varyBuildMismatch(image: VaryBuild & { schema_version?: number | null }, loaded: VaryBuild): string | null {
+  if (!image.schema_version || !image.engine)
+    return "This image does not record which engine and build made it, so Vary cannot check it matches the current load.";
+  const differs = VARY_BUILD_KEYS.filter((k) => (image[k] ?? null) !== (loaded[k] ?? null));
+  return differs.length
+    ? `This image came from a different build (${differs.map((k) => k.replace(/_/g, " ")).join(", ")}) than the current load, so the same seed would not give a nearby image. Load that build to vary it.`
+    : null;
+}
+
 /** Why Vary cannot replay `image` as recorded on the current load (it would silently drop a part), else null. */
 export function varyBlockedReason(
-  image: {
+  image: VaryBuild & {
+    schema_version?: number | null;
     loras?: string[] | null;
     prompt_weighting?: boolean | null;
     clip_skip?: number | null;
@@ -123,7 +145,10 @@ export function varyBlockedReason(
   },
   loraCapable: boolean,
   capability: SdControlsCapability | null | undefined,
+  loaded: VaryBuild,
 ): string | null {
+  const build = varyBuildMismatch(image, loaded);
+  if (build) return build;
   // Its noise was a blend of its seed and its variation seed, which no single seed reproduces.
   if (image.variation_strength)
     return "This image already used a variation seed, so Vary cannot start from its noise. Restore it and change the variation seed instead.";

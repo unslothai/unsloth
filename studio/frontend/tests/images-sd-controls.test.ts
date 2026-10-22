@@ -310,19 +310,54 @@ test("imported variation values out of the request bounds are named, not randomi
 
 test("Vary is disabled with a reason when the load cannot apply the selected recipe as recorded", async () => {
   const { varyBlockedReason } = await import("../src/features/images/lib/sd-controls.ts");
-  const recipe = { loras: ["style:0.8"], cfg_rescale: 0.7, clip_skip: 2, prompt_weighting: false };
-  assert.equal(varyBlockedReason(recipe, true, SDXL), null);
-  assert.equal(varyBlockedReason({ loras: [] }, false, SDXL), null);
+  const BUILD = { schema_version: 1, engine: "diffusers", model_kind: "pipeline" };
+  const recipe = { ...BUILD, loras: ["style:0.8"], cfg_rescale: 0.7, clip_skip: 2, prompt_weighting: false };
+  assert.equal(varyBlockedReason(recipe, true, SDXL, BUILD), null);
+  assert.equal(varyBlockedReason({ ...BUILD, loras: [] }, false, SDXL, BUILD), null);
   // Speed=Auto compiled after the render: supports_lora is now false, so the adapters would be dropped.
-  assert.match(varyBlockedReason({ loras: ["style:0.8"] }, false, SDXL) ?? "", /its LoRAs/);
+  assert.match(varyBlockedReason({ ...BUILD, loras: ["style:0.8"] }, false, SDXL, BUILD) ?? "", /its LoRAs/);
   const noRescale = { ...SDXL, cfg_rescale: null, clip_skip: { ...SDXL.clip_skip, max: 2 } };
-  assert.match(varyBlockedReason({ cfg_rescale: 0.7 }, true, noRescale) ?? "", /CFG rescale 0\.7/);
-  assert.match(varyBlockedReason({ clip_skip: 4 }, true, noRescale) ?? "", /CLIP skip 4/);
-  assert.match(varyBlockedReason({ prompt_weighting: false }, true, { ...SDXL, prompt_weighting: false }) ?? "", /weighting off/);
+  assert.match(varyBlockedReason({ ...BUILD, cfg_rescale: 0.7 }, true, noRescale, BUILD) ?? "", /CFG rescale 0\.7/);
+  assert.match(varyBlockedReason({ ...BUILD, clip_skip: 4 }, true, noRescale, BUILD) ?? "", /CLIP skip 4/);
+  assert.match(varyBlockedReason({ ...BUILD, prompt_weighting: false }, true, { ...SDXL, prompt_weighting: false }, BUILD) ?? "", /weighting off/);
   const src = readSrc("features/images/images-page.tsx");
-  assert.match(src, /const varyBlocked = canVary && selected \? varyBlockedReason\(selected, loraCapable, sdCaps\) : null;/);
+  assert.match(src, /const varyBlocked = canVary && selected \? varyBlockedReason\(selected, loraCapable, sdCaps, status \?\? \{\}\) : null;/);
   assert.match(src, /disabled=\{busy !== null \|\| varyBlocked !== null\}/);
   assert.match(src, /\{varyBlocked \?\? \(/);
+});
+
+test("Vary is disabled unless the selected image came off the exact loaded build", async () => {
+  const { varyBlockedReason } = await import("../src/features/images/lib/sd-controls.ts");
+  const loaded = {
+    engine: "diffusers",
+    model_kind: "gguf",
+    gguf_filename: "sdxl-Q4_K_M.gguf",
+    transformer_quant: null,
+    text_encoder_quant: "fp8",
+  };
+  const image = { ...loaded, schema_version: 1, model: "sdxl", workflow: "txt2img" };
+  // The exact same build keeps Vary on; null and absent quant fields read alike.
+  assert.equal(varyBlockedReason(image, true, SDXL, loaded), null);
+  assert.equal(varyBlockedReason({ ...image, transformer_quant: undefined }, true, SDXL, loaded), null);
+  for (const [field, value, label] of [
+    ["engine", "sd_cpp", /engine/],
+    ["model_kind", "pipeline", /model kind/],
+    ["gguf_filename", "sdxl-Q8_0.gguf", /gguf filename/],
+    ["transformer_quant", "int8", /transformer quant/],
+    ["text_encoder_quant", null, /text encoder quant/],
+  ] as const) {
+    assert.match(
+      varyBlockedReason({ ...image, [field]: value }, true, SDXL, loaded) ?? "",
+      new RegExp(`different build \\(.*${label.source}`),
+      field,
+    );
+  }
+  // Older records: no schema_version (build not stored) or no engine (stored before it was recorded) cannot be checked.
+  const { schema_version: _drop, ...noSchema } = image;
+  assert.match(varyBlockedReason(noSchema, true, SDXL, loaded) ?? "", /does not record which engine/);
+  assert.match(varyBlockedReason({ ...image, engine: null }, true, SDXL, loaded) ?? "", /does not record which engine/);
+  // The build check comes before the variation-seed one.
+  assert.match(varyBlockedReason({ ...image, engine: "mlx", variation_strength: 0.2 }, true, SDXL, loaded) ?? "", /different build/);
 });
 
 test("Create with an SDXL ControlNet engaged sends no CFG rescale, and the control says why", () => {
@@ -388,7 +423,8 @@ test("an imported CFG rescale outside the accepted range is named with its clamp
 
 test("Vary is disabled for an image that already used a variation seed", async () => {
   const { varyBlockedReason } = await import("../src/features/images/lib/sd-controls.ts");
-  assert.equal(varyBlockedReason({ variation_strength: 0 }, true, SDXL), null);
-  assert.match(varyBlockedReason({ variation_strength: 1 }, true, SDXL) ?? "", /already used a variation seed/);
-  assert.match(varyBlockedReason({ variation_strength: 0.15 }, true, SDXL) ?? "", /already used a variation seed/);
+  const B = { schema_version: 1, engine: "diffusers" };
+  assert.equal(varyBlockedReason({ ...B, variation_strength: 0 }, true, SDXL, B), null);
+  assert.match(varyBlockedReason({ ...B, variation_strength: 1 }, true, SDXL, B) ?? "", /already used a variation seed/);
+  assert.match(varyBlockedReason({ ...B, variation_strength: 0.15 }, true, SDXL, B) ?? "", /already used a variation seed/);
 });

@@ -345,6 +345,8 @@ export interface GalleryImage {
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
+  // Engine that ran it ("diffusers" | "sd_cpp" | "mlx"); the same seed draws different noise on each.
+  engine?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
   transformer_quant?: string | null;
