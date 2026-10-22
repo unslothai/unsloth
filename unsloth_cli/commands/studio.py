@@ -1844,9 +1844,9 @@ def _engine_install_notice(engine: str, row: dict) -> Optional[str]:
     if wsl.get("state") == "restart_required":
         return "Restart Windows to finish turning on WSL2, then run this command again."
     if wsl.get("state") == "ready" and wsl.get("distro"):
-        return f"On Windows, {engine} runs inside Studio's private WSL2 environment."
+        return f"On Windows, {engine} runs inside Unsloth Studio's private WSL2 environment."
     return (
-        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn "
+        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Unsloth Studio will turn "
         "on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux "
         "distributions are not touched. Windows will show one administrator (UAC) prompt, and "
         "may ask you to restart before the installation can finish. Nothing changes unless you "
@@ -1884,7 +1884,7 @@ def _export_models_dirs(models_dir: Optional[List[Path]]) -> None:
         if os.pathsep in resolved_path:
             typer.echo(
                 f"Error: --models-dir {raw} contains '{os.pathsep}', which cannot be passed "
-                "to Studio. Rename the folder or add it from Custom Folders in the model picker.",
+                "to Unsloth Studio. Rename the folder or add it from Custom Folders in the model picker.",
                 err = True,
             )
             raise typer.Exit(2)
@@ -1985,7 +1985,7 @@ def studio_default(
     models_dir: Optional[List[Path]] = typer.Option(
         None,
         "--models-dir",
-        help = "Add a folder of local models to Studio (repeatable). It is saved as a "
+        help = "Add a folder of local models to Unsloth Studio (repeatable). It is saved as a "
         "Custom Folder, so its models show up in the Chat and Train model pickers on this "
         "and later launches; remove it from Custom Folders in the model picker.",
     ),
@@ -2585,9 +2585,11 @@ def run(
         rich_help_panel = _RUN_PANEL_SERVER,
         help = (
             "llama-server parallel decode slots. N requests share one "
-            "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Unsloth "
-            "run settings (Parallel Slots) can override it per load."
+            "loaded model and one KV cache of the full context "
+            "(--kv-unified), so a single request can use all of it. "
+            "llama.cpp builds without --kv-unified fall back to one slot. "
+            "The Unsloth run settings (Parallel Slots) can override it per "
+            "load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -2628,7 +2630,7 @@ def run(
         "--engine",
         rich_help_panel = _RUN_PANEL_MODEL,
         help = (
-            "Serve a safetensors model with vLLM or SGLang instead of Studio's default "
+            "Serve a safetensors model with vLLM or SGLang instead of Unsloth Studio's default "
             "backend. Installed on first use after a confirmation (--yes skips it); "
             "Linux NVIDIA, or Windows through WSL2."
         ),
@@ -2670,7 +2672,7 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Comma-separated GPU indices to load the model on, for example 0,1 (the "
-            "Studio GPU picker). Default: automatic selection."
+            "Unsloth Studio GPU picker). Default: automatic selection."
         ),
     ),
 ):
@@ -2851,7 +2853,7 @@ def run(
         typer.echo(
             f"Error: re-launched through {studio_venv_dir} but still running from "
             f"{sys.prefix}, so not re-launching again. Check that UNSLOTH_STUDIO_HOME "
-            "points at the Studio install, or re-run: unsloth studio setup",
+            "points at the Unsloth Studio install, or re-run: unsloth studio setup",
             err = True,
         )
         raise typer.Exit(1)

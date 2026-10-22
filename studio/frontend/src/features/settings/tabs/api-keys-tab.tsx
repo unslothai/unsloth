@@ -21,16 +21,16 @@ import type {
 } from "../api/keyless-api-access";
 import { ApiKeyRow } from "../components/api-key-row";
 import { AudioApiExamples } from "../components/audio-api-examples";
+import { MediaApiExamples } from "../components/media-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
 import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
-import { LanAccessSection } from "../components/lan-access-section";
 import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
-import { RemoteAccessSection } from "../components/remote-access-section";
+import { RemoteLanSummary } from "../components/remote-lan-summary";
 import {
   UsageExamples,
   useApiTunnelPref,
@@ -189,24 +189,6 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <MonitorLink />
-
-      {/* Installation-wide controls: owner-only routes. */}
-      {isOwner ? (
-        <>
-          <KeylessApiAccessSection onSettingsChange={setKeyless} />
-
-          {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
-          <RemoteAccessSection />
-
-          <LanAccessSection />
-
-          <ModelAutoSwitchSection />
-
-          <ModelAliasesSection />
-        </>
-      ) : null}
-
       <UsageExamples
         apiKey={revealed}
         useTunnel={useTunnel}
@@ -216,7 +198,29 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
+      <MonitorLink />
+
+      {/* Installation-wide controls: owner-only routes. */}
+      {isOwner ? (
+        <>
+          <KeylessApiAccessSection onSettingsChange={setKeyless} />
+
+          <RemoteLanSummary />
+
+          <ModelAutoSwitchSection />
+
+          <ModelAliasesSection />
+        </>
+      ) : null}
+
       <AudioApiExamples
+        apiKey={revealed}
+        useTunnel={useTunnel}
+        keylessScope={keyless.scope}
+        keylessExposure={keyless.exposure}
+      />
+
+      <MediaApiExamples
         apiKey={revealed}
         useTunnel={useTunnel}
         keylessScope={keyless.scope}

@@ -25,7 +25,6 @@ def test_flux_single_block_split_is_proven(backport):
     allocator = sizevars.SizeVarAllocator()
     # FluxSingleTransformerBlock: cat([attn, mlp], dim=2) over the merged text+image sequence.
     assert allocator.statically_known_multiple_of(15360 * s31 + 15360 * s87, s31 + s87)
-    # With the text length static (mark_static on the text dim): still exact.
     assert allocator.statically_known_multiple_of(15360 * s87 + 7864320, s87 + 512)
 
 

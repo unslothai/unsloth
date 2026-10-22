@@ -38,7 +38,7 @@ def _ltx_vae():
 
 
 def _line_error(x, ref):
-    d = (x - ref).abs().mean(1)[0]  # (T, H, W)
+    d = (x - ref).abs().mean(1)[0]
     return max(float(d.mean(1).max()), float(d.mean(2).max()))
 
 
@@ -59,14 +59,12 @@ def free(monkeypatch):
 
 def test_tight_memory_tiles_have_no_seam_lines(free, monkeypatch):
     vae = _ltx_vae()
-    z = torch.randn(
-        1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1)
-    )  # 1216x704, 9 frames
+    z = torch.randn(1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1))
     vae.use_tiling = False
     untiled = _decode(vae, z)
-    vae.enable_tiling()  # what Studio does on every LTX load
+    vae.enable_tiling()
     stock = _decode(vae, z)
-    free["bytes"] = 0  # nothing fits: the stock-size 16-latent tiles, with the wide overlap
+    free["bytes"] = 0
     assert vt.install(vae)
     wide = _decode(vae, z)
     assert vae._unsloth_last_decode_tile == (16, 16)
@@ -74,16 +72,12 @@ def test_tight_memory_tiles_have_no_seam_lines(free, monkeypatch):
     stock_err, wide_err = _line_error(stock, untiled), _line_error(wide, untiled)
     assert stock_err > 3 * wide_err, (stock_err, wide_err)
     monkeypatch.setenv(vt.WIDE_TILES_ENV, "0")
-    assert torch.equal(
-        _decode(vae, z), stock
-    )  # kill switch set after install: the stock tiled decode
+    assert torch.equal(_decode(vae, z), stock)
 
 
 def test_whole_latent_fits_decodes_untiled(free, monkeypatch):
     vae = _ltx_vae()
-    z = torch.randn(
-        1, 8, 2, 16, 24, generator = torch.Generator().manual_seed(2)
-    )  # 768x512, the default preset
+    z = torch.randn(1, 8, 2, 16, 24, generator = torch.Generator().manual_seed(2))
     vae.use_tiling = False
     untiled = _decode(vae, z)
     vae.enable_tiling()
@@ -99,8 +93,8 @@ def test_whole_latent_fits_decodes_untiled(free, monkeypatch):
 
 def test_more_free_memory_means_fewer_larger_tiles(free, monkeypatch):
     vae = _ltx_vae()
-    monkeypatch.setattr(vt, "_itemsize", lambda vae: 2)  # the bf16 decoder Studio loads
-    z = torch.zeros(1, 128, 16, 22, 38)  # 1216x704x121, the largest the UI offers
+    monkeypatch.setattr(vt, "_itemsize", lambda vae: 2)
+    z = torch.zeros(1, 128, 16, 22, 38)
     for fused in (False, True):
         vae._unsloth_vae_fused_installed = int(fused)
         sizes = []
@@ -169,13 +163,12 @@ def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
 
 @pytest.mark.parametrize("free_bytes, fp32_accum", [(0, False), (None, False), (1000 * GIB, True)])
 def test_fp32_accumulator_only_when_budgeted(free, monkeypatch, free_bytes, fp32_accum):
-    # Unbudgeted plans must not add a full-frame fp32 buffer on top of stock-size tiles.
     vae = _ltx_vae().to(torch.bfloat16)
     z = torch.randn(1, 8, 1, 22, 38, dtype = torch.bfloat16)
     vae.enable_tiling()
     assert vt.install(vae)
     free["bytes"] = free_bytes
-    monkeypatch.setenv(U.UNTILED_ENV, "0")  # keep >= 2 tiles so the accumulator is used
+    monkeypatch.setenv(U.UNTILED_ENV, "0")
     seen = []
     zeros = torch.zeros
 
@@ -219,7 +212,6 @@ def test_tile_layout_full_tiles_and_weights_sum_to_one(length):
         assert torch.allclose(total, torch.ones_like(total), atol = 1e-6)
 
 
-# Untiled decode peaks of the LTX-2.3 VAE (bf16, B200, MiB): (w, h, frames) -> peak. The estimate must cover each.
 MEASURED = {
     (768, 512, 25): 1011,
     (768, 512, 121): 4755,
@@ -275,9 +267,7 @@ def test_video_load_installs_wide_tiles_on_every_tiling_load():
     tiling = src.index("pipe.vae.enable_tiling()")
     install = src.index("from .video_ltx2_vae_tiles import install")
     resident = src.index("from .video_vae_untiled import install_untiled_decode")
-    assert (
-        tiling < install < resident
-    )  # after tiling is enabled, before (so beneath) the resident untiled wrapper
+    assert tiling < install < resident
 
 
 def test_axis_weights_share_the_image_tile_blend(monkeypatch):

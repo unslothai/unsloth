@@ -119,6 +119,7 @@ export const ja = {
     reload: "再読み込み",
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
+    local: "ローカル",
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -216,7 +217,7 @@ export const ja = {
     importBookmarksDoneOne: "{count} 件のブックマークをインポートしました。",
     importBookmarksDoneMany: "{count} 件のブックマークをインポートしました。",
     importBookmarksNone: "このファイルに新しいブックマークはありません。",
-    importBookmarksPartial: "{count} 件をインポートしましたが、残りの {leftOut} 件は入りませんでした。Studio に保存できるブックマークは最大 {max} 件です。",
+    importBookmarksPartial: "{count} 件をインポートしましたが、残りの {leftOut} 件は入りませんでした。Unsloth に保存できるブックマークは最大 {max} 件です。",
     importBookmarksFailed: "ファイルを読み込めませんでした。ブラウザからエクスポートしたブックマークの HTML ファイルを選択してください。",
     downloadsTitle: "ダウンロード",
     askWhereToSaveSetting: "ファイルごとに保存先を確認する",
@@ -267,7 +268,7 @@ export const ja = {
     annotationScreenshotsAlways: "常に含める",
     annotationScreenshotsNever: "含めない",
     clearDataSetting: "閲覧データを消去",
-    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Studio を再読み込みするまでのみ保持されます。",
+    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Unsloth を再読み込みするまでのみ保持されます。",
     manage: "管理",
     fullView: {
       enter: "全画面表示",
@@ -469,6 +470,8 @@ export const ja = {
       downloadFailed: "{name} をダウンロードできませんでした",
       notMarked: "{name} は保存されましたが、インターネットからダウンロードしたファイルとしてマークできなかったため、開く前にシステムの警告が表示されません。",
       blocked: "このアドレスはブラウザパネルでは開けません。開けるのは公開ウェブサイトのみです。",
+      blockedLocal: "このローカルアドレスはここでは開けません。開くにはアドレスバーに入力してください。",
+      studioAddress: "これは Unsloth 自身のアドレスのため、ブラウザパネルでは開けません。",
       clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去します。サイトからはログアウトされます。",
       clearDataDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
@@ -846,6 +849,7 @@ export const ja = {
       byProject: "プロジェクト別",
       inOneList: "1つのリストで",
       sortChatsBy: "チャットの並び順",
+      projectsHome: "プロジェクトのホーム",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
@@ -1086,6 +1090,10 @@ export const ja = {
       alternateSlot: "代替ショートカット",
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
+      metaUnsupported: "Windows キーはショートカットに使用できません。",
+      altGraphUnsupported: "AltGr の組み合わせはショートカットに使用できません。",
+      desktopOnly: "デスクトップアプリのみ",
+      builtInKey: "組み込み: {key}",
       actions: {
         findInPage: {
           label: "ページ内検索",
@@ -1287,6 +1295,10 @@ export const ja = {
           label: "応答を修正",
           description: "現在の応答を停止して下書きを次に送信します",
         },
+        stopGeneration: {
+          label: "生成を停止",
+          description: "生成中の応答を停止します",
+        },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",
           description: "思考の深さのレベルを順に切り替えます",
@@ -1448,15 +1460,15 @@ export const ja = {
       dictation: {
         audioUploadTitle: "録音を使って音声入力",
         audioUploadDescription:
-          "Studio で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Studio サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
+          "Unsloth で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Unsloth サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
         audioUploadChooseFile: "録音を選択",
         audioUploadRecord: "音声を録音",
         audioUploadIphoneHint:
           "iPhone では、Voice Memos または別の録音アプリで録音を保存してから、ここで選択してください。",
         audioUploadServerModelNote:
-          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Studio サーバー上で上に表示されているローカルモデルを使用します。",
+          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Unsloth サーバー上で上に表示されているローカルモデルを使用します。",
         audioUploadAutomatic: "自動",
-        audioUploadModelReady: "この Studio サーバーで使用可能",
+        audioUploadModelReady: "この Unsloth サーバーで使用可能",
         audioUploadRetryTitle: "{file} を文字起こしできませんでした",
         audioUploadRetry: "文字起こしを再試行",
         audioUploadChooseModel:
@@ -1798,20 +1810,14 @@ export const ja = {
       },
       notifications: {
         sectionTitle: "通知",
-        showLlamaUpdates: "llama.cpp のアップデート通知",
-        showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
-        showLoadedModels: "読み込み済みモデルのインジケーター",
-        showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
-        showWhisperUpdates: "whisper.cpp のアップデート通知",
-        showWhisperUpdatesDescription: "音声認識モデル向けの新しい whisper.cpp ビルドが利用可能になったときに通知します。音声を文字起こししない場合はオフにしてください。",
-        showAudioCppUpdates: "audio.cpp のアップデート通知",
-        showAudioCppUpdatesDescription:
-          "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
-        showUnslothUpdates: "Unsloth のアップデート通知",
-        showUnslothUpdatesDescription:
-          "新しいバージョンの Unsloth をインストールできるようになったときに通知します。",
+        showLoadedModels: "読み込み済みモデルのカード",
+        showLoadedModelsDescription: "読み込み中のモデルを並べた隅のカード。ワンクリックで取り出せます。",
+        updateReminders: "更新のお知らせ",
+        updateRemindersDescription: "新しいバージョンの準備ができたときに案内する頻度です。",
+        llamaHint: "チャットと GGUF モデル",
+        audioHint: "音声、音楽、文字起こし",
         frequency: {
-          always: "常に",
+          always: "出るたびに",
           daily: "1日1回",
           weekly: "週に1回",
           biweekly: "2週間に1回",
@@ -1946,7 +1952,7 @@ export const ja = {
         menuSubtitle: "ファイル検索に使用",
         device: "埋め込みデバイス",
         deviceDescription:
-          "すべてのモデルで埋め込みモデルを実行する場所です。GPU は大量のドキュメントをより速くインデックスしますが、Studio を再起動するまで一部の VRAM を使用し続けます。",
+          "すべてのモデルで埋め込みモデルを実行する場所です。GPU は大量のドキュメントをより速くインデックスしますが、Unsloth を再起動するまで一部の VRAM を使用し続けます。",
         deviceAuto: "自動",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2047,9 +2053,9 @@ export const ja = {
         longestStreak: "最長の連続日数",
         activityTitle: "トークンの推移",
         activityDescription: {
-          daily: "直近{weeks}で{total}",
-          weekly: "ピーク週 {total} · 直近{weeks}",
-          cumulative: "直近{weeks}で累計{total}",
+          daily: "{since}以降 {total}",
+          weekly: "最も多い週 {total} · {since}以降",
+          cumulative: "{since}以降の累計 {total}",
         },
         mode: {
           daily: "日次",
@@ -2058,8 +2064,9 @@ export const ja = {
         },
         cellTooltip: "{date} · {tokens}、{messages}",
         weekTooltip: "{date} の週 · {tokens}",
-        chartToggle: "グラフ",
-        chartToggleHint: "週次と累計を軸ラベル付きのグラフで表示",
+        emptyDayTooltip: "{date} · アクティビティなし",
+        apiRequests: "API経由 {count}",
+        cumulativeTooltip: "{date}の週まで · 累計 {tokens}",
         less: "少ない",
         more: "多い",
         insightsTitle: "アクティビティの分析",
@@ -2376,7 +2383,7 @@ export const ja = {
         multiModelHint: "チャット、音声、画像、動画のモデルが対象です。読み込まれた各チャットモデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、Unsloth は新しいモデルを他のモデルが使っていない GPU に配置しようとします。「収まる場合」は約 1 GB の空きを残します。「収まる場合」と「常に」は、別の GPU 上のモデルをアンロードしません。",
         allowOversizedLoad: "大きすぎるモデルの読み込みを許可",
         allowOversizedLoadDescription: "メモリチェックで収まらないと判定された場合でも、画像と動画のモデルを読み込みます。",
-        allowOversizedLoadHint: "CPU と GPU が 1 つのメモリを共有する環境 (Apple Silicon、内蔵 GPU) に適用されます。モデルの重みの推定値が、オペレーティングシステム用の領域を確保した後の残りメモリを超えると、Studio は読み込みを拒否します。オンにすると、その場合でも読み込みを試みます。推定はどちらの方向にも外れることがあり、大きすぎる読み込みは失敗する、メモリを使い切る、激しいスワップや応答停止を起こす、または Studio を停止させることがあります。既定ではオフです。",
+        allowOversizedLoadHint: "CPU と GPU が 1 つのメモリを共有する環境 (Apple Silicon、内蔵 GPU) に適用されます。モデルの重みの推定値が、オペレーティングシステム用の領域を確保した後の残りメモリを超えると、Unsloth は読み込みを拒否します。オンにすると、その場合でも読み込みを試みます。推定はどちらの方向にも外れることがあり、大きすぎる読み込みは失敗する、メモリを使い切る、激しいスワップや応答停止を起こす、または Unsloth を停止させることがあります。既定ではオフです。",
         mediaIdleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
@@ -2744,6 +2751,22 @@ export const ja = {
         visibilityDescription:
           "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
       },
+      memory: {
+        title: "メモリー",
+        description: "すべてのチャットが読み込むメモです。ローカルでもクラウドでも、どのモデルでも使われます。プロジェクト内のチャットは、そのプロジェクトの AGENTS.md も読み込みます。",
+        enable: "チャットでメモリーを使う",
+        enableDescription: "このメモをすべてのチャットに送信します。",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD により、このインストールでは無効になっています。",
+        editor: "メモリーのメモ",
+        placeholder: "例:\n- Python を書いていて uv を使っています。\n- 簡潔に答えてください。",
+        hint: "{path} に保存されます。このファイルは任意のテキストエディタでも編集できます。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "メモリーを保存しました",
+        loadError: "メモリーを読み込めませんでした。",
+        saveError: "メモリーを保存できませんでした。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md メモリー 記憶 覚える パーソナライズ プロフィール メモ",
+      },
       currentDate: {
         label: "今日の日付をモデルに伝える",
         description:
@@ -2821,7 +2844,7 @@ export const ja = {
       importFailed: "インポートに失敗しました。",
       importFromSource: "{source} からインポート",
       importFromSourceDescription:
-        "{source} の会話をプロジェクトごとにまとめて Studio にコピーします。",
+        "{source} の会話をプロジェクトごとにまとめて Unsloth にコピーします。",
       importingAction: "インポート中...",
       importedSourceOneChat: "{source} から 1 件の会話をインポートしました。",
       importedSourceChatCount:
@@ -3095,6 +3118,14 @@ export const ja = {
           "モデルの自動切り替えがオンのときだけ、名前でモデルが読み込まれます。オンにするか、先にそのモデルをオーディオページで読み込んでください。",
         useViaApi: "API で使う",
       },
+      mediaApi: {
+        title: "画像と動画の API",
+        description: "OpenAI 互換のエンドポイントで、自分のコードから画像と動画を生成できます。",
+        images: "画像",
+        video: "動画",
+        placeholderModel: "表示中のモデルは例です。画像または動画ページでモデルを読み込み、そのページの API ボタンからここを開くと入力されます。",
+        autoSwitchOff: "メディアの自動切り替えがオフのため、リクエストは指定した名前にかかわらず、ページで読み込まれているモデルで実行されます。",
+      },
       decisionApi: {
         title: "判定 API",
         docs: "ドキュメント",
@@ -3174,6 +3205,24 @@ export const ja = {
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
+      whisperCppVersion: "whisper.cpp バージョン",
+      engines: {
+        title: "エンジン",
+        description: "Unsloth がモデルの実行に使うランタイムです。更新はバックグラウンドでインストールされ、再起動は不要です。",
+        updatesLabel: "エンジンの更新",
+        notInstalled: "未インストール",
+        available: "{version} を利用可能",
+        upToDate: "最新です",
+        updatesAvailable: "更新があります",
+        checking: "更新を確認しています...",
+        checkFailed: "更新を確認できませんでした。後でもう一度お試しください。",
+        unsupported: "このインストールのエンジンは Unsloth の外部で管理されています。",
+        checkForUpdates: "更新を確認",
+        update: "更新",
+        updating: "更新しています...",
+        updated: "エンジンを更新しました。",
+        updateFailed: "更新に失敗しました: {error}",
+      },
       hardware: "ハードウェア",
       gpu: "GPU",
       gpuIntegrated: "内蔵",
@@ -3231,7 +3280,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "アプリはすでに実行中の Studio サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
+          "アプリはすでに実行中の Unsloth サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",
@@ -3254,6 +3303,9 @@ export const ja = {
         docsUpdating: "アップデート方法",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3827,7 +3879,7 @@ export const ja = {
         decisionColumnsMissing:
           "判定モデルには state、questions、gold（または answers）列が必要です。不足している列: {columns}",
         decisionOwnerOnly:
-          "判定モデルをファインチューニングできるのは Studio の所有者だけです。",
+          "判定モデルをファインチューニングできるのは Unsloth の所有者だけです。",
         hfDatasetRequired:
           "先に Hugging Face データセットを選択してください。",
         hfDatasetSplitRequired:

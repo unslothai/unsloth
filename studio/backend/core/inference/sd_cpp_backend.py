@@ -748,8 +748,13 @@ def sd_cpp_vulkan_device_is_uma(
 _GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
 
 
+_TRADEMARK_RE = re.compile(r"\((?:tm|r)\)|[\u2122\u00ae]", re.IGNORECASE)
+
+
 def _normalized_card_name(text: str) -> str:
-    """Letters and digits only, lowercased: `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    """Letters and digits only, lowercased, trademark marks dropped (HIP's `AMD Radeon(TM) Graphics` is RADV's
+    `AMD Radeon Graphics`): `AMD Radeon RX 7900 XTX (RADV NAVI31)` then contains `AMD Radeon RX 7900 XTX`."""
+    text = _TRADEMARK_RE.sub(" ", text)
     return "".join(character for character in text.lower() if character.isalnum())
 
 
@@ -803,14 +808,14 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     if opaque is not None:
         return None, True
     visible: "Optional[list[int]]" = None
-    for raw in (rocr, hip):
+    for is_hip, raw in ((False, rocr), (True, hip)):
         if raw is None:
             continue
         entries = _mask_entries(raw)
         if entries is None:
             return None, True
         # clr keeps the first of a repeated HIP entry; ROCr stops at one (utils/hardware/amd.py).
-        if raw is hip:
+        if is_hip:
             entries = list(dict.fromkeys(entries))
         elif len(set(entries)) < len(entries):
             entries = entries[: next(i for i, e in enumerate(entries) if e in entries[:i])]
@@ -2879,6 +2884,8 @@ _UNREAD_LOADING_CARD = object()
 class SdCppDiffusionBackend:
     """Native sd.cpp backend with the diffusers ``DiffusionBackend`` method surface."""
 
+    # sd.cpp parses A1111 attention syntax ((word:1.2), [word]) in every prompt; it cannot be turned off.
+    parses_prompt_attention = True
     # Class-level defaults so an instance built with ``__new__`` answers before any load ran.
     _loading_cards = None
     _committed_loading_card: Optional[str] = None

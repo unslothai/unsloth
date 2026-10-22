@@ -119,6 +119,9 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
 API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 # Own module: the overlay mounts from __root.tsx, so importing the page made it eager.
 API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
+API_MODEL_LOAD_CONTROLS_TSX = (
+    REPO / "studio/frontend/src/features/api-monitor/components/api-model-load-controls.tsx"
+)
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
@@ -142,10 +145,12 @@ def test_api_monitor_renders_lifecycle_rows():
     assert 'from "./lifecycle"' in src
 
 
-def test_auto_switch_section_sits_above_the_usage_examples():
+def test_auto_switch_section_sits_below_the_monitor_link():
+    # #14455 moved the usage examples up, under the key form (api-settings-tab.test.ts pins that);
+    # the auto-switch section still follows the monitor link.
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
+    assert tab.index("<UsageExamples") < tab.index("<MonitorLink />")
     assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
-    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -161,17 +166,18 @@ def test_api_monitor_renders_download_rows():
 
 def test_monitor_can_unload_the_loaded_model():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "unloadActiveModel" in src
-    # Always rendered so the manual release stays discoverable; disabled, not hidden. Read the
-    # button's own disabled= as a set of || terms: #11223 added `modelLoading` (no unload while a
-    # model loads), and the guard is that these two stay among them, not the exact spelling.
-    click = "onClick={() => void unloadActiveModel()}"
-    button = src[src.index(click) + len(click) :]
-    disabled = re.match(r"\s*disabled=\{([^}]*)\}", button)
-    assert disabled, "the unload button no longer sits next to its disabled= prop"
-    terms = {term.strip() for term in disabled.group(1).split("||")}
-    assert {"unloading", "!data?.active_model"} <= terms, terms
-    assert "{data?.active_model ? (" not in src
+    controls = API_MODEL_LOAD_CONTROLS_TSX.read_text(encoding = "utf-8")
+    # The redesigned page (#14455) unloads through the model picker's eject, wired to the page's
+    # unloadActiveModel; the standalone always-visible button went with it.
+    assert "const unloadActiveModel = async" in src
+    assert "onUnloadActive={unloadActiveModel}" in src
+    assert "onUnloadActive();" in controls
+    # #11223: no unload while a model loads, or while one is already unloading. Read busy= as a set
+    # of || terms, so the guard is that both stay among them, not the exact spelling.
+    busy = re.search(r"const busy = ([^;]+);", controls)
+    assert busy, "the load controls no longer compute busy"
+    assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}
+    assert "onEject={busy ? undefined : handleEject}" in controls
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src

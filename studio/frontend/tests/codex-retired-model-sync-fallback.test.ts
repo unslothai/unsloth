@@ -29,8 +29,6 @@ after(async () => {
 });
 
 test("a saved selection of only the retired slug falls back to the seed", () => {
-  // This is the upgrade path the PR exists for: the connection would otherwise sync to
-  // an empty model list, vanish from the picker, and backfill [] that the backend 400s.
   const resolved = resolveSyncedModelIds("openai_codex", [], [RETIRED], SEED);
   assert.deepEqual(resolved, SEED);
 });

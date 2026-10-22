@@ -386,12 +386,7 @@ def test_delete_with_missing_shared_dir_still_deletes_row(monkeypatch, tmp_path)
 
 
 def test_a_failed_purge_is_reported_and_puts_the_directory_back(monkeypatch, tmp_path):
-    """A purge that fails must not report the artifacts as deleted.
-
-    The staged name is hidden and randomized, so claiming success would leave every byte on
-    disk under a name the UI never shows and no retry can rediscover -- the run row is gone by
-    then, so nothing points at it any more.
-    """
+    """A failed purge must be reported and the directory restored, since its staged name is hidden."""
     outputs, run_dir = _shared_setup_4(tmp_path)
 
     monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
@@ -673,7 +668,6 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
     assert response.artifacts_deleted is True
     assert deleted_runs == ["run-1"]
-    # One offload, not two: nothing was staged here, so there is no purge phase.
     assert len(calls) == 1
 
 
