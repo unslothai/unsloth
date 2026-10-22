@@ -5361,6 +5361,8 @@ export function ImagesPage({
           await settleLostGeneration(() => isMounted.current, probeBaseline);
           if (!isMounted.current) break;
           await loadGallery();
+          // A compare cell takes its record from what the gallery gained (matched by seed in compare/).
+          compare?.onImages(i, galleryCache.images.filter((image) => !knownIds.has(image.id)));
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
@@ -5488,6 +5490,7 @@ export function ImagesPage({
       negativeCapable,
       negativeMinGuidance,
       guidanceFixed,
+      guidance: effectiveGuidance,
       samplers: samplerOptions,
       samplerChoice,
       shift: shiftControl,
@@ -5504,7 +5507,7 @@ export function ImagesPage({
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetCapable, controlnetId, controlImage],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetCapable, controlnetId, controlImage],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {

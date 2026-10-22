@@ -155,6 +155,29 @@ export function drawGrid(
   }
 }
 
+/** Decode and draw cells strictly one after another, so at most one decoded cell exists at a time. A cell that is
+ *  missing or fails to decode keeps the placeholder already drawn. */
+export async function drawCellsInTurn<R, B>(
+  records: ReadonlyArray<R | null>,
+  load: (record: R, index: number) => Promise<B>,
+  draw: (bitmap: B, index: number) => void,
+): Promise<number> {
+  let drawn = 0;
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (!record) continue;
+    let bitmap: B;
+    try {
+      bitmap = await load(record, i);
+    } catch {
+      continue;
+    }
+    draw(bitmap, i);
+    drawn++;
+  }
+  return drawn;
+}
+
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {

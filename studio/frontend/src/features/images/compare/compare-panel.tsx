@@ -33,9 +33,9 @@ import {
   type AxisInput,
   type CompareContext,
 } from "./compare-axes";
-import { createCompareRun, gridTitles, sliceCells, type CompareRun, type CompareRunState } from "./compare-run";
+import { createCompareRun, gridRecipeFields, gridTitles, sliceCells, type CompareRun, type CompareRunState } from "./compare-run";
 import { joinAxisList } from "./compare-values";
-import { drawGrid, gridInfotext, gridLayout, withPngText } from "./compose-grid";
+import { drawCellsInTurn, drawGrid, gridInfotext, gridLayout, withPngText } from "./compose-grid";
 
 export interface ComparePanelProps {
   context: CompareContext;
@@ -81,16 +81,6 @@ async function composeGrid(
   const records = sliceCells(plan, run.results, iz);
   const first = records.find(Boolean);
   if (!first) return null;
-  const bitmaps = await Promise.all(
-    records.map(async (r) => {
-      if (!r) return null;
-      try {
-        return await createImageBitmap(await fetchGalleryBlob(r.url));
-      } catch {
-        return null;
-      }
-    }),
-  );
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
@@ -114,8 +104,25 @@ async function composeGrid(
   );
   canvas.width = layout.width;
   canvas.height = layout.height;
-  drawGrid(ctx, layout, bitmaps);
-  bitmaps.forEach((b) => b?.close());
+  // Placeholders and labels first, then one cell at a time decoded straight to its drawn size: a 64-cell grid of
+  // full-size decodes held at once would be gigabytes of RGBA.
+  drawGrid(ctx, layout, records.map(() => null));
+  await drawCellsInTurn(
+    records,
+    async (r, i) => {
+      const rect = layout.cells[i];
+      return createImageBitmap(await fetchGalleryBlob(r.url), {
+        resizeWidth: rect.w,
+        resizeHeight: rect.h,
+        resizeQuality: "high",
+      });
+    },
+    (bitmap, i) => {
+      const rect = layout.cells[i];
+      ctx.drawImage(bitmap, rect.x, rect.y, rect.w, rect.h);
+      bitmap.close();
+    },
+  );
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) return null;
   const png = withPngText(new Uint8Array(await blob.arrayBuffer()), "parameters", infotext);
@@ -185,13 +192,13 @@ export default function ComparePanel(props: ComparePanelProps) {
     if (done === 0) return;
     const plan = result.plan;
     const firstReq = state.requests.find(Boolean);
-    const fields: Array<[string, string | number | null | undefined]> = [
-      ["Steps", firstReq?.steps ?? props.steps],
-      ["CFG scale", firstReq?.guidance ?? props.guidance],
-      ["Seed", firstReq?.seed],
-      ["Size", `${props.width}x${props.height}`],
-      ["Model", props.modelName],
-    ];
+    const fields = gridRecipeFields(plan, firstReq, {
+      steps: props.steps,
+      guidance: props.guidance,
+      width: props.width,
+      height: props.height,
+      model: props.modelName,
+    });
     const axesInfo = plan.axes
       .map((a, i) => ({ a, name: AXIS_NAMES[i] }))
       .filter(({ a }) => a.def.id !== NOTHING)
@@ -208,10 +215,13 @@ export default function ComparePanel(props: ComparePanelProps) {
       axes: axesInfo,
     });
     try {
+      // One Z slice at a time, for the same memory reason as the cells.
+      const made: GridResult[] = [];
       const titles = gridTitles(plan);
-      const made = (
-        await Promise.all(titles.map((t, iz) => composeGrid(state, iz, t, { legend, margin }, infotext)))
-      ).filter((g): g is GridResult => g !== null);
+      for (let iz = 0; iz < titles.length; iz++) {
+        const grid = await composeGrid(state, iz, titles[iz], { legend, margin }, infotext);
+        if (grid) made.push(grid);
+      }
       if (!mounted.current) return;
       setGrids(made);
       if (made.length) setOpen(true);

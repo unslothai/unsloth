@@ -5,6 +5,7 @@
  *  back. The page keeps owning progress polling, Stop, the gallery merge and error toasts. */
 
 import type { DiffusionGenerateRequest, GalleryImage } from "../api.ts";
+import { SAMPLER_LABELS, SCHEDULE_LABELS } from "../lib/sampler-choice.ts";
 import {
   buildCellRequest,
   cellTitle,
@@ -57,7 +58,11 @@ export function createCompareRun(
     },
     onImages(run, images) {
       const cell = plan.order[run];
-      if (cell !== undefined && images[0]) results[cell] = images[0];
+      if (cell === undefined) return;
+      // A lost-response recovery passes every record the gallery gained: the cell's own carries its seed.
+      const seed = requests[cell]?.seed;
+      const own = images.find((image) => image.seed === seed) ?? (images.length === 1 ? images[0] : undefined);
+      if (own) results[cell] = own;
     },
   };
 }
@@ -76,4 +81,28 @@ export function gridTitles(plan: CompareGridPlan): string[] {
 
 export function completedCells(run: CompareRunState): number {
   return run.results.filter(Boolean).length;
+}
+
+/** The grid's shared recipe for its `parameters` chunk. Sampler and schedule are written whenever an axis does not
+ *  vary them, so the PNG still names the scheduler its cells ran. */
+export function gridRecipeFields(
+  plan: CompareGridPlan,
+  first: DiffusionGenerateRequest | null | undefined,
+  form: { steps: number; guidance: number; width: number; height: number; model: string | null },
+): Array<[string, string | number | null | undefined]> {
+  const varied = new Set(plan.axes.map((a) => a.def.id));
+  const fields: Array<[string, string | number | null | undefined]> = [
+    ["Steps", first?.steps ?? form.steps],
+  ];
+  if (!varied.has("sampler")) fields.push(["Sampler", SAMPLER_LABELS[first?.sampler ?? "default"] ?? first?.sampler]);
+  if (!varied.has("schedule") && first?.schedule_type) {
+    fields.push(["Schedule type", SCHEDULE_LABELS[first.schedule_type] ?? first.schedule_type]);
+  }
+  fields.push(
+    ["CFG scale", first?.guidance ?? form.guidance],
+    ["Seed", first?.seed],
+    ["Size", `${form.width}x${form.height}`],
+    ["Model", form.model],
+  );
+  return fields;
 }

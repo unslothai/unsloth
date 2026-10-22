@@ -5,7 +5,12 @@
  *  cells run in, and each cell's generate request. Pure, so tests drive it without a page. */
 
 import type { DiffusionGenerateRequest, LoraSpecInput } from "../api.ts";
-import { SCHEDULE_LABELS, type SamplerChoice, type SamplerOption } from "../lib/sampler-choice.ts";
+import {
+  AUTOMATIC_SCHEDULE as AUTOMATIC,
+  SCHEDULE_LABELS,
+  type SamplerChoice,
+  type SamplerOption,
+} from "../lib/sampler-choice.ts";
 import { SHIFT_MAX, type ShiftControl } from "../lib/shift-choice.ts";
 import { parseAxisValues, roundValue, type AxisValueType } from "./compare-values.ts";
 
@@ -31,6 +36,8 @@ export interface CompareContext {
   // Guidance a negative prompt (and so the unconditional pass) needs; null = always engaged.
   negativeMinGuidance: number | null;
   guidanceFixed: boolean;
+  // The form's effective guidance, which every cell runs at unless a CFG axis sets it.
+  guidance: number;
   samplers: readonly SamplerOption[];
   samplerChoice: SamplerChoice;
   shift: ShiftControl | null;
@@ -71,6 +78,8 @@ export interface AxisDef {
   format(value: Value): string;
   // Values with the same key run with the same tensor shapes; the plan keeps each key's cells together.
   shapeKey?(value: Value): string;
+  // Keys that must run first, in this order; others follow in first-seen order.
+  shapeOrder?: readonly string[];
 }
 
 export const NOTHING = "nothing";
@@ -192,9 +201,11 @@ export function availableAxes(ctx: CompareContext): AxisDef[] {
       const name = ctx.loras.length > 1 ? `LoRA weight: ${lora.label}` : "LoRA weight";
       axes.push(
         numberAxis(`lora:${index}`, name, "float", 0, LORA_WEIGHT_MAX, "0, 0.5, 1", (c, v) => (c.loraWeights[index] = v), {
-          // Weight 0 removes the adapter from the request, which is a different module set from any weight above it.
-          cost: 2,
+          // Weight 0 drops the adapter from the request. Every weighted cell runs before any of those, outermost
+          // of all axes: Speed Auto compiles on an adapter-free run, and a compiled load refuses LoRA after that.
+          cost: 4,
           shapeKey: (v) => (Number(v) === 0 ? "off" : "on"),
+          shapeOrder: ["on", "off"],
           format: (v) => `${name}: ${v}`,
         }),
       );
@@ -268,7 +279,7 @@ export function executionOrder(axes: readonly ResolvedAxis[]): number[] {
   const total = n[0] * n[1] * n[2];
   const priority = [2, 1, 0].sort((a, b) => axes[b].def.cost - axes[a].def.cost);
   const rank = axes.map((axis) => {
-    const keys: string[] = [];
+    const keys: string[] = [...(axis.def.shapeOrder ?? [])];
     return axis.values.map((v) => {
       const key = axis.def.shapeKey ? axis.def.shapeKey(v) : "";
       let at = keys.indexOf(key);
@@ -322,12 +333,6 @@ export function planCompare(
       if (!r.ok) return { ok: false, error: `${AXIS_NAMES[a]}: ${r.error}` };
       values.push(r.value);
     }
-    if (def.id === "prompt_sr") {
-      const search = String(values[0]);
-      if (!ctx.prompt.includes(search) && !ctx.negativePrompt.includes(search)) {
-        return { ok: false, error: `${AXIS_NAMES[a]}: Prompt S/R did not find "${search}" in the prompt or negative prompt` };
-      }
-    }
     if (def.id === "seed" && !options.keepRandomSeeds) {
       const rng = options.rng ?? Math.random;
       for (let i = 0; i < values.length; i++) if (values[i] === -1) values[i] = Math.floor(rng() * 2 ** 32);
@@ -350,7 +355,43 @@ export function planCompare(
     };
   }
   const axes = resolved as [ResolvedAxis, ResolvedAxis, ResolvedAxis];
-  return { ok: true, plan: { axes, cellCount, order: executionOrder(axes) } };
+  const plan: CompareGridPlan = { axes, cellCount, order: executionOrder(axes) };
+  const problem = cellProblem(plan, ctx);
+  return problem ? { ok: false, error: problem } : { ok: true, plan };
+}
+
+/** Combinations no cell may run: a Prompt S/R term no cell's prompt carries (a negative prompt counts only where
+ *  that cell's CFG engages it), or a Schedule type the cell's sampler does not take (the backend would run its
+ *  Automatic schedule under a Karras label). */
+function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null {
+  const srAxes: Array<[number, string]> = [];
+  plan.axes.forEach((axis, a) => {
+    if (axis.def.id === "prompt_sr") srAxes.push([a, String(axis.values[0])]);
+  });
+  const srHit = srAxes.map(() => false);
+  for (let i = 0; i < plan.cellCount; i++) {
+    const cell = cellState(plan, i);
+    const g = cell.guidance ?? ctx.guidance;
+    const negative =
+      ctx.negativeCapable && (ctx.negativeMinGuidance === null || g > ctx.negativeMinGuidance) ? ctx.negativePrompt : "";
+    srAxes.forEach(([, search], k) => {
+      if (ctx.prompt.includes(search) || negative.includes(search)) srHit[k] = true;
+    });
+    if (cell.schedule !== undefined && cell.schedule !== AUTOMATIC) {
+      const sampler = cell.sampler ?? ctx.samplerChoice.sampler;
+      const option = ctx.samplers.find((s) => s.id === sampler);
+      if (!option?.schedule_types.includes(cell.schedule)) {
+        const schedule = SCHEDULE_LABELS[cell.schedule] ?? cell.schedule;
+        return `Schedule type ${schedule} is not available with ${option?.label ?? sampler}. Drop it, or compare only samplers that take it.`;
+      }
+    }
+  }
+  const miss = srAxes.findIndex((_, k) => !srHit[k]);
+  if (miss >= 0) {
+    const [a, search] = srAxes[miss];
+    return `${AXIS_NAMES[a]}: Prompt S/R did not find "${search}" in the prompt, or in a negative prompt any cell uses`;
+  }
+  return null;
 }
 
 /** The cell's overrides, every axis applied in X, Y, Z order (so two Prompt S/R axes chain as in A1111). */
@@ -401,7 +442,8 @@ export function buildCellRequest(
     delete req.sampler;
     delete req.schedule_type;
     if (sampler !== "default") req.sampler = sampler;
-    if (schedule !== "automatic" && option?.schedule_types.includes(schedule)) req.schedule_type = schedule;
+    // planCompare refuses a Schedule axis value the sampler lacks; only the form's schedule can fall back here.
+    if (schedule !== AUTOMATIC && option?.schedule_types.includes(schedule)) req.schedule_type = schedule;
   }
   if (cell.shift !== undefined) req.shift = cell.shift;
   if (cell.baseShift !== undefined) req.base_shift = cell.baseShift;

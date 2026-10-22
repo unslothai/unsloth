@@ -15,9 +15,9 @@ import {
   type CompareContext,
   type CompareGridPlan,
 } from "../src/features/images/compare/compare-axes.ts";
-import { createCompareRun, gridTitles, sliceCells } from "../src/features/images/compare/compare-run.ts";
+import { createCompareRun, gridRecipeFields, gridTitles, sliceCells } from "../src/features/images/compare/compare-run.ts";
 import { joinAxisList, parseAxisValues, splitAxisList } from "../src/features/images/compare/compare-values.ts";
-import { gridInfotext, gridLayout, MAX_CANVAS_SIDE, withPngText, wrapText } from "../src/features/images/compare/compose-grid.ts";
+import { drawCellsInTurn, gridInfotext, gridLayout, MAX_CANVAS_SIDE, withPngText, wrapText } from "../src/features/images/compare/compose-grid.ts";
 import { pngTextChunks } from "../src/features/images/lib/image-metadata.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -87,6 +87,7 @@ function sdxl(over: Partial<CompareContext> = {}): CompareContext {
     negativeCapable: true,
     negativeMinGuidance: 1,
     guidanceFixed: false,
+    guidance: 6,
     samplers: SAMPLERS,
     samplerChoice: { sampler: "default", scheduleType: "automatic" },
     shift: null,
@@ -424,5 +425,139 @@ test("the Images page (its own lazy chunk) renders the panel and loops cells thr
   assert.match(page, /for \(let i = 0; i < runTotal; i\+\+\)/);
   assert.match(page, /generateDiffusionImage\(compareRequest\(compare, i, baseSeed, \{/);
   assert.match(page, /compare\?\.onImages\(i, res\.images\)/);
+  // The lost-response branch also reports the cell, from the records the gallery gained.
+  assert.match(page, /compare\?\.onImages\(i, galleryCache\.images\.filter\(\(image\) => !knownIds\.has\(image\.id\)\)\)/);
   assert.match(page, /workflow === "create"/);
+});
+
+test("a Schedule type the cell's sampler does not take is refused, not silently run as Automatic", () => {
+  const bad = planCompare(
+    [
+      { axisId: "sampler", text: "euler, euler_a" },
+      { axisId: "schedule", text: "karras" },
+    ],
+    sdxl(),
+  );
+  assert.equal(bad.ok, false);
+  assert.match(bad.ok ? "" : bad.error, /Karras is not available with Euler a/);
+  // The form's Model default takes no schedule either.
+  const onDefault = planCompare([{ axisId: "schedule", text: "automatic, karras" }], sdxl());
+  assert.match(onDefault.ok ? "" : onDefault.error, /Karras is not available with Model default/);
+  const good = plan([
+    { axisId: "sampler", text: "euler, dpmpp_2m" },
+    { axisId: "schedule", text: "automatic, karras" },
+  ]);
+  const reqs = [0, 1, 2, 3].map((i) =>
+    buildCellRequest(good, i, base(), sdxl(), { base: 1, keepRandom: false, seedFieldEmpty: false }),
+  );
+  assert.deepEqual(
+    reqs.map((r) => [r.sampler, r.schedule_type]),
+    [
+      ["euler", undefined],
+      ["dpmpp_2m", undefined],
+      ["euler", "karras"],
+      ["dpmpp_2m", "karras"],
+    ],
+  );
+});
+
+test("Prompt S/R counts a negative-prompt match only where some cell's CFG engages the negative prompt", () => {
+  const ctx = sdxl({ prompt: "a fox", negativePrompt: "red eyes", guidance: 1 });
+  const off = planCompare([{ axisId: "prompt_sr", text: "red, blue" }], ctx);
+  assert.equal(off.ok, false);
+  assert.match(off.ok ? "" : off.error, /did not find "red" in the prompt, or in a negative prompt any cell uses/);
+  // A CFG axis that raises guidance over the threshold engages it for those cells.
+  const withCfg = planCompare([{ axisId: "prompt_sr", text: "red, blue" }, { axisId: "guidance", text: "1, 7" }], ctx);
+  assert.ok(withCfg.ok);
+  const req = buildCellRequest(withCfg.ok ? withCfg.plan : (null as never), 3, base({ prompt: "a fox", negative_prompt: undefined, guidance: 1 }), ctx, {
+    base: 1,
+    keepRandom: false,
+    seedFieldEmpty: false,
+  });
+  assert.equal(req.negative_prompt, "blue eyes");
+  assert.equal(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], sdxl({ ...ctx, guidance: 6, negativeCapable: false })).ok, false);
+  assert.ok(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], sdxl({ ...ctx, guidance: 6 })).ok);
+});
+
+test("LoRA weight cells: every weighted cell runs before any adapter-free one, across all axes", () => {
+  const ctx = sdxl({ loraCapable: true, loras: [{ id: "a/style", weight: 1, label: "style" }], prompt: "a red fox" });
+  const p = plan(
+    [
+      { axisId: "lora:0", text: "0, 0.5, 1" },
+      { axisId: "prompt_sr", text: "red, blue" },
+      { axisId: "steps", text: "4, 8" },
+    ],
+    ctx,
+  );
+  const hasLora = p.order.map((i) =>
+    Boolean(buildCellRequest(p, i, base(), ctx, { base: 1, keepRandom: false, seedFieldEmpty: false }).loras),
+  );
+  const firstOff = hasLora.indexOf(false);
+  assert.ok(firstOff > 0);
+  assert.ok(hasLora.slice(firstOff).every((x) => !x), "a LoRA cell ran after an adapter-free one");
+  // The backend's deferred compile rule: with LoRA-free runs back to back, a later LoRA request would be refused.
+  let attached = true;
+  let compiled = false;
+  for (const lora of hasLora) {
+    assert.ok(!(lora && compiled), "a LoRA cell would hit a compiled load");
+    if (!lora && !attached) compiled = true;
+    attached = lora;
+  }
+});
+
+test("a lost-response recovery hands the cell its own record, matched by seed", () => {
+  const p = plan([{ axisId: "seed", text: "11, 12" }]);
+  const run = createCompareRun(p, sdxl(), { keepRandomSeeds: false, seedFieldEmpty: false });
+  run.request(0, base(), 5);
+  run.request(1, base(), 5);
+  run.onImages(1, [{ id: "other", seed: 99 } as never, { id: "mine", seed: 12 } as never]);
+  assert.equal((run.results[1] as unknown as { id: string }).id, "mine");
+  run.onImages(0, [{ id: "a", seed: 1 } as never, { id: "b", seed: 2 } as never]);
+  assert.equal(run.results[0], null, "an ambiguous set without the cell's seed is not guessed");
+  run.onImages(0, [{ id: "only", seed: 11 } as never]);
+  assert.equal((run.results[0] as unknown as { id: string }).id, "only");
+});
+
+test("grid metadata names the sampler and schedule whenever no axis varies them", () => {
+  const steps = plan([{ axisId: "steps", text: "10, 20" }]);
+  const first = base({ sampler: "dpmpp_2m", schedule_type: "karras" });
+  const fields = Object.fromEntries(gridRecipeFields(steps, first, { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
+  assert.equal(fields.Sampler, "DPM++ 2M");
+  assert.equal(fields["Schedule type"], "Karras");
+  const samplers = plan([{ axisId: "sampler", text: "euler, dpmpp_2m" }]);
+  const varied = Object.fromEntries(gridRecipeFields(samplers, first, { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
+  assert.equal("Sampler" in varied, false);
+  assert.equal(varied["Schedule type"], "Karras");
+  const plain = Object.fromEntries(gridRecipeFields(steps, base(), { steps: 25, guidance: 6, width: 1024, height: 1024, model: "m" }));
+  assert.equal(plain.Sampler, "Model default");
+  assert.equal("Schedule type" in plain, false);
+});
+
+test("grid cells are decoded and drawn one at a time; missing and failed cells keep the placeholder", async () => {
+  let live = 0;
+  let peak = 0;
+  const drawn: number[] = [];
+  const count = await drawCellsInTurn(
+    ["a", null, "fail", "d"],
+    async (r) => {
+      live++;
+      peak = Math.max(peak, live);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      if (r === "fail") {
+        live--;
+        throw new Error("decode");
+      }
+      return r;
+    },
+    (_bitmap, i) => {
+      drawn.push(i);
+      live--;
+    },
+  );
+  assert.equal(peak, 1);
+  assert.equal(count, 2);
+  assert.deepEqual(drawn, [0, 3]);
+  const panel = readSrc("features/images/compare/compare-panel.tsx");
+  assert.doesNotMatch(panel, /Promise\.all/);
+  assert.match(panel, /resizeWidth: rect\.w/);
 });
