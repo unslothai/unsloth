@@ -6,6 +6,7 @@ import functools
 import inspect
 import logging
 import os
+import types
 import warnings
 from typing import Optional
 from dataclasses import asdict
@@ -497,6 +498,46 @@ def _use_per_expert_dW_kernel():
     return os.environ.get("UNSLOTH_MOE_DW_KERNEL", "").strip().lower() != "legacy"
 
 
+_PER_EXPERT_DW_FITS = {}
+
+
+def _per_expert_dW_fits(device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
+    """False when this tile needs more shared memory on ``device`` than the per-expert dW kernel can get.
+
+    It double buffers both operand tiles where the legacy kernel single buffers them, so an explicit
+    tile the legacy kernel launched (128x256x256, 4 stages: 69,632 B legacy vs 131,584 B on an L4) can
+    raise OutOfResources. Fitted configs never get here; a caller-supplied tile or one fitted against
+    another card (configs fit the current device, not the operand's) can."""
+    index = _device_index(device)
+    key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    fits = _PER_EXPERT_DW_FITS.get(key)
+    if fits is None:
+        fits = True
+        try:
+            if not getattr(torch.version, "hip", None):
+                from ..autotune_cache import _estimate_smem
+
+                props = torch.cuda.get_device_properties(index)
+                smem = int(props.shared_memory_per_block_optin)
+                tile = types.SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                need = _estimate_smem("dW", tile, act_bytes, act_bytes, (props.major, props.minor))
+                fits = need <= smem
+                if not fits:
+                    logger.info(
+                        f"Unsloth: MoE dW tile (M, N, K, stages) {key[2:]} needs ~{need} B shared "
+                        f"memory per-expert, over {smem} B on cuda:{index}; using the legacy dW kernel."
+                    )
+        except Exception:
+            fits = True
+        _PER_EXPERT_DW_FITS[key] = fits
+    return fits
+
+
 def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
@@ -574,6 +615,15 @@ def _launch_grouped_gemm_dW(
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
     per_expert = _use_per_expert_dW_kernel()
+    if (
+        per_expert
+        and not autotune
+        and not _per_expert_dW_fits(
+            X.device, X.element_size(), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
+    ):
+        # Keep the kernel this tile launched with before the per-expert one (same result, bitwise).
+        per_expert = False
 
     if accumulate:
         # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
