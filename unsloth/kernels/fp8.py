@@ -734,15 +734,27 @@ def can_use_fp8_block_gemv(X, weight, weight_scale):
         return False
     if group_n < 1 or group_k < 16 or group_k & (group_k - 1):
         return False
+    # Only where it is never slower than the block GEMM, with L2 flushed or L2-hot (CUDA graph replay),
+    # on L4 (58 SMs) and RTX PRO 6000 (188): narrow outputs (down, kv, o), and small weights on small parts.
+    if 2 * N > K or (_sm_count(weight.device) < 100 and N * K > _FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS):
+        return False
     if _fp8_kernel_unsupported(weight):
         return False
     # Triton 3.3 miscompiles fp8 GEMVs on Blackwell; keep the GEMM there.
     return not _fp8_gemv_miscompiles(weight.device)
 
 
-@functools.lru_cache(maxsize = None)
+_FP8_BLOCK_GEMV_SMALL_GPU_MAX_ELEMS = 16 * 1024 * 1024
+# Read once: a device-properties query inside a compiled region graph-breaks.
+_SM_COUNTS = tuple(
+    torch.cuda.get_device_properties(i).multi_processor_count
+    for i in range(torch.cuda.device_count() if torch.cuda.is_available() else 0)
+)
+
+
 def _sm_count(device):
-    return torch.cuda.get_device_properties(device).multi_processor_count
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return _SM_COUNTS[index] if index < len(_SM_COUNTS) else 0
 
 
 @_opaque_under_compile(
@@ -758,13 +770,13 @@ def _fp8_block_gemv(
         x2 = x2.contiguous()
     M = x2.shape[0]
     sms = _sm_count(weight.device)
-    # Swept on L4 (58 SMs) and RTX PRO 6000 (188): narrow tiles on small parts, within 2-5% of the per-shape best.
-    block_n, num_warps = (16, 2) if sms < 100 else (64, 4)
+    # Swept in both timing modes on L4 (58 SMs) and RTX PRO 6000 (188).
+    block_n, num_warps, num_stages, programs_per_sm = (16, 2, 4, 1) if sms < 100 else (32, 4, 3, 4)
     block_k = min(128, group_k)
     n_tiles = triton.cdiv(N, block_n)
-    # Split K (in whole scale blocks) until about one program per SM.
+    # Split K (in whole scale blocks) until about programs_per_sm programs per SM.
     k_blocks = triton.cdiv(K, group_k)
-    split = max(1, min(k_blocks, (sms + n_tiles - 1) // n_tiles, 16))
+    split = max(1, min(k_blocks, (programs_per_sm * sms + n_tiles - 1) // n_tiles, 16))
     k_per_split = triton.cdiv(k_blocks, split) * group_k
     split = triton.cdiv(K, k_per_split)
     if split == 1:
@@ -795,7 +807,7 @@ def _fp8_block_gemv(
             BLOCK_K = block_k,
             LONG_INDEXING = long_indexing(weight),
             num_warps = num_warps,
-            num_stages = 4,
+            num_stages = num_stages,
             enable_fp_fusion = True,
         )
     out = y[0] if split == 1 else y.sum(0).to(X.dtype)

@@ -51,7 +51,7 @@ def _rel_err(y, ref):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("M", [1, 3, 16])
-@pytest.mark.parametrize("NK", [(4096, 4096), (1024, 4096), (1000, 1152), (640, 1000)])
+@pytest.mark.parametrize("NK", [(2048, 4096), (1024, 4096), (500, 1152), (320, 1000)])
 def test_block_gemv_matches_oracle_and_beats_act_quant(dtype, M, NK):
     N, K = NK
     q, s = _quantize(N, K, seed = M)
@@ -154,3 +154,19 @@ def test_non_128_blocks(block):
     S = s.double().repeat_interleave(bn, 0).repeat_interleave(bk, 1)
     ref = X.double().reshape(4, K) @ (q.double() * S).T
     assert _rel_err(y, ref) <= torch.finfo(torch.bfloat16).eps
+
+
+def test_routes_only_where_never_slower(monkeypatch):
+    # Wide outputs (q, gate / up) keep the block GEMM everywhere; on < 100-SM parts big weights do too.
+    X = torch.randn(2, 1, 4096, device = "cuda", dtype = torch.bfloat16)
+    q, s = _quantize(4096, 4096)
+    assert not F8.can_use_fp8_block_gemv(X, q, s)
+    q, s = _quantize(2048, 4096)
+    assert F8.can_use_fp8_block_gemv(X, q, s)
+    Xd = torch.randn(2, 1, 12288, device = "cuda", dtype = torch.bfloat16)
+    qd, sd = _quantize(4096, 12288)
+    monkeypatch.setattr(F8, "_sm_count", lambda device: 188)
+    assert F8.can_use_fp8_block_gemv(Xd, qd, sd)
+    monkeypatch.setattr(F8, "_sm_count", lambda device: 58)
+    assert not F8.can_use_fp8_block_gemv(Xd, qd, sd)
+    assert F8.can_use_fp8_block_gemv(X, *_quantize(1024, 4096))
