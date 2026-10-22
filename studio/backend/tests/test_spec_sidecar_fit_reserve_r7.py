@@ -463,3 +463,14 @@ def test_a_row_split_shares_the_drafter_by_weight_not_whole_layers(tmp_path, _di
     _three_block_drafter(backend)
     first, second = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--split-mode", "row"]))
     assert abs(first - second) <= 512
+
+
+def test_shares_follow_each_cards_free_memory_past_its_own_margin(tmp_path, _discrete):
+    """A user margin of 20,000 MiB leaves card 0 about 4 GB for weights against card 1's
+    23 GB, so card 0 takes the smaller draft share and no margin exceeds its card."""
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    margins = _margins(_dspark(backend, gguf, tmp_path, extra_args = ["--fit-target", "20000,1024"]))
+    assert len(margins) == 2
+    assert margins[0] < 24_000
+    assert margins[1] > 1024 + 4 * 1024

@@ -6543,6 +6543,29 @@ def _fit_target_values(user_args: Iterable[str], env: Optional[Mapping[str, str]
     return found
 
 
+def _fit_margins_by_device(
+    user_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]],
+    base_margin_mib: float,
+    count: int,
+) -> list[float]:
+    """Each card's user --fit-target margin, applied as common/arg.cpp does: the env first,
+    then every flag in order; a single value fills every card, a list sets only the entries
+    it names. Cards it leaves unset keep ``base_margin_mib``."""
+    margins = [float(base_margin_mib)] * count
+    for raw in _fit_target_values(user_args or (), env):
+        entries = [e.strip() for e in str(raw).replace("/", ",").split(",") if e.strip()]
+        try:
+            values = [float(e) for e in entries]
+        except ValueError:
+            continue
+        if len(values) == 1:
+            margins = values * count
+        else:
+            margins[: len(values)] = values[:count]
+    return margins
+
+
 def _sidecar_reserve_margin_flags(
     child_args: Iterable[str],
     user_args: Optional[Iterable[str]],
@@ -6579,20 +6602,7 @@ def _sidecar_reserve_margin_flags(
     ):
         return []
     if per_device:
-        # Each card keeps its own user margin, applied as common/arg.cpp does: the env
-        # first, then every flag in order; a single value fills every card, a list sets
-        # only the entries it names.
-        margins = [float(base_margin_mib)] * len(per_device)
-        for raw in _fit_target_values(user_args or (), env):
-            entries = [e.strip() for e in str(raw).replace("/", ",").split(",") if e.strip()]
-            try:
-                values = [float(e) for e in entries]
-            except ValueError:
-                continue
-            if len(values) == 1:
-                margins = values * len(per_device)
-            else:
-                margins[: len(values)] = values[: len(per_device)]
+        margins = _fit_margins_by_device(user_args, env, base_margin_mib, len(per_device))
         want_list = ",".join(
             str(math.ceil(max(base_margin_mib, m) + r)) for m, r in zip(margins, per_device)
         )
@@ -33885,8 +33895,13 @@ class LlamaCppBackend:
                                 )
                                 _weights = None
                                 if _spawn_free and all(f and f > 0 for f in _spawn_free):
+                                    # Past each card's own margin, as the fitter places layers.
+                                    _spawn_margins = _fit_margins_by_device(
+                                        extra_args, env, _spawn_base, len(_spawn_free)
+                                    )
                                     _weights = [
-                                        max(1.0, float(f) - _spawn_base) for f in _spawn_free
+                                        max(1.0, float(f) - max(_spawn_base, m))
+                                        for f, m in zip(_spawn_free, _spawn_margins)
                                     ]
                                 _ts = _extra_args_tensor_split(run_cmd, env)
                                 if _ts and _spawn_ids:
