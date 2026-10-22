@@ -943,3 +943,87 @@ def test_model_offload_stable_range_holds_torchao_int8_weights():
         assert net.blocks[0].weight.device.type == "cpu"
         assert not arena.arena.mapped
     assert arena.stats["onloads"] == 3 and arena.stats["unmaps"] == 3
+
+
+@pytest.mark.parametrize("where", ["forward_refusal", "placement"])
+def test_a_refused_model_offload_leaves_the_stock_onload(monkeypatch, where):
+    """A denoiser whose step stays eager keeps accelerate's own onload: no stable range, no instance ``to``, no
+    re-install hook (so no per-offload card sync for a step that never replays)."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    _ref, net, _hook = _model_offloaded()
+    if where == "forward_refusal":
+        monkeypatch.setattr(cg, "_forward_refusal", lambda module, mode: "not capture-safe")
+    else:
+
+        def boom(*a, **k):
+            raise RuntimeError("no hook forward")
+
+        monkeypatch.setattr(cg, "OffloadPlacement", boom)
+    placement, why = cg.offload_placement(net)
+    assert placement is None and why
+    assert sa.arena_of(net) is None
+    assert "to" not in net.__dict__
+    assert not net._forward_pre_hooks
+
+
+class _SharedBuffer(_Net):
+    """One buffer tensor registered on two submodules, as tied rotary / scale tables are."""
+
+    def __init__(self):
+        super().__init__(width = 512)
+        scale = torch.linspace(0.5, 1.5, 512)
+        self.blocks[0].register_buffer("scale", scale)
+        self.blocks[-1].register_buffer("scale", scale)
+
+    def forward(
+        self,
+        x,
+        t,
+        return_dict = True,
+    ):
+        x = self.proj_in(x) * t
+        for i, block in enumerate(self.blocks):
+            x = torch.nn.functional.gelu(block(x))
+            if i in (0, len(self.blocks) - 1):
+                x = x * block.scale
+        out = self.proj_out(x)
+        return (out,) if not return_dict else {"sample": out}
+
+
+def test_model_offload_stable_range_places_every_registration_of_a_shared_buffer():
+    _cuda()
+    pytest.importorskip("accelerate")
+    from accelerate import cpu_offload_with_hook
+    from accelerate.hooks import remove_hook_from_module
+
+    torch.manual_seed(0)
+    ref = _SharedBuffer().cuda()
+    torch.manual_seed(0)
+    net, hook = cpu_offload_with_hook(_SharedBuffer(), execution_device = "cuda")
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1 and "stable device range" in reason, reason
+    arena = sa.arena_of(net)
+    later = 0
+    dev = torch.cuda.current_device()
+    for render in range(4):
+        seeds = [10 * render + i for i in range(5)]
+        before = cg.capture_generation(dev)
+        got = _run(net, seeds)
+        if render:
+            later += cg.capture_generation(dev) - before
+        first, last = net.blocks[0].scale, net.blocks[-1].scale
+        lo, hi = arena.arena.va, arena.arena.va + arena.arena.size
+        # Module.to() splits a shared buffer into two host copies; the onload shares one placed tensor again
+        assert first is last and lo <= first.data_ptr() < hi
+        for a, b in zip(got, _run(ref, seeds)):
+            assert torch.equal(a, b)
+        hook.offload()
+        assert net.blocks[-1].scale.device.type == "cpu" and not arena.arena.mapped
+        torch.cuda.empty_cache()
+        _hold = torch.empty(4 << 20, device = "cuda")  # the freed VRAM is reused meanwhile
+        del _hold
+        remove_hook_from_module(net)
+        net, hook = cpu_offload_with_hook(net, execution_device = "cuda")
+    assert later == 0 and handles[0].stats["invalidations"] == 0, handles[0].stats
+    cg.uninstall_all(handles)

@@ -310,16 +310,27 @@ def _set_tensor(owner: Any, leaf: str, kind: str, value: Any) -> None:
 
 
 def _entries(module: Any) -> list:
-    """(qualified name, owner module, leaf name, kind, tensor) for every parameter and buffer, each tensor once."""
+    """(qualified name, registrations, kind, tensor) for every parameter and buffer, each tensor once.
+
+    ``registrations`` lists every (owner module, leaf name, qualified name) the tensor is registered under: a buffer
+    shared by several submodules (or names) has one registry slot per registration, and each must point at the placed
+    copy."""
     out: list = []
-    seen: set = set()
-    for mod_name, mod in module.named_modules():
+    index: dict = {}
+    for mod_name, mod in module.named_modules(remove_duplicate = False):
         for kind, table in (("p", mod._parameters), ("b", mod._buffers)):
             for leaf, t in table.items():
-                if t is None or id(t) in seen:
+                if t is None:
                     continue
-                seen.add(id(t))
-                out.append((f"{mod_name}.{leaf}" if mod_name else leaf, mod, leaf, kind, t))
+                qual = f"{mod_name}.{leaf}" if mod_name else leaf
+                at = index.get(id(t))
+                if at is not None:
+                    regs = out[at][1]
+                    if not any(o is mod and l == leaf for o, l, _q in regs):
+                        regs.append((mod, leaf, qual))
+                    continue
+                index[id(t)] = len(out)
+                out.append((qual, [(mod, leaf, qual)], kind, t))
     return out
 
 
@@ -372,6 +383,8 @@ class ModuleArena:
             self._reinstall_handle.remove()
         except Exception:  # noqa: BLE001
             pass
+        if module is not None and module.__dict__.get(_ARENA_ATTR) is self:
+            module.__dict__.pop(_ARENA_ATTR, None)
         if self.arena is not None and module is not None and not self._referenced(module):
             self.arena.close()
             self.arena = None
@@ -379,7 +392,7 @@ class ModuleArena:
     def _build(self, entries: list) -> None:
         offset = 0
         layout: dict = {}
-        for name, _owner, _leaf, _kind, whole in entries:
+        for name, regs, _kind, whole in entries:
             if whole.device.type != "cpu" or not _placeable(whole):
                 continue
             for key, t in _pieces(name, whole):
@@ -389,7 +402,12 @@ class ModuleArena:
                     if t.numel()
                     else 0
                 )
-                layout[key] = (offset, tuple(t.shape), tuple(t.stride()), t.dtype, span)
+                slot = (offset, tuple(t.shape), tuple(t.stride()), t.dtype, span)
+                # Every registration name of a shared tensor maps to its one slot: Module.to() moves each
+                # registration on its own, so after an offload they come back as separate (equal) host copies.
+                suffix = key[len(name) :]
+                for _owner, _leaf, qual in regs:
+                    layout[qual + suffix] = slot
                 offset += -(-max(span, 1) // _ALIGN) * _ALIGN
         self.layout = layout
         self.arena = VmmArena(max(offset, _ALIGN), self.device.index)
@@ -398,7 +416,7 @@ class ModuleArena:
         if self.arena is None or not self.arena.mapped:
             return False
         lo, hi = self.arena.va, self.arena.va + self.arena.size
-        for name, _owner, _leaf, _kind, whole in _entries(module):
+        for name, _regs, _kind, whole in _entries(module):
             try:
                 if whole.device.type != "cuda":
                     continue
@@ -424,7 +442,8 @@ class ModuleArena:
         assert self.arena is not None and self.layout is not None
         self.arena.map()
         placed = 0
-        for name, owner, leaf, kind, whole in entries:
+        filled: dict = {}  # slot offset -> (host tensor copied into it during this onload, its view)
+        for name, regs, kind, whole in entries:
             if whole.device.type != "cpu" or not _placeable(whole):
                 continue
             pieces = _pieces(name, whole)
@@ -435,13 +454,27 @@ class ModuleArena:
                 for slot, (_, t) in zip(slots, pieces)
             ):
                 continue
+            # A slot already filled by another registration of a once-shared buffer is reused only when the copies
+            # still hold the same values; otherwise this one keeps the stock move.
+            if any(
+                slot[0] in filled and not torch.equal(filled[slot[0]][0], t)
+                for slot, (_, t) in zip(slots, pieces)
+            ):
+                continue
             views = []
             for slot, (_, t) in zip(slots, pieces):
+                if slot[0] in filled:
+                    # the same view object: the registrations share one tensor again, as on the first onload, so the
+                    # graph's placement fingerprint (one entry per tensor) does not change
+                    views.append(filled[slot[0]][1])
+                    continue
                 view = self.arena.view(slot[0], slot[1], slot[3], slot[2])
                 view.copy_(t, non_blocking = non_blocking)
+                filled[slot[0]] = (t, view)
                 views.append(view)
             if _plain(whole):
-                _set_tensor(owner, leaf, kind, views[0])
+                for owner, leaf, _qual in regs:
+                    _set_tensor(owner, leaf, kind, views[0])
             else:
                 # a wrapper weight is rebuilt over its placed inner tensors and swapped in, as Module.to moves it
                 names, ctx = whole.__tensor_flatten__()
@@ -453,7 +486,8 @@ class ModuleArena:
                         whole, torch.nn.Parameter(rebuilt, requires_grad = whole.requires_grad)
                     )
                 else:
-                    owner._buffers[leaf] = rebuilt
+                    for owner, leaf, _qual in regs:
+                        owner._buffers[leaf] = rebuilt
             placed += 1
         self.stats["placed"] = placed
 
@@ -529,7 +563,7 @@ def attach(
         _driver()
     except Exception as exc:  # noqa: BLE001
         return None, f"CUDA virtual memory unavailable ({exc})"
-    odd = [name for name, _o, _l, _k, t in _entries(module) if not _placeable(t)]
+    odd = [name for name, _r, _k, t in _entries(module) if not _placeable(t)]
     if odd:
         return None, f"{len(odd)} parameter(s) are not plain tensors ({odd[0]})"
     if device is None:

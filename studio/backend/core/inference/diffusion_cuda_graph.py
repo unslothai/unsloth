@@ -2005,18 +2005,23 @@ def offload_placement(module: Any) -> tuple:
                 None,
                 f"offload hook {type(hf_hook).__name__} moves the weights inside the forward",
             )
+        # Every other refusal first: the stable range below swaps the module's onload, so it attaches only for a
+        # placement that will record.
+        why = _forward_refusal(module, "model")
+        if why is not None:
+            return None, why
+        arena = None
         if not model_offload_graphs_requested():
             # Recorded only where the onloads land at the same addresses every render (diffusion_stable_arena).
             from .diffusion_stable_arena import attach
             arena, _arena_why = attach(module)
             if arena is None:
                 return None, MODEL_OFFLOAD_REASON
-        why = _forward_refusal(module, "model")
-        if why is not None:
-            return None, why
         try:
             return OffloadPlacement(module, "model"), None
         except Exception as exc:  # noqa: BLE001
+            if arena is not None:
+                arena.detach()
             return None, f"model offload hook unreadable ({exc})"
     registry = getattr(module, "_diffusers_hook", None)
     hooks = getattr(registry, "hooks", None) or {}
@@ -2054,6 +2059,17 @@ def offload_placement(module: Any) -> tuple:
         return None, f"block offload hook unreadable ({exc})"
     placement.skip = skip
     return placement, None
+
+
+def _detach_stable_range(module: Any) -> None:
+    """Give a module whose step stays eager its stock onload back (no stable range, no per-offload card sync)."""
+    try:
+        from .diffusion_stable_arena import arena_of
+        arena = arena_of(module)
+        if arena is not None:
+            arena.detach()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _stable_range(module: Any) -> bool:
@@ -2162,6 +2178,8 @@ def arm_after_placement(
                 stable = placement.mode == "model" and _stable_range(module)
                 modes.append("model_stable" if stable else placement.mode)
         except Exception as exc:  # noqa: BLE001
+            if placement is not None and placement.mode == "model":
+                _detach_stable_range(module)
             refusals.append(f"{type(module).__name__}: {exc}")
     installed = tuple(handles)
     try:
