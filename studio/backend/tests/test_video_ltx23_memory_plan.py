@@ -242,7 +242,8 @@ def test_resident_proof_uses_the_budget_fast_was_placed_with():
     """Auto precision keeps bf16 only on a proven fit; a fast plan placed resident under its own budget is one."""
     from core.inference.diffusion import _plan_proves_resident
 
-    fast = _plan(TENANT_FREE_MIB, LTX23_DIT_MIB)
+    # Free memory between the auto and the fast budget (the discrete reserve is capped at 4 GiB, fast keeps 2 GiB).
+    fast = _plan(79_500, LTX23_DIT_MIB)
     assert fast.offload_policy == OFFLOAD_NONE
     assert fast.estimates["resident_required_mib"] > fast.estimates["safe_device_budget_mib"]
     assert _plan_proves_resident(fast)
