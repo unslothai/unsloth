@@ -361,8 +361,7 @@ type NavRowDef = {
   pending?: boolean;
   // What that spinning row says on hover; detection can take minutes on a cold host.
   pendingTooltip?: string;
-  // Greyed out like a disabled row but still clickable: Train on a Chat only install opens the
-  // full install dialog instead of doing nothing.
+  // Greyed out but clickable: Train on an upgradable Chat only install opens the full install dialog.
   dimmed?: boolean;
   badge?: string;
   onClick: () => void;
@@ -1324,8 +1323,6 @@ export function AppSidebar() {
   // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
   const repair = useTauriRepairController();
   const canRepair = repair !== null && !repair.isExternalServer;
-  // Non-null only for a measured Chat only install this Desktop can upgrade, on hardware that
-  // trains: the greyed Train row then opens the full install dialog instead of doing nothing.
   const fullInstall = useFullInstallUpgrade();
   const [fullInstallOpen, setFullInstallOpen] = useState(false);
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
