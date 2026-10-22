@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for _CUDA_TORCH_PKG_SPEC in install_python_stack.py.
-
-The CUDA repair path installs the torch trio from an exclusive --index-url (no
-PyPI fallback), so these pinned ranges decide which torch the venv gets. The
-upper bound is locked to the 2.11.x family to match the base image and rocm7.2
-spec and to keep the companions off a torch-2.12 wheel that would ABI-mismatch.
-"""
+"""_CUDA_TORCH_PKG_SPEC caps torch at 2.11.x so companion wheels do not ABI-mismatch on 2.12."""
 
 from __future__ import annotations
 
@@ -17,7 +11,6 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-# install_python_stack.py lives at repo_root/studio/install_python_stack.py
 _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
 
 
@@ -38,11 +31,8 @@ def _spec_of(pkg_spec: str):
 @pytest.mark.parametrize(
     "index, allowed, rejected",
     [
-        # torch: 2.11.x allowed (matches base image); 2.12.x excluded.
         (0, ["2.11.0", "2.11.2", "2.10.0", "2.4.0"], ["2.12.0", "2.3.0", "1.13.1"]),
-        # torchvision: 0.26.x (torch 2.11 companion) allowed; 0.27.x (torch 2.12) out.
         (1, ["0.26.0", "0.26.1", "0.19.0"], ["0.27.0", "0.18.0"]),
-        # torchaudio: same 2.11.x window as torch.
         (2, ["2.11.0", "2.10.0", "2.4.0"], ["2.12.0", "2.3.0"]),
     ],
 )

@@ -175,11 +175,12 @@ test("restoring an inpaint record resets mask options it omitted at their defaul
 
 test("a run whose response was lost still becomes the seed Reuse last seed picks", () => {
   const page = readSrc("features/images/images-page.tsx");
-  assert.match(page, /const runBaseSeed = baseSeed \+ i \* batchSize;/);
+  // A variation run keeps one seed across runs (the variation seed advances instead).
+  assert.match(page, /const runBaseSeed = varying \? baseSeed : baseSeed \+ i \* batchSize;/);
   assert.match(page, /seed: runBaseSeed,/);
   assert.match(
     page,
-    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\(runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
+    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\((?:compare\?\.sentSeed\(i\) \?\? )?runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
   );
 });
 

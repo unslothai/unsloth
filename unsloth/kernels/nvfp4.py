@@ -488,7 +488,8 @@ def _fused_ok(
         and packed.dtype == torch.uint8
         and packed.dim() == 2
         and packed.shape[0] > 0
-        and (mode in _FUSED_FORCE or (inner % 64 == 0 and packed.shape[0] % 64 == 0))
+        # N and K both 64 aligned (inner is N for dX); unaligned dX is up to 2.8x slower.
+        and (mode in _FUSED_FORCE or (packed.shape[0] % 64 == 0 and packed.shape[1] % 32 == 0))
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
         and scale.dim() == 2
@@ -687,6 +688,18 @@ def _nvfp4_matmul_bwd(
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
 
 
+_AUTOCAST_CASTS = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _autocast_operand(X):
+    # Cast outside the opaque op so fused, dense and fake impl all return the autocast dtype.
+    if X.is_cuda and X.dtype in _AUTOCAST_CASTS and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+        if dtype != X.dtype:
+            return X.to(dtype)
+    return X
+
+
 class NVFP4Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -697,12 +710,13 @@ class NVFP4Linear_matmul(torch.autograd.Function):
         global_scale,
         bias = None,
     ):
-        output = _nvfp4_matmul_fwd(X, packed, scale, global_scale)
+        X_mm = _autocast_operand(X)
+        output = _nvfp4_matmul_fwd(X_mm, packed, scale, global_scale)
         if bias is not None:
             output = output + bias
-            # A float32 bias promotes; cast back only then (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
-            if output.dtype != X.dtype:
-                output = output.to(X.dtype)
+            # Cast to the compute dtype only if a fp32 bias promoted (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
+            if output.dtype != X_mm.dtype:
+                output = output.to(X_mm.dtype)
         ctx.save_for_backward(packed, scale, global_scale)
         ctx.bias_grad = bias is not None and bias.requires_grad
         ctx.dtype = X.dtype

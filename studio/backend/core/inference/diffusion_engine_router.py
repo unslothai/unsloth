@@ -26,8 +26,9 @@ Env knobs:
 
 The MLX engine (``mlx_diffusion_backend``) is considered only when UNSLOTH_DIFFUSION_MLX=1, on macOS 14+ on
 Apple Silicon, for a GGUF of a family that declares ``mlx_model_config`` in a quant the converter handles
-(Q4_0 / Q4_1 / Q8_0 / BF16 / F16), with ``mlx`` and ``mflux`` installed. Every refusal is recorded
-(``mlx_fallback_reason`` in the status) and falls through to the choice this module makes without it.
+(Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0, the Q4_K / Q5_K / Q6_K mixes, BF16 / F16), with ``mlx`` and ``mflux`` installed.
+Every refusal is recorded (``mlx_fallback_reason`` in the status) and falls through to the choice this module makes
+without it.
 """
 
 from __future__ import annotations
@@ -394,6 +395,8 @@ def _mlx_host_refusal() -> Optional[str]:
 # mflux's own darwin mlx range plus the light deps install_python_stack.py installs beside it (mflux goes in --no-deps).
 _MLX_RUNTIME_REQUIREMENTS: tuple[str, ...] = (
     "mlx>=0.32.0,<0.33.0",
+    # Pillow 13.0.0 breaks every mflux import (PIL._typing), so it is refused here, not at load.
+    "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
     "platformdirs>=4,<5",
     "toml>=0.10.2,<1",

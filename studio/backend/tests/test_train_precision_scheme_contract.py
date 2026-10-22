@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Contract: the diffusion TRAINING precision menu never gains an INFERENCE-only scheme.
-
-Inference and training share a vocabulary of quantisation names, but not the same set.
-Inference offers ``nvfp4`` (torchao 4-bit weight-only, Blackwell) and ``fp8_dynamic``;
-the DiT trainer offers neither -- there is no training path for them, so a UI that
-advertised one would evict every resident model, start a run, and then fail. The chain
-that has to stay honest is:
-
-    train_precision_modes()  ->  family_train_infos()  ->  GET /diffusion/info
-                                                              |
-                                       diffusion-train-panel.tsx `precisionModes`
-                                                              |
-                              DiffusionTrainingStartRequest.base_precision (422 gate)
-
-These assertions read BOTH ends -- the live Python probe over a simulated GPU matrix, and
-the frontend source -- so adding ``nvfp4`` to either one reddens. They are deliberately
-paired with a positive check that ``nvfp4`` really is a supported INFERENCE scheme, so the
-suite cannot pass by the name having quietly disappeared everywhere.
-"""
+"""The diffusion training menu must never offer nvfp4 or fp8_dynamic, which have no training path."""
 
 from __future__ import annotations
 
@@ -57,19 +39,16 @@ def _literal_names(model, field: str) -> frozenset[str]:
     return frozenset(names)
 
 
-# Every quantisation name inference can be asked for, across the transformer and the text encoders.
 _INFERENCE_SCHEMES: frozenset[str] = (
     _literal_names(DiffusionLoadRequest, "transformer_quant")
     | _literal_names(DiffusionLoadRequest, "text_encoder_quant")
     | frozenset(TE_QUANT_MODES)
 ) - _SENTINELS
 
-# Schemes inference supports that training has no path for. Derived, not hardcoded, so a new
-# inference-only scheme is covered the day it lands; the guard below pins nvfp4 into it so the
-# derivation cannot silently empty out (which would make every assertion here vacuous).
+# Derived so new inference-only schemes are covered; nvfp4 is pinned below so it
+# cannot silently empty out.
 _INFERENCE_ONLY: frozenset[str] = _INFERENCE_SCHEMES - _TRAIN_PRECISIONS
 
-# (major, minor) capabilities spanning every branch of the probe: pre-Ampere, Ampere, Ada, Hopper, Blackwell, and newer.
 _CAPABILITIES = ((7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0))
 
 
@@ -80,11 +59,7 @@ def _probe(
     cuda = True,
     torchao = True,
 ) -> tuple[list[str], str]:
-    """(modes, recommended) as train_precision_modes() would answer on the given machine.
-
-    The recommendation is returned, not discarded: the Train panel seeds basePrecision from it,
-    so a recommendation outside the reported list is an option the user starts on and the select
-    never offered."""
+    """Returns the recommendation too, since the Train panel seeds its base precision from it."""
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
@@ -105,9 +80,6 @@ def _every_advertisable_mode(monkeypatch) -> frozenset[str]:
     return frozenset(seen)
 
 
-# ── the vocabularies really do differ ─────────────────────────────────────────
-
-
 def test_nvfp4_is_a_real_inference_scheme_and_not_a_training_one():
     """Anchors the rest of the file: nvfp4 must exist on the inference side, or every
     "nvfp4 is absent" assertion below would pass for the wrong reason."""
@@ -117,12 +89,8 @@ def test_nvfp4_is_a_real_inference_scheme_and_not_a_training_one():
     assert "nvfp4" in _literal_names(DiffusionLoadRequest, "text_encoder_quant")
     # It is also the scheme the diffusers LoRA path refuses to attach to, so it is genuinely live.
     assert "nvfp4" in _DIFFUSERS_LORA_BLOCKED_QUANT
-    # ...and it is inference-only.
     assert "nvfp4" in _INFERENCE_ONLY
     assert "nvfp4" not in _TRAIN_PRECISIONS
-
-
-# ── backend: the probe ────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("capability", _CAPABILITIES)
@@ -139,10 +107,8 @@ def test_train_precision_modes_never_offers_an_inference_only_scheme(
     )
     # Anything advertised must also clear the request schema, or the UI offers a guaranteed 422.
     assert set(modes) <= _TRAIN_PRECISIONS, sorted(set(modes) - _TRAIN_PRECISIONS)
-    assert "nf4" in modes  # the floor is always available
-    # The recommendation is what the panel seeds basePrecision with, so one outside the reported
-    # list is an option the user starts on and the select never offered -- and one outside the
-    # schema is a guaranteed 422 on the first start.
+    assert "nf4" in modes
+    # The recommendation seeds basePrecision, so it must be offered and schema-valid.
     assert recommended in modes, (
         f"the recommendation {recommended!r} is not in the modes reported for "
         f"sm{capability[0]}{capability[1]} (torchao={torchao}): {sorted(modes)}"
@@ -168,9 +134,6 @@ def test_family_train_infos_never_advertises_an_inference_only_scheme(monkeypatc
         assert info["recommended_precision"] in _TRAIN_PRECISIONS
 
 
-# ── schema: the 422 gate ──────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("scheme", sorted(_INFERENCE_ONLY))
 def test_the_start_request_rejects_an_inference_only_precision(scheme):
     with pytest.raises(Exception) as excinfo:
@@ -184,13 +147,7 @@ def test_the_start_request_rejects_an_inference_only_precision(scheme):
 
 
 def test_the_trainer_accepts_exactly_what_the_schema_advertises():
-    """The one link the rest of this file cannot supply. Every set above is derived from the
-    request schema and the probe, so a mode added to BOTH of those disappears from
-    ``_INFERENCE_ONLY`` and every assertion here passes -- while
-    ``DiffusionLoraConfig.normalized()`` keeps its own hardcoded tuple and rejects the run after
-    it has already evicted the resident model. Asked of the trainer directly rather than parsed
-    out of it, so a refactor of that tuple cannot fool the check.
-    """
+    """The trainer's hardcoded tuple must match the schema, or runs fail after evicting the model."""
     accepted, refused = set(), {}
     for mode in sorted(_TRAIN_PRECISIONS):
         config = DiffusionLoraConfig(
@@ -202,10 +159,7 @@ def test_the_trainer_accepts_exactly_what_the_schema_advertises():
         try:
             config.normalized()
         except Exception as exc:  # noqa: BLE001 - anything that stops a start counts as a refusal
-            # The mode-name message is the expected shape, but it is not the only way a start
-            # dies: a dense-base check, a mixed-precision check or a new dataset-path check would
-            # block the same advertised mode just as completely. Swallowing those would keep this
-            # green for a precision the UI offers and the trainer refuses.
+            # Any refusal blocks the advertised mode, not just the mode-name message.
             refused[mode] = f"{type(exc).__name__}: {exc}"
             continue
         accepted.add(mode)
@@ -216,8 +170,7 @@ def test_the_trainer_accepts_exactly_what_the_schema_advertises():
     )
     assert accepted == set(_TRAIN_PRECISIONS)
 
-    # ...and the tuple is not simply permissive: an inference-only scheme still has to bounce,
-    # or the assertion above would hold for a trainer that accepts everything.
+    # An inference-only scheme must still bounce, so the tuple is not just permissive.
     for scheme in sorted(_INFERENCE_ONLY):
         bogus = DiffusionLoraConfig(
             base_model = "black-forest-labs/FLUX.1-dev",
@@ -240,9 +193,6 @@ def test_every_training_precision_is_accepted_by_the_start_request():
         assert req.base_precision == mode
 
 
-# ── frontend: the Train panel's precision selector ────────────────────────────
-
-
 def _precision_memo_block() -> str:
     """The body of ``diffusion-train-panel.tsx``'s ``precisionModes`` useMemo: the type
     annotation, the reported-mode filter, and the no-backend fallback array."""
@@ -257,10 +207,7 @@ def _precision_memo_block() -> str:
     return block
 
 
-# A TS/TSX string literal in any of the three quotings. Prettier normalizes this file to
-# double quotes, but the guard must not depend on that: a hand-edit or a merge that spelled a
-# scheme 'nvfp4' or `nvfp4` would otherwise slip past every assertion below while rendering
-# exactly the same option. Verified by mutation -- a single-quoted arm used to pass clean.
+# Match any quoting: a single-quoted arm used to slip past (verified by mutation).
 _STRING_LITERAL = re.compile(r"""["'`]([^"'`\\\n]*)["'`]""")
 _M_EQUALS = re.compile(r"""m === ["'`]([^"'`]+)["'`]""")
 
@@ -311,21 +258,14 @@ def test_the_reported_mode_filter_is_a_subset_of_what_the_backend_can_report(mon
     whitelist = set(_M_EQUALS.findall(predicate))
     assert whitelist, f"parsed no whitelist arms out of {predicate!r}"
     advertisable = _every_advertisable_mode(monkeypatch)
-    # Equality, not containment. A subset check passes just as happily when an arm is DELETED,
-    # and the effect of deleting one is that the backend keeps reporting the mode while the panel
-    # silently drops it from the select -- a mode the user can never pick and no error anywhere.
+    # Equality, not containment: a deleted arm silently drops a reported mode.
     assert whitelist == advertisable - _SENTINELS, (
         f"the panel filters to {sorted(whitelist)} but the backend can report "
         f'{sorted(advertisable - _SENTINELS)}; "auto" is prepended separately, so the filter '
         "has to name every other advertisable mode exactly"
     )
     assert not _INFERENCE_ONLY.intersection(whitelist)
-    # ...and Auto has to survive the memo. Subtracting it above is only sound while the memo
-    # prepends it: change `return ["auto", ...reported]` to `return reported` and this file
-    # would still pass while the user loses the backend-recommended option the moment a report
-    # arrives. Both return paths, since the fallback is what a backendless first paint renders.
-    # `return []` for an untrainable family offers nothing at all, deliberately; every return
-    # that offers anything has to lead with Auto.
+    # Subtracting Auto above is sound only while every non-empty return leads with "auto".
     returns = [
         line
         for line in block.splitlines()
@@ -335,9 +275,6 @@ def test_the_reported_mode_filter_is_a_subset_of_what_the_backend_can_report(mon
     assert returns, f"parsed no return arrays out of the memo: {block!r}"
     for line in returns:
         assert '"auto"' in line, f"the memo returns a list with no Auto option: {line.strip()!r}"
-
-
-# ── inference keeps NVFP4 ─────────────────────────────────────────────────────
 
 
 def test_inference_still_offers_nvfp4_end_to_end():
@@ -350,9 +287,7 @@ def test_inference_still_offers_nvfp4_end_to_end():
     )
     assert req.transformer_quant == "nvfp4" and req.text_encoder_quant == "nvfp4"
 
-    # The video load form too, through the schema rather than its source: video-page.tsx can
-    # keep offering NVFP4 long after VideoLoadRequest stopped accepting it, and the only symptom
-    # is a 422 from /video/load.
+    # Through the schema: video-page.tsx could keep offering NVFP4 after the schema dropped it.
     video = VideoLoadRequest(model_path = "unsloth/Wan2.2-TI2V-5B", transformer_quant = "nvfp4")
     assert video.transformer_quant == "nvfp4"
 
