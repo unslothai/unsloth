@@ -21,7 +21,9 @@ import { formatSeconds, resamplePeaks } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 const BAR_GAP_PX = 1;
-const BAR_PITCH_PX = 3 + BAR_GAP_PX;
+const BAR_PITCH_PX = 2 + BAR_GAP_PX;
+// Fraction of the track height above the baseline.
+const BASELINE = 0.7;
 
 export interface WaveformControl {
   seek: (seconds: number, play?: boolean) => void;
@@ -314,14 +316,14 @@ export function WaveformBarGlyphs({
     >
       {Array.from({ length: count }, (_, index) => {
         const peak = levels ? (levels[index] ?? 0) : 0;
-        // SoundCloud-style: a bar above the baseline and a fainter reflection below it.
+        // SoundCloud-style: each bar reaches further above the baseline than below it.
         const height = 10 + peak ** 0.8 * 90;
         return (
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
             key={index}
             className={cn(
-              "flex h-full w-[3px] shrink-0 flex-col gap-px",
+              "relative h-full w-[2px] shrink-0",
               isPlayed((index + 0.5) / count)
                 ? "text-foreground"
                 : cn(
@@ -330,18 +332,13 @@ export function WaveformBarGlyphs({
                   ),
             )}
           >
-            <span className="flex flex-[7] items-end">
-              <span
-                className="w-full rounded-t-full bg-current"
-                style={{ height: `max(2px, ${height}%)` }}
-              />
-            </span>
-            <span className="flex flex-[3] items-start">
-              <span
-                className="w-full rounded-b-full bg-current opacity-40"
-                style={{ height: `max(1px, ${height}%)` }}
-              />
-            </span>
+            <span
+              className="absolute inset-x-0 rounded-full bg-current"
+              style={{
+                top: `${BASELINE * (100 - height)}%`,
+                height: `max(2px, ${height}%)`,
+              }}
+            />
           </span>
         );
       })}
