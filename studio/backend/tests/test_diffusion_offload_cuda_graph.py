@@ -378,9 +378,19 @@ def test_model_offload_replays_over_the_stable_range_and_frees_it_between_render
         torch.cuda.empty_cache()
         _hold = torch.empty(4 << 20, device = "cuda")  # the freed VRAM is reused meanwhile
         del _hold
+        # diffusers re-hooks every render (remove_hook_from_module also drops instance ``to`` overrides)
+        from accelerate.hooks import remove_hook_from_module
+
+        remove_hook_from_module(net)
+        remove_hook_from_module(other)
+        net, hook = cpu_offload_with_hook(net, execution_device = "cuda")
+        other, other_hook = cpu_offload_with_hook(
+            other, execution_device = "cuda", prev_module_hook = hook
+        )
     assert later == 0
     assert handles[0].stats["captures"] == 1 and handles[0].stats["invalidations"] == 0
     assert arena.stats["onloads"] == 4 and arena.stats["unmaps"] == 4
+    assert arena.stats.get("reinstalls", 0) >= 3
     cg.uninstall_all(handles)
 
 
@@ -864,6 +874,17 @@ def test_status_names_graphs_dropped_after_replaying():
     assert cg.live_status(resolved, ["cuda_graph"], [handle])[0]["cuda_graph"]["value"] == "on"
 
 
+def _inner_of(t):
+    """A torchao wrapper weight's inner tensors, read without the module under test."""
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    if not is_traceable_wrapper_subclass(t):
+        return None
+    names, _ctx = t.__tensor_flatten__()
+    inner = [(n, getattr(t, n)) for n in names]
+    return inner if all(type(x) is torch.Tensor for _, x in inner) else None
+
+
 def test_model_offload_stable_range_holds_torchao_int8_weights():
     """Studio's compiled low_vram tier quantizes the denoiser to torchao int8: those wrapper weights are rebuilt over
     the stable range too (same inner addresses on every onload, memory released between renders), exactly.
@@ -885,7 +906,7 @@ def test_model_offload_stable_range_holds_torchao_int8_weights():
         return net
 
     probe = build()
-    if dm._wrapper_inner(probe.blocks[0].weight.data) is None:
+    if _inner_of(probe.blocks[0].weight.data) is None:
         pytest.skip("this torchao build stores int8 weights without a traceable wrapper")
     ref = build().cuda()
     net, hook = cpu_offload_with_hook(build(), execution_device = "cuda")
@@ -904,7 +925,7 @@ def test_model_offload_stable_range_holds_torchao_int8_weights():
         return outs
 
     def inner_ptrs():
-        return [x.data_ptr() for b in net.blocks for _, x in dm._wrapper_inner(b.weight.data)]
+        return [x.data_ptr() for b in net.blocks for _, x in _inner_of(b.weight.data)]
 
     ptrs = None
     for render in range(3):

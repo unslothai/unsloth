@@ -622,7 +622,7 @@ def _int8_pipe(device):
     except TypeError:
         config = quant.Int8DynamicActivationInt8WeightConfig()
     quant.quantize_(torch.nn.Sequential(lin), config)
-    if dm._wrapper_inner(lin.weight.data) is None:
+    if _inner_of(lin.weight.data) is None:
         pytest.skip("this torchao build stores int8 weights without a traceable wrapper")
     pipe.components["text_encoder"] = torch.nn.Linear(8, 64, dtype = torch.bfloat16)
     pipe.components["transformer"] = lin
@@ -631,7 +631,18 @@ def _int8_pipe(device):
 
 
 def _inner_ptrs(module):
-    return [x.data_ptr() for _, x in dm._wrapper_inner(module.weight.data)]
+    return [x.data_ptr() for _, x in _inner_of(module.weight.data)]
+
+
+def _inner_of(t):
+    """A torchao wrapper weight's inner tensors, read without the module under test."""
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    if not is_traceable_wrapper_subclass(t):
+        return None
+    names, _ctx = t.__tensor_flatten__()
+    inner = [(n, getattr(t, n)) for n in names]
+    return inner if all(type(x) is torch.Tensor for _, x in inner) else None
 
 
 @cuda
@@ -657,5 +668,5 @@ def test_torchao_int8_weights_keep_their_host_storage_and_are_pinned(monkeypatch
         host = now
     for out in outs:
         assert torch.equal(out, ref)
-    inner = dm._wrapper_inner(pipe.transformer.weight.data)
+    inner = _inner_of(pipe.transformer.weight.data)
     assert all(t.is_pinned() for _, t in inner) == (pin == "1")

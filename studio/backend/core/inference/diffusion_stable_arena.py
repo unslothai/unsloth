@@ -345,7 +345,15 @@ class ModuleArena:
         self._module = weakref.ref(module)
         self._stock_to = type(module).to
         module.__dict__["to"] = self._to
+        # accelerate's remove_hook_from_module pops ``to`` from the instance (its _accelerate_added_attributes) and
+        # diffusers re-hooks before every render: put it back before the hook's pre-forward onloads the module.
+        self._reinstall_handle = module.register_forward_pre_hook(self._reinstall)
         weakref.finalize(module, ModuleArena._finalize, self.__dict__)
+
+    def _reinstall(self, module: Any, _args: Any) -> None:
+        if module.__dict__.get("to") != self._to and self.failed is None:
+            module.__dict__["to"] = self._to
+            self.stats["reinstalls"] = self.stats.get("reinstalls", 0) + 1
 
     @staticmethod
     def _finalize(state: dict) -> None:
@@ -360,6 +368,10 @@ class ModuleArena:
         module = self._module()
         if module is not None and module.__dict__.get("to") == self._to:
             module.__dict__.pop("to", None)
+        try:
+            self._reinstall_handle.remove()
+        except Exception:  # noqa: BLE001
+            pass
         if self.arena is not None and module is not None and not self._referenced(module):
             self.arena.close()
             self.arena = None
