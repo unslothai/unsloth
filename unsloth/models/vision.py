@@ -3393,6 +3393,12 @@ class FastBaseModel:
             and is_vLLM_available()
             and xpu_vllm_refuses_bf16()
         ):
+            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+                # This model needs bf16 or float32 (float16 gives NaN gradients): fail before loading.
+                raise RuntimeError(
+                    "Unsloth: vLLM does not accept bfloat16 on this Intel GPU, and this model cannot "
+                    "run in float16. Load it with fast_inference = False."
+                )
             logger.warning_once(
                 "Unsloth: vLLM does not accept bfloat16 on this Intel GPU. Will change to float16."
             )
