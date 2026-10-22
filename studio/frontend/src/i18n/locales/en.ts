@@ -4723,7 +4723,7 @@ export const en = {
       countMany: "{count} models loaded",
       pillLabel: "{count}. Show details, or drag to move",
       dragToMove: "Drag to move",
-      dragHandleLabel: "Move loaded models. Arrow keys nudge it.",
+      dragHandleLabel: "Drag to move",
       collapse: "Collapse",
       collapseLabel: "Collapse loaded models",
       close: "Close",
