@@ -59,7 +59,6 @@ def test_plugin_registers_a_pretooluse_hook_on_the_editing_tool(tmp_path, hook_f
     assert 0 < hook["timeout"] <= 30
     gate = plugin / "hooks" / "plan_gate.py"
     if hook_form == "exec":
-        # No shell at all: PowerShell, sh and cmd never parse it.
         assert hook["command"] == sys.executable
         assert hook["args"][-1] == str(gate)
         return

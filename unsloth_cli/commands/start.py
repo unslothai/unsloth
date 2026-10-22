@@ -59,7 +59,7 @@ _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 # Codex treats an SSE stream with no bytes for this long as lost, cancels it and reconnects. Its default is 300000 (5 minutes), measured against the WHOLE quiet period, and llama-server sends nothing at all while it processes the prompt. A local CPU host chews through a prompt at low tens of tokens a second and Codex's own preamble is several thousand tokens before the user has typed anything: 16.1 tok/s measured on a 2-core box means ~460s of silence for a ~7300-token first turn, so the default trips before the first token exists. The reconnect is worse than the wait, because llama-server hands the retry a different parallel slot whose KV cache shares no prefix, so each attempt restarts prompt processing from zero and the five retries can never converge. Observed as a request completing in exactly 300056ms with `Reconnecting... 1/5` and no turn ever finishing. 20 minutes here, sized to be longer than a slow local first turn rather than to any server-side budget: nothing here bounds generation, and a genuinely dead stream is still caught, just later.
 _CODEX_STREAM_IDLE_TIMEOUT_MS = 1_200_000
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
-# Not "unsloth": Hermes strips a model's `<provider>/` prefix, which turns unsloth/<repo> into a bare <repo> that no longer matches model.default, so it ignores the pinned context_length.
+# Not "unsloth": Hermes strips a `<provider>/` prefix, so unsloth/<repo> stops matching model.default.
 _HERMES_PROVIDER = "unsloth-studio"
 _HERMES_LEGACY_PROVIDER = "unsloth"
 # Skip the installer's interactive setup wizard: `unsloth start hermes` runs this hint unattended and then writes its own session-scoped Hermes config, so the wizard's global API-key/model prompts would block the launch and point the user at a different provider than the one Unsloth just configured. Both installers expose a skip flag: `-SkipSetup` (PowerShell) and `--skip-setup` (POSIX, passed to the piped script via `bash -s --`). Pin both the fetched script and the repository checkout it performs to the same full commit so a later change to either upstream branch cannot silently replace code that Unsloth executes with the user's privileges.
@@ -3628,7 +3628,7 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
                 entries.append(source.name)
             except OSError:
                 if source.is_file():
-                    # Codex rewrites auth.json in place, so a hard link (no privilege needed on NTFS) carries a token refresh home; a copy would strand the user's login on a rotated-out refresh token.
+                    # Hard link, not copy: Codex rewrites auth.json in place, and a copy strands a rotated refresh token.
                     try:
                         os.link(source, target)
                     except OSError:
@@ -3640,7 +3640,7 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
                     elif source.name in fallback_dirs:
                         shutil.copytree(source, target)
                         entries.append(source.name)
-    # Not signed in yet: a dangling link lets the first login land in the user's home instead of an overlay deleted on exit.
+    # Not signed in yet: a dangling link lands the first login in the user's home, not the overlay.
     auth = source_home / "auth.json"
     if not os.path.lexists(auth):
         with contextlib.suppress(OSError):
@@ -3904,7 +3904,7 @@ _CLAUDE_HOOK_ARGS_MIN_VERSION = (2, 1, 139)
 
 def _claude_hook(gate: Path, exec_form: bool = True) -> dict:
     if exec_form:
-        # Exec form spawns no shell. Without Git Bash, Windows runs a shell-form hook in PowerShell, which cannot parse `"python.exe" -c ...`, and since 2.1.299 a failing guard blocks the tool every time.
+        # Exec form: without Git Bash, Windows runs shell-form hooks in PowerShell, which cannot parse them.
         return {
             "type": "command",
             "command": sys.executable,
@@ -4347,7 +4347,7 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
     return match.group(1).lower() if match else None
 
 
-# Pi's package declares engines node >=22.19.0, and npm only warns on a mismatch, so it installs on the Node 20.19 that Unsloth accepts and then dies on load.
+# Pi needs node >=22.19.0; npm only warns, so it installs on Node 20.19 and then dies on load.
 _PI_MIN_NODE = (22, 19, 0)
 
 
@@ -4833,7 +4833,7 @@ def _connect(
         launch = launch,
         server_options = server_options,
     )
-    # A running server resolves a relative path against its own working directory, not the user's; only this machine's Studio shares our filesystem (an SSH tunnel on loopback does not).
+    # The server resolves relative paths against its own cwd; only a local Studio shares our filesystem.
     if model and server is None and is_loopback_url(base) and _is_model_path(model):
         if os.path.exists(os.path.expanduser(model)) and verify_studio_identity(base):
             model = os.path.abspath(os.path.expanduser(model))
@@ -5523,7 +5523,7 @@ def _set_hermes_provider(
             # Current Hermes refuses a local server below its floor unless ollama_num_ctx claims it; context_length alone no longer passes.
             _subdict(config, "model")["ollama_num_ctx"] = _HERMES_MIN_CONTEXT
             threshold = round(0.9 * window / _HERMES_MIN_CONTEXT, 4)
-            # Hermes raises any threshold under 0.75 for windows below 512K; threshold_tokens is the absolute cap it still honors.
+            # Hermes raises thresholds under 0.75 below 512K; threshold_tokens is the cap it still honors.
             _subdict(config, "compression").update(
                 enabled = True, threshold = threshold, threshold_tokens = int(0.9 * window)
             )

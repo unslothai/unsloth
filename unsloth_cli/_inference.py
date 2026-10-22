@@ -36,7 +36,6 @@ _MPI_ENV_PAIRS = (
     ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
 )
 
-# Built lazily, keyed by (follow_redirects, loopback); urllib stays function-local to match this module.
 _openers: dict = {}
 
 
@@ -52,8 +51,7 @@ def _opener(follow_redirects: bool, loopback: bool):
                     req.full_url, code, f"refusing redirect to {newurl}", headers, fp
                 )
 
-        # urllib proxies 127.0.0.1 too unless no_proxy lists it, which hands the bearer key to an
-        # exported http_proxy and fails discovery of a Studio that is running.
+        # urllib proxies 127.0.0.1 unless no_proxy lists it, leaking the bearer key to http_proxy.
         handlers = [urllib.request.ProxyHandler({})] if loopback else []
         if not follow_redirects:
             handlers.append(_NoRedirect)
@@ -821,8 +819,7 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     if os.environ.get("UNSLOTH_STUDIO_URL"):
         return found
     recorded = list(_recorded_studio_bases(candidates))
-    # Another OS user's or another install's Studio on the default port pushes ours to the next free
-    # one; prefer the server this install recorded over a default it cannot prove is its own.
+    # Another install may own the default port: prefer the server this install recorded.
     if found is not None and (not recorded or verify_studio_identity(found, timeout)):
         return found
     return next((c for c in recorded if _answers_as_studio(c, timeout)), found)

@@ -1700,7 +1700,6 @@ def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
-    # Claude keeps only the last --settings, so the forwarded one is merged into the overlay.
     [position] = [index for index, arg in enumerate(command) if arg == "--settings"]
     settings = json.loads(Path(command[position + 1]).read_text())
     assert settings["env"]["CLAUDE_CODE_USE_FOUNDRY"] == ""
@@ -3047,7 +3046,6 @@ def test_connect_sends_a_running_server_the_users_absolute_path(fake_studio, tmp
     _, _, entry = start._connect(None, "./foo.gguf")
     assert entry["id"] == str(tmp_path / "foo.gguf")
 
-    # A tunnelled server has its own filesystem, so the path stays relative to it.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
     monkeypatch.setattr(start, "_agent_api_key", lambda *a, **k: "sk-unsloth-saved")
     _, _, entry = start._connect(None, "./foo.gguf")
