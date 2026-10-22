@@ -3,13 +3,19 @@
 
 import { useMonitorFrameStore } from "@/features/settings";
 import {
+  type FrameBox,
   type PanelIntent,
+  clearPanelIntent,
   isDegenerateBox,
+  liftAboveObstacle,
+  nudgeDelta,
   placeAxis,
   readPanelIntent,
+  snapsToAnchor,
   storePanelIntent,
 } from "@/hooks/floating-panel-position";
 import {
+  type KeyboardEvent,
   type PointerEvent,
   useLayoutEffect,
   useMemo,
@@ -40,6 +46,9 @@ interface DragSession {
   baseLeft: number;
   baseTop: number;
 }
+
+/** Space kept between a panel resting at its default corner and the card below it. */
+const OBSTACLE_GAP_PX = 8;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -87,6 +96,8 @@ export function useFloatingPanelLayout(
     bounds: DOMRect,
   ) => { left: number; top: number },
   storageKey?: string,
+  /** At the default corner (no stored spot), rest above this box instead of covering it. */
+  restingObstacle?: FrameBox | null,
 ) {
   // Per-instance frame owner: a panel unmounting mid-exit clears only its own frame.
   const publisher = useMemo(() => ({}), []);
@@ -109,6 +120,9 @@ export function useFloatingPanelLayout(
   const reconcileRef = useRef<(() => void) | null>(null);
   const initialPlacementRef = useRef(initialPlacement);
   const initializedRef = useRef(false);
+  const obstacleRef = useRef(restingObstacle ?? null);
+  // Where the default corner put it on the last reconcile, for snapping a drop back to it.
+  const restRef = useRef({ left: 0, top: 0, maxLeft: 0, maxTop: 0 });
 
   useLayoutEffect(() => {
     const monitor = monitorRef.current;
@@ -186,6 +200,32 @@ export function useFloatingPanelLayout(
       }
       initializedRef.current = true;
 
+      // A bottom-anchored panel rests above the corner card rather than over it.
+      const bottomTop = (atLeft: number) => {
+        const lifted = liftAboveObstacle(
+          {
+            left: constraintsBox.left + atLeft,
+            top: constraintsBox.top + maxTop,
+            width,
+            height,
+          },
+          obstacleRef.current,
+          OBSTACLE_GAP_PX,
+        );
+        return lifted === null
+          ? maxTop
+          : clamp(lifted - constraintsBox.top, 0, maxTop);
+      };
+      restRef.current = {
+        left: maxLeft,
+        top: bottomTop(maxLeft),
+        maxLeft,
+        maxTop,
+      };
+      if (!session && intentRef.current.top === null) {
+        top = bottomTop(left);
+      }
+
       if (session) {
         session.left = left;
         session.top = top;
@@ -251,6 +291,13 @@ export function useFloatingPanelLayout(
       useMonitorFrameStore.getState().clearFrame(publisher);
     }
   }, [hidden, publisher]);
+
+  useLayoutEffect(() => {
+    obstacleRef.current = restingObstacle ?? null;
+    if (!dragSessionRef.current) {
+      reconcileRef.current?.();
+    }
+  }, [restingObstacle]);
 
   useLayoutEffect(() => {
     if (narrowedRef.current === narrowed) {
@@ -378,6 +425,20 @@ export function useFloatingPanelLayout(
       constraintsHeight,
     } = session;
     dragSessionRef.current = null;
+    const rest = restRef.current;
+    if (
+      (left !== baseLeft || top !== baseTop) &&
+      snapsToAnchor(
+        { left, top },
+        rest,
+        { left: rest.maxLeft, top: rest.maxTop },
+      )
+    ) {
+      const monitor = monitorRef.current;
+      if (monitor) monitor.style.transform = "";
+      resetPosition();
+      return;
+    }
     if (left !== baseLeft || top !== baseTop) {
       const intent = intentRef.current;
       intentRef.current = {
@@ -406,6 +467,58 @@ export function useFloatingPanelLayout(
     );
   }
 
+  function commitPosition(left: number, top: number, constraints: DOMRect) {
+    const monitor = monitorRef.current;
+    if (monitor) {
+      monitor.style.left = `${left}px`;
+      monitor.style.top = `${top}px`;
+    }
+    setLayout((current) =>
+      !current || (current.left === left && current.top === top)
+        ? current
+        : {
+            ...current,
+            left,
+            top,
+            maxWidth: constraints.width - left,
+            maxHeight: constraints.height - top,
+          },
+    );
+  }
+
+  /** Back to the default corner, forgetting the stored spot. */
+  function resetPosition() {
+    intentRef.current = { left: null, top: null };
+    clearPanelIntent(storageKey);
+    reconcileRef.current?.();
+  }
+
+  /** Arrow keys on a focused handle; true when the key moved the panel. */
+  function nudge(event: KeyboardEvent<HTMLElement>): boolean {
+    const delta = nudgeDelta(event.key, event.shiftKey);
+    const monitor = monitorRef.current;
+    if (!(delta && monitor && constraintsElement) || dragSessionRef.current) {
+      return false;
+    }
+    event.preventDefault();
+    const constraintsBox = constraintsElement.getBoundingClientRect();
+    const monitorBox = monitor.getBoundingClientRect();
+    const left = clamp(
+      monitorBox.left - constraintsBox.left + delta.dx,
+      0,
+      Math.max(0, constraintsBox.width - monitorBox.width),
+    );
+    const top = clamp(
+      monitorBox.top - constraintsBox.top + delta.dy,
+      0,
+      Math.max(0, constraintsBox.height - monitorBox.height),
+    );
+    intentRef.current = { left, top };
+    storePanelIntent(storageKey, intentRef.current);
+    commitPosition(left, top, constraintsBox);
+    return true;
+  }
+
   return {
     publisher,
     monitorRef,
@@ -415,5 +528,7 @@ export function useFloatingPanelLayout(
     startDrag,
     updateDrag,
     finishDrag,
+    resetPosition,
+    nudge,
   };
 }
