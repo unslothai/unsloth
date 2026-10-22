@@ -862,3 +862,63 @@ def test_status_names_graphs_dropped_after_replaying():
     }  # a live graph again (refusal lifted, recorded anew): status stays as recorded
     handle.capture_error = None
     assert cg.live_status(resolved, ["cuda_graph"], [handle])[0]["cuda_graph"]["value"] == "on"
+
+
+def test_model_offload_stable_range_holds_torchao_int8_weights():
+    """Studio's compiled low_vram tier quantizes the denoiser to torchao int8: those wrapper weights are rebuilt over
+    the stable range too (same inner addresses on every onload, memory released between renders), exactly.
+    The eager torchao int8 matmul here is not capture-safe, so this checks placement, not the replay; the compiled
+    Studio step records over it (scripts/graphs_split_offload)."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    quant = pytest.importorskip("torchao.quantization")
+    from accelerate import cpu_offload_with_hook
+
+    def build():
+        torch.manual_seed(0)
+        net = _Net(width = 256).to(torch.bfloat16)
+        try:
+            config = quant.Int8DynamicActivationInt8WeightConfig(version = 2)
+        except TypeError:
+            config = quant.Int8DynamicActivationInt8WeightConfig()
+        quant.quantize_(net.blocks, config)
+        return net
+
+    probe = build()
+    if dm._wrapper_inner(probe.blocks[0].weight.data) is None:
+        pytest.skip("this torchao build stores int8 weights without a traceable wrapper")
+    ref = build().cuda()
+    net, hook = cpu_offload_with_hook(build(), execution_device = "cuda")
+    arena, why = sa.attach(net)
+    assert arena is not None, why
+
+    def run(module, seeds):
+        outs = []
+        with torch.no_grad():
+            for seed in seeds:
+                x, t = _inputs(seed)
+                outs.append(
+                    module(x.to(torch.bfloat16), t.to(torch.bfloat16), return_dict = False)[0].clone()
+                )
+        torch.cuda.synchronize()
+        return outs
+
+    def inner_ptrs():
+        return [x.data_ptr() for b in net.blocks for _, x in dm._wrapper_inner(b.weight.data)]
+
+    ptrs = None
+    for render in range(3):
+        seeds = [10 * render + i for i in range(3)]
+        got = run(net, seeds)
+        assert type(net.blocks[0].weight.data) is type(probe.blocks[0].weight.data)
+        now = inner_ptrs()
+        lo, hi = arena.arena.va, arena.arena.va + arena.arena.size
+        assert all(lo <= q < hi for q in now)
+        assert ptrs is None or now == ptrs
+        ptrs = now
+        for a, b in zip(got, run(ref, seeds)):
+            assert torch.equal(a, b)
+        hook.offload()
+        assert net.blocks[0].weight.device.type == "cpu"
+        assert not arena.arena.mapped
+    assert arena.stats["onloads"] == 3 and arena.stats["unmaps"] == 3

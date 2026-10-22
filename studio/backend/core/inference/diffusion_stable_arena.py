@@ -13,8 +13,9 @@ land at the same addresses on every render, so the recorded step graph keeps rep
 
 ComfyUI does the same for its graph replays over offloaded weights (comfy_aimdo ``model_vbar``).
 
-Only plain dense tensors (and their strides) are placed in the range; a module holding any other parameter type
-(torchao / GGUF subclasses) is left to the stock hook. Opt out with ``UNSLOTH_DIFFUSION_MODEL_OFFLOAD_ARENA=0``.
+Plain dense tensors (with their strides) and torchao-style wrapper weights (int8 / fp8: their plain inner tensors,
+rebuilt over the range) are placed; a module holding any other parameter type (GGUF) is left to the stock hook.
+Opt out with ``UNSLOTH_DIFFUSION_MODEL_OFFLOAD_ARENA=0``.
 """
 
 from __future__ import annotations
@@ -284,6 +285,23 @@ def _plain(t: Any) -> bool:
     )
 
 
+def _inner(t: Any) -> Optional[list]:
+    """A torchao-style wrapper weight's plain inner tensors (``diffusion_memory._wrapper_inner``), else None."""
+    from .diffusion_memory import _wrapper_inner
+    return _wrapper_inner(t)
+
+
+def _placeable(t: Any) -> bool:
+    return _plain(t) or _inner(t) is not None
+
+
+def _pieces(name: str, t: Any) -> list:
+    """(layout key, tensor) for each storage of ``t``: its own data, or a wrapper weight's inner tensors."""
+    if _plain(t):
+        return [(name, t.data)]
+    return [(f"{name}#{attr}", x) for attr, x in (_inner(t) or ())]
+
+
 def _set_tensor(owner: Any, leaf: str, kind: str, value: Any) -> None:
     if kind == "p":
         owner._parameters[leaf].data = value
@@ -349,17 +367,18 @@ class ModuleArena:
     def _build(self, entries: list) -> None:
         offset = 0
         layout: dict = {}
-        for name, _owner, _leaf, _kind, t in entries:
-            if t.device.type != "cpu" or not _plain(t):
+        for name, _owner, _leaf, _kind, whole in entries:
+            if whole.device.type != "cpu" or not _placeable(whole):
                 continue
-            # strided layouts (channels_last) keep their strides over the span they reach
-            span = (
-                (1 + sum((n - 1) * st for n, st in zip(t.shape, t.stride()))) * t.element_size()
-                if t.numel()
-                else 0
-            )
-            layout[name] = (offset, tuple(t.shape), tuple(t.stride()), t.dtype, span)
-            offset += -(-max(span, 1) // _ALIGN) * _ALIGN
+            for key, t in _pieces(name, whole):
+                # strided layouts (channels_last) keep their strides over the span they reach
+                span = (
+                    (1 + sum((n - 1) * st for n, st in zip(t.shape, t.stride()))) * t.element_size()
+                    if t.numel()
+                    else 0
+                )
+                layout[key] = (offset, tuple(t.shape), tuple(t.stride()), t.dtype, span)
+                offset += -(-max(span, 1) // _ALIGN) * _ALIGN
         self.layout = layout
         self.arena = VmmArena(max(offset, _ALIGN), self.device.index)
 
@@ -367,9 +386,12 @@ class ModuleArena:
         if self.arena is None or not self.arena.mapped:
             return False
         lo, hi = self.arena.va, self.arena.va + self.arena.size
-        for _name, _owner, _leaf, _kind, t in _entries(module):
+        for name, _owner, _leaf, _kind, whole in _entries(module):
             try:
-                if t.device.type == "cuda" and lo <= t.data_ptr() < hi:
+                if whole.device.type != "cuda":
+                    continue
+                pieces = _pieces(name, whole) if _placeable(whole) else [(name, whole)]
+                if any(lo <= x.data_ptr() < hi for _, x in pieces):
                     return True
             except Exception:  # noqa: BLE001
                 return True
@@ -382,24 +404,44 @@ class ModuleArena:
         return False
 
     def _onload(self, module: Any, non_blocking: bool) -> None:
+        import torch
+
         entries = _entries(module)
         if self.layout is None:
             self._build(entries)
         assert self.arena is not None and self.layout is not None
         self.arena.map()
         placed = 0
-        for name, owner, leaf, kind, t in entries:
-            slot = self.layout.get(name)
-            if (
+        for name, owner, leaf, kind, whole in entries:
+            if whole.device.type != "cpu" or not _placeable(whole):
+                continue
+            pieces = _pieces(name, whole)
+            slots = [self.layout.get(key) for key, _ in pieces]
+            if any(
                 slot is None
-                or t.device.type != "cpu"
-                or not _plain(t)
                 or (tuple(t.shape), tuple(t.stride()), t.dtype) != (slot[1], slot[2], slot[3])
+                for slot, (_, t) in zip(slots, pieces)
             ):
                 continue
-            view = self.arena.view(slot[0], slot[1], slot[3], slot[2])
-            view.copy_(t.data if kind == "p" else t, non_blocking = non_blocking)
-            _set_tensor(owner, leaf, kind, view)
+            views = []
+            for slot, (_, t) in zip(slots, pieces):
+                view = self.arena.view(slot[0], slot[1], slot[3], slot[2])
+                view.copy_(t, non_blocking = non_blocking)
+                views.append(view)
+            if _plain(whole):
+                _set_tensor(owner, leaf, kind, views[0])
+            else:
+                # a wrapper weight is rebuilt over its placed inner tensors and swapped in, as Module.to moves it
+                names, ctx = whole.__tensor_flatten__()
+                rebuilt = type(whole).__tensor_unflatten__(
+                    dict(zip(names, views)), ctx, whole.shape, whole.stride()
+                )
+                if kind == "p":
+                    torch.utils.swap_tensors(
+                        whole, torch.nn.Parameter(rebuilt, requires_grad = whole.requires_grad)
+                    )
+                else:
+                    owner._buffers[leaf] = rebuilt
             placed += 1
         self.stats["placed"] = placed
 
@@ -475,7 +517,7 @@ def attach(
         _driver()
     except Exception as exc:  # noqa: BLE001
         return None, f"CUDA virtual memory unavailable ({exc})"
-    odd = [name for name, _o, _l, _k, t in _entries(module) if not _plain(t)]
+    odd = [name for name, _o, _l, _k, t in _entries(module) if not _placeable(t)]
     if odd:
         return None, f"{len(odd)} parameter(s) are not plain tensors ({odd[0]})"
     if device is None:
