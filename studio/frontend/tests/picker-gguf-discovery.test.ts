@@ -360,3 +360,23 @@ test("a Hub row with no table reading keeps the local header's", async () => {
   );
   assert.equal(merged.variants[0].lookup_table_bytes, 20 * GIB);
 });
+
+test("an update that drops the table is taken at its word", async () => {
+  const GIB = 1024 ** 3;
+  const cached: GgufVariantsResponse = {
+    ...local,
+    variants: [{ ...local.variants[0], lookup_table_bytes: 20 * GIB }],
+  };
+  const hub: GgufVariantsResponse = {
+    ...local,
+    variants: [
+      { ...local.variants[0], lookup_table_bytes: 0, update_available: true },
+    ],
+  };
+  const merged = await loadPickerGgufVariants(
+    async (localOnly) => (localOnly ? cached : hub),
+    options,
+    () => {},
+  );
+  assert.equal(merged.variants[0].lookup_table_bytes, 0);
+});
