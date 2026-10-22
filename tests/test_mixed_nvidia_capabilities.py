@@ -641,10 +641,11 @@ def test_sentence_transformer_direct_loads_check_the_placement():
 class _ParamsOn:
     """A model with no hf_device_map (an extracted text core) whose parameters sit on these devices."""
 
-    def __init__(self, *devices):
+    def __init__(self, *devices, dtype = None):
         import torch
 
-        self._params = [types.SimpleNamespace(device = torch.device(d)) for d in devices]
+        dtype = torch.float16 if dtype is None else dtype
+        self._params = [types.SimpleNamespace(device = torch.device(d), dtype = dtype) for d in devices]
 
     def parameters(self):
         return iter(self._params)
@@ -724,6 +725,93 @@ def test_train_start_on_capable_cards_changes_nothing(monkeypatch, capsys):
     )
     assert disabled == []
     assert capsys.readouterr().out == ""
+
+
+def test_bf16_weights_placed_on_a_card_without_bf16_warn_at_train_start(monkeypatch, capsys):
+    # Loaded in bf16 on CPU, then the Trainer put it on the T4: the live check infers the dtype.
+    import torch
+
+    model = _ParamsOn("cuda:1", "cuda:1", dtype = torch.bfloat16)
+    disabled = _check_placement(
+        monkeypatch, [SM86, SM75], None, None, model = model, at_train_start = True
+    )
+    assert disabled == []
+    assert "bfloat16 layers on GPU 1 (card1)" in capsys.readouterr().out
+
+
+def test_bf16_weights_only_on_the_bf16_card_do_not_warn_at_train_start(monkeypatch, capsys):
+    import torch
+
+    model = _ParamsOn("cuda:0", dtype = torch.bfloat16)
+    model._params += _ParamsOn("cuda:1", dtype = torch.float16)._params
+    disabled = _check_placement(
+        monkeypatch, [SM86, SM75], None, None, model = model, at_train_start = True
+    )
+    assert disabled == []
+    assert capsys.readouterr().out == ""
+
+
+class _PlacedByTrainer(_ParamsOn):
+    """A FastSentenceTransformer loaded with device_map = "cpu" whose LoRA compile is pending."""
+
+    _compile_pending = True
+    _compile_mode = "default"
+
+    def place(self, device):
+        import torch
+
+        for p in self._params:
+            p.device = torch.device(device)
+
+
+@pytest.mark.parametrize("moved", ["trainer_init", "before_train"])
+def test_sentence_transformer_trainer_checks_the_placement_before_the_deferred_compile(
+    monkeypatch, capsys, moved
+):
+    import sys
+
+    import unsloth.models.sentence_transformer as st
+
+    model = _PlacedByTrainer("cpu", "cpu")
+    # Load time: everything on CPU, so nothing to check yet.
+    disabled = _check_placement(monkeypatch, [SM90, SM61], None, None, model = model)
+    assert disabled == []
+    model.place("cuda:0")  # loaded on CPU, the user picks the GTX 1080 via the current device
+    compiled = []
+
+    class SentenceTransformerTrainer:
+        def __init__(self, model = None, args = None):
+            self.model = model
+            if moved == "trainer_init":
+                model.place("cuda:1")  # Trainer moves the model to args.device
+
+        def train(self):
+            return list(disabled)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformerTrainer = SentenceTransformerTrainer),
+    )
+    monkeypatch.setattr(
+        st.FastSentenceTransformer, "_estimate_compile_threshold", staticmethod(lambda *a, **k: 1)
+    )
+    monkeypatch.setattr(
+        st.FastSentenceTransformer,
+        "_apply_torch_compile",
+        staticmethod(lambda m, mode = "default": compiled.append(mode)),
+    )
+    st._patch_sentence_transformer_trainer()
+    trainer = SentenceTransformerTrainer(
+        model = model, args = types.SimpleNamespace(max_steps = 100, fp16 = False, bf16 = False)
+    )
+    assert compiled == ["default"]
+    if moved == "before_train":
+        model.place("cuda:1")
+    # Compile is off before the first forward, which runs inside train(). The stubbed switch leaves
+    # Dynamo on, so the train() re-check may fire again after the __init__ one.
+    assert set(trainer.train()) == {0}
+    assert "GPU 1 (card1)" in capsys.readouterr().out
 
 
 def _public_bf16_helper(fake, monkeypatch, world_size = "1"):

@@ -1711,6 +1711,26 @@ def _placed_gpu_indices(model, live = False):
     return indices
 
 
+def _bf16_weights_on(model, indices):
+    """torch.bfloat16 when a parameter of that dtype sits on one of these GPU indices, else None. The
+    live check has no load-time dtype, and a Trainer may have placed a bf16 model on an older card."""
+    try:
+        current = None
+        for p in model.parameters():
+            if p.dtype != torch.bfloat16 or p.device.type != "cuda":
+                continue
+            index = p.device.index
+            if index is None:
+                if current is None:
+                    current = torch.cuda.current_device()
+                index = current
+            if index in indices:
+                return torch.bfloat16
+    except Exception:
+        pass
+    return None
+
+
 def check_mixed_gpu_placement(model, dtype = None, live = False):
     """bf16 and the compile switches answer for the current device; check where the load really
     put the weights. A card that cannot compile turns Dynamo off before the first forward, and
@@ -1753,6 +1773,8 @@ def check_mixed_gpu_placement(model, dtype = None, live = False):
             f"Unsloth: the model has layers on {', '.join(map(_name, no_compile))}, which cannot run "
             "torch.compile, so training runs without it."
         )
+    if no_bf16 and dtype is None and live:
+        dtype = _bf16_weights_on(model, set(no_bf16))
     if no_bf16 and dtype == torch.bfloat16:
         print(
             f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "

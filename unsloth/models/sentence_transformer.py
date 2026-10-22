@@ -3358,6 +3358,15 @@ def _patch_sentence_transformer_trainer():
     from functools import wraps
 
     _original_init = SentenceTransformerTrainer.__init__
+    _original_train = SentenceTransformerTrainer.train
+
+    def _check_live_placement(trainer):
+        # A model loaded on CPU (or moved since) reaches its card only here, after the load-time
+        # check ran: check before the deferred torch.compile's first forward. No-op on one GPU.
+        try:
+            check_mixed_gpu_placement(getattr(trainer, "model", None), live = True)
+        except Exception:
+            pass
 
     @wraps(_original_init)
     def _patched_init(self, *args, **kwargs):
@@ -3405,6 +3414,7 @@ def _patch_sentence_transformer_trainer():
                 model._compile_pending = False
 
         _original_init(self, *args, **kwargs)
+        _check_live_placement(self)
 
         # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -3427,7 +3437,14 @@ def _patch_sentence_transformer_trainer():
             except Exception as exc:
                 print(f"Unsloth: could not enable MFU logging ({exc}).")
 
+    @wraps(_original_train)
+    def _patched_train(self, *args, **kwargs):
+        # The model may have moved since __init__ (.to(), accelerate placement).
+        _check_live_placement(self)
+        return _original_train(self, *args, **kwargs)
+
     SentenceTransformerTrainer.__init__ = _patched_init
+    SentenceTransformerTrainer.train = _patched_train
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 
 
