@@ -457,8 +457,12 @@ def component_assignment_trials(
     primary_limit_mib: int,
     secondary_limit_mib: int,
     move_denoisers: bool = True,
+    encoders_only_limit_mib: Optional[int] = None,
 ) -> list[AssignmentTrial]:
-    """Every assignment :func:`choose_component_assignment` tries, in its order, priced (the first that fits wins)."""
+    """Every assignment :func:`choose_component_assignment` tries, in its order, priced (the first that fits wins).
+    ``encoders_only_limit_mib``: what a secondary holding nothing but text encoders may take (its free memory minus
+    ComfyUI's per-card floor); such a card runs one encoder forward per prompt, so it is priced with the weights and
+    an encoder forward's room instead of the base overhead and the 85% resident margin of a card that denoises."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
     if not dits:
         return []
@@ -485,17 +489,30 @@ def component_assignment_trials(
         busy = any(sizes[n][1] != "text_encoder" for n in names)
         return weights + (headroom_mib if busy else TEXT_ENCODER_HEADROOM_MIB) + overhead_mib
 
-    return [
-        AssignmentTrial(
-            moved = moved,
-            moved_mib = sum(sizes[n][0] for n in moved),
-            primary_need_mib = need([n for n in sizes if n not in moved]),
-            primary_limit_mib = int(primary_limit_mib),
-            secondary_need_mib = need(list(moved)),
-            secondary_limit_mib = int(secondary_limit_mib),
+    def secondary(moved: tuple[str, ...]) -> tuple[int, int]:
+        standard = (need(list(moved)), int(secondary_limit_mib))
+        if encoders_only_limit_mib is None or any(sizes[n][1] != "text_encoder" for n in moved):
+            return standard
+        encoders = (
+            sum(sizes[n][0] for n in moved) + TEXT_ENCODER_HEADROOM_MIB,
+            int(encoders_only_limit_mib),
         )
-        for moved in candidates
-    ]
+        return encoders if encoders[1] - encoders[0] > standard[1] - standard[0] else standard
+
+    trials = []
+    for moved in candidates:
+        sec_need, sec_limit = secondary(moved)
+        trials.append(
+            AssignmentTrial(
+                moved = moved,
+                moved_mib = sum(sizes[n][0] for n in moved),
+                primary_need_mib = need([n for n in sizes if n not in moved]),
+                primary_limit_mib = int(primary_limit_mib),
+                secondary_need_mib = sec_need,
+                secondary_limit_mib = sec_limit,
+            )
+        )
+    return trials
 
 
 def choose_component_assignment(
@@ -506,6 +523,7 @@ def choose_component_assignment(
     primary_limit_mib: int,
     secondary_limit_mib: int,
     move_denoisers: bool = True,
+    encoders_only_limit_mib: Optional[int] = None,
 ) -> Optional[tuple[str, ...]]:
     """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
     -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
@@ -520,6 +538,7 @@ def choose_component_assignment(
         primary_limit_mib = primary_limit_mib,
         secondary_limit_mib = secondary_limit_mib,
         move_denoisers = move_denoisers,
+        encoders_only_limit_mib = encoders_only_limit_mib,
     ):
         if trial.fits:
             return trial.moved
@@ -651,7 +670,9 @@ def refine_plan_for_multigpu(
     def one_card_plan(why: str) -> Any:
         if plan.offload_policy == "none":
             return keep("one_card", f"one card: everything resident on cuda:{primary} ({why})")
-        return keep("offload", f"one card with '{plan.offload_policy}' offload on cuda:{primary} ({why})")
+        return keep(
+            "offload", f"one card with '{plan.offload_policy}' offload on cuda:{primary} ({why})"
+        )
 
     if getattr(plan, "secondary_ordinal", None) is not None:
         return keep(
@@ -676,7 +697,9 @@ def refine_plan_for_multigpu(
             PlacementCandidate("layer_split", not_needed),
         )
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
-        return one_card_plan(f"memory mode '{getattr(plan, 'requested_mode', None)}' was chosen explicitly")
+        return one_card_plan(
+            f"memory mode '{getattr(plan, 'requested_mode', None)}' was chosen explicitly"
+        )
     if plan.estimates.get("explicit_cpu_offload"):
         return one_card_plan("CPU offload was requested explicitly")
     memory = plan.device_memory
@@ -784,6 +807,7 @@ def refine_plan_for_multigpu(
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
         move_denoisers = move_denoisers,
+        encoders_only_limit_mib = encoder_card_limit_mib(secondary),
     )
     winner = next((t for t in trials if t.fits), None)
     moved = winner.moved if winner is not None else None
@@ -793,7 +817,9 @@ def refine_plan_for_multigpu(
         rejected.append(PlacementCandidate("companion_split", trial.why_not(primary, secondary)))
     if moved is None:
         if not trials:
-            rejected.append(PlacementCandidate("companion_split", "no denoiser among the loaded components"))
+            rejected.append(
+                PlacementCandidate("companion_split", "no denoiser among the loaded components")
+            )
         return layer_split_or_plan()
     reason = (
         f"multi-GPU (loaded sizes): {', '.join(moved)} on cuda:{secondary}, the rest resident on "
@@ -837,12 +863,22 @@ def _with_denoiser_roles(
     if not sizes:
         return sizes
     return {
-        name: (mib, "dit" if name in DENOISER_ATTRS else role) for name, (mib, role) in sizes.items()
+        name: (mib, "dit" if name in DENOISER_ATTRS else role)
+        for name, (mib, role) in sizes.items()
     }
 
 
 def _cards(ordinals: Sequence[int]) -> str:
     return ", ".join(f"cuda:{int(o)}" for o in ordinals)
+
+
+def encoder_card_limit_mib(ordinal: int) -> Optional[int]:
+    """What a secondary that only runs text encoders may hold: free memory minus ComfyUI's per-card floor (the layer
+    split prices its block-only cards the same way). None when the card cannot be read."""
+    from .diffusion_layer_split_plan import secondary_reserve_mib
+
+    free, _total = _free_total_mib(int(ordinal))
+    return None if free is None else max(0, int(free) - secondary_reserve_mib())
 
 
 def secondary_device_memory(ordinal: int) -> Any:
@@ -1279,7 +1315,9 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     elif declined is not None:
         out["cfg_parallel"] = {"armed": False, "declined": declined}
     if decision is not None:
-        out["placement"] = _live_decision(pipe, decision, info, layer, declined if cfg is None else None)
+        out["placement"] = _live_decision(
+            pipe, decision, info, layer, declined if cfg is None else None
+        )
     return out
 
 

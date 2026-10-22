@@ -43,7 +43,11 @@ T4 = 15360  # MiB nvidia-smi reports for a T4
 
 
 class Host:
-    def __init__(self, cards: list[Card], mask: Optional[list[int]] = None):
+    def __init__(
+        self,
+        cards: list[Card],
+        mask: Optional[list[int]] = None,
+    ):
         self.cards = {c.index: c for c in cards}
         self.visible = list(mask) if mask is not None else sorted(self.cards)
         self.mem_get_info_calls: list[int] = []
@@ -58,7 +62,11 @@ class Host:
 
         rows = {
             "devices": [
-                {"index": c.index, "vram_total_gb": c.total_mib / 1024, "vram_used_gb": c.used_mib / 1024}
+                {
+                    "index": c.index,
+                    "vram_total_gb": c.total_mib / 1024,
+                    "vram_used_gb": c.used_mib / 1024,
+                }
                 for c in self.cards.values()
             ]
         }
@@ -70,7 +78,11 @@ class Host:
         monkeypatch.setattr(hw, "_get_parent_visible_gpu_spec", lambda: {})
         monkeypatch.setattr(hw, "_smi_visible_utilization", lambda spec: rows)
         monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
-        monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: {c.index: c.cap for c in self.cards.values()})
+        monkeypatch.setattr(
+            nvidia,
+            "get_compute_capabilities",
+            lambda: {c.index: c.cap for c in self.cards.values()},
+        )
 
         def mem_get_info(ordinal, *, module = None):
             self.mem_get_info_calls.append(int(ordinal))
@@ -85,7 +97,11 @@ class Host:
         monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
         monkeypatch.setattr(lsp, "_is_rocm", lambda: False)
         monkeypatch.setattr(
-            dd, "resolve_diffusion_device_target", lambda **kw: dd.DiffusionDeviceTarget("cuda", torch.float16, "cuda", "nvidia", True, True, True)
+            dd,
+            "resolve_diffusion_device_target",
+            lambda **kw: dd.DiffusionDeviceTarget(
+                "cuda", torch.float16, "cuda", "nvidia", True, True, True
+            ),
         )
         monkeypatch.setattr(dd, "_PINNED_AWAY_FROM_ZERO", False)
 
@@ -111,7 +127,14 @@ class _Engine:
     def __init__(self):
         self.placed = []
 
-    def place(self, pipe, *, primary, split, logger = None):
+    def place(
+        self,
+        pipe,
+        *,
+        primary,
+        split,
+        logger = None,
+    ):
         self.placed.append(split)
         return {}
 
@@ -132,7 +155,12 @@ def _env(monkeypatch):
     yield eng
 
 
-def _sizes(dit: int, te: int, vae: int = 160, dit2: int = 0) -> dict:
+def _sizes(
+    dit: int,
+    te: int,
+    vae: int = 160,
+    dit2: int = 0,
+) -> dict:
     out = {"transformer": (dit, "dit")}
     if dit2:
         out["transformer_2"] = (dit2, "dit")
@@ -202,7 +230,10 @@ def decide(
         if plan.layer_split is not None:
             lsp.apply_layer_split_plan(pipe, plan, placement = f"cuda:{ordinal}")
         elif plan.secondary_ordinal is not None:
-            mg._PLACEMENTS[pipe] = {"primary": f"cuda:{ordinal}", "secondary": f"cuda:{plan.secondary_ordinal}"}
+            mg._PLACEMENTS[pipe] = {
+                "primary": f"cuda:{ordinal}",
+                "secondary": f"cuda:{plan.secondary_ordinal}",
+            }
         cfg = mg.install_cfg_parallel(pipe, offload_policy = plan.offload_policy)
     return Decision(primary, selection, one_card, plan, mg.placement_status(pipe), cfg)
 
