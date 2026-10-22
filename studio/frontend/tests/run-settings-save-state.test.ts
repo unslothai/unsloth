@@ -54,13 +54,19 @@ test("the status compares what Save would store against the stored record", () =
   );
 });
 
-test("an unticked Load never forgets a server row the panel never read", () => {
+test("an unticked Load forgets only a Remember that was on", () => {
   const persist = CONFIG_PAGE.slice(
     CONFIG_PAGE.indexOf("const persistConfig = "),
     CONFIG_PAGE.indexOf("const finishPersist = "),
   );
-  assert.match(persist, /!isExtraArgsHydratedForDraft\(draftKey\)/);
-  assert.match(persist, /saved &&\s*!forgetsUnreadRow &&/);
+  // A compare pane seeded off its snapshot, or a failed overrides read, opens unticked over a
+  // record that exists; deleting it then removed settings the editor never showed.
+  assert.match(persist, /const forgets = !remember && savedRemember;/);
+  assert.match(
+    persist,
+    /: forgets\s*\?\s*deletePerModelConfig\(configId, target\.ggufVariant\)\s*:\s*true;/,
+  );
+  assert.match(persist, /saved &&\s*\(remember \|\| forgets\) &&/);
 });
 
 test("a fresh editor adopts the server row when nothing changed in flight", () => {
@@ -98,5 +104,22 @@ test("GGUF Advanced rows sit in titled groups, the llama-server ones hidden for 
   assert.ok(
     gguf.indexOf("<ExtraArgsRow") > order[3],
     "extra args left the Server group",
+  );
+});
+
+test("the overrides read waits for this model's queued writes", () => {
+  const overrides = readFileSync(
+    path.join(HERE, "..", "src/features/model-picker/api/model-overrides.ts"),
+    "utf8",
+  );
+  const fetchBody = overrides.slice(
+    overrides.indexOf("export async function fetchLoadModelOverride("),
+    overrides.indexOf("export async function fetchLoadExtraArgs("),
+  );
+  const waits = fetchBody.indexOf("writesByKey");
+  assert.notEqual(waits, -1, "the read no longer waits on writesByKey");
+  assert.ok(
+    waits < fetchBody.indexOf("authFetch("),
+    "the read starts before the writes settle",
   );
 });

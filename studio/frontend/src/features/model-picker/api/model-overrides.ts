@@ -239,6 +239,20 @@ export async function fetchLoadModelOverride(
   if (ggufVariant) {
     query.set("gguf_variant", ggufVariant);
   }
+  // After this model's queued writes: a panel reopened right after Forget read the old row back
+  // and re-saved it locally while the removal was still in flight.
+  await Promise.all(
+    [loadId, aliasId].map((id) =>
+      writesByKey
+        .get(
+          modelOverrideKey(
+            normalizeModelIdentity(id),
+            normalizeGgufVariantIdentity(ggufVariant),
+          ),
+        )
+        ?.catch(() => {}),
+    ),
+  );
   const res = await authFetch(`${OVERRIDES_URL}?${query.toString()}`);
   if (!res.ok) {
     throw new Error(

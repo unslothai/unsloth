@@ -3598,23 +3598,23 @@ export function ModelConfigPage({
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
     const normalized = normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
+    // Only a Remember that was on can be forgotten. An unticked box that never was is no decision:
+    // a compare pane seeded off its snapshot, or an overrides read that failed, deleted settings
+    // (CLI-set flags included) this editor had never shown.
+    const forgets = !remember && savedRemember;
     const saved = remember
       ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
-      : deletePerModelConfig(configId, target.ggufVariant);
+      : forgets
+        ? deletePerModelConfig(configId, target.ggufVariant)
+        : true;
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
     // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
     // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
-    // Never forget a row this editor never read (the read failed or timed out): that wiped CLI-set flags.
-    const forgetsUnreadRow =
-      !remember &&
-      !savedRemember &&
-      !resolvedIsDiffusion &&
-      !isExtraArgsHydratedForDraft(draftKey);
     if (
       saved &&
-      !forgetsUnreadRow &&
+      (remember || forgets) &&
       (target.apiLoadable ?? target.isGguf) &&
       !nativePathToken
     ) {
