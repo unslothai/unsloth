@@ -341,7 +341,14 @@ def test_outer_compile_prepares_gdn_eagerly(request, monkeypatch):
     except Exception as e:
         pytest.skip(f"tiny Qwen3-Next unavailable: {e}")
     ids = torch.randint(0, 100, (2, 8))
-    want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
+    try:
+        want = model(input_ids = ids, labels = ids, use_cache = False).loss.detach()
+    except (RuntimeError, ValueError) as e:
+        # A GPU host resolves the stock GDN op to the compiler-disabled fla Triton kernel, which
+        # neither takes these CPU tensors nor traces whole; the eager GDN reference only runs CPU-only.
+        if "Triton" not in str(e):
+            raise
+        pytest.skip(f"stock GDN op resolved to a Triton kernel: {e}")
     calls = []
     prepare = M._prepare_gdn
 
