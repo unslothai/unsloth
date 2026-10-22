@@ -168,6 +168,9 @@ def _install_device_type_stub(name: str) -> None:
     stub.hip_visible_archs = lambda: []
     stub.cuda_visible_capabilities = lambda *a, **k: []
     stub.cuda_gate_capabilities = lambda: []
+    stub.cuda_current_capability = lambda: None
+    stub.hip_current_arch = lambda: ""
+    stub.arch_breaks_compile = lambda arch: False
     stub.cuda_order_mismatch_names = lambda: []
     stub.xpu_supports_native_bf16 = lambda: True
     stub.zoo_shares_xpu_bf16 = lambda: False

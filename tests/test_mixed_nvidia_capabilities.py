@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bf16 and the torch.compile kill switches are process-wide, so on a mixed host (e.g. RTX 3090 +
-T4 with device_map="auto") they must hold on the weakest visible card, not on device 0. The
-capability cache must also follow torch.cuda.set_device."""
+"""bf16 and the torch.compile kill switches answer for the current device, as torch does: an idle
+older card beside it (e.g. RTX 4090 + GTX 1080) must not take bf16 or compile from a model that runs
+on the 4090. A load that places layers on the older card is checked after loading. The capability
+cache must also follow torch.cuda.set_device."""
 
 import functools
 import inspect
@@ -28,12 +29,15 @@ if not hasattr(dt, "torch"):
 
 SM80, SM86, SM75, SM90, SM61 = (8, 0), (8, 6), (7, 5), (9, 0), (6, 1)
 
+# (visible caps, current device): bf16 and the pre-Volta floor follow the current device only.
 CASES = [
-    pytest.param([SM80, SM80], True, None, id = "sm80x2"),
-    pytest.param([SM86, SM75], False, None, id = "sm86+sm75"),
-    pytest.param([SM75, SM86], False, None, id = "sm75+sm86"),
-    pytest.param([SM90, SM61], False, 6, id = "sm90+sm61"),
-    pytest.param([SM61], False, 6, id = "sm61"),
+    pytest.param([SM80, SM80], 0, id = "sm80x2"),
+    pytest.param([SM86, SM75], 0, id = "sm86+sm75"),
+    pytest.param([SM86, SM75], 1, id = "sm86+sm75@1"),
+    pytest.param([SM75, SM86], 0, id = "sm75+sm86"),
+    pytest.param([SM90, SM61], 0, id = "sm90+sm61"),
+    pytest.param([SM90, SM61], 1, id = "sm90+sm61@1"),
+    pytest.param([SM61], 0, id = "sm61"),
 ]
 
 
@@ -115,31 +119,26 @@ def _run_model_utils_chain(fake, monkeypatch):
     return namespace
 
 
-@pytest.mark.parametrize("caps,bf16,_floor", CASES)
-def test_gpu_init_bf16_needs_every_visible_card(monkeypatch, caps, bf16, _floor):
+@pytest.mark.parametrize("caps,current", CASES)
+def test_gpu_init_bf16_follows_the_current_device(monkeypatch, capsys, caps, current):
     fake = _fake_torch(caps)
+    fake.cuda.set_device(current)
     namespace = _run_gpu_init_chain(fake, monkeypatch)
+    bf16 = caps[current][0] >= 8
     assert namespace["SUPPORTS_BFLOAT16"] is bf16
     assert bool(fake.cuda.is_bf16_supported(False)) is bf16
-    assert bool(fake.cuda.is_bf16_supported()) is bf16
     # Emulation is torch's own per-device answer and stays untouched.
     assert fake.cuda.is_bf16_supported(including_emulation = True) is True
+    # An idle older card is no reason to print anything at import.
+    assert "bfloat16" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("caps,bf16,_floor", CASES)
-def test_mixed_host_says_why_bf16_is_off(monkeypatch, capsys, caps, bf16, _floor):
-    _run_gpu_init_chain(_fake_torch(caps), monkeypatch)
-    out = capsys.readouterr().out
-    mixed = any(c[0] >= 8 for c in caps) and any(c[0] < 8 for c in caps)
-    assert ("lack bfloat16" in out) is mixed
-    if mixed:
-        assert str([i for i, c in enumerate(caps) if c[0] < 8]) in out
-
-
-@pytest.mark.parametrize("caps,bf16,_floor", CASES)
-def test_model_utils_bf16_needs_every_visible_card(monkeypatch, caps, bf16, _floor):
-    namespace = _run_model_utils_chain(_fake_torch(caps), monkeypatch)
-    assert namespace["SUPPORTS_BFLOAT16"] is bf16
+@pytest.mark.parametrize("caps,current", CASES)
+def test_model_utils_bf16_follows_the_current_device(monkeypatch, caps, current):
+    fake = _fake_torch(caps)
+    fake.cuda.set_device(current)
+    namespace = _run_model_utils_chain(fake, monkeypatch)
+    assert namespace["SUPPORTS_BFLOAT16"] is (caps[current][0] >= 8)
 
 
 def test_capability_cache_follows_set_device(monkeypatch):
@@ -177,7 +176,7 @@ def test_capability_cache_resolves_device_spellings(monkeypatch):
     assert cached(torch.device("cuda", 1)) == SM75
     assert cached() == SM86
     assert cached("cuda") == SM86
-    assert calls == [1, 0]  # one real probe per index
+    assert calls == [0, 1]  # one real probe per card, read once while wrapping
     with pytest.raises(KeyError):
         cached("cpu")  # not a CUDA device: passed through uncached, as torch would reject it
     assert model_utils._cache_device_capability(cached) is cached  # re-import does not stack
@@ -201,6 +200,15 @@ def test_capability_cache_single_device_keeps_the_plain_cache(monkeypatch):
     assert model_utils._cache_device_capability(cached) is cached
 
 
+def test_capability_cache_identical_cards_keep_the_plain_cache(monkeypatch):
+    import unsloth.models._utils as model_utils
+
+    monkeypatch.setattr(model_utils, "torch", _fake_torch([SM90, SM90, SM90]))
+    cached = model_utils._cache_device_capability(lambda device = None: SM90)
+    assert hasattr(cached, "cache_info")  # every spelling of every card gets one answer
+    assert cached() == cached(2) == SM90
+
+
 def _run_pre_volta(fake, monkeypatch, capsys):
     applied = []
 
@@ -218,11 +226,13 @@ def _run_pre_volta(fake, monkeypatch, capsys):
     return applied, capsys.readouterr().out
 
 
-@pytest.mark.parametrize("caps,_bf16,floor", CASES)
-def test_pre_volta_switch_reads_the_weakest_visible_card(monkeypatch, capsys, caps, _bf16, floor):
-    applied, out = _run_pre_volta(_fake_torch(caps), monkeypatch, capsys)
-    assert applied == [min(c[0] for c in caps)]
-    if floor is None:
+@pytest.mark.parametrize("caps,current", CASES)
+def test_pre_volta_switch_reads_the_current_device(monkeypatch, capsys, caps, current):
+    fake = _fake_torch(caps)
+    fake.cuda.set_device(current)
+    applied, out = _run_pre_volta(fake, monkeypatch, capsys)
+    assert applied == [caps[current][0]]
+    if caps[current][0] >= 7:
         assert out == ""
     else:
         assert out == (
@@ -249,12 +259,13 @@ def test_pre_volta_switch_skips_an_unreadable_card(monkeypatch, capsys):
     "archs,applied",
     [
         (["gfx906:sramecc+:xnack-"], True),
-        (["gfx1100", "gfx906:sramecc+:xnack-"], True),
+        # An idle gfx906 beside the current card is checked after loading, not here.
+        (["gfx1100", "gfx906:sramecc+:xnack-"], False),
         (["gfx906", "gfx1100"], True),
         (["gfx90a", "gfx942"], False),
     ],
 )
-def test_gfx906_switch_reads_every_visible_card(monkeypatch, capsys, archs, applied):
+def test_gfx906_switch_reads_the_current_device(monkeypatch, capsys, archs, applied):
     fake = _fake_torch([SM90] * len(archs), archs = archs)
     environ = {}
     dynamo_config = types.SimpleNamespace(disable = False)
@@ -341,14 +352,13 @@ def test_grpo_tma_options_need_every_visible_card(caps, unreadable, expected):
 @pytest.mark.parametrize(
     "caps,current,bf16",
     [
-        ([(9, 0), (9, 0), (7, 5)], 0, False),  # a known old card still counts
+        ([(9, 0), (9, 0), (7, 5)], 0, True),
         ([(9, 0), (9, 0), (7, 5)], 2, False),
-        ([(9, 0), (9, 0), (9, 0)], 0, True),  # current device is sm90, as on main
+        ([(9, 0), (9, 0), (9, 0)], 0, True),
     ],
 )
-def test_a_partial_scan_judges_every_card_it_read(monkeypatch, capsys, caps, current, bf16):
-    # Card 1 unreadable: the gate judges the readable cards, which include the current device,
-    # so it is never less strict than main's current-device rule.
+def test_an_unreadable_card_does_not_matter(monkeypatch, capsys, caps, current, bf16):
+    # Card 1 unreadable: only the current device is read.
     fake = _fake_torch(caps)
     real_cap = fake.cuda.get_device_capability
 
@@ -359,34 +369,68 @@ def test_a_partial_scan_judges_every_card_it_read(monkeypatch, capsys, caps, cur
 
     fake.cuda.get_device_capability = get_device_capability
     fake.cuda.set_device(current)
-    namespace = _run_gpu_init_chain(fake, monkeypatch)
-    assert namespace["SUPPORTS_BFLOAT16"] is bf16
-    out = capsys.readouterr().out
-    assert ("[2]" in out) is (not bf16) and "[1]" not in out
+    assert _run_gpu_init_chain(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
     assert _run_model_utils_chain(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
 
 
-def test_bf16_notice_names_real_device_indices(monkeypatch, capsys):
-    # Device 2 is the pre-Ampere card while device 0 is current: the notice names 2.
-    _run_gpu_init_chain(_fake_torch([(9, 0), (8, 6), (7, 5)]), monkeypatch)
-    out = capsys.readouterr().out
-    assert "[2]" in out and "[0]" not in out and "[1]" not in out
+class _Placed:
+    def __init__(self, device_map):
+        self.hf_device_map = device_map
 
 
-@pytest.mark.skipif(not __import__("torch").cuda.is_available(), reason = "needs a CUDA device")
-@pytest.mark.parametrize("spelling", [None, 0, "cuda:0", "device", "tensor"])
-def test_capability_cache_traces_in_fullgraph(spelling):
-    # Attention helpers call get_device_capability(Q.device) inside compiled regions.
+def _check_placement(monkeypatch, caps, device_map, dtype, current = 0):
     import torch
 
     import unsloth.models._utils as model_utils
 
-    cached = model_utils._cache_device_capability(inspect.unwrap(torch.cuda.get_device_capability))
+    fake = _fake_torch(caps)
+    fake.cuda.set_device(current)
+    fake.cuda.get_device_name = lambda i: f"card{i}"
+    fake.device = torch.device
+    fake.bfloat16, fake.float16 = torch.bfloat16, torch.float16
+    disabled = []
+    monkeypatch.setattr(model_utils, "torch", fake)
+    monkeypatch.setattr(model_utils, "DEVICE_TYPE", "cuda")
+    monkeypatch.setattr(model_utils, "DEVICE_COUNT", len(caps))
+    monkeypatch.setattr(
+        model_utils, "apply_pre_volta_compile_workaround", lambda major: disabled.append(major) or True
+    )
+    model_utils.check_mixed_gpu_placement(_Placed(device_map), dtype)
+    return disabled
 
-    def f(x):
-        arg = {"device": torch.device("cuda"), "tensor": x.device}.get(spelling, spelling)
-        return x * (cached() if arg is None else cached(arg))[0]
 
-    torch._dynamo.reset()
-    x = torch.ones(2, device = "cuda")
-    assert torch.compile(f, fullgraph = True)(x)[0].item() == torch.cuda.get_device_capability(0)[0]
+def test_layers_on_a_pre_volta_card_turn_compile_off(monkeypatch, capsys):
+    import torch
+
+    disabled = _check_placement(
+        monkeypatch, [SM90, SM61], {"model.layers.0": 0, "model.layers.1": 1}, torch.float16
+    )
+    out = capsys.readouterr().out
+    assert disabled == [0]
+    assert "GPU 1 (card1)" in out and "torch.compile" in out
+
+
+def test_bf16_layers_on_a_card_without_bf16_warn(monkeypatch, capsys):
+    import torch
+
+    disabled = _check_placement(
+        monkeypatch, [SM86, SM75], {"model.layers.0": 0, "lm_head": 1}, torch.bfloat16
+    )
+    out = capsys.readouterr().out
+    assert disabled == []
+    assert "bfloat16 layers on GPU 1 (card1)" in out
+
+
+@pytest.mark.parametrize(
+    "caps,device_map",
+    [
+        ([SM86, SM61], {"": 0}),  # everything on the current card: nothing to check
+        ([SM90, SM90], {"model.layers.0": 0, "model.layers.1": 1}),  # identical cards
+        ([SM86, SM75], {"model": "cpu", "lm_head": 0}),
+    ],
+)
+def test_placement_on_capable_cards_changes_nothing(monkeypatch, capsys, caps, device_map):
+    import torch
+
+    assert _check_placement(monkeypatch, caps, device_map, torch.bfloat16) == []
+    assert capsys.readouterr().out == ""

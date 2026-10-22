@@ -329,9 +329,8 @@ try:
         arch_lacks_bf16,
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
-        cuda_gate_capabilities,
+        cuda_current_capability,
         cuda_order_mismatch_names,
-        cuda_visible_capabilities,
         hip_visible_archs,
         xpu_supports_native_bf16,
         zoo_shares_xpu_bf16,
@@ -569,24 +568,17 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     SUPPORTS_BFLOAT16 = False
     torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
 elif DEVICE_TYPE == "cuda":
-    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
-    _cuda_caps = cuda_gate_capabilities()
-    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
-    if not SUPPORTS_BFLOAT16 and any(major >= 8 for major, _ in _cuda_caps):
-        _old = [i for i, (major, _) in cuda_visible_capabilities(with_index = True) if major < 8]
-        print(
-            f"Unsloth: visible GPU(s) {_old} lack bfloat16, so float16 is used on every GPU. "
-            "Hide them with CUDA_VISIBLE_DEVICES to train in bfloat16."
-        )
-        del _old
-    del _cuda_caps
+    # The current device, as torch answers: an idle older card beside it must not take bf16 from a
+    # model that runs here. A load placing layers on such a card is checked after loading.
+    _cuda_cap = cuda_current_capability()
+    SUPPORTS_BFLOAT16 = _cuda_cap is not None and _cuda_cap[0] >= 8
+    del _cuda_cap
 
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
-            supported = old_is_bf16_supported(including_emulation)
-            return supported if including_emulation else (supported and SUPPORTS_BFLOAT16)
+            return old_is_bf16_supported(including_emulation)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
     else:

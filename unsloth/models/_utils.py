@@ -72,6 +72,7 @@ __all__ = [
     "resolve_model_class",
     "resolve_attention_implementation",
     "fall_back_from_flash_attention_on_pre_ampere",
+    "check_mixed_gpu_placement",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
     "set_task_config_attr",
@@ -167,7 +168,8 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
     apply_gfx101x_triton_workaround,
-    cuda_gate_capabilities,
+    apply_pre_volta_compile_workaround,
+    arch_breaks_compile,
     gfx101x_triton_workaround_applied,
     xpu_supports_native_bf16,
     zoo_shares_xpu_bf16,
@@ -1672,6 +1674,69 @@ def _pre_ampere_cuda_devices(model):
         return []  # same-generation hosts never walk the modules
     attention = _attention_placements(model, device_map)
     return sorted({indices[k] for k in attention if indices.get(k) in pre_ampere})
+
+
+def _placed_gpu_indices(model):
+    """GPU indices a loaded model's weights sit on: its hf_device_map, else its first parameter."""
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict):
+        return {i for i in (_cuda_index(v) for v in device_map.values()) if i is not None}
+    try:
+        device = next(model.parameters()).device
+    except Exception:
+        return set()
+    if device.type != "cuda":
+        return set()
+    return {torch.cuda.current_device() if device.index is None else device.index}
+
+
+def check_mixed_gpu_placement(model, dtype = None):
+    """bf16 and the compile switches answer for the current device; check where the load really
+    put the weights. A card that cannot compile turns Dynamo off before the first forward, and
+    bf16 weights on a card without bf16 get a warning. One-GPU hosts never walk anything."""
+    if DEVICE_TYPE not in ("cuda", "hip") or DEVICE_COUNT <= 1:
+        return
+    indices = sorted(_placed_gpu_indices(model))
+    if not indices or indices == [torch.cuda.current_device()]:
+        return
+
+    def _name(i):
+        try:
+            return f"GPU {i} ({torch.cuda.get_device_name(i)})"
+        except Exception:
+            return f"GPU {i}"
+
+    try:
+        if DEVICE_TYPE == "hip":
+            no_compile = [
+                i
+                for i in indices
+                if arch_breaks_compile(getattr(torch.cuda.get_device_properties(i), "gcnArchName", ""))
+            ]
+            no_bf16 = []
+        else:
+            caps = {i: tuple(torch.cuda.get_device_capability(i)) for i in indices}
+            no_compile = [i for i in indices if caps[i][0] < 7]
+            no_bf16 = [i for i in indices if caps[i][0] < 8]
+    except Exception:
+        return
+    import torch._dynamo as torch_dynamo
+
+    if (
+        no_compile
+        and not torch_dynamo.config.disable
+        and apply_pre_volta_compile_workaround(0)
+    ):
+        print(
+            f"Unsloth: the model has layers on {', '.join(map(_name, no_compile))}, which cannot run "
+            "torch.compile - training without it."
+        )
+    if no_bf16 and dtype == torch.bfloat16:
+        print(
+            f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "
+            "no native bfloat16, so they run slowly. Load with dtype = torch.float16, or keep the "
+            "model on bfloat16 GPUs with CUDA_VISIBLE_DEVICES."
+        )
 
 
 def fall_back_from_flash_attention_on_pre_ampere(model):
@@ -3865,17 +3930,20 @@ def _cache_device_capability(get_device_capability):
     if getattr(get_device_capability, "_unsloth_per_device_cache", False):
         return get_device_capability
 
-    # One visible device: every spelling names it, so the plain C-level cache is exact and fastest.
+    # One visible device, or several with one capability: every spelling of a CUDA device gets the
+    # same answer, so the plain C-level cache is exact and fastest.
     try:
-        single_device = torch.cuda.device_count() <= 1
+        count = torch.cuda.device_count()
+        scanned = {i: get_device_capability(i) for i in range(count)} if count > 1 else {}
+        uniform = count <= 1 or len({tuple(c) for c in scanned.values()}) == 1
     except Exception:
-        single_device = False
-    if single_device:
+        scanned, uniform = {}, False
+    if uniform:
         cached = functools.cache(get_device_capability)
         cached._unsloth_per_device_cache = True
         return cached
 
-    cache = {}
+    cache = dict(scanned)
 
     @functools.wraps(get_device_capability)
     def cached_get_device_capability(device = None):
@@ -3913,10 +3981,9 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
 elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
-    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
-    _cuda_caps = cuda_gate_capabilities()
-    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
-    del _cuda_caps
+    # The current device, as torch.cuda.is_bf16_supported() answers: an idle older card beside it must
+    # not take bf16 from a model that runs here. A load placing layers there is checked after loading.
+    SUPPORTS_BFLOAT16 = major_version >= 8
 
     if major_version >= 8:
         if _package_available("flash_attn"):

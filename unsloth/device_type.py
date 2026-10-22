@@ -216,6 +216,26 @@ def cuda_gate_capabilities():
         return []
 
 
+def cuda_current_capability():
+    """(major, minor) of the current CUDA device, or None when it cannot be read. bf16 and the
+    compile switches answer for it, as torch does: an idle older card beside it changes nothing,
+    and a load that places layers on one is checked after loading."""
+    try:
+        return tuple(torch.cuda.get_device_capability())
+    except Exception:
+        return None
+
+
+def hip_current_arch():
+    """gcnArchName of the current HIP device, or "" when it cannot be read."""
+    try:
+        return str(
+            getattr(torch.cuda.get_device_properties(torch.cuda.current_device()), "gcnArchName", "")
+        )
+    except Exception:
+        return ""
+
+
 def cuda_order_mismatch_names():
     """Visible NVIDIA names when they differ and CUDA_DEVICE_ORDER is unset, else []."""
     if is_hip() or os.environ.get("CUDA_DEVICE_ORDER", "").strip():
@@ -319,10 +339,14 @@ def apply_pre_volta_compile_workaround(
 
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
 # (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
-# Any visible gfx906 counts: compile is process-wide and layers may land on it. Same switch as
-# pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
+# The current device decides here; a load placing layers on another gfx906 is checked after loading.
+# Same switch as pre-Volta, so regions compiled while unsloth_zoo imported are turned off too.
+def arch_breaks_compile(arch):
+    return str(arch or "").split(":")[0].strip().lower() == "gfx906"
+
+
 if DEVICE_TYPE == "hip":
-    if any(arch.split(":")[0].strip().lower() == "gfx906" for arch in hip_visible_archs()):
+    if arch_breaks_compile(hip_current_arch()):
         os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
         os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
         os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
@@ -334,8 +358,8 @@ if DEVICE_TYPE == "hip":
 
 
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
-    # Weakest visible card: compile is process-wide and layers may land on any of them.
-    _cuda_major = min((cap[0] for cap in cuda_gate_capabilities()), default = None)
+    # The current device; a load placing layers on an older card is checked after loading.
+    _cuda_major = (cuda_current_capability() or (None,))[0]
     if apply_pre_volta_compile_workaround(_cuda_major):
         print(
             "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "
