@@ -233,6 +233,9 @@ export function useRagDocuments(
             } else if (ev.type === "complete") {
               finish("completed", null, ev.num_chunks);
               return;
+            } else if (ev.type === "cancelled") {
+              finish("cancelled");
+              return;
             } else if (ev.type === "error") {
               finish(
                 ev.stage === "cancelled" ? "cancelled" : "failed",

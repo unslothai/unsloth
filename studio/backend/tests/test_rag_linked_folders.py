@@ -107,6 +107,159 @@ def _row(sql: str, params = ()) -> dict | None:
     return dict(row) if row else None
 
 
+@requires_sqlite_vec
+def test_requested_cancel_is_terminal_without_an_error_or_successor(rag_home):
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    with _connection() as conn:
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET successor_kind='rebuild' WHERE id=?", (job_id,)
+        )
+        conn.commit()
+    folder_sync.request_cancel(folder["id"])
+    try:
+        folder_sync.reconcile_folder(job_id)
+    finally:
+        folder_sync.clear_cancel(folder["id"])
+
+    job = folder_sync.get_job(job_id)
+    assert job["status"] == "cancelled"
+    assert job["stage"] == "cancelled"
+    assert job["error"] is None
+    assert job["completed_at"] is not None
+    assert job["successor_kind"] is None
+    assert folder_sync.get_folder(folder["id"])["last_error"] is None
+    assert _row("SELECT 1 FROM rag_job_leases WHERE job_id=?", (job_id,)) is None
+    folder_sync._queue_successor(job_id)
+    folder_sync._recover_startup_state()
+    assert folder_sync._next_job() is None
+    assert folder_sync.get_job(job_id)["status"] == "cancelled"
+
+
+@requires_sqlite_vec
+def test_unlink_records_cancellation_before_removing_job_rows(rag_home, monkeypatch):
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    seen = []
+    delete = folder_sync._delete_retired_folder
+
+    def inspect_retired(folder_id):
+        seen.append(folder_sync.get_job(job_id))
+        return delete(folder_id)
+
+    monkeypatch.setattr(folder_sync, "_delete_retired_folder", inspect_retired)
+    assert folder_sync.delete_folder(folder["id"], remove_index = False)
+    assert seen[0]["status"] == "cancelled"
+    assert seen[0]["stage"] == "cancelled"
+    assert seen[0]["error"] is None
+    assert folder_sync.get_job(job_id) is None
+
+
+@requires_sqlite_vec
+def test_cancelled_folder_job_stream_ends(rag_home, monkeypatch):
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    folder_sync._set_job(
+        job_id, status = "cancelled", stage = "cancelled", completed_at = folder_sync._now()
+    )
+
+    def unexpected_poll(_seconds):
+        pytest.fail("a cancelled job must end its event stream without another poll")
+
+    monkeypatch.setattr(folder_sync.time, "sleep", unexpected_poll)
+    assert [event["status"] for event in folder_sync.job_events(job_id)] == ["cancelled"]
+
+
+@requires_sqlite_vec
+def test_cancelled_folder_history_is_pruned(rag_home, monkeypatch):
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    folder_sync._set_job(job_id, status = "cancelled", completed_at = folder_sync._now())
+    monkeypatch.setattr(folder_sync.config, "FOLDER_JOB_HISTORY_LIMIT", 0)
+    with _connection() as conn:
+        folder_sync._prune_terminal_jobs(conn)
+    assert folder_sync.get_job(job_id) is None
+
+
+@requires_sqlite_vec
+def test_cancelled_folder_sse_is_a_cancellation_frame(rag_home):
+    import json
+    from routes import rag as rag_routes
+
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    folder_sync._set_job(job_id, status = "cancelled", stage = "cancelled")
+    response = rag_routes.folder_job_events(job_id, subject = "test")
+
+    async def first_frame():
+        iterator = response.body_iterator
+        try:
+            return await anext(iterator)
+        finally:
+            await iterator.aclose()
+
+    frame = json.loads(asyncio.run(first_frame()).removeprefix("data: "))
+    assert frame["type"] == "cancelled"
+    assert frame["status"] == "cancelled"
+    assert frame["error"] is None
+
+
+@requires_sqlite_vec
+def test_cancel_during_embedding_preserves_indexed_documents(
+    rag_home, stub_embeddings, monkeypatch, caplog
+):
+    import logging
+
+    caplog.set_level(logging.INFO, logger = "core.rag.ingestion")
+    source, folder = _folder(rag_home)
+    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    kept_id = _mapping(folder)["document_id"]
+    (source / "new.txt").write_text("new words to cancel", encoding = "utf-8")
+    real_encode = embeddings.encode
+    pruned_jobs = []
+    delete_job = ingestion.delete_terminal_job
+
+    def cancel_in_embed(texts, **kwargs):
+        folder_sync.request_cancel(folder["id"])
+        return real_encode(texts, **kwargs)
+
+    def inspect_pruned_job(job_id):
+        pruned_jobs.append(ingestion.get_job_status(job_id))
+        return delete_job(job_id)
+
+    monkeypatch.setattr(embeddings, "encode", cancel_in_embed)
+    monkeypatch.setattr(ingestion, "delete_terminal_job", inspect_pruned_job)
+    try:
+        job = _run(folder["id"])
+    finally:
+        folder_sync.clear_cancel(folder["id"])
+    assert job["status"] == "cancelled"
+    assert job["error"] is None
+    assert pruned_jobs and all(row["status"] == "cancelled" for row in pruned_jobs)
+    assert all(row["error"] is None for row in pruned_jobs)
+    assert "lease was reclaimed" not in caplog.text
+    assert _row("SELECT 1 FROM ingestion_jobs") is None
+    assert _row("SELECT 1 FROM rag_job_leases") is None
+    assert folder_sync.delete_folder(folder["id"], remove_index = False)
+    with _connection() as conn:
+        kept = store.get_document(conn, kept_id)
+        assert kept["status"] == "completed"
+        assert kept["linked_folder_id"] is None
+        assert store.search_lexical(conn, folder["scope"], "durable", 5)
+
+
+@requires_sqlite_vec
+def test_cancelled_ingestion_job_can_be_pruned(rag_home):
+    with _connection() as conn:
+        document_id = store.create_document(
+            conn, scope = "kb:scope-1", filename = "cancelled.txt", sha256 = "cancelled"
+        )
+        job_id = ingestion._new_job(conn, document_id, "kb:scope-1", status = "cancelled")
+    assert ingestion.delete_terminal_job(job_id)
+    assert ingestion.get_job_status(job_id) is None
+
+
 def _mapping(folder: dict) -> dict | None:
     return _row("SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],))
 

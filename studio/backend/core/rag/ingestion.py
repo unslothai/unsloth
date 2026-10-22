@@ -41,6 +41,10 @@ _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 _RETIRE_JOIN_SECONDS = 10.0
 
 
+class _IngestionCancelled(Exception):
+    """An intentional linked-folder cancellation, distinct from losing a lease."""
+
+
 def _sha256_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -108,9 +112,9 @@ def _set_job(
         "status=COALESCE(?, status), "
         "stage=COALESCE(?, stage), "
         "progress=COALESCE(?, progress), "
-        "error=COALESCE(?, error) "
+        "error=CASE WHEN ?='cancelled' THEN NULL ELSE COALESCE(?, error) END "
         "WHERE id=?",
-        (status, stage, progress, error, job_id),
+        (status, stage, progress, status, error, job_id),
     )
     conn.commit()
 
@@ -123,8 +127,10 @@ def _progress(conn, job_id: str, stage: str, progress: float) -> None:
 
     if folder_sync.is_cancel_requested(getattr(folder_sync._worker_state, "folder_id", None)):
         # Terminal, so the folder cleanup can prune the row with the document it discards.
-        _set_job(conn, job_id, status = "failed", stage = "error", error = "Linked folder was removed")
-        raise job_leases.JobLeaseLost("Linked folder was removed")
+        conn.rollback()
+        _set_job(conn, job_id, status = "cancelled", stage = "cancelled")
+        _emit(job_id, {"type": "cancelled", "stage": "cancelled"})
+        raise _IngestionCancelled
     if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
         raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
@@ -454,6 +460,8 @@ def _run(
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
+    except _IngestionCancelled:
+        logger.info("ingestion job %s cancelled by unlink", job_id)
     except job_leases.JobLeaseLost:
         logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
@@ -803,7 +811,7 @@ def delete_terminal_job(job_id: str) -> bool:
     conn = rag_db.get_connection()
     try:
         cursor = conn.execute(
-            "DELETE FROM ingestion_jobs WHERE id=? AND status IN ('completed','failed')",
+            "DELETE FROM ingestion_jobs WHERE id=? AND status IN ('completed','failed','cancelled')",
             (job_id,),
         )
         conn.commit()

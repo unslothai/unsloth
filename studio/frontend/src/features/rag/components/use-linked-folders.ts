@@ -30,6 +30,7 @@ import {
   jobChangedSources,
   linkedFolderSourcesChanged,
   retainActiveFolderJobs,
+  terminalJobStatus,
 } from "../types/rag";
 export function useLinkedFolders(
   scope?: LinkedFolderScope,
@@ -151,10 +152,12 @@ export function useLinkedFolders(
                   ? "completed"
                   : event.type === "error"
                     ? "failed"
-                    : (event.status ?? "running"),
+                    : event.type === "cancelled"
+                      ? "cancelled"
+                      : (event.status ?? "running"),
             };
             apply(latest);
-            if (latest.status === "completed" || latest.status === "failed") {
+            if (terminalJobStatus(latest.status)) {
               finish(latest);
               return;
             }
@@ -168,7 +171,7 @@ export function useLinkedFolders(
             if (controller.signal.aborted) return;
             latest = await getFolderSyncJob(initial.id);
             apply(latest);
-            if (latest.status === "completed" || latest.status === "failed") {
+            if (terminalJobStatus(latest.status)) {
               finish(latest);
               return;
             }
