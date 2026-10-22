@@ -273,3 +273,74 @@ def test_other_remote_schemes_are_refused_before_fsspec(monkeypatch, url):
     monkeypatch.setattr(fsspec, "open", no_open)
     with pytest.raises(OSError, match = "unsupported scheme"):
         _typed_image_dataset(url)[0]
+
+
+def _decode_without_io(monkeypatch, path):
+    """Decode one bytes-less cell; any open that slips past the guard raises AssertionError."""
+    from datasets import Image as ImageFeature
+    from datasets.features import image as hf_image
+
+    def no_open(*args, **kwargs):
+        raise AssertionError(f"reached fsspec / PIL with {args[:1]}")
+
+    monkeypatch.setattr(hf_image, "xopen", no_open)
+    import PIL.Image
+
+    monkeypatch.setattr(PIL.Image, "open", no_open)
+    return ImageFeature().decode_example({"path": path, "bytes": None})
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "ftp://10.0.0.5/image.png::/tmp/x",
+        "zip://a.png::ftp://10.0.0.5/x.zip",
+        "zip://a.png::smb://host/share/x.zip",
+    ],
+)
+def test_every_chained_hop_is_checked(monkeypatch, path):
+    with pytest.raises(OSError, match = "unsupported scheme"):
+        _decode_without_io(monkeypatch, path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["https://attacker.example/x.zip::/tmp/x", "zip://a.png::https://attacker.example/x.zip"],
+)
+def test_chained_non_hub_urls_are_refused(monkeypatch, path):
+    calls = _recording_fetch(monkeypatch, _png())
+    with pytest.raises(OSError, match = "remote archive"):
+        _decode_without_io(monkeypatch, path)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "\\\\attacker\\share\\a.png",
+        "//attacker/share/a.png",
+        "file:////attacker/share/a.png",
+        "file://attacker/share/a.png",
+        "\\\\?\\UNC\\attacker\\share\\a.png",
+        "zip://a.png::\\\\attacker\\share\\x.zip",
+    ],
+)
+def test_network_share_paths_are_refused(monkeypatch, path):
+    with pytest.raises(OSError, match = "network share"):
+        _decode_without_io(monkeypatch, path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/data/images/a.png",
+        "C:\\data\\a.png",
+        "file:///data/a.png",
+        "file://localhost/data/a.png",
+        "zip://a.png::https://huggingface.co/datasets/o/r/resolve/main/a.zip",
+        "gzip://a.png::hf://datasets/o/r/a.png.gz",
+    ],
+)
+def test_local_and_hub_paths_still_reach_datasets(monkeypatch, path):
+    with pytest.raises(AssertionError, match = "reached"):
+        _decode_without_io(monkeypatch, path)

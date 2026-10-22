@@ -20,11 +20,34 @@ _DATASETS_OWN_SCHEMES = {
     "az",
     "abfs",
     "abfss",
+    # Archive / compression wrappers datasets chains onto another hop (zip://a.png::<archive>).
+    "zip",
+    "tar",
+    "gzip",
+    "bz2",
+    "xz",
+    "zstd",
+    "lz4",
 }
 
 
 def _scheme(url):
     return url.split("://", 1)[0].lower() if "://" in url else ""
+
+
+def _is_network_share(path):
+    """UNC and network ``file:`` paths: Windows would open an SMB connection to the host."""
+    p = path.replace("\\", "/")
+    if p[:5].lower() == "file:":
+        p = p[5:]
+        if p.startswith("//"):
+            host = p[2:].split("/", 1)[0]
+            if host.lower() not in ("", "localhost"):
+                return True
+            p = p[2 + len(host) :]
+    if p.startswith(("//?/", "//./")):
+        return p[4:].upper().startswith("UNC/")
+    return p.startswith("//")
 
 
 def fetch_untrusted_image_bytes(url):
@@ -72,17 +95,22 @@ def install_guarded_image_decode():
     ):
         path = value.get("path") if isinstance(value, dict) else None
         if isinstance(path, str) and value.get("bytes") is None:
-            source = path.split("::")[-1]
+            # fsspec opens every hop of a chained path, so each one is checked.
+            hops = path.split("::")
+            for hop in hops:
+                if _is_network_share(hop):
+                    raise OSError(f"Refusing an image path on a network share: {path}")
+                if _scheme(hop) not in _DATASETS_OWN_SCHEMES:
+                    # ftp://, sftp://, smb:// ... would reach fsspec with no address checks.
+                    raise OSError(f"Refusing an image URL with an unsupported scheme: {path}")
             # Exact origin, not a prefix: huggingface.co.attacker.example would match a prefix.
-            if source.startswith(("http://", "https://")) and _origin(source) != _origin(
-                config.HF_ENDPOINT
+            if any(
+                _scheme(hop) in ("http", "https") and _origin(hop) != _origin(config.HF_ENDPOINT)
+                for hop in hops
             ):
-                if "::" in path:
+                if len(hops) > 1:
                     raise OSError(f"Refusing a remote archive image path: {path}")
                 value = {"path": None, "bytes": fetch_untrusted_image_bytes(path)}
-            elif _scheme(source) not in _DATASETS_OWN_SCHEMES:
-                # ftp://, sftp://, smb:// ... would reach fsspec with no address checks.
-                raise OSError(f"Refusing an image URL with an unsupported scheme: {path}")
         return original(self, value, token_per_repo_id)
 
     decode_example._unsloth_guarded = True
