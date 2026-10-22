@@ -150,6 +150,7 @@ def get_or_autotune_moe_kernels(
     force_autotune: bool = False,
     seq_len: int = 8192,
     weight_dtype: Optional[torch.dtype] = None,
+    device: Optional[Any] = None,
 ) -> Tuple[Any, Any, Any]:
     """
     Get cached kernel configurations or run auto-tuning.
@@ -163,10 +164,28 @@ def get_or_autotune_moe_kernels(
         weight_dtype: Data type of the expert weights, if different from dtype
         force_autotune: Force re-running autotuning even if cache exists
         seq_len: Sequence length to use for tuning benchmarks
+        device: CUDA device the kernels will launch on (the operand's), default the current device
 
     Returns:
         Tuple of (config_fwd, config_bwd_dx, config_bwd_dw)
     """
+    # Capability, shared memory and the tuning run are all read off the current device. On a mixed
+    # host the operand's card need not be current (accelerate moves inputs without switching), so a
+    # tile fitted for an A100 could launch on an L4: make the operand's card current for the lookup.
+    device = torch.device(device) if isinstance(device, (str, int)) else device
+    if isinstance(device, torch.device) and device.type == "cuda" and device.index is not None:
+        with torch.cuda.device(device):
+            return _get_or_autotune_moe_kernels(
+                num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
+            )
+    return _get_or_autotune_moe_kernels(
+        num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
+    )
+
+
+def _get_or_autotune_moe_kernels(
+    num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
+):
     device_capability = torch.cuda.get_device_capability()
     cache_key = _get_cache_key(
         num_experts,
