@@ -372,6 +372,12 @@ if _IS_MLX:
     _raw_text_spec.loader.exec_module(_raw_text)
     RawTextDataLoader = _raw_text.RawTextDataLoader
     TextPreprocessor = _raw_text.TextPreprocessor
+    _ebook_path = _Path(__file__).resolve().parent / "dataprep" / "ebooks.py"
+    _ebook_spec = importlib.util.spec_from_file_location("unsloth._mlx_ebooks", _ebook_path)
+    _ebook = importlib.util.module_from_spec(_ebook_spec)
+    _ebook_spec.loader.exec_module(_ebook)
+    load_ebook_dataset = _ebook.load_ebook_dataset
+    del _ebook, _ebook_spec, _ebook_path
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):

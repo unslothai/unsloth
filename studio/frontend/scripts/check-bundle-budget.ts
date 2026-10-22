@@ -374,11 +374,14 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
   // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier, model picker and memory bar:
   // +911 B raw / +466 B transfer against 463e3f348 (97 chunks). Raised by that plus a 400 B raw / 200 B
   // transfer margin (another build of the same tree measured 282 B larger raw).
-  transferBytes: 2_077_561,
-  rawBytes: 6_894_527,
+  transferBytes: 2_077_979,
+  rawBytes: 6_896_041,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
