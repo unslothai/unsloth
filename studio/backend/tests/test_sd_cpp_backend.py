@@ -3039,3 +3039,70 @@ def test_the_native_progress_total_is_sized_where_the_assets_are_fetched(monkeyp
     b._set_expected_bytes(assets, None)
     assert asked == ["unsloth/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
     assert b._loading.expected_bytes == 2_000
+
+
+def _png_bytes():
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buf, format = "PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("losses, recovers", [(1, True), (2, False)])
+def test_a_lost_vulkan_device_restarts_the_resident_server(monkeypatch, losses, recovers):
+    # The resident server stays up on a dead device after VK_ERROR_DEVICE_LOST: start the same build again
+    # (a fresh device) and retry the job once; a second loss in a row surfaces. Neither records a strike.
+    events: list = []
+    remaining = {"losses": losses}
+
+    class _FakeServer:
+        def __init__(self, binary):
+            self.binary = binary
+            events.append(("new", binary))
+
+        def start(self, files, **kwargs):
+            events.append(("start", kwargs.get("offload")))
+
+        def stop(self):
+            events.append(("stop", self.binary))
+
+        def img_gen(self, payload, **_kw):
+            if remaining["losses"]:
+                remaining["losses"] -= 1
+                raise RuntimeError("sd-server job failed: vk::Queue::submit: ErrorDeviceLost")
+            return [_png_bytes()]
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ("--offload-to-cpu",), device = "vulkan")
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server-vulkan"))
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/bin/sd-server-cpu")
+    bk._accelerator_runtime_failures.clear()
+    kwargs = dict(
+        prompt = "a fox",
+        negative_prompt = None,
+        width = 64,
+        height = 64,
+        steps = 2,
+        seed = 1,
+        batch_size = 1,
+        cfg_scale = None,
+        flux_guidance = None,
+        lora_resolved = [],
+        cancel = threading.Event(),
+    )
+    if recovers:
+        images, _seeds = b._generate_server(b._state, **kwargs)
+        assert len(images) == 1
+    else:
+        with pytest.raises(RuntimeError, match = "ErrorDeviceLost"):
+            b._generate_server(b._state, **kwargs)
+    # The same build, with the load's own flags (device pin included), not the CPU backend.
+    assert ("new", "/bin/sd-server-vulkan") in events[1:]
+    assert ("start", b._state.offload_flags) in events or any(
+        e[0] == "start" and "--offload-to-cpu" in (e[1] or ()) for e in events
+    )
+    assert not bk._accelerator_runtime_failures

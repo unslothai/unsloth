@@ -1846,17 +1846,24 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
     if not klass:
         return False
     fingerprint = _accelerator_fingerprint()
-    decisive_only = klass == "vulkan" and not _vulkan_cpu_rung_applies()
-
-    def _applicable(record: Optional[dict]) -> Optional[dict]:
-        record = _record_under_current_rule(klass, record)
-        return _decisive_evidence_only(record) if decisive_only else record
-
-    if _record_diverts(_applicable(_accelerator_runtime_failures.get(klass)), fingerprint, card):
+    if _record_diverts(
+        _applicable_record(klass, _accelerator_runtime_failures.get(klass)), fingerprint, card
+    ):
         return True
     return _record_diverts(
-        _applicable(_stored_accelerator_runtime_failures().get(klass)), fingerprint, card
+        _applicable_record(klass, _stored_accelerator_runtime_failures().get(klass)),
+        fingerprint,
+        card,
     )
+
+
+def _applicable_record(klass: str, record: Optional[dict]) -> Optional[dict]:
+    """The evidence in *record* that still counts on this host: old-rule ambiguous Vulkan strikes are
+    dropped, and outside the CPU-torch route only decisive Vulkan evidence diverts."""
+    record = _record_under_current_rule(klass, record)
+    if klass == "vulkan" and not _vulkan_cpu_rung_applies():
+        return _decisive_evidence_only(record)
+    return record
 
 
 def off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> Optional[str]:
@@ -1929,7 +1936,9 @@ def accelerator_runtime_failure_state() -> dict:
                 "fallback": _ACCELERATOR_FALLBACK.get(klass),
                 "strikes": int(record.get("strikes", 0) or 0),
                 "proven": bool(record.get("proven", False)),
-                "diverting": enabled and _record_diverts(record, fingerprint),
+                # The same evidence the runtime decision counts, so status matches behaviour.
+                "diverting": enabled
+                and _record_diverts(_applicable_record(klass, record), fingerprint),
                 "stale": not _fingerprint_still_applies(record.get("fingerprint"), fingerprint),
             }
         )
@@ -2035,6 +2044,17 @@ def output_shows_capacity_failure(text: Optional[str]) -> bool:
         return False
     lowered = str(text).lower()
     return any(marker in lowered for marker in _ACCELERATOR_CAPACITY_FAILURE_MARKERS)
+
+
+# A lost Vulkan device: recoverable by creating a new device, so neither a build strike nor a fatal error.
+_VULKAN_DEVICE_LOST_MARKERS: tuple[str, ...] = ("errordevicelost", "vk_error_device_lost")
+
+
+def output_shows_vulkan_device_lost(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    lowered = str(text).lower()
+    return any(marker in lowered for marker in _VULKAN_DEVICE_LOST_MARKERS)
 
 
 def output_shows_accelerator_failure(text: Optional[str]) -> bool:
@@ -4772,6 +4792,8 @@ class SdCppDiffusionBackend:
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
+        # One same-build respawn per request: a second lost device in a row surfaces the error.
+        device_respawned = False
         try:
             for offset in range(0, total, _MAX_SERVER_BATCH):
                 if cancel.is_set():
@@ -4811,8 +4833,13 @@ class SdCppDiffusionBackend:
                     )
                 except RuntimeError as exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
-                    # so restart the model on the CPU backend once and retry this chunk. Any other death propagates.
+                    # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device leaves
+                    # the server alive on a dead device: start the same build again (a fresh device) and retry once.
+                    # Any other death propagates.
                     server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
+                    if server is None and not device_respawned:
+                        server = self._respawn_server_after_device_loss(state, str(exc), cancel)
+                        device_respawned = server is not None
                     if server is None:
                         raise
                     state = replace(state, server = server)
@@ -4844,6 +4871,43 @@ class SdCppDiffusionBackend:
             if lora_stage is not None:
                 shutil.rmtree(lora_stage, ignore_errors = True)
         return images, seeds
+
+    def _respawn_server_after_device_loss(
+        self, state: _SdState, error_text: str, cancel: threading.Event
+    ) -> Optional[SdCppServer]:
+        """Restart this checkpoint's sd-server on the same build after a lost Vulkan device; None if that
+        does not apply. The Vulkan spec makes VK_ERROR_DEVICE_LOST recoverable only by creating a new device,
+        which the running server never does, so every later job on it would fail. No build strike: a lost
+        device (a TDR or a scheduler reset) says nothing about whether this build runs here."""
+        if not output_shows_vulkan_device_lost(error_text):
+            return None
+        if state.server is None or cancel.is_set():
+            return None
+        logger.warning(
+            "sd-server lost its Vulkan device; restarting it on the same build. Details: %s",
+            error_text[:300],
+        )
+        state.server.stop()
+        server = SdCppServer(state.server.binary)
+        with self._lock:
+            self._pending_server = server
+        try:
+            server.start(
+                state.files,
+                vae_format = state.vae_format,
+                offload = state.offload_flags,
+                native_speed = state.native_speed,
+                threads = state.threads,
+                env = state.spawn_env(),
+            )
+        except Exception:  # noqa: BLE001 -- the lost device is the more useful error
+            server.stop()
+            return None
+        finally:
+            with self._lock:
+                if self._pending_server is server:
+                    self._pending_server = None
+        return server
 
     def _restart_server_on_cpu_backend(
         self, state: _SdState, error_text: str, cancel: threading.Event

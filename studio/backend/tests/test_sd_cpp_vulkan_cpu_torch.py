@@ -70,6 +70,7 @@ def _pinned_host(monkeypatch):
     monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
     monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: True)
     monkeypatch.setattr(r, "_nvidia_adapter_present", lambda: False)
+    monkeypatch.setattr(r, "_reachable_intel_arc_render_node", lambda: True, raising = False)
 
 
 @pytest.mark.parametrize(
@@ -77,7 +78,7 @@ def _pinned_host(monkeypatch):
     [
         ((_VEGA,), "vulkan"),
         ((_ARC_LINUX,), "vulkan"),
-        # Unpinned ggml-vulkan lists only dedicated GPUs when there are any: the card renders, not the UHD iGPU.
+        # Unpinned sd.cpp takes a discrete GPU before an iGPU: the card renders, not the UHD iGPU.
         ((_UHD_LINUX, _VEGA), "vulkan"),
         ((_ARC_LINUX, _VEGA), "vulkan"),
         ((_UHD_LINUX,), "auto"),
@@ -146,6 +147,14 @@ def test_an_unmounted_uhd_node_does_not_block_the_amd_card(monkeypatch):
     # Both nodes mounted: the dedicated card is still the one sd.cpp takes.
     monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: set(vendors))
     assert r.image_install_accelerator("cpu") == "vulkan"
+
+
+@pytest.mark.parametrize("arc_node_reachable, expected", [(True, "vulkan"), (False, "auto")])
+def test_a_uhd_beside_an_arc_needs_the_arcs_own_node(monkeypatch, arc_node_reachable, expected):
+    # The vendor-level node check passes on the iGPU's node alone: a container mounting only it sees the UHD.
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _ARC_LINUX))
+    monkeypatch.setattr(r, "_reachable_intel_arc_render_node", lambda: arc_node_reachable, raising = False)
+    assert r.image_install_accelerator("cpu") == expected
 
 
 @pytest.mark.parametrize("value", ["", "default"])
@@ -486,6 +495,25 @@ def test_a_vulkan_record_from_before_device_lost_stopped_counting_is_ignored(mon
     proven = {"vulkan": {"strikes": 1, "proven": True, "fingerprint": {"bundle": "t"}}}
     _empty_failure_records(monkeypatch, stored = proven)
     assert sd_cpp_backend.preferred_accelerator("vulkan") == "cpu"
+
+
+def test_the_fallback_status_counts_the_same_evidence_as_the_runtime(monkeypatch):
+    """Settings must not report a diversion the runtime decision no longer makes."""
+    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_vulkan_fallback_enabled", lambda: True)
+    monkeypatch.setattr(sd_cpp_backend, "_vulkan_cpu_rung_applies", lambda: True)
+    old = {"vulkan": {"strikes": 2, "proven": False, "fingerprint": {"bundle": "t"}}}
+    _empty_failure_records(monkeypatch, stored = old)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "vulkan"
+    assert sd_cpp_backend.accelerator_runtime_failure_state()["diverting"] is False
+    # Current ambiguous strikes off the CPU-torch route: kept on Vulkan, and reported so.
+    _empty_failure_records(monkeypatch)
+    for _ in range(2):
+        sd_cpp_backend.note_accelerator_runtime_failure("vulkan", proven = False)
+    monkeypatch.setattr(sd_cpp_backend, "_vulkan_cpu_rung_applies", lambda: False)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "vulkan"
+    assert sd_cpp_backend.accelerator_runtime_failure_state()["diverting"] is False
+    monkeypatch.setattr(sd_cpp_backend, "_vulkan_cpu_rung_applies", lambda: True)
+    assert sd_cpp_backend.accelerator_runtime_failure_state()["diverting"] is True
 
 
 @pytest.mark.parametrize("value", ["0 1", "0, 1", "1 "])
