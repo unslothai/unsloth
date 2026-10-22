@@ -64,7 +64,18 @@ def test_refused_bf16_becomes_fp16_only_for_a_vllm_load_on_xpu(name):
     assert _resolve(name, "xpu", torch.float32, True, refuses = True) is torch.float32
 
 
-@pytest.mark.parametrize("name", ["llama.py", "vision.py"])
+def test_a_stale_forced_float32_env_does_not_fail_a_language_model_load():
+    # FastLanguageModel never sets UNSLOTH_FORCE_FLOAT32; an earlier FastModel load (Gemma 3) can
+    # leave it at "1" in the process, which must not refuse a later Llama-path load.
+    assert (
+        _resolve(
+            "llama.py", "xpu", torch.bfloat16, True, refuses = True, env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+        )
+        is torch.float16
+    )
+
+
+@pytest.mark.parametrize("name", ["vision.py"])
 def test_a_forced_float32_model_refuses_to_load_in_fp16(name):
     # Gemma 3/4, Qwen3.5: float16 gives NaN gradients, so a refused bf16 fails early instead.
     with pytest.raises(RuntimeError, match = "fast_inference = False"):

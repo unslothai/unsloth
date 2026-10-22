@@ -3375,12 +3375,8 @@ class FastLlamaModel:
             and _vllm_will_load_weights(fast_inference, num_labels)
             and xpu_vllm_refuses_bf16()
         ):
-            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                # This model needs bf16 or float32 (float16 gives NaN gradients): fail before loading.
-                raise RuntimeError(
-                    "Unsloth: vLLM does not accept bfloat16 on this Intel GPU, and this model cannot "
-                    "run in float16. Load it with fast_inference = False."
-                )
+            # No forced-float32 check here: this path never sets UNSLOTH_FORCE_FLOAT32, so the env
+            # var only holds what an earlier FastModel load left behind.
             logger.warning_once(
                 "Unsloth: vLLM does not accept bfloat16 on this Intel GPU. Will change to float16."
             )
