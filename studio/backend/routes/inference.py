@@ -11146,8 +11146,26 @@ set_routed_backend(get_llama_cpp_backend)
 set_reload_hook(_openai_llama_reconfigure_after_respawn)
 
 
+def _worker_exited(slot: Optional[_ExtraSlot]) -> bool:
+    proc = getattr(model_slots.in_slot(slot, _peek_inference_backend), "_proc", None)
+    return proc is not None and not proc.is_alive()
+
+
+def _reap_dead_workers(slots: list) -> None:
+    for slot in slots:
+        model_slots.in_slot(slot, lambda: reap_dead_worker(_peek_inference_backend()))
+
+
+async def _reap_exited_workers() -> None:
+    # A killed worker stays named until reaped; is_alive() is a non-blocking waitpid.
+    exited = [slot for slot in (None, *model_slots.slots) if _worker_exited(slot)]
+    if exited:
+        await asyncio.to_thread(_reap_dead_workers, exited)
+
+
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
     """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
+    await _reap_exited_workers()
     return await model_slots.route(requested, _loaded_satisfies)
 
 
@@ -14630,6 +14648,16 @@ def reap_dead_managed_engine(backend) -> None:
         account_access.clear_resident("chat")
 
 
+def reap_dead_worker(backend) -> None:
+    """Cleared, never respawned: every routed request runs this, so an OOM respawn would loop."""
+    from core.inference.gpu_arbiter import CHAT, holds
+
+    if getattr(backend, "_proc", None) is None:
+        return
+    if backend.reap_dead_worker() and (release_chat_after_kept_models() or not holds(CHAT)):
+        account_access.clear_resident("chat")
+
+
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
@@ -14703,6 +14731,8 @@ async def load_model_for_preview(
                         detail = "A transformers installation is in progress. Retry when it completes.",
                         headers = {"Retry-After": "10"},
                     )
+                # Else a dead worker's name refuses every preview as Studio-owned.
+                await _reap_exited_workers()
                 loaded = _loaded_slot_ident()
                 # Borrow the resident model when it already serves this checkpoint, matching
                 # an equivalent spelling (relative vs the resolved absolute path) via realpath
@@ -21202,6 +21232,8 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
 
+    # Before the early return: the NPU and managed-engine guards read the primary's name.
+    await _reap_exited_workers()
     # The NPU backend is one per process and replaces the primary, so it never takes a slot. vLLM
     # and SGLang reserve a fixed share of the GPU up front, so neither shares it with a kept model.
     if is_npu_model_path(request.model_path) or request.engine != "auto":
@@ -21882,6 +21914,7 @@ async def _load_model_impl(
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
+            await asyncio.to_thread(reap_dead_worker, backend)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
@@ -25493,6 +25526,8 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     """Status of the slot serving ``model`` (the primary one by default), listing every loaded model."""
     slot = await _route_to_extra_slot(model)
     response = await _slot_status(current_subject)
+    if isinstance(response, InferenceStatusResponse) and response.is_gguf:
+        response.resident_mib = _llama_resident_mib()
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -25513,6 +25548,15 @@ async def get_status(current_subject: str, model: Optional[str] = None):
                         response.serving.append(e["id"])
                         response.serving_checkpoints.append(checkpoint)
     return response
+
+
+def _llama_resident_mib() -> Optional[int]:
+    """The routed slot's llama-server footprint; None when not loaded or unreadable."""
+    try:
+        llama = get_llama_cpp_backend()
+        return llama.resident_memory_mib() if getattr(llama, "is_loaded", False) else None
+    except Exception:  # noqa: BLE001 - optional decoration on a status read
+        return None
 
 
 def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
@@ -56048,6 +56092,9 @@ async def diffusion_status(
         owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
         visible = owner is None or owner == current_account_id()
         status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
+    if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
+        from core.inference.gpu_residency import media_owner_held_mib
+        status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

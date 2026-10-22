@@ -24,7 +24,8 @@ VRAM_BUDGET_SETTING_KEY = "vram_budget_fraction"
 VRAM_FRACTION_ENV_VAR = "UNSLOTH_VRAM_FRACTION"
 
 # Mirrored in per-model-config.ts as percent for the slider, a pair test_vram_budget_settings.py pins together. The default is the historical _CTX_FIT_VRAM_FRACTION / _GPU_PIN_VRAM_FRACTION.
-VRAM_FRACTION_MIN = 0.80
+# 0.10, not 0: at 0 every GGUF load runs on the CPU. vLLM / SGLang cannot offload and keep engine_adapters.MANAGED_ENGINE_BUDGET_FLOOR.
+VRAM_FRACTION_MIN = 0.10
 VRAM_FRACTION_MAX = 1.00
 VRAM_FRACTION_DEFAULT = 0.97
 

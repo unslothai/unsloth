@@ -2186,6 +2186,10 @@ class LlamaFlagCatalogResponse(BaseModel):
 class InferenceStatusResponse(_InferenceRuntimeFields):
     """Current inference backend status"""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     active_model: Optional[str] = Field(
         None, description = "Currently active model display identifier"
     )
@@ -5692,6 +5696,10 @@ class DiffusionDownloadPlanResponse(BaseModel):
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
@@ -7344,6 +7352,10 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    resident_mib: Optional[int] = Field(
+        None,
+        description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
+    )
     multi_gpu: Optional[Dict[str, Any]] = Field(
         None,
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "

@@ -374,6 +374,15 @@ export const BUDGET = {
   // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
   // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
   // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -389,8 +398,9 @@ export const BUDGET = {
   // Merged with main at c0c0759bb9, which adds the passive Settings update check (+24 B raw / +43 B transfer):
   // raised by that.
   // Merged with main at f76dd22958, whose limits rose by +1,892 B raw / +702 B transfer since c0c0759bb9: raised by that.
-  transferBytes: 2_078_554,
-  rawBytes: 6_896_226,
+  // Merged with main at 3569dfa8a5, whose limits rose by +16,304 B raw / +4,589 B transfer since f76dd22958: raised by that.
+  transferBytes: 2_083_143,
+  rawBytes: 6_912_530,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
