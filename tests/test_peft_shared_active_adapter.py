@@ -69,7 +69,7 @@ def _lora_layers(model):
 
 
 def _round_trip(model):
-    # trl.trainer.utils.use_adapter(model, "ref"): set_adapter("ref"), then back to the previous one.
+    # trl.trainer.utils.use_adapter(model, "ref").
     model.set_adapter("ref")
     model.set_adapter("default")
 
@@ -125,6 +125,5 @@ def test_compiled_lora_forward_does_not_recompile_after_round_trip(patched):
 
 
 def test_unpatched_peft_recompiles_after_round_trip(unpatched):
-    # Negative control: shows the patched test can fail; moot once peft / torch stop recompiling here.
     if _recompiles_across_round_trip(_lora_model()) == 0:
         pytest.skip("this peft / torch no longer recompiles on the adapter round trip")

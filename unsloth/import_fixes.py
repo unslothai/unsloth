@@ -9544,8 +9544,7 @@ def patch_peft_float8_adapter_upcast():
 
 
 def patch_peft_shared_active_adapter():
-    """peft's set_adapter gives each layer its own `[name]` list; compiled layers guard on it being shared, so TRL
-    DPO's ref / default switch retraced inside the checkpoint recompute (Gemma 4 E2B / E4B `CheckpointError`)."""
+    """Compiled layers guard on peft's shared active-adapter str; TRL DPO's ref switch broke Gemma 4 E2B recompute."""
     try:
         import peft.tuners.tuners_utils as tu
     except Exception:
