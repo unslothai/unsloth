@@ -77,6 +77,9 @@ test("a style statement after a semicolon cannot fetch either", () => {
     // A stateDiagram classDef runs to the end of the line, past any `;`.
     [`stateDiagram-v2\n  classDef x fill:#f96;background:${url}\n  class A x`, "stateDiagram-v2\n\n  class A x"],
     [`flowchart LR; A-->B; style A fill:${url}`, "flowchart LR; A-->B;"],
+    // A stateDiagram also takes a statement after a space, with no `;` before it.
+    [`stateDiagram-v2\n  A --> B classDef x fill:${url}\n  class A x`, "stateDiagram-v2\n  A --> B \n  class A x"],
+    [`stateDiagram-v2\n  [*] --> A\tclassDef x mask:${url}\n  class A x`, "stateDiagram-v2\n  [*] --> A\t\n  class A x"],
   ]) {
     const out = stripRemoteDiagramImages(source);
     assert.equal(out, kept);

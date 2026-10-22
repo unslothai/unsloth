@@ -19,9 +19,10 @@ const FETCHING_TAG =
   /<(?=\/?(?:img|image|picture|source|video|audio|track|input|iframe|frame|embed|object|link|style|svg|use|meta|base|body|table|thead|tbody|tr|td|th)\b)/gi;
 
 // A style rule that could name a resource: CSS functions that load one, or an escape hiding one.
-// A statement can also start after `;`, and a stateDiagram classDef runs to the end of the line, so
-// everything from the keyword to the line's end is checked; the text before it stays.
-const STYLE_LINE = /(^|;)[^\S\n]*(?:classDef|style|linkStyle)\b.*$/gim;
+// A statement can also start after `;`, or mid-line after a space in a stateDiagram, and a
+// stateDiagram classDef runs to the end of the line, so everything from the keyword to the line's
+// end is checked; the text before it stays.
+const STYLE_LINE = /(^|[;\s])[^\S\n]*(?:classDef|style|linkStyle)\b.*$/gim;
 const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import/i;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
