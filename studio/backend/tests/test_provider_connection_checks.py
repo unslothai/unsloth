@@ -5,6 +5,7 @@
 
 import asyncio
 import threading
+import time
 
 import httpx
 import pytest
@@ -182,11 +183,14 @@ def test_responses_probe_stops_at_the_total_budget(monkeypatch):
 
             return stream()
 
+    started = time.monotonic()
     result = _run(
         providers_route._test_custom_provider_connectivity(_SlowClient(), "", "responses")
     )
     assert not result.success and "timed out" in result.message
-    assert tried == ["m0", "m1"]
+    # Coarse timers (Windows) can leave a sliver of budget for one more short probe.
+    assert tried[:2] == ["m0", "m1"] and len(tried) <= 3
+    assert time.monotonic() - started < 1.0
 
 
 def _saved_row(monkeypatch, tmp_path, *, has_key: bool):
