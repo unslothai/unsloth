@@ -387,7 +387,6 @@ def test_external_ask_flushes_skill_approval_before_waiting(mention_client, monk
 
     events = asyncio.run(drive())
     gate = next(i for i, e in enumerate(events) if '"status":"awaiting_approval"' in e)
-    # The Allow / Deny card must be followed by its own keepalive write while Ask waits.
     assert events[gate + 1].startswith(":"), events[gate : gate + 2]
     assert any('"status":"loaded"' in e for e in events) == (verdict == "allow")
     if verdict == "deny":

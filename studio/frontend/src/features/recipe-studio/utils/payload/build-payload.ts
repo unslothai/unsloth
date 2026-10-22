@@ -430,6 +430,9 @@ export function buildRecipePayload(
         ...(firstSeed && {
           seed_preview_rows: firstSeed.seed_preview_rows ?? [],
         }),
+        ...(firstSeed?.seed_total_rows !== undefined && {
+          seed_total_rows: firstSeed.seed_total_rows,
+        }),
         ...(firstSeed &&
           firstSeed.local_file_name !== undefined && {
             local_file_name: firstSeed.local_file_name,

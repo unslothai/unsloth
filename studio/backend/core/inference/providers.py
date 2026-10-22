@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
@@ -1098,6 +1098,12 @@ def provider_address_excluding_metadata(url: str) -> str:
     return str(addresses[0])
 
 
+# The client appends these itself, so a pasted full endpoint would request /chat/completions/models.
+_PASTED_ENDPOINT_PATH = re.compile(
+    r"/(?:chat/completions|completions|responses|messages|models)$", re.IGNORECASE
+)
+
+
 def validate_provider_base_url(base_url: str) -> str:
     """Return a normalized provider base URL, or raise ``ValueError``.
 
@@ -1113,8 +1119,9 @@ def validate_provider_base_url(base_url: str) -> str:
     installation (``utils.managed_provider_url_settings``), which is how a team
     sharing one LAN model server gets to use it from more than one account.
 
-    Normalization is strip + trailing-slash removal only (what the client did
-    before), so validating an already-validated URL returns it unchanged.
+    Normalization is strip, trailing-slash removal and dropping a pasted endpoint
+    path such as ``/chat/completions``, so validating an already-validated URL
+    returns it unchanged.
     """
     if not isinstance(base_url, str) or not base_url.strip():
         raise ValueError("Provider base URL is required.")
@@ -1158,6 +1165,10 @@ def validate_provider_base_url(base_url: str) -> str:
         # Caller-controlled egress: the owner's loopback and LAN, unless the owner opened them.
         _reject_non_public(hostname, port, scheme, managed_public_only_reason())
 
+    path = parts.path.rstrip("/")
+    endpoint = _PASTED_ENDPOINT_PATH.search(path)
+    if endpoint:
+        raw = urlunsplit(parts._replace(path = path[: endpoint.start()]))
     return raw.rstrip("/")
 
 
