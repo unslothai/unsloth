@@ -57,7 +57,9 @@ import structlog
 from loggers import get_logger
 import contextlib as _contextlib
 from contextvars import ContextVar
+import functools
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -2047,6 +2049,55 @@ def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
     return model_fam == mmproj_fam
 
 
+# MiMo-VL's vision tower overflows to NaN in an F16 projector on CUDA, so every image (and every
+# later turn in that chat) answers "!!!!"; its BF16 / F32 projectors are fine. Xiaomi ships only BF16.
+_F16_UNSAFE_MMPROJ_RE = _re.compile(r"mimo[-_ ]?vl", _re.IGNORECASE)
+_MMPROJ_PRECISION_RE = _re.compile(r"[-_.](bf16|f16|f32)\.gguf$", _re.IGNORECASE)
+# None stands for a projector whose name carries no precision.
+MMPROJ_ORDER_BF16 = ("bf16", "f16", "f32", None)
+MMPROJ_ORDER_NO_F16 = ("bf16", "f32", None, "f16")
+
+
+def mmproj_f16_unsafe(name: Optional[str]) -> bool:
+    """True for a model (repo id or weight filename) whose F16 projector is known to overflow."""
+    return bool(name) and _F16_UNSAFE_MMPROJ_RE.search(str(name)) is not None
+
+
+@functools.lru_cache(maxsize = 1)
+def device_mmproj_precision() -> str:
+    """BF16 on ROCm and pre-Ampere NVIDIA, else F16 (Mac, Ampere and newer, CPU, Vulkan, unknown)."""
+    try:
+        if platform.system() == "Darwin":
+            return "f16"
+        from utils.hardware.hardware import _installed_llama_backend
+
+        backend = _installed_llama_backend()
+        if backend == "rocm":
+            return "bf16"
+        if backend == "cuda":
+            from core.inference.llama_cpp import LlamaCppBackend
+            caps = LlamaCppBackend._cuda_compute_caps()
+            if caps and min(caps.values()) < 80:
+                return "bf16"
+    except Exception as e:
+        logger.debug(f"device_mmproj_precision probe failed: {e}")
+    return "f16"
+
+
+def mmproj_order(*model_names: Optional[str]) -> Optional[tuple]:
+    """Projector precision order for this model on this machine; None keeps the F16-first default."""
+    if any(mmproj_f16_unsafe(n) for n in model_names):
+        return MMPROJ_ORDER_NO_F16
+    return MMPROJ_ORDER_BF16 if device_mmproj_precision() == "bf16" else None
+
+
+def mmproj_order_rank(mmproj_name: str, order: tuple) -> int:
+    """Higher is preferred; a precision outside ``order`` ranks last."""
+    m = _MMPROJ_PRECISION_RE.search(Path(mmproj_name).name)
+    precision = m.group(1).lower() if m else None
+    return -order.index(precision) if precision in order else -len(order)
+
+
 def _shared_prefix_len(a: str, b: str) -> int:
     n = min(len(a), len(b))
     for i in range(n):
@@ -2332,10 +2383,12 @@ def detect_mmproj_file(
 
     # Score first, then longest shared prefix, then shorter stem. The prefix is read past
     # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
+    order = mmproj_order(p.name)
     best = max(
         scored,
         key = lambda sc: (
             sc[0],
+            mmproj_order_rank(sc[1].name, order) if order else 0,
             _shared_prefix_len(model_stem, _re.sub(r"^mmproj[-_]", "", sc[1].stem.lower())),
             -len(sc[1].stem),
         ),

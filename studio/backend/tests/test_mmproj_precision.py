@@ -1,0 +1,246 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Projector precision: BF16 on ROCm and pre-Ampere NVIDIA, F16 elsewhere; MiMo-VL never F16."""
+
+from __future__ import annotations
+
+import sys
+import threading
+import types as _types
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+_loggers_stub = _types.ModuleType("loggers")
+_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+sys.modules.setdefault("loggers", _loggers_stub)
+_structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+sys.modules.setdefault("structlog", _structlog_stub)
+if not hasattr(sys.modules["structlog"], "get_logger"):
+    sys.modules["structlog"].get_logger = _structlog_stub.get_logger
+
+from core.inference.llama_cpp import LlamaCppBackend, _pick_mmproj  # noqa: E402
+from hub.utils.gguf_plan import preferred_mmproj_sibling  # noqa: E402
+from utils.models import model_config  # noqa: E402
+from utils.models.model_config import (  # noqa: E402
+    MMPROJ_ORDER_BF16,
+    MMPROJ_ORDER_NO_F16,
+    detect_mmproj_file,
+    device_mmproj_precision,
+    mmproj_f16_unsafe,
+    mmproj_order,
+)
+
+MIMO_LISTING = [
+    "MiMo-VL-7B-RL-UD-Q4_K_XL.gguf",
+    "mmproj-BF16.gguf",
+    "mmproj-F16.gguf",
+    "mmproj-F32.gguf",
+]
+QWEN_LISTING = [
+    "Qwen2.5-VL-7B-Instruct-UD-Q4_K_XL.gguf",
+    "mmproj-BF16.gguf",
+    "mmproj-F16.gguf",
+    "mmproj-F32.gguf",
+]
+
+
+@pytest.fixture
+def device(monkeypatch):
+    def _set(precision):
+        monkeypatch.setattr(model_config, "device_mmproj_precision", lambda: precision)
+
+    _set("f16")
+    return _set
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "unsloth/MiMo-VL-7B-RL-GGUF",
+        "bartowski/XiaomiMiMo_MiMo-VL-7B-RL-2508-GGUF",
+        "XiaomiMiMo/MiMo-VL-7B-RL-GGUF",
+        "MiMo-VL-7B-RL-UD-Q4_K_XL.gguf",
+    ],
+)
+def test_mimo_vl_is_f16_unsafe(name):
+    assert mmproj_f16_unsafe(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF",
+        "jedisct1/MiMo-7B-RL-GGUF",
+        "unsloth/gemma-3-4b-it-GGUF",
+        "",
+        None,
+    ],
+)
+def test_other_models_are_not_f16_unsafe(name):
+    assert not mmproj_f16_unsafe(name)
+
+
+@pytest.mark.parametrize(
+    "system, backend, caps, expected",
+    [
+        ("Darwin", "metal", {}, "f16"),
+        ("Linux", "rocm", {}, "bf16"),
+        ("Windows", "rocm", {}, "bf16"),
+        ("Linux", "cuda", {0: 75}, "bf16"),
+        ("Linux", "cuda", {0: 70}, "bf16"),
+        ("Linux", "cuda", {0: 86, 1: 75}, "bf16"),
+        ("Linux", "cuda", {0: 80}, "f16"),
+        ("Linux", "cuda", {0: 89}, "f16"),
+        ("Windows", "cuda", {0: 120}, "f16"),
+        ("Linux", "cuda", {}, "f16"),
+        ("Linux", "vulkan", {}, "f16"),
+        ("Linux", "cpu", {}, "f16"),
+        ("Linux", None, {}, "f16"),
+    ],
+)
+def test_device_precision(monkeypatch, system, backend, caps, expected):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(model_config.platform, "system", lambda: system)
+    monkeypatch.setattr(hardware, "_installed_llama_backend", lambda: backend)
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: caps))
+    device_mmproj_precision.cache_clear()
+    try:
+        assert device_mmproj_precision() == expected
+    finally:
+        device_mmproj_precision.cache_clear()
+
+
+def test_device_precision_probe_failure_keeps_f16(monkeypatch):
+    from utils.hardware import hardware
+
+    def boom():
+        raise RuntimeError("no marker")
+
+    monkeypatch.setattr(model_config.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hardware, "_installed_llama_backend", boom)
+    device_mmproj_precision.cache_clear()
+    try:
+        assert device_mmproj_precision() == "f16"
+    finally:
+        device_mmproj_precision.cache_clear()
+
+
+@pytest.mark.parametrize("precision", ["f16", "bf16"])
+def test_mimo_vl_order_ignores_device(device, precision):
+    device(precision)
+    assert mmproj_order("unsloth/MiMo-VL-7B-RL-GGUF") == MMPROJ_ORDER_NO_F16
+
+
+def test_other_model_order_follows_device(device):
+    assert mmproj_order("unsloth/Qwen2.5-VL-7B-Instruct-GGUF") is None
+    device("bf16")
+    assert mmproj_order("unsloth/Qwen2.5-VL-7B-Instruct-GGUF") == MMPROJ_ORDER_BF16
+
+
+def test_default_pick_still_prefers_f16():
+    assert _pick_mmproj(MIMO_LISTING) == "mmproj-F16.gguf"
+
+
+@pytest.mark.parametrize(
+    "listing, expected",
+    [
+        (MIMO_LISTING, "mmproj-BF16.gguf"),
+        (["mmproj-F16.gguf", "mmproj-F32.gguf"], "mmproj-F32.gguf"),
+        (["mmproj-F16.gguf"], "mmproj-F16.gguf"),
+        (
+            [
+                "mmproj-XiaomiMiMo_MiMo-VL-7B-RL-2508-bf16.gguf",
+                "mmproj-XiaomiMiMo_MiMo-VL-7B-RL-2508-f16.gguf",
+            ],
+            "mmproj-XiaomiMiMo_MiMo-VL-7B-RL-2508-bf16.gguf",
+        ),
+        (["mmproj-MiMo-VL-7B-RL_BF16.gguf"], "mmproj-MiMo-VL-7B-RL_BF16.gguf"),
+    ],
+)
+def test_no_f16_order(listing, expected):
+    assert _pick_mmproj(listing, order = MMPROJ_ORDER_NO_F16) == expected
+
+
+@pytest.mark.parametrize(
+    "listing, expected",
+    [
+        (QWEN_LISTING, "mmproj-BF16.gguf"),
+        (["mmproj-F16.gguf", "mmproj-F32.gguf"], "mmproj-F16.gguf"),
+        (["mmproj-F32.gguf"], "mmproj-F32.gguf"),
+    ],
+)
+def test_bf16_device_order(listing, expected):
+    assert _pick_mmproj(listing, order = MMPROJ_ORDER_BF16) == expected
+
+
+def _siblings(names):
+    return [SimpleNamespace(rfilename = n) for n in names]
+
+
+def test_hub_plan(device):
+    assert preferred_mmproj_sibling(_siblings(MIMO_LISTING)).rfilename == "mmproj-BF16.gguf"
+    assert preferred_mmproj_sibling(_siblings(QWEN_LISTING)).rfilename == "mmproj-F16.gguf"
+    device("bf16")
+    assert preferred_mmproj_sibling(_siblings(QWEN_LISTING)).rfilename == "mmproj-BF16.gguf"
+
+
+def _touch(path: Path) -> Path:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(b"\0" * 32)
+    return path
+
+
+def _local_pick(tmp_path, listing):
+    for n in listing:
+        _touch(tmp_path / n)
+    return Path(detect_mmproj_file(str(tmp_path / listing[0]))).name
+
+
+def test_local_folder(device, tmp_path):
+    assert _local_pick(tmp_path / "mimo", MIMO_LISTING) == "mmproj-BF16.gguf"
+    assert _local_pick(tmp_path / "qwen", QWEN_LISTING) == "mmproj-F16.gguf"
+    device("bf16")
+    assert _local_pick(tmp_path / "qwen_bf16", QWEN_LISTING) == "mmproj-BF16.gguf"
+
+
+def _download_mmproj_call(hf_repo):
+    backend = object.__new__(LlamaCppBackend)
+    backend._cancel_event = threading.Event()
+    seen = {}
+
+    def fake_companion(**kw):
+        seen.update(kw)
+        return None
+
+    backend._download_companion_gguf = fake_companion
+    backend._download_mmproj(hf_repo = hf_repo)
+    return seen
+
+
+def test_download_skips_cached_f16_reuse_for_mimo_vl(device):
+    seen = _download_mmproj_call("unsloth/MiMo-VL-7B-RL-GGUF")
+    assert seen["reuse_snapshot_sibling"] is False
+    assert seen["pick"](MIMO_LISTING) == "mmproj-BF16.gguf"
+
+
+def test_download_unchanged_for_other_models(device):
+    seen = _download_mmproj_call("unsloth/Qwen2.5-VL-7B-Instruct-GGUF")
+    assert seen["reuse_snapshot_sibling"] is True
+    assert seen["pick"] is _pick_mmproj
+
+
+def test_download_bf16_device_keeps_cached_reuse(device):
+    device("bf16")
+    seen = _download_mmproj_call("unsloth/Qwen2.5-VL-7B-Instruct-GGUF")
+    assert seen["reuse_snapshot_sibling"] is True
+    assert seen["pick"](QWEN_LISTING) == "mmproj-BF16.gguf"

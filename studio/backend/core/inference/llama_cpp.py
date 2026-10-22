@@ -4045,7 +4045,7 @@ def _mtp_drafter_loads_standalone(path: str) -> bool:
     return mtp_drafter_loads_standalone(path)
 
 
-def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+def _pick_mmproj(candidates: list[str], *, order: Optional[tuple] = None) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
     # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
@@ -4055,6 +4055,9 @@ def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     )
     if not mmproj_files:
         return None
+    if order:
+        from utils.models.model_config import mmproj_order_rank
+        return max(mmproj_files, key = lambda f: mmproj_order_rank(f, order))
     return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
 
 
@@ -21368,14 +21371,20 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
+        from utils.models.model_config import mmproj_f16_unsafe, mmproj_order
+
+        order = mmproj_order(hf_repo)
+        # A cached copy is reused before the listing is read; only a broken F16 must not be.
+        f16_unsafe = mmproj_f16_unsafe(hf_repo)
         outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mmproj,
+            pick = functools.partial(_pick_mmproj, order = order) if order else _pick_mmproj,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            reuse_snapshot_sibling = not f16_unsafe,
             outcome = outcome,
         )
         if resolved is not None:

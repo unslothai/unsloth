@@ -102,6 +102,12 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
     candidates = mmproj_siblings(siblings)
     if not candidates:
         return None
+    from utils.models.model_config import mmproj_order, mmproj_order_rank
+
+    # No repo id here: the weights' own filenames name the model.
+    order = mmproj_order(*(_gguf_rfilename(s) for s in siblings))
+    if order:
+        return max(candidates, key = lambda s: mmproj_order_rank(getattr(s, "rfilename"), order))
     return next(
         (s for s in candidates if extract_quant_label(getattr(s, "rfilename")).upper() == "F16"),
         candidates[0],
