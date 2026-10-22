@@ -190,3 +190,19 @@ test("a background load with no saved pick still reconciles as Automatic", () =>
     /const effectiveGpuIds = reconcilePersistedGpuIds\(\s*config\.selectedGpuIds \?\? null,/,
   );
 });
+
+test("Automatic classifies a GGUF before pinning its default pick", () => {
+  // /load rejects gpu_ids for DiffusionGemma on Vulkan, and the probe used to skip Automatic.
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /config\.tensorParallel === true \|\|\s*automaticPinsDefault\)/,
+  );
+  assert.match(
+    source,
+    /automaticPinsDefault =\s*config\.selectedGpuIds == null &&\s*reconcilePersistedGpuIds\(null, undefined, false\) != null;/,
+  );
+});

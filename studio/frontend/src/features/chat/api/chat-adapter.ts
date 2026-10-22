@@ -3672,9 +3672,16 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // and Automatic loses its default pick (an iGPU beside a discrete card stays out only once devices are known).
     await ensureGpuDeviceCache();
     let isDiffusion = false;
+    // Automatic pins a default pick on a mixed iGPU host, and /load rejects gpu_ids for DiffusionGemma on
+    // some hosts, so classify the GGUF first in that case too.
+    const automaticPinsDefault =
+      config.selectedGpuIds == null &&
+      reconcilePersistedGpuIds(null, undefined, false) != null;
     if (
       candidate.kind === "gguf" &&
-      (config.selectedGpuIds != null || config.tensorParallel === true)
+      (config.selectedGpuIds != null ||
+        config.tensorParallel === true ||
+        automaticPinsDefault)
     ) {
       // Prepare the token before this probe: the Hub 401s an invalid Authorization header even for
       // a public repo, aborting the candidate before recovery can run.
