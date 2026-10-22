@@ -51,6 +51,19 @@ test("only the owner gets the engine Update button, which the update route requi
   assert.match(section, /\{isOwner \? \(\s*<Button[^]*?data-testid="engine-update"/);
 });
 
+test("a self-managed llama.cpp still lets Update install an offered audio.cpp release", () => {
+  const section = read(
+    "features/settings/components/engine-versions-section.tsx",
+  );
+  // The backend's `supported` describes llama.cpp only; audio.cpp joins update_available on its own.
+  assert.match(
+    section,
+    /const unmanaged = status\?\.supported === false && !offered;/,
+  );
+  assert.match(section, /disabled=\{!offered \|\| applying \|\| checking\}/);
+  assert.doesNotMatch(section, /!supported/);
+});
+
 test("every locale labels the audio.cpp row", () => {
   const locales = readdirSync(new URL("i18n/locales/", SRC)).filter((name) =>
     name.endsWith(".ts"),

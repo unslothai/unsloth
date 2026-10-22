@@ -61,7 +61,8 @@ export function EngineVersionsSection() {
   );
   const job = status?.job;
   const offered = status != null && llamaUpdateOffered(status);
-  const supported = status?.supported !== false;
+  // `supported` is llama.cpp's alone: an audio.cpp update still installs beside a self-managed llama.cpp.
+  const unmanaged = status?.supported === false && !offered;
 
   async function handleCheck() {
     setChecking(true);
@@ -89,13 +90,13 @@ export function EngineVersionsSection() {
       ? t("settings.about.engines.checking")
       : checkFailed
         ? t("settings.about.engines.checkFailed")
-        : supported
-          ? offered
+        : unmanaged
+          ? t("settings.about.engines.unsupported")
+          : offered
             ? t("settings.about.engines.updatesAvailable")
             : status
               ? t("settings.about.engines.upToDate")
-              : t("settings.about.engines.checking")
-          : t("settings.about.engines.unsupported");
+              : t("settings.about.engines.checking");
 
   return (
     <SettingsSection
@@ -150,7 +151,7 @@ export function EngineVersionsSection() {
           {isOwner ? (
             <Button
               size="sm"
-              disabled={!offered || !supported || applying || checking}
+              disabled={!offered || applying || checking}
               onClick={() => void handleUpdate()}
               data-testid="engine-update"
             >
