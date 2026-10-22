@@ -883,3 +883,19 @@ def test_loader_dtype_choices_ask_the_helper_at_call_time(path):
         ):
             stale.append(f"{node.name}:{node.lineno}")
     assert stale == []
+
+
+def test_an_unreadable_peer_keeps_the_cards_that_were_read(monkeypatch):
+    # One card's capability query raising must not drop the per-device table for the others.
+    monkeypatch.delenv("WORLD_SIZE", raising = False)
+    fake = _fake_torch([SM90, None, SM75])
+    read = fake.cuda.get_device_capability
+
+    def get_device_capability(device = None):
+        if read(device) is None:
+            raise RuntimeError("capability query failed")
+        return read(device)
+
+    fake.cuda.get_device_capability = get_device_capability
+    namespace = _run_model_utils_chain(fake, monkeypatch)
+    assert namespace["_BF16_BY_DEVICE"] == {0: True, 2: False}

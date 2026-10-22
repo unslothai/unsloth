@@ -4036,15 +4036,21 @@ elif DEVICE_TYPE == "cuda":
     # One process on cards that differ: is_bfloat16_supported() answers for the current device at call
     # time, so torch.cuda.set_device after import is followed. Distributed launches keep the weakest card.
     if not distributed_launch():
+        # Each card is read on its own: an unreadable peer drops out (and falls back to
+        # SUPPORTS_BFLOAT16) instead of discarding the cards that were read.
+        _bf16_caps = {}
         try:
-            _bf16_caps = [
-                tuple(torch.cuda.get_device_capability(i)) for i in range(torch.cuda.device_count())
-            ]
-            if len(set(_bf16_caps)) > 1:
-                _BF16_BY_DEVICE = {i: cap[0] >= 8 for i, cap in enumerate(_bf16_caps)}
-            del _bf16_caps
+            _bf16_count = torch.cuda.device_count()
         except Exception:
-            _BF16_BY_DEVICE = None
+            _bf16_count = 0
+        for _bf16_i in range(_bf16_count):
+            try:
+                _bf16_caps[_bf16_i] = tuple(torch.cuda.get_device_capability(_bf16_i))
+            except Exception:
+                pass
+        if len(set(_bf16_caps.values())) > 1:
+            _BF16_BY_DEVICE = {i: cap[0] >= 8 for i, cap in _bf16_caps.items()}
+        del _bf16_caps, _bf16_count
 
     if major_version >= 8:
         if _package_available("flash_attn"):
