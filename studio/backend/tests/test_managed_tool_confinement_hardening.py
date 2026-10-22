@@ -263,3 +263,14 @@ def test_registered_folders_on_removable_mounts_stay_silent(monkeypatch):
     assert path_gate._path_needs_approval(f"{models}/link") is True
     assert path_gate._path_needs_approval(f"{models}/bus") is True
     assert path_gate._path_needs_approval(f"{models}/same") is False
+    # A link that hides another account's subtree behind an innocent name still asks.
+    links[f"{models}/public"] = f"{models}/Accounts/bob/Projects/a.txt"
+    assert path_gate._path_needs_approval(f"{models}/public") is True
+    # A model folder registered through a symlink onto the drive stays silent, as it was before.
+    monkeypatch.setattr(path_gate, "_silent_roots", lambda: (("/run", "/models"), ()))
+    links.clear()
+    links["/models"] = models
+    links["/models/x.gguf"] = f"{models}/x.gguf"
+    links["/models/link"] = "/run/media/alice/SSD/private/notes.txt"
+    assert path_gate._path_needs_approval("/models/x.gguf") is False
+    assert path_gate._path_needs_approval("/models/link") is True

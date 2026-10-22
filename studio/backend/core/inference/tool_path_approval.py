@@ -608,14 +608,21 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # allowed rather than on every token. A link planted between this and the open is not covered;
     # that TOCTOU gap is the OS sandbox's to close.
     resolved = _resolved_fs_text(candidate)
-    # The same carve-out for the target: a link inside a silent root (a registered folder on a drive
-    # included) can point into /run/user or elsewhere on the drive, which the broad `/run` root holds.
-    if resolved != candidate and _uncovered_runtime_subtree(resolved, roots):
-        return True
-    # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
-    # macOS `/tmp`, `/dev/stdout`) would otherwise reject everything under it.
-    if resolved != candidate and not _contained_in(resolved, roots):
-        if not _contained_in(resolved, tuple(_resolved_fs_text(r) for r in roots)):
+    if resolved != candidate:
+        # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
+        # macOS `/tmp`, `/dev/stdout`, `/models -> /run/media/...`) would otherwise reject everything under it.
+        if not _contained_in(resolved, roots) or _contained_in(
+            resolved, _WRITABLE_RUNTIME_SUBTREES
+        ):
+            roots = roots + tuple(_resolved_fs_text(r) for r in roots)
+        if not _contained_in(resolved, roots):
+            return True
+        # The same carve-out for the target: a link inside a silent root (a registered folder on a drive
+        # included) can point into /run/user or elsewhere on the drive, which the broad `/run` root holds.
+        if _uncovered_runtime_subtree(resolved, roots):
+            return True
+        # And the account segment: a link can hide `Accounts/<other>/...` behind an innocent name.
+        if _names_a_managed_account_subtree(resolved):
             return True
     # Inside a silent root, so only a credential underneath one still asks. Running the (superlinear) credential
     # scan only here, rather than on every operand, keeps the ordering guarantee at a fraction of the cost:
