@@ -9,23 +9,10 @@ import { stripTrailingTemplatePlaceholder } from "../src/features/chat/utils/tra
 import { readSrc } from "./helpers/kit.ts";
 
 /**
- * #9098. The trailing `${...}` strip is a statement about a FINISHED reply: a
- * provider occasionally leaves a fragment on the end of an otherwise complete
- * answer. Run once per SSE arrival it was tested against every PREFIX of that
- * answer instead, and any prefix that happened to end at a complete `${...}`
- * was cut. The adapter assigns the result back, so the cut was permanent and
- * the rest of the reply streamed in on top of the hole:
- *
- *     in    return `Hi, ${name}!`      21 chars
- *     out   return `Hi,!`              13 chars
- *
- * The two modes below are the before and the after. Both call the same shipped
- * function; only WHEN it is called differs, which is the whole change. The
- * function itself is not touched, so its own suite
- * (`trailing-template-placeholder.test.ts`) still describes what it removes.
+ * A FINISHED reply's trailing `${...}` strip, run on every streamed prefix, permanently cut
+ * any prefix ending at a complete `${...}`. Old vs new placement of the same function.
  */
 
-/** Old: strip after every arrival, assigning the result back. */
 function replayPerArrival(chunks: readonly string[]): string {
   let buffer = "";
   for (const chunk of chunks) {
@@ -35,7 +22,6 @@ function replayPerArrival(chunks: readonly string[]): string {
   return buffer;
 }
 
-/** New: accumulate, then strip the finished reply once. */
 function replayAtEnd(chunks: readonly string[]): string {
   let buffer = "";
   for (const chunk of chunks) {
@@ -44,7 +30,6 @@ function replayAtEnd(chunks: readonly string[]): string {
   return stripTrailingTemplatePlaceholder(buffer);
 }
 
-/** Split `text` into `size`-character arrivals. */
 function chunked(text: string, size: number): string[] {
   const out: string[] = [];
   for (let at = 0; at < text.length; at += size) {
@@ -55,15 +40,9 @@ function chunked(text: string, size: number): string[] {
 
 type Case = {
   name: string;
-  /** The reply as the provider sends it, split into arrivals. */
   chunks: string[];
-  /** What the user must end up with. */
   expect: string;
-  /**
-   * Whether the per-arrival placement lost text on this input. `true` marks a
-   * case that discriminates the fix from the bug by itself; `false` marks one
-   * that was already correct and must stay correct.
-   */
+  /** `true` marks a case that alone discriminates the fix from the bug. */
   lostBefore: boolean;
 };
 
@@ -71,17 +50,13 @@ const FULL = "return `Hi, ${name}!`";
 
 const CASES: Case[] = [
   {
-    // The issue, verbatim, one character per arrival: the worst case, because
-    // every prefix of the reply is a buffer the strip gets to see.
     name: "the reported reproduction, one character per arrival",
     chunks: [...FULL],
     expect: FULL,
     lostBefore: true,
   },
   {
-    // The case the strip exists for. Mistral magistral leaks a fragment onto
-    // the end of a complete answer; deleting the strip outright brings that
-    // back, so it is pinned here rather than assumed.
+    // Mistral magistral leaks a fragment onto a finished answer; this is why the strip exists.
     name: "a fragment genuinely at the end of a finished reply is still removed",
     chunks: ["The answer ", "is 42.", " ${answer}"],
     expect: "The answer is 42.",
@@ -100,14 +75,7 @@ const CASES: Case[] = [
     lostBefore: true,
   },
   {
-    // Two arrivals, split so the closing brace lands on the second. The strip
-    // cannot match the first, which is exactly why the bug was believed
-    // impossible: it fires on the arrival that COMPLETES the fragment.
     name: "a placeholder split across two arrivals",
-    // The boundary lands right after the closing brace, which is the arrival
-    // the strip fires on. Move it one character later and this reply survives
-    // the old placement untouched: the bug is a property of where the chunks
-    // fell, not of the reply.
     chunks: ["greet(`Hi, ${na", "me}", "!`)"],
     expect: "greet(`Hi, ${name}!`)",
     lostBefore: true,
@@ -120,24 +88,18 @@ const CASES: Case[] = [
   },
   {
     name: "a placeholder inside a fenced code block",
-    // Arrivals cut so one of them ends at the closing brace, as a real
-    // token boundary can. Chunked any other way this reply comes through
-    // whole, which is why the bug looks intermittent from the outside.
     chunks: ["```js\n", "const s = ", "`v=${v}", "`;\n", "```"],
     expect: "```js\nconst s = `v=${v}`;\n```",
     lostBefore: true,
   },
   {
-    // #9088 landed CRLF handling on this path. `\r` is whitespace to the
-    // pattern, so a CRLF reply gives the strip more places to fire, not fewer.
+    // `\r` is whitespace to the pattern, so CRLF gives the strip more places to fire.
     name: "CRLF line endings",
     chunks: ["line one\r\n", "const t = `${q}", "`;\r\n", "line three"],
     expect: "line one\r\nconst t = `${q}`;\r\nline three",
     lostBefore: true,
   },
   {
-    // Both at once: a real template literal in the body AND a leaked fragment
-    // on the end. The fix has to keep one and remove the other.
     name: "a template literal in the body and a leaked fragment on the end",
     chunks: chunked("use `${name}` here. ${answer}", 2),
     expect: "use `${name}` here.",
@@ -156,8 +118,7 @@ test("every case survives the stream intact", () => {
 });
 
 test("the cases that discriminate really did lose text before", () => {
-  // Without this the suite could go green against a corpus that never
-  // exercised the bug, which is the failure mode a passing test hides best.
+  // Guards against a corpus that never exercised the bug.
   for (const item of CASES) {
     const before = replayPerArrival(item.chunks);
     assert.equal(
@@ -183,9 +144,6 @@ test("the reported reproduction, character for character", () => {
 });
 
 test("the finished reply does not depend on how the stream was split", () => {
-  // The property behind the fix, stated directly. An SSE stream chunks
-  // arbitrarily, so a placement whose answer depends on where the chunk
-  // boundaries fell is wrong however good it looks on one recording.
   for (const item of CASES) {
     const whole = item.chunks.join("");
     for (const size of [1, 2, 3, 5, 7, 13, 1_000]) {
@@ -199,8 +157,6 @@ test("the finished reply does not depend on how the stream was split", () => {
 });
 
 test("chunk-independence is a claim the old placement fails", () => {
-  // The mirror of the test above: if the per-arrival placement also satisfied
-  // it, the test would be measuring nothing.
   const disagreements = CASES.filter((item) => {
     const whole = item.chunks.join("");
     return [1, 2, 3, 5, 7, 13].some(
@@ -218,10 +174,7 @@ test("chunk-independence is a claim the old placement fails", () => {
 });
 
 test("the finished reply is always a prefix of what the model sent", () => {
-  // The strip only ever takes a suffix off, so a correct placement can shorten
-  // the reply and can never rewrite the middle of it. This is the sharpest
-  // statement of the bug available: the old placement BREAKS it, because a cut
-  // made mid-stream sits in the middle of the finished reply.
+  // The strip only removes a suffix, so a correct placement can never rewrite the middle.
   for (const item of CASES) {
     const whole = item.chunks.join("");
     const atEnd = replayAtEnd(item.chunks);
@@ -246,7 +199,6 @@ test("the old placement spliced the middle out, which is why text vanished", () 
 });
 
 test("randomised replies keep the two placements apart", () => {
-  // Fixed seed, so a failure is reproducible from the message alone.
   let seed = 0x9098;
   const next = () => {
     seed = (seed * 1_103_515_245 + 12_345) & 0x7fffffff;
@@ -266,15 +218,11 @@ test("randomised replies keep the two placements apart", () => {
     const atEnd = replayAtEnd(chunked(reply, size));
     const perArrival = replayPerArrival(chunked(reply, size));
 
-    // The fix's guarantee: one answer, the one the whole reply deserves.
     assert.equal(
       atEnd,
       stripTrailingTemplatePlaceholder(reply),
       `atEnd disagreed on ${JSON.stringify(reply)} at size ${size}`,
     );
-    // And what it returns is always a prefix of the reply. The old placement
-    // is not: on 4,000 random replies it produced a non-prefix often enough to
-    // be counted below, which is text removed from the middle.
     assert.equal(
       reply.startsWith(atEnd),
       true,
@@ -299,18 +247,9 @@ test("randomised replies keep the two placements apart", () => {
   );
 });
 
-// ---------------------------------------------------------- the shipped placement ---
-
 const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
-/**
- * Which of the two modes above the adapter is actually running.
- *
- * Read out of the source rather than assumed, so the corpus is exercised
- * through the placement that ships. Without this the cases would go on passing
- * against `replayAtEnd` no matter what the adapter did, which is the exact
- * shape of a test that measures nothing.
- */
+/** Read from the source so the corpus runs through the placement that ships. */
 function shippedReplay(): {
   replay: (chunks: readonly string[]) => string;
   loopStart: number;
@@ -358,13 +297,7 @@ test("the corpus is run through the placement the adapter actually ships", () =>
   }
 });
 
-// ------------------------------------------------------------- continuation ---
-
-/**
- * A whole run, the way the adapter does it: the buffer starts at whatever a
- * Continue was seeded with, and the strip is skipped entirely unless this run
- * appended reply text of its own.
- */
+/** The strip is skipped unless this run appended reply text of its own. */
 function replayRun(seed: string, chunks: readonly string[]): string {
   let buffer = seed;
   let produced = false;
@@ -378,21 +311,13 @@ function replayRun(seed: string, chunks: readonly string[]): string {
 const SEEDED_PARTIAL = "greet(`Hi, ${name}";
 
 test("a continuation that adds nothing leaves the seeded partial alone", () => {
-  // A Continue run is seeded with the previous run's partial. If it finishes
-  // without a text or reasoning delta, having emitted only a tool call, the
-  // buffer holds nothing but that partial. The partial is the middle of a reply
-  // someone is still writing, so trimming its tail is #9098 one step in: the
-  // user presses Continue again and the text is already gone.
+  // A Continue run that emits only a tool call holds just the seeded partial, the middle of a
+  // reply; trimming its tail would lose text.
   assert.equal(replayRun(SEEDED_PARTIAL, []), SEEDED_PARTIAL);
-  // And the strip would have cut it, so the gate is what saves it rather than
-  // the input happening not to match.
   assert.equal(stripTrailingTemplatePlaceholder(SEEDED_PARTIAL), "greet(`Hi,");
 });
 
 test("a continuation that does add text is finished normally", () => {
-  // The gate must not turn into "continuations are never trimmed". A Continue
-  // that writes the rest of the answer produces a finished reply like any
-  // other, artefact and all.
   assert.equal(replayRun(SEEDED_PARTIAL, ["!", "`)"]), "greet(`Hi, ${name}!`)");
   assert.equal(
     replayRun("The answer is 42.", [" ${", "answer}"]),

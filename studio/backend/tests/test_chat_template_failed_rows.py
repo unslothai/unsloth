@@ -123,11 +123,7 @@ def test_a_column_named_like_the_marker_is_not_clobbered():
 
 
 def test_a_marker_named_column_survives_a_schema_less_stream():
-    """A generator-backed IterableDataset reports column_names AND features as None.
-
-    Taking that as "no columns" picks the plain marker name, and remove_columns then
-    deletes the user's own column from every row that survived.
-    """
+    """A schema-less stream must not pick a marker column name that clashes with the user's own column."""
 
     def rows():
         for i in range(8):
@@ -149,10 +145,7 @@ def test_a_marker_named_column_survives_a_schema_less_stream():
 
 
 def test_failures_spread_across_scan_batches_are_all_counted(monkeypatch):
-    """The error column is scanned and filtered in batches, so a batch boundary is a seam.
-
-    Counting or first-error logic that only looked at one batch would under-report here.
-    """
+    """Failures spanning scan batches must all be counted, since a batch boundary is a seam."""
     monkeypatch.setattr(chat_templates, "_ERROR_SCAN_BATCH", 3)
     n = 20
     bad = {0, 4, 5, 11, 19}

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Projects nav row repeats the Projects section, so it steps aside while that section is on
-// screen, until the user decides its place in Customize sidebar.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installLocalStorageFake, readSrcAsync } from "./helpers/kit.ts";
@@ -26,7 +23,6 @@ test("the row stands down only while the section is showing", () => {
     false,
     "the row is still pinned beside the section that repeats it",
   );
-  // No projects left, or the sidebar organised as one list, and the section is gone with them.
   assert.equal(
     sidebarNavRowPinned(PROJECTS, auto, { projectsSectionShowing: false }),
     true,
@@ -36,12 +32,10 @@ test("the row stands down only while the section is showing", () => {
 test("a choice in Customize sidebar outlives the rule", () => {
   const decided = sidebarNavAutoAfterChoice(["projects"], "projects");
   assert.deepEqual(decided, []);
-  // Pinned stays pinned beside the section…
   assert.equal(
     sidebarNavRowPinned(PROJECTS, decided, { projectsSectionShowing: true }),
     true,
   );
-  // …and off stays off once every project is deleted.
   assert.equal(
     sidebarNavRowPinned({ id: "projects", pinned: false }, decided, {
       projectsSectionShowing: false,
@@ -61,7 +55,6 @@ test("only Projects has a rule; every other row reads its own pref", () => {
       );
     }
   }
-  // And a stored list cannot smuggle another id into the rule.
   const sanitized = sanitizeCustomization({
     sidebarNavAuto: ["projects", "train", "nonsense"],
   });
@@ -69,7 +62,6 @@ test("only Projects has a rule; every other row reads its own pref", () => {
 });
 
 test("an install that never chose gets the rule, one that chose keeps its choice", () => {
-  // Written before the field existed, with a layout we shipped: no choice was ever made.
   assert.deepEqual(sanitizeCustomization({}).sidebarNavAuto, ["projects"]);
   assert.deepEqual(DEFAULT_CUSTOMIZATION.sidebarNavAuto, ["projects"]);
   assert.deepEqual(
@@ -77,7 +69,6 @@ test("an install that never chose gets the rule, one that chose keeps its choice
       .sidebarNavAuto,
     ["projects"],
   );
-  // An arranged layout already carries a Projects choice, so the rule must not overrule it.
   const unpinned = sanitizeCustomization({
     sidebarNav: DEFAULT_CUSTOMIZATION.sidebarNav.map((entry) =>
       entry.id === "projects" ? { ...entry, pinned: false } : entry,
@@ -93,7 +84,6 @@ test("an install that never chose gets the rule, one that chose keeps its choice
     false,
     "an upgrade pinned a row the user had put away",
   );
-  // Reordering counts as arranging too, even with Projects left where it was.
   const reordered = sanitizeCustomization({
     sidebarNav: [
       { id: "train", pinned: true },
@@ -101,19 +91,16 @@ test("an install that never chose gets the rule, one that chose keeps its choice
     ],
   });
   assert.deepEqual(reordered.sidebarNavAuto, []);
-  // An explicit empty list is a decision, and survives the round trip.
   assert.deepEqual(sanitizeCustomization({ sidebarNavAuto: [] }).sidebarNavAuto, []);
 });
 
-// The rail hides both folder sections in CSS without unmounting them, so the row has to stay on
-// it: standing down there would bury the only way to reach projects behind More.
+// The rail hides folder sections in CSS without unmounting, so the row must stay there.
 test("the rail keeps the Projects row, since the section is hidden there", async () => {
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     sidebar,
     /const projectsSectionShowing =\n\s*projectsSectionConfigured && \(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
-  // The section itself still mounts on the rail, as it did before, and CSS hides it.
   assert.match(sidebar, /if \(!projectsSectionRendered\) return null;/);
   assert.match(
     sidebar,
@@ -121,8 +108,7 @@ test("the rail keeps the Projects row, since the section is hidden there", async
   );
 });
 
-// Pinned folders are rows of Pinned, whose ids are not the Projects list's, so a Shift-click
-// that read the Projects list found neither endpoint and cleared the selection.
+// Pinned folder ids are not in the Projects list, so range-select uses the row's own list.
 test("folders range-select within the list the row is in", async () => {
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
@@ -138,7 +124,6 @@ test("folders range-select within the list the row is in", async () => {
     sidebar,
     /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
   );
-  // Nothing reaches for the Projects list from inside the handler any more.
   const handler = sidebar.slice(
     sidebar.indexOf("function handleProjectSelectionClick("),
     sidebar.indexOf("function selectProjectForContextMenu("),
@@ -166,14 +151,12 @@ test("the sidebar and the customizer resolve the row the same way", async () => 
   );
 });
 
-// Train and Recipes reuse the folder section, so route rendering must not repin a hidden Projects row.
 test("a route that borrows the section does not bring the row back", async () => {
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(
     sidebar,
     /const projectsSectionConfigured =\n\s*organizeBy === "project" &&\n\s*!projectsSectionHidden &&\n\s*\(projects\.length > 0 \|\| projectsLoaded\);/,
   );
-  // The section itself still stands down on those routes; only the row stopped following it.
   assert.match(
     sidebar,
     /const projectsSectionRendered =\n\s*!isStudioRoute && !showTrainingRecents && projectsSectionConfigured;/,
@@ -190,8 +173,6 @@ test("a route that borrows the section does not bring the row back", async () =>
   }
 });
 
-// Both the sidebar and Customize sidebar decide the row's place, and a switch that disagrees with
-// the sidebar beside it is the bug in another form.
 test("the customizer reads the setting the same way", async () => {
   const customizer = await readSrcAsync(
     "features/settings/components/sidebar-nav-customizer.tsx",

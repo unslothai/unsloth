@@ -31,6 +31,5 @@ test("a stem that failed to load is left out of playback, so the rest still play
     mixer,
     /const loadingCount = playable\.filter\(\(stem\) => !stem\.src\)\.length/,
   );
-  // The zip needs every stem, so Download all waits for all of them.
   assert.match(mixer, /disabled=\{stems\.some\(\(stem\) => !stem\.src\)\}/);
 });

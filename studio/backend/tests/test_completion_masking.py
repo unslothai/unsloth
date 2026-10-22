@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Completion-only masking policy shared across CUDA and MLX training.
-
-Covers utils.datasets.completion_masking.apply_completion_masking, shared by
-the CUDA trainer (core/training/trainer.py) and the MLX worker
-(core/training/worker.py):
-  - unmapped models use chat template auto-detection (previously masking was
-    silently disabled),
-  - gpt-oss goes auto-first too (its quantized checkpoints ship a template
-    the manual markers cannot match),
-  - an auto-detection failure falls back to the template table markers,
-  - explicit dataset templates take precedence over tokenizer markers,
-  - a table miss after an auto failure warns and leaves the trainer unchanged.
-"""
+"""Completion-only masking for CUDA and MLX: auto-detect first, table markers as the fallback."""
 
 from __future__ import annotations
 
@@ -68,7 +56,6 @@ class _Notes:
 
 
 def test_unmapped_model_uses_auto_detection():
-    # Unmapped model: the auto path applies masking (was silently disabled).
     trainer = _Trainer()
     train_fn = _Recorder()
     notes = _Notes()
@@ -79,7 +66,7 @@ def test_unmapped_model_uses_auto_detection():
 
     assert applied is True
     assert result.wrapped_from is trainer
-    assert train_fn.calls == [dict(_AUTO)]  # applied with the detected markers
+    assert train_fn.calls == [dict(_AUTO)]
     assert notes.warnings() == []
 
 
@@ -205,9 +192,7 @@ def test_unknown_dataset_template_fails_loudly():
 
 
 def test_gpt_oss_uses_auto_detection_first():
-    # The quantized gpt-oss checkpoints ship a template without the
-    # <|channel|>final header, where the manual markers match nothing; auto
-    # derives markers from the template the checkpoint actually ships.
+    # Quantized gpt-oss templates lack <|channel|>final, so manual markers match nothing.
     trainer = _Trainer()
     train_fn = _Recorder()
 
@@ -259,8 +244,6 @@ def test_auto_failure_falls_back_to_template_table():
 
 
 def test_application_failure_propagates_not_fallback():
-    # Detection succeeds; a failure while APPLYING the masking must propagate,
-    # never silently fall back to full-sequence training.
     def train_fn(trainer, **kwargs):
         raise RuntimeError("dataset map worker crashed")
 
@@ -269,7 +252,6 @@ def test_application_failure_propagates_not_fallback():
 
 
 def test_preset_tokenizer_markers_used_directly():
-    # Preset unsloth marker attrs skip detection; zoo reuses them on a bare call.
     class _Tok:
         _unsloth_input_part = "<I>"
         _unsloth_output_part = "<O>"
@@ -282,7 +264,7 @@ def test_preset_tokenizer_markers_used_directly():
         trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_fail
     )
     assert applied is True
-    assert train_fn.calls == [{}]  # bare call, stored parts
+    assert train_fn.calls == [{}]
 
 
 def test_table_miss_warns_and_disables_without_crashing():
@@ -295,14 +277,13 @@ def test_table_miss_warns_and_disables_without_crashing():
     )
 
     assert applied is False
-    assert result is trainer  # unchanged: full sequence training
-    assert train_fn.calls == []  # detection failed; nothing applied
+    assert result is trainer
+    assert train_fn.calls == []
     assert any("could not be applied" in m for m in notes.warnings())
     assert any("full sequences" in m for m in notes.warnings())
 
 
 def test_num_proc_forwarded_only_when_given():
-    # CUDA path passes num_proc; the MLX path omits it.
     train_fn = _Recorder()
     apply_completion_masking(
         _Trainer(), "unsloth/Qwen3-0.6B", train_fn, num_proc = 4, detect_fn = _detect_ok
@@ -321,7 +302,6 @@ def test_num_proc_forwarded_only_when_given():
 
 
 def test_manual_fallback_failure_propagates_to_caller():
-    # Errors while applying the manual fallback must propagate to the caller.
     def train_fn(trainer, **kwargs):
         raise RuntimeError("boom")
 
@@ -351,8 +331,6 @@ def test_lookup_manual_markers():
 
 
 def test_renamed_gpt_oss_gets_template_markers():
-    # Name-detected as gpt-oss but not in the exact-name table: must use the
-    # gpt-oss markers, not fall through to full-sequence training.
     trainer = _Trainer()
     train_fn = _Recorder()
 
@@ -386,8 +364,6 @@ _FakeTokenizerWrapper.__name__ = "TokenizerWrapper"
 
 
 def test_mlx_tokenizer_wrapper_unwrapped_for_preset_markers():
-    # Markers live on the inner HF tokenizer that the wrapper hides; the helper
-    # must unwrap so the preset bare-call path still fires on MLX.
     class _Tok:
         _unsloth_input_part = "<I>"
         _unsloth_output_part = "<O>"
@@ -400,12 +376,10 @@ def test_mlx_tokenizer_wrapper_unwrapped_for_preset_markers():
         trainer, "LiquidAI/LFM2-8B-A1B", train_fn, detect_fn = _detect_fail
     )
     assert applied is True
-    assert train_fn.calls == [{}]  # bare call, stored parts
+    assert train_fn.calls == [{}]
 
 
 def test_mlx_tokenizer_wrapper_unwrapped_for_detection():
-    # Detection must see the real tokenizer, not the wrapper, so it does not
-    # depend on the loader's __call__ patch.
     class _Tok:
         pass
 

@@ -115,6 +115,7 @@ export const en = {
     reload: "Reload",
     more: "More",
     addressPlaceholder: "Search or enter a URL",
+    local: "Local",
     suggested: "Suggested",
     suggestedMenu: {
       open: "Open",
@@ -465,6 +466,8 @@ export const en = {
       downloadFailed: "Couldn't download {name}",
       notMarked: "{name} was saved but couldn't be marked as downloaded from the internet, so your system won't warn before opening it.",
       blocked: "This address can't open in the browser panel. It only opens public websites.",
+      blockedLocal: "This local address can't open here. Type it in the address bar to open it.",
+      studioAddress: "This is Unsloth's own address, so it can't open in the browser panel.",
       clearDataSettingDescription: "Clear browsing history, download history, cached pages, and the cookies and site data pages keep, which signs you out of sites.",
       clearDataDescription: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",
       clearDataFailed: "Couldn't clear site data. Try again.",
