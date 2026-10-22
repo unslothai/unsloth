@@ -102,6 +102,17 @@ export function matchesRecommended(
   return format !== null && checkpointQuantFormats.includes(format);
 }
 
+/** Recommended for an image / video model: also full-precision checkpoints, since diffusers repos are the main way to run them. */
+export function matchesRecommendedDiffusion(
+  result: { id: string; isGguf: boolean; quantMethod?: string },
+  checkpointQuantFormats: readonly string[],
+): boolean {
+  return (
+    matchesRecommended(result, checkpointQuantFormats) ||
+    checkpointQuantFormat(result) === null
+  );
+}
+
 // Recommended browsing lists every GGUF but only checkpoints with more than this many likes.
 export const MIN_RECOMMENDED_CHECKPOINT_LIKES = 30;
 

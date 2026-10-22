@@ -22,7 +22,13 @@ import utils.hardware.hardware as hw
 from auth import policy
 from auth.authentication import get_current_subject
 from utils import video_cpu_settings as vcs
-from utils.account_context import OWNER, AccountContext, bind_account, current_account, reset_account
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    bind_account,
+    current_account,
+    reset_account,
+)
 
 ALICE = AccountContext("a" * 32, "alice")
 
@@ -67,6 +73,8 @@ def _host(
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: (chat_only_reason, None))
     monkeypatch.setattr(hw, "_torch_mps_available", lambda: torch if mps is None else mps)
     monkeypatch.setattr(hw.platform, "system", lambda: system)
+    # Independent of the interpreter running the suite (an x86_64 Python on Apple Silicon is Rosetta).
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: False)
 
 
 def _opt_in(store, value):

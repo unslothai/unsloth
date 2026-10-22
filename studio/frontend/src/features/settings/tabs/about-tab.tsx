@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
+import { hardwareGpuMemoryGb } from "@/hooks/gpu-vram";
 import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
 import { type TranslationKey, useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
@@ -18,6 +19,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -92,6 +94,19 @@ function acceleratorRuntimes(hw: HardwareInfo): RuntimeRow[] {
   return rows;
 }
 
+function aboutGpuMemoryText(
+  gpu: HardwareInfo["gpus"][number],
+  t: ReturnType<typeof useT>,
+): string {
+  const memory = hardwareGpuMemoryGb(gpu);
+  if (!memory) return "";
+  const gpuMemoryGb =
+    memory.gb < 1 ? memory.gb.toFixed(1) : Math.round(memory.gb);
+  return memory.integrated
+    ? ` · ${gpuMemoryGb} GiB (${t("settings.about.gpuIntegrated")})`
+    : ` · ${gpuMemoryGb} GiB`;
+}
+
 export function AboutTab() {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -156,13 +171,9 @@ export function AboutTab() {
         </p>
       </header>
 
-      {/* llama.cpp and audio.cpp rows live in the shared version section so they sit with
-          the Unsloth/Package rows; the props keep them About-only (General passes none). */}
-      <StudioVersionSection
-        llamaCppVersion={hw.llamaCpp}
-        audioCppVersion={hw.audioCpp}
-        desktopAppVersion={desktopAppVersion}
-      />
+      <StudioVersionSection desktopAppVersion={desktopAppVersion} />
+
+      <EngineVersionsSection />
 
       <div ref={updateSectionRef} className="scroll-mt-5">
         <SettingsSection title={t("settings.about.updates")}>
@@ -191,9 +202,7 @@ export function AboutTab() {
             >
               <code className="font-mono text-xs text-muted-foreground">
                 {gpu.name ?? "—"}
-                {gpu.vramTotalGb != null
-                  ? ` · ${Math.round(gpu.vramTotalGb)} GiB`
-                  : ""}
+                {aboutGpuMemoryText(gpu, t)}
               </code>
             </SettingsRow>
           ))}

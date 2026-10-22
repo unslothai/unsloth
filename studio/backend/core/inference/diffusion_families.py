@@ -24,6 +24,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
 from .family_name_match import (
+    model_identity,
     name_key_in,
     normalize_family_name,
     token_in_name,
@@ -89,6 +90,8 @@ class DiffusionFamily:
     cfg_kwarg: str = "guidance_scale"
     # False when the diffusers pipeline ignores a negative prompt; the native engine decides on its own.
     uses_negative_prompt: bool = True
+    # False when the diffusers pipeline takes no guidance (FLUX.3 distilled); FLUX.2 klein is per checkpoint.
+    uses_guidance: bool = True
     # One or two sentences on how this family reads prompts; None when it has no quirks.
     prompt_hint: Optional[str] = None
     # The pipe attribute holding the denoiser: ``pipe.transformer`` for DiT families, ``pipe.unet`` for SDXL.
@@ -136,6 +139,11 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
+    # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
+    comfy_shift_node: Optional[str] = None
+    comfy_shift_node_variants: tuple[tuple[str, Optional[str]], ...] = field(default_factory = tuple)
+    # Textual-inversion format (diffusion_embeddings KIND_*); None = no embeddings.
+    textual_inversion: Optional[str] = None
     # (lowercased id substring, ((key, value), ...)) overriding ``base_repo``'s transformer config; first match wins.
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
@@ -255,8 +263,10 @@ class DiffusionFamily:
 
 
 # Fresh servers rendered 2-4 variants of one seed here (FLUX.1, Z-Image, Qwen-Image; the edit siblings share their DiT):
-# near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200 measured deterministic.
+# near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200: FLUX.1 measured deterministic.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
+# Qwen-Image races on B200 too (torch 2.14): fresh processes rendered one seed 26 dB apart; with the filter 6/6 matched bitwise.
+_QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 
 # --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
 
@@ -313,6 +323,26 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
+# Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
+# Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
+SMALL_DIT_BF16_WHEN_RESIDENT = (
+    "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
+    "0.103 on Z-Image-Turbo)"
+)
+# Bases of a small-DiT family that are not small: FLUX.2 klein 9B / base 9B (18.2 GB bf16 transformer, unmeasured)
+# keep the quantized auto default. Upstream ids; mirrors fold back through ``canonical_base``.
+_SMALL_DIT_LARGE_BASES = frozenset(
+    {
+        "black-forest-labs/flux.2-klein-9b",
+        "black-forest-labs/flux.2-klein-base-9b",
+    }
+)
+
+
+def small_dit_rule_excludes(base_repo: Optional[str]) -> bool:
+    """True when ``base_repo`` (vendor id or mirror) is a large variant the small-DiT bf16 rule must not cover."""
+    return canonical_base(base_repo).lower() in _SMALL_DIT_LARGE_BASES
+
 
 # FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
 # sharded T5 through its index (the shards sit beside it in the snapshot). The shards are listed so every fetch,
@@ -354,6 +384,13 @@ _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        comfy_shift_node = "flux",
+        # FLUX.1-schnell is ComfyUI's FLOW-type FluxSchnell (ModelSamplingDiscreteFlow, shift 1.0).
+        comfy_shift_node_variants = tuple(
+            (f"{prefix}-{model}", node)
+            for model, node in (("schnell", "sd3"), ("krea-dev", "flux"), ("dev", "flux"))
+            for prefix in ("flux.1", "flux1", "flux-1", "flux")
+        ),
         label = "FLUX.1-dev",
         profile = FamilyProfile(
             auto_prefer = _GATED_AUTO_PREFER,
@@ -418,8 +455,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # flux match.
     DiffusionFamily(
         name = "flux.2-klein",
+        comfy_shift_node = "flux",
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -429,6 +468,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         pipeline_class = "Flux2KleinPipeline",
+        # B200: a per-process XBLOCK pick for the q/k RMSNorm reduction changed the latent and stuck to the compile home.
+        filter_reduction_configs_archs = ((10, 0),),
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
@@ -500,8 +541,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # for reading order; the longest-alias match is what keeps "...-klein-base" off the distilled entry.
     DiffusionFamily(
         name = "flux.3-klein-base",
+        comfy_shift_node = "flux",
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -511,6 +554,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
             # NVFP4 gate record for a base still lifts it.
             scheme_deny = frozenset({"nvfp4"}),
+            # The FLUX.2 VAE and the same 2x2 packed 128-channel tokens, so FLUX.2's fitted map applies.
+            preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
@@ -552,8 +597,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "flux.3-klein",
+        comfy_shift_node = "flux",
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -563,6 +610,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
             # NVFP4 gate record for a base still lifts it.
             scheme_deny = frozenset({"nvfp4"}),
+            # The FLUX.2 VAE and the same 2x2 packed 128-channel tokens, so FLUX.2's fitted map applies.
+            preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
@@ -572,6 +621,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/flux-3-image-klein-FP8"),
         ),
         uses_negative_prompt = False,
+        uses_guidance = False,
         transformer_class = "Flux3Transformer2DModel",
         # Qwen3-VL-4B pre-cast fp8, the int8 ConvRot encoder's fallback (diffusion_te_prequant.TE_INT8_CONVROT_FILES).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/flux-3-image-klein-FP8"),),
@@ -600,9 +650,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # BFL's own diffusers file.
     DiffusionFamily(
         name = "flux.2-dev",
+        comfy_shift_node = "flux",
         label = "FLUX.2-dev",
         profile = FamilyProfile(te_int8_skip = (3, 0), preview_factors = "flux2"),
         pipeline_class = "Flux2Pipeline",
+        # cudnn.benchmark's per-process VAE conv pick rendered 5 variants of one seed over 7 fresh B200 processes.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
@@ -637,6 +690,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # FLUX instruction editing: FluxKontextPipeline takes an image + instruction. Specific aliases first so
         # detect_family prefers this over "flux.1".
         name = "flux.1-kontext",
+        comfy_shift_node = "flux",
         profile = FamilyProfile(preview_factors = "flux1"),
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         comfy_flow_shift = flux_mu_shift(
@@ -668,6 +722,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
+        comfy_shift_node = "sd3",
         # Same DiT class + unpadded text stream as qwen-image.
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
@@ -676,7 +731,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
             preview_factors = "qwen_image",
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         comfy_flow_shift_variants = (
             ("qwen-image-edit-2511", 3.1),
@@ -743,13 +798,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # qwen-image's DiT plus use_additional_t_cond / use_layer3d_rope (read from the base config for a GGUF) and an
         # RGBA VAE. Listed before qwen-image so the name outranks it.
         name = "qwen-image-layered",
+        comfy_shift_node = "sd3",
         # Same DiT class + unpadded text stream as qwen-image.
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
         comfy_flow_shift = 1.0,
         layer_count = 2,
@@ -787,6 +843,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "qwen-image",
+        comfy_shift_node = "sd3",
         label = "Qwen-Image",
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
@@ -797,7 +854,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "qwen_image",
             auto_static_skip = (("qwen/qwen-image", (("default", 2), ("max", 3), ("steps", 20))),),
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
@@ -856,6 +913,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
         # rules, none of which fit.
         name = "qwen-image-2.1",
+        comfy_shift_node = "flux",
         profile = FamilyProfile(
             # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's exclusion list
             # does not apply and this one was measured rather than inherited. ``txt_in`` is here as a QUALITY lever,
@@ -997,6 +1055,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
+        comfy_shift_node = "sd3",
         label = "Z-Image",
         profile = FamilyProfile(
             # exactly the Linears the hosted INT8 checkpoint quantizes (all input axes 256-divisible)
@@ -1017,9 +1076,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 default_on = True,
             ),
             auto_prefer = _GATED_AUTO_PREFER,
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "zimage",
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS + ((10, 0),),
         cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
@@ -1067,6 +1128,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "krea-2",
+        comfy_shift_node = "flux",
         label = "Krea 2",
         pipeline_class = "Krea2Pipeline",
         transformer_class = "Krea2Transformer2DModel",
@@ -1096,6 +1158,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # from_pretrained path loads it. NOT aliased to bare "lumina": Lumina-Next checkpoints are a different arch.
     DiffusionFamily(
         name = "lumina-2",
+        comfy_shift_node = "sd3",
         profile = FamilyProfile(auto_bf16_when_resident = _LUMINA2_BF16_WHEN_RESIDENT),
         pipeline_class = "Lumina2Pipeline",
         transformer_class = "Lumina2Transformer2DModel",
@@ -1121,6 +1184,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # covers Full/Dev/Fast.
     DiffusionFamily(
         name = "hunyuanimage-2.1",
+        comfy_shift_node = "sd3",
         profile = FamilyProfile(
             auto_static_skip = (
                 ("hunyuanvideo-community/hunyuanimage-2.1-diffusers", (("max", 2), ("steps", 50))),
@@ -1153,6 +1217,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "hidream-i1",
+        comfy_shift_node = "sd3",
         profile = FamilyProfile(
             auto_bf16_when_resident = _HIDREAM_BF16_WHEN_RESIDENT,
             trusted_repos = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
@@ -1214,6 +1279,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
         name = "sdxl",
+        textual_inversion = "sdxl",
         label = "SDXL",
         profile = FamilyProfile(preview_factors = "sdxl"),
         # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
@@ -1314,7 +1380,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    needle = repo_id.lower()
+    needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:
         # Do not let a generic family (qwen-image) swallow a variant it cannot run (qwen-image-LAYERED). Scoped to the
@@ -1469,7 +1535,9 @@ def _family_from_content(
     if not path:
         return fam
     needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
-    vetoed = fam is None and any(_best_family_match(n.lower()) is not None for n in needles)
+    vetoed = fam is None and any(
+        _best_family_match(model_identity(n).lower()) is not None for n in needles
+    )
     name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
     if name is None:
         return None
@@ -2040,6 +2108,12 @@ def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[floa
 _FLUX3_FLOW_MAP = {"flux.3-klein": True, "flux.3-klein-base": False}
 
 
+def comfy_shift_node_for(fam: Any, *identifiers: Optional[str]) -> Optional[str]:
+    """The ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*) for this checkpoint, or None."""
+    row = _first_variant(getattr(fam, "comfy_shift_node_variants", ()), identifiers)
+    return row[1] if row else getattr(fam, "comfy_shift_node", None)
+
+
 def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> dict[str, Any]:
     row = _first_variant(getattr(fam, "transformer_config_variants", ()), identifiers)
     overrides = dict(row[1]) if row else {}
@@ -2080,7 +2154,7 @@ def transformer_variant_differs_from_base(
 def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
     """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
+        needle = model_identity(identifier).lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
             if name_key_in(key, needle):
                 return steps, guidance

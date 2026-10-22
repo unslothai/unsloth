@@ -1284,6 +1284,7 @@ export function useAudioModelSlot({
     reloadOnCpu,
     setLoadFailureHandlers,
     handleEject,
+    invalidatePendingTtsSelection,
     trainedTtsModels,
   };
 }

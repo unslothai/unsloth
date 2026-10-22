@@ -76,12 +76,10 @@ def test_reasoning_effort_ladder(model_id):
 
 def test_requires_symmetric_kv():
     from core.inference.llama_cpp import LlamaCppBackend
-
     assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek41") is True
 
 
 def test_listed_as_default_gguf():
     from core.inference.defaults import DEFAULT_MODELS_GGUF, DEFAULT_MODELS_STANDARD
-
     assert "unsloth/DeepSeek-V4.1-Flash-1017-GGUF" in DEFAULT_MODELS_GGUF
     assert "unsloth/DeepSeek-V4.1-Flash-1017-GGUF" in DEFAULT_MODELS_STANDARD

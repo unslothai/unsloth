@@ -648,6 +648,98 @@ def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
         return out
 
 
+@triton.jit
+def _e4m3fn_byte_to_float(b):
+    # No fp8e4nv before sm_89: decode E4M3FN bytes exactly (bias 7, exp 0 subnormal, 0x7F/0xFF NaN).
+    exp = (b >> 3) & 15
+    man = b & 7
+    normal = (((exp + 120) << 23) | (man << 20)).to(tl.float32, bitcast = True)
+    value = tl.where(exp == 0, man.to(tl.float32) * 0.001953125, normal)
+    value = tl.where((b & 127) == 127, float("nan"), value)
+    # Sign as a bit, not a negation: -x can lower to 0 - x, which turns code 0x80 (-0.0) into +0.0.
+    return (value.to(tl.int32, bitcast = True) | ((b & 128) << 24)).to(tl.float32, bitcast = True)
+
+
+@triton.jit
+def _e4m3fn_bytes_dequant_kernel(
+    x_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    stride_xm,
+    stride_xn,
+    stride_sm,
+    stride_sn,
+    BLOCK_M_Q: tl.constexpr,
+    BLOCK_N_Q: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+):
+    pid_r = tl.program_id(0)
+    pid_c = tl.program_id(1)
+    if LONG_INDEXING:
+        pid_r = pid_r.to(tl.int64)
+        pid_c = pid_c.to(tl.int64)
+    r = pid_r * BLOCK_R + tl.arange(0, BLOCK_R)
+    c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    mask = (r[:, None] < M) & (c[None, :] < N)
+    b = tl.load(x_ptr + r[:, None] * stride_xm + c[None, :] * stride_xn, mask = mask, other = 0)
+    # Per-element scale gather: a tile spans several quant blocks (also covers ragged / rectangular ones).
+    s = tl.load(
+        s_ptr + (r // BLOCK_M_Q)[:, None] * stride_sm + (c // BLOCK_N_Q)[None, :] * stride_sn,
+        mask = mask,
+        other = 0.0,
+    ).to(tl.float32)
+    # One fp32 multiply then one round to the output dtype, as the torch fallback does.
+    y = _e4m3fn_byte_to_float(b.to(tl.int32)) * s
+    tl.store(y_ptr + r[:, None] * N + c[None, :], y.to(y_ptr.dtype.element_ty), mask = mask)
+
+
+# (rows, cols, num_warps) per program, from a tile sweep on T4 and A100.
+_BYTES_DEQUANT_TILE = (8, 512, 4)
+
+
+@_opaque_under_compile(
+    "fp8_e4m3fn_bytes_dequant",
+    lambda weight, weight_scale, block_m, block_n, dtype: torch.empty(
+        weight.shape, dtype = dtype, device = weight.device
+    ),
+)
+def _e4m3fn_bytes_dequant(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_m: int, block_n: int, dtype: torch.dtype
+) -> torch.Tensor:
+    # Raw bytes, as triton has no fp8e4nv below sm89; bit-identical to _torch_blockwise_dequant.
+    m, n = weight.shape
+    out = torch.empty((m, n), dtype = dtype, device = weight.device)
+    if out.numel() == 0:
+        return out
+    x = weight.view(torch.uint8)
+    BLOCK_R, BLOCK_C, num_warps = _BYTES_DEQUANT_TILE
+    grid = (triton.cdiv(m, BLOCK_R), triton.cdiv(n, BLOCK_C))
+    with _fp8_triton_device_context(weight):
+        _e4m3fn_bytes_dequant_kernel[grid](
+            x,
+            weight_scale,
+            out,
+            m,
+            n,
+            x.stride(0),
+            x.stride(1),
+            weight_scale.stride(0),
+            weight_scale.stride(1),
+            BLOCK_M_Q = block_m,
+            BLOCK_N_Q = block_n,
+            BLOCK_R = BLOCK_R,
+            BLOCK_C = BLOCK_C,
+            LONG_INDEXING = long_indexing(x, weight_scale, out),
+            enable_fp_fusion = True,
+            num_warps = num_warps,
+        )
+    return out
+
+
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
     """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
     evenly into block_size and this GPU can compile its fp8 dtype, else a
@@ -670,6 +762,17 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
     ):
         # Uneven tiling, rectangular blocks, or an uncompilable fp8 dtype: the triton kernel uses one
         # BLOCK_SIZE for both axes, so it mis-indexes when block_size[0] != [1].
+        if (
+            torch.version.hip is None
+            and weight.is_cuda
+            and weight.dtype == torch.float8_e4m3fn
+            and weight_scale.ndim == 2
+        ):
+            # NVIDIA, any arch (below sm89, or ragged / rectangular blocks): one triton pass over the
+            # e4m3fn bytes, bit-identical to the torch loop.
+            return _e4m3fn_bytes_dequant(
+                weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
+            )
         return _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype)
     # Even tiling with square blocks: pass the real block size, since weight_dequant would silently
     # default to 128 and dequantize wrongly.

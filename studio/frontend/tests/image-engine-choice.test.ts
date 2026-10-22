@@ -11,6 +11,7 @@ import {
   loadedEngineChoice,
   nativeLoadAdvanced,
   nativeReloadTarget,
+  offersCompiledLoraReload,
   offersNativeLoraReload,
   reapplyChangesEngine,
   reapplyTarget,
@@ -91,6 +92,16 @@ test("the loaded build's select value follows the backend's engine provenance", 
   assert.equal(loadedEngineChoice({ loaded: false, resolved: { engine: { source: "explicit", requested: "sd_cpp" } } }), "auto");
 });
 
+test("the LoRA note offers a plain reload once Speed=Auto compiled LoRA off", () => {
+  const compiled = { loaded: true, engine: "diffusers", supports_lora: false, lora_after_reload: true };
+  assert.equal(offersCompiledLoraReload(compiled), true);
+  assert.equal(offersCompiledLoraReload({ ...compiled, lora_after_reload: false }), false);
+  assert.equal(offersCompiledLoraReload({ ...compiled, supports_lora: true }), false);
+  // An older backend sends no field.
+  assert.equal(offersCompiledLoraReload({ loaded: true, supports_lora: false }), false);
+  assert.equal(offersCompiledLoraReload({ loaded: false, lora_after_reload: true }), false);
+});
+
 test("the LoRA note offers a native reload only where it would turn LoRA on", () => {
   assert.equal(offersNativeLoraReload(ggufOnDiffusers), true);
   assert.equal(offersNativeLoraReload({ ...ggufOnDiffusers, lora_via_native: false }), false);
@@ -141,7 +152,7 @@ test("the native reload targets the resident GGUF, not a stale page load another
 
 test("a refused load reseeds the Engine select from the resident build", () => {
   const source = readSrc("features/images/images-page.tsx");
-  assert.match(source, /setEngineSeed\(""\);[\s\S]{0,80}dismissLoadToast\(\);\s*reportLoadFailure\(err, "Failed to start load"\)/);
+  assert.match(source, /setEngineSeed\(""\);[\s\S]{0,80}dismissLoadToast\(\);\s*(?:if \(!offerLoadAnywayFor\(err\)\) )?reportLoadFailure\(err, "Failed to start load"\)/);
 });
 
 test("a staged pick snapshots its resolved engine for both the plan and the load", () => {
@@ -302,7 +313,8 @@ test("a background load that fails reseeds the Engine select, like a refused sta
 test("a reload from status keeps the resident GGUF's base repo, on the load and the plan", () => {
   const gguf = { loaded: true, model_kind: "gguf", repo_id: "org/klein-GGUF", gguf_filename: "klein-Q4.gguf", base_repo: "org/custom-base" };
   assert.equal(residentReloadTarget(gguf)?.baseRepo, "org/custom-base");
-  assert.equal(nativeReloadTarget(null, gguf)?.baseRepo, "org/custom-base");
+  // With no last load T has no baseRepo, so name it: the status-built target is the branch that carries one.
+  assert.equal(nativeReloadTarget<{ repoId: string; baseRepo?: string }>(null, gguf)?.baseRepo, "org/custom-base");
   assert.equal("baseRepo" in (residentReloadTarget({ ...gguf, base_repo: null }) ?? {}), false);
   const source = readSrc("features/images/images-page.tsx");
   assert.equal(source.match(/base_repo: opts\.baseRepo,/g)?.length, 2);

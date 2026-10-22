@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { isModEnter } from "@/features/settings/lib/keyboard-shortcuts";
 import { useT } from "@/i18n";
 import {
   ChevronLeftStandardIcon,
@@ -47,7 +48,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  type KeyboardEvent,
   type ReactElement,
   type ReactNode,
   useEffect,
@@ -85,10 +85,6 @@ const keyOf = (skill: SkillRecord) => `${skill.source}:${skill.name}`;
 
 function describe(cause: unknown): string | undefined {
   return cause instanceof Error ? cause.message : undefined;
-}
-
-function isChord(event: KeyboardEvent): boolean {
-  return event.key === "Enter" && (event.metaKey || event.ctrlKey);
 }
 
 function isEditable(skill: SkillRecord): boolean {
@@ -942,7 +938,7 @@ function Editor({
         if (!readOnly) onSubmit();
       }}
       onKeyDown={(event) => {
-        if (isChord(event) && !readOnly) {
+        if (isModEnter(event) && !readOnly) {
           event.preventDefault();
           onSubmit();
         }

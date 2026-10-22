@@ -255,6 +255,49 @@ def test_self_check_under_inference_mode():
         assert LH._self_check(device, dtype) is True
 
 
+def _self_check_in_checkpoint(device, dtype):
+    # Cold first call from inside a non-reentrant checkpointed layer (DDP / FSDP2, Gemma-4
+    # E-series): returns the cached verdict, the layer's run count and whether w got a grad.
+    from torch.utils.checkpoint import checkpoint
+
+    LH._SELF_CHECK.pop((str(device), dtype), None)
+    calls = []
+    w = (torch.randn(8, 8, device = device) * 0.1).requires_grad_()
+
+    def layer(x):
+        calls.append(1)
+        h = (x @ w).sigmoid()
+        LH._self_check(device, dtype)
+        return (h @ w).sigmoid()
+
+    checkpoint(layer, torch.randn(4, 8, device = device), use_reentrant = False).sum().backward()
+    return LH._SELF_CHECK[(str(device), dtype)], len(calls), w.grad is not None
+
+
+def test_self_check_stays_out_of_a_non_reentrant_checkpoint(monkeypatch):
+    # The check's tensors were packed into the layer's checkpoint and its autograd.grad recomputed
+    # the layer mid-forward: CheckpointError, cached as False, the kernel off for the process.
+    def kernel(q, k, v, lo, hi, scale):
+        groups = q.shape[1] // k.shape[1]
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1), is_causal = True
+        )
+        return out.transpose(1, 2)
+
+    monkeypatch.setattr(LH, "large_head_attention", kernel)
+    monkeypatch.setattr(LH, "_measured_faster_on", lambda device: True)
+    monkeypatch.setattr(LH, "_dense_intervals", lambda *args: (None, None))
+    key = (str(torch.device("cpu")), torch.float32)
+    monkeypatch.setitem(LH._SELF_CHECK, key, None)
+    assert _self_check_in_checkpoint(torch.device("cpu"), torch.float32) == (True, 2, True)
+
+
+@pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
+def test_real_self_check_stays_out_of_a_non_reentrant_checkpoint():
+    device, dtype = torch.device("cuda", torch.cuda.current_device()), _cuda_dtype()
+    assert _self_check_in_checkpoint(device, dtype) == (True, 2, True)
+
+
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_patch_self_checks_so_compiled_graphs_use_the_kernel(monkeypatch):
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -492,6 +535,103 @@ def test_install_skipped_when_every_self_check_fails(monkeypatch):
         assert ALL_ATTENTION_FUNCTIONS["sdpa"] is saved
     finally:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+
+
+def test_enabled_reads_the_same_value_compiled_and_eager(monkeypatch):
+    # An lru_cache wrapper is traced through by dynamo (with a warning), so a compiled caller
+    # re-read the environment while eager callers kept the cached value.
+    import sys
+
+    # dynamo resolves globals through sys.modules; this test loads the file standalone.
+    monkeypatch.setitem(sys.modules, LH.__name__, LH)
+    monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "1")
+    LH._enabled.cache_clear()
+    try:
+        assert LH._enabled() is True
+        monkeypatch.setenv("UNSLOTH_HD512_ATTENTION", "0")
+
+        def f(x):
+            return x + 1 if LH._enabled() else x - 1
+
+        x = torch.zeros(3)
+        torch._dynamo.reset()
+        compiled = torch.compile(f, backend = "eager", fullgraph = True)(x)
+        assert torch.equal(compiled, f(x))
+        assert torch.equal(compiled, x + 1)
+    finally:
+        monkeypatch.delenv("UNSLOTH_HD512_ATTENTION")
+        LH._enabled.cache_clear()
+        torch._dynamo.reset()
+
+
+def _install_with_params(monkeypatch, params, **attrs):
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    model = torch.nn.Linear(4, 4)
+    model.head_dim = 512
+    for name, value in attrs.items():
+        setattr(model, name, value)
+    monkeypatch.setattr(model, "parameters", lambda: iter(params))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(LH, "_PATCHED", [False])
+    checked = []
+    monkeypatch.setattr(
+        LH, "_self_check", lambda device, dtype: checked.append((device, dtype)) or True
+    )
+    saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    try:
+        installed = LH.patch_large_head_attention(model)
+    finally:
+        ALL_ATTENTION_FUNCTIONS["sdpa"] = saved
+    return installed, checked
+
+
+class _FakeParam:
+    is_cuda = True
+    device = torch.device("cuda", 0)
+
+    def __init__(
+        self,
+        dtype,
+        quant_dtype = None,
+    ):
+        self.dtype = dtype
+        if quant_dtype is not None:
+            self.quant_state = type("QuantState", (), {"dtype": quant_dtype})()
+
+
+def test_patch_self_checks_the_compute_dtype_of_4bit_only_shards(monkeypatch):
+    # A GPU holding only bnb 4-bit weights (uint8 storage), e.g. embeddings offloaded to CPU, must
+    # still get its load-time check, else compiled blocks never use the kernel there.
+    cpu = type(
+        "CpuParam", (), {"is_cuda": False, "device": torch.device("cpu"), "dtype": torch.bfloat16}
+    )()
+    installed, checked = _install_with_params(
+        monkeypatch, [cpu, _FakeParam(torch.uint8, torch.bfloat16)]
+    )
+    assert installed is True
+    assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
+
+
+def test_patch_self_checks_the_compute_dtype_of_float_packed_4bit(monkeypatch):
+    # bnb_4bit_quant_storage = float16 with bfloat16 compute: the storage dtype is a half type, but
+    # attention runs in bfloat16, so that is the verdict compiled blocks look up.
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16, torch.bfloat16)]
+    )
+    assert installed is True
+    assert checked == [(torch.device("cuda", 0), torch.bfloat16)]
+
+
+def test_patch_skips_the_fp16_self_check_under_forced_float32(monkeypatch):
+    # zoo's forced float32 Gemma-4 attention runs float32 SDPA directly, so the router never sees it.
+    installed, checked = _install_with_params(
+        monkeypatch, [_FakeParam(torch.float16)], _unsloth_forced_float32 = True
+    )
+    assert installed is False and checked == []
+    installed, checked = _install_with_params(monkeypatch, [_FakeParam(torch.float16)])
+    assert installed is True and checked == [(torch.device("cuda", 0), torch.float16)]
 
 
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")

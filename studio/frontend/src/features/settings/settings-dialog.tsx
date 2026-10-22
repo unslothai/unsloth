@@ -49,6 +49,7 @@ import {
   lazy,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -366,6 +367,12 @@ export function SettingsDialog() {
     entry: string;
   } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: panelTab is the trigger, not an input.
+  useLayoutEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+  }, [panelTab]);
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);

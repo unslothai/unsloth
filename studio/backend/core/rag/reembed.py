@@ -94,19 +94,8 @@ def stale_counts() -> dict:
     return {"documents": len(rows) - archived, "archived": archived}
 
 
-def _clip(text: str, count, limit: int | None) -> tuple[str, bool]:
-    """The longest prefix of ``text`` the embedder accepts. Chunks were sized with the previous
-    model's tokenizer, and llama-server refuses an input past its batch instead of truncating."""
-    if not limit or count(text) <= limit:
-        return text, False
-    lo, hi = 0, len(text)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if count(text[:mid]) <= limit:
-            lo = mid
-        else:
-            hi = mid - 1
-    return text[:lo], True
+# Chunks were sized with the previous model's tokenizer.
+_clip = embeddings.clip_to_limit
 
 
 def _reembed_document(job: _Job, doc: dict, model: str) -> bool:

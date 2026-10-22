@@ -77,11 +77,11 @@ class LoadRequest(BaseModel):
         ge = 0.05,
         le = 0.99,
         description = "Upper bound on the share of each selected GPU the managed engine may claim "
-        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+        "(vLLM --gpu-memory-utilization). Unset lets Unsloth size it from free memory.",
     )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
-        description = "Inference engine to use. 'auto' selects Studio's default backend; "
+        description = "Inference engine to use. 'auto' selects Unsloth's default backend; "
         "'vllm' and 'sglang' require an installed optional engine.",
     )
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -629,7 +629,7 @@ class ValidateModelRequest(BaseModel):
         ge = 0.05,
         le = 0.99,
         description = "Upper bound on the share of each selected GPU the managed engine may claim "
-        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+        "(vLLM --gpu-memory-utilization). Unset lets Unsloth size it from free memory.",
     )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -1287,7 +1287,7 @@ class EstimateMemoryResponse(BaseModel):
 class MemoryEstimate(BaseModel):
     """The canonical answer to "what would this load occupy".
 
-    Studio grew two routes that answer this -- ``POST /inference/estimate-memory``
+    Unsloth grew two routes that answer this -- ``POST /inference/estimate-memory``
     for the Load Model panel and ``GET /models/kv-cache-estimate`` for the Hub
     memory bar. They share the ``_gguf_memory_breakdown`` planner, so their
     arithmetic already agrees; this is the shared CONTRACT, so their vocabulary
@@ -1477,7 +1477,7 @@ class _InferenceRuntimeFields(BaseModel):
     engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
-        description = "Active inference engine. 'auto' denotes Studio's default backend; "
+        description = "Active inference engine. 'auto' denotes Unsloth's default backend; "
         "'vllm' and 'sglang' denote optional managed engines.",
     )
 
@@ -1862,7 +1862,7 @@ class _InferenceRuntimeFields(BaseModel):
     gpu_backend_unavailable: bool = Field(
         False,
         description = (
-            "Studio detected a GPU for this load but llama.cpp's own device table "
+            "Unsloth detected a GPU for this load but llama.cpp's own device table "
             "reported none, meaning its GPU backend did not initialise. Separates a "
             "backend failure from a fit that placed no layers; both log 0/M."
         ),
@@ -2889,7 +2889,7 @@ class ChatCompletionRequest(BaseModel):
     )
     bypass_permissions: Optional[bool] = Field(
         False,
-        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls. Refused (400) for API keys and keyless API access unless the server sets UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1.",
     )
     permission_mode: Optional[str] = Field(
         None,
@@ -2969,7 +2969,7 @@ class ChatCompletionRequest(BaseModel):
     compact_context: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "[x-unsloth] Compact now (Unsloth's /compact). A local GGUF or MLX chat starts "
             "a checkpoint on this request even when it still fits: older turns are "
             "archived and searchable, and the model keeps the newest turn plus standing "
             "instructions until the chat outgrows the window again. Needs "
@@ -3382,6 +3382,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    max_tokens: Optional[int] = Field(None, ge = 1)
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = None
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = None
+    compaction_headroom_ratio: Optional[float] = Field(None, ge = 0.0, le = 0.9)
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
@@ -4589,6 +4593,13 @@ class DiffusionLoadRequest(BaseModel):
         "cut), low_vram (offload every component, lowest VRAM, slower). "
         "Overrides cpu_offload when set.",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -5059,6 +5070,86 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
         "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
     )
+    prompt_weighting: Optional[bool] = Field(
+        None,
+        description = "AUTOMATIC1111 prompt syntax on SDXL: (word:1.2), (word), [word], \\( escapes and "
+        "BREAK. Omitted: on. A prompt without that syntax that fits in 75 CLIP tokens renders exactly "
+        "as before; a longer one is encoded in 75-token chunks instead of truncated. false reads "
+        "brackets literally (long prompts still chunk). "
+        "true is refused for a model without the control.",
+    )
+    clip_skip: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 12,
+        description = "CLIP skip in AUTOMATIC1111 numbering: 1 = the model's own layer. On SDXL 1 and 2 "
+        "both read the penultimate layer the model already uses (as in A1111 and Forge), 3 reads one "
+        "layer earlier. Values above 1 are refused for models without the control.",
+    )
+    cfg_rescale: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "CFG rescale (diffusers guidance_rescale, arXiv 2305.08891): 0 = off. Mostly for "
+        "v-prediction / zero-terminal-SNR checkpoints, where 0.7 is the paper's value. Above 0 is "
+        "refused for models without the control.",
+    )
+    variation_seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**32 - 1,
+        description = "Variation seed (AUTOMATIC1111 subseed): the seed's noise is slerped toward this "
+        "seed's noise by variation_strength. Omitted with a strength: random. Text-to-image only.",
+    )
+    variation_strength: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "How far toward the variation seed's noise: 0 = off, 1 = the variation seed alone. "
+        "With a batch, every image keeps the seed and image i uses variation_seed + i.",
+    )
+    shift: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 100.0,
+        description = "Static flow shift for this generation, as ComfyUI's ModelSamplingSD3 / "
+        "ModelSamplingAuraFlow `shift`, on models whose status `shift_control.node` is 'sd3'. "
+        "Omitted keeps the model's schedule.",
+    )
+    base_shift: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 100.0,
+        description = "ComfyUI ModelSamplingFlux `base_shift` (default 0.5) for models whose status "
+        "`shift_control.node` is 'flux'. Omitted with `max_shift` keeps the model's schedule.",
+    )
+    max_shift: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 100.0,
+        description = "ComfyUI ModelSamplingFlux `max_shift` (default 1.15), applied at the output "
+        "size, for models whose status `shift_control.node` is 'flux'.",
+    )
+    mask_blur: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 64,
+        description = "Inpaint only: Gaussian blur radius (px) applied to the mask before inpainting "
+        "(AUTOMATIC1111 'Mask blur'). Omitted or 0 uses the mask as painted.",
+    )
+    inpaint_only_masked: Optional[bool] = Field(
+        None,
+        description = "Inpaint only: render just the masked region (plus `inpaint_padding`) at full "
+        "resolution and paste it back (AUTOMATIC1111 'Inpaint area: Only masked', diffusers "
+        "padding_mask_crop). Requires status `supports_inpaint_only_masked`; omitted or false "
+        "inpaints the whole picture.",
+    )
+    inpaint_padding: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 256,
+        description = "Padding (px) around the mask when `inpaint_only_masked` is set; omitted = 32.",
+    )
     provider_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
@@ -5160,6 +5251,10 @@ class GalleryImage(BaseModel):
     )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
+    engine: Optional[str] = Field(
+        None,
+        description = "Engine that ran it (diffusers, sd_cpp or mlx); the same seed draws different noise on each",
+    )
     model_kind: Optional[str] = Field(
         None, description = "How the model was loaded: gguf, single_file or pipeline"
     )
@@ -5251,6 +5346,43 @@ class GalleryImage(BaseModel):
     schedule_type: Optional[str] = Field(
         None, description = "Schedule type the sampler ran with (resolved); null = the config's"
     )
+    prompt_weighting: Optional[bool] = Field(
+        None,
+        description = "True when AUTOMATIC1111 weight syntax was applied; false when the request turned "
+        "it off (literal prompt); null = nothing to weight",
+    )
+    clip_skip: Optional[int] = Field(
+        None, description = "CLIP skip (AUTOMATIC1111 numbering) above 1; null = the model's layer"
+    )
+    cfg_rescale: Optional[float] = Field(None, description = "CFG rescale; null = off")
+    variation_seed: Optional[int] = Field(
+        None, description = "Variation seed THIS image used; null = no variation"
+    )
+    variation_strength: Optional[float] = Field(
+        None, description = "Variation strength; null = no variation"
+    )
+    shift: Optional[float] = Field(
+        None, description = "Requested static flow shift; null = the model's"
+    )
+    base_shift: Optional[float] = Field(
+        None, description = "Requested ModelSamplingFlux base shift; null = the model's"
+    )
+    max_shift: Optional[float] = Field(
+        None, description = "Requested ModelSamplingFlux max shift; null = the model's"
+    )
+    embeddings: Optional[list[str]] = Field(
+        None, description = "Textual-inversion embeddings the prompts used (filename stems)"
+    )
+    mask_blur: Optional[int] = Field(
+        None, description = "Inpaint mask blur radius (px) applied; null = none"
+    )
+    inpaint_only_masked: Optional[bool] = Field(
+        None,
+        description = "True when the inpaint rendered only the masked area; null = whole picture",
+    )
+    inpaint_padding: Optional[int] = Field(
+        None, description = "Padding (px) around the mask for an only-masked inpaint"
+    )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
@@ -5312,7 +5444,8 @@ class MaskSegmenterDownloadRequest(BaseModel):
     """Body of POST /images/segment/download (optional)."""
 
     hf_token: Optional[str] = Field(
-        None, description = "Hugging Face token for the gated facebook/sam3 download"
+        None,
+        description = "Hugging Face token, needed only for a gated segmenter variant (facebook/sam3)",
     )
 
 
@@ -5410,6 +5543,11 @@ class DiffusionLoadProgressResponse(BaseModel):
     bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
     fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class DiffusionResolvedControl(BaseModel):
@@ -5512,11 +5650,22 @@ class DiffusionDownloadPlanResponse(BaseModel):
         "nothing is known to be wrong -- the check reads metadata only and stays silent on an "
         "unreadable header, an unmapped base or an offline host.",
     )
+    incompatible_code: Optional[str] = Field(
+        None,
+        description = "Stable code for incompatible_reason: 'unified-memory-load' when the unified-memory "
+        "check refused the pick (send allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    multi_gpu: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
+    )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
         default_factory = list,
@@ -5596,6 +5745,11 @@ class DiffusionStatusResponse(BaseModel):
     transformer_cache: Optional[str] = Field(
         None, description = "Step cache engaged: fbcache | static | null"
     )
+    baked_loras: list[str] = Field(
+        default_factory = list,
+        description = "Adapter ids baked into the transformer at load time, as GalleryImage.baked_loras "
+        "records them; empty when the load baked none",
+    )
     transformer_cache_stats: Optional[dict] = Field(
         None,
         description = "Static step skip only: mode, schedule and the last generation's "
@@ -5646,6 +5800,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "LoRA is unavailable on the current engine for this GGUF, but reloading it on the "
         "native sd.cpp engine would apply LoRAs.",
     )
+    lora_after_reload: bool = Field(
+        False,
+        description = "LoRA is off only because Speed=Auto compiled the model on its 3rd image; "
+        "reloading it (still Speed=Auto) brings LoRAs back until then.",
+    )
     supports_lora: bool = Field(
         False,
         description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "
@@ -5660,11 +5819,33 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
+    supports_inpaint_only_masked: bool = Field(
+        False,
+        description = "Whether the loaded model's inpaint pipeline can render only the masked area "
+        "(`inpaint_only_masked`, diffusers padding_mask_crop). Diffusers only; False for the "
+        "native and MLX engines and when nothing is loaded.",
+    )
     supports_negative_prompt: bool = Field(
         True,
         description = "Whether the loaded model applies a negative prompt on this engine "
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    negative_prompt_min_guidance: Optional[float] = Field(
+        None,
+        description = "The guidance Unsloth passes a negative prompt above (1 for classifier-free guidance, 0 "
+        "for Z-Image and Krea 2 on diffusers); null when guidance does not gate it. Drives the Negative prompt hint.",
+    )
+    supports_guidance: bool = Field(
+        True,
+        description = "Whether the loaded model reads the guidance value on this engine (drives the Guidance "
+        "control). False on diffusers for FLUX.3 Klein (distilled), whose pipeline has no guidance, and for "
+        "distilled FLUX.2 klein checkpoints, which Flux2KleinPipeline runs without it.",
+    )
+    supports_live_preview: bool = Field(
+        True,
+        description = "Whether generations on this load can stream live denoise previews (drives the Live preview "
+        "switch). False on the native and MLX engines and for families without a fitted preview map.",
     )
     prompt_hint: Optional[str] = Field(
         None,
@@ -5676,6 +5857,25 @@ class DiffusionStatusResponse(BaseModel):
         description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
         "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
         "models, the native and MLX engines, or nothing loaded.",
+    )
+    sd_controls: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "SDXL prompt weighting, CLIP skip, CFG rescale and variation seed: "
+        "{prompt_weighting, clip_skip {min, max, default, same_as_default_through}, cfg_rescale "
+        "{min, max, default, recommended}, variation_seed, vary_strength, prediction_type}. Null when "
+        "the loaded model has none of them (every non-SDXL family, the native and MLX engines).",
+    )
+    shift_control: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "The Shift control the loaded flow-matching model takes, or null to hide it: "
+        "{node: 'sd3', shift} (one static shift, ComfyUI ModelSamplingSD3 / AuraFlow; shift = the "
+        "loaded value or null when resolution-dependent) or {node: 'flux', base_shift, max_shift} "
+        "(ComfyUI ModelSamplingFlux defaults). Diffusers engine only.",
+    )
+    textual_inversion: Optional[str] = Field(
+        None,
+        description = "Textual-inversion embedding format the loaded model takes ('sdxl'), or null when "
+        "it takes none. Embeddings are listed by GET /api/models/diffusion-embeddings.",
     )
     # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
@@ -5741,6 +5941,39 @@ class ImageGenerationRequest(BaseModel):
     stream: Optional[bool] = Field(
         None, description = "Streaming image generation is not supported; omit or set false."
     )
+    width: Optional[int] = Field(
+        None,
+        ge = 256,
+        le = 2048,
+        description = "[x-unsloth] Image width in pixels (multiple of 16); send with height "
+        "instead of size.",
+    )
+    height: Optional[int] = Field(
+        None,
+        ge = 256,
+        le = 2048,
+        description = "[x-unsloth] Image height in pixels (multiple of 16); send with width "
+        "instead of size.",
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 100, description = "[x-unsloth] Denoising steps (default per model)."
+    )
+    guidance: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "[x-unsloth] Classifier-free guidance scale (default per model).",
+    )
+    seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**53 - 1,
+        description = "[x-unsloth] Seed for a repeatable image (random if omitted). With n > 1 "
+        "each image derives its own seed from it.",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, description = "[x-unsloth] What to avoid, on models that take a negative prompt."
+    )
 
     @field_validator("n", "size", "response_format", mode = "before")
     @classmethod
@@ -5749,6 +5982,12 @@ class ImageGenerationRequest(BaseModel):
         if value is None:
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("seed", mode = "before")
+    @classmethod
+    def _minus_one_seed_means_random(cls, value):
+        # -1 = random (A1111, sd.cpp); seed was ignored here before, so -1 must not start 400ing.
+        return None if value == -1 else value
 
 
 class ImageGenerationData(BaseModel):
@@ -6063,6 +6302,14 @@ class AudioRunRequest(BaseModel):
         max_length = 64,
         pattern = r"^[A-Za-z0-9_-]+$",
         description = "Your id for this run; POST it to /audio/cancel to stop the run",
+    )
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, Speak sends the text to that "
+        "connection's /audio/speech as `model` and the clip is saved to history.",
+    )
+    voice: Optional[str] = Field(
+        None, max_length = 256, description = "Voice on the connection named by `provider_id`."
     )
 
     @model_validator(mode = "after")
@@ -6559,6 +6806,13 @@ class VideoLoadRequest(BaseModel):
         "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
         "(offload every component, lowest VRAM, slower).",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -6994,6 +7248,11 @@ class VideoLoadProgressResponse(BaseModel):
         None, description = "Estimated total bytes to download (null = unknown)"
     )
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class VideoGenerationDefaults(BaseModel):
@@ -7059,6 +7318,12 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    multi_gpu: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
+    )
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     evicted: List[str] = Field(
         default_factory = list,

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 decode steps as CUDA graphs: ``diffusion_qwenimage21.graph_plan`` + ``GraphedForward``.
-
-CPU tests check the plan (what runs eager, that the planned call is tensors-only and bit-identical to the eager
-fast step). CUDA tests record real graphs on a tiny random transformer and compare whole renders against the
-stock diffusers forward, bit for bit."""
+"""Graph plan checked on CPU; CUDA renders must match the stock diffusers forward bit for bit."""
 
 from __future__ import annotations
 
@@ -21,7 +17,7 @@ from core.inference import diffusion_qwenimage21 as q
 torch = pytest.importorskip("torch")
 qmod = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21")
 
-# Sibling import: pytest puts the rootdir on sys.path, not this directory.
+# pytest puts the rootdir on sys.path, not this directory
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
@@ -101,7 +97,6 @@ def test_planned_decode_step_is_bit_identical_to_the_eager_fast_step(case):
         call, planned = plan
         got = call(**planned)[0]
     assert torch.equal(want, got)
-    # Everything the graph layer has to copy is a tensor or a constant: no opaque object, no float.
     key = cg.graph_key(((), planned))
     assert not cg._uncapturable(key)
     assert not cg._has_float(key)
@@ -117,24 +112,21 @@ def test_what_the_plan_leaves_eager(monkeypatch):
     with torch.inference_mode():
         cached = _call_kwargs(inp, hs, t, kv, "cached")
         assert q.graph_plan(m, (), cached) is not None
-        # The prefill fills the cache from Python; it stays eager.
+        # the prefill fills the cache from Python, so it stays eager
         assert q.graph_plan(m, (), {**cached, "kv_cache_mode": "extract"}) is None
         assert q.graph_plan(m, (), {**cached, "kv_cache": None, "kv_cache_mode": None}) is None
         assert q.graph_plan(m, (), {**cached, "return_dict": True}) is None
-        # A LoRA scale rides in attention_kwargs through the forward's decorator.
         assert q.graph_plan(m, (), {**cached, "attention_kwargs": {"scale": 0.5}}) is None
         assert (
             q.graph_plan(m, (hs,), {k: v for k, v in cached.items() if k != "hidden_states"})
             is None
         )
         assert q.graph_plan(m, (), {**cached, "unknown": 1}) is None
-        # An empty cache (no prefill yet) is not plannable, and never raises.
         empty = qmod.QwenImage21KVCache(len(m.transformer_blocks))
         assert q.graph_plan(m, (), {**cached, "kv_cache": empty}) is None
         assert q.graph_plan(m, (), {**cached, "img_mask": "not a tensor"}) is None
     with torch.enable_grad():
         assert q.graph_plan(m, (), cached) is None
-    # A prefix K/V too large to keep a second copy of per graph stays eager.
     monkeypatch.setattr(q, "GRAPH_KV_MAX_BYTES", 16)
     with torch.inference_mode():
         assert q.graph_plan(m, (), cached) is None
@@ -201,9 +193,6 @@ def test_a_failed_capture_falls_back_to_the_callers_own_call():
     assert cg._POOL_BOX[0] is None
 
 
-# ------------------------------------------------------------------------------------------------- CUDA
-
-
 def _cuda_inputs(**case):
     return {k: (v.to("cuda") if torch.is_tensor(v) else v) for k, v in _inputs(**case).items()}
 
@@ -231,7 +220,7 @@ def test_graphed_render_is_bit_identical_to_the_stock_forward(case):
         assert torch.equal(a, b)
         assert torch.equal(a, c)
     assert not handle.poisoned, handle.capture_error
-    # Two renders: two prefills eager, one capture, every decode step replayed (the capturing one included).
+    # two prefills eager, one capture, every decode step replayed (the capturing one too)
     assert handle.stats["planned_eager"] == 2
     assert handle.stats["captures"] == 1
     assert handle.stats["replays"] == 2 * (5 - 1)
@@ -269,8 +258,7 @@ def test_a_new_prompt_length_recaptures_and_the_oldest_graph_is_evicted():
                 assert torch.equal(a, b)
     finally:
         cg.uninstall_all([handle])
-    # 9 and 11 capture, 9 replays, 13 evicts the least recently replayed (11). After the first capture a new length
-    # runs its first decode step for real (that is its warm-up) and records on the next one.
+    # 9 and 11 capture, 9 replays, 13 evicts 11 (LRU); a new length warms up on its first decode step
     assert handle.stats["captures"] == 3
     assert handle.stats["shape_warmups"] == 2
     assert handle.stats["evictions"] == 1
@@ -351,7 +339,7 @@ def test_graph_statics_match_the_eager_inputs_strides_and_inference_mode():
         (entry,) = handle.cache.values()
         kv, hs = _prefilled(m, inp)
         with torch.inference_mode():
-            # Decode-step latents come out of the previous step, made in inference mode like everything else here.
+            # decode latents come from the previous step, made in inference mode
             hs = hs.clone()
             t = torch.full((1,), 0.5, device = "cuda")
             _, planned = q.graph_plan(m, (), _call_kwargs(inp, hs, t, kv, "cached"))
@@ -376,7 +364,7 @@ def test_planned_decode_steps_do_not_sync_the_host():
         with torch.inference_mode():
             for i in range(5):
                 t = torch.full((2,), 1.0 - i / 5, device = "cuda")
-                # Step 1 captures (its warm-up and capture synchronize by design); later replays must not.
+                # step 1 warm-up and capture synchronize by design; later replays must not
                 if i >= 2:
                     torch.cuda.set_sync_debug_mode("error")
                 try:
@@ -386,9 +374,6 @@ def test_planned_decode_steps_do_not_sync_the_host():
     finally:
         cg.uninstall_all([handle])
     assert handle.stats["replays"] == 4
-
-
-# ------------------------------------------------------------------------------------------- offloaded
 
 
 def _block_streamed(m):
@@ -410,7 +395,7 @@ def test_block_streamed_decode_steps_replay_bit_identically(case):
     from core.inference import diffusion_offload_prefetch as op
 
     resident = _render(_model().to("cuda"), _cuda_inputs(**case))
-    assert q.install()  # before the hooks, as Studio's load does
+    assert q.install()
     m = _model()
     pipe = _block_streamed(m)
     eager = _render(m, _cuda_inputs(**case))
@@ -428,9 +413,7 @@ def test_block_streamed_decode_steps_replay_bit_identically(case):
             for i in range(3):
                 t = torch.full((hs.shape[0],), 1.0 - i / 5, device = "cuda")
                 if i:
-                    torch.cuda.set_sync_debug_mode(
-                        "error"
-                    )  # a replay of the streamed step never waits on the host
+                    torch.cuda.set_sync_debug_mode("error")
                 try:
                     m(**_call_kwargs(inp, hs, t, kv, "extract" if i == 0 else "cached"))
                 finally:
@@ -464,8 +447,6 @@ def test_offload_placement_names_a_forward_that_cannot_record_under_the_hooks(mo
 
     monkeypatch.setattr(cs, "resolve", lambda cls: (rewrite, None))
     assert "capture-safe forward" in cg._forward_refusal(m, "group")
-    assert (
-        cg._forward_refusal(m, "model") is None
-    )  # model offload calls the slot with the weights already onloaded
+    assert cg._forward_refusal(m, "model") is None
     monkeypatch.setattr(cs, "resolve", lambda cls: (None, "X forward is not capture-safe (why)"))
     assert cg._forward_refusal(m, "model") == "X forward is not capture-safe (why)"
