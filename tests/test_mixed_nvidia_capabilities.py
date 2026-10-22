@@ -510,3 +510,28 @@ def test_diffusion_loader_checks_the_placement():
     ]
     assert calls, "FastDiffusionModel.from_pretrained must check where device_map put the weights"
     assert [ast.unparse(a) for a in calls[0].args] == ["model", "dtype"]
+
+
+def test_both_llama_load_branches_check_the_placement():
+    """num_labels loads go through AutoModelForSequenceClassification; they must check device_map too."""
+    import ast
+
+    tree = ast.parse((REPO_ROOT / "unsloth" / "models" / "llama.py").read_text(encoding = "utf-8"))
+
+    def checks(nodes):
+        return any(
+            isinstance(n, ast.Call) and getattr(n.func, "id", None) == "check_mixed_gpu_placement"
+            for stmt in nodes
+            for n in ast.walk(stmt)
+        )
+
+    branches = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If) and ast.unparse(n.test) == "num_labels is not None"
+        and any("AutoModelForSequenceClassification.from_pretrained" in ast.unparse(s) for s in n.body)
+    ]
+    assert branches, "sequence-classification load branch not found"
+    for branch in branches:
+        assert checks(branch.body), "the num_labels branch must check where device_map put the weights"
+        assert branch.orelse and checks(branch.orelse), "the causal LM branch must check the placement"

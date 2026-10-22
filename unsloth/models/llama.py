@@ -3878,6 +3878,7 @@ class FastLlamaModel:
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
                 )
+                check_mixed_gpu_placement(model, dtype)
                 # Attach dispatch hooks for bnb multi-device loads. The hooks stand aside only when vLLM
                 # owns the weights, which it never does here: vLLM has no classification head, so this
                 # branch loaded the weights in-process even though the caller asked for fast_inference.
