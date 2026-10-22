@@ -348,12 +348,16 @@ export const BUDGET = {
   // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
   // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
-  // The Vulkan CPU fallback notices and the Compute backend picker's loading item (#14521) add 769 B raw / 257 B
-  // transfer to the eager chat and settings chunks (6,878,886 -> 6,879,655 B raw, 2,071,694 -> 2,071,951 B
-  // transfer against 36497673f, one machine and build, 97 chunks). Raised by that; main measured 1 B transfer
-  // over here, so transfer is set to the measured build.
-  transferBytes: 2_071_951,
-  rawBytes: 6_879_919,
+  // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
+  // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
+  // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
+  // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
+  // (already 244 B above the measured 6_879_345).
+  // The Vulkan CPU fallback notices and the Compute backend picker's loading item (#14521) add 737 B raw / 288 B
+  // transfer to the eager chat and settings chunks (6,879,345 -> 6,880,082 B raw, 2,071,823 -> 2,072,111 B
+  // transfer against 94885076b, one machine and build, Node 24, 97 chunks). Raised by that, headroom kept.
+  transferBytes: 2_072_300,
+  rawBytes: 6_880_326,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

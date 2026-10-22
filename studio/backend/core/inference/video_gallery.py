@@ -16,6 +16,7 @@ import re
 import threading
 import uuid
 from collections.abc import Callable
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, BinaryIO, Optional, Union
 
@@ -359,7 +360,6 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
         if normalized == "webm":
             _transcode_webm(path, dest)
         else:
-            # GIF is already bounded by _GIF_MAX_FRAMES / _GIF_MAX_EDGE, so it is built in memory and written out.
             dest.write_bytes(_transcode_gif(path))
     except BaseException:
         dest.unlink(missing_ok = True)
@@ -453,56 +453,172 @@ def _transcode_webm(path: Path, dest: Path) -> None:
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
 
 
-# Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px and 300 frames (25s at
-# the 12 fps target) bound that at roughly 150 MB for the widest clip a generate request allows.
 _GIF_MAX_EDGE = 720
 _GIF_MAX_FRAMES = 300
+_GIF_PALETTEGEN_ARGS = "reserve_transparent=on:transparency_color=ffffff"
+_GIF_PALETTEUSE_ARGS = "dither=sierra2_4a"
+# palettegen needs every frame before paletteuse; above this budget decode twice instead of holding frames.
+_GIF_HOLD_BYTES = 160 * 1024 * 1024
 
 
-def _transcode_gif(path: Path) -> bytes:
-    import io
+def _gif_plan(in_v) -> tuple[Fraction, int, int, int]:
+    """(source fps, frame step, output width, output height) for a GIF of ``in_v``."""
+    rate = Fraction(in_v.average_rate or 24)
+    step = max(1, round(float(rate) / 12))
+    total = in_v.frames or 0
+    kept = (total + step - 1) // step if total else 0
+    if kept > _GIF_MAX_FRAMES:
+        step = -(-total // _GIF_MAX_FRAMES)
+    width, height = in_v.codec_context.width, in_v.codec_context.height
+    if max(width, height) > _GIF_MAX_EDGE:
+        scale = _GIF_MAX_EDGE / max(width, height)
+        width, height = max(1, round(width * scale)), max(1, round(height * scale))
+    return rate, step, width, height
 
+
+def _gif_scaled_frames(path: Path, step: int, width: int, height: int):
+    import av
+    with av.open(str(path)) as src:
+        in_v = src.streams.video[0]
+        in_v.thread_type = "AUTO"
+        kept = 0
+        for i, frame in enumerate(src.decode(in_v)):
+            if i % step:
+                continue
+            if kept >= _GIF_MAX_FRAMES:
+                break
+            kept += 1
+            yield frame.reformat(
+                width = width, height = height, format = "rgb24", interpolation = "LANCZOS"
+            )
+
+
+def _gif_palette_supported() -> bool:
     try:
         import av
-        from PIL import Image
-    except Exception as exc:  # noqa: BLE001 -- missing deps -> no transcode
-        raise RuntimeError("GIF export needs the 'av' and 'Pillow' packages.") from exc
-    frames: list[Any] = []
-    try:
-        with av.open(str(path)) as src:
-            if not src.streams.video:
-                raise RuntimeError("GIF export failed: the clip has no video stream.")
-            in_v = src.streams.video[0]
-            rate = float(in_v.average_rate or 24)
-            # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
-            step = max(1, round(rate / 12))
-            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded walk is a memory bomb
-            # (a 2048x2048 clip of 1024 frames is >4 GB). Bound both axes: downscale past _GIF_MAX_EDGE and widen the
-            # step to at most _GIF_MAX_FRAMES. MP4 keeps the full clip.
-            total = in_v.frames or 0
-            kept = (total + step - 1) // step if total else 0
-            if kept > _GIF_MAX_FRAMES:
-                step = -(-total // _GIF_MAX_FRAMES)
-            for i, frame in enumerate(src.decode(in_v)):
-                if i % step:
-                    continue
-                if len(frames) >= _GIF_MAX_FRAMES:
-                    break
-                image = frame.to_image()
-                if max(image.size) > _GIF_MAX_EDGE:
-                    scale = _GIF_MAX_EDGE / max(image.size)
-                    image = image.resize(
-                        (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
-                        Image.Resampling.LANCZOS,
-                    )
-                frames.append(image.convert("P", palette = Image.Palette.ADAPTIVE))
-    except RuntimeError:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- surface as "decoder unavailable"
-        raise RuntimeError(f"GIF export failed to decode the clip: {exc}") from exc
+        import av.filter
+
+        filters = av.filter.filters_available
+        if "palettegen" not in filters or "paletteuse" not in filters:
+            return False
+        # codecs_available lists a codec usable in either direction; only an encoder writes the GIF
+        av.codec.Codec("gif", "w")
+        return True
+    except Exception:  # noqa: BLE001 -- an old or partial build: use the Pillow path
+        return False
+
+
+def _drain_sink(sink) -> list[Any]:
+    import av
+    out = []
+    while True:
+        try:
+            out.append(sink.pull())
+        except (av.error.BlockingIOError, av.error.EOFError):
+            return out
+
+
+def _transcode_gif_palette(
+    path: Path, rate: Fraction, step: int, width: int, height: int, kept: int
+) -> bytes:
+    """GIF via one clip-wide palette (palettegen + paletteuse); per-frame quantizing was slow and flickered."""
+    import io
+
+    import av
+    import av.filter
+
+    hold = kept > 0 and kept * width * height * 3 <= _GIF_HOLD_BYTES
+    held: Optional[list[Any]] = [] if hold else None
+    time_base = Fraction(1, 100)
+
+    graph = av.filter.Graph()
+    buffer = graph.add_buffer(width = width, height = height, format = "rgb24", time_base = time_base)
+    palettegen = graph.add("palettegen", _GIF_PALETTEGEN_ARGS)
+    sink = graph.add("buffersink")
+    buffer.link_to(palettegen)
+    palettegen.link_to(sink)
+    graph.configure()
+    count = 0
+    for frame in _gif_scaled_frames(path, step, width, height):
+        frame.pts = count
+        frame.time_base = time_base
+        buffer.push(frame)
+        if held is not None:
+            held.append(frame)
+        count += 1
+    if not count:
+        raise RuntimeError("GIF export decoded no frames.")
+    buffer.push(None)
+    palettes = _drain_sink(sink)
+    if not palettes:
+        raise RuntimeError("GIF export failed: palettegen produced no palette.")
+    palette = palettes[-1]
+
+    graph = av.filter.Graph()
+    frames_in = graph.add_buffer(width = width, height = height, format = "rgb24", time_base = time_base)
+    palette_in = graph.add_buffer(
+        width = palette.width, height = palette.height, format = palette.format.name, time_base = time_base
+    )
+    paletteuse = graph.add("paletteuse", _GIF_PALETTEUSE_ARGS)
+    sink = graph.add("buffersink")
+    frames_in.link_to(paletteuse, 0, 0)
+    palette_in.link_to(paletteuse, 0, 1)
+    paletteuse.link_to(sink)
+    graph.configure()
+    palette.pts = 0
+    palette.time_base = time_base
+    palette_in.push(palette)
+    palette_in.push(None)
+
+    # Frame k at pts k on the rate/step clock; the muxer derives centisecond delays from pts gaps (no drift).
+    out_rate = rate / step
+    buf = io.BytesIO()
+    with av.open(buf, "w", format = "gif", options = {"loop": "0"}) as dst:
+        stream = dst.add_stream("gif", rate = out_rate)
+        stream.width = width
+        stream.height = height
+        stream.pix_fmt = "pal8"
+        written = 0
+
+        def _emit(frames: list[Any]) -> None:
+            nonlocal written
+            for out in frames:
+                out.pts = written
+                out.time_base = 1 / out_rate
+                written += 1
+                for packet in stream.encode(out):
+                    packet.duration = 1
+                    dst.mux(packet)
+
+        source = held if held is not None else _gif_scaled_frames(path, step, width, height)
+        for k, frame in enumerate(source):
+            if k >= count:
+                break
+            frame.pts = k
+            frame.time_base = time_base
+            frames_in.push(frame)
+            _emit(_drain_sink(sink))
+        frames_in.push(None)
+        _emit(_drain_sink(sink))
+        for packet in stream.encode():
+            packet.duration = 1
+            dst.mux(packet)
+    return buf.getvalue()
+
+
+def _transcode_gif_pillow(path: Path, rate: Fraction, step: int, width: int, height: int) -> bytes:
+    """Fallback for a PyAV build without palettegen / paletteuse / the GIF encoder: Pillow, one palette per frame."""
+    import io
+
+    from PIL import Image
+
+    frames = [
+        frame.to_image().convert("P", palette = Image.Palette.ADAPTIVE)
+        for frame in _gif_scaled_frames(path, step, width, height)
+    ]
     if not frames:
         raise RuntimeError("GIF export decoded no frames.")
-    duration_ms = max(20, int(1000 * step / rate))
+    duration_ms = max(20, int(1000 * step / float(rate)))
     buf = io.BytesIO()
     frames[0].save(
         buf,
@@ -513,6 +629,29 @@ def _transcode_gif(path: Path) -> bytes:
         loop = 0,
     )
     return buf.getvalue()
+
+
+def _transcode_gif(path: Path) -> bytes:
+    try:
+        import av
+        from PIL import Image  # noqa: F401 -- the fallback encoder; checked up front so the error names it
+    except Exception as exc:  # noqa: BLE001 -- missing deps -> no transcode
+        raise RuntimeError("GIF export needs the 'av' and 'Pillow' packages.") from exc
+    try:
+        with av.open(str(path)) as src:
+            if not src.streams.video:
+                raise RuntimeError("GIF export failed: the clip has no video stream.")
+            in_v = src.streams.video[0]
+            rate, step, width, height = _gif_plan(in_v)
+            total = in_v.frames or 0
+        kept = min(_GIF_MAX_FRAMES, (total + step - 1) // step) if total else 0
+        if _gif_palette_supported():
+            return _transcode_gif_palette(path, rate, step, width, height, kept)
+        return _transcode_gif_pillow(path, rate, step, width, height)
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- surface as "decoder unavailable"
+        raise RuntimeError(f"GIF export failed to decode the clip: {exc}") from exc
 
 
 def _sidecar_path(video_id: str) -> Path:

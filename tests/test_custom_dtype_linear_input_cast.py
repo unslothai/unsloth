@@ -84,7 +84,7 @@ def test_no_hook_when_nothing_moved_off_the_load_dtype():
 
 
 def test_vision_loader_hooks_after_the_custom_dtype_code():
-    tree = ast.parse(VISION.read_text())
+    tree = ast.parse(VISION.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
             continue

@@ -184,6 +184,15 @@ def test_native_offload_kept_with_stock_checkpoint(patched, monkeypatch):
     real = hf_modeling_utils.save_on_cpu
 
     class Counting(real):
+        def __init__(
+            self,
+            pin_memory = False,
+            device_type = "cuda",
+        ):
+            # transformers always asks for pinned memory, which torch refuses with no usable accelerator.
+            pin_memory = pin_memory and torch.accelerator.is_available()
+            super().__init__(pin_memory = pin_memory, device_type = device_type)
+
         def __enter__(self):
             entered.append(1)
             return super().__enter__()
