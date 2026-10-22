@@ -35409,6 +35409,8 @@ class LlamaCppBackend:
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
                             cmd = self._strip_mmproj_args(_vision_gpu_cmd)
+                            # Direct spawn, so the retry safeguards do not drop it for us.
+                            cmd = self._drop_managed_lazy_mode(cmd, "text-only retry")
                             _unified_withdraw_if_unneeded(cmd, why = "The text-only retry")
                             # This retry bypasses _spawn_and_wait, so refresh the
                             # launched-argv snapshot itself -- the zero-offload
