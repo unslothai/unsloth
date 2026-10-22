@@ -264,13 +264,18 @@ class _Distribution:
     "distribution, wheel, expected",
     [
         ("mamba-ssm", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n", True),
-        ("mamba-ssm", "Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: cp313-cp313-linux_x86_64\n", False),
+        (
+            "mamba-ssm",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: cp313-cp313-linux_x86_64\n",
+            False,
+        ),
         ("mamba-ssm", None, False),
         ("causal-conv1d", "Tag: py3-none-any\n", False),
     ],
 )
-def test_the_extension_free_wheel_is_read_from_its_wheel_tag(monkeypatch, distribution, wheel, expected):
+def test_the_extension_free_wheel_is_read_from_its_wheel_tag(
+    monkeypatch, distribution, wheel, expected
+):
     import importlib.metadata
-
     monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _Distribution(wheel))
     assert ips._is_extension_free_wheel(distribution) is expected
