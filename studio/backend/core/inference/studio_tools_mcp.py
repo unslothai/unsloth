@@ -110,6 +110,7 @@ async def _call(
     name: str,
     args: dict,
     ticket: Optional[GenerationTicket] = None,
+    config_check: Any = None,
 ) -> Any:
     from fastmcp import Client
 
@@ -120,6 +121,9 @@ async def _call(
     try:
         with generation_ticket(ticket or GenerationTicket()):
             async with Client(chat_tools_mcp()) as client:
+                # As for a remote row: an edit or delete of the row while connecting stops the call.
+                if config_check is not None and not await asyncio.to_thread(config_check):
+                    raise RuntimeError("MCP server was updated or removed while connecting")
                 return await client.call_tool(name, args, raise_on_error = False)
     finally:
         reset_caller(token)
@@ -147,6 +151,8 @@ def call(
     from studio_mcp.caller import Caller
     from utils.account_context import arun_as, current_account
 
+    if cancel_event is not None and cancel_event.is_set():
+        return f"Error: MCP tool '{name}' cancelled"
     account = current_account()
     if keyless_caller(account):
         return f"Error: MCP tool '{name}' failed: Unsloth Studio tools need an API key or a signed-in session."
@@ -168,6 +174,9 @@ def call(
         # Minting can outlast an edit or delete of the row.
         if config_check is not None and not config_check():
             return f"Error: MCP tool '{name}' failed: MCP server was updated or removed"
+        # A Stop during the mint must not still start the tool.
+        if cancel_event is not None and cancel_event.is_set():
+            return f"Error: MCP tool '{name}' cancelled"
         caller = Caller(
             token = key,
             account_id = account.account_id,
@@ -183,7 +192,7 @@ def call(
         ticket = GenerationTicket()
         future = contextvars.Context().run(
             asyncio.run_coroutine_threadsafe,
-            arun_as(account, _call(caller, name, args, ticket)),
+            arun_as(account, _call(caller, name, args, ticket, config_check)),
             loop,
         )
         deadline = time.monotonic() + limit

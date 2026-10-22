@@ -397,6 +397,50 @@ def test_no_mint_means_no_call_and_never_the_owner(studio_home, accounts, server
     assert app.state.seen == [] and chat_keys() == []
 
 
+def test_a_stop_before_dispatch_never_reaches_a_route(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    app = studio(monkeypatch, RUN_PAYLOADS)
+    minted = minted_keys(monkeypatch)
+    stop = threading.Event()
+    stop.set()
+    assert bridge(OWNER, "list_training_runs", cancel_event = stop) == (
+        "Error: MCP tool 'list_training_runs' cancelled"
+    )
+    assert minted == []
+    # Stopped while the key was being minted.
+    stop.clear()
+    real = studio_tools_mcp._mint
+
+    def mint_then_stop(*args):
+        minted = real(*args)
+        stop.set()
+        return minted
+
+    monkeypatch.setattr(studio_tools_mcp, "_mint", mint_then_stop)
+    assert bridge(OWNER, "list_training_runs", cancel_event = stop) == (
+        "Error: MCP tool 'list_training_runs' cancelled"
+    )
+    assert app.state.seen == [] and chat_keys() == []
+
+
+def test_a_row_changed_while_connecting_never_reaches_a_route(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    app = studio(monkeypatch, RUN_PAYLOADS)
+    checks = []
+
+    def config_check():
+        checks.append(threading.current_thread().name)
+        return len(checks) < 2
+
+    result = bridge(OWNER, "list_training_runs", config_check = config_check)
+    assert result.startswith("Error: MCP tool 'list_training_runs' failed:"), result
+    assert "updated or removed" in result
+    assert len(checks) == 2
+    assert app.state.seen == [] and chat_keys() == []
+
+
 def test_a_keyless_caller_gets_no_studio_tools(studio_home, accounts, server_loop, monkeypatch):
     app = studio(monkeypatch, RUN_PAYLOADS)
     add_row(OWNER)
