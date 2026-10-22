@@ -7613,16 +7613,63 @@ def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -
     _move_dispatch_hook(dst, src)
 
 
+def _offload_hook_problem(module: torch.nn.Module):
+    """Why an Accelerate offload hook on module cannot be moved onto its fake quantized replacement, else None."""
+    hook = getattr(module, "_hf_hook", None)
+    if hook is None or not getattr(hook, "offload", False):
+        return None
+    if type(hook).__name__ != "AlignDevicesHook":
+        return f"its offload hook is a {type(hook).__name__}, not an AlignDevicesHook"
+    if getattr(hook, "weights_map", None) is None:
+        return "its offload hook has no weights_map"
+    if getattr(hook, "place_submodules", False):
+        return "its offload hook also places submodules"
+    missing = [n for n, _ in module.named_parameters(recurse = False) if n not in hook.weights_map]
+    if missing:
+        return f"its offload weights_map has no {missing}"
+    return None
+
+
+def _check_offloaded_embeddings(originals: Dict[str, torch.nn.Module]) -> None:
+    """Refuse, before QAT replaces anything, an offloaded embedding whose real weight could not follow it."""
+    for fqn, module in originals.items():
+        problem = _offload_hook_problem(module)
+        if problem is not None:
+            raise RuntimeError(
+                f"Unsloth: QAT cannot fake quantize the CPU / disk offloaded embedding {fqn!r}: {problem}. "
+                "Load the model without offloading the embedding (e.g. device_map = 'auto' with enough GPU "
+                "memory, or keep the embedding on a GPU in device_map)."
+            )
+
+
 def _move_dispatch_hook(dst: torch.nn.Module, src: torch.nn.Module) -> None:
-    """Re-attach src's Accelerate device hook to dst, so a split model still aligns devices at dst's own forward."""
+    """Re-attach src's Accelerate device hook to dst, so a split model still aligns devices at dst's own forward.
+    An offload hook moves too: its weights_map holds the real weight, which the hook loads onto dst (meta between
+    calls) before dst's forward fake quantizes it."""
     hook = getattr(src, "_hf_hook", None)
-    if hook is None or hasattr(dst, "_hf_hook") or getattr(hook, "offload", False):
-        return  # offload hooks own the weights map; they are not rebuilt here
+    if hook is None or hasattr(dst, "_hf_hook"):
+        return
+    offload = getattr(hook, "offload", False)
+    if offload:
+        problem = _offload_hook_problem(src)
+        if problem is not None:
+            raise RuntimeError(
+                f"Unsloth: cannot move the offload hook onto the fake quantized embedding: {problem}."
+            )
+        # init_hook re-reads devices from dst, already meta; keep src's so detaching still restores the weight.
+        original_devices = dict(getattr(hook, "original_devices", {}) or {})
     try:
         from accelerate.hooks import add_hook_to_module
 
         add_hook_to_module(dst, hook)
+        if offload and original_devices:
+            hook.original_devices = original_devices
     except Exception as exc:
+        if offload:
+            raise RuntimeError(
+                "Unsloth: could not move the offload hook onto the fake quantized embedding "
+                f"({type(exc).__name__}: {exc})."
+            ) from exc
         warnings.warn(
             f"Unsloth: could not re-attach a dispatch hook to the fake quantized embedding "
             f"({type(exc).__name__}: {exc}).",
@@ -8363,6 +8410,7 @@ def _prepare_model_for_qat(
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
     embedding_subclasses = _embedding_subclasses(model)
+    _check_offloaded_embeddings(embedding_subclasses)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)

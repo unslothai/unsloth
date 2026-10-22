@@ -346,3 +346,51 @@ def test_fake_quantized_embedding_forward_compiles_fullgraph():
     compiled = torch.compile(emb, backend = "eager", fullgraph = True)
     with torch.no_grad():
         torch.testing.assert_close(compiled(ids), emb(ids))
+
+
+def _offload_embedding(model, **hook_kwargs):
+    # What cpu_offload / dispatch_model install: the real weight in weights_map, the parameter on meta between calls.
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    from accelerate.utils import PrefixedDataset
+
+    prefix = "model.embed_tokens."
+    weights = {k: v.clone() for k, v in model.state_dict().items() if k.startswith(prefix)}
+    add_hook_to_module(
+        model.get_input_embeddings(),
+        AlignDevicesHook(
+            execution_device = "cpu",
+            offload = True,
+            weights_map = PrefixedDataset(weights, prefix),
+            **hook_kwargs,
+        ),
+    )
+    assert model.get_input_embeddings().weight.device.type == "meta"
+    return model
+
+
+def test_offloaded_embedding_is_fake_quantized():
+    pytest.importorskip("accelerate.hooks")
+    ids = torch.randint(0, 256, (2, 12))
+    reference = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4").get_input_embeddings()
+    with torch.no_grad():
+        expected = reference(ids).float()
+
+    model = _prepare_model_for_qat(_offload_embedding(_tiny_gemma3()), "int8-int4")
+    emb = model.get_input_embeddings()
+    assert getattr(emb._hf_hook, "offload", False)
+    calls = _count_fake_quant_calls(emb)
+    with torch.no_grad():
+        out = emb(ids).float()
+    assert out.device.type == "cpu"
+    assert len(calls) == 1
+    torch.testing.assert_close(out, expected)
+    assert emb.weight.device.type == "meta"  # offloaded again after the call
+
+
+def test_offloaded_embedding_hook_that_cannot_move_is_refused():
+    pytest.importorskip("accelerate.hooks")
+    model = _offload_embedding(_tiny_gemma3(), place_submodules = True)
+    original = model.get_input_embeddings()
+    with pytest.raises(RuntimeError, match = "offloaded embedding"):
+        _prepare_model_for_qat(model, "int8-int4")
+    assert model.get_input_embeddings() is original
