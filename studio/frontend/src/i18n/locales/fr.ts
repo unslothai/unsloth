@@ -118,6 +118,7 @@ export const fr = {
     reload: "Actualiser",
     more: "Plus",
     addressPlaceholder: "Rechercher ou saisir une URL",
+    local: "Local",
     suggested: "Suggestions",
     suggestedMenu: {
       open: "Ouvrir",
@@ -468,6 +469,8 @@ export const fr = {
       downloadFailed: "Impossible de télécharger {name}",
       notMarked: "{name} a été enregistré mais n'a pas pu être marqué comme téléchargé depuis Internet ; votre système n'avertira donc pas avant de l'ouvrir.",
       blocked: "Cette adresse ne peut pas s'ouvrir dans le panneau du navigateur. Il n'ouvre que les sites web publics.",
+      blockedLocal: "Cette adresse locale ne peut pas s'ouvrir ici. Saisissez-la dans la barre d'adresse pour l'ouvrir.",
+      studioAddress: "C'est l'adresse d'Unsloth lui-même, elle ne peut donc pas s'ouvrir dans le panneau du navigateur.",
       clearDataSettingDescription: "Effacer l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites.",
       clearDataDescription: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
       clearDataFailed: "Impossible d'effacer les données des sites. Réessayez.",

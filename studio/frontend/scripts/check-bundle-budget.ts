@@ -367,6 +367,13 @@ export const BUDGET = {
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
   // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
   // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
+  // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -381,8 +388,9 @@ export const BUDGET = {
   // growth, keeping main's 528 B raw / 196 B transfer above the measured build.
   // Merged with main at c0c0759bb9, which adds the passive Settings update check (+24 B raw / +43 B transfer):
   // raised by that.
-  transferBytes: 2_077_852,
-  rawBytes: 6_894_334,
+  // Merged with main at f76dd22958, whose limits rose by +1,892 B raw / +702 B transfer since c0c0759bb9: raised by that.
+  transferBytes: 2_078_554,
+  rawBytes: 6_896_226,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

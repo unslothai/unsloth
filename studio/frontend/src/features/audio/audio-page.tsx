@@ -87,6 +87,7 @@ import { useCloneGeneration } from "./hooks/use-clone-generation";
 import { useConvertGeneration } from "./hooks/use-convert-generation";
 import { adoptEditSource, useEditGeneration } from "./hooks/use-edit-generation";
 import { useSeparateGeneration } from "./hooks/use-separate-generation";
+import { useSpeakConnection } from "./hooks/use-speak-connection";
 import { useSpeechGeneration } from "./hooks/use-speech-generation";
 import { useSttSidecar } from "./hooks/use-stt-sidecar";
 import { useTranscription } from "./hooks/use-transcription";
@@ -105,7 +106,11 @@ import {
   SeparateOutput,
   SeparateRail,
 } from "./pages/separate-page";
-import { SpeakOutput, SpeakRail } from "./pages/speak-page";
+import {
+  SpeakConnectionRail,
+  SpeakOutput,
+  SpeakRail,
+} from "./pages/speak-page";
 import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeFooter, TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import type { SendTarget } from "./components/stem-mixer-types";
@@ -512,6 +517,7 @@ export function AudioPage({
     reloadOnCpu,
     setLoadFailureHandlers,
     handleEject,
+    invalidatePendingTtsSelection,
     trainedTtsModels,
   } = useAudioModelSlot({
     active,
@@ -562,6 +568,12 @@ export function AudioPage({
   useEffect(() => {
     if (busy === "generating") setAnnouncement("");
   }, [busy]);
+
+  const speakConnection = useSpeakConnection();
+  const connection =
+    mode === "speak" && ttsWorkflow === "speak"
+      ? speakConnection.connection
+      : null;
 
   const {
     prompt,
@@ -617,6 +629,7 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
+    connection,
   });
 
   const music = useMusicGeneration({
@@ -1028,12 +1041,13 @@ export function AudioPage({
   );
 
   const pageModelLoaded =
-    ttsLoaded &&
-    loadedModelRunsWorkflow({
-      workflow: ttsWorkflow,
-      audioWorkflows: status?.audio_workflows,
-      music: musicGeneration,
-    });
+    connection !== null ||
+    (ttsLoaded &&
+      loadedModelRunsWorkflow({
+        workflow: ttsWorkflow,
+        audioWorkflows: status?.audio_workflows,
+        music: musicGeneration,
+      }));
   const rememberedModels = useAudioWorkspaceStore(
     (state) => state.lastModelByWorkflow,
   );
@@ -1165,6 +1179,10 @@ export function AudioPage({
       ? { reason: "Waiting for the model to finish loading." }
       : busy !== null
         ? null
+        : connection
+          ? prompt.trim()
+            ? null
+            : { reason: "Type the text to speak." }
         : !ttsLoaded
           ? {
               reason:
@@ -1639,10 +1657,25 @@ export function AudioPage({
     (row: PageModelRow) => rowOnPage(pageWorkflow, row, pagePrefs),
     [pageWorkflow, pagePrefs],
   );
+  const setSpeakConnectionId = speakConnection.setModelId;
   const selectModel = useCallback(
-    (id: string, meta: Parameters<typeof handleModelSelect>[1]) =>
-      handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta)),
-    [audioCatalog.byId, handleModelSelect],
+    (id: string, meta: Parameters<typeof handleModelSelect>[1]) => {
+      if (meta.source === "external") {
+        if (busyRef.current === null) {
+          invalidatePendingTtsSelection();
+          setSpeakConnectionId(id);
+        }
+        return;
+      }
+      if (modeRef.current === "speak") setSpeakConnectionId(null);
+      handleModelSelect(id, withCatalogPipelineTag(audioCatalog.byId, id, meta));
+    },
+    [
+      audioCatalog.byId,
+      handleModelSelect,
+      invalidatePendingTtsSelection,
+      setSpeakConnectionId,
+    ],
   );
   const sttOnDeviceModels = downloadedSttArtifacts.map((artifact) => {
     const catalogModel = MODELS_BY_MODE.transcribe.find(
@@ -1682,7 +1715,9 @@ export function AudioPage({
 
   const capabilityLine =
     mode === "speak"
-      ? showLastPageModel
+      ? connection
+        ? `Speaks through ${connection.providerName}, a saved connection.`
+        : showLastPageModel
         ? `${lastPageModel.split("/").pop()} is not loaded. Pick it above to load it.`
         : ttsLoaded
         ? pageModelLoaded
@@ -1794,6 +1829,11 @@ export function AudioPage({
                         (ttsWorkflow === "music"),
                     )
               }
+              externalModels={
+                mode === "speak" && ttsWorkflow === "speak"
+                  ? speakConnection.models
+                  : undefined
+              }
               rowFilter={selectorRowFilter}
               moreModels={selectorMoreModels}
               loadedModelIdOverride={
@@ -1813,9 +1853,10 @@ export function AudioPage({
                     ? false
                     : undefined
               }
-              value={selectorValue}
+              value={(connection && speakConnection.modelId) || selectorValue}
               onValueChange={selectModel}
               onEject={
+                !connection &&
                 audioEjectAvailable({
                   mode,
                   busy,
@@ -1884,10 +1925,12 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <UseViaApiButton
-                workflow={pageWorkflow}
-                model={selectorValue ?? null}
-              />
+              {connection ? null : (
+                <UseViaApiButton
+                  workflow={pageWorkflow}
+                  model={selectorValue ?? null}
+                />
+              )}
               <LibraryPageLink
                 tab="audio"
                 labelClassName="hidden @[50rem]:inline"
@@ -2020,6 +2063,17 @@ export function AudioPage({
                         historyClips={clips}
                       />
                     </AudioActiveProvider>
+                  ) : connection ? (
+                    <SpeakConnectionRail
+                      connection={connection}
+                      prompt={prompt}
+                      setPrompt={setPrompt}
+                      instructions={audioInstructions}
+                      setInstructions={setAudioInstructions}
+                      setVoice={speakConnection.setVoice}
+                      setSpeed={speakConnection.setSpeed}
+                      disabled={busy === "generating"}
+                    />
                   ) : (
                     <SpeakRail {...railProps} />
                   );
@@ -2110,7 +2164,9 @@ export function AudioPage({
                   ttsLoaded={pageModelLoaded}
                   prompt={prompt}
                   lyricsOptional={musicStudio || lyricsOptional}
-                  musicNeedsDescription={!musicStudio && musicNeedsDescription}
+                  musicNeedsDescription={
+                    !musicStudio && !connection && musicNeedsDescription
+                  }
                   audioInstructions={audioInstructions}
                   blocker={generateBlocker}
                   shortcutLabel={shortcutLabel}

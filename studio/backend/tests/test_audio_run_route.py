@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference import audio_gallery, audio_inputs, audio_voices
 from routes import inference
-from utils.account_context import bind_account, reset_account, run_as
+from utils.account_context import OWNER, bind_account, reset_account, run_as
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
@@ -2206,3 +2206,133 @@ def test_take_or_group_rejected_outside_single_variation_music(stub, body):
     with _client(ALICE) as client:
         response = client.post("/api/inference/audio/run", json = {"text": "x", **body})
     assert response.status_code == 422, response.text
+
+
+def _connection(monkeypatch, handler):
+    import httpx
+
+    import core.inference.external_provider as external_provider
+
+    monkeypatch.setattr(
+        external_provider,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        inference.providers_db,
+        "get_provider",
+        lambda pid: (
+            {
+                "provider_type": "custom",
+                "display_name": "Kokoro Box",
+                "base_url": "http://127.0.0.1:8880/v1",
+                "is_enabled": True,
+            }
+            if pid == "conn-1"
+            else None
+        ),
+    )
+    monkeypatch.setattr(inference, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test")
+
+
+def _speak_on_connection(client, **body):
+    payload = {
+        "workflow": "speak",
+        "text": "Hello there.",
+        "provider_id": "conn-1",
+        "model": "kokoro",
+        "voice": "af_heart",
+        **body,
+    }
+    return client.post("/api/inference/audio/run", json = payload)
+
+
+def test_speak_through_a_connection_lands_in_history(stub, monkeypatch):
+    import httpx
+
+    sent = []
+
+    def handler(req):
+        sent.append((str(req.url), req.headers.get("authorization"), json.loads(req.content)))
+        return httpx.Response(200, content = _wav(rate = 22050), headers = {"content-type": "audio/wav"})
+
+    _connection(monkeypatch, handler)
+    with _client(OWNER) as client:
+        response = _speak_on_connection(client, instructions = "Warmly.", speed = 1.25)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        (clip,) = body["clips"]
+        assert client.get(clip["url"]).status_code == 200
+        listed = client.get("/api/inference/audio/gallery").json()["audio"]
+    assert stub["backend"].calls == []
+    assert sent == [
+        (
+            "http://127.0.0.1:8880/v1/audio/speech",
+            "Bearer sk-test",
+            {
+                "model": "kokoro",
+                "input": "Hello there.",
+                "response_format": "wav",
+                "voice": "af_heart",
+                "speed": 1.25,
+                "instructions": "Warmly.",
+            },
+        )
+    ]
+    assert (body["model"], body["audio"]) == ("kokoro", None)
+    assert (clip["role"], clip["workflow"], clip["sample_rate"]) == ("output", "speak", 22050)
+    assert [(c["id"], c["prompt"], c["model"], c["workflow"]) for c in listed] == [
+        (clip["id"], "Hello there.", "kokoro", "speak")
+    ]
+    sidecar = run_as(OWNER, audio_gallery.gallery_dir) / f"{clip['id']}.json"
+    meta = json.loads(sidecar.read_text(encoding = "utf-8"))
+    assert meta["settings"] == {"voice": "af_heart", "instructions": "Warmly.", "speed": 1.25}
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"seed": 7},
+        {"options": {"temperature": 0.5}},
+        {"inputs": {"reference": {"voice_id": "abc"}}},
+        {"workflow": "clone"},
+    ],
+)
+def test_speak_through_a_connection_refuses_settings_it_cannot_send(stub, monkeypatch, extra):
+    sent = []
+    _connection(monkeypatch, lambda req: sent.append(req))
+    with _client(OWNER) as client:
+        response = _speak_on_connection(client, **extra)
+    assert response.status_code == 400, response.text
+    assert sent == [] and stub["backend"].calls == []
+
+
+def test_speak_through_a_connection_reports_the_upstream_error(stub, monkeypatch):
+    import httpx
+
+    _connection(monkeypatch, lambda req: httpx.Response(404, text = "model 'kokoro' not found"))
+    with _client(OWNER) as client:
+        response = _speak_on_connection(client)
+        listed = client.get("/api/inference/audio/gallery").json()["audio"]
+    assert response.status_code == 502
+    assert "model 'kokoro' not found" in response.text
+    assert listed == []
+
+
+def test_speak_through_a_connection_saves_the_real_length_of_a_streamed_wav(stub, monkeypatch):
+    import httpx
+
+    wav = bytearray(_wav(rate = 24000, frames = 24000))
+    wav[4:8] = wav[40:44] = b"\xff\xff\xff\xff"
+    _connection(
+        monkeypatch,
+        lambda req: httpx.Response(200, content = bytes(wav), headers = {"content-type": "audio/wav"}),
+    )
+    with _client(OWNER) as client:
+        response = _speak_on_connection(client)
+        assert response.status_code == 200, response.text
+        (clip,) = response.json()["clips"]
+        listed = client.get("/api/inference/audio/gallery").json()["audio"]
+    assert [c["duration_s"] for c in listed] == [1.0]
+    sidecar = run_as(OWNER, audio_gallery.gallery_dir) / f"{clip['id']}.json"
+    assert json.loads(sidecar.read_text(encoding = "utf-8"))["duration_s"] == 1.0

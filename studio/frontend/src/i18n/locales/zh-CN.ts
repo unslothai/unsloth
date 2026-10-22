@@ -118,6 +118,7 @@ export const zhCN = {
     reload: "重新加载",
     more: "更多",
     addressPlaceholder: "搜索或输入网址",
+    local: "本地",
     suggested: "推荐",
     suggestedMenu: {
       open: "打开",
@@ -468,6 +469,8 @@ export const zhCN = {
       downloadFailed: "无法下载 {name}",
       notMarked: "{name} 已保存,但无法标记为从互联网下载,因此打开前系统不会发出警告。",
       blocked: "此地址无法在浏览器面板中打开。面板只打开公开网站。",
+      blockedLocal: "此本地地址无法在此打开。请在地址栏中输入它来打开。",
+      studioAddress: "这是 Unsloth 自身的地址，因此无法在浏览器面板中打开。",
       clearDataSettingDescription: "清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，这会让你退出各网站。",
       clearDataDescription: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       clearDataFailed: "无法清除网站数据。请重试。",
