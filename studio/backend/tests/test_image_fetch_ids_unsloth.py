@@ -191,8 +191,6 @@ def test_every_sd_cpp_asset_fetch_id_is_unsloth():
 
 
 def test_moss_image_components_come_from_its_fp8_repos():
-    """MOSS-Image follows FLUX.3: each variant's diffusers folders sit in its own -FP8 repo, so a bf16 pick, a prequant
-    pick and the sd-cli VAE and tokenizer all fetch from unsloth/*, while the family keeps the upstream ids."""
     fam = detect_family("OpenMOSS-Team/MOSS-Image-SFT")
     assert fam is not None and fam.name == "moss-image"
     assert fam.base_repo == "OpenMOSS-Team/MOSS-Image-SFT"

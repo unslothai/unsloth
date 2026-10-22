@@ -38,7 +38,6 @@ from .test_sd_cpp_backend import _FakeEngine
 
 _REPO = "unsloth/MOSS-Image-SFT-GGUF"
 _GGUF = "MOSS-Image-SFT-Q4_K_M.gguf"
-# The VAE and tokenizer come from the upstream folders mirrored into the SFT -FP8 repo.
 _SNAP = "unsloth/MOSS-Image-SFT-FP8"
 _TE = ("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf", "llm")
 _TOKENIZER = (_SNAP, "tokenizer/tokenizer.json")

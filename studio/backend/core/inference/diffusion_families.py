@@ -1621,8 +1621,7 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),
     ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
     ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
-    # MOSS-Image, as FLUX.3: the upstream diffusers folders (model_index.json, transformer/, text_encoder/, tokenizer/,
-    # scheduler/, vae/, byte-identical at the pinned commit) sit in each variant's -FP8 repo beside its prequant files.
+    # MOSS-Image, as FLUX.3: upstream diffusers folders are mirrored byte-identical into each variant's -FP8 repo.
     ("OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8"),
     ("OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
