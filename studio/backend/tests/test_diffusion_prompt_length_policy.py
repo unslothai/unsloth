@@ -62,8 +62,9 @@ def test_prompt_length_varies_reads_the_policy():
 
 
 def test_the_compile_arms_only_its_own_sources():
-    # FLUX.1 is classified but compiles as before
+    # every classified family is armed
     assert set(dt._FAMILY_SOURCES) == {
+        "FluxTransformer2DModel",
         "ZImageTransformer2DModel",
         "Flux3Transformer2DModel",
         "QwenImage21Transformer2DModel",

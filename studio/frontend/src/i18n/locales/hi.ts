@@ -626,6 +626,8 @@ export const hi = {
       "यह चैट आपके इतिहास में नहीं दिखेगी और सेव नहीं होती। आपके जाने पर यह गायब हो जाती है।",
   },
   picker: {
+    unifiedTightFit: "तंग फ़िट",
+    unifiedTightFitHint: "इस Mac पर छोटे कॉन्टेक्स्ट के साथ लोड हो सकता है या धीमा चल सकता है।",
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
     retry: "पुनः प्रयास करें",
@@ -1988,6 +1990,18 @@ export const hi = {
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
       },
+      fullInstall: {
+        label: "इंस्टॉल का प्रकार",
+        description:
+          "केवल चैट (GGUF)। पूरा इंस्टॉल ट्रेनिंग, एक्सपोर्ट, वीडियो, safetensors मॉडल और इमेज जनरेशन की अतिरिक्त सुविधाएं जोड़ता है।",
+        action: "पूरे इंस्टॉल में अपग्रेड करें",
+        confirmTitle: "क्या पूरे इंस्टॉल में अपग्रेड करना है?",
+        confirmDescription:
+          "यह केवल-चैट इंस्टॉल GGUF मॉडल चलाता है। पूरा इंस्टॉल इस मशीन के GPU के लिए PyTorch जोड़ता है, जिससे ट्रेनिंग, एक्सपोर्ट, वीडियो, safetensors मॉडल और इमेज जनरेशन की अतिरिक्त सुविधाएं उपलब्ध हो जाते हैं। यह कई गीगाबाइट (कम से कम 5 GB डिस्क स्पेस) डाउनलोड करता है और सर्वर को रीस्टार्ट करता है। चैट, मॉडल और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
+        confirmAction: "अपग्रेड करें",
+        keywords:
+          "full install upgrade इंस्टॉल का प्रकार पूरा इंस्टॉल अपग्रेड केवल चैट chat only gguf add training ट्रेनिंग प्रशिक्षण train fine-tune pytorch torch एक्सपोर्ट वीडियो इमेज जनरेशन safetensors",
+      },
       repairInstall: {
         label: "इंस्टॉलेशन ठीक करें",
         description:
@@ -1996,6 +2010,8 @@ export const hi = {
         confirmTitle: "क्या यह इंस्टॉलेशन ठीक करना है?",
         confirmDescription:
           "सर्वर रोकता है और इंस्टॉलर फिर से चलाता है, जो इस मशीन के GPU के लिए PyTorch को दोबारा इंस्टॉल करता है। चैट और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
+        confirmDescriptionChatOnly:
+          "सर्वर रोकता है और इंस्टॉलर फिर से चलाता है। यह केवल-चैट इंस्टॉल है, इसलिए इंस्टॉलर इसे PyTorch के साथ पूरे इंस्टॉल में भी अपग्रेड करता है, कुल मिलाकर कई गीगाबाइट। चैट और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
         confirmAction: "अभी ठीक करें",
       },
       resetPreferences: {
@@ -2719,6 +2735,10 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      showReplyTimes: "जवाब का समय",
+      showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
+      showReplyTimesKeywords:
+        "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
@@ -3126,6 +3146,7 @@ export const hi = {
       relativeNever: "कभी नहीं",
       relativeJustNow: "अभी",
       expired: "समाप्त",
+      expiredStatus: "समाप्त",
       today: "आज",
       created: "बनाया गया: {value}",
       used: "उपयोग किया गया: {value}",
@@ -4691,5 +4712,42 @@ export const hi = {
     cantRun: "नहीं चल सका",
     failed: "त्रुटि {status}",
     invalidJson: "अनुरोध की बॉडी मान्य JSON नहीं है।",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "लोड किए गए मॉडल",
+      countOne: "{count} मॉडल लोड है",
+      countMany: "{count} मॉडल लोड हैं",
+      pillLabel: "{count}. विवरण दिखाएँ, या हिलाने के लिए खींचें",
+      dragToMove: "हिलाने के लिए खींचें",
+      dragHandleLabel: "लोड किए गए मॉडल हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं।",
+      collapse: "समेटें",
+      collapseLabel: "लोड किए गए मॉडल समेटें",
+      close: "बंद करें",
+      closeLabel: "लोड किए गए मॉडल बंद करें",
+      backOnNextLoad: "अगला मॉडल लोड होने पर फिर दिखेगा",
+      ejectToFree: "मेमोरी खाली करने के लिए इजेक्ट करें",
+      ejectLabel: "{model} इजेक्ट करें",
+      openTarget: "{target} खोलें",
+      rowLabel: "{model}। {target} खोलें",
+      loading: "लोड हो रहा है",
+      ejecting: "इजेक्ट हो रहा है",
+      stillInMemory: "अब भी मेमोरी में",
+      alsoServing: "इसे भी सर्व कर रहा है",
+      noneLoaded: "कोई मॉडल लोड नहीं है",
+      noneLoadedDetail: "आपके लोड किए मॉडल यहाँ दिखेंगे।",
+      otherAccount: "किसी दूसरे खाते द्वारा उपयोग में",
+      otherAccountDetail: "मेमोरी ऐसे मॉडल के पास है जिसे आप नहीं देख सकते",
+      toastStillResident: "इजेक्ट करते समय “{model}” लोड हो गया, इसलिए वह अब भी मेमोरी इस्तेमाल कर रहा है। उसे खाली करने के लिए दोबारा इजेक्ट करें।",
+      toastUnverified: "{model} को अनलोड करने का अनुरोध किया गया था, लेकिन रनटाइम ने पुष्टि नहीं की। कुछ देर बाद कार्ड देखें।",
+      toastAlreadyFree: "{model} अब लोड नहीं था।",
+      toastReplaced: "{model} अब लोड नहीं है। “{resident}” ने उसकी जगह ले ली और उसे छुआ नहीं गया।",
+      toastEjected: "{model} इजेक्ट हो गया",
+      toastFailed: "{model} इजेक्ट नहीं हो सका",
+    },
+    monitor: {
+      dragHandleLabel: "लाइव मॉनिटर हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं, डबल-क्लिक करने पर यह रीसेट हो जाता है।",
+      reconnecting: "फिर से कनेक्ट हो रहा है...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

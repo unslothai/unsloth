@@ -54,6 +54,11 @@ export default defineConfig({
         target: "http://127.0.0.1:8888",
         changeOrigin: true,
       },
+      // MCP setup snippets use the page's origin.
+      "/mcp": {
+        target: "http://127.0.0.1:8888",
+        changeOrigin: true,
+      },
       "/seed/inspect": {
         target: "http://127.0.0.1:8004",
         changeOrigin: true,

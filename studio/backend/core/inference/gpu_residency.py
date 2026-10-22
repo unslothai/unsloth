@@ -87,6 +87,16 @@ def media_held_mib() -> dict[int, int]:
         return {}
 
 
+def media_owner_held_mib(owner: str) -> Optional[int]:
+    """MiB admitted for one resident media owner across its GPUs, or None when unpriced. Never raises."""
+    try:
+        need = _media_records().get(owner)
+        total = sum(int(mib) for mib in need.values()) if need else 0
+        return total or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def media_unallocated_mib() -> dict[int, int]:
     """{physical GPU id: MiB} of the media price live free VRAM still shows as free: an idle resident's generation
     headroom, or all of a resident still loading. Never raises."""
