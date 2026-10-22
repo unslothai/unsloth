@@ -52425,9 +52425,20 @@ async def _generate_diffusion_image_run(
             logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
 
+    global _diffusion_persist_active
     if detailer is not None:
-        with account_access.media_generation("diffusion"):
-            await asyncio.to_thread(_run_detailer, backend, request, result, enhancement, detailer)
+        # The render's own active marker is down by now: hold generate-progress (and liveness) "active" from here
+        # through the persist below, which drops this hold with its own, so a reload or the lost-response recovery
+        # never reads the request as finished while SAM 3 and the face inpaints still run.
+        _diffusion_persist_active += 1
+        try:
+            with account_access.media_generation("diffusion"):
+                await asyncio.to_thread(
+                    _run_detailer, backend, request, result, enhancement, detailer
+                )
+        except BaseException:
+            _diffusion_persist_active -= 1
+            raise
 
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -52544,7 +52555,6 @@ async def _generate_diffusion_image_run(
         return records
 
     # Hold generate-progress "active" across the persist so a reload mount probe cannot refresh the gallery before these records exist.
-    global _diffusion_persist_active
     _diffusion_persist_active += 1
     try:
         with account_access.media_generation("diffusion"):
@@ -52553,7 +52563,8 @@ async def _generate_diffusion_image_run(
         logger.error("diffusion.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
-        _diffusion_persist_active -= 1
+        # Also the Detailer's hold, raised before its pass.
+        _diffusion_persist_active -= 2 if detailer is not None else 1
 
     return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
 
@@ -53595,7 +53606,8 @@ def _run_detailer(
     from core.inference.diffusion_families import load_identity
 
     status = backend.status()
-    if status.get("repo_id") != result.get("repo_id"):
+    # The render reports the load's display id when it has one (a local snapshot shown under its Hub id), status both.
+    if result.get("repo_id") != (status.get("display_repo_id") or status.get("repo_id")):
         # Another model was loaded after the render: its pass would not be the same model's.
         result["detailer"] = [
             {**diffusion_detailer.settings_record(settings), "error": "the model changed"}

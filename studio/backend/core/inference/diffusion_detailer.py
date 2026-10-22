@@ -131,8 +131,15 @@ class Detection:
     concept: str
     score: float
     box: tuple[float, float, float, float]
-    # (H, W) bool at the image's size.
-    mask: Any
+    # (H, W) bool at the image's size, or None with ``plane`` set: SAM 3's low-resolution mask logits, expanded only
+    # when this detection is processed, so a batch never holds every full-size mask at once.
+    mask: Any = None
+    plane: Any = None
+
+    def full_mask(self, height: int, width: int) -> Any:
+        if self.mask is not None:
+            return self.mask
+        return _plane_to_mask(self.plane, height, width)
 
 
 @dataclass
@@ -374,7 +381,10 @@ def detail_image(
         if crop_w <= 0 or crop_h <= 0:
             skipped += 1
             continue
-        mask = dilate(np.asarray(det.mask, dtype = bool)[cy1:cy2, cx1:cx2], settings.dilation)
+        mask = dilate(
+            np.asarray(det.full_mask(height, width), dtype = bool)[cy1:cy2, cx1:cx2],
+            settings.dilation,
+        )
         if not mask.any():
             skipped += 1
             continue
@@ -516,35 +526,44 @@ def _plane_to_mask(plane: Any, height: int, width: int) -> Any:
         return (up > 0).numpy()
 
 
-def detect(images: list, settings: DetailerSettings) -> tuple[list[list[Detection]], dict]:
+def detect(
+    images: list,
+    settings: DetailerSettings,
+    stop: Optional[Callable[[], bool]] = None,
+) -> tuple[list[list[Detection]], dict]:
     """SAM 3 on every image, then parked in host RAM: it never stays on the GPU beside the image model while that
-    denoises."""
+    denoises. Each image keeps at most MAX_DETECTIONS detections (the pass's cap) as low-resolution planes;
+    ``info["found"]`` has how many SAM 3 kept per image. ``stop`` is checked before each image."""
     from core.inference import diffusion_segment
 
     prompt = segment_prompt(settings.targets)
     segmenter = diffusion_segment.get_segmenter()
     out: list[list[Detection]] = []
+    found: list[int] = []
     info: dict = {}
     started = time.perf_counter()
     try:
         for image in images:
+            if stop is not None and stop():
+                raise DetailerCancelled("cancelled")
             result = segmenter.segment(
                 image.convert("RGB"), prompt, threshold = settings.confidence, instance_masks = True
             )
-            width, height = image.size
+            pairs = list(zip(result.instances, result.instance_logits))
+            found.append(len(pairs))
             out.append(
                 [
-                    Detection(
-                        inst.concept, inst.score, inst.box, _plane_to_mask(plane, height, width)
-                    )
-                    for inst, plane in zip(result.instances, result.instance_logits)
+                    Detection(inst.concept, inst.score, inst.box, plane = plane)
+                    for inst, plane in pairs[:MAX_DETECTIONS]
                 ]
             )
             info = {"device": result.device, "precision": result.precision}
+            del result, pairs
     finally:
         # Parked in host RAM: the next pass moves it back instead of reading the weights again.
         diffusion_segment.release_segmenter("detailer", wait = True, park = True)
     info["model"] = diffusion_segment.active_variant().id
+    info["found"] = found
     info["detect_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
     return out, info
 
@@ -612,11 +631,15 @@ def _detail_images(
     seeds = result.get("seeds") or []
     records: list[Optional[dict]] = [None] * len(images)
     try:
-        found, info = detect(images, settings)
+        found, info = detect(images, settings, stop = stop_event.is_set)
     except Exception as exc:  # noqa: BLE001 -- the render stands; the recipe says why it was not detailed
-        logger.warning("images.detailer: detection failed: %s", exc)
-        result["detailer"] = [{**settings_record(settings), "error": str(exc)} for _ in images]
+        cancelled = isinstance(exc, DetailerCancelled)
+        if not cancelled:
+            logger.warning("images.detailer: detection failed: %s", exc)
+        error = "cancelled" if cancelled else str(exc)
+        result["detailer"] = [{**settings_record(settings), "error": error} for _ in images]
         return
+    totals = info.get("found") or []
     step_count = settings.steps if settings.steps is not None else steps
     cfg = settings.guidance if settings.guidance is not None else guidance
     cancelled = stop_event.is_set()
@@ -670,6 +693,11 @@ def _detail_images(
             "model": info.get("model"),
             "detect_device": info.get("device"),
         }
+        # Detection kept only the first MAX_DETECTIONS: the record counts what SAM 3 found.
+        total = totals[index] if index < len(totals) else None
+        if total is not None and total > len(found[index]):
+            records[index]["found"] = total
+            records[index]["dropped"] = total - len(found[index])
         if index == 0:
             records[index]["detect_ms"] = info.get("detect_ms")
     result["images"] = images

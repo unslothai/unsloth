@@ -26,6 +26,10 @@ export interface DetailerOptions {
   feather: number;
   /** null = the image's own steps. */
   steps: number | null;
+  /** Empty = the image's own negative prompt. */
+  negativePrompt: string;
+  /** null = the image's own CFG (ADetailer's "use separate CFG scale" off). */
+  guidance: number | null;
 }
 
 /** ComfyUI-Impact-Pack FaceDetailer's defaults (modules/impact/impact_pack.py:743-769). */
@@ -40,6 +44,8 @@ export const DETAILER_DEFAULTS: DetailerOptions = {
   dilation: 10,
   feather: 5,
   steps: null,
+  negativePrompt: "",
+  guidance: null,
 };
 
 /** The request's `detailer` object (DiffusionDetailerSpec). */
@@ -54,6 +60,8 @@ export interface DetailerRequest {
   dilation?: number;
   feather?: number;
   steps?: number;
+  negative_prompt?: string;
+  guidance?: number;
 }
 
 export interface DetailerDetection {
@@ -141,6 +149,10 @@ export function detailerRequestField(
     if (bounded !== fallback) (out as unknown as Record<string, number>)[key] = bounded;
   }
   if (options.steps !== null && Number.isFinite(options.steps)) out.steps = clamp(Math.round(options.steps), 1, 200);
+  const negative = (options.negativePrompt ?? "").trim();
+  if (negative) out.negative_prompt = negative;
+  if (options.guidance !== null && options.guidance !== undefined && Number.isFinite(options.guidance))
+    out.guidance = clamp(options.guidance, 0, 100);
   return { detailer: out };
 }
 
@@ -199,6 +211,9 @@ export function restoredDetailer(image: { detailer?: unknown }): {
     if (value !== undefined) (options as Record<string, unknown>)[key] = value;
   }
   options.steps = record.steps ?? null;
+  // ADetailer's separate negative prompt and CFG: absent means the image's own, so a restore clears a stale override.
+  options.negativePrompt = record.negative_prompt ?? "";
+  options.guidance = record.guidance ?? null;
   return { enabled: true, options };
 }
 
@@ -270,7 +285,8 @@ export function readDetailerOptions(): DetailerOptions {
     const out = { ...DETAILER_DEFAULTS };
     for (const key of Object.keys(DETAILER_DEFAULTS) as Array<keyof DetailerOptions>) {
       const v = (value as Record<string, unknown>)[key];
-      if (key === "steps") out.steps = typeof v === "number" && Number.isFinite(v) ? v : null;
+      if (key === "steps" || key === "guidance")
+        out[key] = typeof v === "number" && Number.isFinite(v) ? v : null;
       else if (typeof v === typeof DETAILER_DEFAULTS[key] && (typeof v !== "number" || Number.isFinite(v)))
         (out as Record<string, unknown>)[key] = v;
     }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { Input } from "@/components/ui/input";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -17,19 +17,17 @@ import {
   DETAILER_TARGETS_HINT,
   type DetailerOptions,
 } from "./lib/detailer";
-import type { SegmenterStatus } from "./lib/mask-from-text";
+import { SEGMENTER_STATUS_EVENT, type SegmenterStatus } from "./lib/mask-from-text";
 import { getSegmenterStatus } from "./mask-segment-api";
 
-/** SAM 3's status, read when the loaded model can inpaint (and again when that changes); null otherwise. */
+/** SAM 3's status, read when the loaded model can inpaint (and again when that changes); null otherwise. Kept
+ *  current by every other status read (the Mask from text panel's download polling, SEGMENTER_STATUS_EVENT), and
+ *  polled itself while a download runs, so the control appears once SAM 3 is on disk without a reload. */
 export function useDetailerSegmenter(modelCapable: boolean, modelKey: string): SegmenterStatus | null {
   const [status, setStatus] = useState<SegmenterStatus | null>(null);
   const seq = useRef(0);
-  useEffect(() => {
+  const read = useCallback(() => {
     const run = ++seq.current;
-    if (!modelCapable) {
-      setStatus(null);
-      return;
-    }
     getSegmenterStatus()
       .then((next) => {
         if (run === seq.current) setStatus(next);
@@ -37,8 +35,66 @@ export function useDetailerSegmenter(modelCapable: boolean, modelKey: string): S
       .catch(() => {
         if (run === seq.current) setStatus(null);
       });
-  }, [modelCapable, modelKey]);
+  }, []);
+  useEffect(() => {
+    if (!modelCapable) {
+      seq.current += 1;
+      setStatus(null);
+      return;
+    }
+    read();
+    const onStatus = (event: Event) => {
+      const next = (event as CustomEvent<SegmenterStatus>).detail;
+      if (next) {
+        seq.current += 1;
+        setStatus(next);
+      }
+    };
+    window.addEventListener(SEGMENTER_STATUS_EVENT, onStatus);
+    return () => window.removeEventListener(SEGMENTER_STATUS_EVENT, onStatus);
+  }, [modelCapable, modelKey, read]);
+  const downloading = modelCapable && status?.download.downloading === true;
+  useEffect(() => {
+    if (!downloading) return;
+    const id = window.setInterval(read, 2000);
+    return () => window.clearInterval(id);
+  }, [downloading, read]);
   return status;
+}
+
+/** A number box where empty means "the image's own"; keeps the typed text (e.g. "4.") while it is being edited. */
+function OptionalNumberInput({
+  ariaLabel,
+  value,
+  onChange,
+}: {
+  ariaLabel: string;
+  value: number | null;
+  onChange: (next: number | null) => void;
+}) {
+  const [text, setText] = useState(value === null ? "" : String(value));
+  useEffect(() => {
+    // A restore or another tab changed the value: show it, unless the box already reads as that number.
+    setText((current) => {
+      const n = current.trim() === "" ? null : Number(current);
+      return n === value ? current : value === null ? "" : String(value);
+    });
+  }, [value]);
+  return (
+    <Input
+      aria-label={ariaLabel}
+      inputMode="decimal"
+      className="h-8 text-xs"
+      placeholder="Same as the image"
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        const raw = e.target.value.trim();
+        const n = Number(raw);
+        onChange(raw === "" || !Number.isFinite(n) || n < 0 ? null : n);
+      }}
+    />
+  );
 }
 
 function Row({ label, hint, children }: { label: string; hint: string; children: ReactNode }) {
@@ -99,6 +155,15 @@ export function DetailerField({
               onChange={(e) => set("prompt", e.target.value)}
             />
           </Row>
+          <Row label="Detailer negative prompt" hint="Negative prompt for the redraw. Empty uses the image's negative prompt; [SEP] works as in the prompt.">
+            <Textarea
+              aria-label="Detailer negative prompt"
+              className="min-h-10 text-xs"
+              placeholder="Same as the image's negative prompt"
+              value={options.negativePrompt}
+              onChange={(e) => set("negativePrompt", e.target.value)}
+            />
+          </Row>
           <ParamSlider
             inline={true}
             label="Denoise"
@@ -132,7 +197,7 @@ export function DetailerField({
           <ParamSlider
             inline={true}
             label="Max size"
-            info="The enlarged crop's longest side stays within this."
+            info="Caps the enlargement: an enlarged face's crop stays within this many pixels. A crop already larger is redrawn at its own size, never shrunk, as in ComfyUI's FaceDetailer."
             value={options.maxSize}
             min={256}
             max={2048}
@@ -169,6 +234,13 @@ export function DetailerField({
             step={0.05}
             onChange={(v) => set("confidence", v)}
           />
+          <Row label="Detailer CFG" hint="Guidance for each redraw. Empty uses the image's guidance.">
+            <OptionalNumberInput
+              ariaLabel="Detailer CFG"
+              value={options.guidance}
+              onChange={(v) => set("guidance", v)}
+            />
+          </Row>
           <Row label="Detailer steps" hint="Steps for each redraw. Empty uses the image's steps.">
             <Input
               aria-label="Detailer steps"

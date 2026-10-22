@@ -4921,7 +4921,11 @@ class DiffusionDetailerSpec(BaseModel):
         "bbox", description = "What guide_size measures: the detection box or the whole crop"
     )
     max_size: int = Field(
-        1024, ge = 64, le = 2048, description = "Neither side of the enlarged crop passes this"
+        1024,
+        ge = 64,
+        le = 2048,
+        description = "Caps the enlargement: an enlarged crop's sides stay within this. A crop "
+        "already larger renders at its own size, never shrunk (FaceDetailer's force_inpaint)",
     )
     dilation: int = Field(
         10, ge = -128, le = 128, description = "Grow (or, negative, shrink) each mask by this many px"

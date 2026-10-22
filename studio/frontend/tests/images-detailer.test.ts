@@ -117,6 +117,8 @@ test("a gallery record restores the pass and turns the switch on; one without tu
     dilation: 10,
     feather: 5,
     steps: 12,
+    negativePrompt: "",
+    guidance: null,
   });
   assert.deepEqual(restoredDetailer({}), { enabled: false, options: {} });
   assert.deepEqual(restoredDetailer({ detailer: "nonsense" }), { enabled: false, options: {} });
@@ -209,4 +211,40 @@ test("the page wires the control behind the gate and keeps it out of the startup
   assert.match(api, /^import type \{ DetailerRecord, DetailerRequest \} from "\.\/lib\/detailer";$/m);
   const root = readFileSync(new URL("../src/app/routes/__root.tsx", import.meta.url), "utf8");
   assert.match(root, /import\("@\/features\/images"\)/);
+});
+
+test("a recorded Detailer negative prompt and CFG restore and are sent again (ADetailer's separate ones)", () => {
+  const restored = restoredDetailer({ detailer: { ...record, negative_prompt: "blurry eyes", guidance: 4.5 } });
+  assert.equal(restored.options.negativePrompt, "blurry eyes");
+  assert.equal(restored.options.guidance, 4.5);
+  const field = detailerRequestField(true, true, { ...DETAILER_DEFAULTS, ...restored.options });
+  assert.equal(field.detailer?.negative_prompt, "blurry eyes");
+  assert.equal(field.detailer?.guidance, 4.5);
+  // From an AUTOMATIC1111 infotext: separate negative prompt and CFG scale.
+  const parsed = parseA1111Parameters(
+    "girl\nSteps: 28, CFG scale: 7, Seed: 1, Size: 512x768, ADetailer model: face_yolov8n.pt, " +
+      "ADetailer negative prompt: blurry, ADetailer denoising strength: 0.4, " +
+      "ADetailer use separate CFG scale: True, ADetailer CFG scale: 5.5",
+  );
+  assert.ok(parsed);
+  const fromPaste = restoredDetailer(recipeSettings(parsed, { width: 512, height: 768, steps: 28, guidance: 7 }));
+  const sent = detailerRequestField(true, true, { ...DETAILER_DEFAULTS, ...fromPaste.options }).detailer;
+  assert.equal(sent?.negative_prompt, "blurry");
+  assert.equal(sent?.guidance, 5.5);
+  // A record without them clears an override left from an earlier restore.
+  const plain = restoredDetailer({ detailer: record });
+  assert.equal(plain.options.negativePrompt, "");
+  assert.equal(plain.options.guidance, null);
+  assert.equal(detailerRequestField(true, true, DETAILER_DEFAULTS).detailer?.guidance, undefined);
+});
+
+test("the Detailer control learns about a finished SAM 3 download without a reload", () => {
+  const api = readFileSync(new URL("../src/features/images/mask-segment-api.ts", import.meta.url), "utf8");
+  // Every status read (the Mask from text panel polls while it downloads) is broadcast...
+  assert.match(api, /dispatchEvent\(new CustomEvent\(SEGMENTER_STATUS_EVENT, \{ detail: status \}\)\)/);
+  const field = readFileSync(new URL("../src/features/images/detailer-field.tsx", import.meta.url), "utf8");
+  // ...the Detailer's hook takes it, and polls on its own while a download runs.
+  assert.match(field, /addEventListener\(SEGMENTER_STATUS_EVENT, onStatus\)/);
+  assert.match(field, /status\?\.download\.downloading === true/);
+  assert.match(field, /setInterval\(read, 2000\)/);
 });

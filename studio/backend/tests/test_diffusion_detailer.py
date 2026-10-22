@@ -62,6 +62,12 @@ def test_a_big_target_renders_at_its_own_size():
     assert det.upscaled_size(600, 600, 1000, 1000, 512, "bbox", 1024) == (1.0, 1000, 1000)
 
 
+def test_max_size_caps_the_enlargement_but_never_shrinks_a_large_crop():
+    """FaceDetailer parity (Impact-Pack core.enhance_detail, force_inpaint): when the capped factor is at or below 1,
+    the crop renders at its own size, so a 2048 px crop with a large face is not shrunk to max_size."""
+    assert det.upscaled_size(800, 800, 2048, 2048, 512, "bbox", 1024) == (1.0, 2048, 2048)
+
+
 def test_snap_size_floors_to_the_inpaint_grid():
     assert det.snap_size(1024, 819) == (1024, 816)
     assert det.snap_size(5, 40) == (16, 32)
@@ -352,7 +358,7 @@ def _patch_detect(monkeypatch, per_image):
     monkeypatch.setattr(
         det,
         "detect",
-        lambda images, settings: (
+        lambda images, settings, stop = None: (
             per_image[: len(images)],
             {"model": "sam3.1", "device": "cpu", "detect_ms": 1.0},
         ),
@@ -444,7 +450,11 @@ def test_cancel_stops_the_pass(monkeypatch):
 
 
 def test_detection_failure_is_recorded(monkeypatch):
-    def _boom(images, settings):
+    def _boom(
+        images,
+        settings,
+        stop = None,
+    ):
         raise RuntimeError("SAM 3 failed")
 
     monkeypatch.setattr(det, "detect", _boom)
@@ -513,10 +523,110 @@ def test_detect_builds_full_size_instance_masks(monkeypatch):
         "threshold": 0.3,
         "instance_masks": True,
     }
-    mask = found[0][0].mask
+    # Kept at SAM 3's resolution until the detection is processed, then expanded to the image's size.
+    assert found[0][0].mask is None
+    mask = found[0][0].full_mask(192, 256)
     assert mask.shape == (192, 256) and mask.dtype == bool
     assert mask[96, 128] and not mask[5, 5]
-    assert info["device"] == "cpu"
+    assert info["device"] == "cpu" and info["found"] == [1]
+
+
+def _many_detections_segmenter(count, calls):
+    import torch
+
+    from core.inference import diffusion_segment
+
+    class _Seg:
+        def segment(self, image, prompt, threshold, instance_masks):
+            calls.append(image)
+            return types.SimpleNamespace(
+                instances = [
+                    diffusion_segment.Instance("face", 0.9, (10.0 + i, 10.0, 60.0 + i, 70.0))
+                    for i in range(count)
+                ],
+                instance_logits = [torch.zeros(8, 8) for _ in range(count)],
+                device = "cpu",
+                precision = "bf16",
+            )
+
+    return _Seg()
+
+
+def test_detection_keeps_only_the_pass_cap_and_no_full_size_masks(monkeypatch):
+    """16 targets x 20 detections is 320 masks; only the first MAX_DETECTIONS are kept, none expanded yet."""
+    pytest.importorskip("torch")
+    from core.inference import diffusion_segment
+
+    calls = []
+    monkeypatch.setattr(
+        diffusion_segment, "get_segmenter", lambda: _many_detections_segmenter(320, calls)
+    )
+    monkeypatch.setattr(
+        diffusion_segment, "release_segmenter", lambda reason, wait = False, park = False: True
+    )
+    found, info = det.detect([_scene(), _scene()], det.DetailerSettings())
+    assert [len(f) for f in found] == [det.MAX_DETECTIONS] * 2
+    assert info["found"] == [320, 320]
+    assert all(d.mask is None and d.plane is not None for f in found for d in f)
+
+
+def test_detail_result_records_what_detection_dropped(monkeypatch):
+    found = [[_face((150, 60, 200, 120))]]
+    monkeypatch.setattr(
+        det,
+        "detect",
+        lambda images, settings, stop = None: (found, {"model": "sam3.1", "found": [40]}),
+    )
+    result = {"images": [_scene()], "seeds": [1]}
+    det.detail_result(
+        lambda **k: {"images": [Image.new("RGB", (k["width"], k["height"]))]},
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+    )
+    record = result["detailer"][0]
+    assert record["found"] == 40 and record["dropped"] == 39
+
+
+def test_stop_during_detection_skips_the_remaining_images(monkeypatch):
+    """Stop pressed while SAM 3 runs on a batch: no further image is segmented and no inpaint runs."""
+    pytest.importorskip("torch")
+    from core.inference import diffusion_segment
+
+    calls, released = [], []
+    segmenter = _many_detections_segmenter(1, calls)
+    real_segment = segmenter.segment
+
+    def _segment(*a, **k):
+        out = real_segment(*a, **k)
+        assert det.cancel_active() is True  # Stop arrives during the first image's detection
+        return out
+
+    segmenter.segment = _segment
+    monkeypatch.setattr(diffusion_segment, "get_segmenter", lambda: segmenter)
+    monkeypatch.setattr(
+        diffusion_segment,
+        "release_segmenter",
+        lambda reason, wait = False, park = False: released.append(park),
+    )
+    inpaints = []
+    result = {"images": [_scene() for _ in range(4)], "seeds": [1, 2, 3, 4]}
+    det.detail_result(
+        lambda **k: inpaints.append(1),
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+    )
+    assert len(calls) == 1 and inpaints == [] and released == [True]
+    assert [r["error"] for r in result["detailer"]] == ["cancelled"] * 4
 
 
 # ── infotext and the gallery record ─────────────────────────────────────────────────────────────────────────────────
@@ -692,3 +802,52 @@ def test_cancel_route_stops_a_detailer_pass(monkeypatch):
     )
     out = asyncio.run(routes.cancel_diffusion_generation(target = None, current_subject = "u"))
     assert out == {"cancelled": True} and stopped == [1]
+
+
+# ── route: model identity and in-flight marker ──────────────────────────────────────────────────────────────────────
+def test_route_runs_the_pass_on_a_display_id_load_and_stays_in_flight(monkeypatch, tmp_path):
+    """A load shown under a display id (a local snapshot under its Hub id) is the same model, and generate-progress
+    / liveness stay active from the end of the render through the Detailer and the persist."""
+    import asyncio
+
+    from core.inference import diffusion_engine_router as router
+    from core.inference import image_gallery
+    from models.inference import DiffusionDetailerSpec, DiffusionGenerateRequest
+    from routes import inference as routes
+
+    class _Backend:
+        def status(self):
+            return {
+                "loaded": True,
+                "workflows": ["txt2img", "inpaint"],
+                "repo_id": "/models/snap",
+                "display_repo_id": "org/model",
+                "family": "z-image",
+                "base_repo": None,
+            }
+
+        def generate(self, **kwargs):
+            return {"images": [_scene()], "seed": 3, "seeds": [3], "repo_id": "org/model"}
+
+    seen = {}
+
+    def _detail_result(generate, result, settings, **kwargs):
+        seen["in_flight"] = routes.generation_in_flight()
+        result["detailer"] = [{"targets": "face", "detections": []}]
+
+    monkeypatch.setattr(router, "get_active_diffusion_engine", lambda: _Backend())
+    monkeypatch.setattr(det, "check_available", lambda status: None)
+    monkeypatch.setattr(det, "detail_result", _detail_result)
+    monkeypatch.setattr(routes, "_release_mask_segmenter_for_render", lambda: None)
+    monkeypatch.setattr(
+        image_gallery,
+        "save",
+        lambda image, meta: {**meta, "id": "x", "url": "/u", "created_at": 0.0},
+    )
+    request = DiffusionGenerateRequest(
+        prompt = "p", steps = 4, guidance = 0.0, seed = 3, detailer = DiffusionDetailerSpec()
+    )
+    response = asyncio.run(routes._generate_diffusion_image_core(request))
+    assert seen == {"in_flight": True}
+    assert response.images[0].detailer == {"targets": "face", "detections": []}
+    assert routes.generation_in_flight() is False
