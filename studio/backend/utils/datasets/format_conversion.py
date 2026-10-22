@@ -503,6 +503,13 @@ def convert_to_vlm_format(
             dataset = dataset.select(with_image)
             total = len(with_image)
 
+    # A null caption would render as the word "None" in the assistant turn, so leave those rows out like rows without an image.
+    with_text = [i for i, text in enumerate(dataset[text_column]) if text is not None]
+    if len(with_text) < total:
+        logger.info(f"Skipping {total - len(with_text)}/{total} rows without text")
+        dataset = dataset.select(with_text)
+        total = len(with_text)
+
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (
