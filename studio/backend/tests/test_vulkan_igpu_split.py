@@ -410,3 +410,13 @@ def test_trailing_mtp_rows_carry_a_layer_of_cache():
     )
     # 4 blocks + 1 nextn row + output: the nextn row holds one block's 2 MiB of cache.
     assert seen["rows"] == [2.0, 2.0, 2.0, 2.0, 2.0, 0.0]
+
+
+def test_a_tensor_override_leaves_the_split_to_llama_cpp():
+    backend = _pricing_backend()
+    inputs = {"separate_draft_on_gpu": False, "model_path": "m.gguf"}
+    assert _mixed(backend, inputs, ["-ot", "blk\\.1[2-5]\\.ffn_.*=Vulkan0"]) is None
+    assert _mixed(backend, inputs, ["--n-cpu-moe", "4"]) is None
+    assert _mixed(backend, inputs, env = {"LLAMA_ARG_OVERRIDE_TENSOR": "ffn=Vulkan0"}) is None
+    with pytest.raises(_Priced):
+        _mixed(backend, inputs, ["--n-cpu-moe", "0"])

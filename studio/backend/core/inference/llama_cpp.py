@@ -10211,6 +10211,9 @@ class LlamaCppBackend:
             # RPC devices go ahead of the local ones, so the shares would land on them.
             or (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
             or str(env.get("LLAMA_ARG_RPC", "")).strip()
+            # Tensor overrides move bytes after the split is priced.
+            or _args_place_tensors_on_cpu(extra_args)
+            or _env_places_tensors_on_cpu(env)
             # A projector pinned to another device is charged to device 0 below.
             or (_extra_args_device(extra_args, {"--mmproj-device", "-mmdev"}) or "").strip()
             or str(env.get("MTMD_BACKEND_DEVICE", "")).strip()
