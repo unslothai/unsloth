@@ -3361,6 +3361,8 @@ export const it = {
       "Questa chat non comparirà nella cronologia e non viene salvata. Scompare quando esci.",
   },
   picker: {
+    unifiedTightFit: "Al limite",
+    unifiedTightFitHint: "Su questo Mac potrebbe caricarsi con un contesto più breve o essere più lento.",
     onDevice: "Sul dispositivo",
     huggingFace: "Hugging Face",
     retry: "Riprova",

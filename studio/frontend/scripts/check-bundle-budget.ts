@@ -381,11 +381,13 @@ export const BUDGET = {
   // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
   // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
   // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
-  // Chat's "Save for this model" button (#14515) in the eager chat chunk; the save itself is lazy. +1,047 B raw /
-  // +345 B transfer against e66f408eb5 (6,907,886 -> 6,908,933 B raw, 2,080,818 -> 2,081,163 B transfer, 98 chunks,
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Chat's "Save for this model" button (#14515) in the eager chat chunk; the save itself is lazy. +1,053 B raw /
+  // +328 B transfer against 0811e559d9 (6,909,320 -> 6,910,373 B raw, 2,081,298 -> 2,081,626 B transfer, 98 chunks,
   // Node 24). Raised by that.
-  transferBytes: 2_081_363,
-  rawBytes: 6_909_133,
+  transferBytes: 2_081_812,
+  rawBytes: 6_910_573,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

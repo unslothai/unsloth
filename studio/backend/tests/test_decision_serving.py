@@ -865,7 +865,7 @@ def test_a_chat_model_that_takes_the_gpu_during_the_warm_up_retires_the_reload(
     assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
-def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
+def test_a_settings_change_during_the_reloads_lookup_never_starts_its_worker(
     home, client, clef, monkeypatch
 ):
     from core.systemone import clef_runtime
@@ -900,7 +900,7 @@ def test_a_settings_change_during_the_reloads_lookup_stops_its_worker(
     laya_runtime.unload(reload_after_training = True)
     clef.training = False
     _reload_finished()
-    assert stopped == [True]
+    assert stopped == [] and len(clef.agents) == 1
     settings = client.get("/api/settings/systemone").json()
     assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
 

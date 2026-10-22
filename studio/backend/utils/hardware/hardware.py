@@ -7209,6 +7209,14 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 "index_kind": "relative",
             }
         memory_total_gb = round(mem.get("total_gb", 0), 2)
+        # The loader budgets min(this, available) * 0.85, not total RAM; the picker flags tight GGUFs with it.
+        try:
+            working_set_bytes = int(_metal_recommended_working_set_bytes() or 0)
+        except Exception:
+            working_set_bytes = 0
+        metal_working_set_gb = (
+            round(working_set_bytes / (1024**3), 2) if working_set_bytes > 0 else None
+        )
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -7223,6 +7231,7 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                     "memory_total_gb": memory_total_gb,
                     "shared_memory": True,
                     "shared_memory_host_backed_gb": memory_total_gb,
+                    "metal_working_set_gb": metal_working_set_gb,
                 }
             ],
             "index_kind": "relative",
