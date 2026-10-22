@@ -2686,6 +2686,8 @@ def test_an_nvidia_vulkan_row_without_the_vendor_name_warm_starts(
         (True, "AMD Radeon RX 7900 XTX", "NVIDIA GeForce RTX 3060", True),
         (True, "AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX (RADV NAVI31)", False),
         (False, "Tesla T4", "Tesla T4", False),
+        # A generic card name never outweighs a row that names another vendor.
+        (False, "NVIDIA Graphics Device", "Intel(R) Graphics", True),
         (False, "GeForce GTX 1080 Ti", "NVIDIA GeForce GTX 1080 Ti", False),
         (False, "NVIDIA A100-SXM4-40GB", "Virtual GPU 0", False),
         (True, "AMD Radeon RX 7900 XTX", "Virtual GPU 0", False),
@@ -2697,7 +2699,7 @@ def test_another_vendor_needs_positive_evidence(monkeypatch, rocm, card, row, ot
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda t = None: rocm)
     )
-    assert pup._vulkan_row_is_another_vendor(row, object(), card) is other
+    assert pup._vulkan_row_is_another_vendor(row, object()) is other
 
 
 def test_repeated_prefetches_retry_an_empty_probe_once_per_window(monkeypatch):

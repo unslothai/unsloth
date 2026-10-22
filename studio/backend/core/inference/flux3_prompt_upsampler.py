@@ -1054,34 +1054,11 @@ def _vulkan_row_vendor(row_name: str) -> Optional[str]:
     return next((vendor for vendor, pattern in _VULKAN_VENDOR_RES if pattern.search(name)), None)
 
 
-def _same_card_name(row_name: str, card_name: Optional[str]) -> bool:
-    """The Vulkan row and the torch card name the same model, vendor prefix and driver tag aside."""
-    if not card_name:
-        return False
-    from core.inference.sd_cpp_backend import _normalized_card_name, _without_driver_tag
-
-    def _bare(text: str) -> str:
-        bare = _normalized_card_name(_without_driver_tag(str(text or "")))
-        for prefix in ("nvidia", "amd", "intel"):
-            if bare.startswith(prefix):
-                bare = bare[len(prefix) :]
-        return bare
-
-    row, card = _bare(row_name), _bare(card_name)
-    return bool(row) and bool(card) and (row == card or row in card or card in row)
-
-
-def _vulkan_row_is_another_vendor(
-    row_name: str,
-    torch,
-    card_name: Optional[str] = None,
-) -> bool:
+def _vulkan_row_is_another_vendor(row_name: str, torch) -> bool:
     """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row is another card only when it names
-    another vendor. A row naming the torch card's model, or no vendor at all, is not."""
+    another vendor. A row naming no vendor at all is not evidence either way."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    if _same_card_name(row_name, card_name):
-        return False
     vendor = _vulkan_row_vendor(row_name)
     expected = "amd" if LlamaCppBackend._torch_is_rocm(torch) else "nvidia"
     return vendor is not None and vendor != expected
@@ -1118,11 +1095,7 @@ def _vulkan_device_args(
         if len(rows) == 1 and count == 1:
             # Nothing to choose, so no name match (a renamed card never declines a single-GPU host),
             # unless that one device is plainly another vendor's: then it is not the image model's card.
-            try:
-                card_name = torch.cuda.get_device_name(0)
-            except Exception:  # noqa: BLE001 -- no name: decide by the row's vendor alone
-                card_name = None
-            return None if _vulkan_row_is_another_vendor(rows[0]["name"], torch, card_name) else []
+            return None if _vulkan_row_is_another_vendor(rows[0]["name"], torch) else []
     except Exception:  # noqa: BLE001
         return []
     try:
