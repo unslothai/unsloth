@@ -619,9 +619,51 @@ def _sharded_nf4(world_size, m, device = "cpu"):
     return model
 
 
+def _legacy_and_mismatched_loads(rank, model, saved, out):
+    """Layer 0 saved without its QuantState entries (a checkpoint from before they were saved): with
+    the live packed bytes it loads, keeps the live QuantState and dequantizes to the live weights;
+    with other packed bytes it raises. Both with and without broadcast_from_rank0."""
+    from bitsandbytes.functional import QuantState, dequantize_4bit
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    def dequantized(state_dict):
+        stats = {k[len("0.weight.") :]: v for k, v in state_dict.items() if k.startswith("0.weight.")}
+        state = QuantState.from_dict(stats, device = "cpu")
+        packed = state_dict["0.weight"].cpu().reshape(-1, 1)
+        state.absmax, state.code = state.absmax.cpu(), state.code.cpu()
+        return dequantize_4bit(packed, state).float()
+
+    reference = dequantized({k: v.cpu() for k, v in saved.items()})
+    live_absmax = model[0].weight.quant_state.absmax.clone()
+    legacy = {k: v for k, v in saved.items() if not k.startswith("0.weight.")}
+    mismatched = dict(legacy)
+    mismatched["0.weight"] = saved["1.weight"].clone()  # same shape, other bytes
+    full = StateDictOptions(full_state_dict = True)  # every rank gets the full dict
+    for broadcast in (False, True):
+        options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = broadcast)
+        try:
+            dcp.set_model_state_dict(model, legacy if (rank == 0 or not broadcast) else {}, options = options)
+            after = dcp.get_model_state_dict(model, options = full)
+            out[f"legacy_{broadcast}"] = (
+                torch.equal(model[0].weight.quant_state.absmax, live_absmax)
+                and torch.equal(dequantized(after), reference)
+            )
+        except Exception as error:
+            out[f"legacy_{broadcast}"] = f"{type(error).__name__}: {error}"
+        try:
+            dcp.set_model_state_dict(
+                model, mismatched if (rank == 0 or not broadcast) else {}, options = options
+            )
+            out[f"mismatch_{broadcast}"] = "loaded"
+        except ValueError as error:
+            out[f"mismatch_{broadcast}"] = "ValueError" if "`0.weight`" in str(error) else str(error)
+
+
 def _case_dcp_quant_state_missing(rank, world_size, m):
-    """A full DCP state dict holding a packed 4-bit weight but none of its QuantState entries must not
-    load (the bytes would be paired with the live scales); one without the packed weight still loads.
+    """A full DCP state dict holding a packed 4-bit weight but none of its QuantState entries loads
+    only when the bytes are the live ones (older checkpoints of a frozen base); other bytes would be
+    paired with the live scales and must not load. One without the packed weight still loads.
     The broadcast_from_rank0 presence check must not send a CPU tensor through the process group
     (NCCL rejects those): with tensor broadcasts of CPU tensors refused, the restore still works."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions
@@ -632,15 +674,8 @@ def _case_dcp_quant_state_missing(rank, world_size, m):
     full = StateDictOptions(full_state_dict = True)
     saved = {k: v.clone() for k, v in dcp.get_model_state_dict(model, options = full).items()}
     out = {}
+    _legacy_and_mismatched_loads(rank, model, saved, out)
     stripped = {k: v for k, v in saved.items() if not k.startswith("0.weight.")}
-    for broadcast in (False, True):
-        options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = broadcast)
-        payload = stripped if (rank == 0 or not broadcast) else {}
-        try:
-            dcp.set_model_state_dict(model, payload, options = options)
-            out[f"missing_{broadcast}"] = "loaded"
-        except ValueError as error:
-            out[f"missing_{broadcast}"] = "ValueError" if "`0.weight`" in str(error) else str(error)
     # No packed weight and no QuantState for layer 0: nothing of it is loaded, so nothing to refuse.
     no_weight = {k: v for k, v in stripped.items() if k != "0.weight"}
     try:
@@ -682,7 +717,7 @@ def _case_nccl_quant_state(rank, world_size, m):
     import torch.distributed.checkpoint.state_dict as dcp
 
     model = _sharded_nf4(world_size, m, device = f"cuda:{rank}")
-    full = StateDictOptions(full_state_dict = True, cpu_offload = True)
+    full = StateDictOptions(full_state_dict = True)  # every rank gets the full dict
     saved = {k: v.clone() for k, v in dcp.get_model_state_dict(model, options = full).items()}
     states = [layer.weight.quant_state for layer in model]
     before = [s.absmax.clone() for s in states]
@@ -695,12 +730,7 @@ def _case_nccl_quant_state(rank, world_size, m):
         out["restored"] = all(torch.equal(s.absmax, b) for s, b in zip(states, before))
     except Exception as error:
         out["restored"] = f"{type(error).__name__}: {error}"
-    stripped = {k: v for k, v in saved.items() if not k.startswith("0.weight.")}
-    try:
-        dcp.set_model_state_dict(model, stripped if rank == 0 else {}, options = options)
-        out["missing"] = "loaded"
-    except ValueError as error:
-        out["missing"] = "ValueError" if "`0.weight`" in str(error) else str(error)
+    _legacy_and_mismatched_loads(rank, model, saved, out)
     return out
 
 
@@ -941,11 +971,14 @@ def test_full_dcp_load_restores_the_saved_quant_state():
 
 def test_full_dcp_load_refuses_a_packed_4bit_weight_without_its_quant_state():
     """A packed 4-bit weight whose QuantState entries the checkpoint lacks was loaded silently and
-    dequantized with the live model's scales; the broadcast_from_rank0 presence check sent a CPU
+    dequantized with the live model's scales, also when its bytes were not the live ones; an older
+    checkpoint of the same frozen base (same bytes) must keep loading; the broadcast_from_rank0 presence check sent a CPU
     tensor through the process group, which an NCCL group cannot carry."""
     pytest.importorskip("bitsandbytes")
     for r in _run("dcp_quant_state_missing").values():
-        assert r["missing_False"] == "ValueError" and r["missing_True"] == "ValueError", r
+        for broadcast in (False, True):
+            assert r[f"legacy_{broadcast}"] is True, r
+            assert r[f"mismatch_{broadcast}"] == "ValueError", r
         assert r["no_weight"] == "loaded", r
         assert r["nccl_like_flag"] is True, r
 
@@ -960,4 +993,7 @@ def test_full_dcp_broadcast_load_restores_quant_state_over_nccl():
     pytest.importorskip("bitsandbytes")
     for r in _run("nccl_quant_state", cpu_only = False).values():
         assert r["backend"] == "nccl", r
-        assert r["restored"] is True and r["missing"] == "ValueError", r
+        assert r["restored"] is True, r
+        for broadcast in (False, True):
+            assert r[f"legacy_{broadcast}"] is True, r
+            assert r[f"mismatch_{broadcast}"] == "ValueError", r

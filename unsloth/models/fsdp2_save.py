@@ -19,6 +19,7 @@ import contextlib
 import copy
 import datetime
 import functools
+import logging
 import os
 
 import torch
@@ -482,6 +483,34 @@ def _add_quant_state_entries(model, state_dict, options):
             state_dict[prefix + "weight." + key] = value.cpu() if cpu else value
 
 
+_LEGACY_4BIT_NOTICE = [False]
+logger = logging.getLogger(__name__)
+
+
+def _as_bytes(tensor):
+    return tensor.detach().contiguous().reshape(-1).view(torch.uint8)
+
+
+def _same_packed_bytes(live, loaded, broadcast_dist):
+    """Whether the packed 4-bit bytes being loaded equal the live (possibly sharded) weight's. Every
+    rank gathers the live weight (a collective); with `broadcast_dist` only rank 0 holds `loaded`,
+    decides, and sends the verdict, so all ranks agree."""
+    DTensor = _dtensor_class()
+    if DTensor is not None and isinstance(live, DTensor):
+        live = _gather_full(live, DTensor)
+    if DTensor is not None and isinstance(loaded, DTensor):
+        loaded = loaded.full_tensor()
+    same = False
+    if isinstance(loaded, torch.Tensor):
+        a, b = _as_bytes(live), _as_bytes(loaded)
+        same = a.numel() == b.numel() and torch.equal(a.cpu(), b.cpu())
+    if broadcast_dist is not None:
+        verdict = [same]
+        broadcast_dist.broadcast_object_list(verdict, src = 0)
+        same = bool(verdict[0])
+    return same
+
+
 def _restore_quant_state(model, state_dict, options):
     """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
     copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
@@ -523,13 +552,27 @@ def _restore_quant_state(model, state_dict, options):
             loads_weight, saved = payload[0]
         if not saved:
             if loads_weight:
-                # The packed bytes would be loaded and dequantized with the live model's scales.
-                raise ValueError(
-                    f"Unsloth: the checkpoint holds the 4-bit weight `{head[:-1]}` but none of its "
-                    "quantization state (`weight.absmax`, `weight.quant_state.*`), so its packed bytes "
-                    "cannot be dequantized correctly. Save the full state dict again with Unsloth, or "
-                    "load it without the frozen 4-bit base weights."
+                # A checkpoint written before QuantState was saved (a frozen QLoRA base): its packed
+                # bytes are the live ones, so the live scales are theirs. Other bytes would be
+                # dequantized with the wrong scales.
+                same = _same_packed_bytes(
+                    module.weight, state_dict.get(head[:-1]), dist if broadcast else None
                 )
+                if not same:
+                    raise ValueError(
+                        f"Unsloth: the checkpoint holds the 4-bit weight `{head[:-1]}` but none of "
+                        "its quantization state (`weight.absmax`, `weight.quant_state.*`), and its "
+                        "packed bytes differ from the model's, so they cannot be dequantized "
+                        "correctly. Save the full state dict again with Unsloth, or load it without "
+                        "the frozen 4-bit base weights."
+                    )
+                if not _LEGACY_4BIT_NOTICE[0]:
+                    _LEGACY_4BIT_NOTICE[0] = True
+                    logger.info(
+                        "Unsloth: the checkpoint has 4-bit weights without their quantization state "
+                        "(saved by an older Unsloth); their packed bytes match the model's, so its "
+                        "quantization state is kept."
+                    )
             continue
         expected = set(live.as_dict(packed = True))
         if set(saved) != expected:
