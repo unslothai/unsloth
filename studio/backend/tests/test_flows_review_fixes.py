@@ -7,6 +7,7 @@ from core.flows import engine as engine_mod
 from core.flows import package
 from core.flows.compiler import CompileError, compile_flow, parse_document
 from core.flows.engine import param_values
+from core.flows.registry import FlowNodeError
 from core.flows.nodes import training
 from core.flows.specs import SPECS_BY_TYPE
 from core.flows.story import node_value
@@ -376,3 +377,29 @@ async def test_parallel_for_each_keeps_the_cpu_limit():
     rs = await _run(eng, d)
     assert rs.status == "completed", rs.error
     assert 1 < peak <= engine_mod.CPU_CONCURRENCY
+
+
+@run_async
+async def test_a_request_aborted_by_stop_reads_as_cancelled():
+    started = asyncio.Event()
+
+    async def aborted(ctx):
+        started.set()
+        while not ctx.cancelled:
+            await asyncio.sleep(0.01)
+        raise FlowNodeError(
+            "Client disconnected before an upstream llama-server generation slot was available"
+        )
+
+    eng = _engine({**BASE, "llm.generate": aborted})
+    d = doc(
+        [node("a", "input.text", value = "p"), node("g", "llm.generate")],
+        [edge("a", "text", "g", "prompt")],
+    )
+    parsed, _ = parse_document(d)
+    rs = await eng.start_run(app = None, flow_id = "f1", doc = parsed, options = {})
+    await asyncio.wait_for(started.wait(), 60)
+    await eng.cancel(rs.id)
+    await asyncio.wait_for(rs.task, 60)
+    assert rs.status == "cancelled"
+    assert _status(rs, "g") == "cancelled" and rs.nodes["g"].error is None

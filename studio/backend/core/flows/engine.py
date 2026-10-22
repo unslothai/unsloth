@@ -924,18 +924,19 @@ class FlowEngine:
             rs.set_status(nid, "cancelled")
             self._record(rs, nid, "cancelled", None, None, iteration)
             return
-        except FlowNodeError as exc:
-            state.error = str(exc)
-            env.values[nid] = SKIPPED
-            rs.flush(nid)
-            rs.set_status(nid, "failed")
-            self._record(rs, nid, "failed", None, state.error, iteration)
-            return
         except Exception as exc:
-            logger.exception("flows: %s (%s) failed", nid, spec["type"])
-            state.error = f"{spec['title']} failed: {exc}"
             env.values[nid] = SKIPPED
             rs.flush(nid)
+            if rs.cancelled:
+                # Stop aborted the request in flight, so its error is the stop itself, not a failure.
+                rs.set_status(nid, "cancelled")
+                self._record(rs, nid, "cancelled", None, None, iteration)
+                return
+            if isinstance(exc, FlowNodeError):
+                state.error = str(exc)
+            else:
+                logger.exception("flows: %s (%s) failed", nid, spec["type"])
+                state.error = f"{spec['title']} failed: {exc}"
             rs.set_status(nid, "failed")
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
