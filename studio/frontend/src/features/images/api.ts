@@ -5,12 +5,15 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
+import type { SdControlsCapability } from "./lib/sd-controls";
+import type { ShiftControl } from "./lib/shift-choice";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -67,6 +70,7 @@ export interface DiffusionStatus {
   // Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), null = default SDPA.
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  baked_loras?: string[] | null;
   vae_tiling?: boolean;
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or
   // on the native engine.
@@ -82,15 +86,30 @@ export interface DiffusionStatus {
   native_engine_eligible?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
+  // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
+  lora_after_reload?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
+  supports_inpaint_only_masked?: boolean;
+  // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
+  negative_prompt_min_guidance?: number | null;
+  // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
+  supports_guidance?: boolean;
+  // False when this load streams no denoise previews (native engine, families without a preview map).
+  supports_live_preview?: boolean;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
+  sd_controls?: SdControlsCapability | null;
+  // The Shift override the loaded flow-matching model takes; null/absent = no Shift control.
+  shift_control?: ShiftControl | null;
+  // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
+  textual_inversion?: string | null;
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
@@ -156,6 +175,8 @@ export interface DiffusionLoadProgress {
   bytes_total: number;
   fraction: number;
   error: string | null;
+  /** Absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface DiffusionLoadRequest {
@@ -211,6 +232,8 @@ export interface DiffusionLoadRequest {
   // quantisation and compile, so a quantized load that omits them rejects every generation. Ignored by bf16 /
   // bnb-4bit, which apply at generate time.
   loras?: LoraSpecInput[];
+  // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
+  allow_oversized_load?: boolean;
 }
 
 export interface DiffusionGenerateRequest {
@@ -229,6 +252,10 @@ export interface DiffusionGenerateRequest {
   init_image?: string;
   mask_image?: string;
   strength?: number;
+  // Absent = today's behaviour; only_masked is refused (400) unless supports_inpaint_only_masked.
+  mask_blur?: number;
+  inpaint_only_masked?: boolean;
+  inpaint_padding?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
   allow_oversized?: boolean;
@@ -245,6 +272,16 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
+  // Sent only off their defaults (lib/sd-controls); refused (400) for a model without them.
+  prompt_weighting?: boolean;
+  clip_skip?: number;
+  cfg_rescale?: number;
+  variation_seed?: number;
+  variation_strength?: number;
+  // `shift` for "sd3", `base_shift` / `max_shift` for "flux"; omitted = the model's own schedule.
+  shift?: number;
+  base_shift?: number;
+  max_shift?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
@@ -308,6 +345,8 @@ export interface GalleryImage {
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
+  // Engine that ran it ("diffusers" | "sd_cpp" | "mlx"); the same seed draws different noise on each.
+  engine?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
   transformer_quant?: string | null;
@@ -336,9 +375,21 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
+  prompt_weighting?: boolean | null;
+  clip_skip?: number | null;
+  cfg_rescale?: number | null;
+  variation_seed?: number | null;
+  variation_strength?: number | null;
+  shift?: number | null;
+  base_shift?: number | null;
+  max_shift?: number | null;
+  embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
+  mask_blur?: number | null;
+  inpaint_only_masked?: boolean | null;
+  inpaint_padding?: number | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
@@ -351,7 +402,7 @@ export interface DiffusionGenerateResponse {
   images: GalleryImage[];
 }
 
-async function parseJson<T>(response: Response): Promise<T> {
+export async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(await readFastApiError(response));
   }
@@ -408,7 +459,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getDiffusionLoadProgress(signal)).phase,
@@ -437,6 +488,8 @@ export interface DiffusionDownloadPlan {
      *  speak, refuse the pick here, since the alternative is the loader saying the same thing after a ~19 GB
      *  download. */
   incompatible_reason?: string | null;
+  /** Absent on an older backend. */
+  incompatible_code?: string | null;
 }
 
 /** What to stage through the download manager before loading this pick. */
@@ -447,7 +500,7 @@ export async function getDiffusionDownloadPlan(
     await authFetch("/api/inference/images/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }
@@ -539,17 +592,6 @@ export async function listDiffusionLoras(family?: string): Promise<DiffusionLora
   return data.loras ?? [];
 }
 
-/** List diffusion ControlNet models, optionally filtered to a model family. */
-export async function listDiffusionControlNets(
-  family?: string,
-): Promise<DiffusionControlNetInfo[]> {
-  const qs = family ? `?family=${encodeURIComponent(family)}` : "";
-  const data = await parseJson<{ controlnets: DiffusionControlNetInfo[] }>(
-    await authFetch(`/api/models/diffusion-controlnets${qs}`),
-  );
-  return data.controlnets ?? [];
-}
-
 export interface GalleryPage {
   images: GalleryImage[];
   has_more: boolean;
@@ -565,31 +607,6 @@ export async function getGallery(offset = 0, limit = 50, archived = false): Prom
 }
 
 /** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
-/** Move one image to just after `afterId` (null = front). The server also decides the pin. */
-export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/move`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ after_id: afterId }),
-    }),
-  );
-}
-
-/** Copy one image into a chat project's folder. */
-export async function addGalleryImageToProject(
-  id: string,
-  projectId: string,
-): Promise<{ path: string; already: boolean }> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/project`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: projectId }),
-    }),
-  );
-}
-
 export async function setGalleryImageFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },

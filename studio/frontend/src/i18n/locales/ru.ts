@@ -50,6 +50,11 @@ export const ru = {
     removeFromMessage: "Убрать из сообщения",
   },
   browser: {
+    drafts: {
+      title: "Выгрузить страницу с введённым текстом?",
+      description: "Чтобы чат оставался отзывчивым, работают не более трёх скрытых страниц с введённым текстом. При продолжении страница {pages} будет выгружена, и несохранённый текст может быть потерян. Отмена вернёт на предыдущую вкладку.",
+      confirm: "Выгрузить и продолжить",
+    },
     agentSettings: {
       title: "Работа с браузером",
       enable: "Разрешить моделям пользоваться браузером",
@@ -210,7 +215,7 @@ export const ru = {
     importBookmarksDoneOne: "Импортировано закладок: {count}.",
     importBookmarksDoneMany: "Импортировано закладок: {count}.",
     importBookmarksNone: "В этом файле нет новых закладок.",
-    importBookmarksPartial: "Импортировано: {count}, ещё {leftOut} не поместились: Studio хранит до {max} закладок.",
+    importBookmarksPartial: "Импортировано: {count}, ещё {leftOut} не поместились: Unsloth хранит до {max} закладок.",
     importBookmarksFailed: "Не удалось прочитать файл. Выберите HTML-файл закладок, экспортированный из браузера.",
     downloadsTitle: "Загрузки",
     askWhereToSaveSetting: "Спрашивать, куда сохранять каждый файл",
@@ -261,7 +266,7 @@ export const ru = {
     annotationScreenshotsAlways: "Всегда добавлять",
     annotationScreenshotsNever: "Никогда не добавлять",
     clearDataSetting: "Очистить данные браузера",
-    clearDataSettingDescription: "Очищает историю просмотров, историю загрузок и кешированные страницы. Страницы хранят файлы cookie и данные сайтов только до перезагрузки Studio.",
+    clearDataSettingDescription: "Очищает историю просмотров, историю загрузок и кешированные страницы. Страницы хранят файлы cookie и данные сайтов только до перезагрузки Unsloth.",
     manage: "Управлять",
     fullView: {
       enter: "Полный экран",
@@ -842,6 +847,7 @@ export const ru = {
       byProject: "По проектам",
       inOneList: "Одним списком",
       sortChatsBy: "Сортировать чаты по",
+      projectsHome: "Главная проектов",
       lastUpdated: "Последнему обновлению",
       manualOrder: "Вручную",
       switchedToManual: "Ручной порядок: перетащите строки, чтобы изменить порядок",
@@ -1082,6 +1088,10 @@ export const ru = {
       alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
+      metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
+      altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
+      desktopOnly: "Только в настольном приложении",
+      builtInKey: "Встроено: {key}",
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1283,6 +1293,10 @@ export const ru = {
           label: "Скорректировать ответ",
           description: "Остановить текущий ответ и отправить черновик следующим",
         },
+        stopGeneration: {
+          label: "Остановить генерацию",
+          description: "Остановить текущий ответ",
+        },
         cycleReasoningEffort: {
           label: "Переключать усилие рассуждения",
           description: "Перебрать уровни усилия рассуждения",
@@ -1444,15 +1458,15 @@ export const ru = {
       dictation: {
         audioUploadTitle: "Диктовка с помощью записи",
         audioUploadDescription:
-          "Для записи непосредственно в Studio браузеру требуется безопасное подключение (HTTPS). При этом HTTP-подключении используйте диктофон на телефоне или выберите сохранённую запись. Сервер Studio расшифрует аудио и добавит текст в ваше сообщение.",
+          "Для записи непосредственно в Unsloth браузеру требуется безопасное подключение (HTTPS). При этом HTTP-подключении используйте диктофон на телефоне или выберите сохранённую запись. Сервер Unsloth расшифрует аудио и добавит текст в ваше сообщение.",
         audioUploadChooseFile: "Выбрать запись",
         audioUploadRecord: "Записать аудио",
         audioUploadIphoneHint:
           "На iPhone сохраните запись из приложения «Диктофон» (Voice Memos) или другого приложения для записи, а затем выберите её здесь.",
         audioUploadServerModelNote:
-          "Для этой записи используется указанная выше локальная модель на сервере Studio, даже если обычная диктовка использует другой движок.",
+          "Для этой записи используется указанная выше локальная модель на сервере Unsloth, даже если обычная диктовка использует другой движок.",
         audioUploadAutomatic: "Автоматически",
-        audioUploadModelReady: "Готово на этом сервере Studio",
+        audioUploadModelReady: "Готово на этом сервере Unsloth",
         audioUploadRetryTitle: "Не удалось расшифровать {file}",
         audioUploadRetry: "Повторить расшифровку",
         audioUploadChooseModel:
@@ -1808,23 +1822,14 @@ export const ru = {
       },
       notifications: {
         sectionTitle: "Уведомления",
-        showLlamaUpdates: "Уведомления об обновлениях llama.cpp",
-        showLlamaUpdatesDescription:
-          "Уведомлять о доступности новой сборки llama.cpp для запуска новых моделей. Отключите, если вы только обучаете модели.",
-        showLoadedModels: "Индикатор загруженных моделей",
-        showLoadedModelsDescription:
-          "Показывает в правом нижнем углу небольшую карточку со всеми моделями, находящимися сейчас в памяти (чат, речь, изображения, видео), и кнопку для выгрузки каждой из них.",
-        showWhisperUpdates: "Уведомления об обновлениях whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Уведомлять о доступности новой сборки whisper.cpp для моделей распознавания речи. Отключите, если вы не расшифровываете аудио.",
-        showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
-        showUnslothUpdates: "Уведомления об обновлениях Unsloth",
-        showUnslothUpdatesDescription:
-          "Сообщать, когда доступна новая версия Unsloth для установки.",
+        showLoadedModels: "Карточка загруженных моделей",
+        showLoadedModelsDescription: "Карточка в углу со всеми загруженными моделями, выгрузка одним щелчком.",
+        updateReminders: "Напоминания об обновлениях",
+        updateRemindersDescription: "Как часто предлагать новую версию, когда она готова.",
+        llamaHint: "Чат-модели и GGUF",
+        audioHint: "Речь, музыка и расшифровка",
         frequency: {
-          always: "Всегда",
+          always: "Как только выйдет",
           daily: "Раз в день",
           weekly: "Раз в неделю",
           biweekly: "Раз в две недели",
@@ -1967,7 +1972,7 @@ export const ru = {
         menuSubtitle: "Для поиска по файлам",
         device: "Устройство для эмбеддингов",
         deviceDescription:
-          "Где работает модель эмбеддингов, для любой модели. GPU быстрее индексирует большие наборы документов, но занимает часть VRAM до перезапуска Studio.",
+          "Где работает модель эмбеддингов, для любой модели. GPU быстрее индексирует большие наборы документов, но занимает часть VRAM до перезапуска Unsloth.",
         deviceAuto: "Автоматически",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2072,9 +2077,9 @@ export const ru = {
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
         activityDescription: {
-          daily: "Период: {weeks} · {total}",
-          weekly: "Пиковая неделя {total} · последние {weeks}",
-          cumulative: "{total} накоплено за последние {weeks}",
+          daily: "{total} с {since}",
+          weekly: "Самая активная неделя {total} · с {since}",
+          cumulative: "Всего {total} с {since}",
         },
         mode: {
           daily: "По дням",
@@ -2083,8 +2088,9 @@ export const ru = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Неделя с {date} · {tokens}",
-        chartToggle: "График",
-        chartToggleHint: "Показывать режимы «По неделям» и «Накопительно» графиком с подписанными осями",
+        emptyDayTooltip: "{date} · Нет активности",
+        apiRequests: "{count} через API",
+        cumulativeTooltip: "К неделе {date} · всего {tokens}",
         less: "Меньше",
         more: "Больше",
         insightsTitle: "Сводка по активности",
@@ -2402,6 +2408,9 @@ export const ru = {
         multiModelDescriptionAlways:
           "Загрузка модели никогда не выгружает другую. Модель, которая не помещается, не загружается. Автовыгрузка по простою и обучение по-прежнему освобождают память.",
         multiModelHint: "Относится к моделям чата, речи, изображений и видео. Каждая загруженная модель чата отвечает на запросы, в которых она указана. При нескольких GPU Unsloth старается разместить новую модель на GPU, который не занят другой моделью. «Если помещаются» оставляет около 1 ГБ свободным. «Если помещаются» и «Всегда» никогда не выгружают модель с другого GPU.",
+        allowOversizedLoad: "Разрешить загрузку слишком больших моделей",
+        allowOversizedLoadDescription: "Загружать модели изображений и видео, даже если проверка памяти сообщает, что они не поместятся.",
+        allowOversizedLoadHint: "Действует, когда CPU и GPU используют общую память (Apple Silicon, встроенные GPU). Unsloth отказывает в загрузке, если оценка весов модели больше памяти, оставшейся после резерва для операционной системы. Если параметр включен, загрузка все равно выполняется. Оценка может ошибаться в обе стороны: слишком большая загрузка может завершиться ошибкой, занять всю память, вызвать активный своппинг или зависание компьютера либо остановить Unsloth. По умолчанию выключено.",
         mediaIdleUnloadDescription:
           "Освобождать VRAM, выгружая модели изображений и видео после указанного числа секунд простоя. 0 оставляет их загруженными; минимальное значение: 60.",
         mlockVetoed: "--mlock остаётся выключенным: закрепление модели зарезервировало бы ОЗУ под неё целиком. Автовыгрузка по простою по-прежнему отключена.",
@@ -2771,6 +2780,22 @@ export const ru = {
         visibilityDescription:
           "Как открываются размышления. Любой блок по-прежнему можно развернуть или свернуть вручную.",
       },
+      memory: {
+        title: "Память",
+        description: "Заметки, которые читает каждый чат, для любой модели, локальной или облачной. Чаты в проекте также читают AGENTS.md этого проекта.",
+        enable: "Использовать память в чатах",
+        enableDescription: "Отправлять эти заметки в каждом чате.",
+        locked: "Отключено для этой установки через UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Заметки памяти",
+        placeholder: "Например:\n- Я пишу на Python и использую uv.\n- Отвечай кратко.",
+        hint: "Сохраняется в {path}. Этот файл можно редактировать и в любом текстовом редакторе.",
+        size: "{used} / {max} КБ",
+        save: "Сохранить",
+        saved: "Память сохранена",
+        loadError: "Не удалось загрузить память.",
+        saveError: "Не удалось сохранить память.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md память запомнить персонализация профиль заметки",
+      },
       currentDate: {
         label: "Сообщать модели сегодняшнюю дату",
         description:
@@ -2849,7 +2874,7 @@ export const ru = {
       importFailed: "Импорт не удался.",
       importFromSource: "Импорт из {source}",
       importFromSourceDescription:
-        "Скопируйте свои диалоги из {source} в Studio с группировкой по проектам.",
+        "Скопируйте свои диалоги из {source} в Unsloth с группировкой по проектам.",
       importingAction: "Импорт…",
       importedSourceOneChat: "Импортирован 1 диалог из {source}.",
       importedSourceChatCount: "Импортировано диалогов из {source}: {count}.",
@@ -3134,6 +3159,14 @@ export const ru = {
           "Модель загружается по имени, только когда включено автопереключение моделей. Включите его или сначала загрузите модель на её странице «Аудио».",
         useViaApi: "Через API",
       },
+      mediaApi: {
+        title: "API для изображений и видео",
+        description: "Создавайте изображения и видео из своего кода через OpenAI-совместимые эндпоинты.",
+        images: "Изображения",
+        video: "Видео",
+        placeholderModel: "Показанная модель приведена для примера. Загрузите модель на странице «Изображения» или «Видео» и откройте этот раздел её кнопкой API, чтобы подставить её.",
+        autoSwitchOff: "Автопереключение медиамоделей выключено, поэтому запросы выполняются на модели, загруженной на странице, какое бы имя в них ни было.",
+      },
       decisionApi: {
         title: "API решений",
         docs: "Документация",
@@ -3214,8 +3247,27 @@ export const ru = {
       desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
       audioCppVersion: "Версия audio.cpp",
+      whisperCppVersion: "Версия whisper.cpp",
+      engines: {
+        title: "Движки",
+        description: "Среды выполнения, с помощью которых Unsloth запускает модели. Обновления устанавливаются в фоне, без перезапуска.",
+        updatesLabel: "Обновления движков",
+        notInstalled: "Не установлено",
+        available: "Доступна {version}",
+        upToDate: "Актуальная версия",
+        updatesAvailable: "Доступны обновления",
+        checking: "Проверка обновлений...",
+        checkFailed: "Не удалось проверить обновления. Повторите попытку позже.",
+        unsupported: "Движки этой установки управляются вне Unsloth.",
+        checkForUpdates: "Проверить обновления",
+        update: "Обновить",
+        updating: "Обновление...",
+        updated: "Движки обновлены.",
+        updateFailed: "Не удалось обновить: {error}",
+      },
       hardware: "Оборудование",
       gpu: "GPU",
+      gpuIntegrated: "встроенная",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3276,7 +3328,7 @@ export const ru = {
         desktopAvailableDescription:
           "Установите обновление сейчас. После установки настольное приложение перезапустится.",
         desktopExternalServer:
-          "Приложение подключилось к уже запущенному серверу Studio и не может его обновить. Остановите этот сервер, затем закройте и снова откройте настольное приложение для обновления.",
+          "Приложение подключилось к уже запущенному серверу Unsloth и не может его обновить. Остановите этот сервер, затем закройте и снова откройте настольное приложение для обновления.",
         desktopManualInstall:
           "Откройте страницу выпуска, чтобы установить последнюю версию пакета для Linux.",
         desktopCheckFailed: "Не удалось проверить наличие обновлений",
@@ -3301,6 +3353,9 @@ export const ru = {
         docsUpdating: "Обновление",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3897,7 +3952,7 @@ export const ru = {
         decisionColumnsMissing:
           "Моделям решений нужны столбцы state, questions и gold (или answers). Не хватает: {columns}.",
         decisionOwnerOnly:
-          "Дообучать модели решений может только владелец Studio.",
+          "Дообучать модели решений может только владелец Unsloth.",
         hfDatasetRequired: "Сначала выберите датасет Hugging Face.",
         hfDatasetSplitRequired:
           "Сначала выберите или введите обучающую выборку.",

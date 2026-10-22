@@ -1013,6 +1013,47 @@ def test_the_layout_reader_totals_every_tensor_from_a_real_gguf(tmp_path):
     assert layout.token_embd_bytes == 4 * (1024 + 4096)
 
 
+@pytest.mark.parametrize("endianess", ["LITTLE", "BIG"])
+def test_reading_the_layout_does_not_walk_the_vocabulary(tmp_path, monkeypatch, endianess):
+    import numpy as np
+    from gguf import GGUFEndian, GGUFReader, GGUFWriter
+
+    vocab = 50_000
+    path = tmp_path / "vocab.gguf"
+    writer = GGUFWriter(str(path), "nemotron_h", endianess = GGUFEndian[endianess])
+    writer.add_block_count(3)
+    writer.add_head_count(8)
+    writer.add_key_length(128)
+    writer.add_value_length(128)
+    # A per-layer array, so the numeric-array path must keep every element.
+    writer.add_array("nemotron_h.attention.head_count_kv", [0, 4, 2])
+    writer.add_token_list([f"tok{i}" for i in range(vocab)])
+    writer.add_token_scores([0.0] * vocab)
+    writer.add_token_types([1] * vocab)
+    writer.add_tensor("token_embd.weight", np.zeros(1024, dtype = np.float32))
+    writer.add_tensor("blk.0.attn_q.weight", np.zeros(256, dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+    reads = 0
+    real_get = GGUFReader._get
+
+    def counting_get(self, *args, **kwargs):
+        nonlocal reads
+        reads += 1
+        return real_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(GGUFReader, "_get", counting_get)
+    layout = layout_from_gguf(str(path))
+    assert layout.complete
+    assert layout.token_embd_bytes == 4 * 1024
+    assert layout.n_attention_layers == 2
+    assert layout.kv_bytes_per_token_f16 == (4 + 2) * (128 + 128) * 2
+    assert reads < 1000
+
+
 def test_token_embd_norm_is_not_an_input_embedding():
     """token_embd_norm follows the repeating layers rather than the input layer."""
     tensors = _shard_tensors(range(64)) + [
@@ -1567,19 +1608,23 @@ def test_split_shard_paths_follow_llama_cpp_naming():
     assert split_shard_paths("/m/model-Q4.gguf") is None
 
 
-def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path, monkeypatch):
-    import gguf
+def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path):
+    import numpy as np
+    from gguf import GGUFWriter
 
     shards = [tmp_path / f"m-{i:05d}-of-00002.gguf" for i in (1, 2)]
-    for shard in shards:
-        shard.write_bytes(b"GGUF")
-    by_path = {
-        str(shards[0]): _StubReader(_shard_fields(**{"split.count": 2}), _shard_tensors(range(32))),
-        str(shards[1]): _StubReader(
-            _shard_fields(**{"split.count": 2}), _shard_tensors(range(32, 64))
-        ),
-    }
-    monkeypatch.setattr(gguf, "GGUFReader", lambda path: by_path[str(path)])
+    for shard, blocks in zip(shards, (range(32), range(32, 64))):
+        writer = GGUFWriter(str(shard), "llama")
+        for key, value in _shard_fields().items():
+            if key.startswith("llama."):
+                writer.add_uint32(key, value)
+        writer.add_uint16("split.count", 2)
+        for tensor in _shard_tensors(blocks):
+            writer.add_tensor(tensor.name, np.zeros(4, dtype = np.float32))
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
 
     assert not layout_from_gguf(str(shards[0])).complete
     whole = layout_from_gguf(str(shards[0]), all_shards = True)

@@ -11,7 +11,7 @@
 # equivalent flags (--no-torch, --skip-autostart, --isolated-uv-cache, --no-rollback,
 # --python, --local).
 #
-# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
+# Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > UNSLOTH_HOME/studio > $USERPROFILE\.unsloth\studio
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
@@ -2159,6 +2159,8 @@ function Install-UnslothStudio {
         $env:UNSLOTH_STUDIO_HOME.Trim()
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         $env:STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        $env:UNSLOTH_HOME.Trim()
     } else {
         $UnslothRoot
     }
@@ -2179,6 +2181,9 @@ function Install-UnslothStudio {
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         $envOverrideVar = "STUDIO_HOME"
         $envOverride = $env:STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+        $envOverrideVar = "UNSLOTH_HOME (studio child)"
+        $envOverride = Join-Path $env:UNSLOTH_HOME.Trim() "studio"
     }
     $defaultProfile = $null
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
@@ -3156,13 +3161,16 @@ function Install-UnslothStudio {
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root,
     # or the one the desktop chose (UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME=1).
+    if ($envOverride) {
+        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
+            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
+        }
+        $envOverride = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($envOverride)
+    }
     $tauriChosenRoot = ($TauriMode -and $envOverrideVar -eq "UNSLOTH_STUDIO_HOME" -and
         $env:UNSLOTH_DESKTOP_CHOSEN_STUDIO_HOME -eq "1")
     if ($TauriMode -and $envOverride -and -not $tauriChosenRoot) {
         $_tauriOverride = $envOverride
-        if ($_tauriOverride -eq "~" -or $_tauriOverride -like "~/*" -or $_tauriOverride -like "~\*") {
-            $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
-        }
         try {
             $_tauriOverride = Get-StudioFinalPath -Path $_tauriOverride
         } catch {}
@@ -3218,10 +3226,6 @@ function Install-UnslothStudio {
     $script:StudioEnvRootExisted = $false
 
     if ($envOverride) {
-        # Tilde expansion: env vars aren't subject to it when quoted on assignment.
-        if ($envOverride -eq "~" -or $envOverride -like "~/*" -or $envOverride -like "~\*") {
-            $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
-        }
         try {
             # BEFORE the create: this is the only moment anyone can still tell. The lock runs
             # thousands of lines below and asks whether the root existed, which by then is yes for
@@ -3249,9 +3253,10 @@ function Install-UnslothStudio {
             Restore-StudioTempEnvironment
             throw "$envOverrideVar=$StudioHome is not writable."
         }
-        # A new desktop-chosen root would inherit its drive's ACL (often writable by every
-        # account): give it the profile's access instead. An existing folder keeps its ACL.
-        if ($tauriChosenRoot -and -not $script:StudioEnvRootExisted) {
+        # A new custom root would inherit its drive's ACL (often writable by every account, so
+        # another user could swap the installed executables): give it the profile's access
+        # instead. An existing folder keeps its ACL.
+        if (-not $script:StudioEnvRootExisted) {
             try {
                 $rootAcl = New-Object System.Security.AccessControl.DirectorySecurity
                 $rootAcl.SetAccessRuleProtection($true, $false)
@@ -4435,6 +4440,10 @@ function Install-UnslothStudio {
         }
         return (Get-CanonicalDir -Path $value)
     }
+
+    # Anchor the master root before the System32 escape changes the working directory.
+    $_installMasterRoot = Get-MasterRootOverride
+    if ($_installMasterRoot) { $env:UNSLOTH_HOME = $_installMasterRoot }
 
     # Explicit staging root, the master root, the shared default cache, or the custom Unsloth
     # home's tree.
@@ -10740,8 +10749,8 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.6" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.6"
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.7" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.7"
 
     # Twin of install.sh's _relax_unsloth_floors_to_index (#14031).
     function Resolve-UnslothFloorsForIndex {

@@ -614,6 +614,29 @@ def test_weight_quant_q_galore_restores_only_active_state(monkeypatch):
     assert restored == [[active], None, None]
 
 
+def test_weight_quant_q_galore_restores_state_a_later_pre_hook_activates(monkeypatch):
+    module = _module()
+
+    class QGaLoreAdamW8bit(torch.optim.AdamW):
+        pass
+
+    QGaLoreAdamW8bit.__module__ = "unsloth.optimizers.q_galore_adamw"
+    active, idle = torch.nn.Parameter(torch.randn(16)), torch.nn.Parameter(torch.randn(16))
+    optimizer = QGaLoreAdamW8bit([{"params": [active, idle], "weight_quant": True}])
+    offloader = _hooked(module, optimizer, chunk_bytes = None)
+    restored = []
+    monkeypatch.setattr(offloader, "restore", lambda params = None: restored.append(params))
+
+    def fill_missing(optimizer, args, kwargs):
+        # A hook registered after the offloader creates the gradient the step then uses.
+        idle.grad = torch.ones_like(idle)
+
+    optimizer.register_step_pre_hook(fill_missing)
+    active.grad = torch.ones_like(active)
+    assert optimizer.step() is None
+    assert restored == [[active, idle]]
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_q_galore_weight_quant_inactive_state_stays_on_host(monkeypatch):
     module = _module()
@@ -703,6 +726,44 @@ def test_q_galore_multi_chunk_offload(monkeypatch, weight_quant):
         else:
             assert torch.equal(p, q)
         assert torch.equal(p.grad, q.grad)
+    assert _state_devices(optimizer) == {"cpu"}
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+def test_q_galore_weight_quant_later_pre_hook_gradient(monkeypatch):
+    module = _module()
+    q_galore = _q_galore(monkeypatch)
+
+    def run(offload):
+        torch.manual_seed(17)
+        params = [torch.nn.Parameter(torch.randn(256, 256, device = "cuda")) for _ in range(2)]
+        groups = [{"params": params, "rank": 16, "weight_quant": True, "stochastic_round": False}]
+        optimizer = q_galore.QGaLoreAdamW8bit(groups, lr = 1e-3)
+        q_galore.QGaLoreAdamW8bit.init_weight_quantization(torch.nn.ParameterList(params), groups)
+        if offload:
+            module.offload_optimizer_state(optimizer)
+        for _ in range(2):
+            for p in params:
+                q_galore._materialize_weight(p)
+                p.grad = torch.full_like(p, 0.01)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none = True)
+
+        def fill_missing(optimizer, args, kwargs):
+            q_galore._materialize_weight(params[1])
+            params[1].grad = torch.full_like(params[1], 0.01)
+
+        optimizer.register_step_pre_hook(fill_missing)
+        q_galore._materialize_weight(params[0])
+        params[0].grad = torch.full_like(params[0], 0.01)
+        optimizer.step()
+        return params, optimizer
+
+    base, _ = run(False)
+    params, optimizer = run(True)
+    for p, q in zip(params, base):
+        assert torch.equal(p._q_data, q._q_data)
+        assert torch.equal(p._q_scales, q._q_scales)
     assert _state_devices(optimizer) == {"cpu"}
 
 

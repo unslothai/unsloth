@@ -2740,6 +2740,78 @@ def test_mlx_text_reuses_prompt_cache_on_the_next_turn(monkeypatch):
     assert stats["usage"]["prompt_tokens"] == 7
 
 
+def _zoo_image_prefill(monkeypatch, **helpers):
+    zoo = types.ModuleType("unsloth_zoo.mlx.generate")
+    zoo.__dict__.update(helpers)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", zoo)
+
+
+def test_an_image_turn_through_mlx_lm_feeds_its_embeddings_outside_the_prompt_cache(monkeypatch):
+    """Two images of one size expand to the same ids, so an image turn neither reuses nor banks a cache."""
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured, seen = [], []
+    token_map = {"P2": [1, 2, 3, 7, 8, 9, 10], "generated": [7, 8]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+    backend._reads_vision = True
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _tok, messages, **_kw: messages[-1]["content"]
+        if isinstance(messages[-1]["content"], str)
+        else "P1 with an image",
+    )
+    _zoo_image_prefill(
+        monkeypatch,
+        image_prompt_embeddings = lambda _m, _t, prompt, images: (
+            seen.append((prompt, images)) or ([1, 2, 3], "embedded")
+        ),
+    )
+    image = object()
+    messages = [{"role": "user", "content": "P1"}]
+    list(backend.generate_chat_response(messages = messages, image = image, max_new_tokens = 4))
+    _run_turn(backend, "P2")
+    assert seen == [("P1 with an image", [image])]
+    assert captured[0]["prompt"] == [1, 2, 3] and captured[0]["input_embeddings"] == "embedded"
+    assert "prompt_cache" not in captured[0] and captured[1]["prompt"] == token_map["P2"]
+
+
+def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypatch):
+    from core.inference import mlx_inference
+
+    inserted, rendered = [], []
+    generator = SimpleNamespace(
+        insert = lambda prompts, **kw: inserted.append((prompts, kw)) or [len(inserted)],
+        remove = lambda *_a, **_k: {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    _zoo_image_prefill(monkeypatch, prefill_image_prompt = lambda *_a: [1, 5, 5, 2])
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm, backend._reads_vision = False, True
+    backend._make_row_cache = lambda: ["cache"]
+    backend._batch_prompt_row = lambda prompt, _state: ([], [9], ["text cache"], "key", [9])
+    plan = SimpleNamespace(
+        prompt = "P", max_tokens = 4, sampler = None, processors = (), detokenizes = False, think_prefix = ""
+    )
+    backend._plan_text_row = lambda messages, **_kw: rendered.append(messages) or plan
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "mlx_lm.generate", generate)
+        session = mlx_inference._TextBatchSession(backend, width = 2)
+    image, messages = object(), [{"role": "user", "content": "hi"}]
+    backend._unset_generation_budget = lambda prompt, tokens: 100 - len(tokens)
+    session.admit({"messages": messages}, 0)
+    session.admit({"messages": messages, "image": image, "max_new_tokens": None}, 1)
+    assert rendered[0] == messages and {"type": "image"} in rendered[1][-1]["content"]
+    assert [kw["max_tokens"] for _prompts, kw in inserted] == [[4], [96]]
+    assert [(prompts, kw["caches"], kw["all_tokens"]) for prompts, kw in inserted] == [
+        ([[9]], [["text cache"]], [[]]),
+        ([[2]], [["cache"]], [[1, 5, 5]]),
+    ]
+    assert session._rows[1].cache_key is None and session._rows[1].prompt_len == 4
+    session.close()
+
+
 def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
     from core.inference import mlx_inference
 
@@ -2853,6 +2925,172 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
     ]
     mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
     assert list(backend.generate_completion([5, 6], max_new_tokens = 3))[-1] == " Paris!"
+
+
+def _numpy_mx(monkeypatch):
+    np = pytest.importorskip("numpy")
+
+    class _At:
+        def __init__(self, array):
+            self.array = array
+
+        def __getitem__(self, idx):
+            def add(values):
+                out = np.array(self.array)
+                np.add.at(out, np.asarray(idx), np.asarray(values))
+                return out
+
+            return SimpleNamespace(add = add)
+
+    class _Arr(np.ndarray):
+        @property
+        def at(self):
+            return _At(self)
+
+    def _logsumexp(
+        a,
+        axis = -1,
+        keepdims = False,
+    ):
+        peak = a.max(axis = axis, keepdims = True)
+        out = np.log(np.exp(a - peak).sum(axis = axis, keepdims = True)) + peak
+        return out if keepdims else out.squeeze(axis)
+
+    core = sys.modules["mlx.core"]
+    monkeypatch.setattr(core, "float32", np.float32, raising = False)
+    monkeypatch.setattr(core, "int32", np.int32, raising = False)
+    monkeypatch.setattr(
+        core, "array", lambda v, dtype = None: np.array(v, dtype = dtype), raising = False
+    )
+    monkeypatch.setattr(
+        core,
+        "zeros",
+        lambda shape, dtype = None: np.zeros(shape, dtype = dtype).view(_Arr),
+        raising = False,
+    )
+    monkeypatch.setattr(core, "logsumexp", _logsumexp, raising = False)
+    monkeypatch.setattr(core, "argpartition", lambda a, kth: np.argpartition(a, kth), raising = False)
+    monkeypatch.setattr(core, "argsort", np.argsort, raising = False)
+    return np
+
+
+# Probabilities the fake model gives every step: token 0 is the argmax, token 3 unlikely.
+_STEP_PROBS = [0.6, 0.3, 0.05, 0.04, 0.01]
+
+
+def _processed_steps(np, processors, prompt, steps):
+    """(token, response) per step as mlx_lm / mlx_vlm run processors: once per step, never
+    during prefill, step n + 1 computed before token n is yielded."""
+    raw = np.log(np.array([_STEP_PROBS], dtype = np.float32))
+    tokens = np.array(prompt)
+
+    def step(tokens):
+        logits = raw.copy()
+        for processor in processors or ():
+            logits = processor(tokens, logits)
+        return int(np.argmax(logits))
+
+    y = step(tokens)
+    for n in range(steps):
+        tokens = np.append(tokens, y)
+        upcoming = step(tokens) if n + 1 < steps else None
+        yield y, n + 1
+        y = upcoming
+
+
+def test_mlx_completion_logprobs_read_the_logits_before_logit_bias(monkeypatch):
+    import math
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    backend = _install_fake_text_stack(monkeypatch, {"generated": []}, captured)
+    np = _numpy_mx(monkeypatch)
+
+    def _stream_generate(_model, _tokenizer, **kw):
+        captured.append(kw)
+        steps = _processed_steps(np, kw.get("logits_processors"), kw["prompt"], kw["max_tokens"])
+        for token, n in steps:
+            yield SimpleNamespace(
+                token = token,
+                text = "",
+                prompt_tokens = len(kw["prompt"]),
+                prompt_tps = 1.0,
+                generation_tokens = n,
+                generation_tps = 1.0,
+                finish_reason = None,
+            )
+
+    monkeypatch.setattr(sys.modules["mlx_lm"], "stream_generate", _stream_generate)
+    sampling = dict(max_new_tokens = 2, temperature = 0.0, logit_bias = {3: 100.0})
+    out = list(backend.generate_completion([1, 2], n_probs = 2, **sampling))
+    entries = backend.last_generation_stats["token_logprobs"]
+    assert out[-1] == "33" and [e["id"] for e in entries] == [3, 3]
+    first = entries[0]
+    assert first["logprob"] == pytest.approx(math.log(0.04), abs = 1e-5)
+    assert first["token"] == "3" and first["bytes"] == [51]
+    assert [(t["id"], t["token"], t["bytes"]) for t in first["top_logprobs"]] == [
+        (0, "0", [48]),
+        (1, "1", [49]),
+    ]
+    assert first["top_logprobs"][0]["logprob"] == pytest.approx(math.log(0.6), abs = 1e-5)
+    list(backend.generate_completion([1, 2], max_new_tokens = 2))
+    assert "logits_processors" not in captured[-1]
+    assert "token_logprobs" not in backend.last_generation_stats
+
+
+def test_mlx_logprob_tokens_keep_a_sentencepiece_word_space(monkeypatch):
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    pieces = {7: "\u2581the", 8: "Hand"}
+    tokenizer = SimpleNamespace(
+        decode = lambda ids, **_kw: "".join(pieces[i] for i in ids)
+        .replace("\u2581", " ")
+        .removeprefix(" ")
+    )
+    assert mlx_inference._token_bytes_text(tokenizer, 7) == (" the", [32, 116, 104, 101])
+    assert mlx_inference._token_bytes_text(tokenizer, 8) == ("Hand", [72, 97, 110, 100])
+
+
+def test_mlx_vlm_completion_logprobs_skip_the_draft_and_repeated_responses(monkeypatch):
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    np = _numpy_mx(monkeypatch)
+    seen = {}
+
+    def _vlm_stream(*_a, **kw):
+        seen.update(kw)
+        steps = list(_processed_steps(np, kw["logits_processors"], kw["input_ids"][0], 2))
+        for token, n in steps:
+            yield SimpleNamespace(text = "", token = token, generation_tokens = n, prompt_tokens = 2)
+        # mlx-vlm repeats the last token in its closing response.
+        yield SimpleNamespace(text = "", token = token, generation_tokens = n, prompt_tokens = 2)
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a: contextlib.nullcontext()
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._is_vlm = SimpleNamespace(), True
+    backend._processor = SimpleNamespace()
+    backend._tokenizer = SimpleNamespace(
+        decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces: "".join(
+            str(i) for i in ids
+        )
+    )
+    monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *_a, **_k: None)
+    backend._speculative_draft = SimpleNamespace(drafter = None, draft_kind = "mtp")
+
+    out = list(backend.generate_completion([5, 6], max_new_tokens = 2, n_probs = 1))
+    entries = backend.last_generation_stats["token_logprobs"]
+    assert out[-1] == "00" and [e["id"] for e in entries] == [0, 0]
+    assert [t["id"] for t in entries[0]["top_logprobs"]] == [0]
+    assert "draft_model" not in seen
+    assert mlx_inference._request_batch_gap({"n_probs": 2})
+    assert mlx_inference._request_batch_gap({"n_probs": 0}) is None
 
 
 def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(monkeypatch):
@@ -3004,7 +3242,7 @@ def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
     assert backend._prompt_cache_history is None
 
 
-def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
+def test_mlx_prompt_cache_keeps_entries_over_budget_out_of_the_lru(monkeypatch):
     from core.inference.mlx_inference import _MLXPromptCacheHistory
 
     _install_fake_prompt_cache_api(monkeypatch)
@@ -3017,6 +3255,132 @@ def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
     stored = history._lru.entries.get("key", {})
     assert tuple([1, 2, 3]) in stored
     assert tuple(range(50)) not in stored
+
+
+def test_mlx_prompt_cache_keeps_reusing_a_conversation_over_budget(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch)
+
+    history = _MLXPromptCacheHistory(6, 1000)
+    turn = list(range(50))
+    history.insert("key", turn[:3], [_FakeCacheEntry(offset = 3, nbytes = 400)])
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+    history.insert("key", turn, long_cache)
+    assert tuple(turn) not in history._lru.entries["key"]
+
+    cache, rest = history.fetch(object(), "key", turn + [50, 51])
+    assert cache is long_cache
+    assert rest == [50, 51]
+
+    cache[0].offset = 52
+    history.insert("key", turn + [50, 51], cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is long_cache
+    assert cache[0].offset == 45
+    assert rest == [99]
+
+    history.insert("key", turn[:45], cache)
+    cache, rest = history.fetch(object(), "key", turn[:5] + [99])
+    assert cache is not long_cache
+    assert rest == turn[3:5] + [99]
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+    assert rest == turn[3:45] + [99]
+
+    history.insert("key", turn[:45], long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45])
+    assert cache is long_cache
+    assert (cache[0].offset, rest) == (44, turn[44:45])
+
+    history.insert("key", turn[:44], cache)
+    cache, rest = history.fetch(object(), "other-adapter", turn[:44] + [99])
+    assert cache is not long_cache
+    assert rest == turn[:44] + [99]
+
+
+def test_mlx_prompt_cache_never_serves_an_over_budget_cache_it_cannot_rewind(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch, trimmable = False)
+    history = _MLXPromptCacheHistory(6, 1000)
+    turn = list(range(50))
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn + [50])
+    assert (cache, rest) == (long_cache, [50])
+
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+    assert rest == turn[:45] + [99]
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    history = _MLXPromptCacheHistory(6, 1000)
+    history._trim = lambda cache, num: num - 1
+    history.insert("key", turn, long_cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+
+
+def test_mlx_batch_releases_an_over_budget_cache_while_another_row_decodes(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory, _TextBatchSession
+
+    _install_fake_prompt_cache_api(monkeypatch)
+
+    history = _MLXPromptCacheHistory(6, 1000)
+    turn = list(range(50))
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+    banked = {"long": (turn, long_cache), "short": ([7, 8, 9], [_FakeCacheEntry(offset = 3)])}
+    session = object.__new__(_TextBatchSession)
+    session.backend = SimpleNamespace(
+        _prompt_cache_history = history,
+        _bank_row_cache = lambda key, *_: history.insert("key", *banked[key]),
+    )
+    session._settled = {}
+    stream = SimpleNamespace(settle = lambda: [], drain = lambda cancelled: [])
+
+    def feed(row, event):
+        if event.finish_reason is not None:
+            session.backend._bank_row_cache(row.cache_key)
+            yield from session._retire(row, cancelled = False)
+
+    session._feed = feed
+
+    def held_after(ended, withdraw = False):
+        rows = {
+            handle: SimpleNamespace(
+                handle = handle,
+                uid = handle,
+                cache_key = handle,
+                all_tokens = [],
+                plan = SimpleNamespace(stream = stream),
+                ready_at = None,
+                processing_at = None,
+                prompt_len = 1,
+                generated = 1,
+                cached = 0,
+                reason = "stop",
+            )
+            for handle in banked
+        }
+        session._rows, session._by_uid = rows, dict(rows)
+        events = [
+            SimpleNamespace(uid = handle, finish_reason = "stop" if handle in ended else None)
+            for handle in banked
+        ]
+        session.generator = SimpleNamespace(
+            next = lambda: ([], events),
+            remove = lambda uids, return_prompt_caches: {},
+        )
+        list(session.withdraw(ended) if withdraw else session.step())
+        return history.fetch(object(), "key", turn + [50])[0] is long_cache
+
+    assert not held_after(["long"])
+    assert held_after(["long", "short"])
+    assert not held_after(["long"], withdraw = True)
+    assert held_after(["long", "short"], withdraw = True)
 
 
 def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
@@ -4035,6 +4399,68 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     with pytest.raises(RuntimeError, match = "GPU Timeout"):
         mlx_inference.MLXInferenceBackend().load_model(config, kv_quant = "tq-4")
     assert attempts == [(False, None)]
+
+
+def test_a_vision_checkpoint_served_through_mlx_lm_reads_images_only_where_zoo_prefills_them(
+    monkeypatch,
+):
+    """unsloth-zoo builds an image checkpoint mlx-vlm lacks (Muse Spark) through mlx-lm."""
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    attempts, built_by_mlx_vlm, reads_images = [], [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            model = SimpleNamespace(config = {}, _is_vlm_model = bool(built_by_mlx_vlm))
+            if reads_images:
+                model._unsloth_supports_images = True
+            return model, SimpleNamespace(tokenizer = "inner")
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(
+        mlx_inference, "_classify_mlx_audio_type", lambda *a, config_audio_type: config_audio_type
+    )
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (2048, 2048, 2048)
+    )
+    vision = SimpleNamespace(
+        identifier = "org/vision", is_vision = True, is_lora = False, audio_type = "audio_vlm"
+    )
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(vision, kv_quant = "tq-4")
+    assert attempts == [False]
+    entry = backend.models["org/vision"]
+    assert entry["audio_type"] is None and entry["has_audio_input"] is False
+    assert backend._is_vlm is False and backend._processor is None
+    assert backend._reads_vision_input() is False
+    assert backend.models["org/vision"]["is_vision"] is False
+    assert backend._turboquant_refusal == mlx_inference.MLX_TURBOQUANT_TEXT_LOAD
+
+    reads_images.append(True)
+    generate = types.ModuleType("unsloth_zoo.mlx.generate")
+    for zoo_prefills in (False, True):
+        if zoo_prefills:
+            generate.prefill_image_prompt = object()
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", generate)
+        backend = mlx_inference.MLXInferenceBackend()
+        backend.load_model(vision, kv_quant = "tq-4")
+        assert backend._is_vlm is False and backend._reads_vision_input() is zoo_prefills
+        assert backend.models["org/vision"]["is_vision"] is zoo_prefills
+        assert backend.models["org/vision"]["audio_type"] is None
+        assert backend._turboquant_refusal == mlx_inference.MLX_TURBOQUANT_TEXT_LOAD
+
+    reads_images.clear()
+    built_by_mlx_vlm.append(True)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(vision)
+    assert backend._is_vlm is True and backend._reads_vision_input() is True
+    assert backend.models["org/vision"]["is_vision"] is True
 
 
 def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
@@ -7023,6 +7449,7 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
                 _probe_models = lambda *_a: iter(
                     [(lambda t = t: t, lambda tower: list(tower.entries), None) for t in towers]
                 ),
+                weightless_forward = contextlib.nullcontext,
             ),
         )
         marks = len(rewound)
@@ -9510,7 +9937,7 @@ def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
 ):
     """A model's declared rate must not depend on which mlx-vlm is installed.
 
-    Studio pins ``mlx-vlm>=0.4.4,<=0.7.8``, which spans both shapes: releases with no resolver
+    Studio pins ``mlx-vlm>=0.4.4,<=0.7.9``, which spans both shapes: releases with no resolver
     and, from 0.7.0, releases that have one. Reading the rate only through the resolver left
     every install on the older shape sampling at the library default instead of the rate the
     checkpoint asked for.

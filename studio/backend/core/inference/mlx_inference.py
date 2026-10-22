@@ -1335,6 +1335,17 @@ def _video_placeholder(processor):
     return None
 
 
+def _mlx_lm_reads_images(model) -> bool:
+    """An image model unsloth-zoo loaded through mlx-lm, with an unsloth-zoo that prefills its images."""
+    if getattr(model, "_unsloth_supports_images", None) is not True:
+        return False
+    try:
+        from unsloth_zoo.mlx.generate import prefill_image_prompt  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _mlx_reads_video(processor) -> bool:
     """Processor carries a video component AND the template places a video marker: a render that
     merely differs from the text one can still be prose, as in the image probe."""
@@ -2735,21 +2746,23 @@ def _asking_the_architecture(model_dir, question):
                 _probe_models,
                 _runtime_dtype,
                 _snapshot_config,
+                weightless_forward,
             )
 
             config = _snapshot_config(model_dir)
             if config is None:
                 return None
-            for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
-                model = build()
-                try:
-                    model(
-                        mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
-                        cache = make_prompt_cache(model),
-                    )
-                except Exception:
-                    continue
-                return question(model, make_prompt_cache)
+            with weightless_forward():
+                for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
+                    model = build()
+                    try:
+                        model(
+                            mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
+                            cache = make_prompt_cache(model),
+                        )
+                    except Exception:
+                        continue
+                    return question(model, make_prompt_cache)
         except Exception as exc:
             logger.debug("MLX architecture probe unavailable for %s: %s", model_dir, exc)
         return None
@@ -2989,8 +3002,35 @@ class _MLXPromptCacheHistory:
         self._trim = trim
         self._max_bytes = max_bytes
         self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
+        self._oversized = None
+
+    def _take_oversized(self, key, tokens):
+        held, self._oversized = self._oversized, None
+        if held is None:
+            return None
+        held_key, held_tokens, cache, nbytes = held
+        if held_key != key:
+            return None
+        common = next(
+            (i for i, (a, b) in enumerate(zip(held_tokens, tokens)) if a != b),
+            min(len(held_tokens), len(tokens)),
+        )
+        prefix = min(common, len(tokens) - 1)
+        # A prefix within budget is the LRU's to serve, so chats under it behave as before.
+        if prefix * nbytes <= self._max_bytes * len(held_tokens):
+            return None
+        excess = len(held_tokens) - prefix
+        if excess and not (self._can_trim(cache) and self._trim(cache, excess) == excess):
+            return None
+        return cache, list(tokens[prefix:])
+
+    def release_oversized(self):
+        self._oversized = None
 
     def fetch(self, model, key, tokens):
+        held = self._take_oversized(key, tokens)
+        if held is not None:
+            return held
         cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
         if cache is not None:
             if rest:
@@ -3010,19 +3050,11 @@ class _MLXPromptCacheHistory:
         return cache if self._prepare is None else self._prepare(cache), list(tokens)
 
     def insert(self, key, tokens, cache):
-        # An over-budget entry evicts itself and every other conversation.
         sizes = [_kv_entry_nbytes(entry) for entry in cache]
         if any(size is None for size in sizes):
             logger.debug("MLX prompt cache: skipping state whose size is unmeasurable")
             return
         nbytes = sum(sizes)
-        if nbytes > self._max_bytes:
-            logger.debug(
-                "MLX prompt cache: skipping %.2f GB entry over the %.2f GB budget",
-                nbytes / 1e9,
-                self._max_bytes / 1e9,
-            )
-            return
         covered = _kv_prefix_coverage(cache)
         if covered is None:
             logger.debug("MLX prompt cache: skipping cache with unverifiable prefix coverage")
@@ -3037,6 +3069,15 @@ class _MLXPromptCacheHistory:
             return
         tokens = tokens[:covered]
         if not tokens:
+            return
+        if nbytes > self._max_bytes:
+            # In the LRU it would evict itself and every other conversation.
+            logger.debug(
+                "MLX prompt cache: holding %.2f GB entry over the %.2f GB budget for its next turn",
+                nbytes / 1e9,
+                self._max_bytes / 1e9,
+            )
+            self._oversized = (key, tokens, cache, nbytes)
             return
         self._lru.insert_cache(key, tokens, cache)
 
@@ -3287,6 +3328,71 @@ def _raw_prompt_constraint(grammar, tokenizer):
 
     # Raw replies decode with skip_special_tokens, so a special id spelling a literal would vanish.
     return GrammarConstraint(grammar, tokenizer, strips_special_tokens = True)
+
+
+class LogprobsUnsupported(ValueError):
+    """``n_probs`` asked of a model that does not sample one token per step."""
+
+    public = True
+    openai_param = "logprobs"
+
+
+def _make_mlx_raw_logprob_recorder():
+    """A first logits processor queueing each step's log-softmax of the model's own logits, and
+    the queue. llama-server reports ``n_probs`` from the logits before any sampler, so a token
+    forced by ``logit_bias`` keeps its real logprob; mlx_lm and mlx_vlm compute theirs after the
+    processors. Neither runtime calls processors during prefill, so entry i is generated token i."""
+    from collections import deque
+
+    import mlx.core as mx
+
+    recorded = deque()
+
+    def _processor(tokens, logits):
+        raw = logits.astype(mx.float32)
+        recorded.append(raw - mx.logsumexp(raw, axis = -1, keepdims = True))
+        return logits
+
+    return _processor, recorded
+
+
+def _token_bytes_text(tokenizer, token_id):
+    kw = dict(skip_special_tokens = False, clean_up_tokenization_spaces = False)
+    # SentencePiece decoders strip a sequence's leading space, so "▁the" alone decodes to
+    # "the"; after a copy of itself it keeps the " the" llama-server reports.
+    alone = tokenizer.decode([token_id], **kw)
+    twice = tokenizer.decode([token_id, token_id], **kw)
+    text = twice[len(alone) :] if twice.startswith(alone) else alone
+    return text, list(text.encode("utf-8"))
+
+
+def _mlx_token_logprob(raw, token_id, n_probs, tokenizer) -> dict:
+    """One llama-server ``logprobs.content`` entry: the sampled token's logprob and the
+    ``n_probs`` most likely tokens, all read from the unprocessed logits."""
+    import mlx.core as mx
+
+    raw = raw.reshape(-1)
+    n = min(int(n_probs), raw.shape[0])
+    top = mx.argpartition(-raw, kth = n - 1)[:n]
+    values = raw[top]
+    order = mx.argsort(-values)
+    # llama-server writes the lowest float for -inf, which JSON cannot carry.
+    floor = -3.4028234663852886e38
+    entry_ids, entry_values = top[order].tolist(), values[order].tolist()
+    text, data = _token_bytes_text(tokenizer, int(token_id))
+    top_logprobs = []
+    for tid, value in zip(entry_ids, entry_values):
+        tid_text, tid_bytes = _token_bytes_text(tokenizer, int(tid))
+        top_logprobs.append(
+            {"id": int(tid), "token": tid_text, "bytes": tid_bytes, "logprob": max(value, floor)}
+        )
+    return {
+        "id": int(token_id),
+        "token": text,
+        "bytes": data,
+        "logprob": max(raw[int(token_id)].item(), floor),
+        "top_logprobs": top_logprobs,
+    }
 
 
 def _with_prompt_history(processor, prompt, window):
@@ -3577,6 +3683,8 @@ def _request_batch_gap(request):
         return "a reply runs the tool protocol"
     if request.get("response_format") is not None or request.get("grammar") is not None:
         return "a reply is constrained to a response format"
+    if request.get("n_probs"):
+        return "a reply reports token probabilities"
     return None
 
 
@@ -3739,26 +3847,43 @@ class _TextBatchSession:
     def admit(self, request, handle):
         """Take one reply in, answering with the text preceding its first token."""
         backend = self.backend
+        image = request.get("image") if backend._reads_vision_input() else None
+        messages = request.get("messages") or []
+        row_kwargs = _row_kwargs(request)
         plan = backend._plan_text_row(
-            _messages_with_system_prompt(
-                request.get("messages") or [],
-                request.get("system_prompt", ""),
-            ),
-            **_row_kwargs(request),
+            _messages_with_system_prompt(messages, request.get("system_prompt", ""))
+            if image is None
+            else backend._conversation_to_render(messages, request.get("system_prompt", ""), image),
+            **row_kwargs,
         )
-        prefix, remainder, cache, cache_key, all_tokens = backend._batch_prompt_row(
-            plan.prompt,
-            self._adapter_state,
-        )
+        began = time.perf_counter()
+        if image is None:
+            prefix, remainder, cache, cache_key, all_tokens = backend._batch_prompt_row(
+                plan.prompt,
+                self._adapter_state,
+            )
+        else:
+            from unsloth_zoo.mlx.generate import prefill_image_prompt
+
+            # mlx-lm batches token ids only: the image prefills here, and stays out of the token-keyed cache.
+            cache = backend._make_row_cache()
+            all_tokens = prefill_image_prompt(
+                backend._model, backend._tokenizer, plan.prompt, [image], cache
+            )
+            prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
+            if row_kwargs["max_new_tokens"] is None:
+                plan.max_tokens = backend._unset_generation_budget(plan.prompt, all_tokens)
         row = _TextBatchRow(
             handle = handle,
             plan = plan,
             cache_key = cache_key,
             all_tokens = all_tokens,
-            prompt_len = len(remainder),
-            cached = len(prefix),
+            prompt_len = len(remainder) if image is None else len(all_tokens),
+            cached = len(prefix) if image is None else 0,
             detokenizer = backend._tokenizer.detokenizer if plan.detokenizes else None,
         )
+        if image is not None:
+            row.processing_at = began
         uids = self.generator.insert(
             [remainder],
             max_tokens = [plan.max_tokens],
@@ -3804,6 +3929,7 @@ class _TextBatchSession:
             if row.ready_at is None:
                 row.ready_at = now
             yield from self._feed(row, event)
+        self._release_held_cache_beside_live_rows()
 
     def _feed(self, row, event):
         stream = row.plan.stream
@@ -3854,6 +3980,14 @@ class _TextBatchSession:
                 row.plan.stream,
             )
             yield from self._retire(row, cancelled = True)
+        self._release_held_cache_beside_live_rows()
+
+    def _release_held_cache_beside_live_rows(self):
+        # Decided once every row that ended together is retired: holding it beside a row still
+        # decoding would raise peak memory.
+        history = self.backend._prompt_cache_history
+        if self._rows and history is not None:
+            history.release_oversized()
 
     def _retire(self, row, *, cancelled):
         self._rows.pop(row.handle, None)
@@ -4909,13 +5043,12 @@ class MLXInferenceBackend:
                     reason,
                 )
                 model = tokenizer_or_processor = _eligibility = None
-        if model is None:
-            import gc
-
-            # Outside the except: its traceback keeps the failed load's weights alive.
-            gc.collect()
-            _drain_generation_streams(mx)
-            mx.clear_cache()
+        # unsloth-zoo builds an image checkpoint mlx-vlm lacks through mlx-lm: the text paths
+        # serve it, reading its images only through an unsloth-zoo that prefills them.
+        served_by_mlx_lm = use_vlm and getattr(model, "_is_vlm_model", None) is False
+        if served_by_mlx_lm and not _mlx_lm_reads_images(model):
+            is_vision = False
+        if model is None or served_by_mlx_lm:
             if speculates:
                 speculates = False
                 spec_reason = (
@@ -4926,6 +5059,13 @@ class MLXInferenceBackend:
             elif self._turboquant:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
+        if model is None:
+            import gc
+
+            # Outside the except: its traceback keeps the failed load's weights alive.
+            gc.collect()
+            _drain_generation_streams(mx)
+            mx.clear_cache()
             load_kwargs["text_only"] = True
             model, tokenizer_or_processor = FastMLXModel.from_pretrained(
                 load_source,
@@ -4950,11 +5090,15 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
+        _config_audio_type = getattr(config, "audio_type", None)
+        if served_by_mlx_lm and _config_audio_type == "audio_vlm":
+            # Omni audio input rides mlx-vlm's processor, which an mlx-lm load does not have.
+            _config_audio_type = None
         _audio_type = _classify_mlx_audio_type(
             model,
             self._processor,
             is_vision,
-            config_audio_type = getattr(config, "audio_type", None),
+            config_audio_type = _config_audio_type,
         )
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
@@ -5224,7 +5368,10 @@ class MLXInferenceBackend:
         )
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
-        info["renders_image"] = _proc is not None and self._reads_vision_input()
+        # An image model served through mlx-lm marks images with its tokenizer's template.
+        info["renders_image"] = self._reads_vision_input() and (
+            _proc is not None or not getattr(self, "_is_vlm", False)
+        )
         info["accepts_multiple_images"] = info["renders_image"] and bool(
             getattr(self, "_multi_image_marker", None)
         )
@@ -5347,7 +5494,7 @@ class MLXInferenceBackend:
 
     def _conversation_to_render(self, messages, system_prompt, image):
         """The turns this request renders, whichever way its reply is decoded."""
-        if self._is_vlm and image is not None:
+        if (self._is_vlm or self._reads_vision_input()) and image is not None:
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
             )
@@ -5531,6 +5678,7 @@ class MLXInferenceBackend:
                 max_new_tokens,
                 repetition_penalty,
                 cancel_event,
+                images = attached if self._reads_vision_input() else None,
                 tools = tools,
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
@@ -5613,9 +5761,11 @@ class MLXInferenceBackend:
         stop = None,
         penalty_window = None,
         grammar = None,
+        n_probs = 0,
     ) -> Generator[str, None, None]:
         """Cumulative text sampled after ``prompt_ids`` with no chat template.
-        ``penalty_window`` is llama-server's ``repeat_last_n``."""
+        ``penalty_window`` is llama-server's ``repeat_last_n``; ``n_probs`` > 0 adds each
+        token's ``logprobs.content`` entry to the stats as ``token_logprobs``."""
         if self._model is None:
             raise RuntimeError("No model loaded")
         self.last_generation_stats = None
@@ -5629,6 +5779,8 @@ class MLXInferenceBackend:
             penalty_window = penalty_window,
             grammar = grammar,
         )
+        if n_probs:
+            sampling["n_probs"] = int(n_probs)
         args = (temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty, cancel_event)
         if self._is_vlm:
             yield from self._generate_vlm(None, None, *args, **sampling)
@@ -5651,6 +5803,7 @@ class MLXInferenceBackend:
         repetition_penalty,
         cancel_event,
         *,
+        images = None,
         tools = None,
         enable_thinking = None,
         reasoning_effort = None,
@@ -5668,6 +5821,7 @@ class MLXInferenceBackend:
         prompt_ids = None,
         penalty_window = None,
         grammar = None,
+        n_probs = 0,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
@@ -5744,6 +5898,11 @@ class MLXInferenceBackend:
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
         )
+        recorded = token_logprobs = None
+        if n_probs:
+            recorder, recorded = _make_mlx_raw_logprob_recorder()
+            logits_processors = [recorder, *(logits_processors or ())]
+            token_logprobs = []
 
         native_token_decoder = (
             NativeToolTokenDecoder(
@@ -5800,13 +5959,23 @@ class MLXInferenceBackend:
             self._int8_prefill_scope(),
             self._generation_scopes(),
         ):
-            (
-                gen_prompt,
-                prompt_cache,
-                cache_key,
-                prompt_tokens,
-                cached_n,
-            ) = self._prepare_prompt_cache(prompt, _adapter_state)
+            input_embeddings = None
+            if images:
+                from unsloth_zoo.mlx.generate import image_prompt_embeddings
+
+                # Any two images of one size expand to the same ids, so the token-keyed cache stays out.
+                prompt_tokens, input_embeddings = image_prompt_embeddings(
+                    self._model, self._tokenizer, prompt, images
+                )
+                gen_prompt, prompt_cache, cache_key, cached_n = prompt_tokens, None, None, 0
+            else:
+                (
+                    gen_prompt,
+                    prompt_cache,
+                    cache_key,
+                    prompt_tokens,
+                    cached_n,
+                ) = self._prepare_prompt_cache(prompt, _adapter_state)
             max_new_tokens = self._generation_limit(prompt, max_new_tokens, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
@@ -5831,6 +6000,8 @@ class MLXInferenceBackend:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 else:
                     gen_kwargs.update(self._kv_quant_generate_kwargs())
+                if input_embeddings is not None:
+                    gen_kwargs["input_embeddings"] = input_embeddings
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
                 for response in stream_generate(
@@ -5840,6 +6011,12 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     token_ids.append(response.token)
+                    if recorded:
+                        token_logprobs.append(
+                            _mlx_token_logprob(
+                                recorded.popleft(), response.token, n_probs, self._tokenizer
+                            )
+                        )
                     if preserve_native_channels:
                         sampled += streamed_text.feed(response)
                         if sequences:
@@ -5929,6 +6106,8 @@ class MLXInferenceBackend:
                             max_new_tokens,
                         ),
                     )
+                    if token_logprobs is not None:
+                        self.last_generation_stats["token_logprobs"] = token_logprobs
         # The turn's settled text: delivered once for the plain path, as the tail for the native-channel one. Every
         # snapshot was matched as it arrived, so a turn no sequence ended owes all of its text, held-back partial
         # included.
@@ -6391,6 +6570,7 @@ class MLXInferenceBackend:
         prompt_ids = None,
         penalty_window = None,
         grammar = None,
+        n_probs = 0,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -6505,6 +6685,15 @@ class MLXInferenceBackend:
                 "constrain the next token. Load an autoregressive model to use "
                 "guided decoding."
             )
+        recorded = token_logprobs = None
+        if n_probs:
+            if _vlm_generation_is_diffusion(self._model):
+                raise LogprobsUnsupported(
+                    "logprobs is not supported on this model: it generates by diffusion rather "
+                    "than one token at a time."
+                )
+            recorder, recorded = _make_mlx_raw_logprob_recorder()
+            token_logprobs = []
         draft = self._speculative_draft
         if (
             presence_penalty
@@ -6513,6 +6702,7 @@ class MLXInferenceBackend:
             or constraint is not None
             or (_rep_active and draft is not None)
             or penalty_window is not None
+            or recorded is not None
         ):
             # These need custom processors: pass the full list (repetition + the rest) instead of the
             # repetition_penalty shortcut so all apply.
@@ -6525,6 +6715,12 @@ class MLXInferenceBackend:
                 penalty_window = penalty_window,
                 penalty_prompt = prompt_ids,
             )
+            if recorded is not None:
+                # Not history_only, so no draft runs: its verify pass would record rejected tokens.
+                vlm_kwargs["logits_processors"] = [
+                    recorder,
+                    *(vlm_kwargs["logits_processors"] or ()),
+                ]
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
@@ -6678,6 +6874,15 @@ class MLXInferenceBackend:
                             ):
                                 # The streaming detokenizer trims the first leading space; decode the ids.
                                 raw_ids.append(int(raw_id))
+                                if recorded:
+                                    token_logprobs.append(
+                                        _mlx_token_logprob(
+                                            recorded.popleft(),
+                                            int(raw_id),
+                                            n_probs,
+                                            self._tokenizer,
+                                        )
+                                    )
                                 decoded = self._tokenizer.decode(
                                     raw_ids,
                                     skip_special_tokens = True,
@@ -6769,6 +6974,8 @@ class MLXInferenceBackend:
                             if draft is None
                             else (draft.draft_n, draft.draft_n_accepted),
                         )
+                        if token_logprobs is not None:
+                            self.last_generation_stats["token_logprobs"] = token_logprobs
 
         if document_only or prompt_ids is not None:
             # The normalizer would rewrite marker text inside the document.

@@ -153,6 +153,54 @@ export async function fetchDecisionExportInfo(
   return (await fetchCheckpointExportProbe(checkpointPath, signal)).decision;
 }
 
+/** Opt-in REAP expert pruning applied to an MoE model before it is exported. */
+export interface ReapOptions {
+  /** Fraction of the routed experts removed in every MoE layer, e.g. 0.25. */
+  sparsity: number;
+  num_calibration_samples: number;
+  /** Hugging Face dataset id for calibration; the backend default when null. */
+  dataset?: string | null;
+}
+
+export interface MoeInfo {
+  num_experts: number;
+  top_k: number;
+  /** Group-limited routers (DeepSeek style): Core prunes the same number from every group. */
+  n_group?: number | null;
+  topk_group?: number | null;
+}
+
+/** Routed-expert counts for a local folder or Hub id; null for a dense model or when unknown. */
+export async function fetchMoeInfo(
+  model: string,
+  hfToken?: string | null,
+  signal?: AbortSignal,
+): Promise<MoeInfo | null> {
+  // Token in a header (not the query string) so it never lands in URLs/logs.
+  const headers: Record<string, string> = {};
+  if (hfToken) {
+    headers["X-HF-Token"] = hfToken;
+  }
+  const response = await authFetch(
+    `/api/export/moe-info?model=${encodeURIComponent(model)}`,
+    { signal, headers },
+  );
+  const body = await parseJson<{
+    num_experts: number | null;
+    top_k: number | null;
+    n_group?: number | null;
+    topk_group?: number | null;
+  }>(response);
+  return body.num_experts && body.top_k
+    ? {
+        num_experts: body.num_experts,
+        top_k: body.top_k,
+        n_group: body.n_group ?? null,
+        topk_group: body.topk_group ?? null,
+      }
+    : null;
+}
+
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   const response = await authFetch("/api/models/checkpoints");
   return parseJson<CheckpointListResponse>(response);
@@ -207,6 +255,7 @@ export async function exportMerged(params: {
   hf_token?: string | null;
   private?: boolean;
   install_missing_dependencies?: boolean;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/merged", {
     method: "POST",
@@ -223,6 +272,7 @@ export async function exportBase(params: {
   hf_token?: string | null;
   private?: boolean;
   base_model_id?: string | null;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/base", {
     method: "POST",
@@ -244,6 +294,7 @@ export async function exportGGUF(params: {
   private?: boolean;
   /** Also convert a Q4_0/Q4_1/Q4_K_M GGUF to Q4NX for the AMD NPU, into <save_directory>/npu-q4nx. */
   npu_q4nx?: boolean;
+  reap?: ReapOptions | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",

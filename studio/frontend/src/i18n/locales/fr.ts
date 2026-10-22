@@ -50,6 +50,11 @@ export const fr = {
     removeFromMessage: "Retirer du message",
   },
   browser: {
+    drafts: {
+      title: "Décharger une page contenant du texte saisi ?",
+      description: "Pour préserver la réactivité du chat, seules trois pages masquées contenant du texte saisi restent actives. Continuer déchargera {pages} et risque de perdre le texte non enregistré. Annuler revient à l’onglet précédent.",
+      confirm: "Décharger et continuer",
+    },
     agentSettings: {
       title: "Utilisation du navigateur",
       enable: "Autoriser les modèles à utiliser le navigateur",
@@ -210,7 +215,7 @@ export const fr = {
     importBookmarksDoneOne: "{count} favori importé.",
     importBookmarksDoneMany: "{count} favoris importés.",
     importBookmarksNone: "Aucun nouveau favori dans ce fichier.",
-    importBookmarksPartial: "{count} importés, mais {leftOut} autres n'ont pas pu être ajoutés : Studio conserve jusqu'à {max} favoris.",
+    importBookmarksPartial: "{count} importés, mais {leftOut} autres n'ont pas pu être ajoutés : Unsloth conserve jusqu'à {max} favoris.",
     importBookmarksFailed: "Impossible de lire ce fichier. Choisissez un fichier HTML de favoris exporté depuis un navigateur.",
     downloadsTitle: "Téléchargements",
     askWhereToSaveSetting: "Demander où enregistrer chaque fichier",
@@ -261,7 +266,7 @@ export const fr = {
     annotationScreenshotsAlways: "Toujours inclure",
     annotationScreenshotsNever: "Ne jamais inclure",
     clearDataSetting: "Effacer les données de navigation",
-    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Studio.",
+    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Unsloth.",
     manage: "Gérer",
     fullView: {
       enter: "Plein écran",
@@ -843,6 +848,7 @@ export const fr = {
       byProject: "Par projet",
       inOneList: "Dans une seule liste",
       sortChatsBy: "Trier les discussions par",
+      projectsHome: "Accueil des projets",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",
@@ -1084,6 +1090,10 @@ export const fr = {
       alternateSlot: "Raccourci alternatif",
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
+      metaUnsupported: "La touche Windows ne peut pas être utilisée dans les raccourcis.",
+      altGraphUnsupported: "Les combinaisons AltGr ne peuvent pas servir de raccourcis.",
+      desktopOnly: "Application de bureau uniquement",
+      builtInKey: "Intégré : {key}",
       actions: {
         findInPage: {
           label: "Rechercher dans la page",
@@ -1285,6 +1295,10 @@ export const fr = {
           label: "Réorienter la réponse",
           description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
         },
+        stopGeneration: {
+          label: "Arrêter la génération",
+          description: "Arrêter la réponse en cours",
+        },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
           description: "Parcourir les niveaux d’effort de raisonnement",
@@ -1445,15 +1459,15 @@ export const fr = {
       dictation: {
         audioUploadTitle: "Dicter avec un enregistrement",
         audioUploadDescription:
-          "Votre navigateur nécessite une connexion sécurisée (HTTPS) pour enregistrer directement dans Studio. Avec cette connexion HTTP, utilisez plutôt l'enregistreur de votre téléphone ou choisissez un enregistrement sauvegardé. Votre serveur Studio transcrira l'audio et ajoutera le texte à votre message.",
+          "Votre navigateur nécessite une connexion sécurisée (HTTPS) pour enregistrer directement dans Unsloth. Avec cette connexion HTTP, utilisez plutôt l'enregistreur de votre téléphone ou choisissez un enregistrement sauvegardé. Votre serveur Unsloth transcrira l'audio et ajoutera le texte à votre message.",
         audioUploadChooseFile: "Choisir un enregistrement",
         audioUploadRecord: "Enregistrer l'audio",
         audioUploadIphoneHint:
           "Sur iPhone, sauvegardez un enregistrement depuis Dictaphone ou une autre application d'enregistrement, puis choisissez-le ici.",
         audioUploadServerModelNote:
-          "Cet enregistrement utilise le modèle local indiqué ci-dessus sur le serveur Studio, même si la dictée habituelle utilise un autre moteur.",
+          "Cet enregistrement utilise le modèle local indiqué ci-dessus sur le serveur Unsloth, même si la dictée habituelle utilise un autre moteur.",
         audioUploadAutomatic: "Automatique",
-        audioUploadModelReady: "Prêt sur ce serveur Studio",
+        audioUploadModelReady: "Prêt sur ce serveur Unsloth",
         audioUploadRetryTitle: "Impossible de transcrire {file}",
         audioUploadRetry: "Réessayer la transcription",
         audioUploadChooseModel:
@@ -1821,23 +1835,14 @@ export const fr = {
       },
       notifications: {
         sectionTitle: "Notifications",
-        showLlamaUpdates: "Notifications de mise à jour de llama.cpp",
-        showLlamaUpdatesDescription:
-          "Notifier lorsqu'une nouvelle version de llama.cpp est disponible pour exécuter de nouveaux modèles. Désactivez si vous ne faites que de l'entraînement.",
-        showLoadedModels: "Indicateur des modèles chargés",
-        showLoadedModelsDescription:
-          "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
-        showWhisperUpdates: "Notifications de mise à jour de whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Notifier lorsqu'une nouvelle version de whisper.cpp est disponible pour les modèles de transcription vocale. Désactivez si vous ne transcrivez jamais d'audio.",
-        showAudioCppUpdates: "Notifications de mise à jour d'audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Notifier lorsque le moteur audio.cpp doit être mis à jour pour les pages Audio. Désactivez si vous n'utilisez jamais Audio.",
-        showUnslothUpdates: "Notifications de mise à jour d'Unsloth",
-        showUnslothUpdatesDescription:
-          "Prévenir lorsqu'une version plus récente d'Unsloth est disponible à l'installation.",
+        showLoadedModels: "Carte des modèles chargés",
+        showLoadedModelsDescription: "Une carte dans le coin avec chaque modèle chargé, à décharger en un clic.",
+        updateReminders: "Rappels de mise à jour",
+        updateRemindersDescription: "À quelle fréquence proposer une nouvelle version quand elle est prête.",
+        llamaHint: "Modèles de chat et GGUF",
+        audioHint: "Voix, musique et transcription",
         frequency: {
-          always: "Toujours",
+          always: "Dès que disponible",
           daily: "Une fois par jour",
           weekly: "Une fois par semaine",
           biweekly: "Toutes les deux semaines",
@@ -1983,7 +1988,7 @@ export const fr = {
         menuSubtitle: "Pour la recherche de fichiers",
         device: "Appareil d'embedding",
         deviceDescription:
-          "Où s'exécute le modèle d'embedding, pour tous les modèles. Le GPU indexe plus vite les grands ensembles de documents, mais garde un peu de VRAM occupée jusqu'au redémarrage de Studio.",
+          "Où s'exécute le modèle d'embedding, pour tous les modèles. Le GPU indexe plus vite les grands ensembles de documents, mais garde un peu de VRAM occupée jusqu'au redémarrage de Unsloth.",
         deviceAuto: "Automatique",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2090,9 +2095,9 @@ export const fr = {
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
         activityDescription: {
-          daily: "{total} au cours des {weeks} dernières",
-          weekly: "Semaine record {total} · {weeks} dernières",
-          cumulative: "{total} cumulés sur les {weeks} dernières",
+          daily: "{total} depuis le {since}",
+          weekly: "Semaine la plus active {total} · depuis le {since}",
+          cumulative: "{total} au total depuis le {since}",
         },
         mode: {
           daily: "Quotidienne",
@@ -2101,8 +2106,9 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
-        chartToggle: "Graphique",
-        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
+        emptyDayTooltip: "{date} · Aucune activité",
+        apiRequests: "{count} via l'API",
+        cumulativeTooltip: "Jusqu'à la semaine du {date} · {tokens} au total",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",
@@ -2421,6 +2427,9 @@ export const fr = {
         multiModelDescriptionAlways:
           "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
         multiModelHint: "Concerne les modèles de discussion, vocaux, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        allowOversizedLoad: "Autoriser le chargement de modèles trop grands",
+        allowOversizedLoadDescription: "Charger les modèles d'image et de vidéo même si la vérification de mémoire indique qu'ils ne tiennent pas.",
+        allowOversizedLoadHint: "S'applique lorsque le CPU et le GPU partagent une seule mémoire (Apple Silicon, GPU intégrés). Unsloth refuse un chargement quand son estimation des poids du modèle dépasse la mémoire restante après la réserve pour le système d'exploitation. Si cette option est activée, le chargement est tenté quand même. L'estimation peut se tromper dans les deux sens : un chargement trop grand peut échouer, épuiser la mémoire, faire beaucoup swapper l'ordinateur ou le bloquer, ou arrêter Unsloth. Désactivé par défaut.",
         mediaIdleUnloadDescription:
           "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
@@ -2792,6 +2801,22 @@ export const fr = {
         visibilityDescription:
           "Comment la réflexion s’ouvre. Vous pouvez toujours déplier ou replier un bloc vous-même.",
       },
+      memory: {
+        title: "Mémoire",
+        description: "Des notes lues par chaque discussion, avec n'importe quel modèle, local ou cloud. Les discussions d'un projet lisent aussi le AGENTS.md de ce projet.",
+        enable: "Utiliser la mémoire dans les discussions",
+        enableDescription: "Envoyer ces notes avec chaque discussion.",
+        locked: "Désactivé pour cette installation par UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Notes de mémoire",
+        placeholder: "Par exemple :\n- J'écris du Python et j'utilise uv.\n- Réponds brièvement.",
+        hint: "Enregistré dans {path}. Vous pouvez aussi modifier ce fichier dans n'importe quel éditeur de texte.",
+        size: "{used} / {max} Ko",
+        save: "Enregistrer",
+        saved: "Mémoire enregistrée",
+        loadError: "Impossible de charger la mémoire.",
+        saveError: "Impossible d'enregistrer la mémoire.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md mémoire souvenir personnalisation profil notes",
+      },
       currentDate: {
         label: "Indiquer la date du jour au modèle",
         description:
@@ -2871,7 +2896,7 @@ export const fr = {
       importFailed: "Échec de l'importation.",
       importFromSource: "Importer depuis {source}",
       importFromSourceDescription:
-        "Copiez vos conversations {source} dans Studio, regroupées par projet.",
+        "Copiez vos conversations {source} dans Unsloth, regroupées par projet.",
       importingAction: "Importation...",
       importedSourceOneChat: "1 conversation importée depuis {source}.",
       importedSourceChatCount:
@@ -3166,6 +3191,14 @@ export const fr = {
           "Le modèle ne se charge par son nom que si le changement automatique de modèle est activé. Activez-le, ou chargez d'abord le modèle sur sa page Audio.",
         useViaApi: "Utiliser via l'API",
       },
+      mediaApi: {
+        title: "API image et vidéo",
+        description: "Générez des images et des vidéos depuis votre propre code avec les points de terminaison compatibles OpenAI.",
+        images: "Images",
+        video: "Vidéo",
+        placeholderModel: "Le modèle affiché est un exemple. Chargez un modèle sur la page Images ou Vidéo et ouvrez ceci depuis son bouton API pour le renseigner.",
+        autoSwitchOff: "Le changement automatique de média est désactivé : les requêtes utilisent le modèle chargé par la page, quel que soit celui qu'elles nomment.",
+      },
       decisionApi: {
         title: "API de décision",
         docs: "Documentation",
@@ -3246,8 +3279,27 @@ export const fr = {
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
       audioCppVersion: "Version d'audio.cpp",
+      whisperCppVersion: "Version de whisper.cpp",
+      engines: {
+        title: "Moteurs",
+        description: "Les environnements d'exécution qu'Unsloth utilise pour faire tourner les modèles. Les mises à jour s'installent en arrière-plan, sans redémarrage.",
+        updatesLabel: "Mises à jour des moteurs",
+        notInstalled: "Non installé",
+        available: "{version} disponible",
+        upToDate: "À jour",
+        updatesAvailable: "Mises à jour disponibles",
+        checking: "Recherche de mises à jour...",
+        checkFailed: "Impossible de rechercher les mises à jour. Réessayez plus tard.",
+        unsupported: "Les moteurs de cette installation sont gérés en dehors d'Unsloth.",
+        checkForUpdates: "Rechercher des mises à jour",
+        update: "Mettre à jour",
+        updating: "Mise à jour...",
+        updated: "Moteurs mis à jour.",
+        updateFailed: "Échec de la mise à jour : {error}",
+      },
       hardware: "Matériel",
       gpu: "GPU",
+      gpuIntegrated: "intégrée",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3308,7 +3360,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "L’application est connectée à un serveur Studio déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
+          "L’application est connectée à un serveur Unsloth déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",
@@ -3332,6 +3384,9 @@ export const fr = {
         docsUpdating: "Mise à jour",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3930,7 +3985,7 @@ export const fr = {
         decisionColumnsMissing:
           "Les modèles de décision ont besoin des colonnes state, questions et gold (ou answers). Colonnes manquantes : {columns}.",
         decisionOwnerOnly:
-          "Seul le propriétaire de Studio peut affiner des modèles de décision.",
+          "Seul le propriétaire de Unsloth peut affiner des modèles de décision.",
         hfDatasetRequired:
           "Sélectionnez d'abord un jeu de données Hugging Face.",
         hfDatasetSplitRequired:

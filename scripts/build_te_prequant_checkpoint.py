@@ -65,7 +65,7 @@ def main(argv = None) -> int:
         default = "auto",
         choices = ["auto", "ideogram4"],
         help = "how to load the dense encoder: 'auto' = transformers from_pretrained on the config's "
-        "architecture; 'ideogram4' = Studio's Ideogram 4 loader, which dequantizes the vendor "
+        "architecture; 'ideogram4' = Unsloth's Ideogram 4 loader, which dequantizes the vendor "
         "fp8 + per-channel weight_scale Qwen3-VL encoder to bf16 (from_pretrained cannot read it)",
     )
     args = p.parse_args(argv)

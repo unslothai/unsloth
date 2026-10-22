@@ -673,7 +673,7 @@ def acquire_for(
     acting = account_id or current_account_id()
     # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
     handover = owner != DIFFUSION or register is not None or replacing
-    with _lock, (_handover_fence() if handover else nullcontext()):
+    with _lock, _handover_fence() if handover else nullcontext():
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS

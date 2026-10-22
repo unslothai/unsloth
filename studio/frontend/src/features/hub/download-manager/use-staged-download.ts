@@ -16,6 +16,7 @@ import {
   publishStagedQueue,
   useStagedDownloadQueues,
 } from "./staged-download-queue";
+import { stagedEntryTransferredBytes } from "./staged-download-progress";
 import { useRepoDownload } from "./use-repo-download";
 
 /** Total progress for the plan ID returned by `stage()`. */
@@ -228,9 +229,23 @@ export function useStagedDownload({
   }, []);
 
   const remainingBytes = (queue ?? []).reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0);
+  // The last measured reading of the current entry, kept through a held sample (a transport switch or retry).
+  const [lastMeasured, setLastMeasured] = useState<{
+    entry: StagedDownloadEntry | null;
+    bytes: number;
+  }>({ entry: null, bytes: 0 });
+  const previousBytes = current && lastMeasured.entry === current ? lastMeasured.bytes : 0;
   const currentBytes = current
-    ? Math.min(Math.max(0, current.bytes), job.progress?.downloadedBytes ?? 0)
+    ? stagedEntryTransferredBytes(current.bytes, job.progress, previousBytes)
     : 0;
+  if (
+    current &&
+    job.progress &&
+    job.progress.measuredTransfer !== false &&
+    (lastMeasured.entry !== current || lastMeasured.bytes !== currentBytes)
+  ) {
+    setLastMeasured({ entry: current, bytes: currentBytes });
+  }
   const downloadedBytes = queue ? Math.max(0, staged.bytes - remainingBytes) + currentBytes : 0;
   const totalBytes = queue ? staged.bytes : 0;
   const plan = staged.plan;

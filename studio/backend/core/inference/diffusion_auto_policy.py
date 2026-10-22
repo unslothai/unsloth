@@ -172,6 +172,27 @@ def resident_bytes_from_declared(
     return int(dtype_resident * dtype_scale) + prequant_bytes
 
 
+def companion_bytes_from_declared(
+    base_repo: Optional[str],
+    declared_files: Any,
+    *,
+    dtype_scale: float = 1.0,
+) -> Optional[int]:
+    """Non-denoiser (text encoder, VAE) share of ``resident_bytes_from_declared``; None when none declared."""
+    _denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
+        _base_key(base_repo) if base_repo else "", (1.0, 1.0)
+    )
+    # An SDXL-style UNet is a denoiser too.
+    companions = sum(
+        max(0, int(size or 0))
+        for path, size in (declared_files or ())
+        if not str(path).startswith(DENOISER_SUBFOLDERS + ("unet/",))
+    )
+    if companions <= 0:
+        return None
+    return int(int(companions / max(companion_factor, 0.01)) * max(1.0, float(dtype_scale or 1.0)))
+
+
 def _base_key(base_repo: Optional[str]) -> str:
     """Return the canonical, case-insensitive key used by per-base tables."""
     from .diffusion_families import canonical_base

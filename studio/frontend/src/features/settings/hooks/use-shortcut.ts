@@ -2,12 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { zoomTypedOffZoomKey } from "../../interface-zoom/lib/zoom-chords";
 import {
   SHORTCUT_SLOTS,
   type ShortcutBinding,
   type ShortcutId,
   activationBelongsToFocus,
   formatBindingLabel,
+  isMacPlatform,
   matchesBinding,
   parseBinding,
 } from "../lib/keyboard-shortcuts";
@@ -250,6 +252,7 @@ export function useShortcut(
       if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
+      if (zoomTypedOffZoomKey(event, hit.code, isMacPlatform())) return;
       // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
       // Enter or a letter, the same pass would deny the request as the user edits the prompt.
       const exception = typesInTextField(hit) ? undefined : textFieldException;
