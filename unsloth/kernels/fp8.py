@@ -636,7 +636,9 @@ _FP8_BLOCK_GEMV = os.environ.get("UNSLOTH_FP8_BLOCK_GEMV", "1").strip().lower() 
 _FP8_BLOCK_GEMV_MAX_ROWS = 16
 
 
-@triton.jit
+# M (decode batch) and the partial stride that follows it stay unspecialized: one compiled variant serves
+# batch 1-16 instead of three (==1, %16, other).
+@triton.jit(do_not_specialize = ["M", "stride_ys"])
 def _fp8_block_gemv_kernel(
     x_ptr,
     w_ptr,
@@ -687,7 +689,7 @@ def _fp8_block_gemv_kernel(
         ).to(x.dtype)
         # BLOCK_K divides GROUP_K and K splits start on a block, so one scale per row per step.
         s = tl.load(s_rows + (k0 // GROUP_K) * stride_sk, mask = mask_n, other = 0.0).to(tl.float32)
-        acc += tl.dot(x, tl.trans(w)) * s[None, :]
+        acc += tl.dot(x, tl.trans(w), out_dtype = tl.float32) * s[None, :]
     y = y_ptr + pid_k * stride_ys + offs_m[:, None] * stride_ym + offs_n[None, :]
     tl.store(y, acc.to(y_ptr.dtype.element_ty), mask = mask_m[:, None] & mask_n[None, :])
 
@@ -794,6 +796,7 @@ def _fp8_block_gemv(
             LONG_INDEXING = long_indexing(weight),
             num_warps = num_warps,
             num_stages = 4,
+            enable_fp_fusion = True,
         )
     out = y[0] if split == 1 else y.sum(0).to(X.dtype)
     return out.reshape(*X.shape[:-1], N)
