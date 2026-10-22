@@ -81,6 +81,16 @@ def _uses_fsdp1(trainer, model):
     return cache[model]
 
 
+def _global_module_backward_hooks():
+    # torch.nn.modules.module.register_module_full_backward_(pre_)hook applies to every module.
+    from torch.nn.modules import module as _module
+
+    return bool(
+        getattr(_module, "_global_backward_hooks", None)
+        or getattr(_module, "_global_backward_pre_hooks", None)
+    )
+
+
 def _output_head(trainer, model):
     # FSDP1 frees or reshards the unwrapped head's parameter view outside its own forward.
     if isinstance(model, torch.nn.Module) and _uses_fsdp1(trainer, model):
@@ -100,12 +110,17 @@ def _output_head(trainer, model):
     if head is None or hasattr(head, "base_layer") or hasattr(head, "modules_to_save"):
         return None, None
     # The kernel reads weight / bias directly: only a plain, unhooked nn.Linear is exactly F.linear(h, W, b).
+    # The head module is never called, so its module backward hooks (which may rewrite grad_input)
+    # would never fire either. Weight tensor / AccumulateGrad hooks still see the kernel's dW.
     if (
         type(head) is not torch.nn.Linear
         or hasattr(head, "_hf_hook")
         or "forward" in vars(head)
         or head._forward_hooks
         or head._forward_pre_hooks
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
+        or _global_module_backward_hooks()
     ):
         return None, None
     weight = getattr(head, "weight", None)
