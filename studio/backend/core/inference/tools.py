@@ -10193,6 +10193,24 @@ def _script_top_level_imports(script: str) -> "list[str]":
     return sorted(names)
 
 
+def _requested_chat_clis(scripts: str, text: str, dest: str) -> "str | None":
+    """Copy the chat-installed CLIs whose names appear as words in *text* into *dest*; *dest* if any."""
+    try:
+        entries = os.listdir(scripts)
+    except OSError:
+        return None
+    words = set(re.findall(r"[\w.+-]+", text))
+    copied = False
+    for entry in entries:
+        stem = os.path.splitext(entry)[0] if os.name == "nt" else entry
+        source = os.path.join(scripts, entry)
+        if (entry in words or stem in words) and os.path.isfile(source):
+            os.makedirs(dest, exist_ok = True)
+            shutil.copy2(source, os.path.join(dest, entry))
+            copied = True
+    return dest if copied else None
+
+
 def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]":
     """argv and env for an approved host-access launch: nothing it loads comes from the sandbox-writable workdir.
 
@@ -10212,9 +10230,17 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
             # The trusted sitecustomize appends these after installed packages for Python and Terminal alike.
             env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
             env["PYTHONNOUSERSITE"] = "1"
-            # Chat-installed CLIs resolve too, but only after every system executable.
-            scripts = os.path.join(packages, "Scripts" if os.name == "nt" else "bin")
-            env["PATH"] = os.pathsep.join(part for part in (env.get("PATH", ""), scripts) if part)
+            # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
+            # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
+            requested = _requested_chat_clis(
+                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
+                script if script is not None else " ".join(map(str, argv)),
+                os.path.join(private, ".unsloth-chat-bin"),
+            )
+            if requested:
+                env["PATH"] = os.pathsep.join(
+                    part for part in (env.get("PATH", ""), requested) if part
+                )
         if script is not None and argv:
             # Helper modules the approved script itself imports stay importable from the chat folder, after
             # everything else. Only those names: a library probing an optional import never reaches the folder.

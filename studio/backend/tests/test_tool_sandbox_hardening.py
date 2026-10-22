@@ -164,18 +164,29 @@ def test_an_approved_terminal_call_runs_chat_clis_after_system_ones(tmp_path, mo
     workdir = _planted_workdir(tmp_path)
     bin_dir = workdir / os_sandbox.SESSION_PACKAGES_RELPATH / "bin"
     bin_dir.mkdir()
-    for name, body in (("chatcli", "echo CHATCLI ok"), ("cat", "echo PLANTED cat")):
+    for name, body in (
+        ("chatcli", "echo CHATCLI ok"),
+        ("cat", "echo PLANTED cat"),
+        ("unsloth-missing-tool", "echo PLANTED probe"),
+    ):
         (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n", encoding = "utf-8")
         (bin_dir / name).chmod(0o755)
     host_file = tmp_path / "notes.csv"
     host_file.write_text("a,b\n", encoding = "utf-8")
     monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
-    command = "chatcli && cat " + shlex.quote(str(host_file))
+    # A probe for a command the call never names (`command -v`, as tools probe for ffmpeg) misses the chat folder.
+    # The name is built at run time, so it never appears in the command text.
+    command = (
+        "chatcli && cat "
+        + shlex.quote(str(host_file))
+        + " && { command -v $(printf %s unsloth-missing; printf %s -tool) || echo PROBE-MISSED; }"
+    )
     assert tools._reaches_host_paths("terminal", command)
     for _ in range(2):
         out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
         assert "CHATCLI ok" in out, out
         assert "a,b" in out, out
+        assert "PROBE-MISSED" in out, out
         assert "PLANTED" not in out, out
 
 
@@ -200,10 +211,9 @@ def test_an_approved_host_launch_env_drops_every_workdir_input(tmp_path):
         assert prepared.env["HOME"] != str(workdir)
         packages = str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
         assert packages not in prepared.env.get("PYTHONPATH", "").split(os.pathsep)
-        # Chat-installed CLIs only after every system executable.
+        # The chat bin folder itself is never on PATH; only CLIs the call names are, last.
         path = prepared.env["PATH"].split(os.pathsep)
-        assert path[-1] == os.path.join(packages, "bin")
-        assert not any(part.startswith(packages) for part in path[:-1])
+        assert not any(part.startswith(packages) for part in path)
         assert not prepared.argv[-1].startswith(str(workdir))
         # The approved code, not whatever the workdir copy was replaced with.
         ran = subprocess.run(
