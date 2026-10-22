@@ -318,7 +318,9 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
             and not _reachable_intel_arc_render_node()
         ):
             return False
-    return _hardware_vulkan_driver({d.get("vendor") for d in gpus}) and _vulkan_loader_loads()
+    # The driver must belong to a card that renders: beside an AMD card, an Intel-only ICD drives just the iGPU.
+    rendering_vendors = {d.get("vendor") for d in gpus if _renders(d)}
+    return _hardware_vulkan_driver(rendering_vendors) and _vulkan_loader_loads()
 
 
 # The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /

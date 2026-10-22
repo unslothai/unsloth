@@ -201,6 +201,11 @@ def invalidate_static(reason: str = "") -> None:
         logger.debug("GPU inventory readings invalidated: %s", reason)
 
 
+def static_generation() -> int:
+    """Bumped by invalidate_static() and reset(): an inventory read before the bump may describe a different host."""
+    return _static_gen
+
+
 def reset() -> None:
     global _static_gen, _slow_until, _stats, _reset_epoch
     _events.invalidate_gpu_memory("reset")

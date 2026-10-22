@@ -417,6 +417,16 @@ def test_the_render_node_and_the_driver_must_share_a_vendor(monkeypatch):
     assert r.image_install_accelerator("cpu") == "vulkan"
 
 
+def test_a_uhd_beside_an_amd_card_needs_the_cards_own_driver(monkeypatch):
+    # Both nodes mounted, but only an Intel ICD loads: Vulkan then enumerates the iGPU alone and the AMD card is not a
+    # Vulkan device at all, so the UHD would render.
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: "intel" in vendors)
+    assert r.image_install_accelerator("cpu") == "auto"
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: "amd" in vendors)
+    assert r.image_install_accelerator("cpu") == "vulkan"
+
+
 @pytest.mark.parametrize(
     "records,live,expected",
     [
@@ -549,6 +559,40 @@ def test_device_listing_readers_share_one_probe(monkeypatch, tmp_path):
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "0")
     sd_cpp_backend.sd_cpp_listed_device(str(binary))
     assert len(calls) == 2
+
+
+def test_a_hardware_inventory_change_reprobes_the_listing(monkeypatch, tmp_path):
+    # Same file, same env, but the eGPU was unplugged (or the driver reset): the old listing names a device that is gone.
+    from utils.hardware import gpu_query, hardware
+
+    binary = tmp_path / "sd-cli"
+    binary.write_bytes(b"x")
+    calls: list = []
+
+    def _probe(_binary, *args):
+        calls.append(args)
+        return _LISTING
+
+    monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+    sd_cpp_backend.sd_cpp_listed_device(str(binary))
+    sd_cpp_backend.sd_cpp_listed_device(str(binary))
+    assert len(calls) == 1
+    # An explicit re-detection (hotplug, driver reset).
+    gpu_query.invalidate_static("test hotplug")
+    sd_cpp_backend.sd_cpp_listed_device(str(binary))
+    assert len(calls) == 2
+    # A periodic inventory refresh that found a different device set.
+    before = [{"vendor": "amd", "name": "AMD Radeon RX 7800 XT"}]
+    monkeypatch.setattr(hardware, "_physical_gpu_inventory_cache", (0.0, {"devices": before}))
+    monkeypatch.setattr(hardware, "_probe_physical_gpu_inventory", lambda: {"devices": []})
+    hardware._run_physical_gpu_inventory_probe()
+    sd_cpp_backend.sd_cpp_listed_device(str(binary))
+    assert len(calls) == 3
+    # A refresh that found the same devices keeps the listing.
+    hardware._run_physical_gpu_inventory_probe()
+    sd_cpp_backend.sd_cpp_listed_device(str(binary))
+    assert len(calls) == 3
 
 
 def test_an_unreadable_listing_is_not_cached(monkeypatch, tmp_path):

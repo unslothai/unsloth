@@ -277,6 +277,9 @@ _physical_gpu_inventory_refreshing = False
 # One re-detection request per recovery, or a poll every few seconds starves detection.
 _REDETECTION_REQUESTED = False
 _physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
+# Bumped when a refresh finds a different device set (an eGPU plugged or pulled, a driver reset), so caches of what the
+# devices said (an sd.cpp --list-devices listing) can tell a stale answer apart without re-probing on every read.
+_physical_gpu_inventory_generation = 0
 # Same treatment for the torch side: classify_torch_build() calls availability probes that block on a wedged driver, and /api/health and /api/liveness reach it through the verdict.
 _TORCH_BUILD_SNAPSHOT_TTL_SECONDS = 60.0
 _torch_build_snapshot_lock = threading.Lock()
@@ -635,7 +638,7 @@ def _carry_unanswered_vendors_forward(
 
 def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
     """One probe pass, stored in the cache. Never raises."""
-    global _physical_gpu_inventory_cache
+    global _physical_gpu_inventory_cache, _physical_gpu_inventory_generation
     previous = _physical_gpu_inventory_cache
     try:
         inventory = _probe_physical_gpu_inventory()
@@ -647,8 +650,18 @@ def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
     inventory = _carry_unanswered_vendors_forward(
         inventory, previous[1] if previous is not None else None
     )
+    if previous is not None and previous[1].get("devices") != inventory.get("devices"):
+        _physical_gpu_inventory_generation += 1
     _physical_gpu_inventory_cache = (time.monotonic(), inventory)
     return inventory
+
+
+def physical_gpu_inventory_generation() -> int:
+    """Changes whenever the GPUs this host has may have changed: a refresh that found a different device set, or an
+    explicit re-detection (``gpu_query.invalidate_static``). Never probes."""
+    from . import gpu_query
+
+    return _physical_gpu_inventory_generation + gpu_query.static_generation()
 
 
 def get_physical_gpu_inventory(*, block: bool = True) -> Dict[str, Any]:

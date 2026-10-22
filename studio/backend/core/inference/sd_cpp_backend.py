@@ -610,8 +610,9 @@ _CUDA_DEVICE_CC_RE = re.compile(
 )
 
 
-# Last --list-devices answer per binary, keyed by (size, mtime_ns) and the device-selection env. The accelerator
-# verdict always probes afresh and refreshes it (a load re-vets the listing on purpose); every other reader reuses it.
+# Last --list-devices answer per binary, keyed by (size, mtime_ns), the device-selection env and the hardware inventory
+# generation. The accelerator verdict always probes afresh and refreshes it (a load re-vets the listing on purpose);
+# every other reader reuses it.
 _LAST_DEVICE_LISTING: dict = {}
 # What ggml reads to pick or hide devices: a change means a different listing from the same file.
 _DEVICE_LISTING_ENV_VARS: tuple[str, ...] = (
@@ -636,10 +637,21 @@ def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
     return (st.st_size, st.st_mtime_ns)
 
 
+def _hardware_inventory_generation() -> Optional[int]:
+    try:
+        from utils.hardware.hardware import physical_gpu_inventory_generation
+
+        return physical_gpu_inventory_generation()
+    except Exception:  # noqa: BLE001 -- an identity read must never fail the probe
+        return None
+
+
 def _device_listing_identity(binary: str) -> tuple:
     return (
         _binary_stat_identity(binary),
         tuple(os.environ.get(name) for name in _DEVICE_LISTING_ENV_VARS),
+        # An eGPU unplug or a driver reset changes the listing from the same file under the same env.
+        _hardware_inventory_generation(),
     )
 
 
@@ -3033,6 +3045,10 @@ class SdCppDiffusionBackend:
         # sd-server started for an in-flight load, before it commits to _state; tracked so an unload can stop it
         # mid-startup.
         self._pending_server: Optional[SdCppServer] = None
+        # The resident server a generation is deliberately stopping to start a replacement (device-loss respawn, CPU
+        # backend restart). status() must not read its exit as an idle crash and clear _state: the handover would then
+        # see an unload and kill the healthy replacement. Only unload() clears _state during that window.
+        self._replacing_server: Optional[SdCppServer] = None
         self._gen: Optional[_SdGen] = None
         # Set by _resolve_backend when it had to skip an accelerator install because the managed tree was still in
         # use; the load retries it once the tree is free.
@@ -4874,6 +4890,20 @@ class SdCppDiffusionBackend:
                 shutil.rmtree(lora_stage, ignore_errors = True)
         return images, seeds
 
+    def _begin_replacement(self, state: _SdState) -> bool:
+        """Mark ``state.server`` as being replaced, under ``_lock``, before the caller stops it, so status() reports
+        the load as still loaded instead of reaping it. False when an unload already took the state: no restart."""
+        with self._lock:
+            if self._state is None or self._state.server is not state.server:
+                return False
+            self._replacing_server = state.server
+            return True
+
+    def _end_replacement(self, old_server: Any) -> None:
+        with self._lock:
+            if self._replacing_server is old_server:
+                self._replacing_server = None
+
     def _hand_over_replacement(self, state: _SdState, server: SdCppServer) -> None:
         """Publish a restarted sd-server into ``_state`` in the same locked step that drops it from
         ``_pending_server``, so an unload always sees it in one of the two. When the unload already
@@ -4881,6 +4911,7 @@ class SdCppDiffusionBackend:
         with self._lock:
             if self._pending_server is server:
                 self._pending_server = None
+            self._replacing_server = None
             published = self._state is not None and self._state.server is not None
             if published:
                 self._state = state
@@ -4900,6 +4931,8 @@ class SdCppDiffusionBackend:
         if not output_shows_vulkan_device_lost(error_text):
             return None
         if state.server is None or cancel.is_set():
+            return None
+        if not self._begin_replacement(state):
             return None
         logger.warning(
             "sd-server lost its Vulkan device; restarting it on the same build. Details: %s",
@@ -4923,6 +4956,7 @@ class SdCppDiffusionBackend:
                 if self._pending_server is server:
                     self._pending_server = None
             server.stop()
+            self._end_replacement(state.server)
             return None
         # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
         return server
@@ -4954,6 +4988,8 @@ class SdCppDiffusionBackend:
         server_binary = find_sd_server_binary()
         if not server_binary:
             return None
+        if not self._begin_replacement(state):
+            return None
         logger.warning(
             "sd-server aborted on an op the '%s' backend cannot run; restarting on the CPU "
             "backend (slower, but it completes). Details: %s",
@@ -4983,6 +5019,7 @@ class SdCppDiffusionBackend:
                 if self._pending_server is server:
                     self._pending_server = None
             server.stop()
+            self._end_replacement(state.server)
             return None
         # Still pending on success: _hand_over_replacement publishes it, so an unload never misses it.
         return server
@@ -5183,6 +5220,7 @@ class SdCppDiffusionBackend:
                 self._active_generate_cancel.set()
             state = self._state
             self._state = None
+            self._replacing_server = None
             self._load_token += 1
             self._loading = None
             # Grab a mid-start() uncommitted server too so we can stop it (startup is abortable).
@@ -5216,13 +5254,17 @@ class SdCppDiffusionBackend:
             state is not None
             and state.mode == "server"
             and state.server is not None
+            and state.server is not self._replacing_server
             and not state.server.is_alive()
         ):
-            logger.warning("sd-server exited after load; clearing loaded state")
             with self._lock:
-                if self._state is state:
+                # Re-checked under the lock: a generation stopping it for a replacement marks it first.
+                reap = self._state is state and state.server is not self._replacing_server
+                if reap:
+                    logger.warning("sd-server exited after load; clearing loaded state")
                     self._state = None
-            state = None
+            if reap:
+                state = None
         if state is None:
             return {
                 "loaded": False,

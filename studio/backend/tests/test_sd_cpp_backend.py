@@ -3132,6 +3132,9 @@ def _device_loss_backend(monkeypatch, tmp_path, *, on_start = None):
             self.stopped = True
             shutil.rmtree(self.lora_dir, ignore_errors = True)
 
+        def is_alive(self):
+            return not self.stopped
+
         def img_gen(self, payload, **_kw):
             payloads.append((self, dict(payload)))
             if len(payloads) == 1:
@@ -3141,6 +3144,7 @@ def _device_loss_backend(monkeypatch, tmp_path, *, on_start = None):
     b = _loaded_backend()
     b._state = _pinned_state(b, policy_flags = (), device = "vulkan")
     object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server-vulkan"))
+    object.__setattr__(b._state, "mode", "server")
     monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
     bk._accelerator_runtime_failures.clear()
     return b, servers, payloads
@@ -3198,3 +3202,70 @@ def test_an_unload_during_the_respawn_leaves_no_live_server(monkeypatch, tmp_pat
     assert len(servers) == 2
     assert all(s.stopped for s in servers)
     assert b._state is None and b._pending_server is None
+
+
+def test_a_status_poll_during_the_respawn_keeps_the_replacement(monkeypatch, tmp_path):
+    # The UI polls /images/status while the respawn runs. The old server is already stopped then, and the idle-crash
+    # reap used to clear _state, so the handover read an unload and killed the healthy replacement.
+    holder: dict = {}
+    polls: list = []
+
+    def _poll_mid_start(server):
+        polls.append(holder["backend"].status()["loaded"])
+
+    b, servers, _payloads = _device_loss_backend(monkeypatch, tmp_path, on_start = _poll_mid_start)
+    holder["backend"] = b
+    images, _seeds = b._generate_server(b._state, **_gen_kwargs())
+    assert len(images) == 1 and len(servers) == 2
+    assert polls == [True]
+    assert b._state is not None and b._state.server is servers[1]
+    assert not servers[1].stopped and b._replacing_server is None
+    # Once the generation is done, a server that really died is reaped again.
+    servers[1].stopped = True
+    assert b.status()["loaded"] is False
+
+
+def test_a_status_poll_during_the_cpu_backend_restart_keeps_the_load(monkeypatch):
+    import dataclasses
+
+    class _FakeServer:
+        def __init__(self, binary):
+            self.binary = binary
+            self.stopped = False
+
+        def start(self, files, **kwargs):
+            polls.append(b.status()["loaded"])
+
+        def stop(self):
+            self.stopped = True
+
+        def is_alive(self):
+            return not self.stopped
+
+    polls: list = []
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ("--offload-to-cpu",))
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server"))
+    object.__setattr__(b._state, "mode", "server")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/bin/sd-server")
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+    state = b._state
+    server = b._restart_server_on_cpu_backend(
+        state, "ggml_metal_op_encode_impl: unsupported op 'MUL_MAT' -> ggml_abort", threading.Event()
+    )
+    assert server is not None and polls == [True] and b._state is state
+    b._hand_over_replacement(dataclasses.replace(state, server = server), server)
+    assert b._state.server is server and not server.stopped
+
+
+def test_an_unload_before_the_respawn_starts_skips_it(monkeypatch, tmp_path):
+    # unload() wins outright when it lands first: no replacement is started at all.
+    b, servers, _payloads = _device_loss_backend(monkeypatch, tmp_path)
+    state = b._state
+    monkeypatch.setattr(b, "status", lambda: {})
+    b.unload()
+    assert (
+        b._respawn_server_after_device_loss(state, "vk::Queue::submit: ErrorDeviceLost", threading.Event())
+        is None
+    )
+    assert len(servers) == 1 and b._replacing_server is None
