@@ -3847,7 +3847,10 @@ export function ChatPage({
     (
       value: string,
       // Partial: the switch-back carries only what the resolver cannot recover.
-      meta?: Partial<ModelSelectorChangeMeta> & { adoptOnly?: boolean },
+      meta?: Partial<ModelSelectorChangeMeta> & {
+        adoptOnly?: boolean;
+        stillWanted?: () => boolean;
+      },
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
@@ -4119,6 +4122,7 @@ export function ChatPage({
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
           forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
           adoptOnly: meta?.adoptOnly,
+          stillWanted: meta?.stillWanted,
         };
         await stageOrLoad(selection);
       })();
@@ -4514,11 +4518,12 @@ export function ChatPage({
   );
   // Opening a chat may only take a slot that already serves its model as is: a reload stays a click.
   const handleAutoSwitchToChatModel = useCallback(
-    (target: ChatModelSwitchTarget) => {
+    (target: ChatModelSwitchTarget, stillWanted: () => boolean) => {
       handleCheckpointChange(target.modelId, {
         ...chatModelSwitchMeta(target, loraModels),
         isDownloaded: true,
         adoptOnly: true,
+        stillWanted,
       });
     },
     [handleCheckpointChange, loraModels],

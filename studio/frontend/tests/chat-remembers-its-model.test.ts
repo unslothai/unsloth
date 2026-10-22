@@ -97,7 +97,7 @@ test("the notice never loads a model on its own", () => {
   // The one automatic switch is to a slot that is already loaded.
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
   assert.match(body, /chatModelLoadedTarget\(createdModel, loadedModels\)/);
-  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo\);/);
+  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo, \(\) => autoSwitchRef\.current === state\);/);
 });
 
 test("a chat goes back to its model when that model is still loaded", () => {
@@ -191,6 +191,12 @@ test("the automatic switch runs once per chat open", () => {
   step = stepChatModelAutoSwitch(step.state, open("a"));
   assert.equal(step.switchTo, null);
 
+  // Leaving the chat route and coming back to the same chat is a new open, so it switches again.
+  step = stepChatModelAutoSwitch({ settled: false }, open("a"));
+  step = stepChatModelAutoSwitch(step.state, { ...open("a"), active: false });
+  step = stepChatModelAutoSwitch(step.state, open("a"));
+  assert.deepEqual(step.switchTo, modelA);
+
   // Off the chat route, or on an unsent New Chat, nothing happens.
   assert.equal(
     stepChatModelAutoSwitch({ settled: false }, { ...open("a"), active: false }).switchTo,
@@ -199,7 +205,7 @@ test("the automatic switch runs once per chat open", () => {
   assert.equal(stepChatModelAutoSwitch({ settled: false }, open(undefined)).switchTo, null);
 
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo\);/);
+  assert.match(body, /if \(switchTo\) onAutoSwitch\(switchTo, \(\) => autoSwitchRef\.current === state\);/);
   // With Keep models loaded off, picking another model unloads the selected one.
   assert.match(body, /createdModel && !resident && keepModelsLoaded\s*\?/);
   assert.match(
@@ -211,13 +217,26 @@ test("the automatic switch runs once per chat open", () => {
 test("the automatic switch only adopts a slot, it never reaches /load", () => {
   const auto = slice(page, "const handleAutoSwitchToChatModel", "\n  );\n");
   assert.match(auto, /isDownloaded: true,\s*adoptOnly: true,/);
-  assert.match(page, /adoptOnly: meta\?\.adoptOnly,\s*\};\s*await stageOrLoad\(selection\);/);
+  assert.match(page, /adoptOnly: meta\?\.adoptOnly,\s*stillWanted: meta\?\.stillWanted,\s*\};\s*await stageOrLoad\(selection\);/);
   // Bails after the adopt check and before the lease that every /load holds.
   const select = slice(runtimeHook, "const selectModel = useCallback", "let lifecycleLease");
   const adopted = select.lastIndexOf("void refreshContextUsage({ afterModelLoad: true });");
   const bail = select.indexOf("if (adoptOnly) {");
   assert.ok(adopted !== -1 && bail > adopted, "adoptOnly bails after the adopt path");
   assert.match(select.slice(bail), /restorePreviousConfig\(\);[\s\S]*?return;/);
+  // Never displaces a load (before taking an intent, and in the replacement loop that would cancel it),
+  // and never lands on a chat that is no longer open.
+  const guard = /if \(adoptOnly && \(loadInFlight\(\) \|\| !stillWanted\(\)\)\) \{\s*restorePreviousConfig\(\);\s*return;/g;
+  assert.equal(select.match(guard)?.length, 2);
+  assert.ok(
+    select.indexOf("if (adoptOnly && (loadInFlight() || !stillWanted()))") <
+      select.indexOf("const loadIntentId = ++modelSelectionIntentEpoch;"),
+  );
+  assert.match(select, /if \(adoptOnly && \(inFlightLoad \|\| activeRun\)\) \{\s*restorePreviousConfig\(\);\s*return;/);
+  assert.ok(
+    select.indexOf("if (adoptOnly && (inFlightLoad || activeRun))") <
+      select.indexOf("await cancelLoadRun(activeRun, true)"),
+  );
 });
 
 test("the notice stays quiet when it has nothing to offer", () => {

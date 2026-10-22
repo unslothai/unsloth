@@ -102,7 +102,8 @@ export function chatModelLoadedTarget(
 
 export type ChatModelAutoSwitch = { threadId?: string; settled: boolean };
 
-/** Settles once the open chat is on its model, so a later pick inside it is never undone. */
+/** Settles once the open chat is on its model, so a later pick inside it is never undone. Leaving
+ *  the chat or the chat route starts a new open. */
 export function stepChatModelAutoSwitch(
   previous: ChatModelAutoSwitch,
   input: {
@@ -113,11 +114,14 @@ export function stepChatModelAutoSwitch(
     modelLoading: boolean;
   },
 ): { state: ChatModelAutoSwitch; switchTo: ChatModelSwitchTarget | null } {
+  if (!(input.active && input.threadId)) {
+    return { state: { threadId: undefined, settled: false }, switchTo: null };
+  }
   const state =
     previous.threadId === input.threadId
       ? previous
       : { threadId: input.threadId, settled: false };
-  if (!(input.active && input.threadId) || state.settled) {
+  if (state.settled) {
     return { state, switchTo: null };
   }
   if (input.resident) {

@@ -291,6 +291,8 @@ export type SelectedModelInput = {
   keepSpeculative?: boolean;
   /** Only take a model already serving exactly as this pick would load it; never reach /load. */
   adoptOnly?: boolean;
+  /** For an adoptOnly pick: false once the chat that asked for it is no longer open. */
+  stillWanted?: () => boolean;
   config?: PerModelConfig;
   previousConfig?: PerModelConfig;
 };
@@ -1322,6 +1324,17 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       const adoptOnly =
         typeof selection === "string" ? false : selection.adoptOnly ?? false;
+      const stillWanted =
+        (typeof selection === "string" ? undefined : selection.stillWanted) ??
+        (() => true);
+      // An automatic pick never displaces a load, running or still in preflight: that pick is newer.
+      const loadInFlight = () =>
+        Boolean(
+          activeLoadRunRef.current ||
+            loadingModelRef.current ||
+            useChatRuntimeStore.getState().loadingModelPick ||
+            useChatRuntimeStore.getState().modelLoading,
+        );
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       const initiallyLoadingSamePick =
         loadingModelRef.current?.id === modelId &&
@@ -1347,6 +1360,10 @@ export function useChatModelRuntime() {
         initiallyLoadingSamePick &&
         !activeLoadRunRef.current?.cancelPromise
       ) {
+        restorePreviousConfig();
+        return;
+      }
+      if (adoptOnly && (loadInFlight() || !stillWanted())) {
         restorePreviousConfig();
         return;
       }
@@ -1519,6 +1536,10 @@ export function useChatModelRuntime() {
         const inFlightLoad =
           loadingModelRef.current ??
           useChatRuntimeStore.getState().loadingModelPick;
+        if (adoptOnly && (inFlightLoad || activeRun)) {
+          restorePreviousConfig();
+          return;
+        }
         // Cancellation clears the picker before its unload settles, yet the run keeps
         // the slot and the lifecycle lease until then. Break only when neither is left:
         // a pick arriving mid-cancel would otherwise find the lease held and be dropped.
@@ -1734,6 +1755,10 @@ export function useChatModelRuntime() {
             // Same window as the confirmation below: a newer pick that could not take the
             // lease still supersedes the status this preflight was about to adopt.
             if (modelSelectionIntentEpoch !== loadIntentId) return;
+            if (adoptOnly && (loadInFlight() || !stillWanted())) {
+              restorePreviousConfig();
+              return;
+            }
             // Roll back the config pre-applied for the load that is not happening, before hydrating, so the
             // resident status wins over the staged snapshot. The helper carries the diffusion flag.
             restorePreviousConfig();
