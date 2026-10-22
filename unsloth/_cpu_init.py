@@ -86,10 +86,17 @@ from trl import SFTConfig as _SFTConfig, SFTTrainer as _SFTTrainer
 class UnslothTrainingArguments(_SFTConfig):
     def __init__(
         self,
-        *args,
         embedding_learning_rate = None,
+        q_galore_config = None,
+        *args,
+        loraplus_lr_ratio = None,
         **kwargs,
     ):
+        # Same positional order as the GPU class; Q-GaLore and LoRA+ are GPU-only, so they must stay unset.
+        if q_galore_config is not None or loraplus_lr_ratio is not None:
+            raise NotImplementedError(
+                "Unsloth: q_galore_config / loraplus_lr_ratio are not supported on the CPU backend."
+            )
         self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
 
@@ -118,6 +125,11 @@ class UnslothTrainer(_SFTTrainer):
             module = getattr(model, getter, lambda: None)()
             if getattr(module, "weight", None) is not None:
                 embedding_ids.add(id(module.weight))
+        # Older transformers models can return None from get_output_embeddings yet still own an lm_head.
+        for owner in (model, getattr(getattr(model, "base_model", None), "model", None)):
+            weight = getattr(getattr(owner, "lm_head", None), "weight", None)
+            if weight is not None:
+                embedding_ids.add(id(weight))
         groups = {}
         for name, param in model.named_parameters():
             if not param.requires_grad:
