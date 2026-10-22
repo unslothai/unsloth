@@ -1885,15 +1885,9 @@ async def validate_systemone_settings(
 
 
 def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
-    from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
-        values = _systemone_values(payload)
-        if values:
-            try:
-                laya_runtime.ensure_can_unload()
-            except laya_runtime.Unavailable as exc:
-                raise HTTPException(status_code = 409, detail = exc.message) from None
+        _systemone_values(payload)
 
 
 @_owner_settings_router.get(

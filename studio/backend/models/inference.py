@@ -6565,6 +6565,12 @@ class TranscribeSourceRequest(BaseModel):
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
     title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
+    provider_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Saved connection ID. When set, the audio goes to that connection's "
+        "/audio/transcriptions as `model`; engine and device are ignored.",
+    )
 
 
 class AudioAnalyzeRequest(TranscribeSourceRef):
