@@ -26,7 +26,11 @@ def _helper():
     # Exact source, without importing unsloth (which needs an accelerator).
     path = ROOT / "unsloth" / "models" / "loader_utils.py"
     tree = ast.parse(path.read_text())
-    fn = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_drop_fp8_dequantize_conversions"]
+    fn = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_drop_fp8_dequantize_conversions"
+    ]
     ns = {}
     exec(compile(ast.Module(fn, []), str(path), "exec"), ns)
     return ns["_drop_fp8_dequantize_conversions"]
@@ -49,9 +53,16 @@ def _pair_classes():
         def __init__(self, config):
             super().__init__(config)
             sub = Qwen3MoeConfig(
-                hidden_size = 16, intermediate_size = 32, moe_intermediate_size = 8,
-                num_hidden_layers = 1, num_attention_heads = 2, num_key_value_heads = 1,
-                head_dim = 8, num_experts = 2, num_experts_per_tok = 1, vocab_size = 32,
+                hidden_size = 16,
+                intermediate_size = 32,
+                moe_intermediate_size = 8,
+                num_hidden_layers = 1,
+                num_attention_heads = 2,
+                num_key_value_heads = 1,
+                head_dim = 8,
+                num_experts = 2,
+                num_experts_per_tok = 1,
+                vocab_size = 32,
             )
             self.left = Qwen3MoeForCausalLM(sub)
             self.right = Qwen3MoeForCausalLM(sub)
@@ -77,7 +88,9 @@ def _quantize_checkpoint(src):
     save_file(out, src / "model.safetensors")
     cfg = json.loads((src / "config.json").read_text())
     cfg["quantization_config"] = {
-        "quant_method": "fp8", "activation_scheme": "dynamic", "weight_block_size": [BLOCK, BLOCK],
+        "quant_method": "fp8",
+        "activation_scheme": "dynamic",
+        "weight_block_size": [BLOCK, BLOCK],
     }
     (src / "config.json").write_text(json.dumps(cfg))
 
@@ -93,7 +106,9 @@ def test_composite_model_keeps_every_scoped_counterpart(tmp_path):
     Pair(PairConfig()).to(torch.bfloat16).save_pretrained(src)
     _quantize_checkpoint(src)
     qc = FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK])
-    model = Pair.from_pretrained(src, device_map = "cpu", dtype = torch.bfloat16, quantization_config = qc)
+    model = Pair.from_pretrained(
+        src, device_map = "cpu", dtype = torch.bfloat16, quantization_config = qc
+    )
     assert not any(p.dtype == torch.float8_e4m3fn for p in model.parameters())
     assert _helper()(model) > 0
 
@@ -132,7 +147,10 @@ def _calls_and_guards(path, cls_name):
 
 @pytest.mark.parametrize(
     "rel, cls_name",
-    [("unsloth/models/loader.py", "FastLanguageModel"), ("unsloth/models/vision.py", "FastBaseModel")],
+    [
+        ("unsloth/models/loader.py", "FastLanguageModel"),
+        ("unsloth/models/vision.py", "FastBaseModel"),
+    ],
 )
 def test_cleanup_runs_for_every_dequantizing_route(rel, cls_name):
     # A caller's FineGrainedFP8Config(dequantize = True) and transformers' automatic dequantize
@@ -152,14 +170,20 @@ def test_explicit_and_automatic_dequantize_reload(tmp_path, explicit):
     torch.manual_seed(0)
     src = tmp_path / "src"
     config = LlamaConfig(
-        hidden_size = 32, intermediate_size = 64, num_hidden_layers = 1,
-        num_attention_heads = 2, num_key_value_heads = 1, vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        vocab_size = 64,
     )
     LlamaForCausalLM(config).to(torch.bfloat16).save_pretrained(src)
     _quantize_checkpoint(src)
     kwargs = {}
     if explicit:
-        kwargs["quantization_config"] = FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK])
+        kwargs["quantization_config"] = FineGrainedFP8Config(
+            dequantize = True, weight_block_size = [BLOCK, BLOCK]
+        )
     # On CPU transformers dequantizes by itself, as on pre-sm89 GPUs.
     model = LlamaForCausalLM.from_pretrained(src, device_map = "cpu", dtype = torch.bfloat16, **kwargs)
     assert not any(p.dtype == torch.float8_e4m3fn for p in model.parameters())
@@ -178,7 +202,12 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
     # not gain a second copy, or save_pretrained would reverse it twice.
     import transformers.conversion_mapping as cm
     from types import SimpleNamespace
-    from transformers.core_model_loading import Concatenate, MergeModulelist, Transpose, WeightConverter
+    from transformers.core_model_loading import (
+        Concatenate,
+        MergeModulelist,
+        Transpose,
+        WeightConverter,
+    )
     from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
 
     target = "mlp.experts.gate_up_proj"
@@ -190,11 +219,15 @@ def test_heterogeneous_composite_keeps_one_copy_of_an_unwrapped_converter(monkey
             operations = [MergeModulelist(dim = 0), Concatenate(dim = 1)],
         )
         merge.scope_prefix = "left"
-        transpose = WeightConverter(source_patterns = target, target_patterns = target, operations = [Transpose(1, 2)])
+        transpose = WeightConverter(
+            source_patterns = target, target_patterns = target, operations = [Transpose(1, 2)]
+        )
         transpose.scope_prefix = "right"
         return [merge, transpose]
 
-    quantizer = FineGrainedFP8HfQuantizer(FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK]))
+    quantizer = FineGrainedFP8HfQuantizer(
+        FineGrainedFP8Config(dequantize = True, weight_block_size = [BLOCK, BLOCK])
+    )
     quantizer.pre_quantized = True
     loaded = quantizer.update_weight_conversions(plain())
     model = SimpleNamespace(_weight_conversions = loaded)

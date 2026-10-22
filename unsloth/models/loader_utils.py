@@ -2073,7 +2073,9 @@ def _drop_fp8_dequantize_conversions(model):
         )
 
     def _has_dequant(conversion):
-        return any(isinstance(op, Fp8Dequantize) for op in getattr(conversion, "operations", None) or [])
+        return any(
+            isinstance(op, Fp8Dequantize) for op in getattr(conversion, "operations", None) or []
+        )
 
     plain = None
     kept, changed = [], 0
