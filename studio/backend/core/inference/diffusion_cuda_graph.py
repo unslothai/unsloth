@@ -916,6 +916,10 @@ class GraphedForward:
         self._sealed_scopes: set = set()
         self._scope_captures: dict = {}
         self._render_scopes: set = set()
+        # Planned keys warmed in this recording window (since the last render end or reset): one the seal caught in
+        # its warm-up (true CFG's other-length negative) still records on this render. Not ``_warmed``, which outlives
+        # both, so a length warmed before a reset never reopens a scope its new first render sealed.
+        self._open_warmups: set = set()
         _LIVE_WRAPPERS.add(self)
 
     @property
@@ -1004,6 +1008,7 @@ class GraphedForward:
         self._sealed_scopes.clear()
         self._scope_captures.clear()
         self._render_scopes.clear()
+        self._open_warmups.clear()
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -1366,11 +1371,11 @@ class GraphedForward:
             if (
                 scope in getattr(self, "_sealed_scopes", ())
                 and (self.placement is None or key not in self._recorded)
-                and not (self.plan is not None and key in self._warmed)
+                and not (self.plan is not None and key in self._open_warmups)
             ):
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
                 # render. (An offloaded key it recorded before re-records after its weights moved, as before. A
-                # planned key warmed before the seal, true CFG's other-length negative, still records.)
+                # planned key warmed earlier on this render, true CFG's other-length negative, still records.)
                 self.stats["length_eager"] += 1
                 return self._eager_as_recorded(eager_args, eager_kwargs)
             if self.placement is not None and speed_check_enabled():
@@ -1387,6 +1392,7 @@ class GraphedForward:
                 self._warmed[key] = None
                 while len(self._warmed) > 4 * self.max_graphs:
                     self._warmed.pop(next(iter(self._warmed)))
+                self._open_warmups.add(key)
                 self.stats["shape_warmups"] += 1
                 # On copies laid out like the capture's statics (fresh, offset 0): compiled code guards on strides and
                 # storage offsets, so a step on the caller's views would warm a variant the capture then misses and
@@ -2343,6 +2349,7 @@ def seal_lengths(handles: Any) -> None:
                 if handle._scope_captures.get(scope, 0) > 0:
                     handle._sealed_scopes.add(scope)
             handle._render_scopes.clear()
+            handle._open_warmups.clear()
         except Exception:  # noqa: BLE001 - optimisation only
             pass
 
