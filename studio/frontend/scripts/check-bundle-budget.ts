@@ -353,8 +353,11 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
-  transferBytes: 2_072_012,
-  rawBytes: 6_879_589,
+  // Lighter system polling (#14592: hidden-tab gating, Vulkan retry backoff, idle export poll, request timeout)
+  // lives in the eager system and export hooks: +1,892 B raw / +589 B transfer (6,879,345 -> 6,881,237 B raw,
+  // 2,071,823 -> 2,072,412 B transfer against 2749eeedaa, Node 26, 97 chunks). Raised by that.
+  transferBytes: 2_072_601,
+  rawBytes: 6_881_481,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
