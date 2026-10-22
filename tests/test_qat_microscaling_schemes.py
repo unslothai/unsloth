@@ -123,13 +123,18 @@ def test_mxfp8_refuses_non_bfloat16_layers(monkeypatch, dtype):
     assert not any(isinstance(m, _mx_linear()) for m in model.modules())
 
 
-def test_mx_qat_linear_takes_float32_activations_under_autocast():
-    # Autocast feeds float32 activations into bfloat16 linears.
-    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+def test_mx_qat_linear_takes_float32_activations_under_autocast(weight_dtype):
+    # Autocast feeds float32 activations into bfloat16 (or float32) linears.
+    # torchao's CPU fake-quant backward cannot mix a float32 weight with bfloat16 activations.
+    device = "cpu" if weight_dtype == torch.bfloat16 else "cuda"
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("float32 weights under autocast need the CUDA MX path")
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(device, weight_dtype)
     model = _prepare_model_for_qat(model, _mx_torchao_config())
     assert isinstance(model[0], _mx_linear())
-    x = torch.randn(2, 3, 64, requires_grad = True)
-    with torch.autocast("cpu", dtype = torch.bfloat16):
+    x = torch.randn(2, 3, 64, device = device, requires_grad = True)
+    with torch.autocast(device, dtype = torch.bfloat16):
         out = model(x)
     assert out.dtype == torch.bfloat16 and out.shape == (2, 3, 128)
     out.float().sum().backward()

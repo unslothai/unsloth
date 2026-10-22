@@ -8045,11 +8045,11 @@ def _microscaling_qat_filter(
 
 
 def _mx_autocast_forward(self, x):
-    # torchao's MX QAT matmul returns bfloat16 and asserts it matches x, but autocast passes float32 activations.
+    # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
     from torchao.prototype.qat import MXFakeQuantizedLinear
 
-    if x.dtype != self.weight.dtype and torch.is_autocast_enabled(x.device.type):
-        x = x.to(self.weight.dtype)
+    if x.dtype != torch.bfloat16 and torch.is_autocast_enabled(x.device.type):
+        x = x.to(torch.bfloat16)
     return MXFakeQuantizedLinear.forward(self, x)
 
 
