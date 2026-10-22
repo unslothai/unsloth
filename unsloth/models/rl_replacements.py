@@ -2375,6 +2375,47 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             "not be installed for this TRL version and are ignored.",
         )
 
+    _old_logps_if = re.search(
+        r"\n([ \t]*)if self\.args\.gradient_accumulation_steps % generate_every != 0",
+        function,
+    )
+    _old_logps_output = (
+        "        if old_per_token_logps is not None:\n"
+        '            output["old_per_token_logps"] = old_per_token_logps\n'
+    )
+    if (
+        _old_logps_if is not None
+        and function.count(_old_logps_output) == 1
+        and "sampling_per_token_logps" in function
+    ):
+        _indent = _old_logps_if.group(1)
+        function = (
+            function[: _old_logps_if.start()]
+            + f"\n{_indent}_unsloth_rollout_logps = locals().get('sampling_per_token_logps')\n"
+            + f"{_indent}_unsloth_rollout_old = _unsloth_grpo_rollout_logps_as_old(\n"
+            + f"{_indent}    self, _unsloth_rollout_logps, completion_mask, locals().get('tool_mask'),\n"
+            + f"{_indent})\n"
+            + f"{_indent}if _unsloth_rollout_old:\n"
+            + f"{_indent}    old_per_token_logps = None\n"
+            + f"{_indent}el"
+            + function[_old_logps_if.start() + 1 + len(_indent) :]
+        )
+        function = function.replace(
+            _old_logps_output,
+            _old_logps_output + "        if _unsloth_rollout_old:\n"
+            '            output["unsloth_rollout_logps_as_old"] = torch.ones(\n'
+            "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
+            "            )\n"
+            # Older TRL (0.23.x) keeps the rollout logprobs only with the IS correction on.
+            '            output["sampling_per_token_logps"] = _unsloth_rollout_logps\n',
+        )
+    elif os.environ.get("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", "0") == "1":
+        _warn_once(
+            "grpo_rollout_logps_as_old",
+            "Unsloth: UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD could not be installed for this TRL "
+            "version and is ignored.",
+        )
+
     return function
 
 
@@ -3578,6 +3619,75 @@ def grpo_update_SamplingParams(
     return generation_kwargs
 
 
+def _unsloth_grpo_rollout_logps_as_old(
+    trainer,
+    sampling_per_token_logps,
+    completion_mask,
+    tool_mask = None,
+):
+    """UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1: use the rollout engine's logprobs (vLLM, or a
+    rollout_func) as pi_old and skip the old-policy forward, as verl rollout_correction
+    bypass_mode (loss_type ppo_clip) and vime --use-rollout-logprobs do. The PPO ratio is then
+    pi_theta / pi_rollout and its clip (plus the dual clip `delta`) is the correction, so no
+    vLLM importance weight is applied on top. True when this generation batch is marked."""
+    import os
+
+    if os.environ.get("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", "0") != "1":
+        return False
+
+    def _skip(reason):
+        trainer._unsloth_rollout_logps_as_old_fallbacks = (
+            getattr(trainer, "_unsloth_rollout_logps_as_old_fallbacks", 0) + 1
+        )
+        warned = getattr(trainer, "_unsloth_rollout_logps_as_old_warned", None)
+        if not isinstance(warned, set):
+            warned = set()
+            trainer._unsloth_rollout_logps_as_old_warned = warned
+        if reason not in warned:
+            warned.add(reason)
+            import warnings
+            warnings.warn(
+                f"Unsloth: UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD=1 is not applied to this batch: "
+                f"{reason}. The trainer scores pi_old itself instead.",
+                stacklevel = 2,
+            )
+        return False
+
+    reason = None
+    if sampling_per_token_logps is None:
+        reason = "there are no rollout logprobs (needs use_vllm=True or a rollout_func)"
+    elif getattr(trainer.args, "loss_type", None) == "vespo":
+        reason = "loss_type='vespo' weights by the vLLM importance ratio itself"
+    elif not hasattr(trainer.args, "loss_type"):
+        reason = "this TRL version predates loss_type"
+    else:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_rollout_logps_as_old  # noqa: F401
+        except Exception:
+            reason = "it needs a newer unsloth_zoo: pip install -U unsloth_zoo"
+    if reason is None:
+        loss_mask = completion_mask.to(torch.bool)
+        if tool_mask is not None:
+            loss_mask = loss_mask & tool_mask.to(device = loss_mask.device, dtype = torch.bool)
+        if not bool(torch.isfinite(sampling_per_token_logps[loss_mask]).all()):
+            reason = "some rollout logprobs on loss tokens are not finite"
+    accelerator = getattr(trainer, "accelerator", None)
+    if getattr(accelerator, "num_processes", 1) > 1:
+        # One reduction on every rank, before any of them returns: under FSDP / ZeRO-3 the
+        # old-policy forward a fallback runs is collective, so all ranks take the same branch.
+        eligible = torch.tensor(
+            [int(reason is None)], dtype = torch.int32, device = completion_mask.device
+        )
+        if not bool(accelerator.gather(eligible).min()) and reason is None:
+            reason = "another process cannot use its rollout logprobs for this batch"
+    if reason is not None:
+        return _skip(reason)
+    trainer._unsloth_rollout_logps_as_old_batches = (
+        getattr(trainer, "_unsloth_rollout_logps_as_old_batches", 0) + 1
+    )
+    return True
+
+
 def _unsloth_grpo_sample_weight_mode():
     import os
 
@@ -3716,6 +3826,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_rollout_logps_as_old))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
@@ -3812,6 +3923,11 @@ def grpo_trainer_compute_loss(function_name, function):
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
+        _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
+        _loss_delta = getattr(self.args, "delta", None)
+        if _rollout_logps_as_old and _loss_delta is None:
+            # verl's dual-clip default (clip_ratio_c = 3.0).
+            _loss_delta = 3.0
         current_gradient_accumulation_steps = _unsloth_grpo_accumulation_steps(self)
         num_processes = self.accelerator.num_processes
 
@@ -3903,6 +4019,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     device = completion_mask.device,
                     dtype = completion_mask.dtype,
                 )
+            if _rollout_logps_as_old:
+                old_logps, sampling_per_token_logps = sampling_per_token_logps, None
             (
                 loss,
                 completion_length,
@@ -3927,7 +4045,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 epsilon_low = self.epsilon_low,
                 epsilon_high = self.epsilon_high,
                 max_completion_length = self.args.max_completion_length,
-                delta = self.args.delta,
+                delta = _loss_delta,
                 temperature = self.args.temperature,
                 max_left_pad = max_left_pad,
                 logit_softcapping = logit_softcapping,
@@ -4032,6 +4150,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 _grpo_accumulated_loss_kwargs["sample_weight"] = _sample_weight
             if tool_mask is not None:
                 _grpo_accumulated_loss_kwargs["tool_mask"] = tool_mask
+            if _rollout_logps_as_old:
+                _grpo_accumulated_loss_kwargs["rollout_logps_as_old"] = True
             if hasattr(self.args, "loss_type"):
                 (
                     loss,
@@ -4055,7 +4175,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     epsilon_low = self.epsilon_low,
                     epsilon_high = self.epsilon_high,
                     max_completion_length = self.args.max_completion_length,
-                    delta = self.args.delta,
+                    delta = _loss_delta,
                     temperature = self.args.temperature,
                     max_left_pad = max_left_pad,
                     logit_softcapping = logit_softcapping,
@@ -4097,16 +4217,16 @@ def grpo_trainer_compute_loss(function_name, function):
             self._metrics["completion_length"].append(completion_length.item())
             self._metrics["kl"].append(mean_kl.item())
 
-        if (
-            self.use_vllm
-            and delta is not None
-            and getattr(self, "vllm_importance_sampling_correction", False)
+        if delta is not None and (
+            (self.use_vllm and getattr(self, "vllm_importance_sampling_correction", False))
+            or _rollout_logps_as_old
         ):
             delta, flat_is_ratio = _unsloth_grpo_is_metric_values(
                 delta,
                 flat_is_ratio,
                 completion_mask,
-                _unsloth_grpo_is_sequence_level(
+                (not _rollout_logps_as_old)
+                and _unsloth_grpo_is_sequence_level(
                     getattr(self.args, "vllm_importance_sampling_mode", None)
                 ),
             )

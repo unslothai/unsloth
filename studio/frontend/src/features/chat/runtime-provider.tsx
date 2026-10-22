@@ -110,6 +110,7 @@ import {
 import {
   CHAT_IMAGE_ACCEPT,
   convertedImageType,
+  getChatImageSizeError,
   normalizeChatImage,
 } from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -470,9 +471,10 @@ class VisionImageAdapter implements AttachmentAdapter {
       throw new Error(reason);
     }
 
-    const maxSize = 20 * 1024 * 1024;
-    if (picked.size > maxSize) {
-      throw new Error("Image size exceeds 20MB limit");
+    const sizeError = getChatImageSizeError(picked);
+    if (sizeError) {
+      toast.error(sizeError);
+      throw new Error(sizeError);
     }
     const attachment = {
       id: crypto.randomUUID(),

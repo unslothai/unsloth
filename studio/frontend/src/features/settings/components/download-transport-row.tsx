@@ -98,9 +98,13 @@ export function DownloadTransportRow() {
         : null;
 
   // The health check's own words, on their own line: free-form English, so folding it into a
-  // translated sentence produced half a sentence in each language. Auto is the only branch
-  // with a reason to explain.
-  const statusReason = mode === "auto" ? (settings?.autoReason ?? null) : null;
+  // translated sentence produced half a sentence in each language. Only a fallback to HTTPS has
+  // something to explain (stalls, low RAM, an env switch); on Xet the reason is bookkeeping
+  // like "Xet download succeeded" or "no cached verdict; defaulting to Xet".
+  const statusReason =
+    mode === "auto" && settings?.autoResolvesTo === "http"
+      ? (settings.autoReason ?? null)
+      : null;
 
   return (
     <SettingsRow

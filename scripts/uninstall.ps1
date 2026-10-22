@@ -1183,7 +1183,7 @@ Environment:
         # Kept rather than pruned, since data left behind is recoverable. Mirrors uninstall.sh.
         $flatMaster = $masterRootToStop
         if ($flatMaster -and ($r.TrimEnd('\', '/') -ieq $flatMaster.TrimEnd('\', '/'))) {
-            _Substep "keeping $r`: UNSLOTH_HOME and the Studio root name the same directory," "Yellow"
+            _Substep "keeping $r`: UNSLOTH_HOME and the Unsloth Studio root name the same directory," "Yellow"
             _Substep "so removing it would take whatever else you keep there. Delete it by hand" "Yellow"
             _Substep "once you have checked what is in it." "Yellow"
             $script:RemoveFailed = $true

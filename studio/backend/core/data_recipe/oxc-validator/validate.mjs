@@ -26,6 +26,8 @@ const OXLINT_DEFAULT_BUDGET_MS = 30_000;
 const OXLINT_BUDGET_MARGIN_MS = 2_000;
 const OXLINT_MIN_TIMEOUT_MS = 1_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
+// Lint with the shipped empty config only: never one found next to or above the snippets.
+const OXLINT_CONFIG_PATH = join(TOOL_DIR, "oxlintrc.json");
 
 function mapLang(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -400,6 +402,9 @@ function runLintBatch(entries, budgetMs) {
 
     const oxlintBin = join(TOOL_DIR, "node_modules", ".bin", "oxlint");
     const oxlintArgs = [
+      "--config",
+      OXLINT_CONFIG_PATH,
+      "--disable-nested-config",
       ...OXLINT_SUPPRESSED_RULES.flatMap((rule) => ["-A", rule]),
       "--format",
       "json",

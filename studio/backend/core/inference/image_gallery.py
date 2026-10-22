@@ -73,8 +73,31 @@ def _params_text(meta: dict[str, Any]) -> str:
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )
+    # webui infotext names (processing.create_infotext).
+    if meta.get("variation_strength"):
+        fields += (
+            f", Variation seed: {meta.get('variation_seed')}, "
+            f"Variation seed strength: {meta['variation_strength']}"
+        )
+    if meta.get("clip_skip"):
+        fields += f", Clip skip: {meta['clip_skip']}"
+    if meta.get("cfg_rescale"):
+        fields += f", CFG rescale: {meta['cfg_rescale']}"
+    # webui opts.emphasis infotext: a prompt run with weighting off replays literally there too.
+    if meta.get("prompt_weighting") is False:
+        fields += ", Emphasis: None"
     if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
         fields += f", Denoising strength: {meta['strength']}"
+    # A1111 inpaint keys (modules/processing.py), only when this inpaint applied them.
+    if meta.get("mask_blur"):
+        fields += f", Mask blur: {meta['mask_blur']}"
+    if meta.get("inpaint_only_masked"):
+        fields += ", Inpaint area: Only masked"
+        if meta.get("inpaint_padding") is not None:
+            fields += f", Masked area padding: {meta['inpaint_padding']}"
+    # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
+    if meta.get("shift") is not None:
+        fields += f", Shift: {meta['shift']}"
     if meta.get("generator"):
         fields += f", Version: {meta['generator']}"
     lines.append(fields)

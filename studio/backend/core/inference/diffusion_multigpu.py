@@ -9,6 +9,9 @@ Three levers, all at a component or denoiser-call boundary, never inside a model
   other companions sit on a secondary card, when that removes offload on the primary. Inputs move to a module's own
   card at its entry points and outputs come back to the primary, so the pipeline still sees one device. Copies are
   exact, so the output is bit-identical to a single-card resident run.
+* Layer split (``diffusion_layer_split``): a DiT that fits no single selected card is split by contiguous ranges of
+  its repeated blocks, the rest of it on the primary. Activations cross at the range boundaries only; outputs are
+  bit-identical to a one-card run.
 * Second denoiser (after load): a two-DiT pipeline (an MoE ``transformer_2``) keeps one expert per card when both
   experts do not fit one card.
 * CFG-parallel (generate): when guidance runs separate cond / uncond denoiser calls on the same latents, every odd
@@ -17,6 +20,8 @@ Three levers, all at a component or denoiser-call boundary, never inside a model
   step stay on the primary. Branches are recognised from the call boundary alone (same latent tensor object in
   consecutive calls), so true CFG, rescale and multi-branch guidance work unchanged and a guidance-distilled model
   (one call per step) never builds a replica.
+* Layer split (after load, diffusion_layer_split_plan): when one card would offload the denoiser itself and no
+  component assignment fits, the denoiser's blocks are cut across the cards. Excludes CFG-parallel.
 
 Kill switches: ``UNSLOTH_DIFFUSION_MULTIGPU=0`` (everything here; one card as before), ``UNSLOTH_DIFFUSION_CFG_PARALLEL=0``
 (only the replica). ``UNSLOTH_DIFFUSION_MULTIGPU=force`` splits the companions even when one card would hold
@@ -120,6 +125,15 @@ def make_selection(
         pass
     if not others:
         return None
+    if _rocm_torch():
+        # ROCm's capability is the gfx target (gfx942 (9, 4)), which does not order; match the primary's load dtype
+        # instead (arch-pinned attention kernels are gated per card in diffusion_layer_split_plan).
+        others = tuple(o for o in others if _rocm_dtype_parity(int(primary), o))
+        return (
+            MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
+            if others
+            else None
+        )
     # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
     # from Ada): a card of a lower compute capability may not run them, so it takes no component.
     need = _capability(int(primary))
@@ -166,6 +180,35 @@ def _capability(ordinal: int) -> Optional[tuple[int, int]]:
         return int(major), int(minor)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _rocm_torch() -> bool:
+    """A ROCm torch build (AMD SDK / Radeon wheels included, which leave ``torch.version.hip`` unset)."""
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+        return is_rocm_torch(torch)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rocm_bf16(ordinal: int) -> Optional[bool]:
+    try:
+        import torch
+
+        from .rocm_bf16 import rocm_bf16_supported
+        return bool(rocm_bf16_supported(torch, int(ordinal)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rocm_dtype_parity(primary: int, ordinal: int) -> bool:
+    """A ROCm card runs the dtype the load resolves for the primary: bf16 when the primary has native bf16 (RDNA1/2,
+    GCN and Vega emulate it), anything otherwise. An unreadable card is kept, like an unknown CUDA capability."""
+    if _rocm_bf16(primary) is not True:
+        return True
+    return _rocm_bf16(ordinal) is not False
 
 
 @contextlib.contextmanager
@@ -378,12 +421,14 @@ def choose_component_assignment(
     overhead_mib: int,
     primary_limit_mib: int,
     secondary_limit_mib: int,
+    move_denoisers: bool = True,
 ) -> Optional[tuple[str, ...]]:
     """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
     -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
     component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
     Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
-    companions. The first denoiser always stays on the primary."""
+    companions. The first denoiser always stays on the primary; ``move_denoisers=False`` (the secondary cannot run the
+    denoiser's attention backend) keeps every denoiser there."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
     if not dits:
         return None
@@ -400,7 +445,7 @@ def choose_component_assignment(
         candidates.append(tuple(companions))
     if encoders and len(encoders) < len(companions):
         candidates.append(tuple(encoders))
-    if seconds:
+    if seconds and move_denoisers:
         candidates.append(tuple(seconds))
         if companions:
             candidates.append(tuple(seconds + companions))
@@ -417,6 +462,32 @@ def choose_component_assignment(
     return None
 
 
+def _secondary_runs_denoiser(
+    pipe: Any, selection: MultiGpuSelection, secondary: int, sizes: dict, logger: Any
+) -> bool:
+    """Whether a second denoiser may move wholesale to ``secondary``. ROCm admits mixed gfx targets (make_selection),
+    so the card must pass the layer split's per-card attention gate: an arch-pinned kernel (flash_attn, AITER) only on
+    the primary's gfx target, native SDPA not math-only beside a fused primary. CUDA's capability order already holds."""
+    if not _rocm_torch() or sum(1 for _m, role in sizes.values() if role == "dit") < 2:
+        return True
+    try:
+        from .diffusion_layer_split_plan import _rocm_backend_cards
+        kept, _backend = _rocm_backend_cards(
+            pipe, int(selection.primary), (int(secondary),), logger
+        )
+    except Exception:  # noqa: BLE001 - unverifiable: keep the denoisers on the primary
+        return False
+    if int(secondary) in kept:
+        return True
+    if logger is not None:
+        logger.info(
+            "diffusion.multigpu: second denoiser stays on cuda:%s (attention backend not verified on cuda:%s)",
+            selection.primary,
+            secondary,
+        )
+    return False
+
+
 def refine_plan_for_multigpu(
     pipe: Any,
     plan: Any,
@@ -425,13 +496,20 @@ def refine_plan_for_multigpu(
     """Post-load: an offloading plan becomes a resident split when the LOADED components can be shared by the cards.
 
     No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
-    or an unknown budget. Returns the plan (a ``dataclasses.replace`` copy when it changed)."""
+    or an unknown budget. When no component assignment fits, a layer split (diffusion_layer_split_plan) is tried before
+    keeping the offload plan. Returns the plan (a ``dataclasses.replace`` copy when it changed)."""
     selection = current_selection()
     if selection is None or plan is None:
         return plan
-    if getattr(plan, "secondary_ordinal", None) is not None:
+    if (
+        getattr(plan, "secondary_ordinal", None) is not None
+        or getattr(plan, "layer_split", None) is not None
+    ):
         return plan
-    if plan.offload_policy == "none" and multigpu_mode() != "force":
+    from .diffusion_layer_split_plan import layer_split_mode, refine_plan_for_layer_split
+
+    layer_force = layer_split_mode() == "force"
+    if plan.offload_policy == "none" and multigpu_mode() != "force" and not layer_force:
         return plan
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
         return plan
@@ -439,6 +517,9 @@ def refine_plan_for_multigpu(
         return plan
     memory = plan.device_memory
     if memory.is_unified or getattr(memory, "device", None) != "cuda":
+        if memory.is_unified:
+            from .diffusion_layer_split_plan import note_unified_primary
+            note_unified_primary(pipe, selection, logger)
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
     if budget is None:
@@ -469,15 +550,32 @@ def refine_plan_for_multigpu(
         or 0
     )
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
+
+    def layer_split_or_plan() -> Any:
+        return refine_plan_for_layer_split(
+            pipe,
+            plan,
+            selection = selection,
+            sizes = sizes,
+            primary_limit_mib = int(primary_limit),
+            secondary_limit_mib = lambda o: secondary_resident_limit_mib(o, mode),
+            headroom_mib = headroom,
+            overhead_mib = overhead,
+            logger = logger,
+        )
+
+    if layer_force:
+        return layer_split_or_plan()
     moved = choose_component_assignment(
         sizes,
         headroom_mib = headroom,
         overhead_mib = overhead,
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
+        move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger),
     )
     if moved is None:
-        return plan
+        return layer_split_or_plan()
     reason = (
         f"multi-GPU (loaded sizes): {', '.join(moved)} on cuda:{secondary}, the rest resident on "
         f"cuda:{selection.primary}; single card would use '{plan.offload_policy}'"
@@ -538,10 +636,18 @@ def move_to_device(
     obj: Any,
     device: Any,
     _depth: int = 0,
+    *,
+    tensor_fn: Optional[Callable[[Any], Any]] = None,
+    objects: bool = True,
 ) -> Any:
+    """Tensors in ``obj`` (containers, dataclasses, ModelOutputs, plain attribute holders) on ``device``.
+    ``tensor_fn(t)`` replaces ``t.to(device)`` for a tensor that is elsewhere. ``objects=False`` leaves dataclasses
+    and attribute holders as they are (a per-layer KV cache the callee writes into must keep its identity)."""
     torch = _torch()
     if isinstance(obj, torch.Tensor):
-        return obj if obj.device == device else obj.to(device)
+        if obj.device == device:
+            return obj
+        return obj.to(device) if tensor_fn is None else tensor_fn(obj)
     if (
         _depth > 6
         or obj is None
@@ -553,28 +659,39 @@ def move_to_device(
         try:
             out = copy.copy(obj)
             for key, value in obj.items():
-                moved = move_to_device(value, device, _depth + 1)
+                moved = move_to_device(
+                    value, device, _depth + 1, tensor_fn = tensor_fn, objects = objects
+                )
                 if moved is not value:
                     out[key] = moved
             return out
         except Exception:  # noqa: BLE001
-            return type(obj)((k, move_to_device(v, device, _depth + 1)) for k, v in obj.items())
+            return type(obj)(
+                (k, move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects))
+                for k, v in obj.items()
+            )
     if isinstance(obj, tuple):
-        moved = [move_to_device(v, device, _depth + 1) for v in obj]
+        moved = [
+            move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj
+        ]
         if all(a is b for a, b in zip(moved, obj)):
             return obj
         if hasattr(obj, "_fields"):
             return type(obj)(*moved)
         return type(obj)(moved) if type(obj) is not tuple else tuple(moved)
     if isinstance(obj, list):
-        return [move_to_device(v, device, _depth + 1) for v in obj]
-    if isinstance(obj, torch.nn.Module):
+        return [
+            move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj
+        ]
+    if type(obj).__name__ == "BlockMask" and callable(getattr(obj, "to", None)):
+        return obj.to(device)
+    if isinstance(obj, torch.nn.Module) or not objects:
         return obj
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         changes = {}
         for f in dataclasses.fields(obj):
             value = getattr(obj, f.name, None)
-            moved = move_to_device(value, device, _depth + 1)
+            moved = move_to_device(value, device, _depth + 1, tensor_fn = tensor_fn, objects = objects)
             if moved is not value:
                 changes[f.name] = moved
         if not changes:
@@ -601,7 +718,7 @@ def move_to_device(
             out = copy.copy(obj)
             for k, v in state.items():
                 if isinstance(v, torch.Tensor) and v.device != device:
-                    setattr(out, k, v.to(device))
+                    setattr(out, k, v.to(device) if tensor_fn is None else tensor_fn(v))
             return out
     return obj
 
@@ -687,6 +804,12 @@ def _split_home(pipe: Any) -> Any:
         return None
     if not isinstance(components, dict):
         return None
+    from .diffusion_layer_split import layer_split_of
+
+    for module in components.values():
+        layered = layer_split_of(module)
+        if layered is not None:
+            return layered.current_home()
     for module in components.values():
         home = getattr(module, "_unsloth_split_home", None)
         if home is not None:
@@ -803,7 +926,18 @@ def place_split(
 
 
 def undo_split(pipe: Any) -> None:
+    """Remove every split placed on ``pipe``: a layer split of any denoiser (its block boundary and the planner's
+    record) and the component boundaries. Weights stay where they are."""
     torch = _torch()
+    from .diffusion_layer_split import undo_layer_split as undo_layers
+    from .diffusion_layer_split_plan import forget_applied_layer_split
+
+    for name in DENOISER_ATTRS:
+        try:
+            undo_layers(pipe, attr = name)
+        except Exception:  # noqa: BLE001 - best effort; the component boundaries below still come off
+            pass
+    forget_applied_layer_split(pipe)
     for module in (getattr(pipe, "components", {}) or {}).values():
         if isinstance(module, torch.nn.Module):
             remove_boundary(module)
@@ -850,12 +984,17 @@ def apply_split_plan(
 
 
 def is_split(pipe: Any) -> bool:
+    """A companion split or a layer split is placed on ``pipe``."""
     if pipe is None:
         return False
     try:
-        return pipe in _PLACEMENTS
+        if pipe in _PLACEMENTS:
+            return True
     except TypeError:
         return False
+    from .diffusion_layer_split_plan import is_layer_split
+
+    return is_layer_split(pipe)
 
 
 def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
@@ -867,9 +1006,28 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         declined = _CFG_DECLINES.get(pipe)
     except TypeError:
         return None
-    if info is None and cfg is None and declined is None:
+    from .diffusion_layer_split_plan import layer_split_status
+
+    layer = layer_split_status(pipe)
+    if info is None and cfg is None and declined is None and layer is None:
         return None
     out: dict[str, Any] = dict(info or {})
+    from .diffusion_layer_split import layer_split_stats
+
+    live = {
+        name: stats
+        for name in DENOISER_ATTRS
+        if (stats := layer_split_stats(getattr(pipe, name, None))) is not None
+    }
+    if layer is not None:
+        out["layer_split"] = dict(layer)
+        if live:
+            out["layer_split"]["live"] = live
+    elif (
+        "layer_split" in out
+    ):  # placed by the engine directly (no planner record): its own summary, live
+        engine = out["layer_split"]
+        out["layer_split"] = dict(live.get(engine.get("denoiser", "transformer")) or engine)
     if cfg is not None:
         out["cfg_parallel"] = cfg.describe()
     elif declined is not None:
@@ -1055,9 +1213,12 @@ def _hooks_present(module: Any) -> Optional[str]:
                 if name and not _trusted_hook(hook):
                     return f"{name}.{attr}"
                 if not name and not _hook_origin(hook).startswith(_TRUSTED_HOOK_MODULES):
-                    return f"<root>.{attr} (a hook outside Studio: its per-call state cannot be mirrored)"
+                    return f"<root>.{attr} (a hook outside Unsloth: its per-call state cannot be mirrored)"
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
+            continue
+        if not name and _resident_graph(sub) is not None:
+            # install_cfg_parallel moves the root's graph under the router
             continue
         if kind == "offload" or _is_offload_object(override):
             continue
@@ -1304,6 +1465,13 @@ def _iter_tensors(obj: Any, depth: int = 0) -> Iterator[Any]:
             yield from _iter_tensors(v, depth + 1)
 
 
+def _to_primary(out: Any, primary: Any) -> Any:
+    """Copy a replica result home with captures held off: the job's own hold dropped when the worker finished."""
+    from .diffusion_cuda_graph import outside_capture
+    with outside_capture():
+        return move_to_device(out, primary)
+
+
 class _ReplicaWorker:
     """One daemon thread bound to the replica's card: set_device, grad / inference / autocast mode and the caller's
     context variables (inductor overrides live in one on torch >= 2.12) are applied per job."""
@@ -1314,25 +1482,50 @@ class _ReplicaWorker:
         self._thread = threading.Thread(
             target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True
         )
-        self._thread.start()
+        # Global capture mode forbids this thread's CUDA allocations while any recording runs, so hold them out.
+        from .diffusion_cuda_graph import capture_hold, capture_release
+
+        capture_hold()
+        try:
+            self._thread.start()
+        except BaseException:
+            capture_release()
+            raise
 
     def _loop(self) -> None:
+        from .diffusion_cuda_graph import capture_release, held_work
+
         torch = _torch()
-        if getattr(self.device, "type", None) == "cuda":
-            try:
-                torch.cuda.set_device(self.device)
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            with held_work():
+                if getattr(self.device, "type", None) == "cuda":
+                    try:
+                        torch.cuda.set_device(self.device)
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001 - refused while a capture records: each job binds its device anyway
+            pass
+        finally:
+            capture_release()
         while True:
             job = self._jobs.get()
             if job is None:
                 return
             fn, ctx, modes, done = job
+            job = None
             try:
-                done["result"] = ctx.run(self._run, fn, modes)
-            except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
-                done["error"] = exc
+                try:
+                    with held_work():
+                        try:
+                            done["result"] = ctx.run(self._run, fn, modes)
+                        except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
+                            done["error"] = exc
+                        fn = ctx = None
+                except Exception as exc:  # noqa: BLE001 - refused while a capture records: the job never ran
+                    done["error"] = exc
+                    fn = ctx = None
             finally:
+                capture_release()
                 done["event"].set()
 
     def _run(self, fn: Callable[[], Any], modes: dict) -> Any:
@@ -1361,6 +1554,9 @@ class _ReplicaWorker:
             "autocast": autocast,
         }
         done: dict[str, Any] = {"event": threading.Event()}
+        from .diffusion_cuda_graph import capture_hold
+
+        capture_hold()
         self._jobs.put((fn, contextvars.copy_context(), modes, done))
         return done
 
@@ -1420,6 +1616,15 @@ def _rebuild(
 _SMALL_TENSOR_NUMEL = 4096
 
 
+def _as_bytes(t: Any) -> Any:
+    """Flat uint8 view; a one-element ``t.expand(n)`` keeps stride 0 through ``contiguous()``, so copy it."""
+    torch = _torch()
+    flat = t.reshape(-1).contiguous()
+    if flat.numel() and flat.stride(0) != 1:
+        flat = flat.clone(memory_format = torch.contiguous_format)
+    return flat.view(torch.uint8)
+
+
 def _bitwise_equal(a: Any, b: Any) -> bool:
     torch = _torch()
     if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)):
@@ -1429,12 +1634,7 @@ def _bitwise_equal(a: Any, b: Any) -> bool:
     if a is b:
         return True
     try:
-        return bool(
-            torch.equal(
-                a.reshape(-1).contiguous().view(torch.uint8),
-                b.reshape(-1).contiguous().view(torch.uint8),
-            )
-        )
+        return bool(torch.equal(_as_bytes(a), _as_bytes(b)))
     except Exception:  # noqa: BLE001 - a layout that cannot be viewed as bytes is never assumed equal
         return False
 
@@ -1451,11 +1651,11 @@ def _unchanged_since_launch(snapshots: list) -> bool:
         if src.numel() == 0:
             continue
         try:
-            now = src.to(snap.device).reshape(-1).contiguous().view(torch.uint8)
+            now = _as_bytes(src.to(snap.device))
             checks.append(
-                torch.equal(now, snap.reshape(-1).contiguous().view(torch.uint8))
+                torch.equal(now, _as_bytes(snap))
                 if snap.device.type == "cpu"
-                else (now == snap.reshape(-1).contiguous().view(torch.uint8)).all()
+                else (now == _as_bytes(snap)).all()
             )
         except Exception:  # noqa: BLE001 - an unverifiable tensor never accepts a prediction
             return False
@@ -1517,6 +1717,39 @@ def _mirror_hook_state(pairs: list) -> tuple:
     return state
 
 
+def _call_signature(args: tuple, kwargs: dict) -> tuple:
+    """What a compiled forward's guards mostly key on: tensor layout, flags and modes (never per-step scalars)."""
+    torch = _torch()
+    sig: list = []
+    for path, leaf in _leaves((args, kwargs)):
+        if isinstance(leaf, torch.Tensor):
+            try:
+                stride = tuple(leaf.stride())
+            except Exception:  # noqa: BLE001 - layouts without strides
+                stride = None
+            sig.append(
+                (
+                    path,
+                    tuple(leaf.shape),
+                    stride,
+                    leaf.dtype,
+                    leaf.requires_grad,
+                    leaf.is_inference(),
+                )
+            )
+        elif leaf is None or isinstance(leaf, (bool, str)):
+            sig.append((path, leaf))
+        else:
+            sig.append((path, type(leaf)))
+    return tuple(sig), torch.is_inference_mode_enabled(), torch.is_grad_enabled()
+
+
+def _note_warm(seen: set, sig: tuple) -> None:
+    if len(seen) >= 256:
+        seen.clear()
+    seen.add(sig)
+
+
 def _background_compile_call() -> bool:
     try:
         from .diffusion_bg_compile import capture_suppressed, eager_forced
@@ -1533,7 +1766,11 @@ class CfgParallelRouter:
     step's; the rest -- negative embeds, masks -- kept) and launched on the replica BEFORE the primary branch runs, so
     the two cards overlap even when the primary forward blocks the host. The real call must then pass exactly the
     predicted tensors (identity) and equal plain values, else the prediction is discarded and the branch runs
-    unpredicted."""
+    unpredicted.
+
+    A whole-step CUDA graph installs under the router (``inner``); split callers (Z-Image) use :meth:`run_pair`."""
+
+    _unsloth_cfg_router_layer = True
 
     def __init__(
         self,
@@ -1547,6 +1784,8 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
+        self.inner: Any = None
+        self._pairing = False
         self.had_override = "forward" in module.__dict__
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
@@ -1573,12 +1812,21 @@ class CfgParallelRouter:
             "predicted_hits": 0,
             "predicted_misses": 0,
             "opaque_primary_calls": 0,
+            "pairs_parallel": 0,
+            "exclusion_skips": 0,
         }
+        # Set when replica work was refused by a long recording: until that capture ends, later replica attempts go
+        # straight to the source instead of each waiting OUTSIDE_WAIT_S again.
+        self.exclusion_refused = False
         self.template: Optional[tuple[Any, Any, dict]] = None
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
         self.pairs: list = []
+        # A call new to either side may compile (FX tracing is process-wide up to torch 2.13): it never overlaps the other side.
+        self.warm_primary: set = set()
+        self.warm_replica: set = set()
+        self._pair_job: Optional[dict] = None
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -1605,6 +1853,8 @@ class CfgParallelRouter:
         self._drop_pending()
         self.replica = None
         self.pairs = []
+        self.warm_primary.clear()
+        self.warm_replica.clear()
         self.prefetched.clear()
         self.carry = []
         self.next_carry = []
@@ -1625,14 +1875,48 @@ class CfgParallelRouter:
         self.cfg_seen = False
         self.singles = 0
 
+    def _note_refusal(self, exc: BaseException) -> None:
+        from .diffusion_cuda_graph import OutsideWorkRefused
+        if isinstance(exc, OutsideWorkRefused):
+            self.exclusion_refused = True
+
+    def _refused_this_capture(self) -> bool:
+        """Whether replica work was refused and the capture that refused it is still recording."""
+        if not self.exclusion_refused:
+            return False
+        from .diffusion_cuda_graph import capture_in_progress
+
+        if capture_in_progress():
+            self.stats["exclusion_skips"] += 1
+            return True
+        self.exclusion_refused = False
+        return False
+
+    def _primary(self, *args: Any, **kwargs: Any) -> Any:
+        inner = self.inner
+        return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
+
+    def _primary_noting(self, sig: Optional[tuple], args: tuple, kwargs: dict) -> Any:
+        sig = _call_signature(args, kwargs) if sig is None else sig
+        job = self._pair_job
+        if sig not in self.warm_primary and job is not None:
+            job["event"].wait()  # may compile: not while the replica runs
+        out = self._primary(*args, **kwargs)
+        _note_warm(self.warm_primary, sig)
+        return out
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._pairing:
+            self.stats["primary_calls"] += 1
+            return self._primary_noting(None, args, kwargs)
         if self.disabled_reason is not None or _background_compile_call():
             # Disabled: no branch state to keep. A render that must run eager while its compile is in flight, or the
             # background compile thread itself replaying recorded inputs: both branches stay on the source, which
             # keeps that render bit-identical to an eager one and leaves the router's per-render state untouched.
             self.stats["primary_calls"] += 1
-            return self.orig_forward(*args, **kwargs)
+            return self._primary(*args, **kwargs)
         latent = _latent_arg(args, kwargs)
+        sig = None
         if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
             self.branch += 1
         else:
@@ -1652,7 +1936,8 @@ class CfgParallelRouter:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
-                self._launch_prediction(latent)
+                sig = _call_signature(args, kwargs)
+                self._launch_prediction(latent, sig)
         if (
             self.branch % 2 == 1
             and self.disabled_reason is None
@@ -1668,6 +1953,9 @@ class CfgParallelRouter:
                 self._build_replica()
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
+            elif self.cfg_seen and self._refused_this_capture():
+                # this step's prefetch or prediction was refused: the branch runs on the source, no further wait
+                self._drop_pending()
             elif self.cfg_seen:
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
@@ -1680,10 +1968,77 @@ class CfgParallelRouter:
                         self.stats["steps_parallel"] += 1
                     return out
                 except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
+                    self._note_refusal(exc)
                     self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             self.cfg_seen = True
         self.stats["primary_calls"] += 1
-        return self.orig_forward(*args, **kwargs)
+        return self._primary_noting(sig, args, kwargs)
+
+    def run_pair(
+        self, primary_call: Callable[[], Any], args: tuple, kwargs: dict
+    ) -> Optional[tuple]:
+        """Second half on the replica, ``primary_call`` on the source. ``(first, second)``; None = run both on source;
+        ``second`` None = replica failed."""
+        if self.disabled_reason is not None or _background_compile_call():
+            return None
+        module = self.module_ref()
+        if module is None or _holds_opaque_tensors((args, kwargs)):
+            return None
+        if any(getattr(module, attr, None) for attr in _ROOT_HOOK_DICTS):
+            return None
+        self._drop_pending()
+        self.template = None
+        self.prev_latent = None
+        self.branch = 0
+        if self.replica is not None:
+            self._drop_if_stale()
+        if self.replica is None and self.disabled_reason is None:
+            self._build_replica()
+        if self.replica is None or self.worker is None or self.disabled_reason is not None:
+            return None
+        if self._refused_this_capture():
+            return None
+        self.prefetched.clear()
+        hook_state = _mirror_hook_state(self.pairs)
+        sig = _call_signature(args, kwargs)
+        try:
+            r_args = self._to_replica(args)
+            r_kwargs = self._to_replica(kwargs)
+        except Exception as exc:  # noqa: BLE001 - e.g. no room left on the replica card: both halves run on the source
+            self.disable(f"replica input copy failed: {type(exc).__name__}: {exc}")
+            return None
+        finally:
+            self.next_carry = []
+            self.prefetched.clear()
+        job = self.worker.submit(_replica_call(self.replica, r_args, r_kwargs))
+        if sig not in self.warm_replica:
+            job["event"].wait()  # may compile: the primary half waits
+        self._pairing = True
+        self._pair_job = job
+        try:
+            first = primary_call()
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                _ReplicaWorker.wait(job)
+            raise
+        finally:
+            self._pairing = False
+            self._pair_job = None
+        try:
+            second = _ReplicaWorker.wait(job)
+            if _hook_state(self.pairs) != hook_state:
+                # source hook state moved during the first half: rerun
+                _mirror_hook_state(self.pairs)
+                second = self.worker.call(_replica_call(self.replica, r_args, r_kwargs))
+            second = _to_primary(second, self.primary)
+        except Exception as exc:  # noqa: BLE001 - the caller recomputes the second half on the source
+            self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
+            return first, None
+        _note_warm(self.warm_replica, sig)
+        self.stats["replica_calls"] += 1
+        self.stats["steps_parallel"] += 1
+        self.stats["pairs_parallel"] += 1
+        return first, second
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
@@ -1726,15 +2081,23 @@ class CfgParallelRouter:
         except KeyError:
             return None
 
-    def _launch_prediction(self, latent: Any) -> None:
+    def _launch_prediction(self, latent: Any, sig: tuple) -> None:
+        if self._refused_this_capture():
+            return
         predicted = self._predict(latent)
         if predicted is None or self.worker is None:
             return
         p_args, p_kwargs = predicted
+        if (
+            sig not in self.warm_primary
+            or _call_signature(p_args, p_kwargs) not in self.warm_replica
+        ):
+            return  # a side may compile: the odd branch runs unpredicted, after the primary one
         try:
             r_args = self._to_replica(p_args)
             r_kwargs = self._to_replica(p_kwargs)
-        except Exception:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
+        except Exception as exc:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
+            self._note_refusal(exc)
             return
         torch = _torch()
         # What the replica consumes, kept per tensor: at the real call the sources are compared bitwise against it, so
@@ -1754,7 +2117,7 @@ class CfgParallelRouter:
             "leaves": _leaves((p_args, p_kwargs)),
             "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
             "snapshots": snapshots,
-            "job": self.worker.submit(lambda: replica(*r_args, **r_kwargs)),
+            "job": self.worker.submit(_replica_call(replica, r_args, r_kwargs)),
         }
 
     def _take_prediction(self, args: tuple, kwargs: dict) -> Any:
@@ -1782,7 +2145,7 @@ class CfgParallelRouter:
             self.prefetched.clear()
             return None
         self.stats["predicted_hits"] += 1
-        return move_to_device(out, self.primary)
+        return _to_primary(out, self.primary)
 
     def _drop_pending(self) -> None:
         pending, self.pending = self.pending, None
@@ -1818,6 +2181,8 @@ class CfgParallelRouter:
         module = self.module_ref()
         if module is None:
             return
+        from .diffusion_cuda_graph import OutsideWorkRefused, outside_capture
+
         t0 = time.perf_counter()
         try:
             hooked = _hooks_present(module)
@@ -1839,7 +2204,8 @@ class CfgParallelRouter:
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
                 )
             self.fingerprint = weights_fingerprint(module)
-            with _device_context(self.secondary):
+            # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
+            with outside_capture(), _device_context(self.secondary):
                 self.replica = self.replica_factory()
             self.pairs = list(zip(module.modules(), self.replica.modules()))
             self.worker = _ReplicaWorker(self.secondary)
@@ -1853,15 +2219,27 @@ class CfgParallelRouter:
                 )
         except Exception as exc:  # noqa: BLE001
             self.replica = None
-            with contextlib.suppress(Exception):
-                _torch().cuda.empty_cache()
+            # A refused build allocated nothing, and its capture is still recording: no allocator call may run now.
+            # Any other failure frees what it left behind, itself with captures held off.
+            if not isinstance(exc, OutsideWorkRefused):
+                with contextlib.suppress(Exception):
+                    with outside_capture():
+                        _torch().cuda.empty_cache()
             self.disable(f"replica unavailable: {exc}")
 
     def _prefetch(self, args: tuple, kwargs: dict) -> None:
-        for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
-            if tensor.device == self.secondary or id(tensor) in self.prefetched:
-                continue
-            self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
+        from .diffusion_cuda_graph import outside_capture
+        if self._refused_this_capture():
+            return
+        try:
+            with outside_capture():
+                for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
+                    if tensor.device == self.secondary or id(tensor) in self.prefetched:
+                        continue
+                    self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
+        except Exception as exc:  # noqa: BLE001 - only an optimisation: no prefetch, the call copies its inputs itself
+            self.prefetched.clear()
+            self._note_refusal(exc)
 
     def _to_replica(self, obj: Any) -> Any:
         torch = _torch()
@@ -1889,18 +2267,27 @@ class CfgParallelRouter:
                 return type(value)((k, walk(v, depth + 1)) for k, v in value.items())
             return value
 
-        return walk(obj)
+        from .diffusion_cuda_graph import outside_capture
+
+        with outside_capture():
+            return walk(obj)
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
         # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place
         # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
+        sig = _call_signature(args, kwargs)
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
-        out = self.worker.call(lambda: replica(*r_args, **r_kwargs))
-        return move_to_device(out, self.primary)
+        out = self.worker.call(_replica_call(replica, r_args, r_kwargs))
+        _note_warm(self.warm_replica, sig)
+        return _to_primary(out, self.primary)
+
+
+def _replica_call(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:
+    return lambda: replica(*args, **kwargs)
 
 
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
@@ -1915,6 +2302,11 @@ def cfg_parallel_decline(
     mode = cfg_parallel_mode()
     if mode == "off":
         return f"{CFG_PARALLEL_ENV}=0"
+    from .diffusion_layer_split_plan import is_layer_split
+
+    # A replica is a whole denoiser on one card, which a denoiser cut across cards cannot be.
+    if is_layer_split(pipe):
+        return "denoiser is split across cards (layer split)"
     # A replica takes a whole denoiser's worth of another card; automatic placement only borrows one to avoid offload.
     if selection.automatic and mode != "force":
         return f"automatic GPU placement (select several cards or set {CFG_PARALLEL_ENV}=force)"
@@ -1927,6 +2319,10 @@ def cfg_parallel_decline(
     torch = _torch()
     if not isinstance(denoiser, torch.nn.Module):
         return "no DiT denoiser (a U-Net batches its guidance branches)"
+    from .diffusion_layer_split import is_layer_split
+
+    if is_layer_split(denoiser):
+        return "denoiser is split across cards (layer split)"
     # Whole-module / sequential offload page the denoiser per call; a group / streaming plan is fine only when it left
     # the denoiser itself resident (encoders streamed), which shows as a denoiser without offload hooks.
     if offload_policy in ("model", "sequential"):
@@ -1940,6 +2336,21 @@ def cfg_parallel_decline(
         return "denoiser is compiled whole"
     if _module_device(denoiser) is None or _module_device(denoiser).type != "cuda":
         return "denoiser is not on a CUDA card"
+    return None
+
+
+def _resident_graph(module: Any) -> Any:
+    slot = module.__dict__.get("forward")
+    try:
+        from .diffusion_cuda_graph import GraphedCompiledCall, GraphedForward
+    except Exception:  # noqa: BLE001
+        return None
+    if (
+        type(slot) is GraphedForward
+        and slot.placement is None
+        and not isinstance(slot, GraphedCompiledCall)
+    ):
+        return slot
     return None
 
 
@@ -1986,12 +2397,18 @@ def install_cfg_parallel(
             if free is not None and need_mib + 1024 > free:
                 reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
             else:
+                graph = _resident_graph(denoiser)
+                if graph is not None:
+                    del denoiser.__dict__["forward"]
                 router = CfgParallelRouter(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
                 )
+                router.inner = graph
                 try:
                     _CFG_ROUTERS[pipe] = router
                 except TypeError:
+                    if graph is not None:
+                        denoiser.__dict__["forward"] = graph
                     return "pipeline cannot be tracked (not weak-referenceable)"
                 denoiser.forward = router
                 denoiser._unsloth_cfg_router = router
@@ -2033,6 +2450,19 @@ def invalidate_cfg_replica(
     return True
 
 
+def _router_slot(module: Any, router: Any) -> Any:
+    """``module`` when ``router`` is its forward, the outer layer (static step skip) whose inner it is, else None."""
+    slot = module.__dict__.get("forward")
+    if slot is router:
+        return module
+    if (
+        getattr(slot, "_unsloth_outer_forward", False) is True
+        and getattr(slot, "inner", None) is router
+    ):
+        return slot
+    return None
+
+
 def drop_displaced_cfg_router(
     pipe: Any,
     reason: str,
@@ -2047,8 +2477,12 @@ def drop_displaced_cfg_router(
     if router is None:
         return False
     module = router.module_ref()
-    if module is not None and module.__dict__.get("forward") is router:
+    holder = _router_slot(module, router) if module is not None else None
+    if holder is module and module is not None:
         return False
+    if holder is not None:
+        # The replica cannot carry a step skip (it holds the source module), so the router could never build one.
+        reason = "a static step skip wraps the denoiser"
     uninstall_cfg_parallel(pipe)
     with contextlib.suppress(TypeError):
         _CFG_DECLINES[pipe] = reason
@@ -2078,10 +2512,22 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     router.drop_replica()
     module = router.module_ref()
     if module is not None:
-        if module.__dict__.get("forward") is router:
-            if router.had_override:
+        holder = _router_slot(module, router)
+        if holder is module:
+            if router.inner is not None:
+                module.__dict__["forward"] = router.inner
+                router.inner = None
+            elif router.had_override:
                 module.__dict__["forward"] = router.orig_forward
             else:
                 del module.__dict__["forward"]
+        elif holder is not None:
+            # under a static step skip: hand the skip what the router wrapped
+            holder.inner = (
+                router.inner
+                if router.inner is not None
+                else (router.orig_forward if router.had_override else None)
+            )
+            router.inner = None
         if module.__dict__.get("_unsloth_cfg_router") is router:
             del module.__dict__["_unsloth_cfg_router"]
