@@ -73,14 +73,28 @@ def test_each_card_keeps_its_budget_margin_under_the_reserve(tmp_path, _budget):
     assert reserved[1] < 24_576
 
 
-def test_split_mode_none_keeps_the_other_cards_margins(tmp_path, _budget):
-    extras = ["--split-mode", "none"]
+@pytest.mark.parametrize("main_gpu", [[], ["--main-gpu", "1"]])
+def test_split_mode_none_keeps_the_other_cards_margins(tmp_path, _budget, main_gpu):
+    """llama.cpp keeps only devices[main_gpu] and the fitter reads margin 0 for it, so the
+    reserve goes in entry 0 whichever card is the main one."""
+    extras = ["--split-mode", "none", *main_gpu]
     base = _base_margins(tmp_path, extra_args = extras)
     backend, gguf = _two_cards(tmp_path)
     reserved = _r7._margins(_r7._dspark(backend, gguf, tmp_path, extra_args = extras))
     assert len(reserved) == 2
     assert reserved[0] >= base[0] + 8 * 1024
     assert reserved[1] == base[1]
+
+
+def test_one_local_card_with_rpc_gets_no_broadcast_reserve(tmp_path, _budget):
+    """A scalar margin is broadcast to the remote devices too, which the reserve would
+    then hold back on each of them."""
+    extras = ["--rpc", "10.0.0.2:50052"]
+    (tmp_path / "base").mkdir()
+    backend, gguf = _r2._cuda_backend(tmp_path / "base", memory = (_MIXED[0],))
+    base = _r7._margins(_r2._placement._launch(backend, gguf, extra_args = extras)["cmd"])
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = (_MIXED[0],))
+    assert _r7._margins(_r7._dspark(backend, gguf, tmp_path, extra_args = extras)) == base
 
 
 def test_an_rpc_launch_gets_no_positional_reserve_list(tmp_path, _budget):

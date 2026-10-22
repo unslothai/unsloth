@@ -34447,22 +34447,25 @@ class LlamaCppBackend:
                             # --split-mode tensor folds the cards into one meta device, so a
                             # per-device --fit-target cannot hold the sidecar: no reserve.
                             _spawn_shares = None
-                        elif _spawn_device_count > 1 and _spawn_rpc:
+                        elif _spawn_rpc:
+                            # Even with one local card, a scalar is broadcast to the remote
+                            # devices too.
                             _spawn_shares = None
                         elif _spawn_device_count > 1 and _split_mode_confines_to_one_device(
                             run_cmd, env
                         ):
                             if _spawn_base_by_dev and len(set(_spawn_base_by_dev)) > 1:
                                 # Both models sit on the main card, but a scalar would erase
-                                # the other cards' own margins: spell the list, reserve on
-                                # the main card only.
+                                # the other cards' own margins: spell the list with the
+                                # reserve in entry 0, since llama.cpp keeps only
+                                # devices[main_gpu] (src/llama.cpp) and the fitter then reads
+                                # margin 0 for it (common/fit.cpp).
                                 _main = self._effective_main_gpu(run_cmd, env) or 0
                                 if 0 <= _main < _spawn_device_count:
                                     _spawn_shares = [
-                                        1.0 if i == _main else 0.0
-                                        for i in range(_spawn_device_count)
+                                        1.0 if i == 0 else 0.0 for i in range(_spawn_device_count)
                                     ]
-                                    _spawn_output_dev = _main
+                                    _spawn_output_dev = 0
                                 else:
                                     _spawn_shares = None
                         elif _spawn_device_count > 1:
