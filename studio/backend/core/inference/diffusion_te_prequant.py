@@ -597,7 +597,9 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "black-forest-labs/flux-3-image-klein-base",
         }
     ),
-    # Qwen3-VL-4B (Krea's own weights, not FLUX.3's): identical sha256 across the Krea-2 pair (compared 2026-08-25)
+    # Qwen3-VL-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25). The tensors are Qwen3-VL-4B-Instruct's
+    # (all 713 match, 2026-10-22), but packed as one file without the ``model.`` prefix, so the sha256 differs from
+    # FLUX.3 Klein's two shards and the pair stays its own group.
     frozenset(
         {
             "krea/krea-2-turbo",
