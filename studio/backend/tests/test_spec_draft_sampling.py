@@ -657,3 +657,98 @@ def test_header_reader_stops_strings_at_the_first_nul(tmp_path):
     backend._read_gguf_metadata(str(path))
     assert backend._gguf_header_parsed is True
     assert backend._gguf_sampling == {"general.sampling.sequence": "top_k;adaptive_p"}
+
+
+# A request can switch a stateful sampler on per slot, after the launch-side check above.
+@pytest.mark.parametrize(
+    "body, stateful",
+    [
+        ({"mirostat": 2}, True),
+        ({"mirostat": 1.0, "temperature": 0.7}, True),
+        ({"mirostat": 0}, False),
+        ({"mirostat": True}, False),
+        ({"samplers": ["top_k", "Adaptive-P"]}, True),
+        ({"samplers": ["top_k", "adaptivep"]}, True),
+        ({"samplers": "kpa"}, True),
+        ({"samplers": "kpA"}, False),
+        ({"samplers": ["top_k", "temperature"]}, False),
+        ({"mirostat": 2, "temperature": 0}, False),
+        ({"samplers": "a", "temperature": 0.0}, False),
+        ({"temperature": 0.8}, False),
+    ],
+)
+def test_request_stateful_sampler_detection(body, stateful):
+    from core.inference.llama_cpp import _request_selects_stateful_sampler
+    assert _request_selects_stateful_sampler(body) is stateful
+
+
+@pytest.mark.parametrize("probabilistic", [True, False])
+def test_load_records_whether_drafts_are_sampled(monkeypatch, probabilistic):
+    backend = _backend(monkeypatch, sampling = probabilistic)
+    _flags(backend, "mtp")
+    assert backend._spec_draft_probabilistic is probabilistic
+    _flags(backend, "off")
+    assert backend._spec_draft_probabilistic is False
+
+
+class _Reached(Exception):
+    pass
+
+
+def _run_completions(monkeypatch, body, *, probabilistic):
+    import asyncio
+    from types import SimpleNamespace
+
+    import routes.inference as inference_route
+    import utils.hardware as hardware
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        context_length = 4096,
+        base_url = "http://127.0.0.1:1",
+        model_identifier = _MTP_MODEL,
+        _spec_draft_probabilistic = probabilistic,
+    )
+
+    async def _same_body(request, *_a, **_kw):
+        return await request.json()
+
+    def _reached(*_a, **_kw):
+        raise _Reached
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+    monkeypatch.setattr(inference_route, "_should_validate_before_switch", lambda: False)
+    monkeypatch.setattr(inference_route, "_auto_switch_from_request_body", _same_body)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", lambda *_a: None)
+    monkeypatch.setattr(inference_route, "_request_used_api_key", _reached)
+
+    class _Req:
+        url = SimpleNamespace(path = "/v1/completions")
+
+        async def json(self):
+            return dict(body, prompt = "Hi")
+
+    return asyncio.run(inference_route.openai_completions(_Req(), "tester"))
+
+
+def test_completions_refuses_a_stateful_sampler_against_sampled_drafts(monkeypatch):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        _run_completions(monkeypatch, {"mirostat": 2, "temperature": 0.7}, probabilistic = True)
+    assert exc.value.status_code == 400
+    assert "UNSLOTH_SPEC_DRAFT_SAMPLING=greedy" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "body, probabilistic",
+    [
+        ({"mirostat": 2, "temperature": 0.7}, False),
+        ({"mirostat": 2, "temperature": 0}, True),
+        ({"temperature": 0.7, "top_k": 20}, True),
+    ],
+)
+def test_completions_forwards_what_the_server_verifies_exactly(monkeypatch, body, probabilistic):
+    with pytest.raises(_Reached):
+        _run_completions(monkeypatch, body, probabilistic = probabilistic)

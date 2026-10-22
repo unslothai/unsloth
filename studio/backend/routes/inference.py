@@ -39752,6 +39752,17 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
     # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
     _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
+    if getattr(llama_backend, "_spec_draft_probabilistic", False):
+        from core.inference.llama_cpp import _request_selects_stateful_sampler
+        if _request_selects_stateful_sampler(body):
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "Mirostat and adaptive-p are not supported while this model verifies "
+                    "sampled speculative drafts. Use temperature 0 or a stateless sampler, or "
+                    "reload with UNSLOTH_SPEC_DRAFT_SAMPLING=greedy."
+                ),
+            )
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))

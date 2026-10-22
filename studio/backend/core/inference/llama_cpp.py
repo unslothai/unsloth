@@ -4798,6 +4798,38 @@ def _apply_sampler_setting(state: list, key: str, value: str) -> bool:
     return True
 
 
+def _request_selects_stateful_sampler(body: Mapping) -> bool:
+    """A /v1/completions body that turns on Mirostat or adaptive-p at a positive temperature.
+
+    llama-server verifies a sampled draft by rejection sampling only above temperature 0, and
+    each draft position then advances the sampler's state on the target's own pick rather than
+    on the token kept, which drifts Mirostat's mu and adaptive-p's running target. The launch
+    side is already kept greedy for these (``_spec_draft_sampling_flags``); a request can still
+    switch one on per slot. Read like tools/server/server-schema.cpp: ``mirostat`` a number,
+    ``samplers`` an array of names or a string of sequence chars; a missing ``temperature``
+    counts as positive."""
+    mirostat = body.get("mirostat")
+    stateful = (
+        isinstance(mirostat, (int, float))
+        and not isinstance(mirostat, bool)
+        and math.isfinite(mirostat)
+        and int(mirostat) != 0
+    )
+    samplers = body.get("samplers")
+    probe = [False, False, False, False]
+    if isinstance(samplers, list) and all(isinstance(name, str) for name in samplers):
+        stateful = stateful or any(name.lower() in _ADAPTIVE_P_SAMPLER_NAMES for name in samplers)
+    elif isinstance(samplers, str):
+        _apply_sampler_setting(probe, "seq", samplers)
+        stateful = stateful or probe[1]
+    if not stateful:
+        return False
+    temperature = body.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        return temperature > 0
+    return True
+
+
 # llama.cpp common_init_sampler_from_model (common/common.cpp) reads these after the CLI/config,
 # each one only when the user did not set that field.
 _GGUF_SAMPLING_MIROSTAT_KEY = "general.sampling.mirostat"
@@ -8938,6 +8970,8 @@ class LlamaCppBackend:
         self._layer_preserves_tensor_intent: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
+        # Studio launched llama-server with --spec-draft-sampling probabilistic.
+        self._spec_draft_probabilistic: bool = False
         # Canonical UI-facing mode the user requested
         # (auto/mtp/ngram/mtp+ngram/off/ngram-simple). Round-tripped through the
         # status API so the dropdown reflects the picked mode, not the resolved
@@ -35441,6 +35475,7 @@ class LlamaCppBackend:
         # Reset; emit branches re-set on the resolved emission.
         self._spec_draft_n_max = None
         self._speculative_type = None
+        self._spec_draft_probabilistic = False
         self._spec_fallback_reason = None
         # A drafter trained with the fine-tune and exported beside this GGUF (drafter.json).
         trained_steps = None
@@ -35792,7 +35827,9 @@ class LlamaCppBackend:
                     model_path is None or getattr(self, "_gguf_path", None) == model_path
                 ):
                     _gguf_sampling = dict(getattr(self, "_gguf_sampling", None) or {})
-                flags.extend(_spec_draft_sampling_flags(caps, extra_args, _gguf_sampling))
+                _draft_sampling = _spec_draft_sampling_flags(caps, extra_args, _gguf_sampling)
+                flags.extend(_draft_sampling)
+                self._spec_draft_probabilistic = bool(_draft_sampling)
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
