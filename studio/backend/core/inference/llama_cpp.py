@@ -4802,8 +4802,11 @@ def _request_mirostat_on(value) -> bool:
     """Whether a request's ``mirostat`` leaves Mirostat on: server-schema.cpp reads it as int32
     (nlohmann get<int32_t>, so a 64-bit integer keeps its low 32 bits and a float truncates)
     and soft-clamps it to [0, 2], so only a positive result is on. Values whose cast has no
-    defined result (beyond 64 bits, NaN, a float outside int32) count as on."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    defined result (beyond 64 bits, NaN, a float outside int32) count as on. nlohmann reads a
+    JSON boolean as 0 / 1, so ``true`` is Mirostat 1."""
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, (int, float)):
         return False
     if isinstance(value, int):
         if not -(2**63) <= value < 2**64:
