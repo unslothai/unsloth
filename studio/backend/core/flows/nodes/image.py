@@ -61,15 +61,25 @@ async def edit(ctx: NodeContext) -> dict:
     instruction = image_prompt(ctx, "instruction", "instruction")
     if not instruction:
         raise FlowNodeError("Say what to change: type an instruction or connect one")
-    images = await ctx.generate_image(
-        model = ctx.params.get("model"),
-        prompt = instruction,
-        seed = ctx.seed,
-        init_image = ctx.inputs["image"],
-        references = ctx.inputs.get("reference") or None,
-        workflow = "edit",
-    )
-    return {"image": images[0]}
+    source, extra = ctx.inputs["image"], list(ctx.inputs.get("reference") or [])
+    # Families without instruction editing (FLUX.2 klein) still take the source as a reference, else as img2img.
+    attempts = [
+        {"init_image": source, "references": extra or None, "workflow": "edit"},
+        {"init_image": None, "references": [source, *extra], "workflow": "reference"},
+        {"init_image": source, "references": None, "workflow": None, "strength": 0.6},
+    ]
+    for i, attempt in enumerate(attempts):
+        try:
+            images = await ctx.generate_image(
+                model = ctx.params.get("model"), prompt = instruction, seed = ctx.seed, **attempt
+            )
+            return {"image": images[0]}
+        except FlowNodeError as exc:
+            if i == len(attempts) - 1 or "not supported for the" not in str(exc):
+                raise
+            ctx.log(
+                f"{attempt['workflow']} is not supported by this model; trying another way", "info"
+            )
 
 
 @handler("image.remove_bg")

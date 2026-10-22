@@ -133,3 +133,30 @@ def test_finetune_trains_on_a_data_recipe_dataset(monkeypatch):
         raise AssertionError("training never started")
     uploaded = [c for c in ctx.calls if c[1] == "/api/hub/datasets/upload"][0][4]["file"][1]
     assert uploaded.decode().count("\n") == 2
+
+
+def test_edit_image_falls_back_when_the_family_has_no_instruction_editing():
+    from core.flows.nodes import image
+    from core.flows.registry import FlowNodeError
+
+    class Ctx:
+        params = {"model": None, "instruction": "make it smile"}
+        inputs = {"image": {"kind": "image", "ref": "image:1"}}
+        flow_params = {}
+        seed = 3
+        calls = []
+
+        async def generate_image(self, **kw):
+            self.calls.append(kw.get("workflow"))
+            if kw.get("workflow") == "edit":
+                raise FlowNodeError(
+                    "Instruction editing is not supported for the 'flux.2-klein' model family."
+                )
+            return [{"kind": "image", "ref": "image:2"}]
+
+        def log(self, *a, **k):
+            pass
+
+    ctx = Ctx()
+    out = asyncio.run(image.edit(ctx))
+    assert out["image"]["ref"] == "image:2" and ctx.calls == ["edit", "reference"]
