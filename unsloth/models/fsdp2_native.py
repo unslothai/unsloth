@@ -1610,15 +1610,30 @@ def native_full_state_dict(
     trainable_only = False,
     cpu_offload = True,
 ):
-    """Collective: every rank must call. Full (unsharded) state dict on rank 0, {} on the others."""
+    """Collective: every rank of the model's mesh must call. Full (unsharded) state dict on the
+    writer, {} on the others. The writer is rank 0, or the lowest rank of a sub-mesh that leaves
+    rank 0 out (fsdp2_save.mesh_writer_rank)."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
 
+    from .fsdp2_save import mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(model) if cpu_offload else 0
     options = StateDictOptions(
-        full_state_dict = True,
-        cpu_offload = cpu_offload,
+        full_state_dict = writer_rank == 0,
+        cpu_offload = cpu_offload and writer_rank == 0,
         ignore_frozen_params = bool(trainable_only),
     )
-    return get_model_state_dict(model, options = options)
+    state = get_model_state_dict(model, options = options)
+    return state if writer_rank == 0 else _gather_to_writer(state, writer_rank)
+
+
+def _gather_to_writer(state, writer_rank):
+    """A sharded (DTensor) state dict made full and moved to the CPU on global rank `writer_rank` only,
+    {} elsewhere: what StateDictOptions(full_state_dict, cpu_offload) does for rank 0, which is not
+    part of a sub-mesh that leaves it out (it would return {} on every rank of that mesh)."""
+    from torch.distributed._state_dict_utils import _gather_state_dict
+
+    return _gather_state_dict(state, cpu_offload = True, ranks_only = (writer_rank,))
 
 
 @contextlib.contextmanager
@@ -1954,24 +1969,28 @@ def native_save_optimizer(
     should_save = None,
 ):
     """Collective (every rank must call): the full, unsharded optimizer state keyed by parameter FQN
-    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` on rank 0. A plain
+    (`get_optimizer_state_dict(full_state_dict, cpu_offload)`), written to `path` on rank 0 (the lowest
+    rank of a sub-mesh that leaves rank 0 out, fsdp2_save.mesh_writer_rank). A plain
     `optimizer.state_dict()` on rank 0 holds only rank 0's DTensor shards, so a resume from it is wrong."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
 
     model = _native_root(model)
     optimizer = _inner_optimizer(optimizer)
+    from .fsdp2_save import _dist, _wait_for_writer, mesh_writer_rank
+
+    writer_rank = mesh_writer_rank(model)
     state = get_optimizer_state_dict(
         model,
         optimizer,
-        options = StateDictOptions(full_state_dict = True, cpu_offload = True),
+        options = StateDictOptions(full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0),
     )
+    if writer_rank != 0:
+        state = _gather_to_writer(state, writer_rank)
+    dist = _dist()
     if should_save is None:
-        should_save = _rank0()
+        should_save = dist is None or dist.get_rank() == writer_rank
     if path is None:
         return state
-    from .fsdp2_save import _dist, _wait_for_writer
-
-    dist = _dist()
     writer = bool(should_save)
     try:
         if writer:
@@ -1981,7 +2000,7 @@ def native_save_optimizer(
             # The other ranks wait for the write, so no later collective overtakes it. A store key,
             # not a barrier: a large full-finetuning state can take longer to write than the
             # collective timeout. Every rank passes the same path (the Trainer does).
-            _wait_for_writer(dist, writer)
+            _wait_for_writer(dist, writer, writer_rank)
     return state
 
 

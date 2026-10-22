@@ -10,7 +10,10 @@ sharding its own model replica on its own data):
 * the per-input media agreement counts only the mesh's ranks: a mixed batch in one pair raises
   there, while the other pair, whose ranks agree, trains;
 * the one-time layout agreement in shard_model runs over the mesh too: pairs whose GPUs differ pick
-  their own fit layout, and one pair shards while the other never calls shard_model."""
+  their own fit layout, and one pair shards while the other never calls shard_model;
+* collective saves (fsdp2_gathered, native_full_state_dict, native_save_optimizer) write from the
+  mesh's own first rank: pair [2, 3] never contains rank 0, and both pairs save at the same time
+  without releasing each other's waiting ranks."""
 
 import multiprocessing
 import os
@@ -128,6 +131,37 @@ def _case_subgroup(native, rank):
     return res
 
 
+def _case_save(native, rank):
+    """Each pair shards its own toy model and saves it at the same time."""
+    from torch.distributed.fsdp import fully_shard
+
+    save = sys.modules["unsloth.models.fsdp2_save"]
+    mesh = _submesh(rank)
+    torch.manual_seed(rank // 2)
+    model = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.Linear(8, 4))
+    for block in model:
+        fully_shard(block, mesh = mesh)
+    fully_shard(model, mesh = mesh)
+    res = {}
+    with save.fsdp2_gathered(model) as writer:
+        res["writer"] = writer
+        res["gathered_shape"] = tuple(model[0].weight.shape) if writer else None
+    res["full_keys"] = sorted(native.native_full_state_dict(model))
+    optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
+    model(torch.randn(2, 8)).sum().backward()
+    optimizer.step()
+    path = os.path.join(os.environ["UNSLOTH_TEST_SAVE_DIR"], f"optimizer_pair{rank // 2}.pt")
+    native.native_save_optimizer(model, optimizer, path)
+    state = torch.load(path, weights_only = False)
+    res["optimizer_entries"] = len(state.get("state", {}))
+    # Full (gathered) moments: 8 * 8 + 8 + 4 * 8 + 4 elements, not one rank's shards.
+    res["exp_avg_numel"] = sum(v["exp_avg"].numel() for v in state["state"].values())
+    import torch.distributed as dist
+
+    dist.barrier()  # rank 0 hosts the store the other pair still waits on
+    return res
+
+
 def _worker(rank, world, port, out, case):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
@@ -154,6 +188,10 @@ def _worker(rank, world, port, out, case):
             res = _case_fit(native, rank)
         elif case == "subgroup":
             res = _case_subgroup(native, rank)
+        elif case == "save":
+            os.environ["UNSLOTH_FSDP2_SAVE_TIMEOUT"] = "60"
+            importlib.import_module("unsloth.models.fsdp2_save")
+            res = _case_save(native, rank)
         else:
             res = _case_grads(native, rank, hsdp = case == "hsdp")
         out.put((rank, res))
@@ -234,3 +272,17 @@ def test_a_sub_mesh_shards_without_the_other_ranks():
     pytest.importorskip("peft")
     results = _run("subgroup")
     assert [results[r]["sharded"] for r in range(WORLD)] == [True, True, False, False], results
+
+
+def test_sub_mesh_saves_write_from_the_mesh_first_rank(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_TEST_SAVE_DIR", str(tmp_path))
+    results = _run("save")
+    assert [results[r]["writer"] for r in range(WORLD)] == [True, False, True, False], results
+    assert results[0]["gathered_shape"] == results[2]["gathered_shape"] == (8, 8), results
+    for rank in (0, 2):
+        assert results[rank]["full_keys"] == ["0.bias", "0.weight", "1.bias", "1.weight"], results
+    for rank in (1, 3):
+        assert results[rank]["full_keys"] == [], results
+    for rank in range(WORLD):
+        assert results[rank]["optimizer_entries"] == 4, results
+        assert results[rank]["exp_avg_numel"] == 108, results
