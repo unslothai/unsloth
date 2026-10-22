@@ -1258,13 +1258,31 @@ def _budget_reserve_kind(memory: DeviceMemory) -> str:
     return _ROCM_APU_POOL if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
+def _user_budget_reserve_mib(base: int) -> int:
+    """What the user's VRAM Budget setting keeps free of ``base``. 0 at or above the default, where the reserves above
+    are already tuned (3% of a 192 GiB card would exceed the discrete cap), so an untouched setting changes nothing."""
+    try:
+        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT, get_vram_budget_fraction
+
+        fraction = float(get_vram_budget_fraction())
+    except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
+        return 0
+    if not fraction < VRAM_FRACTION_DEFAULT:
+        return 0
+    return int(base * (1.0 - fraction))
+
+
+def _planner_reserve_mib(memory: DeviceMemory, base: int) -> int:
+    return max(_reserve_mib(_budget_reserve_kind(memory), base), _user_budget_reserve_mib(base))
+
+
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """Free memory minus a headroom reserve (room for fragmentation + other tenants). None when
     free memory is unknown."""
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    return max(0, int(memory.free_mib) - _reserve_mib(_budget_reserve_kind(memory), base))
+    return max(0, int(memory.free_mib) - _planner_reserve_mib(memory, base))
 
 
 def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -1273,7 +1291,7 @@ def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    reserve = max(2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2)
+    reserve = max(2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2, _user_budget_reserve_mib(base))
     return max(0, int(memory.free_mib) - reserve)
 
 
@@ -1755,7 +1773,7 @@ def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
     total = memory.total_mib
     if total is None:
         return None
-    return int((int(total) - _reserve_mib(_budget_reserve_kind(memory), int(total))) * 0.85)
+    return int((int(total) - _planner_reserve_mib(memory, int(total))) * 0.85)
 
 
 # Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an estimate, so an operator who
