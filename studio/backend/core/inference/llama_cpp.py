@@ -24934,6 +24934,11 @@ class LlamaCppBackend:
             return intent
         if not source_matches and not self.matches_load_source(intent):
             return intent
+        # A reload after a zero-device probe asks again: a GPU made visible since runs on it.
+        if not source_matches and self._cpu_fallback_reason == "vulkan_no_device":
+            binary = self._find_llama_server_binary()
+            if binary and LlamaCppBackend._run_vulkan_probe(binary):
+                return intent
         extras = list(intent.extra_args) if intent.extra_args is not None else None
         # Judge the env the replay runs with, not this process's: _cpu_isolated_replay
         # pops every main-model placement var first. Using os.environ would drop the
@@ -38531,6 +38536,16 @@ class LlamaCppBackend:
         ):
             logger.info("llama-server was torn down while waiting for it to become healthy")
             self._health_wait_cancelled = True
+            return False
+
+        # Exited during the last probe or interval: a crash for the crash recovery, not a stall.
+        if process is not None and process.poll() is not None:
+            if self._stdout_thread is not None:
+                self._stdout_thread.join(timeout = 2)
+            logger.error(
+                f"llama-server exited with code {process.returncode} at the health-check deadline. "
+                f"Output (tail): {chr(10).join(self._stdout_lines[-50:])[-2000:]}"
+            )
             return False
 
         # Leave a marker so _classify_llama_start_failure tells a live but

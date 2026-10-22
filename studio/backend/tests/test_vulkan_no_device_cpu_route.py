@@ -508,3 +508,67 @@ def test_response_accepts_the_new_reasons(reason):
         cpu_fallback_reason = reason,
     )
     assert response.model_dump()["cpu_fallback_reason"] == reason
+
+
+def test_a_child_exiting_at_the_deadline_is_a_crash_not_a_stall(monkeypatch):
+    """Exited during the last probe: the crash recovery decides, the stall branch must not."""
+    clock = _Clock()
+    monkeypatch.setattr(llama_cpp.time, "monotonic", clock.monotonic)
+    polls = {"n": 0}
+
+    class _Event:
+        def clear(self):
+            pass
+
+        def wait(self, interval):
+            clock.now += interval
+
+    def _poll():
+        # Alive for every in-loop check, gone by the deadline re-check.
+        polls["n"] += 1
+        return None if clock.now < 30.0 else -11
+
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "get",
+        lambda *a, **k: (_ for _ in ()).throw(llama_cpp.httpx.ConnectError("refused")),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_startup_work_sample", classmethod(lambda cls, p: (0.0, 100 << 20, 0, 0))
+    )
+    backend = LlamaCppBackend()
+    backend._process = SimpleNamespace(poll = _poll, pid = 1, returncode = -11)
+    backend._health_probe_event = _Event()
+    backend._stdout_lines = []
+    backend._cancel_event = None
+    healthy = backend._wait_for_health(
+        timeout = 30.0, interval = 30.0, cancelled = lambda: False, cpu_counts_as_progress = False
+    )
+    assert healthy is False
+    assert backend._health_wait_stalled is False
+
+
+@pytest.mark.parametrize("probe_rows, stays_cpu", [([], True), ([{"name": "Intel Arc"}], False)])
+def test_a_reload_after_a_zero_device_probe_asks_again(monkeypatch, tmp_path, probe_rows, stays_cpu):
+    """A GPU made visible since the zero-device load runs on it; still none keeps CPU."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    backend = LlamaCppBackend()
+    backend._process = SimpleNamespace(poll = lambda: None)
+    backend._healthy = True
+    backend._model_identifier = "owner/model"
+    backend._gguf_path = str(gguf)
+    backend._cpu_fallback_reason = "vulkan_no_device"
+    monkeypatch.setattr(LlamaCppBackend, "matches_load_source", lambda self, intent: True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/fake/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary: list(probe_rows))
+    )
+    intent = GgufLoadIntent(
+        model_identifier = "owner/model", gguf_path = str(gguf), n_ctx = 4096, gpu_memory_mode = "auto"
+    )
+    assert backend._preserve_cpu_fallback_intent(intent).cpu_fallback is stays_cpu
