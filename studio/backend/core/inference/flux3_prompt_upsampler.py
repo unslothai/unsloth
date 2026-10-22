@@ -901,9 +901,9 @@ _vulkan_rows_memo: dict = {}
 _vulkan_rows_lock = threading.Lock()
 
 
-def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
-    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer once
-    per cache window: an empty answer that already was a retry stands until the window ends."""
+def _vulkan_rows(binary: str, retry_empty: bool = False, throttle_retry: bool = False) -> list:
+    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer. With
+    ``throttle_retry`` (a speculative prefetch) an empty answer that already was a retry stands until the window ends."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     try:
@@ -913,7 +913,8 @@ def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
     with _vulkan_rows_lock:
         hit = _vulkan_rows_memo.get(key)
         live = hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
-        if live and (hit[0] or not retry_empty or (len(hit) > 2 and hit[2])):
+        # Only a speculative prefetch is throttled: a real launch always asks again.
+        if live and (hit[0] or not retry_empty or (throttle_retry and len(hit) > 2 and hit[2])):
             return hit[0]
         rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
         _vulkan_rows_memo.clear()
@@ -968,7 +969,9 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
     def _work() -> None:
         try:
             # An empty answer (cached or fresh) is retried once, as the launch it stands in for did.
-            rows = _vulkan_rows(binary, retry_empty = True) or _vulkan_rows(binary, retry_empty = True)
+            rows = _vulkan_rows(binary, retry_empty = True, throttle_retry = True) or _vulkan_rows(
+                binary, retry_empty = True, throttle_retry = True
+            )
             # One row on one torch card launches unpinned, so it needs no card lookup.
             if rows and (len(rows) > 1 or torch.cuda.device_count() > 1):
                 ordinal = _resident_cuda_ordinal()

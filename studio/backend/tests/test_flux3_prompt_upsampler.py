@@ -2135,7 +2135,7 @@ def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
         llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
     )
     monkeypatch.setattr(
-        pup, "_vulkan_rows", lambda b, retry_empty = False: order.append("probe") or []
+        pup, "_vulkan_rows", lambda b, retry_empty = False, **_kw: order.append("probe") or []
     )
     sidecar.warm(binary = "b", model = model, mmproj = None)
     # An empty answer is retried once, still before the slot.
@@ -2713,6 +2713,17 @@ def test_repeated_prefetches_retry_an_empty_probe_once_per_window(monkeypatch):
     monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 0.0)
     pup._prefetch_vulkan_rows("b")
     assert len(calls) == 4
+
+
+def test_a_real_launch_reprobes_after_throttled_prefetches(monkeypatch):
+    # Prefetches stop retrying for the window, a launch does not: a device that came up since is found.
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    pup._prefetch_vulkan_rows("b")
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b", "b"]
+    pup._vulkan_rows("b", retry_empty = True)
+    assert len(calls) == 3
 
 
 def test_concurrent_prefetches_share_one_probe(monkeypatch):
