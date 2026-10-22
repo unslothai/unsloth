@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Dismissal of the integrated-GPU memory notice.
-
-Once dismissed it must stay dismissed, but only for the allocation it was dismissed
-at: a user who acts on the advice, raises the allocation and later runs short again
-is in a new situation and worth telling.
-"""
+"""A dismissed iGPU notice stays dismissed only for the allocation it was dismissed at."""
 
 import sys
 from pathlib import Path
@@ -23,7 +18,6 @@ class TestAFreshInstall:
         assert notice.notice_already_dismissed(32.0) is False
 
     def test_an_unknown_allocation_is_not_silenced(self):
-        # Nothing dismissed yet, so even an unreadable allocation may speak.
         assert notice.notice_already_dismissed(None) is False
 
 
@@ -34,22 +28,18 @@ class TestDismissal:
         assert notice.notice_already_dismissed(32.0) is True
 
     def test_it_stays_silent_at_a_smaller_allocation(self):
-        # Lowering the allocation is not new information: they were already told.
         notice.dismiss_notice(64.0)
         assert notice.notice_already_dismissed(32.0) is True
 
     def test_it_speaks_again_after_the_user_raises_the_allocation(self):
-        # Acted on the advice and hit the ceiling again: worth one more mention.
         notice.dismiss_notice(32.0)
         assert notice.notice_already_dismissed(64.0) is False
 
     def test_a_driver_rounding_difference_does_not_re_show_it(self):
-        # A driver-reported byte count reads 95.83 against a 96.00 setting.
         notice.dismiss_notice(95.83)
         assert notice.notice_already_dismissed(95.9) is True
 
     def test_dismissal_only_ever_rises(self):
-        # A stale client reporting an old, smaller allocation must not re-arm it.
         notice.dismiss_notice(64.0)
         notice.dismiss_notice(16.0)
         assert notice.get_dismissed_at_gb() == 64.0
@@ -121,21 +111,17 @@ class TestTheToleranceBoundary:
     """The slack is a tenth of a GB, and both sides arrive rounded to a tenth."""
 
     def test_a_reading_exactly_one_tenth_above_stays_dismissed(self):
-        # The client dismisses at the rounded value the advice showed (95.8), and a
-        # later boot reading 95.9 is one tenth away. Binary floats put 95.8 + 0.1 at
-        # 95.89999999999999, so the float comparison called it not dismissed.
+        # 95.8 + 0.1 is 95.89999999999999 in binary floats.
         assert 95.8 + 0.1 == pytest.approx(95.9), "the float is only 1 ulp off"
         assert (95.9 <= 95.8 + 0.1) is False, "which is what the old comparison read"
         notice.dismiss_notice(95.8)
         assert notice.notice_already_dismissed(95.9) is True
 
     def test_two_tenths_above_still_speaks(self):
-        # The slack is one tenth, not "anything close". A real change must be heard.
         notice.dismiss_notice(95.8)
         assert notice.notice_already_dismissed(96.0) is False
 
     def test_the_boundary_holds_across_the_ladder(self):
-        # Every rung the ladder can suggest, dismissed at its rounded reading.
         for rung in (4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128):
             reading = round(rung - 0.2, 1)
             notice.dismiss_notice(reading)

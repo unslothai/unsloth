@@ -117,6 +117,7 @@ export const it = {
     reload: "Ricarica",
     more: "Altro",
     addressPlaceholder: "Cerca o inserisci un URL",
+    local: "Locale",
     suggested: "Suggeriti",
     suggestedMenu: {
       open: "Apri",
@@ -467,6 +468,8 @@ export const it = {
       downloadFailed: "Impossibile scaricare {name}",
       notMarked: "{name} è stato salvato ma non è stato possibile contrassegnarlo come scaricato da Internet, quindi il sistema non avviserà prima di aprirlo.",
       blocked: "Questo indirizzo non si può aprire nel pannello del browser. Apre solo siti web pubblici.",
+      blockedLocal: "Questo indirizzo locale non si può aprire qui. Digitalo nella barra degli indirizzi per aprirlo.",
+      studioAddress: "Questo è l'indirizzo di Unsloth stesso, quindi non si può aprire nel pannello del browser.",
       clearDataSettingDescription: "Cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti.",
       clearDataDescription: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
       clearDataFailed: "Impossibile cancellare i dati dei siti. Riprova.",
@@ -993,6 +996,10 @@ export const it = {
       alternateSlot: "Scorciatoia alternativa",
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
+      metaUnsupported: "Il tasto Windows non può essere usato nelle scorciatoie.",
+      altGraphUnsupported: "Le combinazioni con AltGr non possono essere usate come scorciatoie.",
+      desktopOnly: "Solo nell'app desktop",
+      builtInKey: "Integrato: {key}",
       actions: {
         findInPage: {
           label: "Trova nella pagina",
@@ -1193,6 +1200,10 @@ export const it = {
         steerMessage: {
           label: "Reindirizza la risposta",
           description: "Interrompi la risposta in corso e invia subito la bozza",
+        },
+        stopGeneration: {
+          label: "Interrompi generazione",
+          description: "Interrompi la risposta in corso",
         },
         cycleReasoningEffort: {
           label: "Scorri lo sforzo di ragionamento",
@@ -1753,23 +1764,14 @@ export const it = {
       },
       notifications: {
         sectionTitle: "Notifiche",
-        showLlamaUpdates: "Notifiche di aggiornamento di llama.cpp",
-        showLlamaUpdatesDescription:
-          "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva le notifiche se usi Unsloth solo per l'addestramento.",
-        showLoadedModels: "Indicatore dei modelli caricati",
-        showLoadedModelsDescription:
-          "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
-        showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
-        showAudioCppUpdates: "Notifiche di aggiornamento di audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Avvisa quando il runtime di audio.cpp deve essere aggiornato per le pagine Audio. Disattiva le notifiche se non usi mai Audio.",
-        showUnslothUpdates: "Notifiche di aggiornamento di Unsloth",
-        showUnslothUpdatesDescription:
-          "Avvisa quando è disponibile una versione più recente di Unsloth da installare.",
+        showLoadedModels: "Scheda dei modelli caricati",
+        showLoadedModelsDescription: "Una scheda nell'angolo con ogni modello caricato, da scaricare con un clic.",
+        updateReminders: "Promemoria di aggiornamento",
+        updateRemindersDescription: "Ogni quanto proporre una nuova versione quando è pronta.",
+        llamaHint: "Modelli di chat e GGUF",
+        audioHint: "Voce, musica e trascrizione",
         frequency: {
-          always: "Sempre",
+          always: "Appena disponibile",
           daily: "Una volta al giorno",
           weekly: "Una volta a settimana",
           biweekly: "Ogni due settimane",
@@ -2001,9 +2003,9 @@ export const it = {
         longestStreak: "Serie più lunga",
         activityTitle: "Attività in token",
         activityDescription: {
-          daily: "Periodo: {weeks} · {total}",
-          weekly: "Settimana di punta {total} · ultime {weeks}",
-          cumulative: "{total} accumulati nelle ultime {weeks}",
+          daily: "{total} dal {since}",
+          weekly: "Settimana più attiva {total} · dal {since}",
+          cumulative: "{total} in totale dal {since}",
         },
         mode: {
           daily: "Giornaliera",
@@ -2012,8 +2014,9 @@ export const it = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Settimana del {date} · {tokens}",
-        chartToggle: "Grafico",
-        chartToggleHint: "Mostra Settimanale e Cumulativa come grafico con assi etichettati",
+        emptyDayTooltip: "{date} · Nessuna attività",
+        apiRequests: "{count} tramite API",
+        cumulativeTooltip: "Fino alla settimana del {date} · {tokens} in totale",
         less: "Meno",
         more: "Più",
         insightsTitle: "Analisi dell'attività",
@@ -2653,6 +2656,10 @@ export const it = {
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
+      showReplyTimes: "Orario delle risposte",
+      showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
+      showReplyTimesKeywords:
+        "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",
@@ -3096,6 +3103,14 @@ export const it = {
           "Il modello si carica per nome solo con il cambio automatico del modello attivo. Attivalo, oppure carica prima il modello dalla sua pagina Audio.",
         useViaApi: "Usa via API",
       },
+      mediaApi: {
+        title: "API per immagini e video",
+        description: "Genera immagini e video dal tuo codice con gli endpoint compatibili con OpenAI.",
+        images: "Immagini",
+        video: "Video",
+        placeholderModel: "Il modello mostrato è un esempio. Carica un modello nella pagina Immagini o Video e apri questa sezione dal suo pulsante API per compilarlo.",
+        autoSwitchOff: "Il cambio automatico dei media è disattivato, quindi le richieste usano il modello caricato nella pagina, qualunque nome indichino.",
+      },
       decisionApi: {
         title: "API decisionale",
         docs: "Documentazione",
@@ -3174,6 +3189,24 @@ export const it = {
       packageVersion: "Versione del pacchetto",
       llamaCppVersion: "Versione di llama.cpp",
       audioCppVersion: "Versione di audio.cpp",
+      whisperCppVersion: "Versione di whisper.cpp",
+      engines: {
+        title: "Motori",
+        description: "I runtime che Unsloth usa per eseguire i modelli. Gli aggiornamenti si installano in background, senza riavvio.",
+        updatesLabel: "Aggiornamenti dei motori",
+        notInstalled: "Non installato",
+        available: "{version} disponibile",
+        upToDate: "Aggiornato",
+        updatesAvailable: "Aggiornamenti disponibili",
+        checking: "Ricerca aggiornamenti...",
+        checkFailed: "Impossibile cercare aggiornamenti. Riprova più tardi.",
+        unsupported: "I motori di questa installazione sono gestiti fuori da Unsloth.",
+        checkForUpdates: "Cerca aggiornamenti",
+        update: "Aggiorna",
+        updating: "Aggiornamento...",
+        updated: "Motori aggiornati.",
+        updateFailed: "Aggiornamento non riuscito: {error}",
+      },
       hardware: "Hardware",
       gpu: "GPU",
       gpuIntegrated: "integrata",
@@ -3262,6 +3295,9 @@ export const it = {
         docsUpdating: "Aggiornamento",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },

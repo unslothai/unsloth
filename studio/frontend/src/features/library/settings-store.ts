@@ -52,7 +52,8 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
   showGeneratedMedia: true,
   showFineTunes: true,
   confirmDelete: true,
-  imageInfoStamp: true,
+  // Opt-in: every download already carries the recipe in its metadata.
+  imageInfoStamp: false,
 };
 
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;
@@ -84,7 +85,8 @@ interface LibrarySettingsState extends LibrarySettings {
 }
 
 /** v1 had one mediaTabs switch for Images, Videos and Audio together; before v3, Fine-tunes
- * always showed; before v4, Images showed only once there were images. */
+ * always showed; before v4, Images showed only once there were images; before v5, the info stamp
+ * defaulted on, and a saved `true` cannot be told apart from that default. */
 export function migrateLibrarySettings(persisted: unknown, version: number): Record<string, unknown> {
   const state = { ...(persisted as Record<string, unknown>) };
   if (version < 2) {
@@ -100,6 +102,9 @@ export function migrateLibrarySettings(persisted: unknown, version: number): Rec
     const tabs = state.tabs as Record<string, string> | undefined;
     if (tabs?.images === "auto") state.tabs = { ...tabs, images: "always" };
   }
+  if (version < 5) {
+    state.imageInfoStamp = false;
+  }
   return state;
 }
 
@@ -112,7 +117,7 @@ export const useLibrarySettingsStore = create<LibrarySettingsState>()(
     }),
     {
       name: LIBRARY_SETTINGS_STORAGE_KEY,
-      version: 4,
+      version: 5,
       migrate: (persisted, version) =>
         migrateLibrarySettings(persisted, version) as unknown as LibrarySettingsState,
     },
