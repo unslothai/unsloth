@@ -184,6 +184,11 @@ def _add_message(client, thread_id, message_id):
     assert response.status_code == 200, response.text
 
 
+# The fork's clock correction carries the request's own latency, so events need to sit well apart
+# from it; 10 ms was inside a CI runner's latency and the Windows clock tick.
+_EVENT_GAP_S = 0.5
+
+
 def _fork(
     client,
     thread_id,
@@ -242,7 +247,7 @@ def test_a_fork_leaves_behind_documents_uploaded_after_its_fork_point(client):
     _create_thread(client, "source")
     _add_message(client, "source", "m1")
     early = _upload(client, "source", "early.txt", "alpha bravo charlie " * 50)
-    time.sleep(0.01)
+    time.sleep(_EVENT_GAP_S)
     response = client.put(
         "/api/chat/threads/source/messages/m2",
         json = {
@@ -254,7 +259,7 @@ def test_a_fork_leaves_behind_documents_uploaded_after_its_fork_point(client):
         },
     )
     assert response.status_code == 200, response.text
-    time.sleep(0.01)
+    time.sleep(_EVENT_GAP_S)
     _upload(client, "source", "late.txt", "delta echo foxtrot " * 50)
 
     _fork(client, "source", "m1", "early-fork")
@@ -274,7 +279,7 @@ def test_the_fork_cutoff_survives_a_browser_clock_behind_the_server(client):
     for message_id, parent in (("m1", None), ("m2", "m1")):
         if message_id == "m2":
             _upload(client, "source", "early.txt", "alpha bravo charlie " * 50)
-            time.sleep(0.01)
+            time.sleep(_EVENT_GAP_S)
         response = client.put(
             f"/api/chat/threads/source/messages/{message_id}",
             json = {
@@ -286,7 +291,7 @@ def test_the_fork_cutoff_survives_a_browser_clock_behind_the_server(client):
             },
         )
         assert response.status_code == 200, response.text
-    time.sleep(0.01)
+    time.sleep(_EVENT_GAP_S)
     _upload(client, "source", "late.txt", "delta echo foxtrot " * 50)
 
     _fork(client, "source", "m1", "skewed-fork", browser_skew_ms = skew)
