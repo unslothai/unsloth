@@ -85,8 +85,10 @@ test("restoreSettings puts the record through restorableSize", () => {
   const body = restoreSettingsBody();
   assert.match(
     body,
-    /restorableSize\(image\.width, image\.height, image\.workflow, sizeLimits\)/,
+    /restorableSize\(base\.width, base\.height, image\.workflow, sizeLimits\)/,
   );
+  // A Hires fix record restores its base pass; every other record its own size.
+  assert.match(body, /const base = hiresBaseSize\(image\) \?\? \{ width: image\.width, height: image\.height \}/);
   assert.doesNotMatch(
     body,
     /setWidth\(image\.width\)|setHeight\(image\.height\)/,
@@ -96,7 +98,7 @@ test("restoreSettings puts the record through restorableSize", () => {
 
 test("a restore that had to move the size says so", () => {
   const body = restoreSettingsBody();
-  assert.match(body, /restored\.width !== image\.width/);
+  assert.match(body, /restored\.width !== base\.width/);
   assert.match(body, /Size scaled to \$\{restored\.width\}/);
 });
 

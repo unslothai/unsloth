@@ -4889,6 +4889,38 @@ class DiffusionLoadRequest(BaseModel):
         return self
 
 
+class HiresSpec(BaseModel):
+    """Hires fix: render, upscale, then refine with img2img at ``denoise`` (txt2img only).
+
+    ``steps`` is the exact refine count; None = the base pass's steps."""
+
+    scale: float = Field(1.5, ge = 1.0, le = 4.0, description = "Upscale factor (A1111 'Hires upscale')")
+    denoise: float = Field(
+        0.5,
+        ge = 0.0,
+        le = 1.0,
+        description = "Refine-pass denoising strength (A1111 'Denoising strength'); 0 = upscale only",
+    )
+    steps: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 100,
+        description = "Exact refine-pass steps (A1111 'Hires steps'); omitted = the base pass's steps",
+    )
+    upscaler: Optional[str] = Field(
+        None,
+        max_length = 160,
+        description = "Upscaler id from status `hires.upscalers` (latent | lanczos | a model id); omitted = "
+        "status `hires.default_upscaler`",
+    )
+    guidance: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "Refine-pass guidance (Forge 'Hires CFG Scale'); omitted = guidance",
+    )
+
+
 class LoraSpec(BaseModel):
     """One LoRA adapter to apply for a generation, referenced by its discovery id.
 
@@ -5233,6 +5265,17 @@ class DiffusionGenerateRequest(BaseModel):
         le = 256,
         description = "Padding (px) around the mask when `inpaint_only_masked` is set; omitted = 32.",
     )
+    hires: Optional[HiresSpec] = Field(
+        None,
+        description = "Hires fix for text to image: upscale the render and refine it in the same request. "
+        "Requires status `hires` to be non-null; omitted = off.",
+    )
+    upscale_model: Optional[str] = Field(
+        None,
+        max_length = 160,
+        description = "Upscale workflow only: a model upscaler id from status `upscale_models` used in place of "
+        "the Lanczos resize. Omitted = Lanczos.",
+    )
     provider_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
@@ -5409,6 +5452,22 @@ class GalleryImage(BaseModel):
         None, description = "img2img/inpaint denoise strength, when the workflow used one"
     )
     upscale: Optional[float] = Field(None, description = "Upscale factor, for the upscale workflow")
+    upscale_model: Optional[str] = Field(
+        None, description = "Model upscaler id the upscale workflow used; null = Lanczos"
+    )
+    hires_scale: Optional[float] = Field(
+        None, description = "Hires fix upscale factor; null = no Hires fix"
+    )
+    hires_denoise: Optional[float] = Field(None, description = "Hires fix refine denoising strength")
+    hires_steps: Optional[int] = Field(
+        None, description = "Hires fix refine steps as requested; null = the base pass's steps"
+    )
+    hires_upscaler: Optional[str] = Field(None, description = "Hires fix upscaler id")
+    hires_guidance: Optional[float] = Field(
+        None, description = "Hires fix refine guidance; null = the base guidance"
+    )
+    hires_base_width: Optional[int] = Field(None, description = "Hires fix base-pass width")
+    hires_base_height: Optional[int] = Field(None, description = "Hires fix base-pass height")
     controlnet_guidance: Optional[str] = Field(
         None, description = "ControlNet guidance interval, formatted as 'start:end'"
     )
@@ -5964,6 +6023,19 @@ class DiffusionStatusResponse(BaseModel):
         "{node: 'sd3', shift} (one static shift, ComfyUI ModelSamplingSD3 / AuraFlow; shift = the "
         "loaded value or null when resolution-dependent) or {node: 'flux', base_shift, max_shift} "
         "(ComfyUI ModelSamplingFlux defaults). Diffusers engine only.",
+    )
+    hires: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "The Hires fix control the loaded model takes, or null to hide it: {upscalers: [{id, label, "
+        "kind}], default_upscaler, defaults: {scale, denoise}, max_side}.",
+    )
+    hires_unavailable_reason: Optional[str] = Field(
+        None,
+        description = "Why Hires fix is hidden for the loaded model, when there is a reason worth showing",
+    )
+    upscale_models: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Model upscalers ({id, label, scale}) the Upscale workflow can use; empty = Lanczos only.",
     )
     textual_inversion: Optional[str] = Field(
         None,
