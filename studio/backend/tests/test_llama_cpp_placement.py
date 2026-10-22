@@ -6001,7 +6001,13 @@ def test_select_gpus_discrete_tier_keeps_a_spread_request_spread():
     assert LlamaCppBackend._select_gpus(8 * gib, gpus, total_by_idx = total) == ([0], False)
 
 
-def _mixed_drafter_launch(tmp_path, monkeypatch, *, speculative_type, slots = 1):
+def _mixed_drafter_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    speculative_type,
+    slots = 1,
+):
     """14 GiB target and a sidecar drafter; the dGPU holds the target alone at native context."""
     gb, mib = 1024**3, 1024 * 1024
     monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
@@ -6634,7 +6640,16 @@ def test_an_unmappable_mask_keeps_the_base_placement(tmp_path, monkeypatch, path
     assert captured["env"].get("ROCR_VISIBLE_DEVICES") != "1"
 
 
-def _native_ctx_mixed_launch(tmp_path, monkeypatch, memory, *, gguf_gb, native, rocm = (0,), **kw):
+def _native_ctx_mixed_launch(
+    tmp_path,
+    monkeypatch,
+    memory,
+    *,
+    gguf_gb,
+    native,
+    rocm = (0,),
+    **kw,
+):
     """Auto context on an APU + dGPU host at a given native context: (mask, launched -c)."""
     monkeypatch.setattr(
         LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set(rocm))
@@ -6662,7 +6677,9 @@ def test_auto_context_does_not_trade_most_of_the_context_for_the_dgpu(
     # 13 GiB on a 16 GB dGPU leaves room for a few thousand tokens; the APU pool holds the
     # native 131K. The discrete tier only wins while it keeps 32K (#7624 follow-up).
     apu, dgpu = (0, 100_000, 0), (1, 16_000, 16_384)
-    memory, rocm = ([apu, dgpu], (0,)) if not apu_second else ([(0, 16_000, 16_384), (1, 100_000, 0)], (1,))
+    memory, rocm = (
+        ([apu, dgpu], (0,)) if not apu_second else ([(0, 16_000, 16_384), (1, 100_000, 0)], (1,))
+    )
     mask, ctx, _b = _native_ctx_mixed_launch(
         tmp_path, monkeypatch, memory, gguf_gb = 13, native = 131_072, rocm = rocm, n_ctx = 0
     )
@@ -6745,7 +6762,12 @@ def test_the_auto_context_floor_leaves_hosts_without_an_apu_alone(tmp_path, monk
     assert ctx < 32_768
 
 
-def _explicit_pick_backend(tmp_path, monkeypatch, *, checkpoints_per_slot = False):
+def _explicit_pick_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    checkpoints_per_slot = False,
+):
     """A dGPU at ordinal 0 and a 1 GB APU at ordinal 1, 11 GiB model, 32K context."""
     monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1}))
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
@@ -6838,7 +6860,10 @@ def test_an_explicit_pick_prices_only_a_leading_dgpu_without_host_bytes():
     ) == ([0], False)
     assert LlamaCppBackend._select_gpus(full, [(0, 13_500), (1, 1_000)], **kw)[1] is True
     kw["integrated"], kw["total_by_idx"] = frozenset({0}), {0: 0, 1: 16_384}
-    assert LlamaCppBackend._select_gpus(
-        full, [(0, 1_000), (1, 13_500)], discrete_size_bytes = discrete, **kw
-    )[1] is True
+    assert (
+        LlamaCppBackend._select_gpus(
+            full, [(0, 1_000), (1, 13_500)], discrete_size_bytes = discrete, **kw
+        )[1]
+        is True
+    )
     del mib

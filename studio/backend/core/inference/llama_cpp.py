@@ -17804,11 +17804,7 @@ class LlamaCppBackend:
         _leading = sorted(idx for idx, _free in gpus)
 
         def _size_mib(ids: list) -> float:
-            if (
-                _discount
-                and integrated.isdisjoint(ids)
-                and sorted(ids) == _leading[: len(ids)]
-            ):
+            if _discount and integrated.isdisjoint(ids) and sorted(ids) == _leading[: len(ids)]:
                 return discrete_size_bytes / (1024 * 1024)
             return model_size_mib
 
@@ -17896,7 +17892,9 @@ class LlamaCppBackend:
             if not prefer_discrete and integrated and discrete_size_bytes is not None
             else {}
         )
-        discrete = LlamaCppBackend._discrete_tier(gpus, integrated, shared) if prefer_discrete else None
+        discrete = (
+            LlamaCppBackend._discrete_tier(gpus, integrated, shared) if prefer_discrete else None
+        )
         if discrete is not None:
             if max(1, min(min_gpus, len(gpus))) <= len(discrete):
                 picked, needs_fit = LlamaCppBackend._select_gpus_split_aware(
@@ -27100,7 +27098,11 @@ class LlamaCppBackend:
                             return 0
                         return _placement_ctx_checkpoints
 
-                    def _tiered_subsets(ranked: list, floor: int, score_of = None) -> list:
+                    def _tiered_subsets(
+                        ranked: list,
+                        floor: int,
+                        score_of = None,
+                    ) -> list:
                         # (count, prefix) in _select_gpus order: unshared discrete first.
                         tier = LlamaCppBackend._discrete_tier(ranked, _tier_gpus, _shared_gpus)
                         base = [(n, ranked[:n]) for n in range(floor, len(ranked) + 1)]
@@ -27112,7 +27114,9 @@ class LlamaCppBackend:
                         # Auto: the discrete tier wins only where it gives up nothing the base walk
                         # (the pick before #14372) got. ``score_of`` is None for no fit, else a tuple
                         # (context, drafter kept, ...) the tier must match in every term.
-                        base_score = next((sc for n, sub in base for sc in (score_of(n, sub),) if sc), None)
+                        base_score = next(
+                            (sc for n, sub in base for sc in (score_of(n, sub),) if sc), None
+                        )
                         if base_score is None:
                             return first + base
                         kept = []
@@ -28128,6 +28132,7 @@ class LlamaCppBackend:
                         # drafter-ranked subset; a discrete-tier subset pays no checkpoints.
                         _target_placements: list[tuple[int, int, float, int]] = []
                         _drafter_order = _probe_orders[-1]
+
                         def _probe_target_ctx(_n: int, _subset) -> Optional[int]:
                             # The target-only context the placement loop gives ``_subset``, or None.
                             _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
@@ -28173,8 +28178,7 @@ class LlamaCppBackend:
                             # is honored verbatim and overflows to --fit.
                             _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
                             _probe_reserve_at = lambda c, _k = _n: (
-                                (_pipeline_overhead_bytes if _k > 1 else 0)
-                                + _cc_bytes(c, _k) // _k
+                                (_pipeline_overhead_bytes if _k > 1 else 0) + _cc_bytes(c, _k) // _k
                             )
                             if not self._every_gpu_holds_reserve(
                                 _usable_wo, _probe_reserve_at(_ctx_wo)
@@ -28210,7 +28214,10 @@ class LlamaCppBackend:
                                 + _cc_bytes(_ctx, _n)
                                 + _mtp_bytes(_ctx)
                             ) / (1024 * 1024)
-                            return (_ctx, int(_need <= _pool_budget_mib(_subset, _probe_frac(True))))
+                            return (
+                                _ctx,
+                                int(_need <= _pool_budget_mib(_subset, _probe_frac(True))),
+                            )
 
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
@@ -28657,6 +28664,7 @@ class LlamaCppBackend:
                                         or 1,
                                     ),
                                 )
+
                             def _cap_fit(n_gpus: int, subset) -> Optional[int]:
                                 # The context Auto would cap ``subset`` to for the UI ceiling, or None.
                                 # Per-GPU-consistent pool budget (fixes mixed
@@ -28883,6 +28891,7 @@ class LlamaCppBackend:
                                 if _unshared is not None:
                                     ranked.remove(_unshared)
                                     ranked.insert(0, _unshared)
+
                             def _subset_ms(n_gpus: int, subset) -> int:
                                 # A CPU-pinned projector is charged for a shared pool; a
                                 # discrete-tier subset draws on none.
@@ -28952,7 +28961,11 @@ class LlamaCppBackend:
                                         return None
                                 return capped
 
-                            def _auto_score(n_gpus: int, subset, ctx = effective_ctx):
+                            def _auto_score(
+                                n_gpus: int,
+                                subset,
+                                ctx = effective_ctx,
+                            ):
                                 capped = _auto_fit(n_gpus, subset, ctx)
                                 return None if capped is None else (capped,)
 
