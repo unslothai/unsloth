@@ -176,11 +176,55 @@ def _gguf_parameter_class() -> Optional[type]:
     return getattr(module, "GGUFParameter", None) if module is not None else None
 
 
+def _wrapper_inner(t: Any) -> Optional[list]:
+    """``[(attr, tensor), ...]`` of a traceable wrapper subclass (torchao int8 / fp8 weights) whose inner tensors are
+    all plain tensors, else None."""
+    import torch
+
+    flatten = getattr(type(t), "__tensor_flatten__", None)
+    if flatten is None or type(t) in (torch.Tensor, torch.nn.Parameter):
+        return None
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+        if not is_traceable_wrapper_subclass(t):
+            return None
+        names, _ctx = t.__tensor_flatten__()
+        inner = [(name, getattr(t, name)) for name in names]
+    except Exception:  # noqa: BLE001
+        return None
+    if not inner or any(type(x) is not torch.Tensor for _, x in inner):
+        return None
+    return inner
+
+
+def _tensor_ptr(t: Any) -> Any:
+    """Storage address of ``t``; for a wrapper subclass, the tuple of its inner tensors' addresses."""
+    inner = _wrapper_inner(t)
+    if inner is not None:
+        return tuple(int(x.data_ptr()) for _, x in inner)
+    return t.data_ptr()
+
+
+def _repoint(param: Any, kept: Any) -> None:
+    """Point ``param`` at its kept host tensor without a copy. A wrapper subclass cannot change device through
+    ``.data``; it swaps with a parameter over the kept tensors, as ``Module.to`` moves it."""
+    if _wrapper_inner(kept) is None:
+        param.data = kept
+        return
+    import torch
+
+    torch.utils.swap_tensors(param, torch.nn.Parameter(kept, requires_grad = param.requires_grad))
+
+
 def _keepable(param: Any) -> bool:
     import torch
 
     data = param.data
     if type(data) is torch.Tensor:
+        return True
+    # torchao weights (int8 / fp8): a wrapper of plain tensors; kept and re-pointed like a dense weight.
+    if _wrapper_inner(data) is not None and type(data) is type(param):
         return True
     # GGUF weights are packed bytes; the quant type lives on the Parameter, which the swap never replaces.
     gguf = _gguf_parameter_class()
@@ -267,15 +311,19 @@ def _pin_host_weights(
     mode = _pin_mode()
     if mode == "off" or not torch.cuda.is_available():
         return 0
-    params = [
-        (name, p)
-        for name, p in module.named_parameters()
-        if host.get(name) is not None
-        and p.device.type == "cpu"
-        and _keepable(p)
-        and _pinnable_layout(p.data)
-        and not p.data.is_pinned()
-    ]
+    # (name, owner tensor, inner attribute or None, the tensor to pin)
+    params: list = []
+    for name, p in module.named_parameters():
+        if host.get(name) is None or p.device.type != "cpu" or not _keepable(p):
+            continue
+        inner = _wrapper_inner(p.data)
+        if inner is None:
+            if _pinnable_layout(p.data) and not p.data.is_pinned():
+                params.append((name, p, None, p.data))
+            continue
+        for attr, t in inner:
+            if t.device.type == "cpu" and _pinnable_layout(t) and not t.is_pinned():
+                params.append((name, p, attr, t))
     buffers = [
         (name, b)
         for name, b in _named_buffers(module)
@@ -285,8 +333,8 @@ def _pin_host_weights(
         and b.is_contiguous()
         and not b.is_pinned()
     ]
-    params = params + [("\0" + name, b) for name, b in buffers]
-    sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
+    params = params + [("\0" + name, b, None, b) for name, b in buffers]
+    sizes = [-(-t.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, _, _, t in params]
     if not sizes or sum(sizes) == 0:
         return 0
     # Lay out chunks first so the RAM gate counts chunk tails and last-chunk rounding, not just weight bytes.
@@ -322,17 +370,17 @@ def _pin_host_weights(
     bufs: list = []
     placed: list = []
     try:
-        for (name, p), (index, start) in zip(params, slots):
+        for (name, p, attr, src), (index, start) in zip(params, slots):
             if index == len(bufs):
                 bufs.append(torch.empty(chunks[index], dtype = torch.uint8, pin_memory = True))
-            view = bufs[index][start : start + p.data.nbytes].view(p.dtype)
+            view = bufs[index][start : start + src.nbytes].view(src.dtype)
             view = (
-                view.view(p.shape)
-                if p.data.is_contiguous()
-                else view.as_strided(p.shape, p.data.stride())
+                view.view(src.shape)
+                if src.is_contiguous()
+                else view.as_strided(src.shape, src.stride())
             )
-            view.copy_(p.data)
-            placed.append((name, p, view))
+            view.copy_(src)
+            placed.append((name, p, attr, view))
     except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
         bufs.clear()
         placed.clear()
@@ -345,14 +393,21 @@ def _pin_host_weights(
                 exc,
             )
         return 0
-    for name, p, view in placed:
+    wrapped: dict = {}
+    for name, p, attr, view in placed:
         if name.startswith("\0"):
             name = name[1:]
             _set_buffer(module, name, view)
             buffer_host[name] = view
             continue
+        if attr is not None:
+            setattr(p, attr, view)
+            wrapped[name] = p
+            continue
         p.data = view
         host[name] = view
+    for name, p in wrapped.items():
+        host[name] = p.data  # the kept host weight now reads the pinned inner tensors
     return need
 
 
@@ -441,11 +496,11 @@ def _wrap_cpu_offload_hook(
                 or seen is None
                 or seen[0] is not p
                 or seen[1] != p._version
-                or seen[2] != p.data_ptr()
+                or seen[2] != _tensor_ptr(p)
             ):
                 continue
             try:
-                p.data = kept
+                _repoint(p, kept)
             except Exception:  # noqa: BLE001 - incompatible tensor types: the stock copy below handles it
                 pass
         out = init_hook(mod)
@@ -463,7 +518,7 @@ def _wrap_cpu_offload_hook(
                 if kept is not None and (
                     owner.get(name) is not p
                     or p.device.type != "cpu"
-                    or p.data.data_ptr() != kept.data_ptr()
+                    or _tensor_ptr(p.data) != _tensor_ptr(kept)
                 ):
                     host.pop(name, None)
                     owner.pop(name, None)
@@ -488,7 +543,7 @@ def _wrap_cpu_offload_hook(
         if onload:
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
-                    version[name] = (p, p._version, p.data_ptr())
+                    version[name] = (p, p._version, _tensor_ptr(p))
             for name, b in _named_buffers(mod):
                 if (
                     name in buffer_host
