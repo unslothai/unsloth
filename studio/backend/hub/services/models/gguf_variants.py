@@ -1629,8 +1629,8 @@ async def _with_lookup_tables(
                                 _lookup_inflight.add(key)
                         if busy:
                             continue
-                        # Every row is queued: the pool caps concurrency, and a read the
-                        # deadline outlasts lands in the cache for the next listing.
+                        # Every row is queued: the pool caps concurrency, and a row the
+                        # deadline leaves unstarted is read by the next listing.
 
                         started: list = []
 
@@ -1653,12 +1653,15 @@ async def _with_lookup_tables(
                         )
                         tasks[task] = index
                     if tasks:
-                        # One deadline for the whole listing; late reads keep running
-                        # and land in the cache for the next one.
-                        done, _pending = await asyncio.wait(
+                        # One deadline for the whole listing; started reads keep running
+                        # and land in the cache, unstarted ones are dropped (their keys
+                        # released) so a stalled Hub never leaves a queue behind.
+                        done, pending = await asyncio.wait(
                             tasks,
                             timeout = max(0.0, deadline - asyncio.get_running_loop().time()),
                         )
+                        for task in pending:
+                            task.cancel()
                         for task in done:
                             if not task.cancelled() and task.exception() is None:
                                 found[tasks[task]] = int(task.result() or 0)

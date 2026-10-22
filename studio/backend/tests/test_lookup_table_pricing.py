@@ -747,6 +747,80 @@ class TestListing:
         assert sorted(readers) == ["hf_first", "hf_second"]
         assert other.response.variants[0].lookup_table_bytes == FLASH_NEXT_TABLE
 
+    @pytest.mark.parametrize("node, streams", [(True, False), (False, True)])
+    def test_an_empty_inventory_beside_a_gpu_node_prices_the_table_resident(
+        self, monkeypatch, node, streams
+    ):
+        """Without the torch fallback a ROCm APU can read as no rows; the launch's own probe
+        finds it and keeps the table resident, so the listing must not discount it."""
+        from core.inference import llama_cpp as lc
+
+        backend = lc.LlamaCppBackend.__new__(lc.LlamaCppBackend)
+        monkeypatch.setattr(backend, "_find_llama_server_binary", lambda: "/fake/llama-server")
+        monkeypatch.setattr(
+            backend,
+            "probe_server_capabilities",
+            lambda binary = None: {"supports_lazy_mode": True, "lazy_mode_flag": "--lazy-mode"},
+        )
+        monkeypatch.setattr(backend, "_is_vulkan_backend", lambda binary = None: False)
+        monkeypatch.setattr(backend, "_get_gpu_memory", lambda *a, **k: [])
+        monkeypatch.setattr(backend, "_lazy_auto_resolves_off", lambda **k: False)
+        monkeypatch.setattr(lc, "_gpu_device_node_present", lambda: node)
+        assert backend.lookup_tables_stream_by_default(None, {}) is streams
+
+    def test_a_stalled_hub_leaves_no_queue_after_the_deadline(self, monkeypatch):
+        import threading
+
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        release = threading.Event()
+        started = []
+        lock = threading.Lock()
+
+        def stalled(
+            repo,
+            name,
+            token,
+            identity = None,
+            **k,
+        ):
+            with lock:
+                started.append(name)
+            release.wait(10)
+            return ("qwen4exp", FLASH_NEXT_TABLE)
+
+        monkeypatch.setattr(gv, "_LOOKUP_DEADLINE_S", 0.3)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
+        monkeypatch.setattr(glt, "remote_lookup_info", stalled)
+        rows = [
+            GgufVariantDetail(filename = f"s{i}/m.gguf", quant = f"S{i}", size_bytes = 40 * GIB + i)
+            for i in range(12)
+        ]
+
+        async def listing_then_release():
+            # One long-lived loop, as the server's: closing it would cancel the queue anyway.
+            await gv._with_lookup_tables(
+                _answer(rows),
+                "o/stalled",
+                hf_token = None,
+                offline = False,
+                prefer_local_cache = False,
+            )
+            await asyncio.sleep(0.3)
+            release.set()
+            await asyncio.sleep(0.5)
+
+        try:
+            asyncio.run(listing_then_release())
+        finally:
+            release.set()
+        # Only the pool's running reads ever started; the queued rest were dropped.
+        assert len(started) <= gv._LOOKUP_CONCURRENCY, started
+        with gv._lookup_arch_lock:
+            assert not [k for k in gv._lookup_inflight if k[:2] == ("table", "o/stalled")]
+
     def test_a_capability_read_never_falls_back_to_a_torch_context(self, monkeypatch):
         from core.inference import llama_cpp as lc
 

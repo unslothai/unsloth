@@ -7627,6 +7627,16 @@ _GPU_MEMORY_SKIP_TORCH: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
 )
 
 
+def _gpu_device_node_present() -> bool:
+    """Whether this host exposes a GPU device node (ROCm, NVIDIA, WSL); Windows cannot
+    tell, so it answers True there."""
+    if sys.platform == "darwin":
+        return False
+    if os.name == "nt":
+        return True
+    return any(os.path.exists(p) for p in ("/dev/kfd", "/dev/nvidiactl", "/dev/dxg"))
+
+
 @contextlib.contextmanager
 def _without_torch_gpu_probe():
     token = _GPU_MEMORY_SKIP_TORCH.set(True)
@@ -11584,6 +11594,10 @@ class LlamaCppBackend:
             vulkan = self._is_vulkan_backend(binary)
             with _without_torch_gpu_probe():
                 rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
+            # No rows without the torch fallback is not "no GPU" where a device node says
+            # otherwise: a ROCm APU the launch's torch probe finds keeps the tables resident.
+            if not rows and not vulkan and _gpu_device_node_present():
+                return False
             shared = {idx for idx, _free, total in rows if total <= 0} if vulkan else set()
             picked = [int(i) for i in gpu_ids] if gpu_ids else None
             return not self._lazy_auto_resolves_off(
