@@ -47,15 +47,22 @@ test("its root bf16 transformer is the pipeline load; other picks stay as named"
   assert.equal(redirectRetiredImagePick(other), other);
 });
 
-test("a downloaded snapshot of a retired copy is redirected by its display id", () => {
-  assert.deepEqual(
-    redirectRetiredImagePick({
-      repoId: "/hf/hub/models--unsloth--flux-3-image-klein-base/snapshots/abc",
-      kind: "pipeline" as const,
-      displayRepoId: "unsloth/flux-3-image-klein-base",
-    }),
-    { repoId: "black-forest-labs/flux-3-image-klein-base", kind: "pipeline" },
-  );
+test("a downloaded snapshot of a retired copy loads from disk, not through its base", () => {
+  // The copy holds the base's own files; redirecting it would need the base's mirror, which may not be cached
+  // (offline it cannot load at all). The backend keeps a complete snapshot the same way.
+  const downloaded = {
+    repoId: "/hf/hub/models--unsloth--flux-3-image-klein-base/snapshots/abc",
+    kind: "pipeline" as const,
+    displayRepoId: "unsloth/flux-3-image-klein-base",
+  };
+  assert.equal(redirectRetiredImagePick(downloaded), downloaded);
+  const rootTransformer = {
+    repoId: "/hf/hub/models--unsloth--flux-3-image-klein/snapshots/abc",
+    kind: "single_file" as const,
+    filename: "model.safetensors",
+    displayRepoId: "unsloth/flux-3-image-klein",
+  };
+  assert.equal(redirectRetiredImagePick(rootTransformer), rootTransformer);
 });
 
 test("a remembered retired copy is recalled as its base, so it matches the status the load reports", () => {
@@ -72,12 +79,10 @@ test("a remembered retired copy is recalled as its base, so it matches the statu
   );
 });
 
-test("a model remembered by an older build as the copy's snapshot path is recalled as its base", () => {
-  rememberImageModel({
-    repoId: "/home/me/.cache/huggingface/hub/models--unsloth--flux-3-image-klein/snapshots/0123abc",
-    kind: "pipeline",
-  });
-  assert.deepEqual(readImageModel(), { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" });
+test("a model remembered as the copy's snapshot path is recalled as that snapshot", () => {
+  const snapshot = "/home/me/.cache/huggingface/hub/models--unsloth--flux-3-image-klein/snapshots/0123abc";
+  rememberImageModel({ repoId: snapshot, kind: "pipeline" });
+  assert.deepEqual(readImageModel(), { repoId: snapshot, kind: "pipeline" });
   const mirror = {
     repoId: "/home/me/.cache/huggingface/hub/models--unsloth--flux-3-image-klein-FP8/snapshots/0123abc",
     kind: "pipeline" as const,

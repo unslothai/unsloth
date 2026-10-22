@@ -19,18 +19,12 @@ const KEY = "unsloth:images:last-model";
 // Retired full copies of the gated FLUX.3 repos. They stay on the Hub for existing links, but Studio's copy of those
 // files lives in the -FP8 repos, so a pick naming one loads the base it copies (as the backend redirects it), and the
 // remembered model matches the status the load reports. The root model.safetensors is that base's bf16 transformer.
+// A copy already downloaded (a snapshot path, with the copy as the display id) loads from disk as before: it was
+// retired for size and holds the base's own files, and the base's mirror may not be cached (or reachable offline).
 const RETIRED_FULL_COPIES: Record<string, string> = {
   "unsloth/flux-3-image-klein": "black-forest-labs/flux-3-image-klein",
   "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
 };
-
-// ``.../models--unsloth--flux-3-image-klein/snapshots/<sha>`` -> the repo id it is a snapshot of ("" otherwise).
-function retiredSnapshotRepo(path: string): string {
-  const match = /(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$/i.exec(
-    path.trim(),
-  );
-  return match ? `unsloth/${match[1].toLowerCase()}` : "";
-}
 
 export function redirectRetiredImagePick<
   T extends {
@@ -42,12 +36,7 @@ export function redirectRetiredImagePick<
     vaeFile?: string;
   },
 >(pick: T): T {
-  // A downloaded copy arrives as its snapshot path with the retired id as the display id; a model remembered by an
-  // older build is that snapshot path alone.
-  const base =
-    RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()] ??
-    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()] ??
-    RETIRED_FULL_COPIES[retiredSnapshotRepo(pick.repoId)];
+  const base = RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()];
   if (!base) return pick;
   const { displayRepoId: _display, ...rest } = pick;
   if (pick.kind === "pipeline") return { ...rest, repoId: base } as T;

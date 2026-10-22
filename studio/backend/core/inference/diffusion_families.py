@@ -1727,6 +1727,42 @@ def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
     return base
 
 
+def retired_copy_loads_from_disk(source: Optional[str], filename: Optional[str] = None) -> bool:
+    """Whether a retired full copy that is already on disk loads as itself rather than through its base.
+
+    The copies were retired for size, not for their files: they hold the base's own bf16 weights. So a complete copy
+    (a snapshot path, or the copy's id with its ``refs/main`` snapshot in the live HF cache) still serves the load it
+    always did: offline the base's mirror may not be cached at all, and online switching would pull it again beside
+    the copy. ``filename`` is a single-file pick, which must be there too. Anything incomplete goes through the base
+    as before. PURE: local stat only."""
+    key = (source or "").strip()
+    if not key or retired_full_copy_base(key) is None and not _is_local_path(key):
+        return False
+    try:
+        if _is_local_path(key):
+            root: Optional[Path] = Path(key).expanduser()
+        else:
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            copy_id = next(c for c in _RETIRED_FULL_COPIES if c == key.lower())
+            revisions = _cached_revisions(Path(active_hf_hub_cache()), copy_id)
+            root = revisions[0] if len(revisions) == 1 else None
+        if root is None or not root.is_dir():
+            return False
+        single = (filename or "").strip().replace("\\", "/")
+        if single and (
+            _safe_relative_parts(single) is None or not _nonempty_file(root.joinpath(*single.split("/")))
+        ):
+            return False
+        from .diffusion_flux3 import FLUX3_COMPONENT_FOLDERS, FLUX3_INDEX
+
+        return local_pipeline_components_are_complete(
+            root, FLUX3_INDEX, fixed_component_folders = FLUX3_COMPONENT_FOLDERS
+        )
+    except (OSError, StopIteration):
+        return False
+
+
 # Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by
 # ``pinned_repo_revision`` around a video load; every hub-id CONFIG read of a base repo (encoder / VAE / transformer
 # configs, model_index, the LTX-2.5 companions) asks ``pinned_revision_kwargs`` so it reads the planned commit. Empty
