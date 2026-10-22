@@ -153,7 +153,9 @@ def test_an_unmounted_uhd_node_does_not_block_the_amd_card(monkeypatch):
 def test_a_uhd_beside_an_arc_needs_the_arcs_own_node(monkeypatch, arc_node_reachable, expected):
     # The vendor-level node check passes on the iGPU's node alone: a container mounting only it sees the UHD.
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _ARC_LINUX))
-    monkeypatch.setattr(r, "_reachable_intel_arc_render_node", lambda: arc_node_reachable, raising = False)
+    monkeypatch.setattr(
+        r, "_reachable_intel_arc_render_node", lambda: arc_node_reachable, raising = False
+    )
     assert r.image_install_accelerator("cpu") == expected
 
 
