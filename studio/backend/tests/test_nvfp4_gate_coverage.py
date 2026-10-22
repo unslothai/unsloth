@@ -236,28 +236,88 @@ def test_an_ungated_base_that_was_never_measured_keeps_the_generic_refusal(enabl
     assert "measured and failed" not in reason
 
 
+def _engage(
+    monkeypatch,
+    backend = "flashinfer",
+    layers = 4,
+):
+    """``_engage_nvfp4_backend`` with the conversion stubbed: ``layers`` move only when the backend is flashinfer."""
+    import core.inference.diffusion_nvfp4_linear as lin
+    import core.inference.diffusion_nvfp4_ops as ops
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: backend)
+    monkeypatch.setattr(
+        lin,
+        "convert_nvfp4_backend",
+        lambda transformer, metadata, chosen, logger = None: layers if chosen == "flashinfer" else 0,
+    )
+
+    def run(
+        family,
+        base,
+        metadata = None,
+    ):
+        return pq._engage_nvfp4_backend(
+            object(), metadata or {}, "cuda:0", family = family, base = base
+        )
+
+    return run
+
+
+def _gate_warnings(caplog):
+    return [r.getMessage() for r in caplog.records if "nvfp4.gate" in r.getMessage()]
+
+
 @pytest.mark.parametrize(
     ("family", "base"),
     [("z-image", _ZIMAGE), ("qwen-image", "Qwen/Qwen-Image-2512")],
 )
-def test_every_explicit_gated_nvfp4_pick_warns_on_an_unchecked_flashinfer(
-    monkeypatch, enabled, tmp_path, caplog, family, base
+def test_an_unchecked_flashinfer_warns_once_when_an_nvfp4_load_engages_it(
+    monkeypatch, enabled, caplog, family, base
 ):
-    """z-image has no nvfp4 deny entry (its record only feeds auto); qwen-image does. Both must warn."""
+    """z-image has no nvfp4 deny entry (its record only feeds auto); qwen-image does. Both warn, once, at the load."""
     target = _blackwell(monkeypatch)
     monkeypatch.setattr(gate, "_WARNED", set())
     monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
     assert family not in tq._FAMILY_SCHEME_DENY or "nvfp4" in tq._FAMILY_SCHEME_DENY[family]
+    engage = _engage(monkeypatch)
     with caplog.at_level("WARNING"):
-        for _ in range(2):
-            assert (
-                tq.select_transformer_quant_scheme(
-                    target, "nvfp4", family = family, base_repo = base, has_prequant = _hosted
-                )
-                == "nvfp4"
+        assert (
+            tq.select_transformer_quant_scheme(
+                target, "nvfp4", family = family, base_repo = base, has_prequant = _hosted
             )
-    hits = [r for r in caplog.records if "flashinfer 0.7.0" in r.getMessage()]
-    assert len(hits) == 1, [r.getMessage() for r in caplog.records]
+            == "nvfp4"
+        )
+        assert not _gate_warnings(caplog)
+        for _ in range(2):
+            assert engage(family, base) == 4
+    hits = [m for m in _gate_warnings(caplog) if "flashinfer 0.7.0" in m]
+    assert len(hits) == 1, _gate_warnings(caplog)
+
+
+def test_planning_and_validation_selects_do_not_use_up_the_load_warning(
+    monkeypatch, enabled, caplog
+):
+    """Scheme selection runs for planning, the pre-eviction gate and validation, none of which loads kernels."""
+    target = _blackwell(monkeypatch)
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
+    with caplog.at_level("WARNING"):
+        for unproven_ok in (False, True, False):
+            tq.select_transformer_quant_scheme(
+                target,
+                "nvfp4",
+                family = "z-image",
+                base_repo = _ZIMAGE,
+                has_prequant = _hosted,
+                unproven_ok = unproven_ok,
+            )
+    assert not _gate_warnings(caplog)
+    assert gate._WARNED == set()
+    with caplog.at_level("WARNING"):
+        _engage(monkeypatch)("z-image", _ZIMAGE)
+    assert len([m for m in _gate_warnings(caplog) if "flashinfer 0.7.0" in m]) == 1
 
 
 def test_a_covered_flashinfer_loads_explicit_nvfp4_silently(monkeypatch, enabled, caplog):
@@ -271,7 +331,8 @@ def test_a_covered_flashinfer_loads_explicit_nvfp4_silently(monkeypatch, enabled
             )
             == "nvfp4"
         )
-    assert not [r for r in caplog.records if "nvfp4.gate" in r.getMessage()]
+        assert _engage(monkeypatch)("z-image", _ZIMAGE) == 4
+    assert not _gate_warnings(caplog)
 
 
 @pytest.mark.parametrize("backend", ["torchao", "raises"])
@@ -299,12 +360,34 @@ def test_an_explicit_nvfp4_pick_on_torchao_never_warns_about_flashinfer(
             )
             == "nvfp4"
         )
-    assert not [r for r in caplog.records if "nvfp4.gate" in r.getMessage()]
+        if backend == "torchao":
+            assert _engage(monkeypatch, backend = "torchao")("z-image", _ZIMAGE) == 0
+    assert not _gate_warnings(caplog)
 
 
-def test_the_backend_probe_is_skipped_when_the_installed_flashinfer_is_covered(
-    monkeypatch, enabled
+def test_a_load_that_moves_no_layer_onto_flashinfer_never_warns(monkeypatch, enabled, caplog):
+    """A checkpoint without baked activation scales stays on torchao even when flashinfer is selected."""
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
+    with caplog.at_level("WARNING"):
+        assert _engage(monkeypatch, layers = 0)("z-image", _ZIMAGE) == 0
+    assert not _gate_warnings(caplog)
+    assert gate._WARNED == set()
+
+
+def test_the_load_warning_keys_on_the_checkpoint_base_not_the_fetch_mirror(
+    monkeypatch, enabled, caplog
 ):
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
+    with caplog.at_level("WARNING"):
+        _engage(monkeypatch)(
+            "z-image", "someone/z-image-mirror", metadata = {"base_model_id": _ZIMAGE}
+        )
+    assert len([m for m in _gate_warnings(caplog) if _ZIMAGE in m]) == 1
+
+
+def test_the_backend_probe_is_skipped_by_an_explicit_select(monkeypatch, enabled):
     import core.inference.diffusion_nvfp4_ops as ops
 
     target = _blackwell(monkeypatch)
@@ -312,7 +395,7 @@ def test_the_backend_probe_is_skipped_when_the_installed_flashinfer_is_covered(
     monkeypatch.setattr(
         ops, "select_nvfp4_backend", lambda device = None: probed.append(device) or "flashinfer"
     )
-    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.6.6")
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: "0.7.0")
     assert (
         tq.select_transformer_quant_scheme(
             target, "nvfp4", family = "z-image", base_repo = _ZIMAGE, has_prequant = _hosted
@@ -322,7 +405,7 @@ def test_the_backend_probe_is_skipped_when_the_installed_flashinfer_is_covered(
     assert probed == []
 
 
-def test_auto_rejects_an_unchecked_flashinfer_silently_and_explicit_still_warns(
+def test_auto_rejects_an_unchecked_flashinfer_silently_and_the_explicit_load_still_warns(
     monkeypatch, enabled, caplog
 ):
     """Auto falls back to the ladder without the warning (it never runs those kernels), and does not use up the
@@ -335,7 +418,8 @@ def test_auto_rejects_an_unchecked_flashinfer_silently_and_explicit_still_warns(
         tq.select_transformer_quant_scheme(
             target, "auto", family = "z-image", base_repo = _ZIMAGE, has_prequant = _hosted
         )
-    assert not [r for r in caplog.records if "nvfp4.gate" in r.getMessage()]
+    assert not _gate_warnings(caplog)
+    engage = _engage(monkeypatch)
     with caplog.at_level("WARNING"):
         assert (
             tq.select_transformer_quant_scheme(
@@ -343,4 +427,48 @@ def test_auto_rejects_an_unchecked_flashinfer_silently_and_explicit_still_warns(
             )
             == "nvfp4"
         )
-    assert len([r for r in caplog.records if "flashinfer 0.7.0" in r.getMessage()]) == 1
+        engage("z-image", _ZIMAGE)
+    assert len([m for m in _gate_warnings(caplog) if "flashinfer 0.7.0" in m]) == 1
+
+
+def test_an_unreadable_flashinfer_version_is_not_covered_when_flashinfer_runs(tmp_path):
+    path = _gate_file(tmp_path, _zimage_record(flashinfer = "0.6.6"))
+    message = gate.nvfp4_gate_flashinfer_mismatch(
+        "z-image", _ZIMAGE, installed = "", path = path, backend_active = True
+    )
+    assert message and "could not be read" in message and "0.6.6" in message
+    bare = _gate_file(tmp_path, _zimage_record())
+    assert (
+        gate.nvfp4_gate_flashinfer_mismatch(
+            "z-image", _ZIMAGE, installed = "", path = bare, backend_active = True
+        )
+        is None
+    )
+
+
+def test_auto_drops_the_gated_head_when_the_flashinfer_version_is_unreadable(
+    monkeypatch, enabled, caplog
+):
+    _blackwell(monkeypatch)
+    monkeypatch.setattr(gate, "_WARNED", set())
+    monkeypatch.setattr(gate, "installed_flashinfer_version", lambda: None)
+    with caplog.at_level("WARNING"):
+        assert tq._nvfp4_gate_backend_ok("z-image", _ZIMAGE, "cuda:0") is False
+    assert not _gate_warnings(caplog)
+    with caplog.at_level("WARNING"):
+        _engage(monkeypatch)("z-image", _ZIMAGE)
+    assert len([m for m in _gate_warnings(caplog) if "could not be read" in m]) == 1
+
+
+def test_the_installed_version_falls_back_to_an_imported_module(monkeypatch):
+    import importlib.metadata as md
+    import sys
+
+    def _missing(name):
+        raise md.PackageNotFoundError(name)
+
+    monkeypatch.setattr(md, "version", _missing)
+    monkeypatch.setitem(sys.modules, "flashinfer", types.SimpleNamespace(__version__ = "0.6.6"))
+    assert gate.installed_flashinfer_version() == "0.6.6"
+    monkeypatch.setitem(sys.modules, "flashinfer", types.SimpleNamespace())
+    assert gate.installed_flashinfer_version() is None

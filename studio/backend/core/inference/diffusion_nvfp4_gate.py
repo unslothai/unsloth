@@ -179,16 +179,20 @@ def nvfp4_gate_backend(
 
 
 def installed_flashinfer_version() -> Optional[str]:
-    """The installed ``flashinfer-python`` version from its metadata (no import), or None."""
+    """The installed ``flashinfer-python`` version from its metadata (no import), else an already imported module's
+    ``__version__`` (a source or vendored copy has no dist metadata), else None."""
     try:
-        from importlib.metadata import PackageNotFoundError, version
+        from importlib.metadata import version
+        found = str(version(FLASHINFER_DIST)).strip()
+        if found:
+            return found
+    except Exception:  # noqa: BLE001 -- missing or broken metadata reads as "unknown", never a load error
+        pass
+    try:
+        import sys
+        found = str(getattr(sys.modules.get("flashinfer"), "__version__", "") or "").strip()
+        return found or None
     except Exception:  # noqa: BLE001
-        return None
-    try:
-        return str(version(FLASHINFER_DIST))
-    except PackageNotFoundError:
-        return None
-    except Exception:  # noqa: BLE001 -- a broken install reads as "unknown", never a load error
         return None
 
 
@@ -214,11 +218,14 @@ def nvfp4_gate_flashinfer_mismatch(
     *,
     installed: Any = None,
     path: Any = None,
+    backend_active: bool = False,
 ) -> Optional[str]:
     """Why the installed flashinfer is not one a passing flashinfer record covers, or None (covered, no flashinfer
-    record, or flashinfer absent: the backend probe answers that case). ``installed`` overrides the metadata read."""
-    current = installed_flashinfer_version() if installed is None else str(installed)
-    if not current:
+    record, or flashinfer absent: the backend probe answers that case). ``installed`` overrides the metadata read.
+    ``backend_active``: the caller knows flashinfer's kernels run, so a version that cannot be read is NOT covered
+    (fail closed) rather than read as "flashinfer absent"."""
+    current = installed_flashinfer_version() if installed is None else str(installed).strip()
+    if not current and not backend_active:
         return None
     covered: list[str] = []
     for record in _passing_records(family, base_repo, path = path):
@@ -228,11 +235,16 @@ def nvfp4_gate_flashinfer_mismatch(
         if not versions:
             # A record that names no version predates the field; nothing to compare against.
             return None
-        if current in versions:
+        if current and current in versions:
             return None
         covered.extend(v for v in versions if v not in covered)
     if not covered:
         return None
+    if not current:
+        return (
+            f"flashinfer's version could not be read, but the NVFP4 accuracy gate for {base_repo} was measured on "
+            f"flashinfer {', '.join(covered)}; its kernels were not checked on this install"
+        )
     return (
         f"flashinfer {current} is installed, but the NVFP4 accuracy gate for {base_repo} was measured on "
         f"flashinfer {', '.join(covered)}; its kernels were not checked on this version"
@@ -243,9 +255,11 @@ def warn_flashinfer_mismatch_once(
     family: Any,
     base_repo: Any,
     logger: Any = None,
+    *,
+    backend_active: bool = False,
 ) -> Optional[str]:
     """Log ``nvfp4_gate_flashinfer_mismatch`` once per (family, base, version); returns the message."""
-    message = nvfp4_gate_flashinfer_mismatch(family, base_repo)
+    message = nvfp4_gate_flashinfer_mismatch(family, base_repo, backend_active = backend_active)
     if message is None:
         return None
     key = (str(family or "").lower(), _canonical(base_repo), installed_flashinfer_version())
@@ -254,5 +268,5 @@ def warn_flashinfer_mismatch_once(
         if logger is None:
             import logging
             logger = logging.getLogger(__name__)
-        logger.warning("nvfp4.gate: %s", message)
+        logger.warning(f"nvfp4.gate: {message}")
     return message
