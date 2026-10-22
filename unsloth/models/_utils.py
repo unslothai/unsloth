@@ -8397,6 +8397,36 @@ def verify_fp8_support_if_applicable(model_config, fast_inference = False):
             )
 
 
+def _deepspeed_zero_stage(shared_state):
+    """ZeRO stage of this DeepSpeed launch: 3 when any source says so, else the known lower stage,
+    else None (unknown, treated as ZeRO-3)."""
+    import os, sys
+
+    hf_deepspeed = sys.modules.get("transformers.integrations.deepspeed", None)
+    try:
+        if hf_deepspeed is not None and hf_deepspeed.is_deepspeed_zero3_enabled():
+            return 3
+    except Exception:
+        pass
+    stages = []
+    plugins = shared_state.get("deepspeed_plugins") if isinstance(shared_state, dict) else None
+    if plugins is not None and not isinstance(plugins, dict):
+        plugins = {"default": plugins}
+    for plugin in (plugins or {}).values():
+        # The plugin's DeepSpeed config holds the stage a config file set; zero_stage is its own field.
+        stage = getattr(getattr(plugin, "hf_ds_config", None), "_stage", None)
+        if not isinstance(stage, int) or stage < 0:
+            stage = getattr(plugin, "zero_stage", None)
+        stages.append(stage)
+    env_stage = os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE", "").strip()
+    if env_stage.isdigit():
+        stages.append(int(env_stage))
+    stages = [stage for stage in stages if isinstance(stage, int) and stage >= 0]
+    if 3 in stages:
+        return 3
+    return max(stages) if stages else None
+
+
 def _get_inference_mode_context_manager(model: torch.nn.Module):
     """A torchao-quantized state dict hits "Cannot set version_counter for inference tensor" on ops like aten.t() under inference mode, a PyTorch bug affecting all tensor subclasses (pytorch/pytorch#164872), so use `torch.no_grad()` in that case and `torch.inference_mode()` otherwise."""
     torchao_config = getattr(model, "torchao_config", None)
@@ -8429,12 +8459,15 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
         return torch.no_grad()
-    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies.
-    if os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in ("1", "true", "yes", "on"):
-        return torch.no_grad()
-    if isinstance(shared_state, dict) and "DEEPSPEED" in str(
-        shared_state.get("distributed_type", "")
-    ):
+    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies. ZeRO-1/2 leave
+    # every parameter whole, so a launch known to run a lower stage keeps inference mode.
+    deepspeed = os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ) or (isinstance(shared_state, dict) and "DEEPSPEED" in str(shared_state.get("distributed_type", "")))
+    if deepspeed and _deepspeed_zero_stage(shared_state) in (None, 3):
         return torch.no_grad()
     try:
         first = next(iter(model.parameters()), None)

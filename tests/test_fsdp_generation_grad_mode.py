@@ -10,7 +10,7 @@ import torch
 
 from unsloth.models._utils import _get_inference_mode_context_manager
 
-_FSDP_ENV = ("ACCELERATE_USE_FSDP", "FSDP_VERSION")
+_FSDP_ENV = ("ACCELERATE_USE_FSDP", "FSDP_VERSION", "ACCELERATE_DEEPSPEED_ZERO_STAGE")
 
 
 @pytest.fixture
@@ -117,3 +117,45 @@ def test_deepspeed_accelerator_state_scores_under_no_grad(no_launcher):
         state.AcceleratorState, "_shared_state", {"distributed_type": "DistributedType.DEEPSPEED"}
     )
     assert _mode_inside(torch.nn.Linear(2, 2)) == (False, False)
+
+
+@pytest.mark.parametrize("stage, inference", [("0", True), ("1", True), ("2", True), ("3", False)])
+def test_a_known_zero_stage_below_3_keeps_inference_mode(no_launcher, stage, inference):
+    """ZeRO-1/2 keep whole parameters, so only ZeRO-3 needs no_grad for generation."""
+    no_launcher.setenv("ACCELERATE_USE_DEEPSPEED", "true")
+    no_launcher.setenv("ACCELERATE_DEEPSPEED_ZERO_STAGE", stage)
+    assert _mode_inside(torch.nn.Linear(2, 2)) == (inference, False)
+
+
+@pytest.mark.parametrize("config_stage, inference", [(2, True), (3, False), (-1, True)])
+def test_the_accelerator_plugin_stage_decides(no_launcher, config_stage, inference):
+    import types
+
+    state = pytest.importorskip("accelerate.state")
+    no_launcher.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
+    # A config file stage wins over the plugin field; a config without one (-1) falls back to it.
+    plugin = types.SimpleNamespace(
+        zero_stage = 2, hf_ds_config = types.SimpleNamespace(_stage = config_stage)
+    )
+    no_launcher.setattr(
+        state.AcceleratorState,
+        "_shared_state",
+        {"distributed_type": "DistributedType.DEEPSPEED", "deepspeed_plugins": {"default": plugin}},
+    )
+    assert _mode_inside(torch.nn.Linear(2, 2)) == (inference, False)
+
+
+def test_a_zero2_launch_still_honours_a_zero3_trainer_config(no_launcher):
+    hf_deepspeed = pytest.importorskip("transformers.integrations.deepspeed")
+    no_launcher.setenv("ACCELERATE_USE_DEEPSPEED", "true")
+    no_launcher.setenv("ACCELERATE_DEEPSPEED_ZERO_STAGE", "2")
+    no_launcher.setattr(hf_deepspeed, "is_deepspeed_zero3_enabled", lambda: True)
+    assert _mode_inside(torch.nn.Linear(2, 2)) == (False, False)
+
+
+def test_a_zero2_launch_with_partitioned_params_still_gets_no_grad(no_launcher):
+    no_launcher.setenv("ACCELERATE_USE_DEEPSPEED", "true")
+    no_launcher.setenv("ACCELERATE_DEEPSPEED_ZERO_STAGE", "2")
+    model = torch.nn.Linear(2, 2)
+    model.weight.ds_id = 0
+    assert _mode_inside(model) == (False, False)
