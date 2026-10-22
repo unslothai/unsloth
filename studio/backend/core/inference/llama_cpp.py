@@ -4061,6 +4061,14 @@ def _pick_mmproj(candidates: list[str], *, order: Optional[tuple] = None) -> Opt
     return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
 
 
+def _mmproj_picker(*model_names: Optional[str]) -> Callable[[list[str]], Optional[str]]:
+    """The projector pick for this model on this machine."""
+    from utils.models.model_config import mmproj_order
+
+    order = mmproj_order(*model_names)
+    return functools.partial(_pick_mmproj, order = order) if order else _pick_mmproj
+
+
 def _hub_download_in_flight(hf_repo: str) -> bool:
     try:
         from hub.utils.download_registry import get_models_registry
@@ -21371,17 +21379,23 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
-        from utils.models.model_config import mmproj_f16_unsafe, mmproj_order
+        from utils.models.model_config import mmproj_f16_unsafe, mmproj_precision
 
         names = (hf_repo, Path(near_path).name if near_path else None)
-        order = mmproj_order(*names)
-        # A cached MiMo-VL F16 projector is the broken one, so do not reuse it.
+        pick = _mmproj_picker(*names)
         f16_unsafe = any(mmproj_f16_unsafe(n) for n in names)
+        if f16_unsafe and near_path:
+            # Only a cached MiMo-VL F16 projector is broken; a cached BF16 / F32 one is reused as usual.
+            cached = _companion_snapshot_sibling(near_path, pick)
+            with contextlib.suppress(OSError):
+                if cached and mmproj_precision(cached) != "f16" and Path(cached).stat().st_size > 0:
+                    logger.info("Reusing cached mmproj: %s", cached)
+                    return cached
         outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = functools.partial(_pick_mmproj, order = order) if order else _pick_mmproj,
+            pick = pick,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,

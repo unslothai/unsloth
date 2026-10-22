@@ -279,3 +279,36 @@ def test_llama_update_job_clears_the_device_precision(monkeypatch):
     upd._operation_lock.acquire()
     upd._run_claimed_job([])
     assert device_mmproj_precision.cache_info().currsize == 0
+
+
+def _download_with_cached(monkeypatch, tmp_path, cached_name):
+    from core.inference import llama_cpp
+
+    cached = _touch(tmp_path / cached_name)
+    monkeypatch.setattr(llama_cpp, "_companion_snapshot_sibling", lambda near, pick: str(cached))
+    backend = object.__new__(LlamaCppBackend)
+    backend._cancel_event = threading.Event()
+    seen = {}
+    backend._download_companion_gguf = lambda **kw: seen.update(kw)
+    got = backend._download_mmproj(
+        hf_repo = "unsloth/MiMo-VL-7B-RL-GGUF", near_path = str(tmp_path / "w.gguf")
+    )
+    return got, seen
+
+
+def test_mimo_vl_reuses_a_cached_bf16_projector(device, monkeypatch, tmp_path):
+    got, seen = _download_with_cached(monkeypatch, tmp_path, "mmproj-BF16.gguf")
+    assert Path(got).name == "mmproj-BF16.gguf" and not seen
+
+
+def test_mimo_vl_does_not_reuse_a_cached_f16_projector(device, monkeypatch, tmp_path):
+    got, seen = _download_with_cached(monkeypatch, tmp_path, "mmproj-F16.gguf")
+    assert got is None and seen["reuse_snapshot_sibling"] is False
+
+
+def test_estimate_and_loader_share_the_picker(device):
+    from core.inference.llama_cpp import _mmproj_picker
+    assert (
+        _mmproj_picker("unsloth/MiMo-VL-7B-RL-GGUF", "w.gguf")(MIMO_LISTING) == "mmproj-BF16.gguf"
+    )
+    assert _mmproj_picker("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "w.gguf") is _pick_mmproj

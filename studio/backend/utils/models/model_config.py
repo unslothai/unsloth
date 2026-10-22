@@ -2089,9 +2089,13 @@ def mmproj_order(*model_names: Optional[str]) -> Optional[tuple]:
     return MMPROJ_ORDER_BF16 if device_mmproj_precision() == "bf16" else None
 
 
-def mmproj_order_rank(mmproj_name: str, order: tuple) -> int:
+def mmproj_precision(mmproj_name: str) -> Optional[str]:
     m = _MMPROJ_PRECISION_RE.search(Path(mmproj_name).name)
-    precision = m.group(1).lower() if m else None
+    return m.group(1).lower() if m else None
+
+
+def mmproj_order_rank(mmproj_name: str, order: tuple) -> int:
+    precision = mmproj_precision(mmproj_name)
     return -order.index(precision) if precision in order else -len(order)
 
 
