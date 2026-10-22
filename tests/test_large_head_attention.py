@@ -504,8 +504,7 @@ def test_router_skips_the_mask_scan_when_it_cannot_use_the_result(monkeypatch):
 
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_leaves_an_explicit_is_causal_beside_a_mask_to_sdpa():
-    # transformers 4.x passes an explicit is_causal next to the mask and SDPA applies both; the
-    # intervals carry the mask alone, so that pairing must reach the wrapped function.
+    # transformers 4.x pairs is_causal with a mask; that pairing must reach the wrapped function.
     calls, original = _sentinel()
     router = LH._make_router(original)
     dtype = _cuda_dtype()
@@ -548,7 +547,6 @@ def test_router_defers_a_view_that_addresses_past_int32():
 
 @pytest.mark.skipif(not _SM80, reason = "the router engages on sm80+ only")
 def test_router_falls_back_to_sdpa_on_mask_scan_oom(monkeypatch):
-    # The mask scan allocates row chunks before the kernel's own OOM guard; near capacity SDPA decides.
     def oom(*args, **kwargs):
         raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
 

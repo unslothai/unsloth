@@ -745,7 +745,6 @@ def _shapes_qualify(query, key, value):
         return False
     if key.dtype != query.dtype or value.dtype != query.dtype:
         return False
-    # The output is a fresh contiguous query-sized tensor; the inputs may be strided views.
     return (
         max(
             query.numel() - 1,
@@ -881,8 +880,7 @@ def _make_router(original):
             and not dropout
             # The kernel only reads the mask's structure, so a trainable mask would get no grad.
             and not (torch.is_tensor(attention_mask) and attention_mask.requires_grad)
-            # transformers 4.x keeps an explicit is_causal beside a mask and SDPA applies both, while 5.x
-            # drops it; the intervals carry the mask only, so leave that pairing to the wrapped function.
+            # transformers 4.x pairs is_causal with a mask (SDPA applies both); intervals carry only the mask.
             and not (
                 attention_mask is not None and is_causal is not None and is_causal is not False
             )
