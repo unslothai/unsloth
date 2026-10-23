@@ -35,14 +35,20 @@ FLOW_PREFIXES = tuple(
 
 
 FLOW_EXACT = ("/api/library",)
+# Read-only system facts a benchmark records (hardware, llama.cpp build); never written through Flows.
+FLOW_READ_ONLY = ("/api/system", "/api/llama/backend")
 
 
-def checked_path(url: httpx.URL) -> str:
+def checked_path(url: httpx.URL, method: str = "GET") -> str:
     path = url.path
     segments = path.split("/")
-    allowed = path in FLOW_EXACT or path.startswith(FLOW_PREFIXES)
+    allowed = (
+        path in FLOW_EXACT
+        or path.startswith(FLOW_PREFIXES)
+        or (path in FLOW_READ_ONLY and method.upper() == "GET")
+    )
     if not allowed or any(s in (".", "..") for s in segments):
-        raise RuntimeError(f"Flows do not forward to {path!r}")
+        raise RuntimeError(f"Flows do not forward to {method.upper()} {path!r}")
     return path
 
 
@@ -131,7 +137,7 @@ async def forward(
                 files = files,
                 data = data,
             )
-            checked_path(request.url)
+            checked_path(request.url, request.method)
             return await client.send(request)
 
     task = asyncio.create_task(send())
@@ -248,7 +254,7 @@ async def stream_sse(
         request = client.build_request(
             "POST", path, headers = _headers(caller, "application/json", headers), json = json_body
         )
-        checked_path(request.url)
+        checked_path(request.url, request.method)
         response = await client.send(request, stream = True)
         try:
             if response.status_code >= 400:

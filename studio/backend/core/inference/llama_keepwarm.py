@@ -864,6 +864,13 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
+        try:
+            from core.inference.gpu_arbiter import lease_held
+            if lease_held():
+                # A benchmark between its unload and its next load looks idle; leave the GPU to it.
+                continue
+        except Exception as exc:
+            logger.debug("gpu lease check failed: %s", exc)
         # The image/video half of the tick, in its own guard so neither side can cost the other an iteration. Inert
         # unless the media TTL is set.
         try:

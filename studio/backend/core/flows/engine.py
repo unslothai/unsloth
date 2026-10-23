@@ -19,6 +19,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ PROGRESS_MIN_INTERVAL_S = 0.2
 # A streamed player answer is flushed this often, so its text reads as typed.
 INVOKE_FLUSH_S = 0.05
 CANCEL_GRACE_S = 10.0
+LEASE_RETRY_S = 2.0
 MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
 
@@ -127,6 +129,8 @@ class NodeState:
     error: Optional[str] = None
     progress: Optional[dict] = None
     message: Optional[str] = None
+    # The last value a long node published per port before it finished; never fed to other nodes.
+    partial: Optional[dict] = None
 
     def snapshot(self) -> dict:
         found: dict[str, Any] = {"status": self.status}
@@ -138,6 +142,8 @@ class NodeState:
             found["progress"] = self.progress
         if self.message:
             found["message"] = self.message
+        if self.partial:
+            found["partial"] = self.partial
         return found
 
 
@@ -188,6 +194,7 @@ class RunState:
     _last_progress: dict[str, float] = field(default_factory = dict)
     _pending_progress: dict[str, dict] = field(default_factory = dict)
     _pending_text: dict[tuple[str, str], list[str]] = field(default_factory = dict)
+    _pending_partial: dict[tuple, dict] = field(default_factory = dict)
     executed: set[str] = field(default_factory = set)
     # Every node that failed at least once; a later For Each iteration succeeding must not hide it.
     ever_failed: set[str] = field(default_factory = set)
@@ -231,6 +238,10 @@ class RunState:
                     **event,
                     "data": {k: v for k, v in event["data"].items() if k != "preview"},
                 }
+            elif type_ == "node.partial":
+                # A partial often repeats everything so far (rows collected), so storing each copy grows the table
+                # quadratically. Store the position only; live clients and the run snapshot carry the value.
+                stored = {**event, "data": {k: v for k, v in event["data"].items() if k != "value"}}
             try:
                 flows_db.append_event(self.id, self.seq, stored)
             except Exception:
@@ -271,6 +282,13 @@ class RunState:
     def text_delta(self, node_id: str, port: str, delta: str) -> None:
         self._pending_text.setdefault((node_id, port), []).append(delta)
 
+    def partial(self, node_id: str, data: dict) -> None:
+        """Keep the newest value per (node, port, iteration); the flusher stores one event per interval."""
+        state = self.node(node_id)
+        state.partial = {**(state.partial or {}), data["port"]: data}
+        key = (node_id, data["port"], tuple(data.get("iteration") or ()))
+        self._pending_partial[key] = data
+
     def flush(self, node_id: Optional[str] = None) -> None:
         for nid in list(self._pending_progress):
             if node_id is None or nid == node_id:
@@ -281,6 +299,9 @@ class RunState:
                 parts = self._pending_text.pop(key)
                 if parts:
                     self.emit("node.text_delta", key[0], {"port": key[1], "delta": "".join(parts)})
+        for key in list(self._pending_partial):
+            if node_id is None or key[0] == node_id:
+                self.emit("node.partial", key[0], self._pending_partial.pop(key))
 
     def snapshot(self) -> dict:
         return {
@@ -365,9 +386,14 @@ class NodeContextImpl:
                 exc.detail, status = exc.status, retryable = exc.status in (409, 503)
             ) from None
 
-    async def ensure_model(self, model_kind: str, choice: Optional[dict]) -> Optional[dict]:
+    async def ensure_model(
+        self,
+        model_kind: str,
+        choice: Optional[dict],
+        options: Optional[dict] = None,
+    ) -> Optional[dict]:
         from core.flows.nodes import _common
-        return await _common.ensure_model(self, model_kind, choice)
+        return await _common.ensure_model(self, model_kind, choice, options)
 
     async def llm_text(self, **kwargs: Any) -> str:
         from core.flows.nodes import _common
@@ -448,6 +474,23 @@ class NodeContextImpl:
     def text_delta(self, port: str, delta: str) -> None:
         self._rs.text_delta(self.node_id, port, delta)
 
+    def partial(
+        self,
+        port: str,
+        value: Any,
+        *,
+        step: Optional[int] = None,
+        total: Optional[int] = None,
+    ) -> None:
+        data: dict[str, Any] = {"port": port, "value": value}
+        if step is not None:
+            data["step"] = step
+        if total is not None:
+            data["total"] = total
+        if self.iteration is not None:
+            data["iteration"] = list(self.iteration)
+        self._rs.partial(self.node_id, data)
+
     def set_status(
         self,
         status: str,
@@ -464,6 +507,20 @@ class NodeContextImpl:
             raise FlowCancelled()
 
     def on_cancel(self, fn: Callable[[], Awaitable[None]]) -> None:
+        from core.inference import gpu_arbiter
+
+        holder = gpu_arbiter._lease_holder.get()
+        if holder is not None:
+            # Stop runs from the cancel request's task; its cleanup (a restore load) still acts as the lease holder.
+            inner = fn
+
+            async def fn() -> None:
+                token = gpu_arbiter._lease_holder.set(holder)
+                try:
+                    await inner()
+                finally:
+                    gpu_arbiter._lease_holder.reset(token)
+
         if self._rs.cancelled:
             # The run was cancelled while the job was being started: stop the job now.
             task = asyncio.get_running_loop().create_task(_run_cancel_hook(fn))
@@ -976,6 +1033,7 @@ class FlowEngine:
             self._record(rs, nid, "skipped", None, None, iteration)
             return
         params = param_values(spec, node)
+        _bind_params(spec, params, inputs)
         seed = self._seed(rs, nid, params, inputs, iteration)
         forced = nid in set(rs.options.get("force_nodes") or [])
         baked = (rs.doc.get("baked") or {}).get(nid)
@@ -1049,8 +1107,11 @@ class FlowEngine:
                 async with lock:
                     ctx.check_cancelled()
                     ctx.count_gpu_op()
-                    rs.set_status(nid, "running")
-                    outputs = await handler(ctx)
+                    if spec.get("exclusive_gpu"):
+                        outputs = await self._exclusive(rs, nid, spec, handler, ctx)
+                    else:
+                        rs.set_status(nid, "running")
+                        outputs = await handler(ctx)
             else:
                 rs.set_status(nid, "running")
                 outputs = await handler(ctx)
@@ -1087,6 +1148,26 @@ class FlowEngine:
         rs.flush(nid)
         self._finish(rs, nid, env, outputs, "done", iteration)
 
+    async def _exclusive(self, rs: RunState, nid: str, spec: dict, handler: Any, ctx: Any) -> dict:
+        """Run under the Studio-wide GPU lease, so chat, training and other runs cannot swap the model meanwhile."""
+        from core.inference import gpu_arbiter
+        while True:
+            lease = gpu_arbiter.operation_lease(
+                "flow", f"flow:{rs.id}:{nid}", MAX_RUN_SECONDS, label = spec["title"]
+            )
+            try:
+                lease.__enter__()
+            except gpu_arbiter.GpuLeaseHeldError as exc:
+                rs.set_status(nid, "waiting", str(exc))
+                await asyncio.sleep(LEASE_RETRY_S)
+                ctx.check_cancelled()
+                continue
+            try:
+                rs.set_status(nid, "running")
+                return await handler(ctx)
+            finally:
+                lease.__exit__(None, None, None)
+
     def _finish(
         self,
         rs: RunState,
@@ -1103,6 +1184,8 @@ class FlowEngine:
         env.values[nid] = {k: v for k, v in outputs.items() if k in declared}
         state = rs.node(nid)
         state.outputs = outputs
+        rs._pending_partial = {k: v for k, v in rs._pending_partial.items() if k[0] != nid}
+        state.partial = None
         if spec["type"] == "output.result":
             name = str((rs.plan.nodes[nid].get("params") or {}).get("name") or nid)
             if "value" in outputs:
@@ -1147,7 +1230,12 @@ class FlowEngine:
         if not kind:
             return None
         choice = params.get("model") or {}
-        return {"repo": choice.get("repo"), "variant": choice.get("variant")}
+        key = {"repo": choice.get("repo"), "variant": choice.get("variant")}
+        repo = choice.get("repo")
+        if isinstance(repo, str) and os.path.isabs(repo):
+            # A local export can be rewritten in place: its files name the weights, not the path.
+            key["files"] = await asyncio.to_thread(_local_fingerprint, repo)
+        return key
 
     async def _for_each(
         self,
@@ -1331,6 +1419,33 @@ class FlowEngine:
         finished.sort(key = lambda r: r.finished_at or 0)
         for rs in finished[: len(finished) - FINISHED_RUNS_KEPT]:
             self.runs.pop(rs.id, None)
+
+
+def _bind_params(spec: dict, params: dict, inputs: dict) -> None:
+    """A value connected to a bindable param's input replaces the field, clamped like a typed one."""
+    by_id = {p["id"]: p for p in spec["params"]}
+    for port in spec["inputs"]:
+        pid = port.get("param")
+        if pid and port["id"] in inputs:
+            value = inputs.pop(port["id"])
+            params[pid] = _clamp(by_id[pid], value) if pid in by_id else value
+
+
+def _local_fingerprint(path: str) -> Optional[list]:
+    """(name, size, mtime) of a local model file; a folder folds every file directly in it into one digest."""
+    try:
+        if os.path.isdir(path):
+            entries = sorted(os.scandir(path), key = lambda e: e.name)
+            digest = hashlib.sha256()
+            for e in entries:
+                if e.is_file():
+                    st = e.stat()
+                    digest.update(f"{e.name}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+            return [[os.path.basename(path.rstrip(os.sep)), digest.hexdigest()]]
+        st = os.stat(path)
+        return [[os.path.basename(path), st.st_size, st.st_mtime_ns]]
+    except OSError:
+        return None
 
 
 def _stored_options(options: dict) -> dict:

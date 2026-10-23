@@ -99,6 +99,16 @@ function InspectorImpl() {
     useCatalogStore((s) =>
       spec ? s.categories[spec.category]?.color : undefined,
     ) ?? "#64748b";
+  // A string, so the inspector re-renders only when the set of bound params changes.
+  const bound = useDocStore((s) => {
+    if (!nodeId) return "";
+    const ids: string[] = [];
+    for (const edge of Object.values(s.graph.edges))
+      if (edge.target === nodeId && edge.target_port.startsWith("param:"))
+        ids.push(edge.target_port.slice("param:".length));
+    return ids.sort().join("\n");
+  });
+  const boundParams = new Set(bound ? bound.split("\n") : []);
 
   const setParam = useCallback(
     (paramId: string, value: unknown) => {
@@ -240,11 +250,17 @@ function InspectorImpl() {
               <span className="text-[11.5px] font-medium text-zinc-400">
                 {param.label}
               </span>
-              <ParamField
-                spec={param}
-                value={node.params[param.id]}
-                onChange={(value) => setParam(param.id, value)}
-              />
+              {param.bindable && boundParams.has(param.id) ? (
+                <p className="rounded-md border border-dashed border-white/15 px-2 py-1.5 text-[12px] text-zinc-400">
+                  Set by its connected input
+                </p>
+              ) : (
+                <ParamField
+                  spec={param}
+                  value={node.params[param.id]}
+                  onChange={(value) => setParam(param.id, value)}
+                />
+              )}
             </div>
           ))}
         </section>

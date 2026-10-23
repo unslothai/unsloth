@@ -104,6 +104,25 @@ def P(
     return d
 
 
+# The input type a bindable param of each kind takes.
+BIND_TYPES = {
+    "number": "number",
+    "int": "number",
+    "seed": "number",
+    "bool": "bool",
+    "text": "text",
+    "textarea": "text",
+    "select": "text",
+    # Expressions are JSON trees ({op, args}), like the field's JSON editor.
+    "expr": "json",
+    "color": "text",
+    "json": "json",
+    "schema": "json",
+    "string_list": "list",
+    "model": "model",
+}
+
+
 def spec(
     type: str,
     title: str,
@@ -123,14 +142,31 @@ def spec(
     entrypoint: bool = False,
     flow_in: bool = False,
     flow_out: Optional[list[str]] = None,
+    requires: Optional[list[str]] = None,
+    exclusive_gpu: bool = False,
 ) -> dict:
-    return {
+    inputs = list(inputs)
+    # A bindable param also gets an optional input; a connected value replaces the field (the engine overlays it).
+    for p in params:
+        if p.get("bindable"):
+            inputs.append(
+                {
+                    **inp(
+                        f"param:{p['id']}",
+                        BIND_TYPES.get(p["kind"], "any"),
+                        p["label"],
+                        optional = True,
+                    ),
+                    "param": p["id"],
+                }
+            )
+    found = {
         "type": type,
         "v": v,
         "title": title,
         "category": category,
         "description": description,
-        "inputs": list(inputs),
+        "inputs": inputs,
         "outputs": list(outputs),
         "params": list(params),
         "lane": lane,  # cpu | gpu | player
@@ -146,6 +182,16 @@ def spec(
         "flow_in": flow_in,
         "flow_out": flow_out or [],
     }
+    # Only when set, so the published catalog of existing nodes stays the same.
+    if requires:
+        # requires: the model backend the node needs ("transformers" or "gguf"), checked after the load.
+        found["requires"] = list(requires)
+    if exclusive_gpu:
+        # exclusive_gpu: hold the Studio-wide GPU lease while the node runs (measurements). The engine takes
+        # the lease on the GPU lane, so an exclusive node always runs there.
+        found["exclusive_gpu"] = True
+        found["lane"] = "gpu"
+    return found
 
 
 _IMAGE_SIZE = [
@@ -478,6 +524,20 @@ NODE_SPECS: list[dict] = [
         inputs = [inp("items", "any", multi = True)],
         outputs = [out("list", "list")],
         icon = "list",
+    ),
+    spec(
+        "logic.product",
+        "Combinations",
+        "logic",
+        'Every combination of named lists, one object per combination ({x: 1, y: "a"}, ...): settings grids, '
+        "XY plots and sweeps. Feed `items` to a For Each.",
+        inputs = [inp("axes", "json", "Axes", optional = True)],
+        outputs = [out("items", "list", item = "json"), out("count", "number")],
+        params = [
+            P("axes", "json", {"x": [1, 2], "y": ["a", "b"]}, "Axes"),
+            P("max_items", "int", 64, "Max combinations", min = 1, max = 256),
+        ],
+        icon = "grid",
     ),
     spec(
         "image.generate",

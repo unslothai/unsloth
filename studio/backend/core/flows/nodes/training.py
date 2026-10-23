@@ -8,9 +8,9 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from typing import Any
+from typing import Any, Optional
 
-from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, strip_think
+from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, poll_job, strip_think
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 POLL_S = 5.0
@@ -115,38 +115,42 @@ async def finetune(ctx: NodeContext) -> dict:
     async def cancel() -> None:
         await ctx.call("POST", "/api/train/stop", json = {"save": True, "expected_job_id": job_id})
 
-    ctx.on_cancel(cancel)
-    while True:
-        await asyncio.sleep(POLL_S)
-        payload = await ctx.call("GET", "/api/train/status")
+    def parse(payload: Any) -> tuple[str, Optional[dict], Optional[str]]:
         slot = _training(payload if isinstance(payload, dict) else {})
         if slot.job_id and slot.job_id != job_id:
             raise FlowNodeError("Another training run replaced this one")
         status = TRAINING_STATUS.get(slot.phase, "running")
+        progress = None
         if slot.progress_percent is not None:
-            ctx.progress(
-                slot.progress_percent / 100.0,
-                phase = slot.phase,
-                step = slot.step,
-                total = slot.total_steps,
-            )
-        if status == "completed":
-            details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
-            run, _ = await _run_folder(ctx.caller, details.get("output_dir"))
-            if not run:
-                raise FlowNodeError("Training finished but its run folder was not found")
-            metrics = {"loss": slot.loss, "steps": slot.step, "job_id": job_id}
-            return {
-                "checkpoint": {
-                    "kind": "checkpoint",
-                    "name": run,
-                    "base_model": config["model_name"],
-                },
-                "metrics": metrics,
+            progress = {
+                "fraction": slot.progress_percent / 100.0,
+                "phase": slot.phase,
+                "step": slot.step,
+                "total": slot.total_steps,
             }
-        if status in ("failed", "cancelled"):
-            ctx.check_cancelled()
-            raise FlowNodeError(slot.error or f"Training {status}")
+        return status, progress, slot.error or f"Training {status}"
+
+    payload = await poll_job(
+        ctx,
+        status = lambda: ctx.call("GET", "/api/train/status"),
+        parse = parse,
+        cancel = cancel,
+        interval = POLL_S,
+    )
+    slot = _training(payload if isinstance(payload, dict) else {})
+    details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+    run, _ = await _run_folder(ctx.caller, details.get("output_dir"))
+    if not run:
+        raise FlowNodeError("Training finished but its run folder was not found")
+    metrics = {"loss": slot.loss, "steps": slot.step, "job_id": job_id}
+    return {
+        "checkpoint": {
+            "kind": "checkpoint",
+            "name": run,
+            "base_model": config["model_name"],
+        },
+        "metrics": metrics,
+    }
 
 
 @handler("train.export")

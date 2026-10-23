@@ -106,8 +106,35 @@ function OutputPreview({
       </p>
     );
   }
+  // A partial is always from this run (queueing clears it), so it wins over the last run's kept outputs.
+  if (
+    runtime.partial &&
+    runtime.status !== "done" &&
+    runtime.status !== "cached"
+  ) {
+    const at = runtime.partialStep;
+    return (
+      <div className="flex flex-col gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-amber-300/80">
+          {at
+            ? runtime.status === "running"
+              ? `Partial: ${at.step} of ${at.total}`
+              : `Partial (stopped at ${at.step} of ${at.total})`
+            : "Partial"}
+        </span>
+        <OutputValues outputs={runtime.partial} spec={spec} />
+      </div>
+    );
+  }
   const outputs = runtime.outputs;
   if (!outputs) return null;
+  return <OutputValues outputs={outputs} spec={spec} />;
+}
+
+function OutputValues({
+  outputs,
+  spec,
+}: { outputs: Record<string, unknown>; spec: NodeSpec }) {
   for (const port of spec.outputs) {
     const value = outputs[port.id];
     if (isMediaValue(value)) {
@@ -377,7 +404,10 @@ function FlowNodeViewImpl({ id, selected }: NodeProps<RfNode>) {
               ))}
             </div>
           )}
-          {(runtime.outputs || runtime.text || runtime.preview) && (
+          {(runtime.outputs ||
+            runtime.partial ||
+            runtime.text ||
+            runtime.preview) && (
             <div className="flow-detail px-3">
               <OutputPreview runtime={runtime} spec={spec} />
             </div>

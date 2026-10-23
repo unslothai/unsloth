@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 import random
 import re
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 from core.flows.expr import ExprError, eval_expr
 from core.flows.nodes._common import as_text
 from core.flows.registry import FlowNodeError, NodeContext, handler
+from core.flows.schema import MAX_FOREACH_ITEMS
 
 _DICE_TERM = re.compile(r"([+-]?)\s*(?:(\d*)d(\d+)|(\d+))", re.I)
 
@@ -113,6 +115,30 @@ async def merge(ctx: NodeContext) -> dict:
 @handler("logic.collect")
 async def collect(ctx: NodeContext) -> dict:
     return {"list": list(ctx.inputs.get("items") or [])}
+
+
+@handler("logic.product")
+async def product(ctx: NodeContext) -> dict:
+    axes = ctx.inputs.get("axes")
+    if axes is None:
+        axes = ctx.params.get("axes")
+    if not isinstance(axes, dict) or not axes:
+        raise FlowNodeError('Combinations takes named lists, like {"x": [1, 2], "y": ["a", "b"]}')
+    names, values = [], []
+    for name, items in axes.items():
+        names.append(str(name))
+        values.append(items if isinstance(items, list) else [items])
+    count = 1
+    for items in values:
+        count *= len(items)
+    limit = min(int(ctx.params.get("max_items") or 64), MAX_FOREACH_ITEMS)
+    if count > limit:
+        # Refused rather than cut, so a sweep never measures part of its grid without saying so.
+        raise FlowNodeError(
+            f"{count} combinations is more than the {limit} allowed; shorten an axis"
+        )
+    combos = [dict(zip(names, combo)) for combo in itertools.product(*values)] if count else []
+    return {"items": combos, "count": len(combos)}
 
 
 @handler("logic.for_each")
