@@ -164,7 +164,7 @@ async def http_request(ctx: NodeContext) -> dict:
     )
     text = data.decode("utf-8", "replace")
     parsed: Any = None
-    if "json" in content_type or text.lstrip().startswith(("{", "[")):
+    if "json" in content_type.lower() or text.lstrip().startswith(("{", "[")):
         try:
             parsed = json.loads(text)
         except ValueError:
@@ -199,16 +199,20 @@ def _program(code: str, value: Any) -> str:
     )
 
 
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
 def parse_python_output(output: str) -> tuple[Any, str]:
     head, marker, tail = output.partition(PY_RESULT_MARKER)
     if not marker:
         raise FlowNodeError("The Python code did not finish: " + output.strip()[-600:])
     line, _, log = tail.partition("\n")
     try:
-        return json.loads(line or "null"), (head + log).strip()
+        return json.loads(line or "null", parse_constant = _no_constant), (head + log).strip()
     except ValueError:
         raise FlowNodeError(
-            "Python's `result` could not be turned into JSON, or is too long to pass on"
+            "Python's `result` could not be turned into JSON (NaN and Infinity are not JSON), or is too long to pass on"
         ) from None
 
 

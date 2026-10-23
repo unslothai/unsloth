@@ -115,6 +115,11 @@ def _save(doc: dict, base: Optional[int]) -> dict:
             status_code = 409,
             detail = "This flow was changed in another window. Reload it to keep editing.",
         )
+    if current_account().via_api_key:
+        # A flow an API key or MCP changed no longer starts on its own until the owner approves its triggers again.
+        approved = flows_db.get_capabilities(record["id"])
+        if approved.get("triggers"):
+            flows_db.set_capabilities(record["id"], {**approved, "triggers": False})
     try:
         triggers.sync(record["id"], record["doc"])
     except Exception:

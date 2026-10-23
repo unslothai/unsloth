@@ -53,6 +53,7 @@ def node_needs(spec: dict, params: dict) -> list[tuple[str, str]]:
 
 def doc_needs(doc: dict) -> dict:
     """Everything a flow document needs approved, in the shape stored as its approval."""
+    from core.flows.engine import param_values
     from core.flows.specs import SPECS_BY_TYPE
 
     need: dict[str, Any] = {
@@ -66,7 +67,8 @@ def doc_needs(doc: dict) -> dict:
         spec = SPECS_BY_TYPE.get(node.get("type"))
         if spec is None or node.get("disabled"):
             continue
-        for cap, detail in node_needs(spec, node.get("params") or {}):
+        # With the defaults filled in, as the engine runs it: a block saved without its code runs the default code.
+        for cap, detail in node_needs(spec, param_values(spec, node)):
             if cap == "python" and detail not in need["python"]:
                 need["python"].append(detail)
             elif cap == "http" and detail and detail not in need["hosts"]:

@@ -110,8 +110,10 @@ def wanted(doc: dict) -> list[dict]:
 
 
 def sync(flow_id: str, doc: dict) -> None:
-    """Only the owner account's triggers ever fire, so only its index is kept."""
-    if not current_account().is_owner:
+    """Only the owner account's triggers ever fire, so only its index is kept, and only the owner's own hand updates
+    it: an API key or MCP save never switches a trigger on (``fire`` also refuses one the saved flow has off)."""
+    account = current_account()
+    if not account.is_owner or account.via_api_key:
         return
     flows_db.replace_triggers(flow_id, wanted(doc), new_token)
 

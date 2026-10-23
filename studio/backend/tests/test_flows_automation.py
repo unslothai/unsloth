@@ -544,3 +544,41 @@ def test_export_drops_request_header_values_and_url_secrets():
     )
     assert found["url"] == "https://api.example.com/v1?q=cats&api_key=&page=2"
     assert found["headers"] == {"Cookie": "", "X-Custom-Auth": "", "Accept": "application/json"}
+
+
+def test_an_api_key_save_never_arms_triggers(client):
+    path = _webhook_flow(client)
+    _approve(client, "hook1")
+    d = client.get("/api/flows/hook1").json()["doc"]
+    d["nodes"].append(node("s", "trigger.schedule", enabled = True, every_minutes = 1))
+    assert (
+        client.put(
+            "/api/flows/hook1", json = {"doc": d}, headers = {"x-test-account": "owner_api"}
+        ).status_code
+        == 200
+    )
+    # The key's schedule is not indexed, and the flow's trigger approval is withdrawn.
+    assert [t["node_id"] for t in client.get("/api/flows/hook1/triggers").json()["triggers"]] == [
+        "w"
+    ]
+    assert client.get("/api/flows/hook1/capabilities").json()["pending"]["triggers"] is True
+    assert client.post(path, json = {}).status_code == 409
+
+
+def test_python_saved_without_code_needs_the_default_codes_approval(client):
+    from core.flows.specs import SPECS_BY_TYPE
+
+    d = doc([node("p", "code.python")], id = "pydef")
+    client.post("/api/flows", json = {"doc": d})
+    default = next(
+        p["default"] for p in SPECS_BY_TYPE["code.python"]["params"] if p["id"] == "code"
+    )
+    pending = client.get("/api/flows/pydef/capabilities").json()["pending"]["python"]
+    assert pending == [capabilities.code_hash(default)]
+    _approve(client, "pydef")
+    assert _run(client, "pydef")["nodes"]["p"]["status"] == "done"
+
+
+def test_python_nan_results_are_refused():
+    with pytest.raises(FlowNodeError, match = "NaN"):
+        automation.parse_python_output(automation.PY_RESULT_MARKER + "NaN\n")
