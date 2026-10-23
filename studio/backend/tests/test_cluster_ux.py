@@ -75,7 +75,7 @@ def test_lost_connection_names_the_workers_of_the_split(monkeypatch):
     for exc in (httpx.ReadError("gone"), RuntimeError("Lost connection to llama-server")):
         text = routes._friendly_error(exc)
         assert text.startswith("Lost connection to the model, which is split across this machine")
-        assert f"`unsloth worker` is still running on {_WORKERS}" in text
+        assert _WORKERS in text and "`unsloth worker` is still running on each worker" in text
         assert "reload the model" in text
         assert "tls://" not in text and "RPC0" not in text
         assert len(text) <= 200  # the chat error bubble shows two lines

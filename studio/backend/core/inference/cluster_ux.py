@@ -126,7 +126,7 @@ def lost_connection_message() -> Optional[str]:
     workers = _remote_workers(state, plan)
     if not workers:
         return None
-    named = _join(workers)
+    named = workers[0] if len(workers) == 1 else "each worker"
     return (
         f"Lost connection to the model, which is split across {_join(_machines(state, plan))}. "
         f"Check that `unsloth worker` is still running on {named}, then reload the model."
