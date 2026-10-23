@@ -4019,7 +4019,12 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
-        {isActiveModel && target.isGguf && !audioRuntimeGguf ? <LoadedPlacementRow /> : null}
+        {isActiveModel && target.isGguf && !audioRuntimeGguf ? (
+          // The same pool the estimate above names: "Unified" on Apple Silicon, "Shared" on other one-pool machines.
+          <LoadedPlacementRow
+            pool={singleMemoryPool ? (isAppleUnifiedMemory ? "unified memory" : "shared memory") : null}
+          />
+        ) : null}
         {target.isGguf && !audioRuntimeGguf && (
           <>
             <GgufContextLengthSetting

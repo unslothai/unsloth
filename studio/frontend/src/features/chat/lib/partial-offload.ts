@@ -101,11 +101,20 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
 }
 
 function count(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
 }
 
-function mibAsGiB(mib: number): string {
-  return formatGiB(mib / 1024);
+/** GiB like the rest of the panel, or MiB under 0.1 GiB, which would otherwise print as "0.0 GiB". */
+function weightAmount(mib: number): string {
+  return mib < 102.4
+    ? `${Math.max(1, Math.round(mib))} MiB`
+    : formatGiB(mib / 1024);
+}
+
+function layerCount(n: number): string {
+  return `${n} ${n === 1 ? "layer" : "layers"}`;
 }
 
 /** --fit reports its own expert spill; a Manual load says it through n_cpu_moe instead. */
@@ -126,39 +135,60 @@ export function loadedPlacementFrom(response: {
   const placement: LoadedPlacement = {
     offloaded: count(response.offloaded_layers),
     total: count(response.offload_total_layers),
-    overflowLayers: count(response.overflow_layers) ?? (manualExperts ? manualExperts : null),
+    overflowLayers:
+      count(response.overflow_layers) ?? (manualExperts ? manualExperts : null),
     gpuWeightsMib: count(response.gpu_weights_mib),
     hostWeightsMib: count(response.host_weights_mib),
     expertCacheMib: count(response.expert_cache_mib) || null,
   };
-  return placement.total === null && placement.gpuWeightsMib === null && placement.hostWeightsMib === null
+  return placement.total === null &&
+    placement.gpuWeightsMib === null &&
+    placement.hostWeightsMib === null
     ? null
     : placement;
 }
 
-/** Both memory figures are shown: token embeddings stay in RAM even when every layer is on the GPU. */
-export function describePlacement(p: LoadedPlacement): { layers: string | null; memory: string | null } {
-  const { offloaded, total, overflowLayers, gpuWeightsMib, hostWeightsMib, expertCacheMib } = p;
-  let layers: string | null = null;
-  if (offloaded !== null && total !== null && total > 0) {
-    if (offloaded <= 0) {
-      layers = `All ${total} layers on the CPU`;
-    } else if (offloaded < total) {
-      layers = `${offloaded} of ${total} layers on the GPU, ${total - offloaded} on the CPU`;
-    } else if (expertCacheMib !== null && expertCacheMib > 0) {
-      layers = `All ${total} layers on the GPU, all experts in RAM (${mibAsGiB(expertCacheMib)} cache on the GPU)`;
-    } else if (overflowLayers !== null && overflowLayers > 0) {
-      layers = `All ${total} layers on the GPU, ${overflowLayers} with their experts in RAM`;
-    } else {
-      layers = `All ${total} layers on the GPU`;
-    }
+/** An overflowing layer has expert weights in RAM: all its routed experts, except --fit's first partial layer
+ *  per device, which keeps only part of its FFN there, so the text says expert weights, not experts. */
+function describeLayers(p: LoadedPlacement): string | null {
+  const { offloaded, total, overflowLayers, expertCacheMib } = p;
+  if (offloaded === null || total === null || total <= 0) return null;
+  if (offloaded <= 0) return `All ${total} layers on the CPU`;
+  if (offloaded < total)
+    return `${offloaded} of ${total} layers on the GPU, ${total - offloaded} on the CPU`;
+  if (expertCacheMib !== null && expertCacheMib > 0) {
+    return `All ${total} layers on the GPU, all experts in RAM (${weightAmount(expertCacheMib)} expert cache on the GPU)`;
   }
+  if (overflowLayers !== null && overflowLayers > 0) {
+    return `All ${total} layers on the GPU, expert weights of ${layerCount(overflowLayers)} in RAM`;
+  }
+  return `All ${total} layers on the GPU`;
+}
+
+/** Both figures are shown: token embeddings stay in RAM even when every layer is on the GPU. On a machine whose
+ *  GPU and CPU share one pool, `pool` names it ("unified memory") and the weights are one figure. */
+function describeWeights(
+  gpuWeightsMib: number | null,
+  hostWeightsMib: number | null,
+  pool: string | null,
+): string | null {
+  const gpu = gpuWeightsMib !== null && gpuWeightsMib > 0 ? gpuWeightsMib : 0;
+  const host =
+    hostWeightsMib !== null && hostWeightsMib > 0 ? hostWeightsMib : 0;
+  if (pool !== null && gpu + host > 0)
+    return `${weightAmount(gpu + host)} in ${pool}`;
   const parts: string[] = [];
-  if (gpuWeightsMib !== null && gpuWeightsMib > 0) {
-    parts.push(`${mibAsGiB(gpuWeightsMib)} in VRAM`);
-  }
-  if (hostWeightsMib !== null && hostWeightsMib > 0) {
-    parts.push(`${mibAsGiB(hostWeightsMib)} in RAM`);
-  }
-  return { layers, memory: parts.length > 0 ? parts.join(" · ") : null };
+  if (gpu > 0) parts.push(`${weightAmount(gpu)} in VRAM`);
+  if (host > 0) parts.push(`${weightAmount(host)} in RAM`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export function describePlacement(
+  p: LoadedPlacement,
+  pool: string | null = null,
+): { layers: string | null; memory: string | null } {
+  return {
+    layers: describeLayers(p),
+    memory: describeWeights(p.gpuWeightsMib, p.hostWeightsMib, pool),
+  };
 }

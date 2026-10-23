@@ -181,10 +181,16 @@ test("live progress is per thread, transient, and re-keyed with the thread's oth
   assert.ok(progress !== -1 && progress < firstToken);
 });
 
-test("the placement readout names experts and gives both memory figures", () => {
+test("the placement readout names expert weights and gives both memory figures", () => {
+  // gemma-4-26B-A4B Q8_0 on a 3090: --fit's verdict "31 layers ( 8 overflowing)", the first of them GATE-only.
   assert.deepEqual(
     describePlacement({ offloaded: 31, total: 31, overflowLayers: 8, gpuWeightsMib: 20709.15, hostWeightsMib: 5639.4, expertCacheMib: null }),
-    { layers: "All 31 layers on the GPU, 8 with their experts in RAM", memory: "20 GiB in VRAM · 5.5 GiB in RAM" },
+    { layers: "All 31 layers on the GPU, expert weights of 8 layers in RAM", memory: "20 GiB in VRAM · 5.5 GiB in RAM" },
+  );
+  assert.equal(
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 1, gpuWeightsMib: 20000, hostWeightsMib: 900, expertCacheMib: null })
+      .layers,
+    "All 31 layers on the GPU, expert weights of 1 layer in RAM",
   );
   assert.deepEqual(
     describePlacement({ offloaded: 41, total: 41, overflowLayers: 0, gpuWeightsMib: 8161.75, hostWeightsMib: 417.3, expertCacheMib: null }),
@@ -222,9 +228,24 @@ test("--moe-cache-mib auto reads as every expert in RAM with a GPU cache", () =>
   });
   assert.ok(placement);
   assert.deepEqual(describePlacement(placement), {
-    layers: "All 31 layers on the GPU, all experts in RAM (6.0 GiB cache on the GPU)",
+    layers: "All 31 layers on the GPU, all experts in RAM (6.0 GiB expert cache on the GPU)",
     memory: "3.8 GiB in VRAM · 22 GiB in RAM",
   });
+});
+
+test("one memory pool gets one figure, and amounts under 0.1 GiB read in MiB", () => {
+  // Qwen3.5-4B Q4_K_M under Metal on an M1 Mac mini: MTL0 2,603.5 MiB and CPU 497.3 MiB, one pool.
+  const metal = { offloaded: 33, total: 33, overflowLayers: null, gpuWeightsMib: 2603.5, hostWeightsMib: 497.31, expertCacheMib: null };
+  assert.deepEqual(describePlacement(metal, "unified memory"), {
+    layers: "All 33 layers on the GPU",
+    memory: "3.0 GiB in unified memory",
+  });
+  assert.equal(describePlacement(metal).memory, "2.5 GiB in VRAM · 0.5 GiB in RAM");
+  // A small model's token embeddings would otherwise print as "0.0 GiB in RAM".
+  assert.equal(
+    describePlacement({ offloaded: 31, total: 31, overflowLayers: 0, gpuWeightsMib: 112.6, hostWeightsMib: 28.7, expertCacheMib: null }).memory,
+    "0.1 GiB in VRAM · 29 MiB in RAM",
+  );
 });
 
 test("the prefill label gives way once decoding started, not at 100%", () => {
