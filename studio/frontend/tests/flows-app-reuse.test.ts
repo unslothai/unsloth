@@ -251,3 +251,12 @@ test("an untouched Flow Input still sends its declared default", () => {
     topic: "cats",
   });
 });
+
+test("a Document input is an app field that takes an upload", () => {
+  const d = doc([{ ...node("doc", "input.file", [0, 0]), label: "Report" }]);
+  const [field] = appFields(d as never);
+  assert.equal(field.kind, "document");
+  const media = { kind: "document", ref: "sha256:ab", name: "q3.pdf" };
+  const filled = applyAppValues(d as never, [field], { [field.key]: media });
+  assert.deepEqual(filled.doc.nodes[0].params.asset, media);
+});

@@ -126,6 +126,7 @@ INPUT_VALUE_PARAM = {
     "input.image": "asset",
     "input.audio": "asset",
     "input.video": "asset",
+    "input.file": "asset",
     "input.list": "items",
 }
 

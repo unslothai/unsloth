@@ -13,6 +13,7 @@ export type AppFieldKind =
   | "image"
   | "audio"
   | "video"
+  | "document"
   | "list";
 
 /** One form field of a flow opened as an app: a Flow Input (by name) or an input block (by node id). */
@@ -35,6 +36,7 @@ const NODE_FIELDS: Record<string, { param: string; kind: AppFieldKind }> = {
   "input.image": { param: "asset", kind: "image" },
   "input.audio": { param: "asset", kind: "audio" },
   "input.video": { param: "asset", kind: "video" },
+  "input.file": { param: "asset", kind: "document" },
   "input.list": { param: "items", kind: "list" },
 };
 
@@ -156,7 +158,10 @@ export function applyAppValues(
     if (!known) return node;
     const next = { ...node.params, [known.param]: nodeValues.get(node.id) };
     // A typed-in seed is the seed to use; the untouched default keeps the block's randomize setting.
-    if (node.type === "input.seed" && Number(next.value) !== Number(node.params.value))
+    if (
+      node.type === "input.seed" &&
+      Number(next.value) !== Number(node.params.value)
+    )
       next.randomize = false;
     return { ...node, params: next };
   });

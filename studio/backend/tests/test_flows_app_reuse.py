@@ -340,3 +340,10 @@ async def test_rerolling_a_run_flow_block_reruns_the_called_flow():
     assert again.outputs["got"] == first.outputs["got"] and len(calls) == 1
     rerolled = await _run(eng, d, force_nodes = ["call"])
     assert len(calls) == 2 and rerolled.outputs["got"] != first.outputs["got"]
+
+
+def test_a_called_flows_document_input_takes_a_value():
+    d = doc([{**node("f", "input.file"), "label": "Report"}])
+    media = {"kind": "document", "ref": "sha256:" + "a" * 64, "name": "q3.pdf"}
+    filled, _ = apply_input_values(d, {"report": media})
+    assert filled["nodes"][0]["params"]["asset"] == media

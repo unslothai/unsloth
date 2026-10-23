@@ -17,8 +17,9 @@ import {
   startRun,
   uploadAsset,
 } from "../api";
-import { OutputValue } from "../editor/output-value";
 import { MediaThumb } from "../editor/media";
+import { OutputValue } from "../editor/output-value";
+import { DOCUMENT_ACCEPT, documentName } from "../editor/param-fields";
 import type { FlowDocument, MediaValue, RunEvent } from "../types";
 import {
   type AppField,
@@ -105,20 +106,25 @@ function FieldInput({
       );
     case "image":
     case "audio":
-    case "video": {
+    case "video":
+    case "document": {
       const media =
         value && typeof value === "object" ? (value as MediaValue) : null;
+      const docName = documentName(value);
       return (
         <div className="flex flex-col gap-2">
-          {media && (
+          {media && !docName && (
             <MediaThumb media={media} className="max-h-48 w-auto rounded-md" />
           )}
+          {docName && <span className="text-sm">{docName}</span>}
           {uploadError && (
             <span className="text-destructive text-xs">{uploadError}</span>
           )}
           <input
             type="file"
-            accept={`${field.kind}/*`}
+            accept={
+              field.kind === "document" ? DOCUMENT_ACCEPT : `${field.kind}/*`
+            }
             disabled={uploading}
             className="text-sm"
             onChange={(e) => {

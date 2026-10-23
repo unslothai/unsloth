@@ -147,7 +147,7 @@ function ModelField({ spec, value, onChange }: FieldProps) {
   );
 }
 
-const DOCUMENT_ACCEPT = ".pdf,.docx,.txt,.md,.markdown,.html,.htm";
+export const DOCUMENT_ACCEPT = ".pdf,.docx,.txt,.md,.markdown,.html,.htm";
 
 /** The file name of an uploaded document value, or null for anything else. */
 export function documentName(value: unknown): string | null {
