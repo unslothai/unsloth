@@ -71,6 +71,12 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
       )}
       {!hasOutputs && runtime.text && <OutputValue value={runtime.text} />}
       {hasOutputs &&
+        spec.outputs.length === 0 &&
+        // Preview and Result blocks have no output ports; show the value they display.
+        Object.entries(runtime.outputs ?? {}).map(([key, value]) => (
+          <OutputValue key={key} value={value} />
+        ))}
+      {hasOutputs &&
         spec.outputs.map((port) =>
           runtime.outputs && port.id in runtime.outputs ? (
             <div key={port.id} className="flex flex-col gap-1">

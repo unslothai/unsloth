@@ -76,7 +76,10 @@ function EditorBody({
     >
       <Toolbar
         onBack={() =>
-          void flushSave().finally(() => void navigate({ to: "/flows" }))
+          // A failed save keeps the editor open: leaving would drop the only copy of the edits.
+          void flushSave().then((saved) => {
+            if (saved) void navigate({ to: "/flows" });
+          })
         }
         onPlay={() =>
           void flushSave().then((saved) => {
