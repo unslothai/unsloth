@@ -21,6 +21,8 @@ def test_the_new_targets_are_artifact_mirrors_and_the_old_full_mirrors_are_not()
         "unsloth/Qwen-Image-Edit-2509-GGUF",
         "unsloth/Qwen-Image-Layered-GGUF",
         "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        "unsloth/MOSS-Image-SFT-FP8",
+        "unsloth/MOSS-Image-Base-FP8",
     ):
         assert df.mirror_hosts_artifacts(repo), repo
         assert df.mirror_hosts_artifacts(repo.lower()), repo

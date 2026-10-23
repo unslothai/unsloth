@@ -363,6 +363,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const showReplyTimes = useChatPreferencesStore(
+    (state) => state.showReplyTimes,
+  );
+  const setShowReplyTimes = useChatPreferencesStore(
+    (state) => state.setShowReplyTimes,
+  );
   const autoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.autoScrollWhileGenerating,
   );
@@ -778,6 +784,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.showReplyTimes")}
+          description={t("settings.chat.showReplyTimesDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.showReplyTimes")}
+            checked={showReplyTimes}
+            onCheckedChange={setShowReplyTimes}
           />
         </SettingsRow>
         <SettingsRow

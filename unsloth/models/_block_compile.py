@@ -144,6 +144,8 @@ def _mark_seq_dynamic(seq_len, obj):
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
 _GDN_OP = [None]
+# Packed batches (cu_seqlens) through the op: set eagerly with _GDN_OP from the op's self-check.
+_GDN_VARLEN = [False]
 
 
 def _hub_forwarded_params(fn):
@@ -177,20 +179,31 @@ def _gdn_chunk_adapter(original):
         beta = None,
         **kwargs,
     ):
+        cu_seqlens = (
+            kwargs.get("cu_seqlens") if forwarded is None or "cu_seqlens" in forwarded else None
+        )
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
             and kwargs.get("use_qk_l2norm_in_kernel") is True
-            # The op is the self-checked default: no state, varlen, scale, layout or gating flags.
+            # Only the self-checked default; packed batches only if their self-check passed.
+            and (cu_seqlens is None or (_GDN_VARLEN[0] and q.shape[0] == 1))
             and all(
                 value is None or value is False
                 for key, value in kwargs.items()
-                if key != "use_qk_l2norm_in_kernel" and (forwarded is None or key in forwarded)
+                if key not in ("use_qk_l2norm_in_kernel", "cu_seqlens")
+                and (forwarded is None or key in forwarded)
             )
         ):
             # Inductor pins a custom op's input strides; a sliced input fails at the next length.
             q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
-            out = torch.ops.unsloth.qwen3_5_gdn_chunk(q, k, v, g, beta, q.shape[-1] ** -0.5)
+            scale = q.shape[-1] ** -0.5
+            if cu_seqlens is None:
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk(q, k, v, g, beta, scale)
+            else:
+                out = torch.ops.unsloth.qwen3_5_gdn_chunk(
+                    q, k, v, g, beta, scale, cu_seqlens.contiguous()
+                )
             return out[0], None
         return original(q, k, v, g, beta, **kwargs)
 
@@ -392,7 +405,7 @@ def _prepare_gdn(layer, hidden_states):
     except Exception:
         pass
     try:
-        from ._gdn_op import _fla_ops
+        from ._gdn_op import _fla_ops, varlen_ok
 
         heads, dk, dv = gdn.num_v_heads, gdn.head_k_dim, gdn.head_v_dim
         B, T = hidden_states.shape[0], hidden_states.shape[1]
@@ -412,6 +425,7 @@ def _prepare_gdn(layer, hidden_states):
 
         if not _fla_ops(make_inputs):
             return
+        _GDN_VARLEN[0] = varlen_ok()
         _GDN_OP[0] = _route_fla_kernel() > 0
         if _GDN_OP[0]:
             _route_causal_conv(gdn)
@@ -553,6 +567,16 @@ _DEMOTION = (_FULL, _SPLIT, _OFF)
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
 
 
+def _training_flex_options(options):
+    """Force the main flex kernel: Inductor's decoding kernel for queries < 128 fails to lower
+    (GQA, head_dim 256), demoting every block. A caller's explicit choice is kept."""
+    if options is None:
+        return {"FORCE_USE_FLEX_ATTENTION": True}
+    if isinstance(options, dict) and "FORCE_USE_FLEX_ATTENTION" not in options:
+        return {**options, "FORCE_USE_FLEX_ATTENTION": True}
+    return options
+
+
 def _flex_split_hook():
     """Lets a block keep flex_attention out of its graph. Some masks do not lower inside a larger
     graph (torch 2.13, Gemma-4 12B blockwise mask: `unsupported operand type(s) for &:
@@ -568,6 +592,8 @@ def _flex_split_hook():
 
     @functools.wraps(flex)
     def flex_attention_forward(*args, **kwargs):
+        if _IN_BLOCK[0] != _OFF:
+            kwargs["kernel_options"] = _training_flex_options(kwargs.get("kernel_options"))
         if _IN_BLOCK[0] == _SPLIT and torch.compiler.is_compiling():
             return outside(*args, **kwargs)
         return flex(*args, **kwargs)
@@ -660,7 +686,7 @@ def _layer_kind(layer):
 
 def _wrap(cls, compile_options):
     original = cls.forward
-    # Unsloth layer forwards read packed lengths on the host (packing.py): packed calls stay stock.
+    # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
     try:
@@ -682,12 +708,24 @@ def _wrap(cls, compile_options):
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
 
+    def _inline(self, hidden_states, args, kwargs, mode):
+        previous = inline_flag[0]
+        inline_flag[0] = True
+        _IN_BLOCK[0] = mode
+        try:
+            return original(self, hidden_states, *args, **kwargs)
+        finally:
+            inline_flag[0] = previous
+            _IN_BLOCK[0] = _OFF
+
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
+        tracing = torch.compiler.is_compiling()
         mode = self.__dict__.get("_unsloth_block_mode")
         if mode is None:
             mode = state["start"].get(_layer_kind(self), _FIRST_MODE)
-            self.__dict__["_unsloth_block_mode"] = mode
+            if not tracing:
+                self.__dict__["_unsloth_block_mode"] = mode
         # Training only: eval logits stay bit-equal to transformers.
         if (
             mode == _OFF
@@ -697,8 +735,16 @@ def _wrap(cls, compile_options):
             or _forced_float32(self)
             or _zero3_partitioned(self)
             or (unsloth_forward and kwargs.get("packed_seq_lengths") is not None)
+            # PrefixGrouper's int segment table would recompile at every new GRPO length.
+            or (unsloth_forward and kwargs.get("prefix_seg_info") is not None)
         ):
             return original(self, hidden_states, *args, **kwargs)
+        if tracing:
+            # Inside a user's torch.compile the enclosing graph owns the layer: no dynamic marking
+            # (forbidden while tracing) and no nested compiled call, but the same in-block state.
+            if _eager_setup_pending(self):
+                _eager_setup(self, hidden_states)
+            return _inline(self, hidden_states, args, kwargs, mode)
         if not self.__dict__.get("_unsloth_block_moe_done", False):
             _experts_outside(self)
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
@@ -921,6 +967,37 @@ def _experts_outside(layer):
             inner._unsloth_block_outside = True
 
 
+def _experts_may_move(layer):
+    """Could _experts_outside move these experts? Precomputed: its bytecode scan cannot run while tracing."""
+    if os.environ.get("UNSLOTH_BLOCK_MOE", "auto") == "inside":
+        return False
+    for module in layer.modules():
+        experts = _experts_of(module)
+        if experts is not None and (
+            os.environ.get("UNSLOTH_BLOCK_MOE", "auto") == "outside"
+            or _lora_would_fold(experts)
+            or _selective_dequant_requested(experts)
+        ):
+            return True
+    return False
+
+
+def _eager_setup_pending(layer):
+    return (
+        not layer.__dict__.get("_unsloth_block_moe_done", False)
+        and layer.__dict__.get("_unsloth_block_moe_may_move", False)
+    ) or (_GDN_OP[0] is None and hasattr(layer, "linear_attn"))
+
+
+@torch.compiler.disable
+def _eager_setup(layer, hidden_states):
+    """Eager first-call setup under an enclosing compile (expert move, GDN self-check): one break, once."""
+    if not layer.__dict__.get("_unsloth_block_moe_done", False):
+        _experts_outside(layer)
+    if _GDN_OP[0] is None and hasattr(layer, "linear_attn"):
+        _prepare_gdn(layer, hidden_states)
+
+
 def _raise_cache_limit(kinds):
     # 4 graphs per kind (grad x flex retry): mixed-kind classes would hit dynamo's cache limit.
     config = torch._dynamo.config
@@ -964,6 +1041,10 @@ def patch_block_compile(model):
     for layer in compiled_layers:
         if type(layer) not in classes:
             classes.append(type(layer))
+        try:
+            layer.__dict__["_unsloth_block_moe_may_move"] = _experts_may_move(layer)
+        except Exception:
+            layer.__dict__["_unsloth_block_moe_may_move"] = True
     if not classes:
         return []
     inner = {type(m) for layer in compiled_layers for m in layer.modules()}

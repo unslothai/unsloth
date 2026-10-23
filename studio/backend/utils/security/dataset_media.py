@@ -102,6 +102,11 @@ def require_readable_media(path) -> None:
         _require_readable(str(path))
 
 
+_READ_THROUGH_PROTOCOLS = frozenset(
+    {"zip", "tar", "gzip", "bz2", "xz", "lz4", "zstd", "simplecache", "filecache", "blockcache"}
+)
+
+
 def _permitted_tokens(value, token_per_repo_id):
     """The token mapping the decoder may use for ``value``; raises for a path the account may not read."""
     if isinstance(value, str):
@@ -116,8 +121,11 @@ def _permitted_tokens(value, token_per_repo_id):
     from datasets.utils.file_utils import is_local_path
     from datasets.utils.py_utils import string_to_dict
 
-    # A chained URL ("zip://inner::<outer>") reads the outer location.
-    source = path.split("::")[-1]
+    # A chained URL ("zip://inner::<outer>") reads the outer location, but only an archive,
+    # compression or cache hop reads through to the next one: `file://x::hf://...` opens x.
+    *hops, source = path.split("::")
+    if any(hop.split("://", 1)[0] not in _READ_THROUGH_PROTOCOLS for hop in hops):
+        _refuse(path)
     if is_local_path(source):
         _require_readable(source)
         return token_per_repo_id

@@ -21,7 +21,7 @@ from core.inference.diffusion_memory import (
     plan_diffusion_memory,
 )
 
-# Planner inputs logged by real loads (MiB): transformer + companions, companions, text encoders.
+# Planner inputs (MiB) logged by real loads.
 QWEN21_GGUF = dict(model_dense_mib = 17_897, companion_dense_mib = 10_247, text_encoder_dense_mib = 8_959)
 ZIMAGE_BF16 = dict(model_dense_mib = 31_326, companion_dense_mib = 7_820, text_encoder_dense_mib = 7_629)
 FLUX1_BF16 = dict(model_dense_mib = 32_184, companion_dense_mib = 9_478, text_encoder_dense_mib = 9_318)
@@ -349,7 +349,6 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
     def on(dtype):
         return types.SimpleNamespace(backend = "cuda", vendor = "nvidia", dtype = dtype)
 
-    # Whether Z-Image promotes depends on the installed diffusers matching its fp16 guard recipe: pin both outcomes.
     monkeypatch.setattr(guard, "fp16_promotes_to_fp32", lambda fam: True)
     assert d._calibrated_activation(zimage, on(torch.float16)) is None
     monkeypatch.setattr(guard, "fp16_promotes_to_fp32", lambda fam: False)
@@ -360,7 +359,6 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
 
 
 def test_a_reference_family_the_guard_cannot_size_keeps_the_flat_plan(monkeypatch):
-    # Klein's references are unsized by the guard (no reference_resolutions); Qwen-Image-2.1 declares them.
     import core.inference.diffusion as d
     from core.inference.diffusion_families import detect_family
 
@@ -398,7 +396,6 @@ def _resident_after_placement(plan, sizes):
 def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted_tier(
     max_speed, tile_side, sizes
 ):
-    # Resident transformer lowers the free VRAM the guard reads; the 2048 canvas must still run tiled, not 400.
     act = calibrated_image_activation("qwen-image-2.1", max_speed = max_speed)
     promoted = 0
     for step in range(10 * 4, 48 * 4 + 1):
@@ -448,7 +445,7 @@ def _fits(verdict):
     )
 
 
-# Six 512px references at the Qwen-Image-2.1 condition weight: ~5980 MiB untiled, under the flat 8192 MiB plan.
+# ~5980 MiB untiled at the Qwen-Image-2.1 condition weight, under the flat 8192 MiB plan.
 SIX_REFS = dict(width = 512, height = 512, condition_pixels = int(6 * 512 * 512 * 0.32))
 
 
@@ -456,7 +453,7 @@ def test_references_on_a_calibrated_tier_are_checked_against_the_free_budget():
     total = 16 * GIB
     free = 4_266 + 1_229
     flat = _guard(free, total, calibrated = False, **SIX_REFS)
-    assert flat.action != dm.ACTIVATION_REFUSE  # the flat plan budgeted 8192 MiB for it
+    assert flat.action != dm.ACTIVATION_REFUSE
     verdict = _guard(free, total, calibrated = True, **SIX_REFS)
     assert verdict.action == dm.ACTIVATION_REFUSE
     assert "balanced memory mode" in verdict.message
@@ -529,7 +526,6 @@ def test_unconditioned_requests_on_a_calibrated_tier_are_unchanged(free, tile_si
     ],
 )
 def test_flat_tiers_ignore_the_controlnet_flag(free, kw):
-    # Flat tiers keep today's verdict: the flat plan already budgets conditioned work.
     base = _guard(free, 16 * GIB, calibrated = False, **dict(kw))
     with_cn = _guard(free, 16 * GIB, calibrated = False, controlnet = True, **dict(kw))
     assert with_cn.action == base.action
