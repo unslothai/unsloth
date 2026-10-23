@@ -491,3 +491,164 @@ def test_load_progress_is_unchanged_without_a_save(client, env, monkeypatch, cas
         "error": None,
         "error_code": None,
     }
+
+
+@pytest.mark.parametrize("saved", [True, False])
+@pytest.mark.parametrize("raises", [False, True])
+def test_the_saving_phase_lasts_until_the_acquire_registers_the_load(
+    env, monkeypatch, saved, raises
+):
+    if not saved:
+        monkeypatch.setattr(env, "save_slots_for_resume", lambda should_abort: None)
+    seen = []
+
+    def acquire():
+        seen.append(cs.saving_progress("image"))
+        arb.acquire_for(arb.DIFFUSION)
+        seen.append(cs.saving_progress("image"))
+        if raises:
+            raise arb.GpuBusyForAnotherAccountError(arb.CHAT, 1)
+
+    try:
+        _load(acquire = acquire)
+    except arb.GpuBusyForAnotherAccountError:
+        assert raises
+    assert seen == [{"phase": cs.SAVING_CHAT_CONTEXT}] * 2
+    assert cs.saving_progress("image") is None and cs._saving == {}
+
+
+def test_load_progress_reads_in_flight_through_the_load_preflight(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,  # noqa: F811
+):
+    import core.inference.diffusion_hub_evidence as evidence
+
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    assert client.post(f"{base}/load", json = body).status_code == 200
+    assert client.get(f"{base}/load-progress").json()["phase"] == "ready"
+    entered, gate = threading.Event(), threading.Event()
+
+    def _slow_prefetch(*args, **kwargs):
+        entered.set()
+        gate.wait(10)
+
+    monkeypatch.setattr(evidence, "prefetch_for_pick", _slow_prefetch)
+    monkeypatch.setattr(cs, "_preparing", {}, raising = False)
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        during = client.get(f"{base}/load-progress").json()
+    finally:
+        gate.set()
+    poster.join(10)
+    assert during["phase"] in ("downloading", "finalizing", "saving_chat_context")
+    assert answer["resp"].status_code == 200
+    assert getattr(cs, "_preparing", {}) == {}
+    assert client.get(f"{base}/load-progress").json()["phase"] == "ready"
+
+
+@pytest.mark.parametrize("phase", ["evidence", "chat_save"])
+def test_an_unload_during_the_preflight_cancels_the_load(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,
+    phase,  # noqa: F811
+):
+    import core.inference.diffusion_hub_evidence as evidence
+
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    monkeypatch.setattr(cs, "_preparing", {})
+    gate = threading.Event()
+    if phase == "evidence":
+        entered = threading.Event()
+
+        def _slow_prefetch(*args, **kwargs):
+            entered.set()
+            gate.wait(10)
+
+        monkeypatch.setattr(evidence, "prefetch_for_pick", _slow_prefetch)
+    else:
+        env.gate, entered = gate, env.entered
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        during = client.get(f"{base}/load-progress").json()["phase"]
+        stopped = client.post(f"{base}/unload")
+        after = client.get(f"{base}/load-progress").json()["phase"]
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert during == ("downloading" if phase == "evidence" else cs.SAVING_CHAT_CONTEXT)
+    assert stopped.status_code == 200
+    assert after not in ("downloading", "finalizing")
+    resp = answer["resp"]
+    assert resp.status_code == 409 and resp.json()["detail"] == "Diffusion load was cancelled."
+    assert client.get(f"{base}/status").json()["loaded"] is False
+    assert env.calls == [] and env.is_loaded and arb._owner == arb.CHAT
+    assert cs._pending is None and kw._kv_resume is None and _no_files(env)
+    assert cs._preparing == {} and cs._saving == {}
+
+
+def test_a_cancelled_preflight_stops_before_the_native_video_unload():
+    import inspect
+
+    import routes.inference as routes
+
+    src = inspect.getsource(routes.load_diffusion_model_gated)
+    assert src.index("raise_if_load_cancelled(") < src.index(
+        "_unload_native_video_sharing_the_sd_cpp_tree"
+    )
+
+
+def test_an_unload_while_the_acquire_waits_never_evicts_chat(
+    client, env, monkeypatch, healthy_diffusers
+):
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    monkeypatch.setattr(cs, "_preparing", {})
+    entered, gate = threading.Event(), threading.Event()
+    real_acquire_for = arb.acquire_for
+
+    def _waiting_acquire_for(*args, **kwargs):
+        if args and args[0] == arb.DIFFUSION:
+            entered.set()
+            gate.wait(10)
+        return real_acquire_for(*args, **kwargs)
+
+    monkeypatch.setattr(arb, "acquire_for", _waiting_acquire_for)
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        stopped = client.post(f"{base}/unload")
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert stopped.status_code == 200
+    resp = answer["resp"]
+    assert resp.status_code == 409 and resp.json()["detail"] == "Diffusion load was cancelled."
+    assert client.get(f"{base}/status").json()["loaded"] is False
+    assert (
+        not [c for c in env.calls if c[0] == "evict-chat"]
+        and env.is_loaded
+        and arb._owner == arb.CHAT
+    )
+    assert cs._preparing == {}

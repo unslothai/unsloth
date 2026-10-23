@@ -118,6 +118,18 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _forget_load_budget_snapshots():
+    def _forget():
+        for name, module in list(sys.modules.items()):
+            if name.endswith("core.inference.diffusion_memory"):
+                getattr(module, "_LOAD_BUDGET_FRACTIONS", {}).clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_mxc_isolation_settings():
     # The setting is cached for a second across tests that each get their own Studio home.
     def _forget():
