@@ -4239,6 +4239,12 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv || [ "$_STUDIO_UV_STAL
         substep "Check the network, or install uv manually: https://docs.astral.sh/uv/"
         exit 1
     fi
+    # Kept a uv below the floor: its bundled roots still trust the compromised emSign CA, so the OS
+    # store decides instead, where there is one. A download that failed while online lands here too.
+    if [ "$_uv_refreshed" = false ] && [ -z "${UV_SYSTEM_CERTS:-}" ] \
+       && { [ "$(uname -s)" = Darwin ] || [ -r /etc/ssl/certs/ca-certificates.crt ] || [ -r /etc/pki/tls/certs/ca-bundle.crt ]; }; then
+        export UV_SYSTEM_CERTS=1 UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
+    fi
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
     fi

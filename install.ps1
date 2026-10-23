@@ -7167,6 +7167,10 @@ exit 0
             substep "Install it from https://docs.astral.sh/uv/" "Yellow"
             return (Exit-InstallFailure "uv could not be installed")
         }
+        # The kept uv is below the floor: its bundled roots still trust the compromised emSign CA, so
+        # the Windows store decides instead. A download that failed while online lands here too.
+        if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
+        if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
     }
 
     # Ahead of the cache setup, which is the first thing to write inside the root and returns

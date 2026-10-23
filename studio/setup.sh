@@ -3427,6 +3427,25 @@ elif {
 fi
 # No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
 [ -z "$_SETUP_UV_PATH_OLD" ] || [ "$USE_UV" = true ] || ! command -v uv &>/dev/null || USE_UV=true
+# Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the OS store
+# decides instead, where there is one. A download that failed while online lands here too.
+if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}" ] && [ -z "${UV_SYSTEM_CERTS:-}" ] \
+   && command -v mktemp >/dev/null 2>&1; then
+    _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
+    _spu_ver=""
+    if [ -n "$_spu_file" ] && _setup_probe_version "$(command -v uv)" "$_spu_file"; then
+        read -r _spu_ver < "$_spu_file" 2>/dev/null || _spu_ver=""
+    fi
+    if [ -n "$_spu_file" ]; then rm -f "$_spu_file" 2>/dev/null || :; fi
+    case "$_spu_ver" in
+        "uv "*)
+            if ! _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
+               && { [ "$(uname -s)" = Darwin ] || [ -r /etc/ssl/certs/ca-certificates.crt ] || [ -r /etc/pki/tls/certs/ca-bundle.crt ]; }; then
+                export UV_SYSTEM_CERTS=1 UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
+            fi ;;
+    esac
+    unset _spu_file _spu_ver
+fi
 
 fast_install() {
     if [ "$USE_UV" = true ]; then

@@ -8071,8 +8071,9 @@ function Get-SetupPathUvTooOld {
     if ($StageRoot) { return $null }
     $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pathUv) { return $null }
-    $line = $null
-    try { $line = (& $pathUv.Source --version 2>$null | Select-Object -First 1) } catch {}
+    # Timed: a uv that hangs on --version must not stall every setup before the pinned one installs.
+    $null = Get-SetupUvExecutableVerdict -Path $pathUv.Source
+    $line = $script:SetupUvVersionLine
     if ("$line" -match '^\s*uv\s' -and
         -not (Test-SetupUvVersionAtLeast -VersionLine "$line" -Minimum $SetupUvMinVersion)) {
         return $pathUv.Source
@@ -8139,6 +8140,18 @@ if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
     } catch { }
     # No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
     if ($pathUvOld -and -not $UseUv -and (Get-Command uv -ErrorAction SilentlyContinue)) { $UseUv = $true }
+    # Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the
+    # Windows store decides instead. A download that failed while online lands here too.
+    if ($UseUv -and -not $script:UvPinnedInstalled) {
+        $activeUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($activeUv) {
+            $null = Get-SetupUvExecutableVerdict -Path $activeUv.Source
+            if (-not (Test-SetupUvVersionAtLeast -VersionLine "$($script:SetupUvVersionLine)" -Minimum $SetupUvMinVersion)) {
+                if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
+                if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
+            }
+        }
+    }
 }
 # Refresh-Environment rebuilt PATH from the registry, and the re-activation meant to put the venv
 # back sits inside a catch that swallows everything -- including a dot-source that died after
