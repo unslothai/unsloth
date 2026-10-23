@@ -2682,11 +2682,54 @@ def _h3_card_free_bytes(
     *,
     single_card_only: bool = False,
 ) -> Optional[int]:
-    """Free VRAM of the H3 render card, or None. ``single_card_only``: None on multi-card boxes, where one card's
-    scalar budget applied to every card would steer sd.cpp's own device pick."""
+    """Free VRAM of the H3 render card, or None. ``single_card_only`` (unpinned): sd.cpp picks the card itself and
+    applies one scalar ``--max-vram`` to every card, so on a multi-card box this is None at the default Budget (no
+    scalar budget steers its pick) and, under a lowered Budget, the SMALLEST budget-adjusted reading across the
+    visible cards: a cap that keeps every card's reserve whichever one sd.cpp renders on (None if any is unread)."""
     if single_card_only and _h3_visible_card_count(device) != 1:
-        return None
+        readings = _h3_unpinned_multi_card_readings(device)
+        if not readings or any(free is None for free, _total in readings):
+            return None
+        return min(free for free, _total in readings)
     return _h3_card_memory_bytes(device, ordinal)[0]
+
+
+def _h3_unpinned_multi_card_readings(
+    device: Optional[str],
+) -> Optional[list[tuple[Optional[int], int]]]:
+    """(budget-adjusted free, total) bytes of every visible card for an unpinned multi-card H3 render under a lowered
+    VRAM Budget, or None at the default / off CUDA / unread. Free is None for a card whose usage is unread."""
+    if device != "cuda":
+        return None
+    from .diffusion_memory import user_budget_reserve_share
+
+    if user_budget_reserve_share() <= 0:
+        return None
+    try:
+        from utils.hardware import get_visible_gpu_utilization, gpu_query
+
+        with gpu_query.fresh_reads():
+            devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
+        out: list[tuple[Optional[int], int]] = []
+        for entry in devices:
+            total = entry.get("vram_total_gb")
+            if total is None:
+                return None
+            total_bytes = int(float(total) * 1024**3)
+            used = entry.get("vram_used_gb")
+            free = (
+                None
+                if used is None
+                else max(
+                    0,
+                    int((float(total) - float(used)) * 1024**3)
+                    - _user_reserve_bytes("cuda", total_bytes),
+                )
+            )
+            out.append((free, total_bytes))
+    except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
+        return None
+    return out or None
 
 
 def _h3_card_reserve_bytes(
@@ -2696,8 +2739,11 @@ def _h3_card_reserve_bytes(
     single_card_only: bool = False,
 ) -> Optional[int]:
     """Bytes the user's VRAM Budget keeps free on the H3 render card: 0 at the default (no reading) and off CUDA, None
-    unread. ``single_card_only`` (unpinned): sd.cpp picks the card itself, so on a multi-card box the largest card's
-    reserve, which covers whichever it picks."""
+    unread. ``single_card_only`` (unpinned): sd.cpp picks the card itself and applies the scalar ``-(1 + reserve)``
+    spare to every card, so on a multi-card box the SMALLEST card's reserve. The largest card's would exceed a
+    smaller card's whole free reading, which sd.cpp resolves to 0 = no cap at all on that card; the free probe's
+    known-small refusal (smallest budget-adjusted reading across the cards) keeps every card's spare below its
+    free reading, so each card stays capped."""
     if device != "cuda":
         return 0
     from .diffusion_memory import user_budget_reserve_share
@@ -2720,7 +2766,7 @@ def _h3_card_reserve_bytes(
         return None
     if not totals:
         return None
-    return max(_user_reserve_bytes("cuda", total) for total in totals)
+    return min(_user_reserve_bytes("cuda", total) for total in totals)
 
 
 def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:

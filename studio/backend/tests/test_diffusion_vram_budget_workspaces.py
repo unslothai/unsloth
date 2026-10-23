@@ -259,11 +259,70 @@ def test_h3_card_reserve_probe(fraction, monkeypatch):
     fraction["value"] = 0.50
     assert V._h3_card_reserve_bytes("cuda", 0) == 12 * GIB
     assert V._h3_card_reserve_bytes("cuda", 1) == 40 * GIB
-    # unpinned on a multi-card box: sd.cpp picks the card, so the largest reserve covers it
-    assert V._h3_card_reserve_bytes("cuda", None, single_card_only = True) == 40 * GIB
+    # unpinned on a multi-card box: one scalar spare hits every card, so the smallest card's reserve (the largest
+    # would exceed the small card's whole free reading, which sd.cpp resolves to no cap at all)
+    assert V._h3_card_reserve_bytes("cuda", None, single_card_only = True) == 12 * GIB
     assert V._h3_card_reserve_bytes("cpu", 0) == 0
     monkeypatch.setattr(hardware, "get_visible_gpu_utilization", lambda **k: {"devices": []})
     assert V._h3_card_reserve_bytes("cuda", 0) is None
+
+
+def _two_card_h3_runtime(monkeypatch, devices):
+    import contextlib
+    import functools
+
+    import core.inference.video as V
+    from utils import hardware
+    from utils.hardware import gpu_query
+
+    monkeypatch.setattr(gpu_query, "fresh_reads", contextlib.nullcontext)
+    monkeypatch.setattr(hardware, "get_visible_gpu_utilization", lambda **k: {"devices": devices})
+    return types.SimpleNamespace(
+        vram_free_probe = functools.partial(
+            V._h3_card_free_bytes, "cuda", None, single_card_only = True
+        ),
+        vram_reserve_probe = functools.partial(
+            V._h3_card_reserve_bytes, "cuda", None, single_card_only = True
+        ),
+    )
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_unpinned_multi_card_h3_launch_keeps_every_cards_reserve(fraction, monkeypatch, explicit):
+    """An unpinned H3 load on a 24 GiB card (22 free) beside a 64 GiB one: at a 50% Budget the largest card's 32 GiB
+    reserve as a scalar spare (-33.00) exceeds the small card's whole free reading, which sd.cpp resolves to 0 = no
+    cap there. The launch must stay within the small card's 10 GiB budget-adjusted free whichever card sd.cpp picks."""
+    import core.inference.video as V
+    from core.inference import diffusion_memory as D
+    from core.inference import sd_cpp_args
+
+    D._LOAD_BUDGET_FRACTIONS.clear()
+    monkeypatch.setattr(sd_cpp_args, "explicit_vram_budget_enabled", lambda: explicit)
+    devices = [
+        {"visible_ordinal": 0, "vram_total_gb": 24.0, "vram_used_gb": 2.0},
+        {"visible_ordinal": 1, "vram_total_gb": 64.0, "vram_used_gb": 2.0},
+    ]
+    runtime = _two_card_h3_runtime(monkeypatch, devices)
+    flags = ["--offload-to-cpu", "--max-vram", "-1", "--stream-layers"]
+    # the default is unchanged: no scalar budget steers sd.cpp's own pick
+    assert V._h3_budgeted_launch_flags(runtime, flags) == flags
+    assert runtime.vram_free_probe() is None
+    fraction["value"] = 0.50
+    assert runtime.vram_free_probe() == 10 * GIB
+    launch = V._h3_budgeted_launch_flags(runtime, flags)
+    value = float(launch[launch.index("--max-vram") + 1])
+    for raw_free, budgeted_free in ((22 * GIB, 10 * GIB), (62 * GIB, 30 * GIB)):
+        # what sd.cpp resolves on each card: a positive cap as is, a negative one as free less the spare (<= 0: none)
+        resolved = value * GIB if value >= 0 else raw_free + value * GIB
+        if not explicit and raw_free == 62 * GIB:
+            continue  # a scalar spare cannot be both the small and the big card's reserve; the small card binds
+        assert 0 < resolved <= budgeted_free, (launch, raw_free)
+    # a card already inside its reserve is refused, never handed sd.cpp's raw reading
+    devices[0]["vram_used_gb"] = 11.5
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    with pytest.raises(H3NativeMemoryRefusal):
+        V._h3_budgeted_launch_flags(runtime, flags)
 
 
 # -- the rest of the sweep --------------------------------------------------------------------------------------------
