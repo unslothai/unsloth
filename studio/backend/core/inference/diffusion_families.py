@@ -1823,6 +1823,55 @@ def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
     return base
 
 
+def retired_copy_loads_from_disk(
+    source: Optional[str],
+    filename: Optional[str] = None,
+    *,
+    companion: bool = False,
+) -> bool:
+    """Whether a retired full copy that is already on disk loads as itself rather than through its base.
+
+    The copies were retired for size, not for their files: they hold the base's own bf16 weights. So a complete copy
+    (a snapshot path, or the copy's id with its ``refs/main`` snapshot in the live HF cache) still serves the load it
+    always did: offline the base's mirror may not be cached at all, and online switching would pull it again beside
+    the copy. ``filename`` is a single-file pick, which must be there too; it supplies the transformer, so that
+    folder needs only its config, as it does for a ``companion`` base (a single file's encoder / VAE / config). Anything incomplete goes through the base
+    as before. PURE: local stat only."""
+    key = (source or "").strip()
+    if not key or retired_full_copy_base(key) is None and not _is_local_path(key):
+        return False
+    try:
+        if _is_local_path(key):
+            root: Optional[Path] = Path(key).expanduser()
+        else:
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            copy_id = next(c for c in _RETIRED_FULL_COPIES if c == key.lower())
+            # A load by id resolves refs/main (offline too): a commit-pinned snapshot with no main ref is not found.
+            repo = Path(active_hf_hub_cache()) / f"models--{copy_id.replace('/', '--')}"
+            commit = (repo / "refs" / "main").read_text(encoding = "utf-8").strip()
+            root = repo / "snapshots" / commit if commit else None
+        if root is None or not root.is_dir():
+            return False
+        single = (filename or "").strip().replace("\\", "/")
+        if single and (
+            _safe_relative_parts(single) is None
+            or not _nonempty_file(root.joinpath(*single.split("/")))
+        ):
+            return False
+        from .diffusion_flux3 import FLUX3_COMPONENT_FOLDERS, FLUX3_INDEX
+
+        # A single file supplies the transformer's weights, so its folder is read for the config only.
+        return local_pipeline_components_are_complete(
+            root,
+            FLUX3_INDEX,
+            excluded_components = ("transformer",) if single or companion else (),
+            fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
+        )
+    except (OSError, StopIteration):
+        return False
+
+
 # Repo id (lowercased) -> the commit a load's plan pinned it to, for the duration of that load's assembly. Set only by
 # ``pinned_repo_revision`` around a video load; every hub-id CONFIG read of a base repo (encoder / VAE / transformer
 # configs, model_index, the LTX-2.5 companions) asks ``pinned_revision_kwargs`` so it reads the planned commit. Empty

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { isRetiredCopySnapshot, readImageModel, redirectRetiredImagePick, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -3395,6 +3395,8 @@ export function ImagesPage({
         const evicted = pendingEvicted.current;
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
+        // An incomplete retired-copy snapshot loaded as the base it copies: Reapply and the recall name that base now.
+        if (lastLoad.current) lastLoad.current = retiredSnapshotAsLoaded(lastLoad.current, loaded);
         if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
           const remembered = withEngagedFamily(lastLoad.current, loaded);
           rememberImageModel(remembered);
@@ -4165,6 +4167,7 @@ export function ImagesPage({
       repoId: string,
       opts: ImageLoadOptions,
       picked: LoadAdvanced,
+      displayRepoId?: string,
     ) => {
       // Normalised exactly as handleLoad does, so the plan describes the load that will run.
       const advanced = nativeLoadAdvanced(
@@ -4175,6 +4178,8 @@ export function ImagesPage({
       );
       return getDiffusionDownloadPlan({
         model_path: repoId,
+        // A retired copy's snapshot plans as its path: the display id lets the plan redirect it as the load will.
+        ...(displayRepoId ? { display_repo_id: displayRepoId } : {}),
         gguf_filename: opts.filename,
         base_repo: opts.baseRepo,
         model_kind: opts.kind,
@@ -4261,6 +4266,10 @@ export function ImagesPage({
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
+      // A downloaded snapshot of a retired copy loads from disk only when complete; an incomplete one goes through
+      // the base. Planned by its path, so the plan reaches the same verdict and the base's files are staged.
+      const retiredSnapshot = isRetiredCopySnapshot({ repoId, displayRepoId: opts.displayRepoId });
+      if (retiredSnapshot) source = "hub";
       // The retry's override rides the same snapshot, so its plan and its load both carry it.
       if (oversizedRetry) advanced = { ...advanced, allow_oversized_load: true };
       // Resolve the engine into the snapshot, so the plan and the load it fires cannot read different selects.
@@ -4281,7 +4290,9 @@ export function ImagesPage({
       let incompatible: string | null = null;
       let incompatibleCode: string | null = null;
       try {
-        const plan = await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
+        const plan = retiredSnapshot
+          ? await requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
+          : await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
@@ -4303,7 +4314,10 @@ export function ImagesPage({
             };
             stagedQuantRevert.current = ownRevert;
           }
-          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
+          // Every entry of a retired snapshot's plan is to fetch: the snapshot's own files are not in it.
+          const entries = retiredSnapshot
+            ? diffusionStagingEntries(plan.entries, repoId, { filename: opts.filename })
+            : diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) {
             pickToast.dismiss(pickToastId);
             if (downloadOnly) return true;
