@@ -300,7 +300,7 @@ export function RemoteCodeConsentDialog() {
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           {blocked ? null : (
-            <AlertDialogAction onClick={() => resolve(true)}>
+            <AlertDialogAction variant="dark" onClick={() => resolve(true)}>
               Enable and continue
             </AlertDialogAction>
           )}

@@ -145,7 +145,7 @@ export function Q4nxConvertCard() {
           {result?.text ??
             "Runs as a drop-in for a FastFlowLM catalog model of the same family and size."}
         </p>
-        <Button disabled={!canConvert} onClick={handleConvert}>
+        <Button variant="dark" disabled={!canConvert} onClick={handleConvert}>
           {running && <Spinner />}
           Convert
         </Button>

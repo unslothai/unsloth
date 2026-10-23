@@ -718,6 +718,7 @@ export function RecipeStudioPage({
               </div>
               <div className="mt-5 flex flex-col justify-center gap-2 sm:flex-row">
                 <Button
+                  variant="dark"
                   type="button"
                   className="corner-squircle"
                   onClick={openSourceBlockSheet}

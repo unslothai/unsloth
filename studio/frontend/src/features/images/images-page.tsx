@@ -23,7 +23,6 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
   Delete02Icon,
   DiceFaces03Icon,
   Download01Icon,
@@ -33,6 +32,8 @@ import {
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
+  PlusSignIcon,
+  Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -181,7 +182,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { ChevronDown, Recycle } from "lucide-react";
+import { Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -5065,7 +5066,7 @@ export function ImagesPage({
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           Add image {numberOf(referenceImages.length)}
         </Button>
       )}
@@ -6470,7 +6471,7 @@ export function ImagesPage({
                             // mouse focus anyway (index.css blanks it).
                             "rounded-full px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
-                              ? "bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"
+                              ? "bg-wash-15 text-foreground hover:bg-wash-20 dark:bg-wash-25 dark:hover:bg-wash-30"
                               : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
                           )}
                         >
@@ -6678,6 +6679,7 @@ export function ImagesPage({
                           setPrompt((p) => withLocalizedHint(p, localizedMode, localizedColors))
                         }
                       >
+                        <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                         Add region wording
                       </Button>
                     </div>
@@ -6910,7 +6912,7 @@ export function ImagesPage({
                           ]);
                         }}
                       >
-                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                         Add LoRA
                       </Button>
                     )}
@@ -7169,7 +7171,7 @@ export function ImagesPage({
               </Button>
             ) : (
               <>
-                <Button
+                <Button variant="dark"
                   className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
@@ -7470,7 +7472,7 @@ export function ImagesPage({
               {/* In-progress generation: a placeholder tile at the front so past images stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (

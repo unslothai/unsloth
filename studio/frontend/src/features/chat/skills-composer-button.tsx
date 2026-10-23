@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Scroll01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDownIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -118,7 +119,8 @@ export function SkillsComposerButton({
                 <XIcon className="composer-pill-x" />
               </span>
               <span>{t("skills.title")}</span>
-              <ChevronDownIcon
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
                 strokeWidth={1.5}
                 className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]"
               />

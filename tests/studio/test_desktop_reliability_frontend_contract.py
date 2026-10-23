@@ -638,7 +638,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "dark:border-white" not in decoration
     assert "dark:border-t-white" not in decoration
     # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
-    assert re.search(r'pinned &&\s*"rounded-tl-\[12px\] border-l"', decoration)
+    assert re.search(r'pinned &&\s*"rounded-tl-md border-l"', decoration)
     assert re.search(
         r'className="absolute top-\[12px\] '
         r"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] "
