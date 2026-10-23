@@ -53,23 +53,32 @@ test("every API example section has a platform toggle that follows the user's ma
     // Language and Platform toggle from the code box's own header
     assert.match(
       src,
-      /toolbar=\{\s*<>\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleLanguage"\)\}[\s\S]*?size="sm"\s*\/>\s*<PlatformToggle value=\{os\} onChange=\{setOs\} \/>\s*<\/>\s*\}/,
+      /toolbar=\{\s*<>[\s\S]*?<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleLanguage"\)\}[^/]*\/>\s*<PlatformToggle value=\{os\} onChange=\{setOs\} \/>\s*<\/>\s*\}/,
+      name,
+    );
+    assert.equal(
+      src.match(/<ExampleToggle\b/g)?.length,
+      name === "audio-api-examples" ? 1 : 2,
       name,
     );
   }
 });
 
-test("Request and Image or video are toggles; Audio keeps its grouped Example dropdown", () => {
+test("Request and Image or video toggle from the code box too; Audio keeps its grouped Example dropdown", () => {
   const usage = readSrc("features/settings/components/usage-examples.tsx");
   const media = readSrc("features/settings/components/media-api-examples.tsx");
   const audio = readSrc("features/settings/components/audio-api-examples.tsx");
   assert.match(
     usage,
-    /<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleRequest"\)\}/,
+    /toolbar=\{\s*<>\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleRequest"\)\}/,
   );
   assert.match(
     media,
-    /<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleKind"\)\}/,
+    /toolbar=\{\s*<>\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleKind"\)\}/,
+  );
+  assert.doesNotMatch(
+    readSrc("features/settings/components/api-example-parts.tsx"),
+    /size === "sm"|h-7/,
   );
   assert.doesNotMatch(media, /@\/components\/ui\/select/);
   assert.match(

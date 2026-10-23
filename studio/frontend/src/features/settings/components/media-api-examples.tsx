@@ -164,19 +164,6 @@ export function MediaApiExamples({
           {t("settings.apiKeys.mediaApi.description")}
         </p>
       </div>
-      <ExampleToggle
-        label={t("settings.apiKeys.exampleKind")}
-        value={kind}
-        options={MEDIA_API_KINDS.map((id) => ({
-          id,
-          label: t(
-            id === "images"
-              ? "settings.apiKeys.mediaApi.images"
-              : "settings.apiKeys.mediaApi.video",
-          ),
-        }))}
-        onChange={setKind}
-      />
       {pageModel == null || autoSwitch === false ? (
         <div className="flex min-w-0 flex-col gap-1 text-ui-11 leading-relaxed text-muted-foreground">
           {pageModel == null ? (
@@ -195,11 +182,23 @@ export function MediaApiExamples({
         toolbar={
           <>
             <ExampleToggle
+              label={t("settings.apiKeys.exampleKind")}
+              value={kind}
+              options={MEDIA_API_KINDS.map((id) => ({
+                id,
+                label: t(
+                  id === "images"
+                    ? "settings.apiKeys.mediaApi.images"
+                    : "settings.apiKeys.mediaApi.video",
+                ),
+              }))}
+              onChange={setKind}
+            />
+            <ExampleToggle
               label={t("settings.apiKeys.exampleLanguage")}
               value={lang}
               options={LANGS}
               onChange={pickLang}
-              size="sm"
             />
             <PlatformToggle value={os} onChange={setOs} />
           </>

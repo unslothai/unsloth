@@ -99,31 +99,23 @@ export function ExampleField({
   );
 }
 
-/** A segmented toggle in the Agents tab's style; "sm" sits in a code box's header. */
+/** A segmented toggle in the Agents tab's style, for a code box's header. */
 export function ExampleToggle<T extends string>({
   label,
   value,
   options,
   onChange,
-  size = "md",
 }: {
   label: string;
   value: T;
   options: { id: T; label: string }[];
   onChange: (next: T) => void;
-  size?: "sm" | "md";
 }) {
   const pillId = useId();
-  const height = size === "sm" ? "h-7" : "h-9";
   return (
     <fieldset className="flex min-w-0">
       <legend className="sr-only">{label}</legend>
-      <div
-        className={cn(
-          "hub-tab-toggle flex w-fit max-w-full min-w-0 items-center rounded-full",
-          height,
-        )}
-      >
+      <div className="hub-tab-toggle flex h-9 w-fit max-w-full min-w-0 items-center rounded-full">
         {options.map((option) => (
           <button
             key={option.id}
@@ -131,9 +123,7 @@ export function ExampleToggle<T extends string>({
             onClick={() => onChange(option.id)}
             aria-pressed={value === option.id}
             className={cn(
-              "relative inline-flex min-w-0 items-center justify-center whitespace-nowrap rounded-full font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              height,
-              size === "sm" ? "px-2.5 text-ui-11" : "px-3 text-ui-12",
+              "relative inline-flex h-9 min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               value === option.id
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -162,7 +152,6 @@ export function PlatformToggle({
       value={value}
       options={OS_OPTIONS.map((o) => ({ id: o.id, label: t(o.labelKey) }))}
       onChange={onChange}
-      size="sm"
     />
   );
 }
@@ -263,12 +252,13 @@ export function ExampleCodeBox({
 
   return (
     <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
-      <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/60 px-2 py-1.5 dark:border-white/5">
-        {toolbar}
+      {/* Copy stays on the first row when the toggles wrap. */}
+      <div className="flex min-w-0 items-start gap-2 border-b border-border/60 px-2 py-1.5 dark:border-white/5">
+        <div className="flex min-w-0 flex-1 flex-wrap gap-2">{toolbar}</div>
         <button
           type="button"
           onClick={handleCopy}
-          className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="my-1.5 ml-auto flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={
             copied
               ? t("settings.apiKeys.copied")

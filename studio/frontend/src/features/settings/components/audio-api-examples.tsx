@@ -310,7 +310,6 @@ export function AudioApiExamples({
               value={lang}
               options={LANGS}
               onChange={pickLang}
-              size="sm"
             />
             <PlatformToggle value={os} onChange={setOs} />
           </>
