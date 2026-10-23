@@ -1614,6 +1614,10 @@ def build_replica(module: Any, device: Any) -> Any:
     )
     if stray:
         raise RuntimeError(f"replica weights stayed on {', '.join(stray)}, not {device}")
+    # The ROCm flash gate is thread-local state its root hooks set; the copy runs on its own worker thread.
+    from .diffusion_attention import track_rocm_flash_replica
+
+    track_rocm_flash_replica(module, replica, device)
     return replica
 
 
@@ -1719,7 +1723,7 @@ def _copy_module(module: Any, device: Any) -> Any:
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache"})
+_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:
@@ -1816,9 +1820,9 @@ def weights_probe(module: Any, index_cache: Optional[dict] = None) -> Optional[b
                 key = (n, flat.device)
                 idx = cache.get(key)
                 if idx is None:
-                    idx = torch.linspace(
-                        0, n - 1, steps = min(n, _PROBE_SAMPLES), device = flat.device
-                    ).long()
+                    # integer spacing: a float32 linspace rounds n - 1 up to n past 2**24 bytes and reads past the end
+                    k = min(n, _PROBE_SAMPLES)
+                    idx = torch.arange(k, device = flat.device) * (n - 1) // max(k - 1, 1)
                     cache[key] = idx
                 by_device.setdefault(flat.device, []).append(flat.index_select(0, idx))
     if not by_device:
