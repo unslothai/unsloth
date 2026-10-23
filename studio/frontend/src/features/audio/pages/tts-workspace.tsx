@@ -638,8 +638,7 @@ export function TtsOutput({
           <div
             className="flex w-full flex-col gap-2"
             onErrorCapture={(event) => {
-              // Covers the waveform and the Edit/Convert comparison players. Ignore an
-              // original/source clip's error and late errors from a previous selection.
+              // Only this clip's link: source players and a previous selection's late errors are not ours to retry.
               const media = event.target;
               if (
                 selectedClipSrc &&

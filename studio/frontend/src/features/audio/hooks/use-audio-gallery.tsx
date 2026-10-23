@@ -132,7 +132,6 @@ export function useAudioGallery({
         if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) return;
         galleryCache.srcById.set(clip.id, url);
         setSrcById(galleryCache.srcById.toRecord());
-        // Never make playback wait for the full download or replace its source when bars arrive.
         void ensureClipPeaks(clip);
       } catch {
         toast.error("Could not load this audio clip. Try selecting it again.");
@@ -277,8 +276,7 @@ export function useAudioGallery({
 
   const selectClip = useCallback(
     (id: string, keepFallback = false) => {
-      // Ordinary gallery refreshes leave a playing source alone. A new selection gets a
-      // fresh link if its cached one is approaching the server's one-hour expiry.
+      // Only a new selection renews a near-expiry link: refreshes never swap a playing source.
       if (galleryCache.selectedId !== id && !galleryCache.srcById.isFresh(id)) {
         galleryCache.srcById.delete(id);
         setSrcById(galleryCache.srcById.toRecord());
