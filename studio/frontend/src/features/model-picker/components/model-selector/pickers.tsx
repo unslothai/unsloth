@@ -3289,6 +3289,8 @@ export function HubModelPicker({
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
+    // A placeholder repo has nothing to load; the Hub page still lists it.
+    hideEmptyUploads: true,
     accessToken,
     // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
     // offline-local behavior. Search rows render only with a query (showHfSection); browse reads
@@ -3303,6 +3305,7 @@ export function HubModelPicker({
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
+    hideEmptyUploads: true,
     accessToken,
     enabled: online && section === "recommended",
   });
@@ -3324,6 +3327,7 @@ export function HubModelPicker({
     sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
+    hideEmptyUploads: true,
     accessToken,
     enabled: communityDiscoveryEnabled && debouncedQuery.trim().length > 0,
   });
@@ -3333,6 +3337,7 @@ export function HubModelPicker({
     sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
+    hideEmptyUploads: true,
     accessToken,
     enabled: communityRecommendedEnabled && debouncedQuery.trim().length === 0,
   });

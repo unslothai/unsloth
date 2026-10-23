@@ -190,6 +190,7 @@ function makeMapModel(
   keepUnsupportedTags: boolean,
   idSuffix: string,
   deviceType: string | null,
+  hideEmptyUploads = false,
 ) {
   const suffixLower = idSuffix.toLowerCase();
   return (raw: unknown): HfModelResult | null => {
@@ -226,6 +227,16 @@ function makeMapModel(
       (Boolean(m.tags?.some((tag) => tag.toLowerCase() === "gguf")) &&
         !isDiffusersPipeline);
     if (excludeGguf && isGguf) {
+      return null;
+    }
+    // The Hub derives both the gguf metadata and the "gguf" tag from uploaded .gguf files, so a
+    // "-GGUF" repo with neither is a placeholder created ahead of its upload: nothing to load yet.
+    if (
+      hideEmptyUploads &&
+      isGgufLike(m.name) &&
+      !m.gguf &&
+      !m.tags?.some((tag) => tag.toLowerCase() === "gguf")
+    ) {
       return null;
     }
     const pipelineTag = m.task ?? m.pipeline_tag;
@@ -859,6 +870,8 @@ export function useHubModelSearch(
     ownerScope?: "unsloth" | "all";
     enabled?: boolean;
     keepUnsupportedTags?: boolean;
+    /** Drop "-GGUF" repos with no GGUF files uploaded yet. The Hub page keeps them listed. */
+    hideEmptyUploads?: boolean;
     channel?: HfModelSearchChannel | null;
     filters?: ModelSearchFilters;
   },
@@ -874,6 +887,7 @@ export function useHubModelSearch(
     ownerScope = "all",
     enabled = true,
     keepUnsupportedTags = false,
+    hideEmptyUploads = false,
     channel = null,
     filters,
   } = options ?? {};
@@ -1172,12 +1186,14 @@ export function useHubModelSearch(
         keepUnsupportedTags,
         channelIdSuffix,
         deviceType,
+        hideEmptyUploads,
       ),
     [
       excludeGguf,
       keepUnsupportedTags,
       channelIdSuffix,
       deviceType,
+      hideEmptyUploads,
     ],
   );
   const search = useHubPaginatedSearch(createIter, mapModel, { enabled });
