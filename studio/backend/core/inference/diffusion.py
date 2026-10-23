@@ -2600,14 +2600,21 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
-def _calibrated_activation(fam: Any, target: Any) -> Any:
-    """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
+def _calibrated_activation(
+    fam: Any,
+    target: Any,
+    *,
+    unpriced_references_ok: bool = False,
+) -> Any:
+    """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
+    ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
     # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
     if (
-        getattr(fam, "reference", False)
+        not unpriced_references_ok
+        and getattr(fam, "reference", False)
         and not tuple(getattr(fam, "reference_resolutions", ()) or ())
         and not is_flux3_family(fam)
     ):
@@ -9880,8 +9887,11 @@ class DiffusionBackend:
                             "unknown"  # adapters baked in at load: a build the key cannot name
                         )
                     try:
-                        # the phase-table seed holds only where it was measured
-                        pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                        # the phase-table seed holds only where it was measured; unpriced references size flat
+                        pipe._unsloth_phase_seeds = (
+                            _calibrated_activation(fam, target, unpriced_references_ok = True)
+                            is not None
+                        )
                         # the dense default / max tier seeds hold on the measured target only
                         pipe._unsloth_dense_tier_seeds = _measured_target(target)
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
