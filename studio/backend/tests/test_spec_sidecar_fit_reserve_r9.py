@@ -152,3 +152,30 @@ def test_an_owned_head_is_reserved_on_its_output_card(tmp_path, monkeypatch):
     head = _owned_head_margins(tmp_path / "b", monkeypatch, 2)
     assert head[1] - no_head[1] >= 2000
     assert no_head[0] - head[0] >= 2000
+
+
+@pytest.mark.parametrize(
+    "embedding, extras, endpoint",
+    [
+        (False, (), "/completion"),
+        (True, (), "/v1/embeddings"),
+        (False, ("--embeddings",), "/v1/embeddings"),
+    ],
+)
+def test_an_embedding_server_is_probed_through_embeddings(monkeypatch, embedding, extras, endpoint):
+    """--embedding restricts llama-server to embeddings, so a /completion probe would never
+    reach the poisoned compute path and the child would never be retired."""
+    from unittest.mock import patch
+
+    backend = _lc.LlamaCppBackend()
+    backend._port = 1
+    backend._extra_args = list(extras)
+    monkeypatch.setattr(_lc.LlamaCppBackend, "is_embedding_gguf", property(lambda self: embedding))
+    resp = type(
+        "Resp",
+        (),
+        {"status_code": 500, "json": lambda self: {"error": {"message": "Compute error."}}},
+    )()
+    with patch.object(_lc.httpx, "post", return_value = resp, create = True) as post:
+        assert backend._metal_compute_failure_confirmed() is True
+    assert post.call_args.args[0].endswith(endpoint)

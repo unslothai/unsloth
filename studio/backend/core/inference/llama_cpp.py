@@ -40988,12 +40988,22 @@ class LlamaCppBackend:
 
     def _metal_compute_failure_confirmed(self) -> bool:
         """Whether the child really fails compute: a poisoned Metal backend rejects every
-        graph, so a one-token completion comes back 500 "Compute error.". The log marker
-        alone is not proof, since request text can reach the server's error output."""
+        graph, so a one-token request comes back 500 "Compute error.". The log marker
+        alone is not proof, since request text can reach the server's error output. An
+        --embedding server is restricted to embeddings, so it is probed there."""
+        try:
+            embedding = bool(self.is_embedding_gguf)
+        except Exception:
+            embedding = False
+        embedding = embedding or any(
+            _flag_name(str(a)) in ("--embedding", "--embeddings") for a in (self._extra_args or ())
+        )
         try:
             resp = httpx.post(
-                f"{self.base_url}/completion",
-                json = {"prompt": " ", "n_predict": 1, "stream": False},
+                f"{self.base_url}/v1/embeddings" if embedding else f"{self.base_url}/completion",
+                json = {"input": " "}
+                if embedding
+                else {"prompt": " ", "n_predict": 1, "stream": False},
                 headers = self._auth_headers,
                 timeout = 10.0,
                 trust_env = False,
