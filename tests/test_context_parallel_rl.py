@@ -29,6 +29,9 @@ class _Decoder(torch.nn.Module):
         self.layers = torch.nn.ModuleList([torch.nn.Linear(8, 8)])
 
     def forward(self, input_ids = None, attention_mask = None, position_ids = None, output_hidden_states = False, **kwargs):
+        if cp.get_cp_manager() is not None:
+            # Per-shard masks differ across peers (only the last holds padding): the hook must drop it.
+            assert attention_mask is None
         h = self.embed_tokens(input_ids) * (1 + 0.01 * position_ids[..., None].float())
         first = h
         # Sum over earlier tokens of the FULL sequence (stands in for Ulysses attention).

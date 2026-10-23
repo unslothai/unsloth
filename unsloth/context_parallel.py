@@ -1035,9 +1035,15 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     seq_len = batch["input_ids"].shape[1]
     manager._prepare_inputs(batch)
     manager._ulysses_shard(batch)
-    for name in ("input_ids", "attention_mask", "position_ids"):
+    for name in ("input_ids", "position_ids"):
         if batch.get(name) is not None:
-            kwargs[name] = batch[name]
+            # Fresh in the ambient grad / inference mode: a shard view keeps its base's inference flag.
+            kwargs[name] = batch[name].clone()
+    # Validated right padding needs no mask under Ulysses (attention drops it anyway). Passing the shard
+    # would differ per peer (only the last shard holds padding) and recompile the compiled decoder
+    # blocks on that rank alone.
+    if "attention_mask" in kwargs:
+        kwargs["attention_mask"] = None
     stack.append(seq_len)
     return args, kwargs
 
