@@ -190,3 +190,11 @@ test("line charts over numbers use a numeric x axis; bars and text stay categori
   assert.equal(kinds.numericChartX({ type: "line", x: ["q4", "q8"] }), false);
   assert.equal(kinds.numericChartX({ type: "line", x: [] }), false);
 });
+
+test("numbers stored as text sort by value, not character by character", () => {
+  const rows = [{ n: "10" }, { n: "2" }, { n: "1.9" }, { n: "1.10" }];
+  assert.deepEqual(
+    sortRows(rows, "n", false).map((r) => r.n),
+    ["1.10", "1.9", "2", "10"],
+  );
+});

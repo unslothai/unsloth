@@ -158,9 +158,15 @@ export function sortRows(
       const yEmpty = y === null || y === undefined;
       if (xEmpty || yEmpty)
         return xEmpty === yEmpty ? a.index - b.index : xEmpty ? 1 : -1;
+      // Numbers stored as text ("10", "2") sort by value too.
+      const nx = typeof x === "string" && x.trim() !== "" ? Number(x) : x;
+      const ny = typeof y === "string" && y.trim() !== "" ? Number(y) : y;
       const order =
-        typeof x === "number" && typeof y === "number"
-          ? x - y
+        typeof nx === "number" &&
+        typeof ny === "number" &&
+        Number.isFinite(nx) &&
+        Number.isFinite(ny)
+          ? nx - ny
           : String(x).localeCompare(String(y));
       return order === 0 ? a.index - b.index : sign * order;
     })
