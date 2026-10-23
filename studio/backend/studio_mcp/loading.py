@@ -952,7 +952,9 @@ def _mark_media_unloaded(kind: tuple[str, str], ended: int) -> None:
     registered = _MEDIA_REGISTERED.get(kind, {})
     for g in [g for g in registered if g <= ended]:
         del registered[g]
-    _MEDIA_READY.get(kind, set()).difference_update(range(ended + 1))
+    # Filter the few ready entries: ``ended`` is a lifetime counter, so never iterate up to it.
+    ready = _MEDIA_READY.get(kind, set())
+    ready.difference_update([g for g in ready if g <= ended])
 
 
 def _newer_media_registered(
@@ -1075,18 +1077,21 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
             in_flight = phase not in (None, "ready", "error")
             replacements = _newer_media_registered(key, job.generation)
             if replacements:
-                # Only a newer load never shown ready may be the one in flight; else it is this job's.
-                if (
-                    in_flight and any(g not in _MEDIA_READY.get(a, ()) for a, g in replacements)
-                ) or any(
+                # Only a newer load never shown ready may be the one in flight; else it is this job's,
+                # which will evict a replacement still resident, so that resident one defers nothing.
+                if in_flight:
+                    if any(g not in _MEDIA_READY.get(a, ()) for a, g in replacements):
+                        return  # A newer load may be the one in flight: what the caller wants now.
+                elif any(
                     _resident_matches(status, *_MEDIA_REGISTERED[a][g]) for a, g in replacements
                 ):
-                    return  # A newer load is (or may be) what is resident: what the caller wants now.
-                # Evicted outside this process's unload (another load, Studio's own unload route):
-                # those registrations are stale and no longer defer this unload.
-                for a, g in replacements:
-                    _MEDIA_REGISTERED.get(a, {}).pop(g, None)
-                    _MEDIA_READY.get(a, set()).discard(g)
+                    return  # A newer load is what is resident: what the caller wants now.
+                else:
+                    # Evicted outside this process's unload (another load, Studio's own unload
+                    # route): those registrations are stale and no longer defer this unload.
+                    for a, g in replacements:
+                        _MEDIA_REGISTERED.get(a, {}).pop(g, None)
+                        _MEDIA_READY.get(a, set()).discard(g)
             registered = _MEDIA_REGISTERED.get(key, {})
             # Another variant of the same repo is another model, not the load this job stopped.
             if not in_flight and not _resident_matches(status, job.model, job.body):

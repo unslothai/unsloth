@@ -1755,6 +1755,83 @@ def test_a_late_media_unload_does_not_defer_its_own_in_flight_load_to_an_evicted
     assert state["unloads"] == [None, "downloading"]
 
 
+def test_a_late_media_unload_stops_its_in_flight_load_while_the_replacement_is_still_resident(
+    monkeypatch, fast_polls
+):
+    # A newer load of another model is shown ready, then the stopped POST returns and its own load
+    # starts while the replacement is still resident. The in-flight phase is the stopped load's
+    # (every newer load was shown ready), so the late unload must go out, not defer to the resident.
+    other = "Wan-AI/Wan2.1-T2V-1.3B"
+    _late_unload_scenario(monkeypatch, post_s = ())
+    state = {"resident": None, "phase": None, "unloads": []}
+
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        json_body = None,
+        **_kw,
+    ):
+        if path == "/api/inference/video/load":
+            model = json_body["model_path"]
+            if model == LTX:
+                await asyncio.sleep(0.5)
+                state["phase"] = "downloading"  # The POST answers; its load goes on.
+                return {"loaded": False}
+            await asyncio.sleep(0.05)
+            state["resident"] = model
+            return {"loaded": True, "repo_id": model}
+        if path == "/api/inference/video/unload":
+            state["unloads"].append(state["phase"] or state["resident"])
+            state["resident"] = state["phase"] = None
+            return UNLOADED
+        if path.endswith("/load-progress"):
+            if state["phase"]:
+                return {"phase": state["phase"]}
+            return READY if state["resident"] else {"phase": None}
+        if path == "/api/inference/video/status" and state["resident"]:
+            return {"loaded": True, "repo_id": state["resident"]}
+        return UNLOADED
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+    monkeypatch.setattr(loading, "try_json", lambda caller, path: route_json("GET", path))
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        newer = await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = other,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        assert newer.loaded is True
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [None, "downloading"]
+
+
+def test_marking_media_unloaded_does_not_iterate_the_request_counter():
+    # The lifetime request counter can be large: an unload filters the few ready entries.
+    key = ("counter", "video")
+    loading._MEDIA_READY[key] = {3, 10**8, 10**8 + 5}
+    started = time.monotonic()
+    try:
+        loading._mark_media_unloaded(key, 10**8)
+        assert loading._MEDIA_READY[key] == {10**8 + 5}
+    finally:
+        loading._MEDIA_READY.pop(key, None)
+        loading._MEDIA_UNLOADED.pop(key, None)
+    assert time.monotonic() - started < 1.0
+
+
 def test_a_stopped_post_that_fails_while_the_unload_runs_needs_no_late_unload(
     monkeypatch, fast_polls
 ):
