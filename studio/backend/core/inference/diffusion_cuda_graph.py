@@ -126,14 +126,9 @@ def _disabled_reason() -> str:
     return f"disabled by {CUDA_GRAPH_DISABLE_ENV}"
 
 
-# ``torch.cuda.graph`` defaults to CUDA's global capture mode, which prohibits the "potentially unsafe" calls
-# (event queries and syncs, host reads, pinned allocs, empty_cache, a thread's first cuBLAS / cuDNN call) from EVERY
-# thread while it records: any of them on another Studio thread (the other backend's render, a decode, a poller)
-# invalidates the recording. So every capture records in ``thread_local`` mode (as the per-block graphs and
-# torch.compile's own CUDA graphs do): another thread's calls are then not checked, and they cannot enter a private
-# capture stream. Two calls still break a recording from any thread in any mode: a device-wide synchronize and a
-# second capture's entry (its own synchronize, the shared pool). So captures are exclusive of each other, and
-# Studio's device syncs go through ``synchronize_outside_capture`` (the shared side, ``outside_capture``).
+# Captures record in ``thread_local`` mode: the default global mode lets ANY thread's unsafe call (event sync, host
+# read, first cuBLAS use) invalidate the recording. A device-wide sync or a second capture's entry still breaks it in
+# any mode, so captures are mutually exclusive and Studio syncs go through ``synchronize_outside_capture``.
 #
 # Calls gated with ``hold_off_capture`` take the lock ACROSS the call: a flag read first would be a TOCTOU (the reader
 # sees "no capture", a capture begins, the call lands inside it). Capture raises the depth UNDER the lock, so either
@@ -147,8 +142,7 @@ _OUTSIDE_JOBS = 0
 
 
 class _ThreadGateState(threading.local):
-    """Per thread: held replica work (``depth``), own recordings (``recording``), ``hold_off_capture`` holds
-    (``lock_held``). Class defaults keep the reads on the sync hot path cheap (no missing-attribute lookup)."""
+    """Per-thread gate counters; class defaults keep hot-path reads cheap."""
 
     depth = 0
     recording = 0
@@ -192,7 +186,7 @@ def capture_refused_now() -> bool:
 
 
 def _wait_outside_drained(own: int) -> None:
-    """Under ``_CAPTURE_IDLE``: wait for other threads' held work to drain (its syncs would break the recording), else raise ``CaptureRefused``."""
+    """Under ``_CAPTURE_IDLE``: wait for other threads' held work to drain, else raise ``CaptureRefused``."""
     drained = _other_holds(own, _OUTSIDE_PARKED[0]) <= 0
     if not drained and not _OUTSIDE_STUCK[0]:
         if own:
@@ -238,7 +232,6 @@ def _capturing():
     seen = _retired_pools_seen()
     with _CAPTURE_IDLE:
         for _ in range(_ENTRY_SETTLE_TRIES):
-            # Another thread's recording first: this entry's synchronize (and its pool) would break it.
             _wait_recordings_ended(mine)
             if seen is not None:
                 _settle_retired_pools(seen)
@@ -267,7 +260,7 @@ def _capturing():
 
 
 def _wait_recordings_ended(mine: int) -> None:
-    """Under ``_CAPTURE_IDLE``: wait for every recording but this thread's own (``mine``), else raise ``CaptureRefused``."""
+    """Under ``_CAPTURE_IDLE``: wait for other threads' recordings, else raise ``CaptureRefused``."""
     if _CAPTURE_DEPTH - mine <= 0:
         return
     if not _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH - mine <= 0, timeout = RETIRED_FLUSH_WAIT_S):
@@ -277,12 +270,11 @@ def _wait_recordings_ended(mine: int) -> None:
 
 
 def recording_here() -> bool:
-    """Whether THIS thread is inside ``_capturing`` (its own recording)."""
+    """Whether THIS thread is inside ``_capturing``."""
     return getattr(_OUTSIDE_LOCAL, "recording", 0) > 0
 
 
 def _sync_device(torch: Any, device: Any) -> None:
-    # No argument when none was given: the exact call the converted sites made before.
     if device is None:
         torch.cuda.synchronize()
     else:
@@ -290,21 +282,18 @@ def _sync_device(torch: Any, device: Any) -> None:
 
 
 def synchronize_outside_capture(device: Any = None, *, refuse: bool = False) -> None:
-    """``torch.cuda.synchronize(device)`` for any Studio thread: a device-wide sync breaks a recording on ANY thread,
-    in any capture mode, so it waits for another thread's recording to end and is counted (``capture_hold``) while it
-    runs, so no capture enters until it returns: the shared side of the capture gate. Uncontended: two lock round trips.
+    """Device sync that waits out another thread's recording and holds captures off while it runs.
 
-    A recording still going after ``RETIRED_FLUSH_WAIT_S`` raises ``CaptureRefused`` when ``refuse`` (a capture's own
-    pre-record sync: nothing recorded yet), else the sync runs anyway, as before. Under ``hold_off_capture`` (the lock
-    already holds captures off) or inside this thread's own recording (a bug that fails that capture either way) it syncs
-    straight away. Not for finalizers: one can run while its thread holds the capture lock."""
+    After ``RETIRED_FLUSH_WAIT_S`` it raises ``CaptureRefused`` if ``refuse`` (nothing recorded yet), else syncs anyway.
+    Under ``hold_off_capture`` or this thread's own recording it syncs at once, so it never self-deadlocks.
+    Not for finalizers: one can run while its thread holds the (non-reentrant) capture lock."""
     torch = _torch()
     if _OUTSIDE_LOCAL.recording or _OUTSIDE_LOCAL.lock_held:
         _sync_device(torch, device)
         return
     global _OUTSIDE_JOBS
     with _CAPTURE_IDLE:
-        # Checked and counted in one step: a capture entering after it sees the hold, one recording before it is waited.
+        # Check and count atomically, so no capture slips in between.
         ended = _CAPTURE_DEPTH == 0 or _CAPTURE_IDLE.wait_for(
             lambda: _CAPTURE_DEPTH == 0, timeout = RETIRED_FLUSH_WAIT_S
         )
@@ -556,7 +545,6 @@ def capture_in_progress() -> bool:
         return _CAPTURE_DEPTH > 0
 
 
-# Another thread's work is not checked against the recording (see ``_CAPTURE_LOCK``); this thread's still is.
 CAPTURE_MODE = "thread_local"
 
 
@@ -565,8 +553,6 @@ def _graph_with_flush(
     pool: Any = None,
     stream: Any = None,
 ):
-    """``torch.cuda.graph`` (synchronize, ``empty_cache``, record) in ``CAPTURE_MODE``; ``stream`` None is torch's
-    default capture stream."""
     return _torch().cuda.graph(graph, pool = pool, stream = stream, capture_error_mode = CAPTURE_MODE)
 
 

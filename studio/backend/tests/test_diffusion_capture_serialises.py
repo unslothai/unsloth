@@ -103,7 +103,6 @@ def _expect_graph_kept(step, handle, x, first, again):
     try:
         assert handle.capture_error is None, handle.capture_error
         assert not handle.poisoned
-        # the second call replays the recorded graph: no second capture
         assert handle.stats["captures"] == 1 and handle.stats["replays"] >= 1, handle.stats
         with torch.inference_mode():
             ref = torch.nn.functional.gelu(step.lin(x)) * 2
@@ -114,8 +113,7 @@ def _expect_graph_kept(step, handle, x, first, again):
 
 @pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
 def test_a_recording_survives_another_threads_decode_tail():
-    """The other backend's VAE decode / save on a thread of its own: cuBLAS and cuDNN first use, a host read, an event
-    query and a pinned buffer, none of which the recording thread can see coming."""
+    """Another thread's decode (first cuBLAS/cuDNN use, host read, event query, pinned alloc) during a recording."""
 
     def decode_tail():
         w = torch.randn(64, 64, device = "cuda")
@@ -134,8 +132,7 @@ def test_a_recording_survives_another_threads_decode_tail():
 
 @pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
 def test_two_threads_recording_at_once_both_keep_their_graphs():
-    """Image and video backends render on their own threads: the second capture's entry (its synchronize, the shared
-    pool) used to land inside the first's recording, and both loads then ran eager."""
+    """A second capture's entry waits out the first's recording instead of breaking it."""
     other = _Step().cuda()
     other_handle = cg.GraphedForward(other).enable()
     y = torch.randn(8, 64, device = "cuda")
@@ -281,8 +278,7 @@ def test_synchronize_under_hold_off_capture_does_not_retake_the_lock(monkeypatch
 
 
 def test_a_captures_own_sync_is_refused_but_a_plain_sync_still_runs_after_the_wait(monkeypatch):
-    """Past the wait, a capture's pre-record sync refuses (nothing recorded yet, the step runs eager) instead of
-    breaking the other recording; any other sync runs, as it did before the gate."""
+    """Past the wait a capture's pre-record sync refuses; any other sync still runs."""
     calls = []
     monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: calls.append(device))
     monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 0.2)
