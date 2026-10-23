@@ -756,6 +756,8 @@ export const de = {
       returnToChat: "Zurück zum Chat",
       returnToChats: "Zurück zu {count} Chats",
       chatGenerating: "Wird generiert",
+      chatAwaitingApproval: "Wartet auf Freigabe",
+      chatUnread: "Ungelesen",
       compare: "Vergleichen",
       search: "Suchen",
       hub: "Modell-Hub",

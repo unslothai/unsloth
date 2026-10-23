@@ -34614,6 +34614,9 @@ async def produce_openai_chat_completions(
                             chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = final_visible)))
                         return chunks
 
+                    # Set by the frame that ends a park: other tabs clear their prompt on it, so it
+                    # is forwarded first and the slot is retaken before the generator does more.
+                    resume_before_next = False
                     while True:
                         if cancel_event.is_set():
                             mark_current_response_failed()
@@ -34623,6 +34626,10 @@ async def produce_openai_chat_completions(
                             mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
+
+                        if resume_before_next:
+                            resume_before_next = False
+                            await _park_admission(False)
 
                         next_task = asyncio.create_task(
                             asyncio.to_thread(next, gen, _tool_sentinel)
@@ -34668,7 +34675,7 @@ async def produce_openai_chat_completions(
                                 and event.get("status") == "awaiting_approval"
                             )
                         ):
-                            await _park_admission(False)
+                            resume_before_next = True
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
@@ -34680,6 +34687,7 @@ async def produce_openai_chat_completions(
                             "tool_args",
                             "skill_load",
                             "tool_model_note",
+                            "tool_approved",
                         ):
                             if (
                                 event["type"] == "skill_load"
@@ -36680,8 +36688,8 @@ async def produce_openai_chat_completions(
                         yield _OPENAI_TOOL_HEARTBEAT_SSE
                         continue
 
-                    if event["type"] in ("tool_output", "tool_args"):
-                        # Live stdout/stderr, or tool-call arguments as the model writes them.
+                    if event["type"] in ("tool_output", "tool_args", "tool_approved"):
+                        # Live stdout/stderr, tool-call arguments as the model writes them, or an approval.
                         if _ui_events:
                             yield f"data: {json.dumps(event)}\n\n"
                         elif _drop_keepalive.due():
