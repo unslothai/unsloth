@@ -401,9 +401,8 @@ def _pin_host_weights(
     members: list = [[] for _ in bufs]
     wrapped: dict = {}
     for name, p, attr, view, index, start in placed:
-        if attr is None:
-            # Wrapped (torchao) inner tensors stay with the stock module.to: the chunk upload re-points p.data only.
-            members[index].append((name, start, view))
+        # A torchao wrapper weight gets one entry per inner tensor, under the weight's name.
+        members[index].append((name, start, view))
         if name.startswith("\0"):
             name = name[1:]
             _set_buffer(module, name, view)
@@ -497,13 +496,46 @@ def _upload_pinned_chunks(
     and with the device cache emptied between components each of those was a cudaMalloc (and a cudaFree on the way
     out): under host load that ran at 57-120 MiB/s against a 50 GiB/s link. Chunks are near-uniform, so the next
     component reuses the previous one's cached chunks. Same bytes, same strides, so outputs are bit-identical.
-    Weights no longer at their pinned host view (replaced, reassigned) are left for the stock copy. Returns bytes."""
+    Weights no longer at their pinned host view (replaced, reassigned) are left for the stock copy. A torchao
+    wrapper weight (int8 / fp8) is rebuilt over its inner tensors' device slices with ``__tensor_unflatten__`` and
+    swapped in, as the stock ``_to_copy`` + ``Module.to`` do. Returns bytes."""
     import torch
 
     params = dict(module.named_parameters())
     buffers = dict(_named_buffers(module))
     copied = 0
     moved: list = []
+    wrapped: dict = {}
+    for name, p in params.items():
+        kept = host.get(name)
+        inner = _wrapper_inner(kept) if kept is not None else None
+        if (
+            inner is None
+            or owner.get(name) is not p
+            or p.device.type != "cpu"
+            or type(p) is not type(kept)
+            or _tensor_ptr(p.data) != _tensor_ptr(kept)
+        ):
+            continue
+        wrapped[name] = dict(inner)
+    # (name, inner attr) -> device slice once uploaded
+    inner_dev: dict = {}
+
+    def _inner_attr(name: str, view: Any) -> Optional[str]:
+        for attr, t in (wrapped.get(name) or {}).items():
+            if _same_view(t, view):
+                return attr
+        return None
+
+    for _buf, entries in layout:
+        for name, _start, view in entries:
+            attr = _inner_attr(name, view)
+            if attr is not None:
+                inner_dev[(name, attr)] = None
+    # Only a wrapper with every inner tensor in the layout is rebuilt; the rest stay for the stock module.to.
+    whole = {
+        name for name, inner in wrapped.items() if all((name, attr) in inner_dev for attr in inner)
+    }
     try:
         for buf, entries in layout:
             live = []
@@ -515,20 +547,24 @@ def _upload_pinned_chunks(
                     if b is not None and buffer_host.get(leaf) is b and _same_view(b, view):
                         live.append((name, start, view))
                     continue
+                if name in wrapped:
+                    if name in whole and _inner_attr(name, view) is not None:
+                        live.append((name, start, view))
+                    continue
                 p = params.get(name)
                 kept = host.get(name)
                 if (
                     p is not None
                     and owner.get(name) is p
                     and kept is not None
+                    and _wrapper_inner(kept) is None
                     and _same_view(kept, view)
                     and _same_view(p.data, view)
                 ):
                     live.append((name, start, view))
             if not live:
                 continue
-            # Pack the movable weights: replaced weights and torchao wrapper tensors (left to the stock module.to)
-            # would otherwise leave holes that are allocated and uploaded for nothing.
+            # Pack live weights so skipped ones leave no allocated holes.
             used, slots = 0, []
             for name, start, view in sorted(live, key = lambda e: e[1]):
                 used = -(-used // _PIN_ALIGN) * _PIN_ALIGN
@@ -557,15 +593,28 @@ def _upload_pinned_chunks(
                 )
                 if name.startswith("\0"):
                     _set_buffer(module, name[1:], dev)
+                elif name in wrapped:
+                    inner_dev[(name, _inner_attr(name, view))] = dev
+                    continue
                 else:
                     params[name].data = dev
                 moved.append((name, view))
+        for name in sorted(whole):
+            p, kept = params[name], host[name]
+            names, ctx = kept.__tensor_flatten__()
+            rebuilt = type(kept).__tensor_unflatten__(
+                {attr: inner_dev[(name, attr)] for attr in names}, ctx, kept.shape, kept.stride()
+            )
+            torch.utils.swap_tensors(p, torch.nn.Parameter(rebuilt, requires_grad = p.requires_grad))
+            moved.append((name, kept))
     except Exception:
         # Put every weight back on its host view; the stock per-tensor copy then runs (and raises a real OOM itself).
         for name, view in moved:
             try:
                 if name.startswith("\0"):
                     _set_buffer(module, name[1:], view)
+                elif name in wrapped:
+                    _repoint(params[name], view)
                 else:
                     params[name].data = view
             except Exception:  # noqa: BLE001

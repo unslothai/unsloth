@@ -3599,6 +3599,7 @@ export function ImagesPage({
       model_kind: status?.model_kind,
       gguf_filename: status?.gguf_filename,
       display_repo_id: status?.display_repo_id,
+      base_repo: status?.base_repo,
       component_files: status?.component_files,
     });
     if (resident) lastLoad.current = resident;

@@ -183,7 +183,11 @@ class StreamEncode:
         try:
             _wrap("decode", _decode_wrapper)
             _wrap("tiled_decode", _tiled_wrapper)
-            handle = vae.decoder.register_forward_hook(self._on_chunk, with_kwargs = True)
+            # Disabled for Dynamo: under a compiled decode (UNSLOTH_DIFFUSION_COMPILE_VAE=1) the hook's thread, queue and
+            # CUDA stream code broke the graph at each of them; as one eager island the chunks still stream.
+            handle = vae.decoder.register_forward_hook(
+                self._torch.compiler.disable(self._on_chunk), with_kwargs = True
+            )
         except Exception:  # noqa: BLE001 - a VAE that refuses the hooks just encodes afterwards
             self.invalidate("hooks refused")
         try:

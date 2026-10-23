@@ -260,6 +260,7 @@ from .diffusion_speed import (
     arm_graphs_after_placement,
     normalize_speed_mode,
     resolve_speed_mode,
+    family_render_cudnn_scope,
     restore_backend_flags,
     settle_compile_fallback,
     snapshot_backend_flags,
@@ -5240,10 +5241,11 @@ class DiffusionBackend:
             # sat unreproducible for want of the frames this logs.
             logger.error("diffusion.load_failed: %s", exc, exc_info = True)
             if self._state is not None:
-                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from .gpu_arbiter import DIFFUSION, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(DIFFUSION)
+                restore_media_need(DIFFUSION)
                 restore_resident_metadata(DIFFUSION)
             try:
                 clear_gpu_cache()
@@ -13503,6 +13505,7 @@ class DiffusionBackend:
                                 zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
+                                family_render_cudnn_scope(state.family, state.device),
                             ):
                                 chunk_variation = (
                                     variation_seed_list[

@@ -1118,7 +1118,7 @@ def test_base_fetch_is_cancellable_between_files(monkeypatch):
     out = mb.fetch_base_snapshot(
         "Tongyi-MAI/Z-Image-Turbo", None, local_files_only = False, cancel_event = cancel
     )
-    assert out == "/hub/snapshots/abc"
+    assert Path(out) == Path("/hub/snapshots/abc")  # native separators on Windows
     assert fetched == files[:3]  # README is outside the allow patterns
 
 
@@ -1647,7 +1647,7 @@ def test_online_companions_land_under_one_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
     out = mb.fetch_base_snapshot(BASE, None, local_files_only = False)
     assert roots == [live] * len(files)
-    assert out == f"{live}/snapshots/abc"
+    assert Path(out) == Path(live) / "snapshots" / "abc"
 
 
 def test_cache_only_companions_skip_a_snapshot_without_tokenizer_config(monkeypatch, tmp_path):
