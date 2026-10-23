@@ -382,6 +382,24 @@ def test_a_worker_not_at_its_recorded_address_waits_for_discovery_before_a_load(
     assert not cs._UNVERIFIED and cs.discovery_settle_s() == 0.0
 
 
+def test_the_discovery_wait_runs_from_the_failed_verification_not_the_listener_start(
+    monkeypatch, relays
+):
+    # A long-running listener must still wait one announcement round for a worker that just moved.
+    relays.only["node-b"] = (("192.168.1.21", 50123), REFUSED)
+    monkeypatch.setattr(cs, "_sighting_candidates", lambda node_id: [])
+    monkeypatch.setattr(cs, "_LISTENER", object())
+    monkeypatch.setattr(cs, "_LISTENER_STARTED", time.monotonic() - 3600)
+    monkeypatch.setattr(cs, "DISCOVERY_SETTLE_S", 0.3)
+    cs.load_nodes()
+    assert "node-b" in cs._UNVERIFIED
+    assert 0 < cs.discovery_settle_s() <= 0.3
+    # Still unreachable on the next load: the wait counts from the first failure, so it is not repeated.
+    cs._UNVERIFIED["node-b"] = time.monotonic() - 10
+    cs.load_nodes()
+    assert "node-b" in cs._UNVERIFIED and cs.discovery_settle_s() == 0.0
+
+
 def test_a_reset_master_gets_a_new_relay_manager(monkeypatch):
     # Leave + re-pair makes a new root: a running Studio must drop the old certificate.
     current = {"master": SimpleNamespace(fingerprint = "1" * 64)}
