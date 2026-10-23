@@ -3249,8 +3249,6 @@ def test_connect_skips_a_minted_key_the_owner_does_not_hold(fake_studio, tmp_pat
 
 
 def test_connect_remints_a_cached_key_the_server_never_stamped(fake_studio, tmp_path, monkeypatch):
-    # A Studio that reports key purposes only lets a stamped key spend saved Connections, so a key
-    # minted under the same name before the stamp existed is replaced, not replayed.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-01dc0de001dc0de0"]}}}))
     http_json = start._http_json
@@ -3272,7 +3270,6 @@ def test_connect_remints_a_cached_key_the_server_never_stamped(fake_studio, tmp_
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]
     assert len(mints) == 1
-    # The stamped key is then replayed without another mint.
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]

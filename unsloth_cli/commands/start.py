@@ -1936,8 +1936,7 @@ def _agent_api_key(
     listed = _http_json(
         "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
     ).get("api_keys", [])
-    # A server that reports purposes only honors a key stamped at mint, so a key minted before
-    # the stamp existed is still accepted but cannot reach saved Connections: mint a new one.
+    # A server reporting purposes only lets stamped keys reach saved Connections: re-mint unstamped ones.
     stamped = any("purpose" in entry for entry in listed)
     owned = {
         entry.get("key_prefix")

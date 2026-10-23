@@ -32616,8 +32616,7 @@ def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
 
 # Provider replay metadata agent clients drop: Gemini 3 answers 400 to a functionCall without its
 # thoughtSignature (tool call extra_content), and Anthropic to a tool continuation without its signed
-# thinking (message extra_content). Keep both by the tool ids the client echoes back, capped per
-# subject so one account's traffic cannot evict another's, and over all subjects.
+# thinking (message extra_content). Keep both by echoed tool id, capped per subject and overall.
 _CONNECTION_TOOL_EXTRAS: collections.OrderedDict = collections.OrderedDict()
 _CONNECTION_TOOL_EXTRAS_MAX = 4096
 _CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX = 64

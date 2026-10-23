@@ -1762,8 +1762,7 @@ DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 # What `unsloth start` mints for its coding agents (unsloth_cli/commands/start.py). Only a desktop
 # session can create a key with this name, and only the owner's may spend saved Connections.
 UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
-# Stamped on that key by the desktop mint. Authority follows the stamp, not the name: older Studios
-# let any caller pick the name, so an unstamped namesake gets nothing and `unsloth start` re-mints.
+# Authority follows this mint stamp, not the name: older Studios let any caller pick the name.
 UNSLOTH_START_API_KEY_PURPOSE = "unsloth_start"
 
 
