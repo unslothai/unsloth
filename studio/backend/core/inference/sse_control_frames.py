@@ -54,6 +54,7 @@ _CONTROL_KEYS = (
     "_diffusionFrame",
     "_reasoningDurationMs",
     "_contextUsage",
+    "_generationProgress",
     "_mcp_provenance",
     "quote_cut",
 )
