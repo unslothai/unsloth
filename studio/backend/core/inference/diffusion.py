@@ -2975,12 +2975,12 @@ def _record_peak_probe(
         if PHASE_PRE_DECODE in split and PHASE_DECODE in split:
             pre, dec = int(split[PHASE_PRE_DECODE]), int(split[PHASE_DECODE])
             phases = {
-                # the scale every whole-render value is on: a streamed placement's prefetch window included
+                # whole-render scale (prefetch window included)
                 PHASE_PRE_DECODE: pre + pad,
                 PHASE_DECODE: dec + pad,
-                # only the VAE runs during the decode: no encoder or denoiser group streams, so no window to pad
+                # nothing streams during the decode, so no window
                 PHASE_DECODE_UNPADDED: dec,
-                # this placement's own scale, what a load keeping every weight resident holds
+                # what an all-resident load holds
                 PHASE_UNPADDED: max(pre, dec),
             }
         quant = with_workflow(quant, workflow)

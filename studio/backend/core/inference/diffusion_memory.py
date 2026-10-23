@@ -3090,9 +3090,7 @@ def with_label_part(label: str, name: str, value: str) -> str:
     )
 
 
-# Image workflows other than text-to-image record under their own key (``wf:<workflow>``): an edit's reference encode and
-# longer denoiser sequence must not make the next text-to-image load more conservative. Loads place from the
-# text-to-image key; ``measured_request_extra_mib`` reads a workflow's own key for its requests.
+# Non-txt2img workflows record under ``wf:<workflow>`` so an edit's larger peak never inflates the next txt2img load.
 WORKFLOW_PART = "wf"
 TXT2IMG_WORKFLOW = "txt2img"
 
@@ -3108,10 +3106,8 @@ def with_workflow(label: str, workflow: Optional[str]) -> str:
 def learned_phase_split(
     family: Optional[str], quant: Optional[str], speed_mode: Optional[str]
 ) -> Optional[dict]:
-    """The phases learned for this key at the default size (``diffusion_measured_peaks.PHASES`` -> MiB, plus
-    ``pixels`` / ``quadratic`` of the bucket), when they account for the whole-render peak: every phase sits in its
-    bucket and the larger padded phase reaches the whole-render value. None otherwise (no phases, a store from before
-    them, a peak a render without phases recorded)."""
+    """Learned phases (+ ``pixels`` / ``quadratic``) at the default bucket, or None unless every phase shares the
+    whole-render bucket and the larger padded phase reaches the whole-render peak."""
     from .diffusion_measured_peaks import PHASE_DECODE, PHASE_PRE_DECODE, PHASES, lookup_bucket
 
     if quant is None:
@@ -3594,13 +3590,9 @@ def refine_plan_from_loaded_weights(
         # The flat plan's hooks stay installed and whole groups are kept resident within the room, so an oversized
         # request can stream them again (release_resident_groups) and run exactly as the flat plan would.
         stream_te = bool(getattr(plan, "stream_text_encoders", False))
-        # Phase-aware encoder residency (diffusion_measured_peaks phases). The whole-render peak sits on the streamed
-        # scale: it carries the prefetch window a streaming placement would hold, which a placement keeping every
-        # weight resident never allocates, and which no phase holds during the VAE decode (only the VAE runs). So:
-        # a resident transformer with every encoder resident is checked against the unpadded peak; failing that, the
-        # encoders are sized against the padded phases that run them (prompt encode + steps). What either keeps
-        # resident beyond the whole-render plan is lent to the decode: release_for_decode streams it again only if
-        # free memory is short of the decode's own peak when the decode starts.
+        # The whole-render peak includes the stream prefetch window, which an all-resident placement never allocates:
+        # all-resident is checked against the unpadded peak, else encoders against the padded pre-decode phase. Extra
+        # residency is lent to the decode; release_for_decode re-streams it only if free memory is short then.
         pre_headroom = resident_headroom = None
         split = None
         if stream_te and policy == OFFLOAD_GROUP:
@@ -4111,11 +4103,9 @@ def release_for_decode(
     device: Any = None,
     logger: Any = None,
 ) -> Optional[Callable[[], None]]:
-    """At the VAE decode of a load whose plan lent encoder residency to it: when free memory (driver free plus the
-    allocator's cached blocks) is short of the decode's learned peak x margin, stream that many MiB of resident groups
-    again (text encoders first) and return the restore that pins them back after the decode; else None. ComfyUI does
-    the same at its decode (``load_models_gpu(memory_required=...)`` frees only the shortfall). The decode itself is
-    untouched (untiled stays untiled), so the output is bit-identical."""
+    """If free memory (driver + allocator cache) is short of the learned decode peak x margin, stream the shortfall of
+    lent groups again (text encoders first) and return the restore; else None. Mirrors ComfyUI's
+    ``load_models_gpu(memory_required=...)``. The decode is untouched, so output is bit-identical."""
     lend = getattr(pipe, DECODE_LEND_ATTR, None)
     if not lend:
         return None

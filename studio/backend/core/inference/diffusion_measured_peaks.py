@@ -11,14 +11,9 @@ measurement above the seed means this machine needs more) and supplies one where
 seed, because one render does not exercise every phase (a prompt-cache hit skips the encoder, a smaller request
 decodes less), and the seed was measured on the worst phase.
 
-Phases: an image render also records, next to the whole-render value, the peak before its VAE decode (``pre_decode``:
-prompt encode + every step) and the decode's (``decode``: an upper bound, the whole render's, when the decode stayed
-under the earlier phases), both on the whole-render value's scale (the streamed prefetch window pad included), plus
-two values without that pad: the decode's (``decode_unpadded``: nothing streams during it, only the VAE runs) and the
-render's (``unpadded``: what a later load that keeps every weight resident holds, since a resident encoder or denoiser
-holds no prefetch window). The planner sizes encoder residency against the phases that run the encoders and lends the
-rest to the decode (``diffusion_memory.refine_plan_from_loaded_weights``). A store written before phases existed has
-none: its entries keep placing from the whole-render peak. ``UNSLOTH_DIFFUSION_PHASE_PEAKS=0`` ignores the phases.
+Phases: ``pre_decode`` / ``decode`` on the whole-render scale (prefetch window pad included), ``decode_unpadded`` /
+``unpadded`` without it (only the VAE runs at decode; resident weights hold no window). Pre-phase stores place from the
+whole-render peak. ``UNSLOTH_DIFFUSION_PHASE_PEAKS=0`` ignores the phases.
 
 ``UNSLOTH_DIFFUSION_LEARNED_PEAKS=0`` turns lookups and recording off; ``UNSLOTH_DIFFUSION_LEARNED_PEAKS_FILE``
 names the JSON file (default ``<studio cache>/diffusion_measured_peaks.json``).
@@ -242,8 +237,7 @@ def record(
     still answers a full-size one (squared with ``quadratic``: SDPA math attention grows with pixels squared, and the
     key's entry keeps scaling that way). Returns True when the stored value rose. ``held`` (a list) gets True appended
     when the store holds at least this peak afterwards (raised, or already covered): False when nothing was persisted.
-    ``phases`` ({name in ``PHASES``: MiB}, each at most ``peak_mib``) are kept the same way, max wins, beside the
-    whole-render peak; they never change it or the return value."""
+    ``phases`` ({name: MiB}, capped at ``peak_mib``) are kept max-wins and never affect the return value."""
     if (
         not enabled()
         or peak_mib is None
@@ -541,10 +535,8 @@ class PeakProbe:
         self.phase_peaks: dict = {}
 
     def mark_decode(self) -> None:
-        """The VAE decode is about to run: the peak so far is the encode + denoise phases'. Read without a reset (other
-        measurements share the counters) and host-side, which is what the allocator's peak counts. A second decode in
-        the window (a split batch) interleaves phases again: no split is reported then. ``phase_peaks`` after
-        ``finish``: {``pre_decode``, ``decode``} MiB above the start, without any pad."""
+        """Read the pre-decode peak without a reset (other measurements share the counters). A second decode (split
+        batch) interleaves phases, so no split is reported."""
         if self.device is None or self.base is None:
             return
         self.decodes += 1
