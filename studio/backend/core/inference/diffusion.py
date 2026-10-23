@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
@@ -4722,6 +4723,7 @@ class DiffusionBackend:
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
     @_account_owned_load
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -12582,6 +12584,7 @@ class DiffusionBackend:
         )
 
     @_release_render_on_unload
+    @holds_inference
     @with_hires
     def generate(
         self,
