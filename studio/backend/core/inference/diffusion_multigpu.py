@@ -2286,6 +2286,12 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
+        # FLUX.3's modular denoise step passes only kwargs named in forward's signature: expose the wrapped one.
+        try:
+            import inspect
+            self.__signature__ = inspect.signature(self.orig_forward)
+        except (TypeError, ValueError):
+            pass
         self.inner: Any = None
         self._pairing = False
         self.had_override = "forward" in module.__dict__

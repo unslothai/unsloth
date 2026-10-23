@@ -49,6 +49,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { ProgressiveRows } from "@/components/progressive-rows";
+import {
+  returnToChatThreadId,
+  useApprovalWaitingStore,
+  watchApprovalWaiting,
+} from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
@@ -644,6 +649,7 @@ function NavItem({
   dataTour,
   className,
   spinner,
+  waiting,
   tooltip,
   tooltipAction,
   alwaysTooltip,
@@ -662,6 +668,8 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  // Replaces the spinner with the approval mark; the text is read after the label.
+  waiting?: string;
   onIntent?: () => void;
   // Stable hook for the UI smokes, which assert a row spins rather than greys out
   // while its capability verdict is still unmeasured.
@@ -705,7 +713,7 @@ function NavItem({
         isActive={active}
         data-tour={dataTour}
         data-testid={testId}
-        data-spinner={spinner ? "true" : undefined}
+        data-spinner={spinner && !waiting ? "true" : undefined}
         className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
@@ -715,13 +723,27 @@ function NavItem({
             {badge}
           </Badge>
         )}
-        {spinner && (
-          // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
-          <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+        {waiting ? (
+          <>
+            <span className="sr-only"> {waiting}</span>
+            <ApprovalMark className="ml-auto mr-1.5 size-3.5 group-data-[collapsible=icon]:hidden" />
+          </>
+        ) : (
+          spinner && (
+            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+          )
         )}
       </SidebarMenuButton>
-      {spinner && (
-        <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+      {waiting ? (
+        <ApprovalMark
+          testId="nav-approval"
+          className="pointer-events-none absolute right-1 top-1 hidden size-2.5 group-data-[collapsible=icon]:block"
+        />
+      ) : (
+        spinner && (
+          <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+        )
       )}
       {overlay}
     </div>
@@ -731,6 +753,28 @@ function NavItem({
       {flyout ? flyout(row) : row}
       {children}
     </SidebarMenuItem>
+  );
+}
+
+/** The spinner's stand-in while a run waits on Allow / Deny. Its shape, not only its colour, tells it from
+ *  the unread dot (amber-accent themes, colour-blind users); static, since motion means working. */
+function ApprovalMark({ className, testId }: { className: string; testId?: string }) {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+      data-testid={testId}
+      className={cn("shrink-0", className)}
+    >
+      <circle cx="7" cy="7" r="7" className="fill-amber-700 dark:fill-amber-400" />
+      <path
+        d="M7 3.6v4.1"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        className="stroke-white dark:stroke-neutral-900"
+      />
+      <circle cx="7" cy="10.3" r="1" className="fill-white dark:fill-neutral-900" />
+    </svg>
   );
 }
 
@@ -2038,6 +2082,9 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Watched here, not by the tool cards: only the open chat mounts those.
+  const approvalWaitingThreadIds = useApprovalWaitingStore((s) => s.threadIds);
+  useEffect(() => watchApprovalWaiting(useChatRuntimeStore), []);
   // Shared with the thread's own Fork, so neither surface can post a second one.
   const forkInFlight = useForkInFlight((s) => s.forking);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
@@ -2061,13 +2108,27 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
-  // Where "Return to Chat" lands: the newest running chat, not an empty New Chat draft (map
-  // insertion order is start order). Compare rows resolve back to the pair id /chat expects.
+  const activeThreadId = isChatRoute
+    ? (search.thread as string | undefined) ??
+      (search.compare as string | undefined) ??
+      storeThreadId ??
+      undefined
+    : undefined;
+  // Less the open chat: its card is already on screen.
+  const approvalWaitingElsewhere = useMemo(() => {
+    if (!activeThreadId) return approvalWaitingThreadIds;
+    const open = allChatItems.find((item) => item.id === activeThreadId);
+    const openIds = new Set(open ? getSidebarItemThreadIds(open) : [activeThreadId]);
+    return new Set([...approvalWaitingThreadIds].filter((id) => !openIds.has(id)));
+  }, [approvalWaitingThreadIds, activeThreadId, allChatItems]);
+  const anyChatWaiting = useMemo(
+    () => [...approvalWaitingElsewhere].some((id) => runningByThreadId[id]),
+    [approvalWaitingElsewhere, runningByThreadId],
+  );
+  // Where "Return to Chat" lands: a running chat, not an empty New Chat draft. Compare rows
+  // resolve back to the pair id /chat expects.
   const runningTarget = useMemo(() => {
-    const ids = Object.entries(runningByThreadId)
-      .filter(([, on]) => on)
-      .map(([id]) => id);
-    const id = ids.length > 0 ? ids[ids.length - 1] : null;
+    const id = returnToChatThreadId(runningByThreadId, approvalWaitingElsewhere);
     if (!id) return null;
     const pair = allChatItems.find(
       (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
@@ -2075,13 +2136,7 @@ export function AppSidebar() {
     return pair
       ? { id: pair.id, compare: true as const }
       : { id, compare: false as const };
-  }, [runningByThreadId, allChatItems]);
-  const activeThreadId = isChatRoute
-    ? (search.thread as string | undefined) ??
-      (search.compare as string | undefined) ??
-      storeThreadId ??
-      undefined
-    : undefined;
+  }, [runningByThreadId, approvalWaitingElsewhere, allChatItems]);
   // A chat started from a section's header joins it when its first send gives it an id, which
   // lands in the store while the address still names the new chat. Leaving that chat first lets
   // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
@@ -5447,6 +5502,9 @@ export function AppSidebar() {
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
+    const awaitingApproval =
+      isGenerating &&
+      threadIds.some((threadId) => approvalWaitingElsewhere.has(threadId));
     const alreadyUnread = threadIds.some((threadId) =>
       unreadThreadIds.has(threadId),
     );
@@ -5472,7 +5530,7 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
-      showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : showForkMark ? "pr-9" : undefined,
+      showWorkSpinner ? "pr-16" : hasUnreadActivity || showForkMark ? "pr-9" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
       showWorkSpinner && "[@media(pointer:coarse)]:pr-[calc(78px*var(--ui-space-scale,1))]",
@@ -5530,7 +5588,8 @@ export function AppSidebar() {
               data-thread-type={item.type}
               data-thread-id={item.id}
               data-generating={isGenerating ? "true" : undefined}
-              aria-busy={isGenerating || undefined}
+              // Waiting on the user is not busy.
+              aria-busy={(isGenerating && !awaitingApproval) || undefined}
               isActive={activeThreadId === item.id}
               data-selected={selectedChatIds.has(item.id) ? "true" : undefined}
               className={buttonClass}
@@ -5551,6 +5610,12 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
+              {/* The mark and the dot sit outside the button, so its name carries them. */}
+              {awaitingApproval ? (
+                <span className="sr-only"> {translate("shell.navigation.chatAwaitingApproval")}</span>
+              ) : hasUnreadActivity ? (
+                <span className="sr-only"> {translate("shell.navigation.chatUnread")}</span>
+              ) : null}
             </SidebarMenuButton>
             {showWorkSpinner ? (
               // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
@@ -5568,25 +5633,30 @@ export function AppSidebar() {
                     : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
               >
-                <Spinner
-                  data-testid="chat-row-spinner"
-                  // role="status" + label: announced, not motion-only.
-                  label={
-                    isGenerating
-                      ? translate("shell.navigation.chatGenerating")
-                      : "Queued"
-                  }
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                />
+                {awaitingApproval ? (
+                  <ApprovalMark testId="chat-row-approval" className="size-3.5" />
+                ) : (
+                  <Spinner
+                    data-testid="chat-row-spinner"
+                    // role="status" + label: announced, not motion-only.
+                    label={
+                      isGenerating
+                        ? translate("shell.navigation.chatGenerating")
+                        : "Queued"
+                    }
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                  />
+                )}
               </span>
             ) : null}
             {hasUnreadActivity ? (
+              // Same box and anchor as the spinner, so both share one column.
               <span
                 className={cn(
-                  "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+                  "pointer-events-none absolute right-4 top-1/2 z-10 flex size-3.5 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
                 aria-hidden
               >
@@ -6104,6 +6174,12 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
+              // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
+              waiting={
+                anyChatWaiting
+                  ? t("shell.navigation.chatAwaitingApproval")
+                  : undefined
+              }
               // An action, not a destination, so it never marks itself active: the active pill is the
               // hover pill, and on a blank new chat it left the row looking permanently hovered.
               active={false}

@@ -750,6 +750,8 @@ export const zhCN = {
       returnToChat: "返回聊天",
       returnToChats: "返回 {count} 个聊天",
       chatGenerating: "生成中",
+      chatAwaitingApproval: "等待批准",
+      chatUnread: "未读",
       compare: "对比",
       search: "搜索",
       hub: "模型中心",
