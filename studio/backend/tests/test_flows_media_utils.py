@@ -242,3 +242,21 @@ def test_a_speed_change_without_a_track_warns_that_sound_is_dropped():
     same = _Ctx({"speed": 1.0})
     asyncio.run(mu.video_edit(same))
     assert same.logs == []
+
+
+def test_a_phone_clip_is_turned_upright():
+    import numpy as np
+
+    class Frame:
+        # A landscape-coded frame whose display matrix says turn 90 degrees counterclockwise (a portrait phone clip).
+        rotation = 90
+
+        def to_ndarray(self, format):
+            arr = np.zeros((48, 64, 3), dtype = np.uint8)
+            arr[0, 0] = 255
+            return arr
+
+    upright = mu._upright(Frame())
+    assert upright.shape == (64, 48, 3) and upright[63, 0].all() and upright.flags["C_CONTIGUOUS"]
+    Frame.rotation = 0
+    assert mu._upright(Frame()).shape == (48, 64, 3)

@@ -164,6 +164,16 @@ def text_overlay(
     return _png(page)
 
 
+def _upright(frame: Any) -> Any:
+    """A decoded frame as an RGB array the way players show it: phone clips store portrait as a display rotation."""
+    import numpy as np
+
+    array = frame.to_ndarray(format = "rgb24")
+    # PyAV gives the display matrix angle counterclockwise; older PyAV has no `rotation` and gets the coded pixels.
+    turns = round(float(getattr(frame, "rotation", 0) or 0) / 90) % 4
+    return np.ascontiguousarray(np.rot90(array, k = turns)) if turns else array
+
+
 def _encoder(container: Any, rate: Fraction) -> Any:
     for name in ("libx264", "libopenh264", "mpeg4"):
         try:
@@ -209,7 +219,7 @@ def edit_video(
                 break
             if kept >= MAX_VIDEO_FRAMES:
                 raise FlowNodeError("The clip is too long to edit here")
-            array = frame.to_ndarray(format = "rgb24")
+            array = _upright(frame)
             if out is None:
                 height, width = array.shape[:2]
                 out = av.open(out_buf, mode = "w", format = "mp4")
@@ -274,7 +284,7 @@ def video_frame(
             chosen = frame
             if which == "first":
                 break
-        image = chosen.to_ndarray(format = "rgb24") if chosen is not None else None
+        image = _upright(chosen) if chosen is not None else None
     finally:
         source.close()
     if image is None:
