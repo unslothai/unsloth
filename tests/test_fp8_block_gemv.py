@@ -21,7 +21,11 @@ def _gemv_only(monkeypatch):
     monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", False)
 
 
-def _quantize(N, K, seed = 0):
+def _quantize(
+    N,
+    K,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     W = torch.randn(N, K, device = "cuda", generator = g)
     nb, kb = triton.cdiv(N, 128), triton.cdiv(K, 128)
@@ -90,11 +94,17 @@ def test_routing_decode_only(monkeypatch):
     real = F8.fp8_block_gemv
     monkeypatch.setattr(F8, "fp8_block_gemv", lambda *a: calls.append(1) or real(*a))
     with torch.no_grad():
-        F8.fp8_block_quant_linear(torch.randn(8, 1, 1024, device = "cuda", dtype = torch.bfloat16), q, s)
+        F8.fp8_block_quant_linear(
+            torch.randn(8, 1, 1024, device = "cuda", dtype = torch.bfloat16), q, s
+        )
         assert len(calls) == 1
-        F8.fp8_block_quant_linear(torch.randn(2, 4, 1024, device = "cuda", dtype = torch.bfloat16), q, s)
-        F8.fp8_block_quant_linear(torch.randn(17, 1, 1024, device = "cuda", dtype = torch.bfloat16), q, s)
-    X =torch.randn(2, 1, 1024, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        F8.fp8_block_quant_linear(
+            torch.randn(2, 4, 1024, device = "cuda", dtype = torch.bfloat16), q, s
+        )
+        F8.fp8_block_quant_linear(
+            torch.randn(17, 1, 1024, device = "cuda", dtype = torch.bfloat16), q, s
+        )
+    X = torch.randn(2, 1, 1024, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
     F8.fp8_block_quant_linear(X, q, s).sum().backward()  # training keeps the autograd path
     assert len(calls) == 1 and X.grad is not None
     assert not F8.can_use_fp8_block_gemv(X.detach(), q, s.t().contiguous())
@@ -184,18 +194,26 @@ def test_router_order(monkeypatch, route, expect):
     if F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton:
         pytest.skip("the fused small-M kernel replaces the Triton block matmul route only")
     monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", True)
-    fn = F8._fp8_block_small_m_first if route == "small_m_first" else F8._with_fp8_block_gemv(F8.fp8_torch_block_quant_forward)
+    fn = (
+        F8._fp8_block_small_m_first
+        if route == "small_m_first"
+        else F8._with_fp8_block_gemv(F8.fp8_torch_block_quant_forward)
+    )
     q, s = _quantize(1024, 4096)
     X = torch.randn(4, 1, 4096, device = "cuda", dtype = torch.bfloat16)
     calls = []
     real_gemv, real_small = F8.fp8_block_gemv, F8.fp8_block_small_m_linear
     monkeypatch.setattr(F8, "fp8_block_gemv", lambda *a: calls.append("gemv") or real_gemv(*a))
-    monkeypatch.setattr(F8, "fp8_block_small_m_linear", lambda *a: calls.append("small_m") or real_small(*a))
+    monkeypatch.setattr(
+        F8, "fp8_block_small_m_linear", lambda *a: calls.append("small_m") or real_small(*a)
+    )
     with torch.no_grad():
         y = fn(X, q, s)
     assert calls == [expect]
     # act_quant rounds X to e4m3 on the fused path: a few percent, against the GEMV's bf16 eps.
-    assert _rel_err(y, _oracle(X, q, s)) <= (5e-2 if expect == "small_m" else torch.finfo(torch.bfloat16).eps)
+    assert _rel_err(y, _oracle(X, q, s)) <= (
+        5e-2 if expect == "small_m" else torch.finfo(torch.bfloat16).eps
+    )
     Xg = X.clone().requires_grad_()
     calls.clear()
     fn(Xg, q, s).sum().backward()
@@ -213,14 +231,19 @@ def test_router_small_m_first_falls_back(monkeypatch):
         gemv = F8.fp8_block_gemv(X, q, s)
     torch.testing.assert_close(compiled, gemv, atol = 0, rtol = 0)
     monkeypatch.setattr(F8, "_fp8_device_lacks_kernel", lambda device: True)
-    monkeypatch.setattr(F8, "fp8_block_small_m_linear", lambda *a: pytest.fail("fused kernel used below sm89"))
+    monkeypatch.setattr(
+        F8, "fp8_block_small_m_linear", lambda *a: pytest.fail("fused kernel used below sm89")
+    )
     with torch.no_grad():
         F8._fp8_block_small_m_first(X, _uncached(q), s)
 
 
 def test_router_binding_follows_sm_count():
     bound = F8.fp8_block_quant_linear
-    if F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton or bound.__wrapped__ is not F8.fp8_torch_block_quant_forward:
+    if (
+        F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton
+        or bound.__wrapped__ is not F8.fp8_torch_block_quant_forward
+    ):
         pytest.skip("FBGEMM / torchao block route: the GEMV wraps it")
     big = torch.version.hip is None and min(F8._SM_COUNTS) >= 100
     assert (bound is F8._fp8_block_small_m_first) == big

@@ -41,15 +41,21 @@ LAYERS, EXPERTS, TOP_K, PAD = 2, 8, 2, 0
 def _post_init_code():
     # The string constant rl.py appends to RLTrainer_post for grpo_trainer.
     for node in ast.walk(ast.parse(RL_PY.read_text(encoding = "utf-8"))):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
-                and "UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine')" in node.value:
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine')"
+            in node.value
+        ):
             return node.value
     raise AssertionError("routing replay post-init code not found in rl.py")
 
 
 def _run_post_init(model, trainer_model = None):
-    trainer = SimpleNamespace(model = trainer_model if trainer_model is not None else model,
-                              processing_class = SimpleNamespace(pad_token_id = PAD))
+    trainer = SimpleNamespace(
+        model = trainer_model if trainer_model is not None else model,
+        processing_class = SimpleNamespace(pad_token_id = PAD),
+    )
     exec(_post_init_code(), {"os": os, "self": trainer, "model": model})
 
 
@@ -66,9 +72,18 @@ def replay(monkeypatch):
 def _moe(seed = 0):
     torch.manual_seed(seed)
     config = Qwen3MoeConfig(
-        vocab_size = 64, hidden_size = 32, intermediate_size = 64, moe_intermediate_size = 16,
-        num_hidden_layers = LAYERS, num_attention_heads = 4, num_key_value_heads = 2, head_dim = 8,
-        num_experts = EXPERTS, num_experts_per_tok = TOP_K, norm_topk_prob = True, pad_token_id = PAD,
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        moe_intermediate_size = 16,
+        num_hidden_layers = LAYERS,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        num_experts = EXPERTS,
+        num_experts_per_tok = TOP_K,
+        norm_topk_prob = True,
+        pad_token_id = PAD,
     )
     model = Qwen3MoeForCausalLM(config).float().eval()
     for layer in model.model.layers:
@@ -80,7 +95,9 @@ def _moe(seed = 0):
 def _natural(model, ids):
     captured = {}
     handles = [
-        layer.mlp.gate.register_forward_hook(lambda m, a, out, i = i: captured.__setitem__(i, out[2].clone()))
+        layer.mlp.gate.register_forward_hook(
+            lambda m, a, out, i = i: captured.__setitem__(i, out[2].clone())
+        )
         for i, layer in enumerate(model.model.layers)
     ]
     with torch.no_grad():
@@ -126,9 +143,15 @@ def test_peft_reference_scoring_routes_naturally(replay):
     assert all(h for h, _ in hooks_before)
 
     forced = ((natural_ids + 3) % EXPERTS).numpy().astype(np.int16)
-    rr.record_routed_experts([SimpleNamespace(
-        prompt_token_ids = ids[:3], outputs = [SimpleNamespace(token_ids = ids[3:], routed_experts = forced[:-1])],
-    )], pad_token_id = PAD)
+    rr.record_routed_experts(
+        [
+            SimpleNamespace(
+                prompt_token_ids = ids[:3],
+                outputs = [SimpleNamespace(token_ids = ids[3:], routed_experts = forced[:-1])],
+            )
+        ],
+        pad_token_id = PAD,
+    )
 
     with torch.no_grad():
         policy = model(input_ids = torch.tensor([ids])).logits
@@ -168,8 +191,13 @@ def test_reference_pass_restores_hook_order_with_prepended_hooks(replay):
     router.register_forward_hook(lambda m, a, out: calls.append("appended"))
     decoder.register_forward_pre_hook(lambda m, a, k: None, prepend = True, with_kwargs = True)
     decoder.layers[0].register_forward_pre_hook(lambda m, a: None, prepend = True)
-    tables = ("_forward_hooks", "_forward_hooks_with_kwargs", "_forward_hooks_always_called",
-              "_forward_pre_hooks", "_forward_pre_hooks_with_kwargs")
+    tables = (
+        "_forward_hooks",
+        "_forward_hooks_with_kwargs",
+        "_forward_hooks_always_called",
+        "_forward_pre_hooks",
+        "_forward_pre_hooks_with_kwargs",
+    )
 
     def orders():
         return [[list(getattr(m, t, {}).items()) for t in tables] for m in model.modules()]
@@ -191,14 +219,27 @@ def _bias_router_model(model_type):
     extra = {
         "minimax_m2": dict(num_local_experts = EXPERTS),
         "hy_v3": dict(num_local_experts = EXPERTS),
-        "lfm2_moe": dict(num_experts = EXPERTS, use_expert_bias = True, num_dense_layers = 0,
-                         layer_types = ["full_attention"] * LAYERS),
+        "lfm2_moe": dict(
+            num_experts = EXPERTS,
+            use_expert_bias = True,
+            num_dense_layers = 0,
+            layer_types = ["full_attention"] * LAYERS,
+        ),
     }[model_type]
     try:
         config = AutoConfig.for_model(
-            model_type, vocab_size = 64, hidden_size = 32, intermediate_size = 64, moe_intermediate_size = 16,
-            num_hidden_layers = LAYERS, num_attention_heads = 4, num_key_value_heads = 2, head_dim = 8,
-            num_experts_per_tok = TOP_K, pad_token_id = PAD, **extra,
+            model_type,
+            vocab_size = 64,
+            hidden_size = 32,
+            intermediate_size = 64,
+            moe_intermediate_size = 16,
+            num_hidden_layers = LAYERS,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 8,
+            num_experts_per_tok = TOP_K,
+            pad_token_id = PAD,
+            **extra,
         )
     except Exception as error:
         pytest.skip(f"this transformers has no {model_type}: {error}")
@@ -217,21 +258,32 @@ def test_sigmoid_correction_bias_routers_route_naturally_with_a_warning(replay, 
     model = _bias_router_model(model_type)
     routers = [m for m in model.modules() if "TopKRouter" in type(m).__name__]
     if not routers:
-        pytest.skip(f"{model_type} has no TopKRouter module in this transformers (gate inside the MoE block)")
+        pytest.skip(
+            f"{model_type} has no TopKRouter module in this transformers (gate inside the MoE block)"
+        )
     ids = [5, 6, 7, 30, 31, 32]
     with torch.no_grad():
         natural = model(input_ids = torch.tensor([ids])).logits
     name = type(routers[0]).__name__
-    with pytest.warns(UserWarning, match = rf"routing replay is off for {len(routers)} router.*{name} \(routing replay has no weight formula"):
+    with pytest.warns(
+        UserWarning,
+        match = rf"routing replay is off for {len(routers)} router.*{name} \(routing replay has no weight formula",
+    ):
         _run_post_init(model)
     assert all(not r._forward_hooks for r in routers)
     # A recorded rollout with other experts no longer changes anything.
     layers = model.config.num_hidden_layers
     forced = np.full((len(ids) - 1, layers, TOP_K), 0, dtype = np.int16)
     forced[..., 1] = 1
-    rr.record_routed_experts([SimpleNamespace(
-        prompt_token_ids = ids[:3], outputs = [SimpleNamespace(token_ids = ids[3:], routed_experts = forced)],
-    )], pad_token_id = PAD)
+    rr.record_routed_experts(
+        [
+            SimpleNamespace(
+                prompt_token_ids = ids[:3],
+                outputs = [SimpleNamespace(token_ids = ids[3:], routed_experts = forced)],
+            )
+        ],
+        pad_token_id = PAD,
+    )
     with torch.no_grad():
         torch.testing.assert_close(model(input_ids = torch.tensor([ids])).logits, natural)
 
@@ -254,7 +306,10 @@ def test_formula_that_only_fits_the_priming_input_is_rejected(replay):
     gate = model.model.layers[0].mlp.gate
     gate.__class__ = SigmoidTopKRouter
     gate.weight.data.normal_(0, 1e-4)
-    with pytest.warns(UserWarning, match = r"SigmoidTopKRouter \(the softmax_renorm weight formula does not reproduce"):
+    with pytest.warns(
+        UserWarning,
+        match = r"SigmoidTopKRouter \(the softmax_renorm weight formula does not reproduce",
+    ):
         _run_post_init(model)
     assert not gate._forward_hooks
     assert model.model.layers[1].mlp.gate._forward_hooks  # the real softmax router passes the check
