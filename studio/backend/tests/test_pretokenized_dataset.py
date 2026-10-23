@@ -209,6 +209,9 @@ def test_prepare_trims_then_truncates_and_is_idempotent():
         ([1, 0, 1, 1], "row 1 has 'attention_mask' zeros between attended tokens"),
         ([0, 0, 0, 0], "row 1 has an all-zero 'attention_mask'"),
         ([0, 2, 1, 1], "row 1 has 'attention_mask' values other than 0 and 1"),
+        # A negative minimum or no zero at all must not skip the value check.
+        ([-1, 0, 1, 1], "row 1 has 'attention_mask' values other than 0 and 1"),
+        ([1, 2, 1, 1], "row 1 has 'attention_mask' values other than 0 and 1"),
     ],
 )
 def test_prepare_refuses_masks_it_cannot_trim(mask, match, streaming):
@@ -221,10 +224,89 @@ def test_prepare_refuses_masks_it_cannot_trim(mask, match, streaming):
         list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
 
 
-def test_prepare_refuses_a_padded_mask_of_another_length():
-    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "attention_mask": [[0, 1]]})
-    with pytest.raises(ValueError, match = "'attention_mask' must have the same length"):
-        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "rows, column",
+    [
+        ({"input_ids": [[1, 2, 3]], "attention_mask": [[0, 1]]}, "attention_mask"),
+        ({"input_ids": [[1, 2, 3]], "labels": [[1, 2]]}, "labels"),
+        (
+            {
+                "input_ids": [[0, 2, 3]],
+                "attention_mask": [[0, 1, 1]],
+                "assistant_masks": [[0, 1, 1, 1]],
+            },
+            "assistant_masks",
+        ),
+    ],
+)
+def test_prepare_refuses_a_padded_mask_of_another_length(rows, column, streaming):
+    ds = Dataset.from_dict(rows)
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    with pytest.raises(ValueError, match = f"'{column}' must have the same length"):
+        list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_prepare_trims_and_truncates_trl_supervision_masks_with_input_ids(streaming):
+    rows = {
+        "input_ids": [[0, 0, 4, 5, 6], [2, 3]],
+        "attention_mask": [[0, 0, 1, 1, 1], [1, 1]],
+        "completion_mask": [[0, 0, 0, 1, 1], [0, 1]],
+        "assistant_masks": [[0, 0, 0, 1, 1], [0, 1]],
+    }
+    ds = Dataset.from_dict(rows)
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    out = list(prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100))
+    assert out[0] == {
+        "input_ids": [4, 5],
+        "attention_mask": [1, 1],
+        "completion_mask": [0, 1],
+        "assistant_masks": [0, 1],
+    }
+    assert out[1] == {k: v[1] for k, v in rows.items()}
+
+
+def test_preview_does_not_report_trimmed_padding_as_truncation():
+    from core.training import token_preview_worker
+
+    rows = [
+        {"input_ids": [0, 0, 4, 5], "attention_mask": [0, 0, 1, 1]},
+        {"input_ids": [0, 4, 5, 6, 7], "attention_mask": [0, 1, 1, 1, 1]},
+    ]
+    ids, _, full_lengths, _ = token_preview_worker._pretokenized(None, "m", rows, 3, {})
+    assert ids == [[4, 5], [4, 5, 6]]
+    # Row 0 only lost padding; row 1 lost padding and one real token to max_seq_length.
+    assert full_lengths == [2, 4]
+
+
+def test_mlx_training_prepares_pretokenized_train_and_eval_rows():
+    # zoo's MLX batcher ignores attention_mask, so the worker must trim padding before MLXTrainer sees the rows.
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_mlx_training"
+    )
+    prepared = {
+        node.args[0].id: node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "prepare_pretokenized_dataset"
+    }
+    trainer_line = next(
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "MLXTrainer"
+    )
+    assert set(prepared) == {"dataset", "eval_dataset"}
+    assert max(prepared.values()) < trainer_line
 
 
 @pytest.mark.parametrize("streaming", [False, True])
