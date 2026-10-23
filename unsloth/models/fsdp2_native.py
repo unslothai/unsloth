@@ -2149,7 +2149,7 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     options = StateDictOptions(full_state_dict = False)
     # The target layout: this rank's shards (empty optimizer state is initialised first).
     state = get_optimizer_state_dict(root, optimizer, options = options)
-    unstepped = _match_saved_optimizer_keys(state, directory)
+    unstepped = _match_saved_optimizer_keys(state, directory, root)
     dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
     if unstepped:
         # Parameters the saved optimizer held but never stepped: listed in its (now loaded) param
@@ -2167,21 +2167,22 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     return state
 
 
-def _match_saved_optimizer_keys(state, directory):
+def _match_saved_optimizer_keys(state, directory, root = None):
     """dcp.load fills exactly the keys of its target, and the target comes from this optimizer's own
     (fresh) state, which get_optimizer_state_dict initialises for every trainable parameter. Match it
     to the checkpoint in both directions:
     - a parameter the saved run never stepped (no gradient yet: an unused expert or branch) has no
       saved state, so its entries are dropped and it stays without state, as it was when saved;
     - a per-parameter tensor the saved run kept and this one does not (AMSGrad's max_exp_avg_sq when
-      the saved group had amsgrad = True) is added, shaped from the checkpoint metadata: like the
-      parameter's other state (same sharding) when the global shape matches, else a plain tensor
+      the saved group had amsgrad = True, or SGD's momentum_buffer resumed into momentum = 0, whose
+      fresh state is empty) is added, shaped from the checkpoint metadata: like the parameter's other
+      state, or the parameter (same sharding), when the global shape matches, else a plain tensor
       read whole.
     Returns the parameters left without state."""
     from torch.distributed.checkpoint import FileSystemReader
 
     metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
-    per_param = state.get("state", {})
+    per_param = state.setdefault("state", {})
     unstepped = []
     for fqn in list(per_param):
         entry = per_param[fqn]
@@ -2190,11 +2191,17 @@ def _match_saved_optimizer_keys(state, directory):
         if not entry:
             del per_param[fqn]
             unstepped.append(fqn)
+    params = dict(root.named_parameters()) if root is not None else {}
+    for key in metadata:
+        if key.startswith("state.") and "." in key[len("state.") :]:
+            fqn = key[len("state.") :].rsplit(".", 1)[0]
+            if fqn not in per_param and fqn in params:
+                per_param[fqn] = {}
     for fqn, entry in per_param.items():
         prefix = f"state.{fqn}."
         like = next(
             (v for v in entry.values() if isinstance(v, torch.Tensor) and v.dim() > 0),
-            None,
+            params.get(fqn),
         )
         for key, md in metadata.items():
             if not key.startswith(prefix):

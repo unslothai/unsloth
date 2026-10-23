@@ -597,6 +597,41 @@ def _case_unstepped(native, dist, rank, tmp):
     return res
 
 
+def _case_momentum(native, dist, rank, tmp):
+    """SGD saved with momentum, resumed into SGD built with momentum = 0, whose fresh optimizer state
+    is empty: the momentum buffers must still be read (the restored param groups ask for them)."""
+
+    def _new(seed, momentum):
+        model = native.shard_model(_model(seed), native.FSDP2Config(param_dtype = torch.float32))
+        return model, torch.optim.SGD(model.parameters(), lr = 1e-2, momentum = momentum, foreach = False)
+
+    model, opt = _new(1, 0.9)
+    for step in (1, 2):
+        _step(model, opt, step, rank)
+    ckpt = os.path.join(tmp, "ckpt")
+    os.makedirs(ckpt, exist_ok = True)
+    native.native_save_optimizer_sharded(model, opt, os.path.join(ckpt, "optimizer_dcp"))
+    state = native.native_full_state_dict(model)
+    if rank == 0:
+        model.save_pretrained(ckpt, state_dict = state, safe_serialization = True)
+    dist.barrier()
+    ref = {"loss": _step(model, opt, 3, rank).item(), "after": _full_model(model), "optim": _full_optim(model, opt)}
+    m, o = _new(2, 0.0)
+    native.native_load_model_checkpoint(m, ckpt)
+    res = {}
+    try:
+        native.native_load_optimizer(m, o, os.path.join(ckpt, "optimizer_dcp"))
+        res["buffers"] = sum("momentum_buffer" in st for st in o.state.values())
+        res["momentum"] = o.param_groups[0]["momentum"]
+        loss = _step(m, o, 3, rank).item()
+        res["loss"] = [ref["loss"], loss]
+        res["after_diff"] = _diff_models(ref["after"], _full_model(m))
+        res["optim_diff"] = [str(d)[:200] for d in _diff_optims(ref["optim"], _full_optim(m, o))]
+    except BaseException as exc:  # CheckpointException is a BaseException
+        res["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    return res
+
+
 def _case_reshard(native, dist, rank, tmp, phase):
     """Save with one world size, resume with another: the weights (sharded read) and the
     optimizer_dcp directory both come back equal to the saver's full state."""
@@ -631,7 +666,7 @@ def _case_reshard(native, dist, rank, tmp, phase):
     return res
 
 
-_SHORT_TIMEOUT_CASES = ("amsgrad", "unstepped")
+_SHORT_TIMEOUT_CASES = ("amsgrad", "unstepped", "momentum")
 
 
 def _worker(rank, world, port, out, case, tmp):
@@ -651,6 +686,8 @@ def _worker(rank, world, port, out, case, tmp):
             res = _case_amsgrad(native, dist, rank, tmp)
         elif case == "unstepped":
             res = _case_unstepped(native, dist, rank, tmp)
+        elif case == "momentum":
+            res = _case_momentum(native, dist, rank, tmp)
         elif case.startswith("reshard_"):
             res = _case_reshard(native, dist, rank, tmp, case[len("reshard_") :])
         else:
@@ -815,5 +852,14 @@ def test_sharded_optimizer_resumes_a_parameter_never_stepped(tmp_path):
         # (a separate, older limitation); the sharded one restores it.
         assert "new_error" not in r, r
         assert r["has_state"] is False, r  # still without state, as when saved
+        assert r["loss"][0] == r["loss"][1], r
+        assert r["after_diff"] == [] and r["optim_diff"] == [], r
+
+
+def test_sharded_optimizer_restores_state_the_fresh_optimizer_lacks(tmp_path):
+    pytest.importorskip("transformers")
+    for rank, r in _run("momentum", str(tmp_path), timeout = 600).items():
+        assert "error" not in r, r
+        assert r["momentum"] == 0.9 and r["buffers"] > 0, r
         assert r["loss"][0] == r["loss"][1], r
         assert r["after_diff"] == [] and r["optim_diff"] == [], r
