@@ -13040,14 +13040,12 @@ class DiffusionBackend:
                 # The AUTO cache toggle runs after the request guard; the guard prices the cache it will engage.
                 auto_step_cache_on = False
                 if state.cache_auto:
-                    # Judged against the pipeline that RUNS this call: a from_pipe workflow (FLUX.1 img2img /
-                    # inpaint) shares the denoiser but opens no cache_context, which the FBCache hooks need.
+                    # Judged on the pipeline that RUNS: from_pipe workflows open no cache_context for FBCache.
                     from .diffusion_autoopt.runtime import auto_cache_steps
                     cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
                     auto_step_cache_on = auto_step_cache_mode(cache_steps) is not None
                     if not auto_step_cache_on:
-                        # Disengage now, so the guard sees the uncached denoiser; a failed disable keeps the marker
-                        # and the doubled price. The toggle below is then a no-op that updates status.
+                        # Disengage before the guard; a failed disable keeps the doubled price.
                         maybe_toggle_step_cache(
                             state.pipe,
                             steps = cache_steps,
