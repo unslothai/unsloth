@@ -1072,6 +1072,7 @@ export const ar = {
     },
     keyboardShortcuts: {
       title: "اختصارات لوحة المفاتيح",
+      intro: "لتغيير اختصار، اختر تركيبة المفاتيح ثم اكتب المفاتيح الجديدة",
       searchPlaceholder: "بحث في الاختصارات…",
       keystrokePlaceholder: "اضغط اختصارًا للبحث",
       searchByKeystrokes: "البحث بضغط المفاتيح",
@@ -1079,22 +1080,23 @@ export const ar = {
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
-      recordingHint: "اضغط التركيبة الجديدة، أو Esc للإلغاء.",
       needsModifier: "أضف ⌘ أو Ctrl أو Alt. المفتاح المجرد سيبتلع الكتابة.",
       conflict: "مستخدم أيضاً في اختصار آخر",
       conflictShadowed: "اختصار آخر يملك هذه التركيبة ويعمل بدلاً منه",
       edit: "تغيير الاختصار",
-      clear: "إزالة الاختصار",
       reset: "استعادة الافتراضي",
       resetAll: "إعادة تعيين الكل إلى الافتراضي",
-      primarySlot: "الاختصار",
-      alternateSlot: "اختصار بديل",
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
       metaUnsupported: "لا يمكن استخدام مفتاح Windows في الاختصارات.",
       altGraphUnsupported: "لا يمكن استخدام تركيبات AltGr كاختصارات.",
       desktopOnly: "تطبيق سطح المكتب فقط",
-      builtInKey: "مدمج: {key}",
+      groups: {
+        composer: "محرر الرسائل",
+        chat: "الدردشة",
+        navigation: "التنقل",
+        app: "التطبيق",
+      },
       actions: {
         findInPage: {
           label: "البحث في الصفحة",
@@ -1284,6 +1286,10 @@ export const ar = {
           label: "إرفاق صور وملفات",
           description: "إضافة مرفق إلى مربع الكتابة",
         },
+        openComposerMenu: {
+          label: "فتح قائمة +",
+          description: "فتح قائمة + للأدوات والمرفقات في محرر الرسائل",
+        },
         sendMessage: {
           label: "إرسال الرسالة",
           description: "إرسال ما في مربع الكتابة",
@@ -1311,10 +1317,6 @@ export const ar = {
         decreaseReasoningEffort: {
           label: "خفض جهد التفكير",
           description: "خفض جهد التفكير مستوى واحدًا",
-        },
-        toggleFastMode: {
-          label: "تبديل وضع Fast",
-          description: "تشغيل وضع Fast أو إيقافه",
         },
         renameChat: {
           label: "إعادة تسمية المحادثة",
@@ -3094,15 +3096,15 @@ export const ar = {
         "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "اسمح لوكلاء البرمجة باستخدام Unsloth Studio عبر MCP، واختر الأدوات التي يحصلون عليها.",
-      keyHint: "يسجّل الوكلاء الدخول بمفتاح API لـ Unsloth Studio.",
+      title: "Unsloth MCP",
+      description: "اسمح لوكلاء البرمجة باستخدام Unsloth عبر MCP، واختر الأدوات التي يحصلون عليها.",
+      keyHint: "يسجّل الوكلاء الدخول بمفتاح API لـ Unsloth.",
       createKey: "إنشاء مفتاح API",
       tools: {
         title: "الأدوات",
         description: "لا يرى الوكلاء أي أداة تعطّلها، ويُرفض أي استدعاء لها. الوكلاء المتصلون بالفعل يرون التغيير عند إعادة الاتصال.",
-        loadError: "تعذّر تحميل أدوات Unsloth Studio MCP.",
-        saveError: "تعذّر حفظ إعداد أداة Unsloth Studio MCP.",
+        loadError: "تعذّر تحميل أدوات Unsloth MCP.",
+        saveError: "تعذّر حفظ إعداد أداة Unsloth MCP.",
         notInChat: "غير متاح في الدردشة",
       },
       status: {
@@ -3110,7 +3112,7 @@ export const ar = {
         off: "متوقف",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "وصول الوكلاء",
         open: "فتح إعدادات MCP",
       },
@@ -3279,14 +3281,14 @@ export const ar = {
       },
       mcp: {
         title: "وصول الوكلاء (MCP)",
-        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth Studio عبر MCP.",
+        description: "اسمح لوكلاء البرمجة مثل Claude Code وCodex باستخدام Unsloth عبر MCP.",
         enable: "السماح باتصالات الوكلاء",
-        enableDescription: "يخدم /mcp/ للطلبات التي تحمل مفتاح API لـ Unsloth Studio.",
+        enableDescription: "يخدم /mcp/ للطلبات التي تحمل مفتاح API لـ Unsloth.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         loadError: "تعذّر تحميل إعدادات وصول الوكلاء.",
         saveError: "تعذّر حفظ إعداد وصول الوكلاء.",
         agent: "الوكيل",
-        exportKeyHint: "اضبط {name} على مفتاح API لـ Unsloth Studio قبل تشغيل الوكيل.",
+        exportKeyHint: "اضبط {name} على مفتاح API لـ Unsloth قبل تشغيل الوكيل.",
         configFileHint: "أضف هذا إلى {path}.",
         keywords: "mcp model context protocol agents claude codex tools وكلاء وكيل أدوات بروتوكول سياق النموذج",
       },

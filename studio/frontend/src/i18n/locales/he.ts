@@ -1161,6 +1161,7 @@ export const he = {
     },
     keyboardShortcuts: {
       title: "קיצורי מקשים",
+      intro: "כדי לשנות קיצור דרך, בחר את צירוף המקשים ואז הקש את המקשים החדשים",
       searchPlaceholder: "חיפוש קיצורי דרך…",
       keystrokePlaceholder: "הקש קיצור כדי לחפש",
       searchByKeystrokes: "חיפוש לפי הקשות",
@@ -1168,22 +1169,23 @@ export const he = {
       noResults: "לא נמצאו קיצורי דרך תואמים.",
       unassigned: "לא הוקצה",
       recording: "הקש על מקשים…",
-      recordingHint: "הקש על צירוף המקשים החדש, או Esc לביטול.",
       needsModifier: "הוסף ⌘, Ctrl או Alt. מקש בודד יחסום הקלדה רגילה.",
       conflict: "בשימוש גם בקיצור דרך אחר",
       conflictShadowed: "קיצור דרך אחר משתמש בצירוף זה ויופעל במקומו",
       edit: "שנה קיצור דרך",
-      clear: "הסר קיצור דרך",
       reset: "שחזר ברירת מחדל",
       resetAll: "אפס הכל לברירות מחדל",
-      primarySlot: "קיצור דרך",
-      alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
       metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
       altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
       desktopOnly: "באפליקציית שולחן העבודה בלבד",
-      builtInKey: "מובנה: {key}",
+      groups: {
+        composer: "תיבת הכתיבה",
+        chat: "צ'אט",
+        navigation: "ניווט",
+        app: "אפליקציה",
+      },
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1374,6 +1376,10 @@ export const he = {
           label: "צרף תמונות וקבצים",
           description: "הוסף קובץ מצורף לתיבת ההודעה",
         },
+        openComposerMenu: {
+          label: "פתיחת תפריט +",
+          description: "פתיחת תפריט + של תיבת הכתיבה עם כלים וקבצים מצורפים",
+        },
         sendMessage: {
           label: "שלח הודעה",
           description: "שלח את תוכן תיבת ההודעה",
@@ -1401,10 +1407,6 @@ export const he = {
         decreaseReasoningEffort: {
           label: "הפחת מאמץ חשיבה",
           description: "הורד את רמת מאמץ החשיבה בדרגה אחת",
-        },
-        toggleFastMode: {
-          label: "הפעל/השבת מצב מהיר",
-          description: "הפעל או כבה את המצב המהיר",
         },
         renameChat: {
           label: "שינוי שם צ'אט",
@@ -3212,15 +3214,15 @@ export const he = {
         "גש ל-Unsloth זה מהמכשירים האחרים שלך, דרך הרשת המקומית או באמצעות כתובת URL ציבורית זמנית.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "אפשר לסוכני קוד להשתמש ב-Unsloth Studio דרך MCP, ובחר אילו כלים הם מקבלים.",
-      keyHint: "סוכנים מתחברים עם מפתח API של Unsloth Studio.",
+      title: "Unsloth MCP",
+      description: "אפשר לסוכני קוד להשתמש ב-Unsloth דרך MCP, ובחר אילו כלים הם מקבלים.",
+      keyHint: "סוכנים מתחברים עם מפתח API של Unsloth.",
       createKey: "יצירת מפתח API",
       tools: {
         title: "כלים",
         description: "סוכנים אף פעם לא רואים כלי שכיבית, וקריאות אליו נדחות. סוכנים שכבר מחוברים רואים את השינוי כשהם מתחברים מחדש.",
-        loadError: "לא ניתן לטעון את הכלים של Unsloth Studio MCP.",
-        saveError: "לא ניתן לשמור את הגדרת הכלי של Unsloth Studio MCP.",
+        loadError: "לא ניתן לטעון את הכלים של Unsloth MCP.",
+        saveError: "לא ניתן לשמור את הגדרת הכלי של Unsloth MCP.",
         notInChat: "לא זמין בצ'אט",
       },
       status: {
@@ -3228,7 +3230,7 @@ export const he = {
         off: "כבוי",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "גישת סוכנים",
         open: "פתח את הגדרות MCP",
       },
@@ -3404,14 +3406,14 @@ export const he = {
       },
       mcp: {
         title: "גישת סוכנים (MCP)",
-        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth Studio דרך MCP.",
+        description: "אפשר לסוכני קוד כמו Claude Code ו-Codex להשתמש ב-Unsloth דרך MCP.",
         enable: "אפשר חיבורי סוכנים",
-        enableDescription: "מגיש את /mcp/ לבקשות שנושאות מפתח API של Unsloth Studio.",
+        enableDescription: "מגיש את /mcp/ לבקשות שנושאות מפתח API של Unsloth.",
         lockedByEnv: "נקבע על ידי {name}.",
         loadError: "לא ניתן לטעון את הגדרות גישת הסוכנים.",
         saveError: "לא ניתן לשמור את הגדרת גישת הסוכנים.",
         agent: "סוכן",
-        exportKeyHint: "הגדר את {name} למפתח API של Unsloth Studio לפני שתפעיל את הסוכן.",
+        exportKeyHint: "הגדר את {name} למפתח API של Unsloth לפני שתפעיל את הסוכן.",
         configFileHint: "הוסף את זה ל-{path}.",
         keywords: "mcp model context protocol agents claude codex tools סוכנים סוכן כלים פרוטוקול הקשר מודל",
       },

@@ -978,6 +978,7 @@ export const it = {
     },
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
+      intro: "Per cambiare una scorciatoia, seleziona la combinazione di tasti e poi digita i nuovi tasti",
       searchPlaceholder: "Cerca scorciatoie…",
       keystrokePlaceholder: "Premi una scorciatoia per cercare",
       searchByKeystrokes: "Cerca per combinazione",
@@ -985,22 +986,23 @@ export const it = {
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
-      recordingHint: "Premi la nuova combinazione, o Esc per annullare.",
       needsModifier: "Aggiungi ⌘, Ctrl o Alt. Un tasto singolo intercetterebbe la digitazione.",
       conflict: "Usata anche da un'altra scorciatoia",
       conflictShadowed: "Un'altra scorciatoia usa questa combinazione e viene eseguita al suo posto",
       edit: "Cambia scorciatoia",
-      clear: "Rimuovi scorciatoia",
       reset: "Ripristina il valore predefinito",
       resetAll: "Ripristina tutto",
-      primarySlot: "Scorciatoia",
-      alternateSlot: "Scorciatoia alternativa",
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       metaUnsupported: "Il tasto Windows non può essere usato nelle scorciatoie.",
       altGraphUnsupported: "Le combinazioni con AltGr non possono essere usate come scorciatoie.",
       desktopOnly: "Solo nell'app desktop",
-      builtInKey: "Integrato: {key}",
+      groups: {
+        composer: "Editor messaggi",
+        chat: "Chat",
+        navigation: "Navigazione",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Trova nella pagina",
@@ -1190,6 +1192,10 @@ export const it = {
           label: "Allega foto e file",
           description: "Aggiungi un allegato all’editor",
         },
+        openComposerMenu: {
+          label: "Apri menu +",
+          description: "Apri il menu + dell'editor con strumenti e allegati",
+        },
         sendMessage: {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",
@@ -1217,10 +1223,6 @@ export const it = {
         decreaseReasoningEffort: {
           label: "Riduci lo sforzo di ragionamento",
           description: "Abbassa di un livello lo sforzo di ragionamento",
-        },
-        toggleFastMode: {
-          label: "Attiva/disattiva la modalità Fast",
-          description: "Attiva o disattiva la modalità Fast",
         },
         renameChat: {
           label: "Rinomina chat",
@@ -3042,15 +3044,15 @@ export const it = {
         "Raggiungi questo Unsloth dagli altri tuoi dispositivi, tramite la rete locale o un URL pubblico temporaneo.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "Consenti agli agenti di programmazione di usare Unsloth Studio tramite MCP e scegli quali strumenti ricevono.",
-      keyHint: "Gli agenti accedono con una chiave API di Unsloth Studio.",
+      title: "Unsloth MCP",
+      description: "Consenti agli agenti di programmazione di usare Unsloth tramite MCP e scegli quali strumenti ricevono.",
+      keyHint: "Gli agenti accedono con una chiave API di Unsloth.",
       createKey: "Crea una chiave API",
       tools: {
         title: "Strumenti",
         description: "Gli agenti non vedono mai uno strumento che disattivi, e le chiamate a quello strumento vengono rifiutate. Gli agenti già connessi vedono la modifica quando si riconnettono.",
-        loadError: "Impossibile caricare gli strumenti di Unsloth Studio MCP.",
-        saveError: "Impossibile salvare l’impostazione dello strumento di Unsloth Studio MCP.",
+        loadError: "Impossibile caricare gli strumenti di Unsloth MCP.",
+        saveError: "Impossibile salvare l’impostazione dello strumento di Unsloth MCP.",
         notInChat: "Non disponibile nella chat",
       },
       status: {
@@ -3058,7 +3060,7 @@ export const it = {
         off: "Disattivo",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "Accesso degli agenti",
         open: "Apri le impostazioni MCP",
       },
@@ -3230,14 +3232,14 @@ export const it = {
       },
       mcp: {
         title: "Accesso degli agenti (MCP)",
-        description: "Consenti ad agenti di programmazione come Claude Code e Codex di usare Unsloth Studio tramite MCP.",
+        description: "Consenti ad agenti di programmazione come Claude Code e Codex di usare Unsloth tramite MCP.",
         enable: "Consenti connessioni degli agenti",
-        enableDescription: "Rende disponibile /mcp/ alle richieste che portano una chiave API di Unsloth Studio.",
+        enableDescription: "Rende disponibile /mcp/ alle richieste che portano una chiave API di Unsloth.",
         lockedByEnv: "Impostato da {name}.",
         loadError: "Impossibile caricare le impostazioni di accesso degli agenti.",
         saveError: "Impossibile salvare l’impostazione di accesso degli agenti.",
         agent: "Agente",
-        exportKeyHint: "Imposta {name} su una chiave API di Unsloth Studio prima di avviare l’agente.",
+        exportKeyHint: "Imposta {name} su una chiave API di Unsloth prima di avviare l’agente.",
         configFileHint: "Aggiungi questo a {path}.",
         keywords: "mcp model context protocol agents claude codex tools agenti agente strumenti protocollo di contesto del modello",
       },

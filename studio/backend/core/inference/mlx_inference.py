@@ -77,6 +77,18 @@ VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
+def _prefill_layer_step(model, step):
+    if not step:
+        return None
+    try:
+        from unsloth_zoo.mlx.offload import wide_prefill_step
+        wide = wide_prefill_step(model)
+    except Exception:
+        return None
+    own = vlm_prefill_step()
+    return own if wide == own and step % own == 0 else None
+
+
 def vlm_prefill_step():
     """mlx-vlm's own step, so an unreused request prefills as mlx-vlm does. It divides every
     boundary, so a step no grid can be built on falls back here rather than reaching a request."""
@@ -243,6 +255,7 @@ class _ForwardRecord:
     __slots__ = (
         "forwards",
         "capture_at",
+        "capture_rows",
         "snapshot",
         "tail_at",
         "tail",
@@ -253,6 +266,7 @@ class _ForwardRecord:
     def __init__(self):
         self.forwards = 0
         self.capture_at = 0
+        self.capture_rows = 0
         self.snapshot = None
         self.tail_at = 0
         self.tail = None
@@ -275,6 +289,21 @@ def _prompt_wide_position_ids(args, kwargs):
         kwargs.get("inputs_embeds"), "shape", None
     )
     return bool(chunk_shape) and len(chunk_shape) > 1 and shape[-1] != chunk_shape[1]
+
+
+def _forward_capturing(base, model, args, kwargs, cache, rows):
+    from unsloth_zoo.mlx.offload import capture_prefill_rows
+
+    def copy(entry):
+        try:
+            return copy_cache_entries([entry])[0]
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+
+    with capture_prefill_rows(rows, copy) as captured:
+        output = base.__call__(model, *args, **kwargs)
+    snapshot = [captured.get(id(entry)) for entry in cache]
+    return output, snapshot if all(entry is not None for entry in snapshot) else None
 
 
 def _recording_class(base):
@@ -301,10 +330,11 @@ def _recording_class(base):
             )
         # As the next forward begins, not as the boundary one returns: generate_step converts the cache between the
         # two (KV quantization).
+        boundary = record is not None and record.forwards == record.capture_at
         if (
             record is not None
             and record.forwards
-            and record.forwards in (record.capture_at, record.tail_at)
+            and (boundary and not record.capture_rows or record.forwards == record.tail_at)
             and cache is not None
         ):
             try:
@@ -312,11 +342,16 @@ def _recording_class(base):
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
             else:
-                if record.forwards == record.capture_at:
+                if boundary:
                     record.snapshot = copied
                 else:
                     record.tail = copied
-        output = base.__call__(self, *args, **kwargs)
+        if boundary and record.capture_rows and cache is not None:
+            output, record.snapshot = _forward_capturing(
+                base, self, args, kwargs, cache, record.capture_rows
+            )
+        else:
+            output = base.__call__(self, *args, **kwargs)
         if record is not None:
             record.forwards += 1
         return output
@@ -637,8 +672,10 @@ class VLMPromptCacheSession:
         media_block = None,
         policy_hosts = (),
         step = VLM_PREFILL_STEP,
+        window = None,
     ):
         self.step = step
+        self.window = window or step
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
@@ -708,7 +745,10 @@ class VLMPromptCacheSession:
             self.cache = entries
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
-        record.capture_at = (boundary - prefix_len) // self.step
+        rows = boundary - prefix_len
+        record.capture_at, record.capture_rows = (
+            divmod(rows, self.window) if rows >= 0 else (rows, 0)
+        )
         if prefix_len <= boundary < len(token_ids) - 1:
             record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
@@ -1038,9 +1078,10 @@ def mlx_resolve_offload(
 ) -> tuple:
     """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
     knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
-    rule on this load's pricing, and off where that cannot be planned; any other knob as given.
-    ``vision=True`` prices the mlx-vlm route a speculative text load takes."""
-    fixed = tuple(None if knob == "auto" else knob for knob in knobs)
+    rule on this load's pricing, and off where that cannot be planned; any other knob as given;
+    then the planned prefill step for experts on disk, else None. ``vision=True`` prices the
+    mlx-vlm route a speculative text load takes."""
+    fixed = tuple(None if knob == "auto" else knob for knob in knobs) + (None,)
     if "auto" not in knobs or not model_dir:
         return fixed
     from core.inference.mlx_memory import mlx_offload_plan, mlx_offload_planner
@@ -1087,6 +1128,17 @@ def mlx_checkpoint_window(model_dir) -> Optional[int]:
     return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
 
 
+def _takes_prefill_step(target) -> bool:
+    fields = getattr(target, "__dataclass_fields__", None)
+    if fields is not None:
+        return "prefill_step_size" in fields
+    try:
+        params = inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    return "prefill_step_size" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
 def _mlx_offload_request(knobs, plan):
     """The offload a load asks for: the ``(ple, experts)`` knobs as sent, the fraction each wants,
     the ``FastMLXModel.from_pretrained`` kwargs, and why none is passed when unsloth_zoo cannot
@@ -1098,7 +1150,13 @@ def _mlx_offload_request(knobs, plan):
     wanted = {part: normalize_mlx_offload(value) for part, value in requested.items()}
     if plan is None:
         wanted = {part: None if value == "auto" else value for part, value in wanted.items()}
-    offload = {"requested": requested, "wanted": wanted, "reason": None, "kwargs": {}}
+    offload = {
+        "requested": requested,
+        "wanted": wanted,
+        "reason": None,
+        "kwargs": {},
+        "prefill_step": None,
+    }
     if not any(wanted.values()):
         return offload
     if mlx_offload_planner() is None:
@@ -1106,7 +1164,11 @@ def _mlx_offload_request(knobs, plan):
     elif "auto" in wanted.values():
 
         def decide(model_dir):
-            wanted.update(zip(wanted, plan(model_dir, tuple(wanted.values()))))
+            *fractions, step = plan(model_dir, tuple(wanted.values()))
+            # A repeat call sees fractions, not "auto", and plans no step: keep the first one.
+            if not offload["decided"]:
+                offload["prefill_step"] = step
+            wanted.update(zip(wanted, fractions))
             offload["decided"] = True
             return dict(wanted)
 
@@ -2833,6 +2895,7 @@ def mlx_drafter_fit(
     load_in_4bit: bool,
     costless = False,
     offload = None,
+    prefill_chunk = None,
 ):
     """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
     only a priced fit reserves it, a pinned context must fit whole, and a ``costless`` one must fit
@@ -2853,6 +2916,7 @@ def mlx_drafter_fit(
                 load_in_4bit = load_in_4bit,
                 vision = True,
                 offload = offload,
+                prefill_chunk = prefill_chunk,
             )
             outcome, fitted = fit(drafter = (source.path, source.builtin))
             if outcome == "unsizable":
@@ -3966,6 +4030,7 @@ class _TextBatchSession:
                 ],
                 completion_batch_size = width,
                 prefill_batch_size = width,
+                **backend._prefill_step_kwargs(BatchGenerator),
             )
         except BaseException:
             self._held.close()
@@ -4278,6 +4343,7 @@ class _VisionBatchSession:
                     completion_batch_size = width,
                     # Rows quantize their own caches where the single path's decode does.
                     **backend._kv_runtime_quant_kwargs(),
+                    **backend._prefill_step_kwargs(GenerationDefaults, grid = True),
                 ),
                 **({} if self._speculative is None else {"speculative": self._speculative}),
             )
@@ -4452,6 +4518,8 @@ class MLXInferenceBackend:
         self._reads_vision = None
         self._turboquant_refusal = ""
         self._speculative_draft = None
+        self._prefill_step = None
+        self._prefill_layer_step = None
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -4596,6 +4664,7 @@ class MLXInferenceBackend:
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
                 step = vlm_prefill_step(),
+                window = self._session_window(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -4776,6 +4845,31 @@ class MLXInferenceBackend:
         if bits is None or getattr(self, "_turboquant", False):
             return entries
         return _quantize_kv_entries(entries, bits)
+
+    def _session_window(self):
+        # TurboQuant converts the cache between forwards and a KV window rotates it per forward,
+        # so neither can take in-window snapshots.
+        step = getattr(self, "_prefill_step", None)
+        if (
+            step
+            and getattr(self, "_prefill_layer_step", None)
+            and getattr(self, "_kv_cache_window", None) is None
+            and not self._kv_runtime_quant_kwargs()
+        ):
+            return step
+        return vlm_prefill_step()
+
+    def _prefill_step_kwargs(
+        self,
+        target = None,
+        grid = False,
+    ):
+        step = getattr(self, "_prefill_step", None)
+        if step is not None and grid:
+            step = vlm_prefill_step()
+        if step is None or not (target is None or _takes_prefill_step(target)):
+            return {}
+        return {"prefill_step_size": step}
 
     def _kv_runtime_quant_kwargs(self):
         """TurboQuant's width for mlx-vlm's converter; start 0, since its default leaves 5000 tokens unquantized."""
@@ -5271,6 +5365,10 @@ class MLXInferenceBackend:
         _offload = _mlx_offload_status(offload, self._model)
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
+        self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None
+        self._prefill_layer_step = _prefill_layer_step(self._model, self._prefill_step)
+        if self._prefill_step:
+            _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
         spec_kind = _drafter_ctx = None
         _drafter_fitted = False
@@ -5582,6 +5680,8 @@ class MLXInferenceBackend:
         if model_name in self.models:
             del self.models[model_name]
         self._speculative_draft = None
+        self._prefill_step = None
+        self._prefill_layer_step = None
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -6167,6 +6267,7 @@ class MLXInferenceBackend:
                     sampler = sampler,
                 )
                 gen_kwargs.update(self._kv_window_generate_kwargs())
+                gen_kwargs.update(self._prefill_step_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 else:
@@ -6949,9 +7050,10 @@ class MLXInferenceBackend:
             if session.media_block is not None:
                 vlm_kwargs.update(session.media_block.generate_kwargs())
             # Reused and unreused turns must prefill on the same grid to match.
-            vlm_kwargs["prefill_step_size"] = session.step
+            vlm_kwargs["prefill_step_size"] = session.window
         else:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
+            vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
         processors = vlm_kwargs.get("logits_processors") or ()
         # The draft is told these processors, and takes only ones that read just the history (a grammar's
@@ -7374,6 +7476,7 @@ class MLXInferenceBackend:
             max_tokens = max(plan.max_tokens for plan in plans),
             prefill_batch_size = len(plans),
             completion_batch_size = len(plans),
+            **self._prefill_step_kwargs(GenerationDefaults, grid = True),
         )
 
         with (
@@ -7579,6 +7682,7 @@ class MLXInferenceBackend:
                             **self._kv_runtime_quant_kwargs(),
                             **self._kv_quant_generate_kwargs(),
                             **self._kv_window_generate_kwargs(),
+                            **self._prefill_step_kwargs(),
                         )
                     )
                 ) as responses:

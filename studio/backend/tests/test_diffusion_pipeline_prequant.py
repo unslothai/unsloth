@@ -1408,6 +1408,9 @@ def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
         ("black-forest-labs/flux-3-image-klein-base", True),
         ("black-forest-labs/FLUX.2-dev", False),
         ("Qwen/Qwen-Image", False),
+        # A 5B DiT: INT8-ConvRot doubles LPIPS against the eager port, so bf16 while it fits.
+        ("OpenMOSS-Team/MOSS-Image-SFT", True),
+        ("OpenMOSS-Team/MOSS-Image-Base", True),
     ],
 )
 def test_the_bf16_rule_names_only_the_measured_families(repo, kept):

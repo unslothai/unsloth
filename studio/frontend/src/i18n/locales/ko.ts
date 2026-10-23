@@ -1072,6 +1072,7 @@ export const ko = {
     },
     keyboardShortcuts: {
       title: "키보드 단축키",
+      intro: "단축키를 변경하려면 키 조합을 선택한 다음 새 키를 입력하세요",
       searchPlaceholder: "단축키 검색…",
       keystrokePlaceholder: "단축키를 눌러 검색",
       searchByKeystrokes: "키 입력으로 검색",
@@ -1079,22 +1080,23 @@ export const ko = {
       noResults: "검색과 일치하는 단축키가 없습니다.",
       unassigned: "지정 안 됨",
       recording: "키를 누르세요…",
-      recordingHint: "새 조합을 누르거나 Esc로 취소하세요.",
       needsModifier: "⌘, Ctrl 또는 Alt를 추가하세요. 단독 키는 입력을 가로챕니다.",
       conflict: "다른 단축키도 이 조합을 사용합니다",
       conflictShadowed: "다른 단축키가 이 조합을 차지하고 있어 그쪽이 실행됩니다",
       edit: "단축키 변경",
-      clear: "단축키 제거",
       reset: "기본값 복원",
       resetAll: "모두 기본값으로 초기화",
-      primarySlot: "단축키",
-      alternateSlot: "대체 단축키",
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       metaUnsupported: "Windows 키는 단축키에 사용할 수 없습니다.",
       altGraphUnsupported: "AltGr 조합은 단축키로 사용할 수 없습니다.",
       desktopOnly: "데스크톱 앱 전용",
-      builtInKey: "기본 제공: {key}",
+      groups: {
+        composer: "입력창",
+        chat: "채팅",
+        navigation: "탐색",
+        app: "앱",
+      },
       actions: {
         findInPage: {
           label: "페이지에서 찾기",
@@ -1284,6 +1286,10 @@ export const ko = {
           label: "사진 및 파일 첨부",
           description: "입력창에 첨부 파일을 추가합니다",
         },
+        openComposerMenu: {
+          label: "+ 메뉴 열기",
+          description: "입력창의 도구 및 첨부 파일 + 메뉴 열기",
+        },
         sendMessage: {
           label: "메시지 보내기",
           description: "입력창의 내용을 보냅니다",
@@ -1311,10 +1317,6 @@ export const ko = {
         decreaseReasoningEffort: {
           label: "추론 강도 낮추기",
           description: "추론 강도를 한 단계 내립니다",
-        },
-        toggleFastMode: {
-          label: "Fast 모드 토글",
-          description: "Fast 모드를 켜거나 끕니다",
         },
         renameChat: {
           label: "채팅 이름 바꾸기",
@@ -3082,15 +3084,15 @@ export const ko = {
         "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "코딩 에이전트가 MCP로 Unsloth Studio를 사용하게 하고, 사용할 수 있는 도구를 고릅니다.",
-      keyHint: "에이전트는 Unsloth Studio API 키로 로그인합니다.",
+      title: "Unsloth MCP",
+      description: "코딩 에이전트가 MCP로 Unsloth를 사용하게 하고, 사용할 수 있는 도구를 고릅니다.",
+      keyHint: "에이전트는 Unsloth API 키로 로그인합니다.",
       createKey: "API 키 만들기",
       tools: {
         title: "도구",
         description: "끈 도구는 에이전트에게 보이지 않으며 해당 도구 호출은 거부됩니다. 이미 연결된 에이전트는 다시 연결할 때 변경 사항이 반영됩니다.",
-        loadError: "Unsloth Studio MCP 도구를 불러오지 못했습니다.",
-        saveError: "Unsloth Studio MCP 도구 설정을 저장하지 못했습니다.",
+        loadError: "Unsloth MCP 도구를 불러오지 못했습니다.",
+        saveError: "Unsloth MCP 도구 설정을 저장하지 못했습니다.",
         notInChat: "채팅에서는 사용할 수 없음",
       },
       status: {
@@ -3098,7 +3100,7 @@ export const ko = {
         off: "꺼짐",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "에이전트 액세스",
         open: "MCP 설정 열기",
       },
@@ -3267,14 +3269,14 @@ export const ko = {
       },
       mcp: {
         title: "에이전트 액세스 (MCP)",
-        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth Studio를 사용하게 합니다.",
+        description: "Claude Code, Codex 같은 코딩 에이전트가 MCP로 Unsloth를 사용하게 합니다.",
         enable: "에이전트 연결 허용",
-        enableDescription: "Unsloth Studio API 키가 있는 요청에 /mcp/를 제공합니다.",
+        enableDescription: "Unsloth API 키가 있는 요청에 /mcp/를 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         loadError: "에이전트 액세스 설정을 불러오지 못했습니다.",
         saveError: "에이전트 액세스 설정을 저장하지 못했습니다.",
         agent: "에이전트",
-        exportKeyHint: "에이전트를 시작하기 전에 {name}에 Unsloth Studio API 키를 설정하세요.",
+        exportKeyHint: "에이전트를 시작하기 전에 {name}에 Unsloth API 키를 설정하세요.",
         configFileHint: "이 내용을 {path}에 추가하세요.",
         keywords: "mcp model context protocol agents claude codex tools 에이전트 도구 모델 컨텍스트 프로토콜",
       },

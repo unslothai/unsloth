@@ -1077,6 +1077,7 @@ export const fr = {
     },
     keyboardShortcuts: {
       title: "Raccourcis clavier",
+      intro: "Pour modifier un raccourci, sélectionnez la combinaison de touches, puis tapez les nouvelles touches",
       searchPlaceholder: "Rechercher des raccourcis…",
       keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
       searchByKeystrokes: "Rechercher par frappe",
@@ -1084,22 +1085,23 @@ export const fr = {
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
-      recordingHint: "Appuyez sur la nouvelle combinaison, ou Échap pour annuler.",
       needsModifier: "Ajoutez ⌘, Ctrl ou Alt. Une touche seule avalerait la saisie.",
       conflict: "Également utilisé par un autre raccourci",
       conflictShadowed: "Un autre raccourci utilise cette combinaison et s'exécute à sa place",
       edit: "Modifier le raccourci",
-      clear: "Supprimer le raccourci",
       reset: "Rétablir la valeur par défaut",
       resetAll: "Tout réinitialiser",
-      primarySlot: "Raccourci",
-      alternateSlot: "Raccourci alternatif",
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
       metaUnsupported: "La touche Windows ne peut pas être utilisée dans les raccourcis.",
       altGraphUnsupported: "Les combinaisons AltGr ne peuvent pas servir de raccourcis.",
       desktopOnly: "Application de bureau uniquement",
-      builtInKey: "Intégré : {key}",
+      groups: {
+        composer: "Zone de saisie",
+        chat: "Discussion",
+        navigation: "Navigation",
+        app: "Application",
+      },
       actions: {
         findInPage: {
           label: "Rechercher dans la page",
@@ -1289,6 +1291,10 @@ export const fr = {
           label: "Joindre photos et fichiers",
           description: "Ajouter une pièce jointe à la zone de saisie",
         },
+        openComposerMenu: {
+          label: "Ouvrir le menu +",
+          description: "Ouvrir le menu + de la zone de saisie (outils et pièces jointes)",
+        },
         sendMessage: {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",
@@ -1316,10 +1322,6 @@ export const fr = {
         decreaseReasoningEffort: {
           label: "Diminuer l’effort de raisonnement",
           description: "Descendre d’un niveau l’effort de raisonnement",
-        },
-        toggleFastMode: {
-          label: "Activer/désactiver le mode Fast",
-          description: "Activer ou désactiver le mode Fast",
         },
         renameChat: {
           label: "Renommer la discussion",
@@ -3141,15 +3143,15 @@ export const fr = {
         "Accédez à cet Unsloth depuis vos autres appareils, via votre réseau local ou une URL publique temporaire.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "Permettez aux agents de code d’utiliser Unsloth Studio via MCP et choisissez les outils qu’ils obtiennent.",
-      keyHint: "Les agents se connectent avec une clé API Unsloth Studio.",
+      title: "Unsloth MCP",
+      description: "Permettez aux agents de code d’utiliser Unsloth via MCP et choisissez les outils qu’ils obtiennent.",
+      keyHint: "Les agents se connectent avec une clé API Unsloth.",
       createKey: "Créer une clé API",
       tools: {
         title: "Outils",
         description: "Les agents ne voient jamais un outil que vous désactivez, et les appels vers cet outil sont refusés. Les agents déjà connectés voient le changement lorsqu’ils se reconnectent.",
-        loadError: "Impossible de charger les outils d’Unsloth Studio MCP.",
-        saveError: "Impossible d’enregistrer le paramètre de l’outil d’Unsloth Studio MCP.",
+        loadError: "Impossible de charger les outils d’Unsloth MCP.",
+        saveError: "Impossible d’enregistrer le paramètre de l’outil d’Unsloth MCP.",
         notInChat: "Pas dans le chat",
       },
       status: {
@@ -3157,7 +3159,7 @@ export const fr = {
         off: "Désactivé",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "Accès des agents",
         open: "Ouvrir les paramètres MCP",
       },
@@ -3327,14 +3329,14 @@ export const fr = {
       },
       mcp: {
         title: "Accès des agents (MCP)",
-        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth Studio via MCP.",
+        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth via MCP.",
         enable: "Autoriser les connexions des agents",
-        enableDescription: "Sert /mcp/ aux requêtes qui portent une clé API Unsloth Studio.",
+        enableDescription: "Sert /mcp/ aux requêtes qui portent une clé API Unsloth.",
         lockedByEnv: "Défini par {name}.",
         loadError: "Impossible de charger les paramètres d’accès des agents.",
         saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",
         agent: "Agent",
-        exportKeyHint: "Définissez {name} sur une clé API Unsloth Studio avant de lancer l’agent.",
+        exportKeyHint: "Définissez {name} sur une clé API Unsloth avant de lancer l’agent.",
         configFileHint: "Ajoutez ceci à {path}.",
         keywords: "mcp model context protocol agents claude codex tools agents agent outils protocole de contexte de modèle",
       },

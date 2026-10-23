@@ -21,7 +21,7 @@ export function UnslothStudioMcpRow(): ReactElement {
     loadMcpAccess().then(
       (next) => live && setEnabled(next.enabled),
       (err) =>
-        console.warn("Couldn't load the Unsloth Studio MCP status.", err),
+        console.warn("Couldn't load the Unsloth MCP status.", err),
     );
     return () => {
       live = false;

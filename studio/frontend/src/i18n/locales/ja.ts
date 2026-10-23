@@ -1074,6 +1074,7 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
+      intro: "ショートカットを変更するには、キーの組み合わせを選択してから新しいキーを入力します",
       searchPlaceholder: "ショートカットを検索…",
       keystrokePlaceholder: "ショートカットを押して検索",
       searchByKeystrokes: "キー入力で検索",
@@ -1081,22 +1082,23 @@ export const ja = {
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
-      recordingHint: "新しいキーの組み合わせを押すか、Esc でキャンセルします。",
       needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
       conflict: "別のショートカットでも使われています",
       conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",
       edit: "ショートカットを変更",
-      clear: "ショートカットを削除",
       reset: "既定値に戻す",
       resetAll: "すべて既定値に戻す",
-      primarySlot: "ショートカット",
-      alternateSlot: "代替ショートカット",
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       metaUnsupported: "Windows キーはショートカットに使用できません。",
       altGraphUnsupported: "AltGr の組み合わせはショートカットに使用できません。",
       desktopOnly: "デスクトップアプリのみ",
-      builtInKey: "組み込み: {key}",
+      groups: {
+        composer: "入力欄",
+        chat: "チャット",
+        navigation: "ナビゲーション",
+        app: "アプリ",
+      },
       actions: {
         findInPage: {
           label: "ページ内検索",
@@ -1286,6 +1288,10 @@ export const ja = {
           label: "写真とファイルを添付",
           description: "入力欄に添付ファイルを追加します",
         },
+        openComposerMenu: {
+          label: "+ メニューを開く",
+          description: "入力欄のツールと添付ファイルの + メニューを開く",
+        },
         sendMessage: {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
@@ -1313,10 +1319,6 @@ export const ja = {
         decreaseReasoningEffort: {
           label: "思考の深さを下げる",
           description: "思考の深さを 1 段階下げます",
-        },
-        toggleFastMode: {
-          label: "Fast モードの切り替え",
-          description: "Fast モードをオンまたはオフにします",
         },
         renameChat: {
           label: "チャット名を変更",
@@ -3069,15 +3071,15 @@ export const ja = {
         "ローカルネットワークまたは一時的な公開URLを介して、他のデバイスからこのUnslothにアクセスできます。",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "コーディングエージェントが MCP 経由で Unsloth Studio を使えるようにし、使えるツールを選べます。",
-      keyHint: "エージェントは Unsloth Studio の API キーでサインインします。",
+      title: "Unsloth MCP",
+      description: "コーディングエージェントが MCP 経由で Unsloth を使えるようにし、使えるツールを選べます。",
+      keyHint: "エージェントは Unsloth の API キーでサインインします。",
       createKey: "API キーを作成",
       tools: {
         title: "ツール",
         description: "オフにしたツールはエージェントに表示されず、呼び出しも拒否されます。すでに接続中のエージェントには、再接続したときに変更が反映されます。",
-        loadError: "Unsloth Studio MCP のツールを読み込めませんでした。",
-        saveError: "Unsloth Studio MCP のツール設定を保存できませんでした。",
+        loadError: "Unsloth MCP のツールを読み込めませんでした。",
+        saveError: "Unsloth MCP のツール設定を保存できませんでした。",
         notInChat: "チャットでは使えません",
       },
       status: {
@@ -3085,7 +3087,7 @@ export const ja = {
         off: "オフ",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "エージェントアクセス",
         open: "MCP 設定を開く",
       },
@@ -3251,14 +3253,14 @@ export const ja = {
       },
       mcp: {
         title: "エージェントアクセス (MCP)",
-        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth Studio を使えるようにします。",
+        description: "Claude Code や Codex などのコーディングエージェントが MCP 経由で Unsloth を使えるようにします。",
         enable: "エージェントの接続を許可",
-        enableDescription: "Unsloth Studio の API キーを持つリクエストに /mcp/ を提供します。",
+        enableDescription: "Unsloth の API キーを持つリクエストに /mcp/ を提供します。",
         lockedByEnv: "{name} で設定されています。",
         loadError: "エージェントアクセスの設定を読み込めませんでした。",
         saveError: "エージェントアクセスの設定を保存できませんでした。",
         agent: "エージェント",
-        exportKeyHint: "エージェントを起動する前に、{name} に Unsloth Studio の API キーを設定してください。",
+        exportKeyHint: "エージェントを起動する前に、{name} に Unsloth の API キーを設定してください。",
         configFileHint: "これを {path} に追加してください。",
         keywords: "mcp model context protocol agents claude codex tools エージェント ツール モデルコンテキストプロトコル",
       },

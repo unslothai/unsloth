@@ -1188,6 +1188,7 @@ export const sv = {
     },
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
+      intro: "Om du vill ändra en genväg markerar du tangentkombinationen och skriver sedan de nya tangenterna",
       searchPlaceholder: "Sök genvägar …",
       keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
       searchByKeystrokes: "Sök efter tangenttryckningar",
@@ -1195,25 +1196,25 @@ export const sv = {
       noResults: "Inga genvägar matchar sökningen.",
       unassigned: "Ej tilldelad",
       recording: "Tryck på tangenter …",
-      recordingHint:
-        "Tryck på den nya tangentkombinationen eller Esc för att avbryta.",
       needsModifier:
         "Lägg till ⌘, Ctrl eller Alt. En ensam tangent skulle fånga upp textinmatning.",
       conflict: "Används också av en annan genväg",
       conflictShadowed:
         "En annan genväg har denna tangentkombination och körs i stället",
       edit: "Ändra genväg",
-      clear: "Ta bort genväg",
       reset: "Återställ standard",
       resetAll: "Återställ alla till standard",
-      primarySlot: "Genväg",
-      alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
       metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
       altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
       desktopOnly: "Endast i skrivbordsappen",
-      builtInKey: "Inbyggt: {key}",
+      groups: {
+        composer: "Meddelandefält",
+        chat: "Chatt",
+        navigation: "Navigering",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1403,6 +1404,10 @@ export const sv = {
           label: "Bifoga foton och filer",
           description: "Lägg till en bilaga i skrivfältet",
         },
+        openComposerMenu: {
+          label: "Öppna +-menyn",
+          description: "Öppna meddelandefältets +-meny med verktyg och bilagor",
+        },
         sendMessage: {
           label: "Skicka meddelande",
           description: "Skicka det som finns i skrivfältet",
@@ -1430,10 +1435,6 @@ export const sv = {
         decreaseReasoningEffort: {
           label: "Minska resonemangsnivå",
           description: "Sänk resonemangsnivån ett steg",
-        },
-        toggleFastMode: {
-          label: "Växla snabbt läge",
-          description: "Aktivera eller inaktivera snabbt läge",
         },
         renameChat: {
           label: "Byt namn på chatt",
@@ -3312,15 +3313,15 @@ export const sv = {
         "Anslut till denna Unsloth från andra enheter, via ditt lokala nätverk eller en tillfällig offentlig URL.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "Låt kodagenter använda Unsloth Studio via MCP och välj vilka verktyg de får.",
-      keyHint: "Agenter loggar in med en API-nyckel för Unsloth Studio.",
+      title: "Unsloth MCP",
+      description: "Låt kodagenter använda Unsloth via MCP och välj vilka verktyg de får.",
+      keyHint: "Agenter loggar in med en API-nyckel för Unsloth.",
       createKey: "Skapa en API-nyckel",
       tools: {
         title: "Verktyg",
         description: "Agenter ser aldrig ett verktyg som du stänger av, och anrop till det nekas. Agenter som redan är anslutna ser ändringen när de ansluter igen.",
-        loadError: "Det gick inte att läsa in verktygen för Unsloth Studio MCP.",
-        saveError: "Det gick inte att spara inställningen för verktyget i Unsloth Studio MCP.",
+        loadError: "Det gick inte att läsa in verktygen för Unsloth MCP.",
+        saveError: "Det gick inte att spara inställningen för verktyget i Unsloth MCP.",
         notInChat: "Inte i chatten",
       },
       status: {
@@ -3328,7 +3329,7 @@ export const sv = {
         off: "Av",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "Agentåtkomst",
         open: "Öppna MCP-inställningar",
       },
@@ -3507,14 +3508,14 @@ export const sv = {
       },
       mcp: {
         title: "Agentåtkomst (MCP)",
-        description: "Låt kodagenter som Claude Code och Codex använda Unsloth Studio via MCP.",
+        description: "Låt kodagenter som Claude Code och Codex använda Unsloth via MCP.",
         enable: "Tillåt agentanslutningar",
-        enableDescription: "Betjänar /mcp/ för förfrågningar som har en API-nyckel för Unsloth Studio.",
+        enableDescription: "Betjänar /mcp/ för förfrågningar som har en API-nyckel för Unsloth.",
         lockedByEnv: "Angiven av {name}.",
         loadError: "Det gick inte att läsa in inställningarna för agentåtkomst.",
         saveError: "Det gick inte att spara inställningen för agentåtkomst.",
         agent: "Agent",
-        exportKeyHint: "Sätt {name} till en API-nyckel för Unsloth Studio innan du startar agenten.",
+        exportKeyHint: "Sätt {name} till en API-nyckel för Unsloth innan du startar agenten.",
         configFileHint: "Lägg till det här i {path}.",
         keywords: "mcp model context protocol agents claude codex tools agenter agent verktyg modellkontextprotokoll",
       },

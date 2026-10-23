@@ -1075,6 +1075,7 @@ export const ru = {
     },
     keyboardShortcuts: {
       title: "Сочетания клавиш",
+      intro: "Чтобы изменить сочетание клавиш, выберите его и нажмите новые клавиши",
       searchPlaceholder: "Поиск сочетаний…",
       keystrokePlaceholder: "Нажмите сочетание для поиска",
       searchByKeystrokes: "Поиск по нажатию",
@@ -1082,22 +1083,23 @@ export const ru = {
       noResults: "Ни одно сочетание не соответствует запросу.",
       unassigned: "Не назначено",
       recording: "Нажмите клавиши…",
-      recordingHint: "Нажмите новую комбинацию или Esc для отмены.",
       needsModifier: "Добавьте ⌘, Ctrl или Alt. Одиночная клавиша перехватит ввод текста.",
       conflict: "Используется также другим сочетанием",
       conflictShadowed: "Эта комбинация занята другим сочетанием, и выполняется оно",
       edit: "Изменить сочетание",
-      clear: "Удалить сочетание",
       reset: "Вернуть значение по умолчанию",
       resetAll: "Сбросить всё до значений по умолчанию",
-      primarySlot: "Сочетание",
-      alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
       altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
       desktopOnly: "Только в настольном приложении",
-      builtInKey: "Встроено: {key}",
+      groups: {
+        composer: "Поле ввода",
+        chat: "Чат",
+        navigation: "Навигация",
+        app: "Приложение",
+      },
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1287,6 +1289,10 @@ export const ru = {
           label: "Прикрепить фото и файлы",
           description: "Добавить вложение в поле ввода",
         },
+        openComposerMenu: {
+          label: "Открыть меню +",
+          description: "Открыть меню + поля ввода с инструментами и вложениями",
+        },
         sendMessage: {
           label: "Отправить сообщение",
           description: "Отправить содержимое поля ввода",
@@ -1314,10 +1320,6 @@ export const ru = {
         decreaseReasoningEffort: {
           label: "Уменьшить усилие рассуждения",
           description: "Снизить усилие рассуждения на один уровень",
-        },
-        toggleFastMode: {
-          label: "Переключить режим Fast",
-          description: "Включить или выключить режим Fast",
         },
         renameChat: {
           label: "Переименовать чат",
@@ -3110,15 +3112,15 @@ export const ru = {
         "Откройте этот Unsloth с других устройств: через локальную сеть или временный публичный URL.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "Разрешите агентам для программирования работать с Unsloth Studio через MCP и выберите, какие инструменты им доступны.",
-      keyHint: "Агенты входят с ключом API Unsloth Studio.",
+      title: "Unsloth MCP",
+      description: "Разрешите агентам для программирования работать с Unsloth через MCP и выберите, какие инструменты им доступны.",
+      keyHint: "Агенты входят с ключом API Unsloth.",
       createKey: "Создать ключ API",
       tools: {
         title: "Инструменты",
         description: "Агенты не видят отключённый вами инструмент, а вызовы к нему отклоняются. Уже подключённые агенты увидят изменение после повторного подключения.",
-        loadError: "Не удалось загрузить инструменты Unsloth Studio MCP.",
-        saveError: "Не удалось сохранить настройку инструмента Unsloth Studio MCP.",
+        loadError: "Не удалось загрузить инструменты Unsloth MCP.",
+        saveError: "Не удалось сохранить настройку инструмента Unsloth MCP.",
         notInChat: "Недоступно в чате",
       },
       status: {
@@ -3126,7 +3128,7 @@ export const ru = {
         off: "Выкл.",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "Доступ агентов",
         open: "Открыть настройки MCP",
       },
@@ -3295,14 +3297,14 @@ export const ru = {
       },
       mcp: {
         title: "Доступ агентов (MCP)",
-        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth Studio через MCP.",
+        description: "Разрешите агентам для программирования, таким как Claude Code и Codex, работать с Unsloth через MCP.",
         enable: "Разрешить подключения агентов",
-        enableDescription: "Обслуживает /mcp/ для запросов с ключом API Unsloth Studio.",
+        enableDescription: "Обслуживает /mcp/ для запросов с ключом API Unsloth.",
         lockedByEnv: "Задано через {name}.",
         loadError: "Не удалось загрузить настройки доступа агентов.",
         saveError: "Не удалось сохранить настройку доступа агентов.",
         agent: "Агент",
-        exportKeyHint: "Перед запуском агента задайте в {name} ключ API Unsloth Studio.",
+        exportKeyHint: "Перед запуском агента задайте в {name} ключ API Unsloth.",
         configFileHint: "Добавьте это в {path}.",
         keywords: "mcp model context protocol agents claude codex tools агенты агент инструменты протокол контекста модели",
       },
