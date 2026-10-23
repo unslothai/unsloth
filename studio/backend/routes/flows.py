@@ -26,6 +26,7 @@ from core.flows import capabilities, compiler, package, triggers
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
+from core.flows.nodes import automation
 from core.flows.registry import FlowNodeError
 from core.flows.schema import MAX_ASSET_BYTES, MAX_PACKAGE_BYTES
 from core.flows.specs import catalog
@@ -414,6 +415,12 @@ async def delete_flow(flow_id: str) -> Response:
         # Let them write their last events before their rows are deleted.
         await asyncio.wait(stopping, timeout = 30)
     flows_db.delete_flow(flow_id)
+    # The Python blocks' sandbox belongs to the flow; nothing can reach it once the flow is gone.
+    try:
+        from core.inference.tools import remove_session_sandbox
+        await asyncio.to_thread(remove_session_sandbox, automation.python_session(flow_id), True)
+    except Exception:
+        logger.warning("flows: could not remove the sandbox of %s", flow_id, exc_info = True)
     return Response(status_code = 204)
 
 
@@ -853,13 +860,28 @@ def approve_capabilities(flow_id: str, body: ApproveBody) -> dict:
         )
     record = _flow_or_404(flow_id)
     need = capabilities.doc_needs(record["doc"])
-    # Approve what the owner was shown and the flow still needs; anything added since stays pending.
+    before = flows_db.get_capabilities(flow_id)
+    # Approve what the owner was shown and the flow still needs; anything added since stays pending. What was approved
+    # before and is still needed stays approved, since the banner sends only what is pending.
     approved = {
-        "python": [h for h in need["python"] if h in body.python],
-        "hosts": [h for h in need["hosts"] if h in body.hosts],
-        "mcp": need["mcp"] and body.mcp,
-        "providers": [p for p in need["providers"] if p in body.providers],
-        "triggers": need["triggers"] and body.triggers,
+        "python": [
+            h
+            for h in need["python"]
+            if h in body.python or capabilities.is_approved(before, "python", h)
+        ],
+        "hosts": [
+            h
+            for h in need["hosts"]
+            if h in body.hosts or capabilities.is_approved(before, "http", h)
+        ],
+        "mcp": need["mcp"] and (body.mcp or capabilities.is_approved(before, "mcp", "mcp")),
+        "providers": [
+            p
+            for p in need["providers"]
+            if p in body.providers or capabilities.is_approved(before, "provider", p)
+        ],
+        "triggers": need["triggers"]
+        and (body.triggers or capabilities.is_approved(before, "trigger", "trigger")),
     }
     flows_db.set_capabilities(flow_id, approved)
     return _capability_report(record)
@@ -900,12 +922,13 @@ async def call_webhook(request: Request, token: str) -> dict:
 
     if not triggers.TOKEN_RE.match(token):
         raise HTTPException(status_code = 404, detail = "Not found")
-    if triggers.rate_limited(token):
-        raise HTTPException(status_code = 429, detail = "Too many calls; wait a minute")
-    # Resolve the secret before reading anything, so an unknown URL costs no body read.
+    # Resolve the secret before reading anything, so an unknown URL costs no body read. Only a real secret gets a
+    # rate-limit bucket, so a flood of made-up ones cannot push a real one's bucket out.
     row = await asyncio.to_thread(run_as, OWNER, flows_db.trigger_by_token, token)
     if row is None:
         raise HTTPException(status_code = 404, detail = "Not found")
+    if triggers.rate_limited(token):
+        raise HTTPException(status_code = 429, detail = "Too many calls; wait a minute")
     if not row["config"].get("enabled"):
         raise HTTPException(status_code = 409, detail = "This webhook is switched off")
     data = await _read_body(request, WEBHOOK_MAX_BYTES)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -70,7 +71,12 @@ class _NoRedirect:
 
 
 def guarded_request(
-    method: str, url: str, headers: dict, body: Optional[bytes], timeout: float
+    method: str,
+    url: str,
+    headers: dict,
+    body: Optional[bytes],
+    timeout: float,
+    stop: Optional[threading.Event] = None,
 ) -> tuple[int, str, bytes]:
     """One request to a public host: resolved once, refused for non-public addresses, then pinned to the checked
     addresses (no proxy, no redirects), as the chat web fetch does."""
@@ -79,6 +85,7 @@ def guarded_request(
 
     from core.inference import tools as web
 
+    deadline = time.monotonic() + timeout
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise FlowNodeError("Give a full http:// or https:// URL")
@@ -102,10 +109,21 @@ def guarded_request(
     except (urllib.error.URLError, OSError) as exc:
         raise FlowNodeError(f"The request failed: {getattr(exc, 'reason', exc)}") from None
     with response:
-        data = response.read(HTTP_MAX_BYTES + 1)
-        if len(data) > HTTP_MAX_BYTES:
-            raise FlowNodeError(f"The response is over {HTTP_MAX_BYTES // (1024 * 1024)} MB")
-        return int(response.status), response.headers.get("content-type") or "", data
+        # The socket timeout bounds each read, not the whole body: a server trickling bytes is cut at the deadline.
+        chunks, size = [], 0
+        while True:
+            if time.monotonic() > deadline:
+                raise FlowNodeError(f"The response took longer than {int(timeout)} seconds")
+            if stop is not None and stop.is_set():
+                raise FlowNodeError("Stopped")
+            chunk = response.read(64 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > HTTP_MAX_BYTES:
+                raise FlowNodeError(f"The response is over {HTTP_MAX_BYTES // (1024 * 1024)} MB")
+            chunks.append(chunk)
+        return int(response.status), response.headers.get("content-type") or "", b"".join(chunks)
 
 
 @handler("http.request")
@@ -135,8 +153,14 @@ async def http_request(ctx: NodeContext) -> dict:
         body = json.dumps(payload).encode()
         headers.setdefault("Content-Type", "application/json")
     timeout = max(1, min(int(ctx.params.get("timeout_s") or 30), 120))
+    stop = threading.Event()
+
+    async def cancel() -> None:
+        stop.set()
+
+    ctx.on_cancel(cancel)
     status, content_type, data = await asyncio.to_thread(
-        guarded_request, method, url, headers, body, timeout
+        guarded_request, method, url, headers, body, timeout, stop
     )
     text = data.decode("utf-8", "replace")
     parsed: Any = None
@@ -148,29 +172,44 @@ async def http_request(ctx: NodeContext) -> dict:
     return {"data": parsed, "text": text, "status": status}
 
 
+def python_session(flow_id: str) -> str:
+    """The sandbox a flow's Python blocks share; it goes when the flow is deleted."""
+    return f"flow-{flow_id}"
+
+
 def _program(code: str, value: Any) -> str:
-    """The user's code with `inputs` set and `result` printed as JSON after a marker line."""
+    """The user's code with `inputs` set. What it prints is held back, and `result` is printed as JSON on a marker line
+    FIRST, then the printed log: the tool cuts long output, and a long log must not cut the result."""
     encoded = json.dumps(value, default = str)
     if len(encoded) > PY_MAX_INPUT_BYTES:
         raise FlowNodeError("The input is too large to pass to Python")
     return (
-        "import json as _flow_json\n"
+        "import contextlib as _flow_cl, io as _flow_io, json as _flow_json, sys as _flow_sys\n"
         f"inputs = _flow_json.loads({encoded!r})\n"
         "result = None\n"
-        f"{code}\n"
-        f"print({PY_RESULT_MARKER!r} + _flow_json.dumps(result, default = str))\n"
+        "_flow_log = _flow_io.StringIO()\n"
+        "try:\n"
+        "    with _flow_cl.redirect_stdout(_flow_log):\n"
+        f"        exec(compile({code!r}, '<python block>', 'exec'), globals())\n"
+        "except BaseException:\n"
+        "    _flow_sys.stdout.write(_flow_log.getvalue()[-4000:])\n"
+        "    raise\n"
+        f"_flow_sys.stdout.write({PY_RESULT_MARKER!r} + _flow_json.dumps(result, default = str) + '\\n')\n"
+        "_flow_sys.stdout.write(_flow_log.getvalue())\n"
     )
 
 
 def parse_python_output(output: str) -> tuple[Any, str]:
-    head, marker, tail = output.rpartition(PY_RESULT_MARKER)
+    head, marker, tail = output.partition(PY_RESULT_MARKER)
     if not marker:
         raise FlowNodeError("The Python code did not finish: " + output.strip()[-600:])
-    line = tail.splitlines()[0] if tail else "null"
+    line, _, log = tail.partition("\n")
     try:
-        return json.loads(line), head.rstrip()
+        return json.loads(line or "null"), (head + log).strip()
     except ValueError:
-        raise FlowNodeError("Python's `result` could not be turned into JSON") from None
+        raise FlowNodeError(
+            "Python's `result` could not be turned into JSON, or is too long to pass on"
+        ) from None
 
 
 @handler("code.python")
@@ -194,7 +233,7 @@ async def python(ctx: NodeContext) -> dict:
         {"code": program},
         cancel_event = stop,
         timeout = timeout,
-        session_id = f"flow-{ctx.flow_id}",
+        session_id = python_session(ctx.flow_id),
     )
     result, log = parse_python_output(str(output))
     return {"result": result, "log": log[-20000:]}

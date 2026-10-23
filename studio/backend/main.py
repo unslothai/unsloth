@@ -1664,6 +1664,10 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
 
 
 def _get_request_body_max_bytes(path: str) -> int:
+    # Flow webhooks take unauthenticated calls: cap what is buffered before the secret is even checked.
+    if path.startswith("/api/flows/hooks/"):
+        from routes.flows import WEBHOOK_MAX_BYTES
+        return WEBHOOK_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe/raw"):
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):

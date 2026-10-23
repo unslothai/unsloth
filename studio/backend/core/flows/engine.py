@@ -67,6 +67,8 @@ class _Skip:
 
 
 SKIPPED = _Skip()
+# Blocks a schedule or webhook fires; in a run one of them started, the others do not run.
+TRIGGER_TYPES = ("trigger.schedule", "trigger.webhook")
 
 
 def _now() -> float:
@@ -1062,6 +1064,18 @@ class FlowEngine:
         if skip:
             env.values[nid] = SKIPPED
             rs.set_status(nid, "skipped", skip)
+            self._record(rs, nid, "skipped", None, None, iteration)
+            return
+        fired = (rs.options.get("params") or {}).get("__trigger")
+        if (
+            rs.origin.get("kind") == "trigger"
+            and isinstance(fired, dict)
+            and spec["type"] in TRIGGER_TYPES
+            and nid not in fired
+        ):
+            # Another trigger started this run: this one's branch stays still.
+            env.values[nid] = SKIPPED
+            rs.set_status(nid, "skipped", "Another trigger started this run")
             self._record(rs, nid, "skipped", None, None, iteration)
             return
         params = param_values(spec, node)

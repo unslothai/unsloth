@@ -70,13 +70,13 @@ def parse_cron(expr: str) -> list[set[int]]:
 
 def cron_matches(sets: list[set[int]], when: datetime) -> bool:
     weekday = (when.weekday() + 1) % 7  # Monday=1 ... Sunday=0
-    return (
-        when.minute in sets[0]
-        and when.hour in sets[1]
-        and when.day in sets[2]
-        and when.month in sets[3]
-        and weekday in sets[4]
-    )
+    day_ok, weekday_ok = when.day in sets[2], weekday in sets[4]
+    # As in cron: with both day fields restricted, either one matching is enough.
+    if len(sets[2]) < 31 and len(sets[4]) < 7:
+        days = day_ok or weekday_ok
+    else:
+        days = day_ok and weekday_ok
+    return when.minute in sets[0] and when.hour in sets[1] and when.month in sets[3] and days
 
 
 # Index of a flow's triggers, kept in step with the saved document
@@ -159,6 +159,12 @@ async def fire(
     record = flows_db.get_flow(flow_id)
     if record is None:
         return None
+    # The saved document is the truth: a trigger switched off or removed there never fires, even if the index lags.
+    if not any(
+        w["node_id"] == node_id and w["config"].get("enabled") for w in wanted(record["doc"])
+    ):
+        logger.info("flows: trigger %s/%s skipped: it is off in the saved flow", flow_id, node_id)
+        return None
     if not capabilities.is_approved(flows_db.get_capabilities(flow_id), "trigger", "trigger"):
         logger.info(
             "flows: trigger %s/%s skipped: triggers are not approved for this flow",
@@ -170,6 +176,9 @@ async def fire(
         logger.info(
             "flows: trigger %s/%s skipped: its last triggered run is still going", flow_id, node_id
         )
+        # A skipped scheduled time counts as taken, so it is not started late once the last run ends.
+        if at_ms is not None:
+            flows_db.mark_trigger_fired(flow_id, node_id, at_ms)
         return None
     rs = await get_engine().start_run(
         app = app,
@@ -258,5 +267,7 @@ def rate_limited(token: str) -> bool:
     hits.append(now)
     _HITS[token] = hits
     if len(_HITS) > 10000:
-        _HITS.clear()
+        # Only buckets with no call in the last minute go.
+        for key in [k for k, v in _HITS.items() if not v or now - v[-1] >= 60]:
+            del _HITS[key]
     return False

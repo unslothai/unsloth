@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getApiBase } from "@/lib/api-base";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { type FlowTrigger, listTriggers, rotateTrigger } from "../api";
@@ -18,6 +19,12 @@ export function TriggerPanel({
   const [trigger, setTrigger] = useState<FlowTrigger | null>(null);
   const [ownerOnly, setOwnerOnly] = useState(false);
 
+  // Another block or flow: never show the last one's secret URL while this one loads.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on identity change only
+  useEffect(() => {
+    setTrigger(null);
+  }, [flowId, nodeId]);
+
   useEffect(() => {
     if (!flowId || saveState !== "saved") return;
     let alive = true;
@@ -34,7 +41,7 @@ export function TriggerPanel({
   }, [flowId, nodeId, saveState]);
 
   const url = trigger?.path
-    ? webhookUrl(window.location.origin, trigger.path)
+    ? webhookUrl(getApiBase() || window.location.origin, trigger.path)
     : null;
   return (
     <section

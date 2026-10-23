@@ -52,3 +52,14 @@ test("the webhook URL joins the page origin and the route path", () => {
     "http://127.0.0.1:8888/api/flows/hooks/abc",
   );
 });
+
+test("the webhook URL uses the backend origin and never shows the last block's secret", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(
+    new URL("../src/features/flows/editor/trigger-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  // Desktop serves the page from the webview, not the HTTP server the hook lives on.
+  assert.match(source, /webhookUrl\(getApiBase\(\) \|\| window\.location\.origin/);
+  assert.match(source, /setTrigger\(null\);\s*\}, \[flowId, nodeId\]\)/);
+});

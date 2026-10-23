@@ -379,3 +379,168 @@ def test_other_accounts_triggers_never_fire(client):
         ]
         == []
     )
+
+
+# Review fixes
+
+
+def test_approving_a_new_capability_keeps_the_earlier_ones(client):
+    d = doc(
+        [
+            node("p", "code.python", code = CODE),
+            node("h", "http.request", url = "https://example.com/a"),
+        ],
+        id = "both1",
+    )
+    client.post("/api/flows", json = {"doc": d})
+    _approve(client, "both1")
+    d["nodes"][1]["params"]["url"] = "https://example.org/b"
+    assert client.put("/api/flows/both1", json = {"doc": d}).status_code == 200
+    assert _approve(client, "both1").status_code == 200
+    report = client.get("/api/flows/both1/capabilities").json()
+    assert report["approved"]["python"] == [capabilities.code_hash(CODE)]
+    assert report["approved"]["hosts"] == ["example.org"]
+    assert not capabilities.has_pending(report["pending"])
+
+
+def test_a_trigger_run_skips_the_other_triggers_branches(client):
+    d = doc(
+        [
+            node("w", "trigger.webhook", enabled = True),
+            node("s", "trigger.schedule", enabled = True),
+            node("p", "code.python", code = CODE),
+            node("q", "code.python", code = CODE),
+        ],
+        [edge("s", "fired_at", "p", "input"), edge("w", "payload", "q", "input")],
+        id = "two1",
+    )
+    client.post("/api/flows", json = {"doc": d})
+    _approve(client, "two1")
+    path = client.get("/api/flows/two1/triggers").json()["triggers"]
+    path = [t for t in path if t["kind"] == "webhook"][0]["path"]
+    snap = _wait(client, client.post(path, json = {"a": 1}).json()["run_id"])
+    assert snap["nodes"]["q"]["status"] == "done"
+    assert snap["nodes"]["s"]["status"] == "skipped"
+    assert snap["nodes"]["p"]["status"] == "skipped"
+
+
+def test_a_skipped_schedule_time_is_not_started_late(client, monkeypatch):
+    d = doc([node("s", "trigger.schedule", enabled = True, every_minutes = 1)], id = "sch2")
+    client.post("/api/flows", json = {"doc": d})
+    _approve(client, "sch2")
+    monkeypatch.setattr(triggers, "_busy", lambda flow_id: True)
+    at = int(datetime(2026, 10, 22, 9, 2).timestamp() * 1000)
+    assert _owner(asyncio.run, triggers.fire(None, "sch2", "s", {}, at)) is None
+    row = [r for r in _owner(flows_db.list_triggers) if r["flow_id"] == "sch2"][0]
+    assert row["last_fired_at"] == at
+
+
+def test_a_trigger_off_in_the_saved_flow_never_fires_even_if_the_index_lags(client, monkeypatch):
+    path = _webhook_flow(client)
+    _approve(client, "hook1")
+    d = client.get("/api/flows/hook1").json()
+    d["doc"]["nodes"][0]["params"]["enabled"] = False
+    # The index update fails after the save: the saved document still wins.
+    monkeypatch.setattr(triggers, "sync", lambda *a: (_ for _ in ()).throw(RuntimeError("db")))
+    assert client.put("/api/flows/hook1", json = {"doc": d["doc"]}).status_code == 200
+    assert client.post(path, json = {}).status_code == 409
+
+
+def test_cron_either_day_field_matches_when_both_are_set():
+    sets = triggers.parse_cron("0 9 1 * 1")
+    assert triggers.cron_matches(sets, datetime(2026, 10, 26, 9, 0))  # a Monday, not the 1st
+    assert triggers.cron_matches(sets, datetime(2026, 10, 1, 9, 0))  # the 1st, a Thursday
+    assert not triggers.cron_matches(sets, datetime(2026, 10, 27, 9, 0))
+    weekdays = triggers.parse_cron("0 9 * * 1")
+    assert not triggers.cron_matches(weekdays, datetime(2026, 10, 1, 9, 0))
+
+
+def test_made_up_secrets_cannot_reset_a_real_webhooks_rate_limit(client, monkeypatch):
+    monkeypatch.setattr(triggers, "_HITS", {})
+    path = _webhook_flow(client)
+    token = path.rsplit("/", 1)[1]
+    for _ in range(triggers.WEBHOOK_PER_MINUTE):
+        triggers.rate_limited(token)
+    for i in range(3):
+        assert client.post(f"/api/flows/hooks/{'z' * 30}{i:04d}", json = {}).status_code == 404
+    assert len(triggers._HITS) == 1
+    monkeypatch.setattr(
+        triggers, "_HITS", {**triggers._HITS, **{f"k{i}": [0.0] for i in range(10001)}}
+    )
+    assert triggers.rate_limited(token)
+
+
+def test_a_long_log_does_not_cut_the_python_result():
+    import subprocess
+    import sys
+
+    program = automation._program("print('x' * 50000)\nresult = {'n': len(inputs)}", [1, 2])
+    out = subprocess.run([sys.executable, "-c", program], capture_output = True, text = True).stdout
+    result, log = automation.parse_python_output(
+        out[:16000]
+    )  # the tool keeps the head of long output
+    assert result == {"n": 2} and log.startswith("xxx")
+
+
+def test_http_body_read_stops_at_the_deadline(monkeypatch):
+    import threading
+
+    from core.inference import tools as web
+
+    class Slow:
+        status = 200
+        headers = {"content-type": "text/plain"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            time.sleep(0.4)
+            return b"x"
+
+    class Opener:
+        def open(self, request, timeout):
+            return Slow()
+
+    monkeypatch.setattr(
+        web, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
+    )
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a: Opener())
+    started = time.monotonic()
+    with pytest.raises(FlowNodeError, match = "longer than"):
+        automation.guarded_request("GET", "https://example.com", {}, None, 1, threading.Event())
+    assert time.monotonic() - started < 3
+
+
+def test_deleting_a_flow_removes_its_python_sandbox(client, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    removed = []
+    monkeypatch.setattr(
+        tools_mod, "remove_session_sandbox", lambda sid, files = False: removed.append((sid, files))
+    )
+    _python_flow(client, "py9")
+    assert client.delete("/api/flows/py9").status_code == 204
+    assert removed == [(automation.python_session("py9"), True)]
+
+
+def test_export_drops_request_header_values_and_url_secrets():
+    from core.flows.package import scrub
+
+    found = scrub(
+        {
+            "url": "https://u:pw@api.example.com/v1?q=cats&api_key=SECRET&page=2",
+            "headers": {
+                "Cookie": "session=abc",
+                "X-Custom-Auth": "s3",
+                "Accept": "application/json",
+            },
+        }
+    )
+    assert found["url"] == "https://api.example.com/v1?q=cats&api_key=&page=2"
+    assert found["headers"] == {"Cookie": "", "X-Custom-Auth": "", "Accept": "application/json"}

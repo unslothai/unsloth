@@ -40,6 +40,7 @@ _SECRET_KEY = re.compile(
 _SECRET_VALUE = re.compile(
     r"(sk-[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,})"
 )
+_PLAIN_HEADERS = ("accept", "accept-language", "content-type", "user-agent")
 _LOCAL_REFS = ("image:", "audio:", "video:", "library:", "voice:")
 
 ReadMedia = Callable[[dict], Awaitable[tuple[bytes, str]]]
@@ -61,15 +62,36 @@ def scrub(value: Any) -> Any:
             for k, v in value.items()
             if not (isinstance(k, str) and _SECRET_KEY.search(k))
         }
+        # Request headers carry credentials under any name (Cookie, X-Custom-Auth): keep the names, drop the values.
+        if isinstance(found.get("headers"), dict):
+            found["headers"] = {
+                k: v if str(k).lower() in _PLAIN_HEADERS else ""
+                for k, v in found["headers"].items()
+            }
         # The player fetches media URLs with the user's token; a shared flow must not point it at another origin.
         if _is_media(found) and "url" in found and not _local_url(found["url"]):
             found.pop("url")
         return found
     if isinstance(value, list):
         return [scrub(v) for v in value]
-    if isinstance(value, str) and _SECRET_VALUE.search(value):
-        return _SECRET_VALUE.sub("", value)
+    if isinstance(value, str):
+        if _SECRET_VALUE.search(value):
+            value = _SECRET_VALUE.sub("", value)
+        if "://" in value and ("?" in value or "@" in value):
+            value = _SECRET_QUERY.sub(_blank_query, _URL_USERINFO.sub(r"\1", value))
     return value
+
+
+# Secrets in a URL: user:password@ and query values named like a credential (?api_key=, &token=, &sig=).
+_URL_USERINFO = re.compile(r"(https?://)[^/@\s?#]+@", re.I)
+_SECRET_QUERY = re.compile(r"([?&])([^=&#\s]+)=([^&#\s]*)")
+
+
+def _blank_query(match: "re.Match") -> str:
+    name = match.group(2)
+    if _SECRET_KEY.search(name) or name.lower() in ("key", "sig", "signature", "code"):
+        return f"{match.group(1)}{name}="
+    return match.group(0)
 
 
 def _is_media(value: Any) -> bool:
