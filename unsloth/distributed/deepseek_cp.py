@@ -183,6 +183,168 @@ def deepseek_v4_attention_forward_with_cp(
     return output, None
 
 
+@torch.no_grad()
+def _v32_global_topk(indexer, hidden_states, q_resid, position_embeddings, group, module):
+    """DSA indexer top-k for this rank's queries against the *full* key sequence, then gathered.
+
+    Indexer keys are a single 128-d vector per token, so gathering them is cheap. Scores are
+    ``[B, chunk, H_idx, S]`` in fp32, so queries are processed in chunks.
+    Returns int32 indices ``[B, S_full, topk]`` identical on every rank.
+    """
+    cp = dist.get_world_size(group)
+    rank = dist.get_rank(group)
+    batch, local_seq, _ = hidden_states.shape
+    cos, sin = position_embeddings
+    rope = indexer.qk_rope_head_dim
+
+    q = indexer.wq_b(q_resid).view(batch, local_seq, indexer.n_heads, indexer.head_dim)
+    q_rot, q_pass = torch.split(q, [rope, indexer.head_dim - rope], dim = -1)
+    k = indexer.k_norm(indexer.wk(hidden_states)).unsqueeze(2)
+    k_rot, k_pass = torch.split(k, [rope, indexer.head_dim - rope], dim = -1)
+    q_rot, k_rot = module.apply_rotary_pos_emb(q_rot, k_rot, cos, sin, unsqueeze_dim = 2)
+    q = torch.cat([q_rot, q_pass], dim = -1)
+    k = torch.cat([k_rot, k_pass], dim = -1).squeeze(2).contiguous()
+
+    k_parts = [torch.empty_like(k) for _ in range(cp)]
+    dist.all_gather(k_parts, k, group = group)
+    k_full = torch.cat(k_parts, dim = 1)  # [B, S, D]
+    full_seq = k_full.shape[1]
+
+    weights = indexer.weights_proj(hidden_states.to(indexer.weights_proj.weight.dtype)).float()
+    weights = weights * (indexer.n_heads**-0.5)
+    k_t = k_full.transpose(-1, -2).float().unsqueeze(1)  # [B, 1, D, S]
+    k_idx = torch.arange(full_seq, device = hidden_states.device)
+    topk = min(indexer.index_topk, full_seq)
+    chunk = max(1, _attn_chunk() // 4)
+    q_start = rank * local_seq
+
+    parts = []
+    for s in range(0, local_seq, chunk):
+        e = min(local_seq, s + chunk)
+        scores = torch.matmul(q[:, s:e].float(), k_t) * indexer.softmax_scale  # [B, c, H, S]
+        scores = F.relu(scores)
+        index_scores = torch.matmul(weights[:, s:e].unsqueeze(-2), scores).squeeze(-2)  # [B, c, S]
+        q_pos = torch.arange(q_start + s, q_start + e, device = hidden_states.device)
+        causal = q_pos[:, None] >= k_idx[None, :]
+        index_scores = index_scores.masked_fill(~causal.unsqueeze(0), float("-inf"))
+        parts.append(index_scores.topk(topk, dim = -1).indices.to(torch.int32))
+    local_topk = torch.cat(parts, dim = 1).contiguous()
+
+    gathered = [torch.empty_like(local_topk) for _ in range(cp)]
+    dist.all_gather(gathered, local_topk, group = group)
+    return torch.cat(gathered, dim = 1)
+
+
+def _sparse_mla_chunk(q, k, v, topk, q_start, scaling, dropout_p, training):
+    """Causal attention restricted to each query's indexer-selected keys. Returns [B, rows, H, Dv]."""
+    batch, _, rows, _ = q.shape
+    full_seq = k.shape[2]
+    q_idx = torch.arange(q_start, q_start + rows, device = q.device)
+    k_idx = torch.arange(full_seq, device = q.device)
+    causal = q_idx[:, None] >= k_idx[None, :]
+    selected = torch.zeros((batch, rows, full_seq), dtype = torch.bool, device = q.device)
+    selected.scatter_(-1, topk.long(), True)
+    keep = (selected & causal.unsqueeze(0)).unsqueeze(1)  # [B, 1, rows, S]
+
+    logits = torch.matmul(q, k.transpose(2, 3)) * scaling
+    logits = logits.masked_fill(~keep, torch.finfo(logits.dtype).min)
+    probs = F.softmax(logits, dim = -1, dtype = torch.float32).to(q.dtype)
+    probs = F.dropout(probs, p = dropout_p, training = training)
+    return torch.matmul(probs, v).transpose(1, 2).contiguous()
+
+
+def _sparse_mla_attention(q, k, v, topk, scaling, dropout_p, training):
+    full_seq = q.shape[2]
+    chunk = _attn_chunk()
+    outs = []
+    for start in range(0, full_seq, chunk):
+        end = min(full_seq, start + chunk)
+        args = (
+            q[:, :, start:end],
+            k,
+            v,
+            topk[:, start:end],
+            start,
+            scaling,
+            dropout_p,
+            training,
+        )
+        if torch.is_grad_enabled() and full_seq > chunk:
+            outs.append(checkpoint(_sparse_mla_chunk, *args, use_reentrant = False))
+        else:
+            outs.append(_sparse_mla_chunk(*args))
+    return outs[0] if len(outs) == 1 else torch.cat(outs, dim = 1)
+
+
+def deepseek_v32_attention_forward_with_cp(
+    self,
+    hidden_states: torch.Tensor,
+    position_embeddings = None,
+    attention_mask = None,
+    past_key_values = None,
+    position_ids = None,
+    **kwargs,
+):
+    """DeepSeek-V3.2 MLA + DSA indexer under Ulysses CP (training path, no padding mask / cache)."""
+    group = self._cp_group
+    cp = dist.get_world_size(group)
+    if cp <= 1:
+        return self._cp_original_forward(
+            hidden_states,
+            position_embeddings = position_embeddings,
+            attention_mask = attention_mask,
+            past_key_values = past_key_values,
+            position_ids = position_ids,
+            **kwargs,
+        )
+    if past_key_values is not None:
+        raise RuntimeError("DeepSeek-V3.2 context parallel is the training path; cache is off.")
+    if self.num_heads % cp != 0:
+        raise RuntimeError(
+            f"DeepSeek-V3.2 CP needs cp={cp} to divide attention heads {self.num_heads}."
+        )
+
+    module = sys.modules[type(self).__module__]
+    batch, local_seq = hidden_states.shape[:-1]
+    cos, sin = position_embeddings
+
+    q_resid = self.q_a_layernorm(self.q_a_proj(hidden_states))
+    q_states = self.q_b_proj(q_resid).view(batch, local_seq, -1, self.qk_head_dim).transpose(1, 2)
+    q_pass, q_rot = torch.split(q_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim = -1)
+
+    kv_pass, k_rot = torch.split(
+        self.kv_a_proj_with_mqa(hidden_states), [self.kv_lora_rank, self.qk_rope_head_dim], dim = -1
+    )
+    k_pass = self.kv_a_layernorm(kv_pass).view(batch, 1, local_seq, self.kv_lora_rank)
+    k_rot = k_rot.view(batch, 1, local_seq, self.qk_rope_head_dim)
+    q_rot, k_rot = module.apply_rotary_pos_emb_interleave(q_rot, k_rot, cos, sin)
+    query_states = torch.cat((q_pass, q_rot), dim = -1)
+    key_states, value_states = self.expand_kv(k_pass, k_rot)
+
+    topk = _v32_global_topk(
+        self.indexer, hidden_states, q_resid, position_embeddings, group, module
+    )
+
+    # [B, H, S_local, D] -> [B, H/cp, S_full, D]
+    q = SeqAllToAll4D.apply(group, query_states, 1, 2)
+    k = SeqAllToAll4D.apply(group, key_states, 1, 2)
+    v = SeqAllToAll4D.apply(group, value_states, 1, 2)
+
+    attn_output = _sparse_mla_attention(
+        q,
+        k,
+        v,
+        topk,
+        self.scaling,
+        0.0 if not self.training else self.attention_dropout,
+        self.training,
+    )
+    # [B, S_full, H/cp, Dv] -> [B, S_local, H, Dv]
+    attn_output = SeqAllToAll4D.apply(group, attn_output, 1, 2)
+    attn_output = attn_output.reshape(batch, local_seq, -1).contiguous()
+    return self.o_proj(attn_output), None
+
+
 def _dsv4_rmsnorm_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
     input_dtype = hidden_states.dtype
     hidden_states = hidden_states.to(torch.float32)
@@ -197,11 +359,18 @@ def apply_deepseek_cp(model, group) -> int:
         if type(module).__name__ == "DeepseekV4RMSNorm":
             module.forward = _dsv4_rmsnorm_forward.__get__(module, type(module))
             continue
-        if type(module).__name__ != "DeepseekV4Attention":
+        forward_with_cp = _CP_ATTENTION_FORWARDS.get(type(module).__name__)
+        if forward_with_cp is None:
             continue
         if getattr(module, "_cp_original_forward", None) is None:
             module._cp_original_forward = module.forward
         module._cp_group = group
-        module.forward = deepseek_v4_attention_forward_with_cp.__get__(module, type(module))
+        module.forward = forward_with_cp.__get__(module, type(module))
         n += 1
     return n
+
+
+_CP_ATTENTION_FORWARDS = {
+    "DeepseekV4Attention": deepseek_v4_attention_forward_with_cp,
+    "DeepseekV32Attention": deepseek_v32_attention_forward_with_cp,
+}
