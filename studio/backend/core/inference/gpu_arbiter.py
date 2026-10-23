@@ -822,8 +822,9 @@ def acquire_for(
         # Read before evicting: dropping the current owner promotes a parked resident and pops its accounts.
         parked = owner in _accounts
         others = [name for name in _residents if name != owner]
-        if others and reassert and lease_refusal() is not None:
-            # Under another holder's lease a re-assert evicts nothing either: that would unload the leased model.
+        # Under another holder's lease a re-assert tears nothing down: that would unload what the leased step uses.
+        quiet = reassert and lease_refusal() is not None
+        if quiet:
             others = []
         if others and coreside:
             from core.inference.gpu_residency import coreside_locked
@@ -860,12 +861,12 @@ def acquire_for(
                 _EVICTORS[name]()
                 note_evictions(unloading, sink)
                 _drop_resident(name)
-        if owner != VIDEO and not (coreside and VIDEO in _residents):
+        if not quiet and owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
         if owner != DECISIONS and (register is not None or replacing) and policy == "off":
             _release_idle_decision_worker()
-        if owner != DIFFUSION or register is not None or replacing:
+        if not quiet and (owner != DIFFUSION or register is not None or replacing):
             # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.
             _release_mask_segmenter(f"GPU acquired for {owner}", handover = True)
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
