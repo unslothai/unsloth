@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pairing: the master opens a short window and prints a token; the worker joins with it.
-
-The worker pins the master's certificate from the token before sending a byte, then proves it holds
-the token secret with an HMAC over a transcript binding both nonces, the session and its CSR. The
-secret itself never crosses the wire. One token pairs exactly one worker.
-"""
+"""Pairing: the master opens a short window and prints a token; the worker joins with it."""
 
 from __future__ import annotations
 
@@ -39,7 +34,6 @@ TRANSCRIPT_LABEL = b"unsloth-pair-v1"
 CONFIRM_LABEL = b"unsloth-pair-confirm-v1"
 FRAME_TIMEOUT_S = 10.0
 CONNECT_TIMEOUT_S = 5.0
-# How long a caller waits past its deadline for a claimed pairing to finish: the ack read plus the commit.
 CLAIMED_GRACE_S = 3 * FRAME_TIMEOUT_S
 MAX_ATTEMPTS = 20
 MAX_NAME = 64
@@ -105,7 +99,6 @@ def local_ipv4_addresses() -> List[str]:
     found: List[str] = []
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            # No packet is sent: connect() on UDP only picks the outbound interface.
             s.connect(("192.0.2.1", 9))
             found.append(s.getsockname()[0])
     except OSError:
@@ -170,7 +163,6 @@ class PairingWindow:
     async def start(self) -> str:
         addrs = self.addrs or local_ipv4_addresses() or ["127.0.0.1"]
         try:
-            # Before listening: a token no worker can decode must never be printed.
             tokens.check_addrs(addrs)
         except tokens.TokenError as exc:
             raise PairingError(f"--addr: {exc}") from None
@@ -224,7 +216,6 @@ class PairingWindow:
         except asyncio.TimeoutError:
             if not self._claimed:
                 raise
-        # A worker proved the token and may have saved its identity: let its bounded handler finish.
         return await asyncio.wait_for(asyncio.shield(self._done), CLAIMED_GRACE_S)
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -294,7 +285,6 @@ class PairingWindow:
             if self._used:
                 raise PairingError("invitation already used")
             self._used = self._claimed = True
-        # Claimed: expiry must not report failure while the worker acknowledges (reads are bounded).
         if self._expiry is not None:
             self._expiry.cancel()
         try:
@@ -350,7 +340,6 @@ class PairingWindow:
             if self._server is not None:
                 self._server.close()
         except Exception as exc:
-            # The invitation is spent: tell whoever waits on it now instead of at expiry.
             if self._done is not None and not self._done.done():
                 self._fail(
                     PairingError(f"pairing failed after the worker's proof: {type(exc).__name__}")
@@ -361,14 +350,11 @@ class PairingWindow:
 
 @contextlib.asynccontextmanager
 async def _identity_lock():
-    """``identity.identity_lock()`` taken off the event loop: a blocking acquire would stall every
-    other coroutine, including the one holding the lock across network I/O."""
     cm = identity.identity_lock()
     entered = asyncio.ensure_future(asyncio.to_thread(cm.__enter__))
     try:
         await asyncio.shield(entered)
     except asyncio.CancelledError:
-        # The thread still takes the lock: hand it back as soon as it does.
         entered.add_done_callback(
             lambda f: f.cancelled() or f.exception() is not None or cm.__exit__(None, None, None)
         )
@@ -393,7 +379,6 @@ async def _connect(addrs: Sequence[str], port: int, master_fp: str):
             continue
         seen = tls.peer_fingerprint(writer.get_extra_info("ssl_object"))
         if seen is None or not hmac.compare_digest(seen, master_fp):
-            # Nothing was sent, so a stale or reassigned address is just a failed candidate.
             writer.close()
             mismatched.append(f"{addr}:{port}")
             continue
@@ -417,15 +402,12 @@ async def join(
 ) -> LocalIdentity:
     """Worker side: pair with the master named by ``token`` and persist the result."""
     invite = tokens.decode(token)
-    # No invite.exp check: the worker's clock may be off; the pinned master enforces the window.
-    # One join at a time on this machine: two concurrent ones would interleave key, cert and root.
     async with _identity_lock():
         return await _join_locked(invite, name, devices, timeout, now, replace, agent_port)
 
 
 async def _join_locked(invite, name, devices, timeout, now, replace, agent_port) -> LocalIdentity:
     current = identity.worker_identity()
-    # Even to the same cluster: the master would keep the old node as a dead duplicate.
     if current is not None and not replace:
         raise PairingError(
             "this machine is already paired as a worker; run `unsloth cluster leave` first"
@@ -493,7 +475,6 @@ async def _join_locked(invite, name, devices, timeout, now, replace, agent_port)
             _connect(invite.addrs, invite.port, invite.master_fp), timeout
         )
         try:
-            # Deadline covers the handshake only: once the identity is saved, end unconfirmed, not timed out.
             issued = await asyncio.wait_for(
                 handshake(reader, writer), max(0.1, deadline - loop.time())
             )
@@ -508,7 +489,6 @@ async def _join_locked(invite, name, devices, timeout, now, replace, agent_port)
                 asyncio.TimeoutError,
                 asyncio.CancelledError,
             ) as exc:
-                # The master may have recorded this worker (only pair_ok lost): keep the identity, say how to check.
                 raise PairingUnconfirmed(
                     f"saved this worker's identity ({local.node_id[:12]}) but the master's final "
                     f"confirmation did not arrive ({type(exc).__name__}). If `unsloth cluster list` on "

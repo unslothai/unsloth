@@ -34,8 +34,7 @@ def state_dir() -> Path:
 
 
 def run_dir() -> Path:
-    """Per-user, machine-wide runtime state (which agent owns which rpc port): independent of any
-    state or cache directory a worker was started with, so two workers always see each other."""
+    """Per-user, machine-wide runtime state (which agent owns which rpc port)."""
     override = (os.environ.get(ENV_RUN_DIR) or "").strip()
     if override:
         return private_dir(Path(override).expanduser())
@@ -51,8 +50,6 @@ def run_dir() -> Path:
 
 
 def _own_shared_tmp_dir(path: Path) -> Path:
-    """A predictable name in a shared temp directory: another local user may have created it first,
-    or made it a symlink to a directory of theirs (or of a victim, for the chmod)."""
     try:
         path.mkdir(mode = 0o700)
     except FileExistsError:

@@ -22,8 +22,6 @@ CLOSE_TIMEOUT_S = 2.0
 
 _STREAM_ERRORS = (OSError, ssl.SSLError, asyncio.IncompleteReadError, ConnectionError)
 
-# Diagnostics only: UNSLOTH_CLUSTER_LINK_TRACE=<file> appends one JSON line per spliced session with
-# per-direction chunk counts and the turnaround times this hop sees. Unset, nothing is recorded.
 TRACE_ENV = "UNSLOTH_CLUSTER_LINK_TRACE"
 TINY_CHUNK = 64
 MAX_TURNAROUNDS = 100_000
@@ -45,7 +43,6 @@ class _Trace:
         d["bytes"] += n
         d["tiny"] += n <= TINY_CHUNK
         d["max_chunk"] = max(d["max_chunk"], n)
-        # Direction switch: the time since the other direction's last chunk (a round trip's far side).
         if self.last_key is not None and self.last_key != key:
             spans = self.turnarounds[key]
             if len(spans) < MAX_TURNAROUNDS:
@@ -86,9 +83,6 @@ def tune_socket(writer: asyncio.StreamWriter) -> None:
     sock = writer.get_extra_info("socket")
     if sock is None:
         return
-    # ggml-rpc is request/response with small headers: Nagle would hold every command for an ACK.
-    # Keepalive: a master that loses power or network sends no FIN, and without probes the worker
-    # would keep the session, and report busy, until it is restarted.
     options = [
         (socket.IPPROTO_TCP, getattr(socket, "TCP_NODELAY", None), 1),
         (socket.SOL_SOCKET, getattr(socket, "SO_KEEPALIVE", None), 1),
@@ -134,10 +128,6 @@ async def close_writer(writer: Optional[asyncio.StreamWriter], abort: bool = Fal
 
 
 class _Pipe(asyncio.Protocol):
-    """Takes over one transport once the session starts: every chunk goes straight to the other
-    transport from data_received, with no StreamReader buffer or task switch between them. That is
-    most of a relay hop's cost on ggml-rpc's many small request/response round trips."""
-
     def __init__(
         self,
         transport,
@@ -172,7 +162,6 @@ class _Pipe(asyncio.Protocol):
         self._finish(None)
         return False
 
-    # The peer's write buffer filled or drained: flow control for the transport feeding it.
     def pause_writing(self) -> None:
         if self.peer is not None and not self.peer.transport.is_closing():
             self.peer.transport.pause_reading()
@@ -185,7 +174,6 @@ class _Pipe(asyncio.Protocol):
         self._finish(exc if exc is not None else None)
         if not self.lost.done():
             self.lost.set_result(None)
-        # The StreamWriter's wait_closed() still waits on the protocol it was created with.
         try:
             self.old_protocol.connection_lost(exc)
         except Exception:
@@ -202,7 +190,6 @@ def _take_over(
 ) -> tuple:
     transport = writer.transport
     pipe = _Pipe(transport, transport.get_protocol(), counters, key, done, trace)
-    # Bytes the StreamReader already holds were read before the switch and must go first.
     pending = bytes(getattr(reader, "_buffer", b""))
     getattr(reader, "_buffer", bytearray()).clear()
     transport.set_protocol(pipe)
@@ -235,9 +222,7 @@ async def splice(
     b_to_a: str = "b_to_a",
     on_done: Optional[Callable[[], None]] = None,
 ) -> None:
-    """Copy both ways until either side ends, then close both. TLS has no half-close, and an RPC
-    session is over once either end goes, so the first EOF or error ends the whole splice.
-    ``on_done`` runs once no more bytes can move, before the (possibly slow) TLS close."""
+    """Copy both ways until either side ends, then close both."""
     tune_socket(a_writer)
     tune_socket(b_writer)
     done: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -263,12 +248,9 @@ async def splice(
             trace.write(clean)
         if on_done is not None:
             on_done()
-        # A clean EOF: flush what is buffered, then close. Errors and cancellation abort.
         await asyncio.gather(_close(a, not clean), _close(b, not clean), return_exceptions = True)
 
 
-# Threaded sessions (opt in, UNSLOTH_CLUSTER_LINK_THREADED_SPLICE=1): two plain threads per session.
-# Measured on Colab G4 / Kaggle T4x2: no faster than asyncio (the relay hop's TLS dominates).
 THREADED_SPLICE_ENV = "UNSLOTH_CLUSTER_LINK_THREADED_SPLICE"
 WRITE_MAX = 256 * 1024
 WAIT_S = 1.0
@@ -282,7 +264,6 @@ _TCP_ESTABLISHED = "01"  # the `st` column of /proc/net/tcp{,6}
 
 
 def _endpoint(addr: str, port: int) -> Optional[tuple]:
-    """(address, port) with IPv4-mapped IPv6 folded to IPv4, so both spellings compare equal."""
     try:
         ip = ipaddress.ip_address(addr.split("%", 1)[0])
     except ValueError:
@@ -293,8 +274,6 @@ def _endpoint(addr: str, port: int) -> Optional[tuple]:
 
 
 def _proc_endpoint(field: str) -> Optional[tuple]:
-    """Decode a /proc/net/tcp{,6} ``ADDR:PORT`` field: the address is printed as 32-bit words in
-    host byte order, the port as plain hex."""
     try:
         addr_hex, port_hex = field.rsplit(":", 1)
         if len(addr_hex) not in (8, 32):
@@ -310,12 +289,6 @@ def _proc_endpoint(field: str) -> Optional[tuple]:
 
 
 def _loopback_owner_uid(client: tuple, server: tuple) -> Optional[int]:
-    """The uid owning the client end of a live loopback TCP connection, from /proc/net/tcp{,6}
-    (Linux). ``client`` and ``server`` are the accepted socket's peer and local (addr, port). Only
-    an ESTABLISHED row whose full local and remote address and port equal the client's view of
-    the connection counts: a port-only match could pick another account's connection from a
-    different loopback address (127.0.0.2) or a stale row. No exact row, or rows that disagree on
-    the owner, gives None."""
     want_local = _endpoint(*client[:2])
     want_remote = _endpoint(*server[:2])
     if want_local is None or want_remote is None:
@@ -341,9 +314,7 @@ def _loopback_owner_uid(client: tuple, server: tuple) -> Optional[int]:
 
 
 def local_client_is_ours(sock: socket.socket) -> bool:
-    """Whether a client of a loopback listener runs as this user. Every local account can reach a
-    127.0.0.1 port, and a relay proxies with this user's cluster credentials. Enforced on Linux;
-    elsewhere there is no cheap owner lookup, and those listeners rely on the loopback bind alone."""
+    """Whether a client of a loopback listener runs as this user."""
     if not sys.platform.startswith("linux") or not hasattr(os, "getuid"):
         return True
     try:
@@ -384,7 +355,6 @@ class SpliceSession:
 def _shutdown_all(socks) -> None:
     for sock in list(socks):
         try:
-            # The base method: SSLSocket.shutdown would also drop its SSL object under a running reader.
             socket.socket.shutdown(sock, socket.SHUT_RDWR)
         except (OSError, ValueError):
             pass
@@ -403,7 +373,6 @@ def _readable_now(sock: socket.socket) -> bool:
 
 
 def _wait_fd(sock: socket.socket, write: bool, timeout: float) -> None:
-    """Block until ``sock`` is readable / writable (or ``timeout``), without touching its SSL object."""
     import select
     if hasattr(select, "poll"):
         poller = select.poll()
@@ -439,9 +408,6 @@ def _pump(
     end,
     pending: bytes = b"",
 ) -> None:
-    """One direction: read src, write dst, until either ends. A TLS socket is non-blocking and only
-    touched under its lock, and nothing waits while holding it, so the other direction's thread can
-    write it meanwhile. Plain sockets just block in recv / sendall."""
     src_lock, dst_lock = locks.get(id(src)), locks.get(id(dst))
     buf = bytearray(CHUNK)
     view = memoryview(buf)
@@ -453,7 +419,6 @@ def _pump(
         mv = memoryview(data)
         off, inflight = 0, 0
         while off < len(mv):
-            # An SSL write that had to wait must be retried with the same length.
             n_try = inflight or min(len(mv) - off, WRITE_MAX)
             with dst_lock:
                 try:
@@ -495,7 +460,6 @@ def _pump(
                         InterruptedError,
                     ):
                         continue
-                    # SSL yields one record (<= 16 KiB) per read: drain every buffered record into one plain write.
                     while 0 < n <= len(view) - TLS_RECORD:
                         if not src.pending() and not _readable_now(src):
                             break
@@ -525,7 +489,6 @@ def _pump(
     except (OSError, ssl.SSLError, ValueError):
         end.set(False)
     finally:
-        # Either direction ending ends the session (TLS has no half-close): wake the other thread.
         _shutdown_all(session.sockets)
 
 
@@ -539,10 +502,7 @@ def socket_splice(
     session: Optional[SpliceSession] = None,
     pending_a: bytes = b"",
 ) -> bool:
-    """splice() for the threaded path: one thread per direction (the caller runs a -> b), plain
-    sockets blocking, TLS sockets non-blocking behind a lock each, so an SSL object is never read and
-    written at the same moment (OpenSSL forbids it) yet neither direction waits on the other. Returns
-    True when a clean EOF ended the session, False on an error or ``session.abort()``."""
+    """splice() for the threaded path."""
     session = session or SpliceSession()
     locks: Dict[Any, Any] = {"trace": threading.Lock()}
     for s in (a, b):

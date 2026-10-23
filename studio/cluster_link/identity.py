@@ -202,8 +202,6 @@ def _create_master_identity() -> LocalIdentity:
     if meta is not None and meta.get("role") == "worker":
         raise RuntimeError("this machine is paired as a worker; run `unsloth cluster leave` first")
     _, _, _, ec, _, name_oid = _x509()
-    # A key without its certificate: an older first `cluster pair` stopped between the two writes,
-    # before any certificate was issued under it, so a fresh root replaces it.
     if (_ca_dir() / "root_key.pem").is_file() and (_ca_dir() / "root.pem").is_file():
         ca_key, ca_cert = _load_ca()
         cn = ca_cert.subject.get_attributes_for_oid(name_oid.COMMON_NAME)[0].value
@@ -328,15 +326,13 @@ def forget_identity() -> None:
 
 @contextlib.contextmanager
 def identity_lock() -> Iterator[None]:
-    """Held by a master reset and by a pairing commit, so a reset cannot land between a pairing
-    issuing a certificate and recording the worker (or after it, unseen by the reset's check)."""
+    """Held by a master reset and a pairing commit: no reset between issuing a cert and recording the worker."""
     with _locked(state_dir() / "identity.lock"):
         yield
 
 
 def forget_master() -> None:
-    """Drop a master's identity, its cluster root and registry. Only for a master with no live workers:
-    every worker paired to this root would be orphaned."""
+    """Drop a master's identity, its cluster root and registry."""
     forget_identity()
     for path in (_ca_dir() / "root_key.pem", _ca_dir() / "root.pem"):
         try:
@@ -358,7 +354,6 @@ def _locked(path: Path) -> Iterator[None]:
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
         except OSError as exc:
-            # Proceeding unlocked would let a CLI and Studio silently overwrite each other's writes.
             raise RuntimeError(f"could not lock {path}: {exc}") from None
         yield
     finally:
@@ -459,8 +454,6 @@ class Registry:
         peer = self.peers.get(node_id)
         if peer is None:
             return
-        # Entries keep their port ("host:port") so a temporary port never evicts the normal pair;
-        # bare "host" entries (older registries) mean the agent port at the time.
         old = int(peer.agent_port or 0)
         port = int(port or old)
         kept = [a if (":" in a or not old) else f"{a}:{old}" for a in peer.addrs]

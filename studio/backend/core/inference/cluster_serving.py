@@ -749,8 +749,6 @@ class Node:
     rpc_port: int = RPC_PORT_DEFAULT
     ssh_user: Optional[str] = None
     managed: bool = False
-    # "link": host/rpc_port are the agent; llama.cpp dials the loopback relay. "native_tls": llama.cpp
-    # dials the rpc-server at native_port over mutual TLS pinned to the paired fingerprint (tls_fp).
     node_id: Optional[str] = None
     transport: str = "direct"
     relay: Optional[str] = None
@@ -956,7 +954,6 @@ def load_nodes(verify: bool = True) -> List[Node]:
 
 
 def _paired_only() -> bool:
-    """No env list and no cluster.json: the nodes are this machine's paired workers."""
     if (os.environ.get(ENV_NODES) or "").strip():
         return False
     path = _config_path()
@@ -1011,7 +1008,6 @@ def _host_identity(host: str) -> str:
 
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     # A managed rpc-server exposes every accelerator on its host: a second one double counts.
-    # Paired workers reach this host through loopback relays, so only direct nodes count.
     direct = [n for n in nodes if not n.link]
     if len(direct) < 2 or not any(n.managed for n in direct):
         return nodes
@@ -1022,25 +1018,20 @@ def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     return nodes
 
 
-# Paired workers: reached via a loopback relay carrying RPC over mutual TLS. Process-wide.
 _RELAYS: Any = None
 _LISTENER: Any = None
-# Status polls (event loop) and loads (worker threads) both reach these: one creator each, ever.
 _LINKS_LOCK = threading.RLock()
 _LINK_ENDPOINTS: Dict[str, str] = {}  # relay or tls:// endpoint -> node_id
-# node_id -> the native port its agent granted on the last planning pass (status reads reuse it).
 _NATIVE: Dict[str, int] = {}
 LINK_DROPPED: Dict[str, str] = {}  # worker name -> why it is not in the split
 
 
 def _link_identity() -> Any:
-    """``studio.cluster_link.identity``, or None when this install does not ship cluster links."""
     try:
         from studio.cluster_link import identity
         return identity
     except Exception:
         pass
-    # A source checkout run beside an installed unsloth: the installed `studio` package shadows ours.
     here = Path(__file__).resolve().parents[3]
     if not (here / "cluster_link" / "__init__.py").is_file():
         return None
@@ -1071,7 +1062,6 @@ def _record_address(identity: Any, node_id: str, host: str, port: int) -> None:
 
 
 def _paired_workers() -> List[Any]:
-    """Live (not removed) workers paired to THIS machine as master; [] when it is not one."""
     identity = _link_identity()
     if identity is None:
         return []
@@ -1096,10 +1086,8 @@ def _relays_locked() -> Optional[Any]:
     if _RELAYS is not None and (
         master is None or _RELAYS.identity.fingerprint != master.fingerprint
     ):
-        # Master reset and re-paired under a new root: no new worker trusts the cached certificate.
         _stop_links()
     if master is None:
-        # Not a master (any more, e.g. after `cluster leave`): there is nothing to relay to.
         return None
     if _RELAYS is None:
         from studio.cluster_link.relay import RelayManager
@@ -1122,10 +1110,8 @@ def _paired_announcement(node_id: str, fp: str) -> bool:
     return _PAIRED_FPS.get(node_id) == fp
 
 
-# One announcement round: workers announce every 5 s, jittered up to 1.2x, plus margin.
 DISCOVERY_SETTLE_S = 6.5
 _LISTENER_STARTED = 0.0
-# node_id of each paired worker the last refresh could not verify at any known address.
 _UNVERIFIED: set = set()
 
 
@@ -1144,16 +1130,13 @@ def _sightings() -> Dict[str, Any]:
 
 
 def discovery_settle_s() -> float:
-    """How long to wait before planning: a worker that is not where it was last seen can only be found
-    from its next announcement, and a listener started moments ago has not heard one yet."""
+    """How long to wait before planning."""
     if not _UNVERIFIED or _LISTENER is None:
         return 0.0
     return max(0.0, DISCOVERY_SETTLE_S - (time.monotonic() - _LISTENER_STARTED))
 
 
 def _sighting_candidates(node_id: str) -> List[Any]:
-    """Every recent sighting of ``node_id``, newest first. Fingerprints are public, so any LAN host can
-    announce a paired worker from another address: each one is only a candidate to verify."""
     latest = _sightings()
     listener = _LISTENER
     if listener is not None and hasattr(listener, "candidates"):
@@ -1168,7 +1151,6 @@ def _sighting_candidates(node_id: str) -> List[Any]:
 def _first_verified(
     relays: Any, node_id: str, candidates: List[Tuple[str, int]]
 ) -> Optional[Tuple[str, int, Dict[str, Any]]]:
-    """The first candidate address where the paired worker itself answers over mutual TLS, with its status."""
     for host, port in candidates:
         try:
             with _LINKS_LOCK:  # status reads re-ensure under it: see _link_nodes
@@ -1182,8 +1164,6 @@ def _first_verified(
 
 
 def _local_tls_client() -> bool:
-    """llama-server's RPC client speaks llama.cpp's TLS when the ggml-rpc-server shipped beside it does:
-    both are one build of one ggml-rpc (the flag only exists in GGML_RPC_TLS builds)."""
     try:
         from studio.cluster_link import native
 
@@ -1192,8 +1172,6 @@ def _local_tls_client() -> bool:
         from core.inference import spark_serving as ss
 
         launched, rpc = ss.llama_server_binary(), ss.rpc_server_binary()
-        # rpc_server_binary() falls back to the managed bundle or PATH: another build, whose TLS says
-        # nothing about the llama-server that dials (a custom LLAMA_SERVER_PATH, say).
         if not launched or not rpc:
             return False
         if os.path.dirname(os.path.abspath(rpc)) != os.path.dirname(os.path.abspath(launched)):
@@ -1204,8 +1182,6 @@ def _local_tls_client() -> bool:
 
 
 def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
-    """The worker's native TLS port once its agent switched to serving this master directly, or None
-    to stay on the relay. Never a plaintext fallback: a refusal here only means the relay."""
     offer = status.get("native") if isinstance(status, dict) else None
     if not isinstance(offer, dict) or not offer.get("available") or not _local_tls_client():
         return None
@@ -1213,7 +1189,6 @@ def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
     if not isinstance(reply, dict) or reply.get("type") != "native_ok":
         logger.info("cluster link: %s stays on the relay (%s)", peer.node_id, reply)
         return None
-    # The rpc-server presents the worker's own certificate; anything else is not the paired worker.
     if str(reply.get("fingerprint", "")).lower() != str(peer.fingerprint).lower():
         logger.warning(
             "cluster link: %s offered another certificate for TLS; using the relay", peer.node_id
@@ -1228,8 +1203,6 @@ def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
 
 
 def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
-    """Every recorded address, newest first: when discovery is blocked, an older one may be the one
-    that still answers."""
     found: List[Tuple[str, int]] = []
     for addr in getattr(peer, "addrs", None) or []:
         host, sep, port = str(addr).rpartition(":")
@@ -1247,16 +1220,12 @@ def _alongside_request(request: Any) -> bool:
 
 
 def _passthrough_request(request: Any) -> bool:
-    """A load the cluster leaves alone (another engine, or beside the served model): no worker
-    discovery, verification or native switch on its behalf."""
     return _alongside_request(request) or (
         str(getattr(request, "engine", "auto") or "auto") != "auto"
     )
 
 
 def _same_link_worker(endpoint: str, node: "Node") -> bool:
-    """Whether ``endpoint`` (from an earlier plan) reached the same paired worker as ``node`` over the
-    other transport: its relay endpoint, or a tls:// endpoint pinned to its certificate."""
     if node.relay and endpoint == node.relay:
         return True
     if endpoint.startswith("tls://"):
@@ -1266,7 +1235,6 @@ def _same_link_worker(endpoint: str, node: "Node") -> bool:
 
 
 def _revoke_native(relays: Any, node_id: str) -> None:
-    # llama-server holds this session directly: only the worker can cut it. Then drop its relay.
     try:
         relays.native_close(node_id)
     except Exception:
@@ -1278,9 +1246,6 @@ def _revoke_native(relays: Any, node_id: str) -> None:
 
 
 def _drop_stale_relays(current: set, wait: bool = True) -> None:
-    """Close the relay (and any live session through it) of every worker no longer paired. With
-    ``wait=False`` (status reads, on the event loop) a native session is cut from a background
-    thread: native_close waits on the worker, up to its timeout."""
     with _LINKS_LOCK:
         stale = [(e, n) for e, n in _LINK_ENDPOINTS.items() if n not in current]
     if not stale:
@@ -1292,7 +1257,6 @@ def _drop_stale_relays(current: set, wait: bool = True) -> None:
             return
         for endpoint, _node_id in stale:
             _LINK_ENDPOINTS.pop(endpoint, None)
-    # Cutting sessions talks to the workers: never under the lock.
     for endpoint, node_id in stale:
         if _NATIVE.pop(node_id, None) is not None:
             if wait:
@@ -1339,8 +1303,6 @@ def _link_nodes(verify: bool = True) -> List[Node]:
         if not candidates:
             LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
             continue
-        # Keep the address where the worker answers over mutual TLS: the recorded one may be stale and
-        # anyone may announce a paired worker. Status reads skip this (event loop, no network waits).
         verified = None
         if verify:
             verified = _first_verified(relays, peer.node_id, candidates)
@@ -1350,8 +1312,6 @@ def _link_nodes(verify: bool = True) -> List[Node]:
                 _UNVERIFIED.discard(peer.node_id)
         host, port = (verified[0], verified[1]) if verified else candidates[0]
         try:
-            # Read and re-ensure under the lock a load's ensure takes: a status read that saw an older
-            # destination must not re-point the relay after a load verified the worker elsewhere.
             with _LINKS_LOCK:
                 if not verify:
                     # Status reads verify nothing: keep the verified destination, or a LAN spoofer could re-point it.
@@ -1391,8 +1351,6 @@ def _link_nodes(verify: bool = True) -> List[Node]:
                 relay = endpoint,
                 name = getattr(peer, "name", None),
             )
-        # One endpoint per worker: the relay one and the tls:// one replace each other. Under the
-        # lock, new one first: a launch on another thread reading secure_rpc_env never sees a gap.
         with _LINKS_LOCK:
             _LINK_ENDPOINTS[node.endpoint] = peer.node_id
             for old in [
@@ -1421,9 +1379,7 @@ def _rpc_endpoints(argv: Sequence[str]) -> List[str]:
 
 
 def secure_rpc_env(argv: Sequence[str]) -> Dict[str, str]:
-    """GGML_RPC_NO_RDMA for a llama-server that dials a link relay: GGML_RDMA_GID would otherwise let
-    RDMA be negotiated through the loopback relay and move tensors outside TLS. For a tls:// endpoint,
-    also the master's cluster certificate, key and root, in the environment and never on argv."""
+    """GGML_RPC_NO_RDMA for a llama-server that dials a link relay."""
     endpoints = _rpc_endpoints(argv)
     with _LINKS_LOCK:
         used = [e for e in endpoints if e in _LINK_ENDPOINTS]
@@ -1457,7 +1413,6 @@ def link_status(node_id: str, timeout: float) -> Tuple[Optional[Dict[str, Any]],
         return None, f"{type(exc).__name__}: {exc}"
     if not isinstance(answer, dict):
         return None, "no status"
-    # RelayManager.status() reports a failed or refused connection in the dict instead of raising.
     if answer.get("reachable") is False or answer.get("type") == "error":
         return None, str(answer.get("error") or "unreachable over mutual TLS")
     if answer.get("rpc_up") is False:
@@ -1909,7 +1864,6 @@ class ClusterServing:
             if e in served_at:
                 return e
             node = links.get(e)
-            # Same rpc-server over its other transport (native TLS <-> relay): held, so never probe it.
             return next((old for old in served_at if node and _same_link_worker(old, node)), None)
 
         held_as = {e: served_as(e) for e in endpoints}
@@ -1917,7 +1871,6 @@ class ClusterServing:
 
         async def silent(e: str) -> bool:
             if e in links:
-                # The agent says whether its rpc-server has a client; a probe would only be refused.
                 known = self._link_status.get(e)
                 if known is not None and "busy" in known:
                     return bool(known["busy"])
@@ -1966,7 +1919,6 @@ class ClusterServing:
         from core.inference import spark_serving as ss
 
         if _paired_workers() and not _passthrough_request(request):
-            # Wait for discovery so an early load sees its workers; in a thread, off Studio's event loop.
             await asyncio.to_thread(self.refresh_nodes)
             settle = discovery_settle_s()
             if settle:
@@ -2034,8 +1986,6 @@ class ClusterServing:
         self.plan, self.block = None, []
         self._down = set()
         if not await asyncio.to_thread(self.refresh_nodes) or self.config_error:
-            # Paired-only, a config error means no worker is left: refreshing closed every relay the
-            # served block points at, so it cannot be reused; replan on this machine instead.
             if self.config_error and self._pre_load[3] and not _paired_only():
                 self.topology, _reason, self.plan, self.block = self._pre_load
                 self.reason = f"cluster config: {self.config_error}; still serving the last split"
@@ -3017,18 +2967,14 @@ class ClusterServing:
 
     def _status_nodes(self) -> List[Node]:
         if not self.nodes and not self.config_error:
-            # Called from async routes: list paired workers without checking them over the network.
             return self.refresh_nodes(verify = False)
         if not _paired_only():
             return self.nodes
-        # Re-read the registry per status (pair/remove elsewhere) without network checks or replacing
-        # self.nodes, which an in-flight load planned against.
         dropped = dict(LINK_DROPPED)
         try:
             nodes = load_nodes(verify = False)
         except ClusterConfigError:
             nodes = []
-        # The re-read starts LINK_DROPPED over; keep why the last load left out a worker still paired.
         paired = {n.name or n.node_id for n in nodes} | set(LINK_DROPPED)
         for label, why in dropped.items():
             if label in paired:

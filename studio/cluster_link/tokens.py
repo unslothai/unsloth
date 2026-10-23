@@ -48,8 +48,7 @@ def _b64d(text: str) -> bytes:
 
 
 def check_addrs(addrs) -> list:
-    """The address list a token may carry; the same rule decode() enforces, so a master never prints a
-    token every worker would reject."""
+    """The address list a token may carry; the same rule decode() enforces."""
     addrs = list(addrs)
     if (
         not addrs
@@ -59,7 +58,6 @@ def check_addrs(addrs) -> list:
         raise TokenError(
             "bad addresses: 1 to 16 host names or IPs, letters, digits, '.', ':' and '-' only"
         )
-    # Listener and agent bind IPv4 only: an IPv6 literal would be an undialable token.
     if any(_is_ipv6(a) for a in addrs):
         raise TokenError("IPv6 addresses are not supported yet: use an IPv4 address or a host name")
     return addrs

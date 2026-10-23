@@ -3618,8 +3618,6 @@ export function useChatModelRuntime() {
               return;
             }
             if (prog.message) {
-              // A load across paired cluster workers: planning measures no bytes, and once the layers
-              // go to the workers this machine's byte count stalls while its ETA climbs. Say the stage.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({ percent: null, label: prog.message, phase: "starting" });
               } else {

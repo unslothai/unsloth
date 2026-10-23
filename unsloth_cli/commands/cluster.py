@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth worker` and `unsloth cluster`: pair machines on a home network and serve one model across
-them. Every link is mutual TLS from the pairing; ggml-rpc-server never listens beyond loopback."""
+"""`unsloth worker` and `unsloth cluster`: ggml-rpc-server never listens beyond loopback."""
 
 from __future__ import annotations
 
@@ -35,8 +34,6 @@ def _fail(message: str) -> None:
 def _link(crypto: bool = False):
     try:
         from unsloth_cli._inference import ensure_studio_backend_path
-
-        # Resolve cluster state through Studio's studio_root(), the directory the backend reads.
         ensure_studio_backend_path(seed_cache_env = False)
     except Exception:
         pass
@@ -45,7 +42,6 @@ def _link(crypto: bool = False):
     except ImportError as exc:
         _fail(f"This install has no cluster support ({exc}). Reinstall Unsloth Studio.")
     if crypto:
-        # Certificates and TLS identities need it; it ships with the Studio extra, not bare unsloth.
         try:
             import cryptography  # noqa: F401
         except ImportError:
@@ -61,8 +57,6 @@ def _registry(identity: Any) -> Any:
 
 
 def _addresses(peer: Any) -> List[Tuple[str, int]]:
-    """A peer's recorded (host, agent port) pairs, newest first: "host:port" entries carry the port they
-    answered on, a bare "host" uses the peer's agent port."""
     default = int(getattr(peer, "agent_port", 0) or 0)
     out: List[Tuple[str, int]] = []
     for addr in getattr(peer, "addrs", None) or []:
@@ -98,7 +92,6 @@ def _rpc_server_binary() -> Optional[str]:
 
 
 def _rpc_server_env(binary: str) -> Optional[dict]:
-    """Studio's env for its llama.cpp build (library paths for the CUDA / ROCm runtime it ships with)."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._llama_server_env_for_binary(binary)
@@ -189,7 +182,6 @@ def worker(
     rpc_port = rpc_port or RPC_PORT_DEFAULT
     native_port = native_port or NATIVE_RPC_PORT_DEFAULT
     if len({port, rpc_port, native_port}) < 3:
-        # Each is its own listener: the agent, the loopback rpc-server, and its TLS mode on the LAN.
         _fail(
             f"--port ({port}), --rpc-port ({rpc_port}) and --native-port ({native_port}) must all differ."
         )
@@ -217,7 +209,6 @@ def worker(
         announcer = Announcer(me.node_id, port, me.fingerprint).start()
 
     async def serve() -> None:
-        # SIGTERM / SIGHUP end the run like Ctrl-C, so stop() reaps rpc-server instead of orphaning it.
         task = asyncio.current_task()
         for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
             if sig is not None and task is not None:
@@ -225,10 +216,8 @@ def worker(
                     asyncio.get_running_loop().add_signal_handler(sig, task.cancel)
                 except (NotImplementedError, RuntimeError):
                     pass
-        # One guard from the first spawn: a signal during start-up must still reap rpc-server.
         try:
             await agent.start()
-            # Say "serving" only once rpc-server accepts: a load that arrives before would be refused.
             if await agent.wait_rpc_ready(60.0):
                 _say(
                     f"Worker {me.node_id[:12]} serving on port {port}; ggml-rpc-server stays on "
@@ -249,7 +238,6 @@ def worker(
             await agent.stop()
 
     try:
-        # Ctrl-C raises out of run(); SIGTERM / SIGHUP cancel serve_forever, which returns.
         asyncio.run(serve())
         _say("Worker stopped.")
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -386,12 +374,10 @@ def join(
     _say(f"Joined as {me.node_id[:12]}. Now run `unsloth worker` here to serve the master.")
 
 
-# One announcement round: workers announce every 5 s, jittered up to 1.2x, plus margin.
 DISCOVERY_SETTLE_S = 6.5
 
 
 def _printable(text: str) -> str:
-    """Names and ids come from other machines: never let one write control sequences to a terminal."""
     return "".join(c if c.isprintable() else "?" for c in str(text))
 
 
@@ -400,7 +386,6 @@ def _redact(text: str, token: str) -> str:
 
 
 def _clause(text: str) -> str:
-    """An exception message to splice into a sentence: no trailing period."""
     return str(text).strip().rstrip(".")
 
 
@@ -410,7 +395,6 @@ def _sentence(text: str) -> str:
 
 
 def _unreachable_reason(st: Any) -> str:
-    """Why a worker did not answer, short: the raw socket error repeats the id and address."""
     if not isinstance(st, dict):
         return "not found on the LAN"
     raw = str(st.get("error") or "")
@@ -468,7 +452,6 @@ def list_workers(
             return {"type": "error", "error": type(exc).__name__, "reachable": False}
 
     def answered(st: Any) -> bool:
-        # A refused or failed connection comes back as an error dict, not an exception.
         return (
             isinstance(st, dict)
             and st.get("reachable", True) is not False
@@ -478,7 +461,6 @@ def list_workers(
     found: dict = {}
     try:
         for peer in workers:
-            # Every recorded address, newest first, before discovery (which a network may block).
             for i, (addr, aport) in enumerate(_addresses(peer)):
                 st = ask(peer, addr, aport)
                 if i == 0 or answered(st):
@@ -490,7 +472,6 @@ def list_workers(
                     break
         missing = [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]
         if missing:
-            # Not where it was last seen (moved, or serving on another port): ask LAN discovery.
             from studio.cluster_link.discovery import Listener
 
             fps = {p.node_id: p.fingerprint for p in workers}
@@ -564,7 +545,6 @@ def remove(target: str = typer.Argument(..., help = "Worker name or id (prefix).
         _fail("No workers are paired to this machine, so there is nothing to remove.")
     registry = _registry(identity)
     peer = _find_worker(registry, target)
-    # Mutations persist only inside a transaction (reload, change, save under the lock).
     with registry.transaction():
         removed = registry.remove(peer.node_id)
     if not removed:
@@ -574,9 +554,7 @@ def remove(target: str = typer.Argument(..., help = "Worker name or id (prefix).
 
 @cluster_app.command("leave")
 def leave(yes: bool = typer.Option(False, "--yes", "-y", help = "Do not ask for confirmation.")):
-    """Forget this machine's cluster identity (a worker leaves; an empty master is reset).
-
-    A master with no paired workers is reset too, e.g. after a `cluster pair` nobody joined."""
+    """Forget this machine's cluster identity (a worker leaves; an empty master is reset)."""
     identity = _link()
     if identity.worker_identity() is None:
         if identity.master_identity(create = False) is None:

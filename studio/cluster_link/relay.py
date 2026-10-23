@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The master side: one loopback listener per paired worker that ``llama-server --rpc`` connects to,
-carried to that worker's agent over mutually authenticated TLS. It runs its own event loop in a daemon
-thread, so RPC traffic never competes with the caller's loop (Studio's API)."""
+"""Master side: one loopback relay per paired worker for llama-server --rpc."""
 
 from __future__ import annotations
 
@@ -36,15 +34,11 @@ logger = logging.getLogger(__name__)
 CONNECT_TIMEOUT_S = 10.0
 FIRST_BYTE_TIMEOUT_S = 30.0
 REPLY_TIMEOUT_S = 10.0
-# open_rpc may first move a worker out of native mode, which restarts its rpc-server and waits up to
-# the agent's RPC_READY_TIMEOUT_S (60 s) for it: the reply wait covers that window.
+# Covers the agent's 60 s RPC_READY_TIMEOUT_S when open_rpc first leaves native mode.
 OPEN_RPC_REPLY_TIMEOUT_S = 75.0
-# A client that reconnects right after its last session ends must not be refused as busy while that
-# session is still closing; a genuinely busy worker is still refused this fast, not after 8 s.
+# Lets a client reconnect while its last session is still closing without being refused as busy.
 BUSY_GRACE_S = 0.25
-# Re-check worker authorization this often: `cluster remove` elsewhere only edits the registry.
 REVALIDATE_S = 2.0
-# Backoff cap for re-sending native_close to a removed worker that did not answer.
 NATIVE_CLOSE_RETRY_MAX_S = 30.0
 
 
@@ -95,7 +89,6 @@ class RelayManager:
             rootfile = identity.rootfile,
         )
         self._relays: Dict[str, _Relay] = {}
-        # Native grants carry no relay session to revalidate: one watch per granted worker does it.
         self._native_watches: Dict[str, asyncio.Future] = {}
         self._ensure_lock: Optional[asyncio.Lock] = None
         self.threaded = threaded_sessions()
@@ -162,8 +155,7 @@ class RelayManager:
         node_id: str,
         timeout: float = 70.0,
     ) -> Dict[str, Any]:
-        """Ask the worker to serve llama.cpp's own TLS to this master; {"type": "native_ok", "port",
-        "fingerprint"} when it does. The worker restarts its rpc-server, so this waits for it."""
+        """Ask the worker to serve llama.cpp's own TLS to this master."""
         try:
             return self._call(self._native(node_id, timeout), timeout + 1.0)
         except Exception as exc:
@@ -174,8 +166,7 @@ class RelayManager:
         node_id: str,
         timeout: float = 15.0,
     ) -> bool:
-        """Tell a worker to stop serving this master natively, which cuts a live session. Also for a
-        worker removed a moment ago: it is no longer authorized here, but it is still the same node."""
+        """Tell a worker to stop serving this master natively, which cuts a live session."""
         try:
             reply = self._call(self._native_close(node_id, timeout), timeout + 1.0)
         except Exception:
@@ -200,7 +191,6 @@ class RelayManager:
                 self._loop.close()
 
     async def _ensure(self, node_id: str, host: str, agent_port: int) -> str:
-        # Serialized: concurrent creators each got a listener, one never registered and never closed.
         if self._ensure_lock is None:
             self._ensure_lock = asyncio.Lock()
         async with self._ensure_lock:
@@ -259,7 +249,6 @@ class RelayManager:
 
     async def _native_close(self, node_id: str, timeout: float) -> Dict[str, Any]:
         reply = await self._control(node_id, {"type": "native_close"}, timeout, paired = False)
-        # Only an answer ends the watch: after a failed close it keeps revalidating and retrying.
         self._stop_native_watch(node_id)
         return reply
 
@@ -271,8 +260,6 @@ class RelayManager:
     async def _revoke_native_when_unauthorized(
         self, relay: _Relay, pid: Optional[tls.PeerIdentity]
     ) -> None:
-        """The relay's 2 s revalidation for a native session, which does not pass through this
-        process: once the worker is removed here, tell it to close, which cuts the session."""
         while True:
             await asyncio.sleep(REVALIDATE_S)
             try:
@@ -284,15 +271,12 @@ class RelayManager:
             relay.last_error = f"{relay.node_id} is no longer paired; native session closed"
             logger.warning("cluster relay: %s", relay.last_error)
             break
-        # The worker still trusts this master: keep asking until it acknowledges.
         delay = REVALIDATE_S
         while True:
             try:
-                # The relay object, not its id: Studio may already have dropped the relay.
                 reply = await self._control(relay, {"type": "native_close"}, 15.0, paired = False)
                 if isinstance(reply, dict) and reply.get("type") == "ok":
                     break
-                # A non-"ok" answer means the worker already left native mode for this master: done.
                 logger.warning(
                     "cluster relay: %s answered native_close with %s", relay.node_id, reply
                 )
@@ -389,7 +373,6 @@ class RelayManager:
         while True:
             await asyncio.sleep(REVALIDATE_S)
             try:
-                # The check reads the registry from disk: off the loop that carries the RPC bytes.
                 ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
             except Exception:
                 ok = False
@@ -507,7 +490,6 @@ class RelayManager:
             _drop(conn)
             return
         if not self._wait_idle_threaded(relay):
-            # A probe of a held worker: fail it now rather than make it wait out a timeout.
             _drop(conn)
             return
         relay.raw.add(conn)
@@ -605,7 +587,6 @@ class RelayManager:
             await close_writer(writer, abort = True)
             return
         if not await self._wait_idle(relay):
-            # A probe of a held worker: fail it now rather than make it wait out a timeout.
             await close_writer(writer, abort = True)
             return
         relay.conns.add(writer)
@@ -617,7 +598,6 @@ class RelayManager:
             except (OSError, asyncio.TimeoutError):
                 first = b""
             if not first:
-                # A port check, or a client that left: the worker never hears of it.
                 return
             if not await self._wait_idle(relay):
                 return
