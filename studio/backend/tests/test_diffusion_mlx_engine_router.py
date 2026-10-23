@@ -572,3 +572,61 @@ def test_auto_switch_planner_judges_mlx_with_the_picks_gguf(monkeypatch):
     monkeypatch.setattr(r, "engine_for", lambda name: name)
     pick = MediaModelPick("unsloth/Z-Image-Turbo-GGUF", "unsloth/Z-Image-Turbo-GGUF", _Q4, "gguf")
     assert media_locality.planners_for(DIFFUSION, pick) == [ENGINE_MLX]
+
+
+# ── a LoRA load never lands on MLX, in any mode ──────────────────────────────
+
+
+@pytest.mark.parametrize("value", [None, "auto", "1"])
+@pytest.mark.parametrize("gguf", [_Q4, "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-Q5_1.gguf"])
+def test_a_lora_load_declines_mlx_under_default_routing(monkeypatch, value, gguf):
+    _apple(monkeypatch)
+    if value is not None:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", value)
+    fam = detect_family("z-image")
+    # Without adapters this load is MLX's.
+    assert _predict(gguf = gguf) == _select(gguf = gguf) == ENGINE_MLX
+    kw = dict(model_kind = "gguf", gguf_filename = gguf, with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_DIFFUSERS
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+    assert "LoRA" in (r.annotate_status({})["mlx_fallback_reason"] or "")
+
+
+def test_a_lora_load_keeps_sd_cpp_under_default_routing_with_the_native_mps_knob(monkeypatch):
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: "/usr/bin/sd-cli")
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "v0"))
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = _Q4, with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_SD_CPP
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_SD_CPP
+
+
+def test_every_load_route_and_the_residency_estimate_pass_loras_to_engine_selection():
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    for rel, minimum in (("routes/inference.py", 3), ("core/inference/gpu_residency.py", 1)):
+        source = (root / rel).read_text()
+        calls = [
+            c
+            for c in ast.walk(ast.parse(source))
+            if isinstance(c, ast.Call)
+            and (
+                getattr(c.func, "id", None) == "predict_engine"
+                or (
+                    getattr(c.func, "id", None) == "partial"
+                    or getattr(c.func, "attr", None) == "partial"
+                )
+                and c.args
+                and getattr(c.args[0], "id", None) == "select_and_activate_engine"
+            )
+        ]
+        assert len(calls) >= minimum, rel
+        for call in calls:
+            names = {k.arg for k in call.keywords}
+            assert {"with_loras", "mlx_blocker"} <= names, f"{rel}: {ast.unparse(call)[:120]}"

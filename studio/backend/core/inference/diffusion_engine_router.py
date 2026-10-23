@@ -454,10 +454,13 @@ def mlx_selection(
     gguf_filename: Optional[str],
     backend: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
     load_blocker: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
     cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field).
+    ``with_loras`` says the load applies LoRA adapters, which the MLX engine cannot, so the load keeps the engine it
+    would have had without MLX (in every mode) instead of reaching the MLX LoRA refusal.
     ``load_blocker`` (``mlx_load_blocker``) names a load option MLX cannot honour: in ``auto`` it keeps the load on
     diffusers; a forced MLX engine refuses that load in the route instead, as before."""
     mode = mlx_mode()
@@ -475,6 +478,8 @@ def mlx_selection(
         return False, "UNSLOTH_DIFFUSION_SD_CPP_MPS=1 asks for the native engine on the Mac GPU"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
+    if with_loras:
+        return False, "the MLX engine does not apply LoRA adapters yet"
     if fam is None or not family_mlx_supported(fam):
         name = getattr(fam, "name", None) or "unknown"
         return False, f"family '{name}' has no MLX implementation"
@@ -771,6 +776,7 @@ def select_and_activate_engine(
     before_fallback: Optional[Callable[[], None]] = None,
     gguf_filename: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
     mlx_blocker: Optional[str] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
@@ -794,6 +800,7 @@ def select_and_activate_engine(
         model_kind = model_kind,
         gguf_filename = gguf_filename,
         engine = requested,
+        with_loras = with_loras,
         load_blocker = mlx_blocker,
     )
     _note_mlx_refusal(mlx_refusal)
@@ -1035,6 +1042,7 @@ def predict_engine(
     gpu_ordinal: Optional[int] = None,
     gguf_filename: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
     mlx_blocker: Optional[str] = None,
 ) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect. ``engine`` is the load's own
@@ -1060,6 +1068,7 @@ def predict_engine(
         model_kind = model_kind,
         gguf_filename = gguf_filename,
         engine = requested,
+        with_loras = with_loras,
         load_blocker = mlx_blocker,
     )[0]:
         return ENGINE_MLX

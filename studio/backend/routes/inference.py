@@ -51540,6 +51540,7 @@ async def diffusion_download_plan(
                 gpu_ordinal = gpu_ordinal,
                 gguf_filename = request.gguf_filename,
                 engine = request.engine,
+                with_loras = bool(request.loras),
                 mlx_blocker = _mlx_load_blocker(request),
             )
             if fam is not None
@@ -51866,6 +51867,7 @@ async def load_diffusion_model_gated(
                     gpu_ordinal = gpu_ordinal,
                     gguf_filename = request.gguf_filename,
                     engine = request.engine,
+                    with_loras = bool(request.loras),
                     mlx_blocker = _mlx_load_blocker(request),
                 )
                 if fam is not None
@@ -52011,6 +52013,8 @@ async def load_diffusion_model_gated(
                 gguf_filename = request.gguf_filename,
                 # The load's own engine pick (auto when absent); refused there rather than swapped.
                 engine = request.engine,
+                # MLX applies no LoRA: an adapter load keeps the engine it had without MLX, in every mode.
+                with_loras = bool(request.loras),
                 # A load option the MLX engine cannot honour keeps an auto-routed Apple Silicon load on diffusers.
                 mlx_blocker = _mlx_load_blocker(request),
             ),
