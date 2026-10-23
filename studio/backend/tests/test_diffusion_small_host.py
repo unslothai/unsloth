@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import re
 import struct
 import sys
 import types
