@@ -205,8 +205,7 @@ _SCALE_DEQUANT_MIN_NUMEL = 1 << 22
 
 
 def _scale_dequant_one_pass_ok(x, s, dtype):
-    # NVIDIA e4m3fn only. Compiled regions fuse the torch expression, except where Inductor cannot emit
-    # fp8e4nv (below sm89): there the expression fails to compile, so the byte kernel runs as one op.
+    # NVIDIA e4m3fn only; under compile only below sm89, where Inductor cannot emit fp8e4nv.
     if torch.compiler.is_compiling():
         if not _fp8_e4m3fn_unsupported_in_trace(x):
             return False

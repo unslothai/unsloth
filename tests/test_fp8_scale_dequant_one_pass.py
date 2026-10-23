@@ -187,7 +187,7 @@ def test_small_weights_keep_the_torch_path(fp8, monkeypatch):
 
 
 def test_compiled_dequant_reads_no_device_capability(F, monkeypatch):
-    # The gate under compile uses capabilities read at import, so a cold cache cannot query the device in a trace.
+    # The compiled gate reads capabilities cached at import, never the device.
     def no_query(*args, **kwargs):
         raise AssertionError("device capability queried while tracing")
 
