@@ -428,7 +428,9 @@ def clean_plan(raw: Any, places: list[str], chunks: int) -> list[dict]:
     entries = (
         [entries] if isinstance(entries, dict) else entries if isinstance(entries, list) else []
     )
-    for entry in entries[:chunks]:
+    for entry in entries:
+        if len(plan) >= chunks:
+            break
         if not isinstance(entry, dict) or not str(entry.get("activity") or "").strip():
             continue
         start = str(entry.get("start") or "")
