@@ -47,7 +47,9 @@ def test_pad_skips_an_empty_denoiser_slot(streamed):
     # every group streams and no encoder is resident: the measured peak already holds the whole window
     assert dm.stream_window_pad_mib(pipe) == 0
     # the same pipeline without the empty slot reads the same
-    assert dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": streamed})) == 0
+    assert (
+        dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": streamed})) == 0
+    )
 
 
 def test_streamed_group_window_skips_an_empty_denoiser_slot(streamed):
