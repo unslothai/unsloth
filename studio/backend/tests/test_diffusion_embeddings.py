@@ -220,8 +220,6 @@ def test_families_gate_textual_inversion():
 
 
 class _AddedTokenizer:
-    """Just what ``apply`` uses of a CLIP tokenizer: added tokens get ids past the 49408-entry vocab."""
-
     eos_token_id = 49407
 
     def __init__(self):
@@ -263,7 +261,6 @@ def _random_sdxl_encoders(eos_token_id):
 
 
 def _pool_owner(encoder):
-    # transformers 4.x: CLIPTextTransformer under ``text_model``; 5.x CLIPTextModel holds eos_token_id itself.
     return getattr(encoder, "text_model", encoder)
 
 
@@ -274,8 +271,6 @@ def _pooled(pipe, ids):
 
 
 def test_sdxl_legacy_config_pools_at_eos_not_added_token(monkeypatch):
-    # Both published SDXL text encoder configs carry the legacy eos_token_id 2, so transformers pools at
-    # input_ids.argmax(-1): the highest id, which an added textual-inversion token outranks.
     pipe = _random_sdxl_encoders(eos_token_id = 2)
     fixture = {"clip_l": torch.randn(3, 8), "clip_g": torch.randn(3, 12)}
     monkeypatch.setattr(de, "_read_tensors", lambda path: fixture)
@@ -289,7 +284,6 @@ def test_sdxl_legacy_config_pools_at_eos_not_added_token(monkeypatch):
         entries = [_entry("EasyNegXL", kind = de.KIND_SDXL)],
     )
     assert applied.used == ["EasyNegXL"]
-    # Prompts without the added tokens pool exactly as before.
     assert all(torch.equal(a, b) for a, b in zip(_pooled(pipe, plain), base))
 
     ids = [[49406, 49408, 49409, 49410, 5, 49407, 49407, 49407]]

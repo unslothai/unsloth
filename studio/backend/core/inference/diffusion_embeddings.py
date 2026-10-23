@@ -285,7 +285,7 @@ class AppliedEmbeddings:
     skipped: list[str]
     pattern: Optional[re.Pattern]
     marker_owners: list[Any]
-    # (CLIPTextTransformer, original eos_token_id) for encoders switched off the legacy pooling rule.
+    # (pooling module, original eos_token_id)
     pool_eos: list[tuple[Any, Any]] = field(default_factory = list)
 
     def rewrite(self, call_kwargs: dict) -> dict:
@@ -333,8 +333,7 @@ class AppliedEmbeddings:
 
 
 def _clip_pooling_module(encoder: Any) -> Any:
-    """The module whose ``eos_token_id`` picks the pooled position: ``text_model`` (transformers 4.x
-    CLIPTextTransformer), or the CLIPTextModel itself (5.x); None for other encoders."""
+    """CLIP module owning ``eos_token_id``: ``text_model`` (transformers 4.x) or the model itself (5.x)."""
     module = encoder
     for _ in range(3):
         if module is None:
@@ -346,11 +345,8 @@ def _clip_pooling_module(encoder: Any) -> Any:
 
 
 def _pool_at_eos(applied: AppliedEmbeddings, encoder: Any, tokenizer: Any) -> None:
-    """Pool at the tokenizer's EOS while added tokens are installed.
-
-    Configs from before transformers #24773 (``eos_token_id == 2``, e.g. both SDXL encoders) pool at
-    ``input_ids.argmax(-1)``, which assumes EOS has the highest id; an added token outranks it and would be
-    pooled instead. The first EOS is the argmax position for prompts without added tokens, so they are unchanged."""
+    """Legacy ``eos_token_id == 2`` configs (pre transformers #24773, both SDXL encoders) pool at
+    ``input_ids.argmax(-1)``, which an added token outranks; pool at the real EOS instead."""
     text_model = _clip_pooling_module(encoder)
     eos = getattr(tokenizer, "eos_token_id", None)
     if text_model is None or getattr(text_model, "eos_token_id", None) != 2:
