@@ -1961,8 +1961,9 @@ class OffloadPlacement:
             failed = _stable_range_failure(getattr(self, "module", None))
             if failed is not None:
                 # The onload fell back to the stock move, which lands at new addresses on every render: record
-                # nothing more, as with no stable range at all (MODEL_OFFLOAD_REASON).
-                _detach_stable_range(self.module)
+                # nothing more, as with no stable range at all (MODEL_OFFLOAD_REASON). Retired, not detached: weights
+                # placed before the failure sit in the range until the offload takes them home and unmaps it.
+                _retire_stable_range(self.module)
                 self._declined = (
                     f"the stable device range failed ({failed}); " + MODEL_OFFLOAD_REASON
                 )
