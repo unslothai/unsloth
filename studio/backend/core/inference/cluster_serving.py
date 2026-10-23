@@ -1563,7 +1563,50 @@ class ClusterServing:
         if model_bytes is None:
             self.topology, self.reason = "single", "model size unknown; serving on this machine"
             return request
-        failed = await self._ensure_workers()
+        if forced != "layer_split" and self._workers_to_start():
+            # Probe this machine first: a load that fits it needs no worker started over ssh.
+            placed = await self._place(
+                request,
+                n_parallel,
+                ss,
+                flags,
+                effective,
+                model_bytes,
+                kv_bytes,
+                local_extra,
+                forced,
+                local_only = True,
+            )
+            if placed is not None:
+                return placed
+        return await self._place(
+            request, n_parallel, ss, flags, effective, model_bytes, kv_bytes, local_extra, forced
+        )
+
+    def _workers_to_start(self) -> List[str]:
+        return [
+            n.endpoint
+            for n in self.nodes
+            if n.managed
+            and not (self.workers.get(n.endpoint) is not None and self.workers[n.endpoint].alive)
+        ]
+
+    async def _place(
+        self,
+        request: Any,
+        n_parallel: int,
+        ss: Any,
+        flags: List[str],
+        effective: List[str],
+        model_bytes: Optional[float],
+        kv_bytes: float,
+        local_extra: float,
+        forced: Optional[str],
+        *,
+        local_only: bool = False,
+    ) -> Any:
+        """Plan over the probed devices; ``local_only`` plans this machine alone and returns None unless it fits."""
+        failed = {} if local_only else await self._ensure_workers()
         if self._cancelled():
             self.topology, self.reason = "single", "the load was cancelled"
             return request
@@ -1572,7 +1615,7 @@ class ClusterServing:
             self.topology, self.reason = "single", "no local llama-server to plan with"
             return request
         # One unreachable worker aborts llama.cpp's whole probe, so plan with the ones that answer.
-        live = [n for n in self.nodes if n.endpoint not in failed]
+        live = [] if local_only else [n for n in self.nodes if n.endpoint not in failed]
         reachable = await asyncio.gather(
             *(ss.wait_for_port(n.host, n.rpc_port, REACH_TIMEOUT_S) for n in live)
         )
@@ -1583,7 +1626,7 @@ class ClusterServing:
         endpoints = [e for e in endpoints if e not in busy]
         devices, error = (
             await asyncio.to_thread(list_devices, binary, endpoints)
-            if endpoints or busy
+            if endpoints or busy or local_only
             else ([], "")
         )
         while endpoints and error and not any(d.remote for d in devices):
@@ -1755,6 +1798,8 @@ class ClusterServing:
         groups = caller_groups if caller_groups > 1 else 0
         await self._size_group_scratch(groups)
         plan, skipped, spec_off_single = plan_with(groups)
+        if local_only and not (plan.topology == "single" and plan.devices):
+            return None
         emit_groups = 0
         if caller_groups > 1:
             self.pipeline_groups_reason = (

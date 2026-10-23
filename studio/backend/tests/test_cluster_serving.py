@@ -556,6 +556,46 @@ def test_managed_workers_are_started_over_ssh_and_kept_across_reloads(monkeypatc
     assert cs.state().workers == {}
 
 
+@pytest.mark.parametrize("model_gib, forced", [(20, None), (20, "layer_split"), (250, None)])
+def test_managed_workers_start_only_when_this_machine_cannot_hold_the_load(
+    monkeypatch, model_gib, forced
+):
+    """A load that fits the coordinator starts no ssh worker; a forced split or a misfit still does."""
+    seen = _cluster_env(monkeypatch, model_bytes = model_gib * GIB)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    if forced:
+        monkeypatch.setenv(cs.ENV_TOPOLOGY, forced)
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: "/b/ggml-rpc-server")
+    ssh = []
+
+    async def fake_ssh(target, remote, **kw):
+        ssh.append(target)
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    async def fake_start(self):
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def fake_stop(self, timeout = 10.0):
+        self.proc = SimpleNamespace(returncode = 0)
+
+    async def owns(process, host, port, timeout, **kw):
+        return True
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss.PeerProcess, "stop", fake_stop)
+    monkeypatch.setattr(ss, "wait_for_own_port", owns)
+    request = _request()
+    out = run(ss.before_load(request, 4))
+    if model_gib == 20 and not forced:
+        assert out is request and ssh == [] and cs.state().workers == {}
+        assert ss.status()["topology"] == "single" and "fits this machine" in ss.status()["reason"]
+        assert seen == [("/b/llama-server", [])], "only this machine was probed"
+    else:
+        assert ssh == ["10.0.0.2", "10.0.0.3", "10.0.0.4"]
+        assert ss.status()["topology"] == "layer_split"
+
+
 def test_a_worker_cancelled_while_starting_is_stopped(monkeypatch):
     _cluster_env(monkeypatch)
     monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2")
