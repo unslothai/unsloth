@@ -259,6 +259,7 @@ from .diffusion_speed import (
     arm_graphs_after_placement,
     normalize_speed_mode,
     resolve_speed_mode,
+    family_render_cudnn_scope,
     restore_backend_flags,
     settle_compile_fallback,
     snapshot_backend_flags,
@@ -13409,6 +13410,7 @@ class DiffusionBackend:
                                 zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
+                                family_render_cudnn_scope(state.family, state.device),
                             ):
                                 chunk_variation = (
                                     variation_seed_list[
