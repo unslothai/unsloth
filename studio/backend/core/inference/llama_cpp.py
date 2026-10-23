@@ -10218,16 +10218,22 @@ class LlamaCppBackend:
             return False
 
         compared_draft_n_max = self._spec_draft_n_max
-        if self._spec_fallback_reason == "runtime_error" and self._last_load_intent is not None:
-            # The MTP-free recovery clears the runtime value but retains the
-            # user's prior value in its intent. Only a changed value should retry MTP.
+        if (
+            self._spec_fallback_reason in ("runtime_error", "drafter_planner")
+            and self._last_load_intent is not None
+        ):
+            # The MTP-free recovery and the planner's drafter drop both leave no runtime
+            # value but keep the user's prior value in the intent. Only a changed value
+            # should retry the drafter.
             compared_draft_n_max = self._last_load_intent.spec_draft_n_max
         draft_depth_matters = (
             self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
             # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
             # types above cannot see it. The depth priced the rollback copies that
-            # made the placement partial, so a change can re-enable MTP.
-            or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
+            # made the placement partial, so a change can re-enable MTP. The planner
+            # priced the drafter it dropped at that depth too, so a shallower one can fit.
+            or self._spec_fallback_reason
+            in ("runtime_error", "mtp_partial_offload", "drafter_planner")
         )
         if draft_depth_matters:
             requested_draft_n_max = intent.spec_draft_n_max

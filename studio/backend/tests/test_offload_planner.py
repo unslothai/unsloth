@@ -1061,8 +1061,10 @@ def test_reading_the_layout_does_not_walk_the_vocabulary(tmp_path, monkeypatch, 
     writer.add_head_count(8)
     writer.add_key_length(128)
     writer.add_value_length(128)
-    # A per-layer array, so the numeric-array path must keep every element.
+    # A per-layer array, so the numeric-array path must keep every element. Row 0 has no KV
+    # heads and a nonzero FFN width, so nemotron_h reads it as MLP-only rather than recurrent.
     writer.add_array("nemotron_h.attention.head_count_kv", [0, 4, 2])
+    writer.add_array("nemotron_h.feed_forward_length", [4096, 0, 0])
     writer.add_token_list([f"tok{i}" for i in range(vocab)])
     writer.add_token_scores([0.0] * vocab)
     writer.add_token_types([1] * vocab)
