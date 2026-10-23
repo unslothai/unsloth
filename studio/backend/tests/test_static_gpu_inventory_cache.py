@@ -87,6 +87,32 @@ def test_a_rocm_install_landing_mid_session_is_seen(rocm_cli, monkeypatch):
     assert _count(rocm_cli, "rocminfo") == 2
 
 
+def test_an_amd_card_attached_beside_another_reads_the_gfx_target_again(rocm_cli, monkeypatch):
+    topology = [(("0000:03:00.0", "0x744c"),)]
+    monkeypatch.setattr(hw, "_linux_amd_pci_topology", lambda *a, **k: topology[0])
+    hw._linux_amd_gfx_candidates()
+    hw._linux_amd_gfx_candidates()
+    assert _count(rocm_cli, "rocminfo") == 1
+    topology[0] = (("0000:03:00.0", "0x744c"), ("0000:0c:00.0", "0x7550"))
+    hw._linux_amd_gfx_candidates()
+    assert _count(rocm_cli, "rocminfo") == 2
+
+
+def test_amd_pci_topology_reads_sysfs(tmp_path):
+    def card(name, vendor, device, slot):
+        dev = tmp_path / "pci" / slot
+        dev.mkdir(parents = True)
+        (dev / "vendor").write_text(vendor + "\n")
+        (dev / "device").write_text(device + "\n")
+        (tmp_path / "drm" / name).mkdir(parents = True)
+        (tmp_path / "drm" / name / "device").symlink_to(dev)
+
+    card("card0", "0x1002", "0x744C", "0000:03:00.0")
+    card("card1", "0x10de", "0x2684", "0000:01:00.0")
+    (tmp_path / "drm" / "card0-DP-1").mkdir()
+    assert hw._linux_amd_pci_topology(str(tmp_path / "drm")) == (("0000:03:00.0", "0x744c"),)
+
+
 def test_a_timed_out_probe_is_not_kept(rocm_cli, monkeypatch):
     def hung(argv, *a, **k):
         rocm_cli.append(list(argv))

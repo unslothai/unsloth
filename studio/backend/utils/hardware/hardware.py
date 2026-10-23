@@ -473,7 +473,35 @@ def _gfx_candidates_key() -> Optional[tuple]:
         static_gen,
         binaries,
         tuple(os.environ.get(name) for name in _GFX_CANDIDATE_ENV),
+        _linux_amd_pci_topology(),
     )
+
+
+def _linux_amd_pci_topology(root: str = "/sys/class/drm") -> tuple:
+    """(PCI address, device id) of every AMD card DRM has bound, sorted. A card attached, removed or swapped
+    beside one that stays changes it, which hardware re-detection (a GPU / no-GPU flip) would not notice.
+    sysfs reads only; an unreadable walk returns a fresh object so the cache is never hit on it."""
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return (object(),)
+    found = []
+    for entry in entries:
+        if not re.fullmatch(r"card\d+", entry):
+            continue
+        device = os.path.join(root, entry, "device")
+        try:
+            with open(os.path.join(device, "vendor"), encoding = "utf-8") as fh:
+                if fh.read().strip().lower() != "0x1002":
+                    continue
+            with open(os.path.join(device, "device"), encoding = "utf-8") as fh:
+                device_id = fh.read().strip().lower()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return (object(),)
+        found.append((os.path.basename(os.path.realpath(device)), device_id))
+    return tuple(sorted(found))
 
 
 def _linux_amd_gfx_candidates() -> list[str]:
