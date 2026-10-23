@@ -293,7 +293,9 @@ async def reflect(ctx: NodeContext) -> dict:
         max_tokens = 300,
         seed = ctx.seed,
     )
-    asked = (raw.get("questions") if isinstance(raw, dict) else None) or []
+    asked = raw.get("questions") if isinstance(raw, dict) else None
+    # Without structured output a local model may answer one question as a bare string.
+    asked = [asked] if isinstance(asked, str) else asked if isinstance(asked, list) else []
     questions = [str(q).strip() for q in asked if str(q).strip()][:3]
     if not questions:
         stream["since_reflection"] = 0.0
@@ -318,9 +320,9 @@ async def reflect(ctx: NodeContext) -> dict:
             max_tokens = 120 * per_question,
             seed = (ctx.seed + qi) % (2**32),
         )
-        for insight in ((raw.get("insights") if isinstance(raw, dict) else None) or [])[
-            :per_question
-        ]:
+        found = raw.get("insights") if isinstance(raw, dict) else None
+        found = [found] if isinstance(found, dict) else found if isinstance(found, list) else []
+        for insight in found[:per_question]:
             if not isinstance(insight, dict) or not str(insight.get("text") or "").strip():
                 continue
             cites = [

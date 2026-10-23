@@ -280,6 +280,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             progress: null,
             error: null,
             text: "",
+            // Partials belong to the run that sent them; outputs stay until replaced.
+            partial: null,
+            partialStep: null,
           },
         ]),
       ),

@@ -21,7 +21,7 @@ def _example(name: str) -> dict:
     return json.loads(json.dumps(BUILT[name]))
 
 
-def test_there_are_nineteen_examples():
+def test_the_example_count():
     assert len(BUILT) == 19
 
 

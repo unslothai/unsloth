@@ -977,6 +977,7 @@ async def speak(
     voice: str = "",
     instructions: str = "",
     reference: Optional[dict] = None,
+    reference_text: str = "",
     seed: Optional[int] = None,
 ) -> dict:
     await ensure_model(ctx, "tts", model)
@@ -985,6 +986,8 @@ async def speak(
     body: dict[str, Any] = {"workflow": "clone" if reference else "speak", "text": text}
     if reference:
         body["inputs"] = {"reference": await audio_ref(ctx, reference)}
+        if reference_text.strip():
+            body["inputs"]["reference_text"] = reference_text.strip()[:4000]
     if voice and not reference:
         body["options"] = {"voice": voice}
     if instructions:
