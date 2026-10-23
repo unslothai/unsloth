@@ -2579,6 +2579,16 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
+def _references_unpriced(fam: Any) -> bool:
+    """Whether ``fam``'s reference images join the denoiser's sequence without the request guard pricing them (no
+    ``reference_resolutions``; FLUX.3 resizes each to 1 MP and charges it): FLUX.2 Klein's source image."""
+    return bool(
+        getattr(fam, "reference", False)
+        and not tuple(getattr(fam, "reference_resolutions", ()) or ())
+        and not is_flux3_family(fam)
+    )
+
+
 def _calibrated_activation(fam: Any, target: Any) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
@@ -9820,6 +9830,7 @@ class DiffusionBackend:
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
                         # the dense default / max tier seeds hold on the measured target only
                         pipe._unsloth_dense_tier_seeds = _measured_target(target)
+                        pipe._unsloth_unpriced_references = _references_unpriced(fam)
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
                         pipe._unsloth_peak_expects_cfg = bool(
                             getattr(fam, "uses_negative_prompt", False)
