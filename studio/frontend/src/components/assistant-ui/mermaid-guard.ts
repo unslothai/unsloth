@@ -54,30 +54,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The `id@{ ... }` shape data blocks, as mermaid's lexer reads them: a `@{` inside a "string" (a quoted
- * label) is text, and a block ends at the first `}` outside a string. An unterminated block runs to the
- * end, so an image named in it is still vetted.
+ * The `id@{ ... }` shape data blocks, as mermaid's lexer ends them: at the first `}` outside a "string".
+ * Every `@{` is tried, since whether one is text (a quoted label, accessibility text) depends on lexer
+ * state; one that never closes is text there too, so the scan moves on past it instead of stopping.
  */
 function shapeDataBlocks(source: string): { start: number; end: number; body: string }[] {
   const blocks: { start: number; end: number; body: string }[] = [];
-  let inString = false;
-  for (let open = 0; open < source.length; open++) {
-    if (source[open] === '"') inString = !inString;
-    if (inString || source[open] !== "@" || source[open + 1] !== "{") continue;
-    let quoted = false;
-    let close = source.length;
+  let from = 0;
+  for (;;) {
+    const open = source.indexOf("@{", from);
+    if (open < 0) return blocks;
+    let inString = false;
+    let close = -1;
     for (let index = open + 2; index < source.length; index++) {
       const char = source[index];
-      if (char === '"') quoted = !quoted;
-      else if (char === "}" && !quoted) {
+      if (char === '"') inString = !inString;
+      else if (char === "}" && !inString) {
         close = index;
         break;
       }
     }
-    blocks.push({ start: open, end: Math.min(close + 1, source.length), body: source.slice(open + 2, close) });
-    open = close;
+    if (close < 0) {
+      from = open + 2;
+      continue;
+    }
+    blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
+    from = close + 1;
   }
-  return blocks;
 }
 
 /** A shape data block without a remote `img`, or null when it carries none and stays as written. */

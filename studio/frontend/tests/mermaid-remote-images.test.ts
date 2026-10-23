@@ -81,13 +81,18 @@ test("a `@{` or `}` inside a quoted label does not hide a later shape data block
   for (const [source, kept] of [
     [`flowchart LR\n  A["@{"] --> B@{ ${img} }`, 'flowchart LR\n  A["@{"] --> B@{ "w":10,"h":10 }'],
     [`flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ ${img} }`, 'flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ "w":10,"h":10 }'],
-    // An unterminated block is still vetted rather than passed through.
-    [`flowchart LR\n  B@{ ${img}`, 'flowchart LR\n  B@{ "w":10,"h":10 }'],
+    // Accessibility text takes the rest of its line, quotes included.
+    [`flowchart LR\n  accTitle: A " title\n  B@{ ${img} }`, 'flowchart LR\n  accTitle: A " title\n  B@{ "w":10,"h":10 }'],
   ]) {
     const out = stripRemoteDiagramImages(source);
     assert.equal(out, kept);
     assert.equal(stripRemoteDiagramImages(out), out);
   }
+});
+
+test("an unterminated `@{` is text and the diagram passes through", () => {
+  const source = "sequenceDiagram\n  Alice->>Bob: show @{ img: foo";
+  assert.equal(stripRemoteDiagramImages(source), source);
 });
 
 test("a style statement after a semicolon cannot fetch either", () => {
