@@ -157,6 +157,27 @@ test("outputs leave right or bottom and inputs enter top or left", () => {
   assertWireRules(rects, edges, routes);
 });
 
+test("a port squeezed next to another card still finds a clean way out", () => {
+  // The model card ends 28px from the LLM card's input, so the input stub sits in its clearance band.
+  const rects = [card("model", 0, -100, 260, 184), card("llm", 288, 0), card("src", -600, 300)];
+  const edges = [wire("src", "llm"), wire("model", "llm", "bottom", "top")];
+  const { routes } = routeWires(rects, edges);
+  assertWireRules(rects, edges, routes);
+});
+
+test("a card dropped over a port does not cut its wire off", () => {
+  const rects = [card("a", 0, 0), card("cover", 180, 20, 220, 120), card("b", 700, 0), card("wall", 450, -200, 100, 500)];
+  const edges = [wire("a", "b")];
+  const { routes } = routeWires(rects, edges);
+  const route = routes.get("a->b") as Route;
+  assert.equal(route.blocked, false, "the wire still routes");
+  for (const [a, b] of segments(route.points)) {
+    for (const rect of rects.filter((r) => r.id !== "cover")) {
+      assert.ok(!hitsInterior(a, b, rect), `passes under ${rect.id}`);
+    }
+  }
+});
+
 test("a feedback wire runs backwards around the graph without breaking the side rules", () => {
   const rects = [card("gen", 0, 0), card("judge", 400, 0), card("bench", 800, 0)];
   const edges = [wire("gen", "judge"), wire("judge", "bench"), wire("bench", "gen")];

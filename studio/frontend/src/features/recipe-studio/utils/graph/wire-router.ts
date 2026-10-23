@@ -45,6 +45,7 @@ export type WireRouterOptions = {
   bendPenalty?: number;
   crossingPenalty?: number;
   overlapPenalty?: number;
+  clearancePenalty?: number;
   hopRadius?: number;
 };
 
@@ -241,6 +242,9 @@ type Grid = {
   // Segment from point i to its right (h) or lower (v) neighbour passes through a card.
   blockedH: Uint8Array;
   blockedV: Uint8Array;
+  // Segment runs through the clearance band around a card.
+  softH: Uint8Array;
+  softV: Uint8Array;
   // Net index on each unit segment, -1 free, -2 shared by several nets.
   netH: Int32Array;
   netV: Int32Array;
@@ -256,11 +260,47 @@ type Grid = {
   search: number;
 };
 
+function markRects(
+  rects: WireRect[],
+  xs: number[],
+  ys: number[],
+  point: Uint8Array | null,
+  horizontal: Uint8Array,
+  vertical: Uint8Array,
+): void {
+  const ny = ys.length;
+  for (const rect of rects) {
+    const i0 = indexOf(xs, rect.x);
+    const i1 = indexOf(xs, rect.x + rect.width);
+    const j0 = indexOf(ys, rect.y);
+    const j1 = indexOf(ys, rect.y + rect.height);
+    for (let i = i0; i <= i1; i += 1) {
+      for (let j = j0; j <= j1; j += 1) {
+        const p = i * ny + j;
+        const insideX = i > i0 && i < i1;
+        const insideY = j > j0 && j < j1;
+        if (point && insideX && insideY) {
+          point[p] = 1;
+        }
+        if (insideY && i < i1) {
+          horizontal[p] = 1;
+        }
+        if (insideX && j < j1) {
+          vertical[p] = 1;
+        }
+      }
+    }
+  }
+}
+
+// Cards are hard obstacles; the clearance band around them only costs extra, so a port that
+// sits close to another card can still get out.
 function buildGrid(
-  obstacles: WireRect[],
+  cards: WireRect[],
+  margins: WireRect[],
   extraXs: number[],
   extraYs: number[],
-  margin: number,
+  ring: number,
 ): Grid {
   const rawXs = [...extraXs];
   const rawYs = [...extraYs];
@@ -268,7 +308,7 @@ function buildGrid(
   let minY = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
-  for (const rect of obstacles) {
+  for (const rect of [...cards, ...margins]) {
     rawXs.push(rect.x, rect.x + rect.width);
     rawYs.push(rect.y, rect.y + rect.height);
     minX = Math.min(minX, rect.x);
@@ -285,8 +325,8 @@ function buildGrid(
     maxY = Math.max(maxY, y);
   }
   // Outer ring so wires that run backwards can go around the whole graph.
-  rawXs.push(minX - margin, maxX + margin);
-  rawYs.push(minY - margin, maxY + margin);
+  rawXs.push(minX - ring, maxX + ring);
+  rawYs.push(minY - ring, maxY + ring);
 
   const xs = withChannelMidlines(sortedUnique(rawXs));
   const ys = withChannelMidlines(sortedUnique(rawYs));
@@ -296,33 +336,10 @@ function buildGrid(
   const blockedPoint = new Uint8Array(size);
   const blockedH = new Uint8Array(size);
   const blockedV = new Uint8Array(size);
-
-  for (const rect of obstacles) {
-    const x0 = rect.x;
-    const x1 = rect.x + rect.width;
-    const y0 = rect.y;
-    const y1 = rect.y + rect.height;
-    const i0 = indexOf(xs, x0);
-    const i1 = indexOf(xs, x1);
-    const j0 = indexOf(ys, y0);
-    const j1 = indexOf(ys, y1);
-    for (let i = i0; i <= i1; i += 1) {
-      for (let j = j0; j <= j1; j += 1) {
-        const p = i * ny + j;
-        const insideX = i > i0 && i < i1;
-        const insideY = j > j0 && j < j1;
-        if (insideX && insideY) {
-          blockedPoint[p] = 1;
-        }
-        if (insideY && i < i1) {
-          blockedH[p] = 1;
-        }
-        if (insideX && j < j1) {
-          blockedV[p] = 1;
-        }
-      }
-    }
-  }
+  const softH = new Uint8Array(size);
+  const softV = new Uint8Array(size);
+  markRects(cards, xs, ys, blockedPoint, blockedH, blockedV);
+  markRects(margins, xs, ys, null, softH, softV);
 
   const netH = new Int32Array(size).fill(-1);
   const netV = new Int32Array(size).fill(-1);
@@ -334,6 +351,8 @@ function buildGrid(
     blockedPoint,
     blockedH,
     blockedV,
+    softH,
+    softV,
     netH,
     netV,
     sinkH: new Int32Array(size).fill(-1),
@@ -407,7 +426,19 @@ type SearchInput = {
   goalDir: number;
   owner: Owner;
   window: { i0: number; i1: number; j0: number; j1: number };
+  /** Cards stacked over this wire's own ports; it may cross them since it starts under them. */
+  exempt: WireRect[];
 };
+
+function inExempt(exempt: WireRect[], x: number, y: number): boolean {
+  return exempt.some(
+    (rect) =>
+      x >= rect.x - EPS &&
+      x <= rect.x + rect.width + EPS &&
+      y >= rect.y - EPS &&
+      y <= rect.y + rect.height + EPS,
+  );
+}
 
 function searchPath(
   grid: Grid,
@@ -415,7 +446,7 @@ function searchPath(
   costs: Required<WireRouterOptions>,
 ): number[] | null {
   const { xs, ys, ny } = grid;
-  const { start, startDir, goal, goalDir, owner, window } = input;
+  const { start, startDir, goal, goalDir, owner, window, exempt } = input;
   grid.search += 1;
   const search = grid.search;
   const goalX = xs[Math.floor(goal / ny)];
@@ -461,28 +492,33 @@ function searchPath(
         continue;
       }
       const q = ni * ny + nj;
-      if (grid.blockedPoint[q] && q !== goal) {
+      if (grid.blockedPoint[q] && q !== goal && !inExempt(exempt, xs[ni], ys[nj])) {
         continue;
       }
+      const midX = (xs[ni] + xs[i]) / 2;
+      const midY = (ys[nj] + ys[j]) / 2;
       let segNet: number;
       let segSink: number;
+      let soft: boolean;
       if (nd === 0 || nd === 2) {
         const left = nd === 0 ? p : q;
-        if (grid.blockedH[left]) {
+        if (grid.blockedH[left] && !inExempt(exempt, midX, midY)) {
           continue;
         }
         segNet = grid.netH[left];
         segSink = grid.sinkH[left];
+        soft = grid.softH[left] === 1;
       } else {
         const upper = nd === 1 ? p : q;
-        if (grid.blockedV[upper]) {
+        if (grid.blockedV[upper] && !inExempt(exempt, midX, midY)) {
           continue;
         }
         segNet = grid.netV[upper];
         segSink = grid.sinkV[upper];
+        soft = grid.softV[upper] === 1;
       }
       const length = Math.abs(xs[ni] - xs[i]) + Math.abs(ys[nj] - ys[j]);
-      let cost = length;
+      let cost = soft ? length * 2 + costs.clearancePenalty : length;
       if (segNet !== -1 && sharesWith(segNet, segSink, owner)) {
         cost *= SHARED_DISCOUNT;
       } else if (usedByOther(segNet, segSink, owner)) {
@@ -924,6 +960,7 @@ const DEFAULT_OPTIONS: Required<WireRouterOptions> = {
   bendPenalty: 40,
   crossingPenalty: 60,
   overlapPenalty: 400,
+  clearancePenalty: 150,
   hopRadius: 4,
 };
 
@@ -963,6 +1000,7 @@ export function routeWires(
   type Prepared = {
     edge: WireEdgeInput;
     owner: Owner;
+    exempt: WireRect[];
     key: string;
     sourcePort: WirePoint;
     targetPort: WirePoint;
@@ -1016,6 +1054,18 @@ export function routeWires(
         net: netIds.get(edge.net) as number,
         sink: sinkIds.get(sink) as number,
       },
+      exempt: rects.filter(
+        (rect) =>
+          rect.id !== edge.source &&
+          rect.id !== edge.target &&
+          [sourcePort, sourceStub, targetPort, targetStub].some(
+            (point) =>
+              point.x > rect.x &&
+              point.x < rect.x + rect.width &&
+              point.y > rect.y &&
+              point.y < rect.y + rect.height,
+          ),
+      ),
       key,
       sourcePort,
       targetPort,
@@ -1025,7 +1075,7 @@ export function routeWires(
     });
   }
 
-  const grid = buildGrid(obstacles, extraXs, extraYs, clearance * 2);
+  const grid = buildGrid(rects, obstacles, extraXs, extraYs, clearance * 2);
   for (const item of prepared) {
     const at = (point: WirePoint): number =>
       indexOf(grid.xs, point.x) * grid.ny + indexOf(grid.ys, point.y);
@@ -1083,7 +1133,7 @@ export function routeWires(
     for (const window of windows) {
       cells = searchPath(
         grid,
-        { start, startDir, goal, goalDir, owner: item.owner, window },
+        { start, startDir, goal, goalDir, owner: item.owner, window, exempt: item.exempt },
         searchCosts,
       );
       if (cells) {
