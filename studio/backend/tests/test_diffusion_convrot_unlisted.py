@@ -36,6 +36,7 @@ def _clean(monkeypatch):
     cq._UNLISTED_TIMING.clear()
     cq._UNLISTED_PROBE.clear()
     saved = dict(cq._H16_DEVICE)
+    cq._H16_DEVICE.clear()  # a real-card verdict from an earlier test file must not leak in
     yield
     cq._UNLISTED_DEVICE.clear()
     cq._UNLISTED_TIMING.clear()
