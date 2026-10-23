@@ -37,8 +37,11 @@ test("long API examples are capped and scroll inside a keyboard-reachable region
   assert.match(highlightedCode, /aria-label=\{label\}/);
   assert.match(
     highlightedCode,
-    /className="max-h-96 [^"]*\boverflow-auto\b[^"]*\bscroll-rounded rounded-lg\b[^"]*\bfocus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset\b/,
+    /className="max-h-96 [^"]*\bhover-scrollbar overflow-auto\b[^"]*\bfocus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset\b/,
   );
+  // square under the header: a rounded scroller cut its scrollbar's top off; the box clips the ends
+  assert.doesNotMatch(highlightedCode, /scroll-rounded|rounded-lg/);
+  assert.match(PARTS, /"relative min-w-0 overflow-hidden rounded-xl border/);
   // redaction must stay on the scroller that holds the snippet text
   assert.match(
     highlightedCode,
