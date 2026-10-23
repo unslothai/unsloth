@@ -6,7 +6,13 @@ import {
   unslothDarkTheme,
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
-import { SegmentedPill } from "@/components/segmented-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -34,8 +40,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ReactNode,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -63,6 +69,8 @@ import {
   shSingle,
   statusGgufVerdict,
 } from "./agent-command";
+import { AgentIcon } from "./agent-command-block";
+import { detailsFor } from "./coding-agent-list";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
 import {
   readUseTunnelPref,
@@ -82,42 +90,81 @@ type ExampleType =
   | "javascriptAdvanced";
 type Os = "unix" | "windows";
 type Variant = "plain" | "tools" | "advanced";
+type Language = "curl" | "python" | "javascript";
 
-const TYPE_TABS: { id: ExampleType; label: string }[] = [
+const LANGUAGES: { id: Language; label: string }[] = [
   { id: "curl", label: "curl" },
   { id: "python", label: "Python" },
   { id: "javascript", label: "JavaScript" },
-  { id: "curlTools", label: "curl + tools" },
-  { id: "pythonTools", label: "Python + tools" },
-  { id: "javascriptTools", label: "JavaScript + tools" },
-  { id: "curlAdvanced", label: "curl + advanced" },
-  { id: "pythonAdvanced", label: "Python + advanced" },
-  { id: "javascriptAdvanced", label: "JavaScript + advanced" },
 ];
 
-// guards a restored tab against a snippet type dropped in a later release.
-const EXAMPLE_TYPE_IDS = new Set<string>(TYPE_TABS.map((tab) => tab.id));
+const VARIANTS: { id: Variant; labelKey: TranslationKey }[] = [
+  { id: "plain", labelKey: "settings.apiKeys.requestPlain" },
+  { id: "tools", labelKey: "settings.apiKeys.requestTools" },
+  { id: "advanced", labelKey: "settings.apiKeys.requestAdvanced" },
+];
 
-const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
-  curlTools: "settings.apiKeys.exampleCurlTools",
-  pythonTools: "settings.apiKeys.examplePythonTools",
-  javascriptTools: "settings.apiKeys.exampleJavaScriptTools",
-  curlAdvanced: "settings.apiKeys.exampleCurlAdvanced",
-  pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
-  javascriptAdvanced: "settings.apiKeys.exampleJavaScriptAdvanced",
-};
+const OS_OPTIONS: { id: Os; labelKey: TranslationKey }[] = [
+  { id: "unix", labelKey: "settings.apiKeys.osUnix" },
+  { id: "windows", labelKey: "settings.apiKeys.osWindows" },
+];
 
-const OS_AWARE: Record<ExampleType, boolean> = {
-  curl: true,
-  python: false,
-  javascript: false,
-  curlTools: true,
-  pythonTools: false,
-  javascriptTools: false,
-  curlAdvanced: true,
-  pythonAdvanced: false,
-  javascriptAdvanced: false,
-};
+// guards a restored pick against a snippet type dropped in a later release.
+const EXAMPLE_TYPE_IDS = new Set<string>([
+  "curl",
+  "python",
+  "javascript",
+  "curlTools",
+  "pythonTools",
+  "javascriptTools",
+  "curlAdvanced",
+  "pythonAdvanced",
+  "javascriptAdvanced",
+] satisfies ExampleType[]);
+
+function exampleType(language: Language, variant: Variant): ExampleType {
+  if (variant === "plain") {
+    return language;
+  }
+  return `${language}${variant === "tools" ? "Tools" : "Advanced"}`;
+}
+
+function exampleParts(type: ExampleType): [Language, Variant] {
+  const language: Language = type.startsWith("curl")
+    ? "curl"
+    : type.startsWith("python")
+      ? "python"
+      : "javascript";
+  const variant: Variant = type.endsWith("Tools")
+    ? "tools"
+    : type.endsWith("Advanced")
+      ? "advanced"
+      : "plain";
+  return [language, variant];
+}
+
+/** A labelled control in the Agents tab's style: fixed-height header, then the control. */
+function Field({
+  label,
+  action,
+  children,
+}: {
+  label: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <div className="flex h-5 items-center justify-between gap-3">
+        <span className="truncate text-xs font-medium text-foreground">
+          {label}
+        </span>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
+}
 
 const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
 const JAVASCRIPT_TYPES = new Set<ExampleType>([
@@ -138,25 +185,6 @@ const ADV = {
   max_tokens: 1024,
 } as const;
 
-const DOC_LINKS = [
-  { label: "Claude Code", href: "https://unsloth.ai/docs/basics/claude-code" },
-  { label: "Codex", href: "https://unsloth.ai/docs/basics/codex" },
-  {
-    label: "VS Code",
-    href: "https://code.visualstudio.com/docs/copilot/customization/language-models",
-  },
-  {
-    label: "DeepSeek Harness",
-    href: "https://github.com/deepseek-ai/deepseek-harness",
-  },
-  { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
-  {
-    label: "Hermes Agent",
-    href: "https://unsloth.ai/docs/integrations/hermes-agent",
-  },
-  { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
-];
-
 // Fallback until the backend's installed-CLI check resolves. Mirrors CODING_AGENTS in
 // studio/backend/utils/coding_agents.py.
 const DEFAULT_AGENTS = [
@@ -174,17 +202,6 @@ const DEFAULT_AGENTS = [
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
 const DEFAULT_AGENT = "claude";
-const AGENT_LABELS: Record<string, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-  vscode: "VS Code",
-  dsh: "DeepSeek Harness",
-  opencode: "OpenCode",
-  hermes: "Hermes",
-  openclaw: "OpenClaw",
-  pi: "Pi",
-  vibe: "Mistral Vibe",
-};
 
 const j = (s: string): string => JSON.stringify(s);
 const toolsJson = TOOLS.map(j).join(", ");
@@ -603,7 +620,6 @@ export function UsageExamples({
   keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
-  const pillId = useId();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
@@ -868,7 +884,6 @@ export function UsageExamples({
     [base, agentKey, os, agent],
   );
 
-  const osAware = OS_AWARE[lang];
   const shikiLang = CURL_TYPES.has(lang)
     ? os === "windows"
       ? "powershell"
@@ -899,261 +914,268 @@ export function UsageExamples({
     }
   };
 
+  const [language, variant] = exampleParts(lang);
+  const pickExample = (next: ExampleType) => {
+    setLang(next);
+    setStoredLang(next);
+  };
+  const agentDetails = detailsFor(agent);
+
   return (
-    <section className="flex min-w-0 max-w-full flex-col">
-      <h2 className="settings-heading mb-2 text-sm font-semibold">
+    <section className="flex min-w-0 max-w-full flex-col gap-4">
+      <h2 className="settings-heading text-sm font-semibold">
         {t("settings.apiKeys.usageExamples")}
       </h2>
-      <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
-        {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
-        {cloudflareUrl ? (
-          <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Switch
-                size="sm"
-                checked={useTunnel}
-                onCheckedChange={onUseTunnelChange}
-                aria-label={t("settings.apiKeys.secureHttps")}
-              />
-              <span className="text-ui-11 font-medium text-foreground">
-                {t("settings.apiKeys.secureHttps")}
-                {/* Only for a network bind not launched with --secure: its raw port stays
-                    reachable. A loopback bind (the default, and Desktop) exposes nothing. */}
-                {secure || loopbackBind ? null : (
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      {/* Inline on the baseline, like a glyph after the label. */}
-                      <button
-                        type="button"
-                        className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        aria-label={t("settings.apiKeys.secureHttpsHint")}
-                      >
-                        {/* Follows the UI font size, like the SettingsRow hint
-                            this matches. */}
-                        <HugeiconsIcon
-                          icon={InformationCircleIcon}
-                          className="size-[var(--ui-icon-size-hint)]"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
-                      {t("settings.apiKeys.secureHttpsHint")}
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={handleCopyUrl}
-              className={cn(
-                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                !useTunnel && "opacity-50",
-              )}
-              title={cloudflareUrl}
-              aria-label={t("settings.apiKeys.copyTunnelUrl")}
-            >
-              <span className="truncate font-mono">{cloudflareUrl}</span>
-              <HugeiconsIcon
-                icon={copiedUrl ? Tick02Icon : Copy01Icon}
-                className={cn(
-                  "size-3.5 shrink-0",
-                  copiedUrl && "text-emerald-600",
-                )}
-              />
-            </button>
-          </div>
-        ) : null}
-        <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-          <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
-            {TYPE_TABS.map((tab) => {
-              const active = lang === tab.id;
-              const labelKey = TYPE_LABEL_KEY[tab.id];
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => {
-                    setLang(tab.id);
-                    setStoredLang(tab.id);
-                  }}
-                  aria-pressed={active}
-                  className={cn(
-                    "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                    active
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {active && <SegmentedPill group={`${pillId}-lang`} />}
-                  {labelKey ? t(labelKey) : tab.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        {osAware ? (
-          <div className="isolate flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                setOs("unix");
-                setStoredOs("unix");
-              }}
-              aria-pressed={os === "unix"}
-              className={cn(
-                "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                os === "unix"
-                  ? "text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {os === "unix" && <SegmentedPill group={`${pillId}-os`} />}
-              {t("settings.apiKeys.osUnix")}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setOs("windows");
-                setStoredOs("windows");
-              }}
-              aria-pressed={os === "windows"}
-              className={cn(
-                "relative rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                os === "windows"
-                  ? "text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {os === "windows" && <SegmentedPill group={`${pillId}-os`} />}
-              {t("settings.apiKeys.osWindows")}
-            </button>
-          </div>
-        ) : null}
-        {snippets ? (
-          <div className="relative min-w-0">
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              aria-label={t("settings.apiKeys.copySnippet")}
-            >
-              <HugeiconsIcon
-                icon={copied ? Tick02Icon : Copy01Icon}
-                className={cn("size-3.5", copied && "text-emerald-600")}
-              />
-              {copied
-                ? t("settings.apiKeys.copied")
-                : t("settings.apiKeys.copy")}
-            </button>
-            <HighlightedCode
-              key={snippets[lang]}
-              code={snippets[lang]}
-              language={shikiLang}
-              label={t("settings.apiKeys.usageExamples")}
-              redactFromReload={Boolean(apiKey)}
+      {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
+      {cloudflareUrl ? (
+        <div className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Switch
+              size="sm"
+              checked={useTunnel}
+              onCheckedChange={onUseTunnelChange}
+              aria-label={t("settings.apiKeys.secureHttps")}
             />
+            <span className="text-ui-11 font-medium text-foreground">
+              {t("settings.apiKeys.secureHttps")}
+              {/* Only for a network bind not launched with --secure: its raw port stays
+                  reachable. A loopback bind (the default, and Desktop) exposes nothing. */}
+              {secure || loopbackBind ? null : (
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    {/* Inline on the baseline, like a glyph after the label. */}
+                    <button
+                      type="button"
+                      className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      aria-label={t("settings.apiKeys.secureHttpsHint")}
+                    >
+                      {/* Follows the UI font size, like the SettingsRow hint
+                          this matches. */}
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-[var(--ui-icon-size-hint)]"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                    {t("settings.apiKeys.secureHttpsHint")}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </span>
           </div>
-        ) : (
-          <div className="min-w-0 px-3 py-2.5 text-ui-11 leading-snug text-muted-foreground">
-            {t("settings.apiKeys.usageNoModel")}
-          </div>
-        )}
-        <div className="flex min-w-0 flex-col gap-1.5 border-t border-border px-3 py-2.5">
-          <span className="text-ui-11 font-semibold text-foreground">
-            {t("settings.apiKeys.codingAgents")}
-          </span>
-          <span className="text-ui-11 leading-snug text-muted-foreground">
-            {t("settings.apiKeys.codingAgentsHint")}
-          </span>
-          <div className="isolate flex min-w-0 flex-wrap items-center gap-1">
-            {availableAgents.map((id) => {
-              const installed = detectedAgents.includes(id);
-              const active = agent === id;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => {
-                    agentPickedByUserRef.current = true;
-                    clickedUnderGgufRef.current = isGguf;
-                    setAgent(id);
-                    setStoredAgent(id);
-                  }}
-                  aria-pressed={active}
-                  title={
-                    installed
-                      ? t("settings.apiKeys.codingAgentDetected")
-                      : undefined
-                  }
-                  className={cn(
-                    "relative flex items-center gap-1 rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                    active
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
+          <button
+            type="button"
+            onClick={handleCopyUrl}
+            className={cn(
+              "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              !useTunnel && "opacity-50",
+            )}
+            title={cloudflareUrl}
+            aria-label={t("settings.apiKeys.copyTunnelUrl")}
+          >
+            <span className="truncate font-mono">{cloudflareUrl}</span>
+            <HugeiconsIcon
+              icon={copiedUrl ? Tick02Icon : Copy01Icon}
+              className={cn(
+                "size-3.5 shrink-0",
+                copiedUrl && "text-emerald-600",
+              )}
+            />
+          </button>
+        </div>
+      ) : null}
+      {/* Same breakpoint as the Agents tab: three columns once all three stay usable. */}
+      <div className="@container">
+        <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
+          <Field label={t("settings.apiKeys.exampleLanguage")}>
+            <Select
+              value={language}
+              onValueChange={(next) =>
+                pickExample(exampleType(next as Language, variant))
+              }
+            >
+              <SelectTrigger
+                aria-label={t("settings.apiKeys.exampleLanguage")}
+                className="w-full rounded-lg"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {LANGUAGES.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label={t("settings.apiKeys.exampleRequest")}>
+            <Select
+              value={variant}
+              onValueChange={(next) =>
+                pickExample(exampleType(language, next as Variant))
+              }
+            >
+              <SelectTrigger
+                aria-label={t("settings.apiKeys.exampleRequest")}
+                className="w-full rounded-lg"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {VARIANTS.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {t(option.labelKey)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label={t("settings.apiKeys.examplePlatform")}>
+            <Select
+              value={os}
+              onValueChange={(next) => {
+                setOs(next as Os);
+                setStoredOs(next as Os);
+              }}
+            >
+              <SelectTrigger
+                aria-label={t("settings.apiKeys.examplePlatform")}
+                className="w-full rounded-lg"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                {OS_OPTIONS.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {t(option.labelKey)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+      </div>
+      {snippets ? (
+        <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label={t("settings.apiKeys.copySnippet")}
+          >
+            <HugeiconsIcon
+              icon={copied ? Tick02Icon : Copy01Icon}
+              className={cn("size-3.5", copied && "text-control-accent")}
+            />
+            {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
+          </button>
+          <HighlightedCode
+            key={snippets[lang]}
+            code={snippets[lang]}
+            language={shikiLang}
+            label={t("settings.apiKeys.usageExamples")}
+            redactFromReload={Boolean(apiKey)}
+          />
+        </div>
+      ) : (
+        <p className="text-ui-11 leading-relaxed text-muted-foreground">
+          {t("settings.apiKeys.usageNoModel")}
+        </p>
+      )}
+      <div className="flex min-w-0 flex-col gap-2.5 pt-2">
+        <span className="text-xs font-medium text-foreground">
+          {t("settings.apiKeys.codingAgents")}
+        </span>
+        <p className="text-ui-11 leading-relaxed text-muted-foreground">
+          {t("settings.apiKeys.codingAgentsHint")}
+        </p>
+        <div className="@container">
+          <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
+            <Field
+              label={t("settings.agents.agent")}
+              action={
+                <a
+                  href={agentDetails.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t("settings.agents.agentDocs", {
+                    agent: agentDetails.name,
+                  })}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
-                  {active && <SegmentedPill group={`${pillId}-agent`} />}
-                  {AGENT_LABELS[id] ?? id}
-                  {installed ? (
-                    <span
-                      aria-hidden="true"
-                      className="size-1.5 rounded-full bg-emerald-500"
-                    />
-                  ) : null}
-                </button>
-              );
-            })}
+                  {t("settings.agents.docs")}
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+                </a>
+              }
+            >
+              <Select
+                value={agent}
+                onValueChange={(id) => {
+                  agentPickedByUserRef.current = true;
+                  clickedUnderGgufRef.current = isGguf;
+                  setAgent(id);
+                  setStoredAgent(id);
+                }}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.agents.agent")}
+                  className="w-full rounded-lg"
+                >
+                  <SelectValue>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <AgentIcon {...agentDetails} />
+                      <span className="truncate">{agentDetails.name}</span>
+                    </span>
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {availableAgents.map((id) => {
+                    const details = detailsFor(id);
+                    return (
+                      <SelectItem key={id} value={id}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <AgentIcon {...details} />
+                          <span className="truncate">{details.name}</span>
+                          {detectedAgents.includes(id) ? (
+                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                              {t("settings.agents.quickstart.installed")}
+                            </span>
+                          ) : null}
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </Field>
           </div>
-          <div className="relative mt-0.5 min-w-0">
-            <code
-              className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground"
-              data-reload-snapshot-sensitive={apiKey ? "" : undefined}
-            >
-              {agentCommand}
-            </code>
-            <button
-              type="button"
-              onClick={handleCopyAgent}
-              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              aria-label={t("settings.apiKeys.copySnippet")}
-            >
-              <HugeiconsIcon
-                icon={copiedAgent ? Tick02Icon : Copy01Icon}
-                className={cn("size-3.5", copiedAgent && "text-emerald-600")}
-              />
-            </button>
-          </div>
-          {agent === "vscode" && (
-            <span className="text-ui-11 leading-snug text-muted-foreground">
-              {t("settings.agents.vscodeNote")}
-            </span>
-          )}
-          {detectedAgents.length > 0 ? (
-            <span className="text-ui-11 leading-snug text-muted-foreground">
-              {t("settings.apiKeys.codingAgentsDetectedHint", {
-                agents: detectedAgents
-                  .map((id) => AGENT_LABELS[id] ?? id)
-                  .join(", "),
-              })}
-            </span>
-          ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-ui-11 text-muted-foreground">
-          <span>{t("settings.apiKeys.setupDocs")}</span>
-          {DOC_LINKS.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-0.5 rounded font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {link.label}
-              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-            </a>
-          ))}
+        <div className="relative min-w-0">
+          <code
+            className="block min-w-0 whitespace-pre-wrap break-all rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+            data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+          >
+            {agentCommand}
+          </code>
+          <button
+            type="button"
+            onClick={handleCopyAgent}
+            className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label={t("settings.apiKeys.copySnippet")}
+          >
+            <HugeiconsIcon
+              icon={copiedAgent ? Tick02Icon : Copy01Icon}
+              className={cn("size-3.5", copiedAgent && "text-control-accent")}
+            />
+          </button>
         </div>
+        {agent === "vscode" && (
+          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            {t("settings.agents.vscodeNote")}
+          </p>
+        )}
       </div>
     </section>
   );

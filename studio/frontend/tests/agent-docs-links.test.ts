@@ -17,9 +17,9 @@ test("Pi and Mistral Vibe docs open the unsloth start page", () => {
   }
 });
 
-test("the Setup docs row has no Pi or Mistral Vibe chip", () => {
+test("the API tab's agent picker links the picked agent's docs, as the Agents tab does", () => {
   const src = readSrc("features/settings/components/usage-examples.tsx");
-  const row = /const DOC_LINKS = \[[\s\S]*?\];/.exec(src)?.[0];
-  assert.ok(row, "DOC_LINKS not found");
-  assert.doesNotMatch(row, /pi\.dev|mistral/i);
+  assert.match(src, /href=\{agentDetails\.docsUrl\}/);
+  assert.doesNotMatch(src, /const DOC_LINKS/);
+  assert.doesNotMatch(src, /href: "https?:\/\//);
 });
