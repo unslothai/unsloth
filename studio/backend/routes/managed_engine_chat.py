@@ -103,7 +103,13 @@ def _with_reasoning_content(line: str) -> str:
     return "data: " + json.dumps(event) if changed else line
 
 
-def _message_fitter(payload, engine, public, tools):
+def _message_fitter(
+    payload,
+    engine,
+    public,
+    tools,
+    studio_loop = False,
+):
     """Auto-compact to the vLLM engine's window; the exact count refuses tools, so this estimates."""
     from routes import inference as api
 
@@ -123,9 +129,21 @@ def _message_fitter(payload, engine, public, tools):
         }
     )
 
+    # The first fit sees the client's branch; later ones see the loop's conversation, which can end
+    # on a controller re-prompt that recall must not query for.
+    branch: list = []
+    tool_loop = studio_loop and not api._tool_calls_are_disabled(payload)
+
     async def fit(messages):
+        if not branch:
+            branch.extend(messages)
         fitted, truncation, max_tokens = await asyncio.to_thread(
-            api._fit_external_context, messages, fit_payload, tools = tools
+            api._fit_external_context,
+            messages,
+            fit_payload,
+            tools = tools,
+            branch = branch,
+            tool_loop = tool_loop,
         )
         line = None
         if truncation and truncation.get("dropped_messages"):
@@ -223,6 +241,8 @@ async def managed_tool_chat(
             full_access = bool(payload.bypass_permissions),
         )
         nudge = await api._apply_rag_nudge(nudge, tools, rag_scope = payload.rag_scope)
+        if not api._tool_calls_are_disabled(payload):
+            nudge = api._apply_compaction_nudge(nudge, tools, payload = payload)
         if nudge:
             messages = api._append_to_system_message(messages, nudge)
     try:
@@ -287,7 +307,9 @@ async def managed_tool_chat(
             engine,
             body,
             preserve_thinking = payload.preserve_thinking,
-            message_fitter = _message_fitter(payload, engine, public, tools or payload.tools),
+            message_fitter = _message_fitter(
+                payload, engine, public, tools or payload.tools, studio_loop = bool(tools)
+            ),
         )
         stripper = api.ServerToolCallStripper()
         stream = None

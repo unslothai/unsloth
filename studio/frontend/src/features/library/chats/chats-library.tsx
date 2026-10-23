@@ -157,7 +157,7 @@ const BAR_PILL =
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 const BAR_OUTLINE =
-  "border border-border transition-colors hover:bg-sidebar-accent dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent";
+  "btn-fill transition-colors ";
 
 const CHAT_SORTS: SortChoice<ChatSortKey>[] = [
   { value: "updated", label: "library.chats.list.lastActive" },
@@ -1198,7 +1198,7 @@ export function ChatsLibrary({
         <button
           type="button"
           onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
-          className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-[calc(var(--radius-xl)-2px)] border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
         >
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.5} className="size-6" />
           {t("shell.sections.newSection")}
@@ -1294,7 +1294,7 @@ export function ChatsLibrary({
           <button
             type="button"
             onClick={() => setCreatingProject(true)}
-            className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-[calc(var(--radius-xl)-2px)] border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            className="flex aspect-[8/7] flex-col self-stretch items-center justify-center gap-2 rounded-2xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
           >
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.5} className="size-6" />
             {t("library.chats.toolbar.newProject")}
@@ -1318,7 +1318,7 @@ export function ChatsLibrary({
             aria-current={active ? "page" : undefined}
             onClick={() => go(entry === "all" ? {} : { chatView: entry })}
             className={cn(
-              "flex h-8 items-center gap-2 rounded-sm font-heading text-ui-14 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+              "flex h-8 items-center gap-2 rounded-full font-heading text-ui-14 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
               active && "font-medium text-foreground",
             )}
           >
@@ -1560,7 +1560,7 @@ export function ChatsLibrary({
                 <button
                   type="button"
                   onClick={() => unarchiveChats(selectedChats)}
-                  className={cn(BAR_PILL, "bg-foreground text-background transition-opacity hover:opacity-85")}
+                  className={cn(BAR_PILL, "bg-action text-background transition-opacity hover:opacity-85")}
                 >
                   <HugeiconsIcon icon={ArchiveRestoreIcon} strokeWidth={1.75} className="size-4" />
                   {t("settings.data.library.unarchive")}
@@ -1590,7 +1590,7 @@ export function ChatsLibrary({
                 onClick={() => actions.remove(selectedChats)}
                 className={cn(
                   BAR_PILL,
-                  "border border-red-500/70 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+                  "bg-red-500/10 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
                 )}
               >
                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />

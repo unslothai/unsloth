@@ -998,6 +998,10 @@ _LOG_LEVEL_TOKEN_RE = re.compile(rf"^{_ANSI}(?:\d+\.\d+\.\d+\.\d+{_ANSI} )?{_ANS
 _STDOUT_TRIM_AT = 20000
 _STDOUT_TAIL_KEEP = 5000
 _STDOUT_HEAD_MAX = 5000
+# Bind addresses whose listener accepts the health probe's 127.0.0.1 connection.
+_LOOPBACK_REACHABLE_BIND_IPS = frozenset(
+    {"127.0.0.1", "0.0.0.0", "::", "::ffff:127.0.0.1", "::ffff:0.0.0.0"}
+)
 
 
 def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
@@ -3431,6 +3435,10 @@ def _drafter_path_kind(path: str) -> Optional[str]:
 
 
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+# Mirrors hub.utils.gguf._IMATRIX_WEIGHTED_RE.
+_IMATRIX_WEIGHTED_RE = re.compile(
+    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
+)
 
 
 def _is_companion_gguf_path(path: str) -> bool:
@@ -3451,7 +3459,8 @@ def _is_companion_gguf_path(path: str) -> bool:
         return True
     # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
     # holding calibration statistics, so only the name rules it out.
-    if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+    stem = Path(p).stem
+    if _IMATRIX_TOKEN_RE.search(stem) and not _IMATRIX_WEIGHTED_RE.search(stem):
         return True
     if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
         return True
@@ -4045,7 +4054,12 @@ def _mtp_drafter_loads_standalone(path: str) -> bool:
     return mtp_drafter_loads_standalone(path)
 
 
-def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+def _pick_mmproj(
+    candidates: list[str],
+    *,
+    order: Optional[tuple] = None,
+    weight: Optional[str] = None,
+) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
     # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
@@ -4055,7 +4069,27 @@ def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     )
     if not mmproj_files:
         return None
+    if order:
+        from utils.models.model_config import mmproj_order_rank, mmproj_weight_match
+
+        # Pair with the weight first, so a repo of several checkpoints never hands over another one's projector.
+        return max(
+            mmproj_files,
+            key = lambda f: (mmproj_weight_match(weight, f), mmproj_order_rank(f, order)),
+        )
     return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
+
+
+def _mmproj_picker(
+    model: Optional[str], weight_path: Optional[str] = None
+) -> Callable[[list[str]], Optional[str]]:
+    from utils.models.model_config import mmproj_order
+
+    order = mmproj_order(model, weight_path)
+    if not order:
+        return _pick_mmproj
+    weight = Path(weight_path).name if weight_path else None
+    return functools.partial(_pick_mmproj, order = order, weight = weight)
 
 
 def _hub_download_in_flight(hf_repo: str) -> bool:
@@ -17833,11 +17867,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _llama_server_env_for_binary(
-        binary: str, *, use_system_rocm: bool = True
+        binary: str,
+        *,
+        use_system_rocm: bool = True,
+        verify_system_rocm: bool = True,
     ) -> dict[str, str]:
         """Build a subprocess env that lets llama-server resolve native libs.
 
-        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend.
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend;
+        ``verify_system_rocm=False`` keeps it without the GPU visibility probe.
         WSL's librocdxg prepend is independent and is not gated by this flag.
         """
         env = child_env_without_native_path_secret()
@@ -17891,9 +17929,15 @@ class LlamaCppBackend:
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
-            # which can be incompatible with the host amdkfd driver (#7233).
+            # which can be incompatible with the host amdkfd driver (#7233). On other
+            # hosts the system copy is the mismatched one and hides the GPU (#14906).
             if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
-                lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
+                _system_rocm = _native_linux_system_rocm_lib_dirs(binary_dir)
+                if _system_rocm and not (
+                    verify_system_rocm
+                    and LlamaCppBackend._system_rocm_hides_gpu(binary, _system_rocm)
+                ):
+                    lib_dirs.extend(_system_rocm)
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -19740,6 +19784,83 @@ class LlamaCppBackend:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
+
+    def _health_listener_is_ours(self, process) -> bool:
+        """False when the port answering /health is demonstrably not held by our child's tree.
+
+        _find_free_port releases the port before llama-server binds it, so another local user could
+        answer /health and receive every prompt plus the per-launch key. Their socket shows no pid
+        on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
+        ownership keeps today's behaviour."""
+        port = getattr(self, "_port", None)
+        pid = getattr(process, "pid", None)
+        if not isinstance(pid, int) or not isinstance(port, int):
+            return True
+        # A child that already exited cannot be the server that answered.
+        poll = getattr(process, "poll", None)
+        if callable(poll) and poll() is not None:
+            return False
+        try:
+            import psutil
+            from core.inference.sd_cpp_server import _has_ancestor
+        except Exception:  # noqa: BLE001 -- optional dependency
+            return True
+        try:
+            root = psutil.Process(pid)
+            tree = [root, *root.children(recursive = True)]
+        except psutil.NoSuchProcess:
+            return False
+        except Exception:  # noqa: BLE001 -- access denied / platform quirk
+            return True
+
+        def _listens(conn) -> bool:
+            laddr = getattr(conn, "laddr", None)
+            return (
+                bool(laddr)
+                and getattr(laddr, "port", None) == port
+                and getattr(laddr, "ip", None) in _LOOPBACK_REACHABLE_BIND_IPS
+                and conn.status == psutil.CONN_LISTEN
+            )
+
+        tree_readable = True
+        for member in tree:
+            try:
+                read = getattr(member, "net_connections", None) or member.connections
+                if any(_listens(c) for c in read(kind = "inet")):
+                    return True
+            except psutil.NoSuchProcess:
+                continue
+            except Exception:  # noqa: BLE001 -- access denied / platform quirk
+                tree_readable = False
+        tree_pids = {m.pid for m in tree}
+        foreign = None
+        try:
+            # Scan every listener: a foreign one listed before ours must not refuse our start.
+            for conn in psutil.net_connections(kind = "inet"):
+                if not _listens(conn) or conn.pid is None:
+                    continue
+                if conn.pid in tree_pids or _has_ancestor(conn.pid, pid):
+                    return True
+                foreign = conn.pid
+        except Exception as exc:  # noqa: BLE001 -- permissions / platform quirks
+            logger.debug("llama-server port ownership check unavailable: %s", exc)
+        if foreign is not None:
+            logger.error(
+                "llama-server port %s is held by pid %s, not our child %s; refusing to use it",
+                port,
+                foreign,
+                pid,
+            )
+            return False
+        if tree_readable:
+            logger.error(
+                "llama-server port %s answered /health but our child %s is not listening on it; "
+                "refusing to use it",
+                port,
+                pid,
+            )
+            return False
+        return True
 
     # ── Stdout drain (prevents pipe deadlock on Windows) ─────────
 
@@ -21649,14 +21770,27 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
+        from utils.models.model_config import mmproj_f16_unsafe, mmproj_precision
+
+        names = (hf_repo, near_path)
+        pick = _mmproj_picker(hf_repo, near_path)
+        f16_unsafe = any(mmproj_f16_unsafe(n) for n in names)
+        if f16_unsafe and near_path:
+            # Only a cached MiMo-VL F16 projector is broken; a cached BF16 / F32 one is reused as usual.
+            cached = _companion_snapshot_sibling(near_path, pick)
+            with contextlib.suppress(OSError):
+                if cached and mmproj_precision(cached) != "f16" and Path(cached).stat().st_size > 0:
+                    logger.info("Reusing cached mmproj: %s", cached)
+                    return cached
         outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mmproj,
+            pick = pick,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            reuse_snapshot_sibling = not f16_unsafe,
             outcome = outcome,
         )
         if resolved is not None:
@@ -24349,6 +24483,67 @@ class LlamaCppBackend:
         revision = LlamaCppBackend._binary_stamp(resolved)
         with LlamaCppBackend._bundle_only_rocm_lock:
             return LlamaCppBackend._bundle_only_rocm_dirs.get(str(resolved.parent)) == revision
+
+    # Build dirs whose system ROCm prepend was already probed, keyed like the latch above.
+    _system_rocm_probed: dict[str, tuple] = {}
+    _system_rocm_probe_lock = threading.Lock()
+
+    @staticmethod
+    def _list_devices_under(binary: str, env: Mapping[str, str]) -> Optional[list[str]]:
+        try:
+            result = subprocess.run(
+                [binary, "--list-devices"],
+                capture_output = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 30,
+                env = utf8_child_env(dict(env)),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logger.debug(f"llama-server --list-devices failed: {e}")
+            return None
+        if result.returncode != 0:
+            return None
+        return _parse_listed_devices(result.stdout)
+
+    @staticmethod
+    def _system_rocm_hides_gpu(binary: str, system_dirs: "list[str]") -> bool:
+        """True when llama-server lists no GPU with system ROCm first but does with its bundle.
+
+        The prepend crash-proofs hosts whose bundled ROCR mismatches amdkfd (#7208), but
+        where the system copy is the mismatched one HIP init fails silently and the server
+        runs on CPU (#14906). No crash means the load_model retry never fires, so this asks
+        the binary directly, once per build. Any other answer keeps the prepend.
+        """
+        resolved = _resolve_llama_binary(binary)
+        key = str(resolved.parent)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._system_rocm_probe_lock:
+            # A caller that waited out the first probe re-reads its verdict from the latch.
+            if LlamaCppBackend._system_rocm_probed.get(key) == revision:
+                return LlamaCppBackend._prefers_bundle_only_rocm(binary)
+            mixed = LlamaCppBackend._list_devices_under(
+                binary,
+                LlamaCppBackend._llama_server_env_for_binary(binary, verify_system_rocm = False),
+            )
+            bundled = None
+            if mixed == []:
+                bundled = LlamaCppBackend._list_devices_under(
+                    binary,
+                    LlamaCppBackend._llama_server_env_for_binary(binary, use_system_rocm = False),
+                )
+            LlamaCppBackend._system_rocm_probed[key] = revision
+            if not bundled:
+                return False
+            logger.warning(
+                "llama-server lists no GPU with the system ROCm libraries (%s) ahead of its "
+                "bundled runtime, but lists %s without them; using the bundled ROCm runtime.",
+                ":".join(system_dirs),
+                ", ".join(bundled),
+            )
+            LlamaCppBackend._remember_bundle_only_rocm(binary)
+            return True
 
     @staticmethod
     def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
@@ -38742,6 +38937,8 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy while the app was shutting down")
                         self._health_wait_cancelled = True
                         return False
+                    if not self._health_listener_is_ours(process):
+                        return False
                     return True
             except (
                 httpx.ConnectError,
@@ -42628,7 +42825,8 @@ class LlamaCppBackend:
                         # nobody answered. Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
-                            # Approved: now it really is running.
+                            # tool_approved first: the route forwards it before retaking the model slot.
+                            yield decision.tool_approved_event(approval_id)
                             yield {"type": "status", "text": decision.status_text}
                         if _decision == "deny":
                             decision_slot = None

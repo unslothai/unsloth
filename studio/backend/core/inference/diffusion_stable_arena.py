@@ -396,8 +396,8 @@ class ModuleArena:
         self.layout: Optional[dict] = None
         self.arena: Optional[VmmArena] = None
         self.failed: Optional[str] = None
+        self.retiring = False
         self.stats = {"onloads": 0, "placed": 0, "stock": 0, "maps": 0, "unmaps": 0, "rebuilds": 0}
-        self._retiring = False
         self._module = weakref.ref(module)
         self._stock_to = type(module).to
         module.__dict__["to"] = self._to
@@ -407,7 +407,10 @@ class ModuleArena:
         weakref.finalize(module, ModuleArena._finalize, self.__dict__)
 
     def _reinstall(self, module: Any, _args: Any) -> None:
-        if module.__dict__.get("to") != self._to and (self.failed is None or self._retiring):
+        if self.retiring:
+            self.retire()
+            return
+        if module.__dict__.get("to") != self._to and self.failed is None:
             module.__dict__["to"] = self._to
             self.stats["reinstalls"] = self.stats.get("reinstalls", 0) + 1
 
@@ -427,9 +430,9 @@ class ModuleArena:
         module = self._module()
         if self.arena is not None and module is not None and self._referenced(module):
             self.failed = self.failed or "detached"
-            self._retiring = True
+            self.retiring = True
             return
-        self._retiring = False
+        self.retiring = False
         if module is not None and module.__dict__.get("to") == self._to:
             module.__dict__.pop("to", None)
         try:
@@ -441,6 +444,20 @@ class ModuleArena:
         if self.arena is not None and module is not None and not self._referenced(module):
             self.arena.close()
             self.arena = None
+
+    def retire(self) -> None:
+        """Restore the stock onload; detach waits for the offload that takes mapped weights home."""
+        self.retiring = True
+        module = self._module()
+        if (
+            module is None
+            or self.arena is None
+            or not self.arena.mapped
+            or not self._referenced(module)
+        ):
+            if self.arena is not None and self.arena.mapped and module is not None:
+                self._release(module)
+            self.detach()
 
     def _build(self, entries: list) -> None:
         offset = 0
@@ -585,6 +602,7 @@ class ModuleArena:
         if (
             module is not None
             and self.failed is None
+            and not self.retiring
             and dtype is None
             and fmt is None
             and device is not None
@@ -608,7 +626,7 @@ class ModuleArena:
         out = self._stock_to(module, *args, **kwargs)
         if module is not None:
             self._release(module)
-            if self._retiring and (self.arena is None or not self.arena.mapped):
+            if self.retiring and not (self.arena is not None and self.arena.mapped):
                 self.detach()
         return out
 

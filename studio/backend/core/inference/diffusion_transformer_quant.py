@@ -410,6 +410,8 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = _profile_table("scheme_deny", q
 # ``FamilyProfile.auto_prefer``: a family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``.
 _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = _profile_table("auto_prefer", quant = True)
 
+_FAMILY_AUTO_SKIP: dict[str, frozenset[str]] = _profile_table("auto_scheme_skip", quant = True)
+
 
 # AUTO keeps bf16 while it fits for these (``FamilyProfile.auto_bf16_when_resident``: measured with both sides compiled,
 # INT8 was at most ~5% faster and failed the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
@@ -445,10 +447,17 @@ def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
     if not nvfp4_diffusion_enabled():
         return False
     try:
-        from .diffusion_nvfp4_gate import nvfp4_gate_backends
+        from .diffusion_nvfp4_gate import nvfp4_gate_backends, nvfp4_gate_flashinfer_mismatch
         from .diffusion_nvfp4_ops import select_nvfp4_backend
-        return str(select_nvfp4_backend(device)).strip().lower() in nvfp4_gate_backends(
-            family, base_repo
+
+        backend = str(select_nvfp4_backend(device)).strip().lower()
+        if backend not in nvfp4_gate_backends(family, base_repo):
+            return False
+        # Auto takes a gated head only on a flashinfer whose kernels the record covers; an unreadable version is not
+        # covered. Silent: auto then runs another scheme, and the warning belongs to a load that runs those kernels.
+        return (
+            backend != "flashinfer"
+            or nvfp4_gate_flashinfer_mismatch(family, base_repo, backend_active = True) is None
         )
     except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe keeps the deny
         return False
@@ -476,6 +485,15 @@ def _family_denied(
     if scheme == TQ_NVFP4 and _nvfp4_gate_passed(family, base_repo):
         return False
     return True
+
+
+def _nvfp4_gate_failure(family) -> Optional[str]:
+    """The measured gate failure behind a family's nvfp4 deny, or None; lazy, the video registry imports late."""
+    try:
+        from .video_families import nvfp4_gate_failure
+        return nvfp4_gate_failure(family)
+    except Exception:  # noqa: BLE001 -- no reason on file falls back to the generic deny text
+        return None
 
 
 _TRAIN_DENY_NVFP4_REASON = (
@@ -542,6 +560,13 @@ def explain_unusable_scheme(
         return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme, base_repo):
         if scheme == TQ_NVFP4:
+            failure = _nvfp4_gate_failure(family)
+            if failure is not None:
+                return (
+                    f"'{scheme}' is ruled out for family '{family}'"
+                    + (f" on base '{base_repo}'" if base_repo else "")
+                    + f": it was measured and failed the NVFP4 accuracy gate ({failure})"
+                )
             return (
                 f"'{scheme}' is ruled out for family '{family}'"
                 + (f" on base '{base_repo}'" if base_repo else "")
@@ -1050,7 +1075,9 @@ def select_transformer_quant_scheme(
     if requested != TQ_AUTO:
         if _family_denied(family, requested, base_repo):
             return None
-        return requested if _scheme_supported(requested, device, unproven_ok = unproven_ok) else None
+        if not _scheme_supported(requested, device, unproven_ok = unproven_ok):
+            return None
+        return requested
     cap = _capability()
     if cap is None:
         return None
@@ -1192,9 +1219,10 @@ def _auto_scheme_order(
                 if prefer.backend is None or _nvfp4_backend_is(device, prefer.backend):
                     head = prefer.schemes
     order: list[str] = []
+    skip = _FAMILY_AUTO_SKIP.get(str(family or "").strip().lower(), frozenset())
     # Filtered here so the NVFP4 switch reaches every reader of the order.
     for scheme in without_nvfp4(head + tier):
-        if scheme not in order:
+        if scheme not in order and scheme not in skip:
             order.append(scheme)
     return tuple(order)
 
