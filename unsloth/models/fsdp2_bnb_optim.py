@@ -113,12 +113,13 @@ def _local_grad(grad, DTensor):
     return grad
 
 
-def _dequantize(raw, key):
-    value = raw[key]
+def _dequantize(raw, key, device):
+    """float32 copy of state `key` on `device`. Paged state reports the CPU device (unified memory)."""
+    value = raw[key].to(device)
     if value.dtype == torch.uint8:
         index = key[-1]
-        code = raw[f"qmap{index}"].to(value.device)
-        absmax = raw[f"absmax{index}"]
+        code = raw[f"qmap{index}"].to(device)
+        absmax = raw[f"absmax{index}"].to(device)
         flat = code[value.reshape(-1).long()].float()
         n = flat.numel()
         scale = absmax.float().repeat_interleave(_BLOCKSIZE)[:n]
@@ -245,7 +246,7 @@ class _LocalShardMixin:
         out = {"step": int(raw.get("step", 0))}
         for key in _STATE_KEYS:
             if key in raw:
-                value = _dequantize(raw, key)
+                value = _dequantize(raw, key, (local if local is not None else p).device)
             elif local is not None and local.numel() == 0:
                 value = torch.zeros(local.shape, dtype = torch.float32, device = local.device)
             else:
