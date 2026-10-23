@@ -1328,7 +1328,7 @@ export function AgentsTab() {
                 <PopoverContent
                   align="start"
                   sideOffset={4}
-                  className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-xl p-1"
+                  className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
                 >
                   <Command
                     shouldFilter={false}

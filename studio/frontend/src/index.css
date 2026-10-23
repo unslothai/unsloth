@@ -3075,11 +3075,22 @@ html[data-chat-font] .aui-root {
 		margin-block: 2px;
 	}
 
-	/* Every list menu takes the + menu's corner and 12px rows. !important beats per-menu rounded-*. */
+	/* A menu's corner is its 12px row radius plus its gutter, so the hover nests in the corner:
+	   16px around the standard 4px gutter. !important beats per-menu rounded-*. */
 	[data-slot="dropdown-menu-content"],
 	[data-slot="dropdown-menu-sub-content"],
 	[data-slot="select-content"],
 	[data-slot="combobox-content"] {
+		border-radius: var(--radius-lg) !important;
+	}
+
+	/* The account menu's 10px gutter. */
+	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
+		border-radius: calc(var(--radius-md) + 10px) !important;
+	}
+
+	/* The model selector holds pill rows and fields, not 12px rows; it keeps the menu tier. */
+	.unsloth-model-selector-menu[data-slot] {
 		border-radius: var(--radius-xl) !important;
 	}
 
@@ -3911,6 +3922,8 @@ html[data-chat-font] .aui-root {
 	/* A sidebar row's menu, one step down from the composer menus this shares a look with.
 	   It carries the most rows of any menu in the app and was running tall. */
 	.unsloth-plus-menu.sidebar-row-menu[data-slot] {
+		/* 12px rows + this menu's 8px gutter. */
+		border-radius: calc(var(--radius-md) + 8px) !important;
 		padding-top: calc(0.375rem * var(--ui-space-scale, 1));
 		padding-bottom: calc(0.375rem * var(--ui-space-scale, 1));
 		padding-left: calc(8px * var(--ui-space-scale, 1));

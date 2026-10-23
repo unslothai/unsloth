@@ -45,9 +45,9 @@ import { sandboxRoutePrefix } from "./sandbox-files";
 
 import type { ContextFile } from "./link-context-menu";
 
-const CONTENT_CLASS = "min-w-60 rounded-xl p-1.5";
+const CONTENT_CLASS = "min-w-60 rounded-lg p-1";
 
-const SUB_CLASS = "min-w-52 rounded-xl p-1.5";
+const SUB_CLASS = "min-w-52 rounded-lg p-1";
 
 function ItemIcon({ icon }: { icon: IconSvgElement }) {
   return <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />;

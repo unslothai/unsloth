@@ -1312,7 +1312,7 @@ export function ChatSettingsPanel({
               <DropdownMenuContent
                 align="start"
                 sideOffset={0}
-                className="menu-soft-surface ring-0 border-0 rounded-xl p-1.5"
+                className="menu-soft-surface ring-0 border-0 rounded-lg p-1"
               >
                 {presets.map((p, index) => (
                   <Fragment key={p.name}>

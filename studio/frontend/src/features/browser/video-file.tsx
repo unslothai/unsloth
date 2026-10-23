@@ -266,7 +266,7 @@ export function VideoFile({
             side="top"
             align="end"
             sideOffset={8}
-            className="browser-menu min-w-52 rounded-xl p-1.5"
+            className="browser-menu min-w-52 rounded-lg p-1"
           >
             <DropdownMenuLabel className="text-ui-12 text-muted-foreground">
               {t("browser.video.speed")}

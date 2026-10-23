@@ -324,7 +324,7 @@ export function ArtifactCard({
             <DropdownMenuContent
               align="end"
               sideOffset={8}
-              className="min-w-56 rounded-xl p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+              className="min-w-56 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
             >
               <DropdownMenuItem onSelect={() => open("preview")}>
                 <MenuGlyph icon={InternetIcon} />

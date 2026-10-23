@@ -413,7 +413,7 @@ export function PromptQueueList({
                       align="end"
                       side="bottom"
                       sideOffset={6}
-                      className="w-56 rounded-xl border border-border/60 p-1.5 shadow-lg"
+                      className="w-56 rounded-lg border border-border/60 p-1 shadow-lg"
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
                       // A queued send focuses the composer: stay open and take focus back, or Escape lands there.

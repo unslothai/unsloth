@@ -467,7 +467,7 @@ function BookmarkMenu({
           {label}
         </TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" sideOffset={6} className="browser-menu max-h-[min(--spacing(96),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto w-64 rounded-xl p-1.5">
+      <DropdownMenuContent align="end" sideOffset={6} className="browser-menu max-h-[min(--spacing(96),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto w-64 rounded-lg p-1">
         {bookmarks.map((bookmark) => (
           <DropdownMenuItem
             key={bookmark.id}

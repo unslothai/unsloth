@@ -143,7 +143,7 @@ function DownloadRow({
             <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-4.5" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="browser-menu min-w-48 rounded-xl p-1.5">
+        <DropdownMenuContent align="end" className="browser-menu min-w-48 rounded-lg p-1">
           <DropdownMenuItem disabled={!open} onSelect={run(open)}>
             <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
             {t("browser.downloads.open")}

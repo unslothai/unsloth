@@ -27,7 +27,7 @@ export function RecentSearches({
   }
   return (
     <div
-      className="hub-recent-panel menu-soft-surface dropdown-surface absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-xl p-1.5"
+      className="hub-recent-panel menu-soft-surface dropdown-surface absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-lg p-1"
       style={top === undefined ? undefined : { top }}
       aria-label="Recent searches"
       onMouseDown={(event) => event.preventDefault()}

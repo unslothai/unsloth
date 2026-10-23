@@ -933,7 +933,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
             {label}
           </TooltipContent>
         </Tooltip>
-        <PopoverContent align="start" sideOffset={8} className="browser-menu w-80 gap-0 rounded-xl p-1.5">
+        <PopoverContent align="start" sideOffset={8} className="browser-menu w-80 gap-0 rounded-lg p-1">
           {view === "site" ? (
             <>
               <div className="flex min-w-0 items-center gap-2.5 px-3 py-2">
@@ -1261,7 +1261,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
         <DropdownMenuContent
           align="end"
           sideOffset={6}
-          className="browser-menu min-w-72 rounded-xl p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu min-w-72 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
           onCloseAutoFocus={(event) => {
             if (!keepFocus.current) return;
             keepFocus.current = false;
@@ -1353,7 +1353,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>{t("browser.pages.bookmarks")}</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-60 rounded-xl p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-60 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
               <DropdownMenuItem
                 disabled={!webUrl}
                 onSelect={() => {
@@ -1729,7 +1729,7 @@ function BrowserFileToolbar({
               <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
               {t("browser.file.openIn")}
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-xl p-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-lg p-1">
               <DropdownMenuItem onSelect={openInNewChat}>
                 <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
                 {t("browser.file.newChat")}
@@ -1871,7 +1871,7 @@ function FloatingFileToolbar({
         <DropdownMenuContent
           align="start"
           sideOffset={6}
-          className="browser-menu w-80 max-w-[calc(100vw-2rem)] rounded-xl p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu w-80 max-w-[calc(100vw-2rem)] rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
         >
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon
@@ -1892,7 +1892,7 @@ function FloatingFileToolbar({
               />
               {t("browser.file.openIn")}
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-xl p-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-lg p-1">
               <DropdownMenuItem onSelect={openInNewChat}>
                 <HugeiconsIcon
                   icon={BubbleChatAddIcon}
@@ -2206,7 +2206,7 @@ function CopySplit({
               <SplitChevron />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-xl p-1.5">
+          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-lg p-1">
             {options.map((option) => (
               <DropdownMenuItem key={option.label} onSelect={option.run}>
                 <HugeiconsIcon icon={option.icon} strokeWidth={1.75} className="size-4" />
@@ -2301,7 +2301,7 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
             <SplitChevron />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-56 rounded-xl p-1.5">
+        <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-56 rounded-lg p-1">
           {isTauri && !runsCode ? (
             <>
               {apps === null ? (

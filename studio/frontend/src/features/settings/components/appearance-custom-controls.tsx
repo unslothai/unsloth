@@ -346,7 +346,7 @@ function FontSelect({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-64 gap-0 rounded-xl p-1 font-heading"
+        className="w-64 gap-0 rounded-lg p-1 font-heading"
       >
         <Command className="rounded-none bg-transparent p-0">
           <CommandInput

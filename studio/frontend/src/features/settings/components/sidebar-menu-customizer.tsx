@@ -121,7 +121,7 @@ export function SidebarMenuCustomizer() {
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <div className="flex flex-col rounded-xl border border-border/70 p-1.5">
+    <div className="flex flex-col rounded-lg border border-border/70 p-1">
       <FixedRow icon={Settings02Icon} label={t("shell.navigation.settings")} />
       <Reorder.Group
         axis="y"

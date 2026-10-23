@@ -149,7 +149,7 @@ export function SidebarNavCustomizer() {
       !sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing }),
   ).length;
   return (
-    <div className="flex flex-col rounded-xl border border-border/70 p-1.5">
+    <div className="flex flex-col rounded-lg border border-border/70 p-1">
       <FixedRow icon={PencilEdit02Icon} label={t("shell.navigation.newChat")} />
       <Reorder.Group
         axis="y"

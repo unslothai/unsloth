@@ -153,7 +153,7 @@ export function ChatMenuOrderList({
   return (
     <div
       data-testid="chat-menu-order"
-      className="flex flex-col rounded-xl border border-border/70 p-1.5"
+      className="flex flex-col rounded-lg border border-border/70 p-1"
     >
       <FixedRow
         icon={AttachmentIcon}
