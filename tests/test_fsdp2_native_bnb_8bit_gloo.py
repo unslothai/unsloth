@@ -547,3 +547,32 @@ def test_bnb_optimizer_that_cannot_step_shards_is_refused_when_built(tmp_path):
     for rank, r in _run("refuse", tmp_path).items():
         assert r["base_hook"] == "refused", (rank, r)
         assert r["subclass_hook"] == "refused", (rank, r)
+
+
+def test_chunked_requantization_is_bitwise_equal_to_one_pass():
+    """The checkpoint (de)quantization runs a bounded number of blocks per pass; a state spanning
+    several chunks with a ragged tail block gives the same codes, absmax and float32 values as one
+    pass, and inverts bitsandbytes' own state exactly."""
+    bnb = pytest.importorskip("bitsandbytes")
+    _load_native()
+    from unsloth.models.fsdp2_bnb_optim import _dequantize, _quantize_into
+
+    torch.manual_seed(0)
+    n = 256 * 10 + 77  # 11 blocks, the last one 77 elements
+    p = torch.nn.Parameter(torch.randn(n))
+    opt = bnb.optim.AdamW8bit([p], lr = 1e-2, min_8bit_size = 0)
+    for step in range(3):
+        p.grad = torch.randn(n) * (10.0 ** (step - 1))
+        opt.step()
+    raw = opt.state[p]
+    for key in ("state1", "state2"):
+        i = key[-1]
+        whole = _dequantize(raw, key, raw[key].device, chunk_blocks = 10**6)
+        for chunk_blocks in (1, 3, 4, 10**6):
+            values = _dequantize(raw, key, raw[key].device, chunk_blocks = chunk_blocks)
+            assert torch.equal(values, whole), (key, chunk_blocks)
+            codes = torch.empty_like(raw[key])
+            absmax = torch.empty_like(raw[f"absmax{i}"])
+            _quantize_into(values, raw[f"qmap{i}"], codes, absmax, chunk_blocks = chunk_blocks)
+            assert torch.equal(codes, raw[key]), (key, chunk_blocks)
+            assert torch.equal(absmax, raw[f"absmax{i}"]), (key, chunk_blocks)

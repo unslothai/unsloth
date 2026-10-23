@@ -104,18 +104,32 @@ def _local_grad(grad, DTensor):
     return grad
 
 
-def _dequantize(raw, key, device):
-    """float32 copy of state `key` on `device`. Paged state reports the CPU device (unified memory)."""
-    value = raw[key].to(device)
-    if value.dtype == torch.uint8:
-        index = key[-1]
-        code = raw[f"qmap{index}"].to(device)
-        absmax = raw[f"absmax{index}"].to(device)
-        flat = code[value.reshape(-1).long()].float()
-        n = flat.numel()
-        scale = absmax.float().repeat_interleave(_BLOCKSIZE)[:n]
-        return (flat * scale).reshape(value.shape)
-    return value.float()
+# Blocks per pass when (de)quantizing a checkpointed state: 16384 blocks = 4M elements, so the
+# temporaries (a float table and int64 indices per candidate scale) stay a few hundred MB however large
+# the shard is. Every block is independent, so the result does not depend on the chunking.
+_CHUNK_BLOCKS = 16384
+
+
+def _dequantize(raw, key, device, chunk_blocks = None):
+    """float32 copy of state `key` on `device`, built chunk by chunk into the one output tensor. Paged
+    state reports the CPU device (unified memory)."""
+    value = raw[key]
+    if value.dtype != torch.uint8:
+        return value.to(device = device, dtype = torch.float32)
+    index = key[-1]
+    code = raw[f"qmap{index}"].to(device = device, dtype = torch.float32)
+    absmax = raw[f"absmax{index}"]
+    flat_codes = value.reshape(-1)
+    n = flat_codes.numel()
+    out = torch.empty(n, dtype = torch.float32, device = device)
+    step = (chunk_blocks or _CHUNK_BLOCKS) * _BLOCKSIZE
+    for start in range(0, n, step):
+        end = min(start + step, n)
+        codes = flat_codes[start:end].to(device).long()
+        scale = absmax[start // _BLOCKSIZE : (end + _BLOCKSIZE - 1) // _BLOCKSIZE]
+        scale = scale.to(device = device, dtype = torch.float32).repeat_interleave(_BLOCKSIZE)
+        torch.mul(code[codes], scale[: end - start], out = out[start:end])
+    return out.reshape(value.shape)
 
 
 def _nearest_codes(padded, sorted_code, scale):
@@ -130,26 +144,37 @@ def _nearest_codes(padded, sorted_code, scale):
     return torch.where(pick_lo, lo, hi), torch.where(pick_lo, err_lo, err_hi).sum(dim = 1)
 
 
-def _quantize_into(values, code, out_codes, out_absmax):
+def _quantize_into(values, code, out_codes, out_absmax, chunk_blocks = None):
     """bitsandbytes' blockwise quantization of `values` (float32) into `out_codes` (uint8, same shape)
     and `out_absmax` (one float32 per 256 elements), inverting a dequantization exactly. bitsandbytes
     scales a block by its largest magnitude A, and the signed map has no -1.0: when that element is
     negative it is stored as min_code * A. The scale is therefore the largest positive value, or the
     largest |negative| / |min code| (with its float32 neighbours, since that division can round), and
     each element maps to the nearest code * scale; per block the candidate with the smallest
-    reconstruction error wins (zero for the original scale)."""
+    reconstruction error wins (zero for the original scale). Runs `chunk_blocks` blocks at a time."""
     device = out_codes.device
     code = code.to(device = device, dtype = torch.float32)
-    flat = values.reshape(-1).to(device = device, dtype = torch.float32)
+    flat = values.reshape(-1)
     n = flat.numel()
     if n == 0:
         return
-    blocks = (n + _BLOCKSIZE - 1) // _BLOCKSIZE
-    padded = torch.zeros(blocks * _BLOCKSIZE, device = device, dtype = torch.float32)
-    padded[:n] = flat
-    padded = padded.view(blocks, _BLOCKSIZE)
     sorted_code, order = torch.sort(code)
     min_code = float(sorted_code[0].item())
+    codes_out = out_codes.view(-1)
+    step = (chunk_blocks or _CHUNK_BLOCKS) * _BLOCKSIZE
+    for start in range(0, n, step):
+        end = min(start + step, n)
+        chunk = flat[start:end].to(device = device, dtype = torch.float32)
+        blocks = (end - start + _BLOCKSIZE - 1) // _BLOCKSIZE
+        if chunk.numel() != blocks * _BLOCKSIZE:  # the ragged tail block, zero padded
+            chunk = torch.nn.functional.pad(chunk, (0, blocks * _BLOCKSIZE - chunk.numel()))
+        index, scale = _quantize_blocks(chunk.view(blocks, _BLOCKSIZE), sorted_code, min_code)
+        codes_out[start:end].copy_(order[index].reshape(-1)[: end - start].to(torch.uint8))
+        out_absmax[start // _BLOCKSIZE : start // _BLOCKSIZE + blocks].copy_(scale.to(out_absmax.dtype))
+
+
+def _quantize_blocks(padded, sorted_code, min_code):
+    """(blocks, 256) float32 -> (index into sorted_code per element, scale per block)."""
     positive = padded.clamp(min = 0).amax(dim = 1)
     candidates = [positive]
     negative = None
@@ -175,9 +200,7 @@ def _quantize_into(values, code, out_codes, out_absmax):
         best_scale = torch.where(better, scale, best_scale)
         best_index = torch.where(better.unsqueeze(1), index, best_index)
         best_err = torch.where(better, err, best_err)
-    codes = order[best_index].reshape(-1)[:n].to(torch.uint8)
-    out_codes.copy_(codes.reshape(out_codes.shape))
-    out_absmax.copy_(best_scale.to(out_absmax.dtype))
+    return best_index, best_scale
 
 
 class _LocalShardMixin:
