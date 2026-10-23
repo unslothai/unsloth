@@ -805,3 +805,19 @@ def test_speak_sends_the_reference_transcript_for_cloning(monkeypatch):
     sent[0]["inputs"]["reference"] = {"clip_id": "abc"}
     AudioRunRequest.model_validate(sent[0])
     assert any(p["id"] == "reference_text" for p in SPECS_BY_TYPE["audio.speak"]["inputs"])
+
+
+def test_streamed_text_hides_thinking_split_across_pieces():
+    from core.flows.nodes._common import visible_so_far
+
+    pieces = ["<th", "ink>plan the ", "reply</thi", "nk>Hello", " there <", "b>x"]
+    shown, text = "", ""
+    for piece in pieces:
+        text += piece
+        visible = visible_so_far(text)
+        assert visible.startswith(shown), (shown, visible)
+        shown = visible
+    assert shown == "Hello there <b>x"
+    assert "plan" not in shown and "<th" not in shown
+    # A closing tag and the answer in one piece: the answer is shown.
+    assert visible_so_far("<think>x</think>Answer") == "Answer"
