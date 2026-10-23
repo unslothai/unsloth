@@ -182,8 +182,10 @@ def spec(
         # requires: the model backend the node needs ("transformers" or "gguf"), checked after the load.
         found["requires"] = list(requires)
     if exclusive_gpu:
-        # exclusive_gpu: hold the Studio-wide GPU lease while the node runs (measurements).
+        # exclusive_gpu: hold the Studio-wide GPU lease while the node runs (measurements). The engine takes
+        # the lease on the GPU lane, so an exclusive node always runs there.
         found["exclusive_gpu"] = True
+        found["lane"] = "gpu"
     return found
 
 
