@@ -120,6 +120,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
   ResearchMcpSource,
@@ -5161,6 +5162,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.activeDiffusionCanvasByThreadId,
         "activeDiffusionCanvasByThreadId",
       );
+      // Its parked calls too, or the row never trades its spinner for the approval mark.
+      if (moved.runningByThreadId) {
+        const confirmations = adoptFirstTurnConfirmations(
+          state.toolConfirmations,
+          threadId,
+        );
+        if (confirmations) moved.toolConfirmations = confirmations;
+      }
       return Object.keys(moved).length > 0 ? moved : state;
     }),
   runKeyForOwner: (fallbackKey, owner) => {

@@ -125,7 +125,10 @@ export function syncApprovalWaiting(
     }
   }
   for (const [id, { threadId }] of Object.entries(confirmations)) {
-    if (!parked.has(id)) parked.set(id, { threadId, since: now });
+    const known = parked.get(id);
+    // A first turn's call gains its chat once the run is adopted; it keeps its park time.
+    if (known) known.threadId = threadId;
+    else parked.set(id, { threadId, since: now });
   }
   publish(now);
 }

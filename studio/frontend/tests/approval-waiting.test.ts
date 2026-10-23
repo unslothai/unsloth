@@ -300,3 +300,39 @@ test("Return to Chat targets a waiting chat whenever the row shows the mark", ()
   assert.match(target, /returnToChatThreadId\(runningByThreadId, approvalWaitingElsewhere\)/);
   assert.match(target, /\[runningByThreadId, approvalWaitingElsewhere, allChatItems\]/);
 });
+
+test("a first turn parked before its chat had an id marks the row once the run is adopted", () => {
+  reset();
+  syncApprovalWaiting(parked({ "s:_default:1": "" }));
+  mock.timers.tick(APPROVAL_SETTLE_MS);
+  assert.deepEqual(waiting(), []);
+  syncApprovalWaiting(parked({ "s:_default:1": "chat-new" }));
+  assert.deepEqual(waiting(), ["chat-new"]);
+  reset();
+});
+
+test("adopting a first turn hands its unkeyed parked calls the chat id, and only those", async () => {
+  const { adoptFirstTurnConfirmations } = await import(
+    "../src/features/chat/utils/adopt-first-turn-confirmations.ts"
+  );
+  const before = {
+    a: { threadId: "", approvalId: "x" },
+    b: { threadId: "chat-b", approvalId: "y" },
+  };
+  assert.deepEqual(adoptFirstTurnConfirmations(before, "chat-new"), {
+    a: { threadId: "chat-new", approvalId: "x" },
+    b: { threadId: "chat-b", approvalId: "y" },
+  });
+  assert.equal(before.a.threadId, "");
+  assert.equal(adoptFirstTurnConfirmations({ b: before.b }, "chat-new"), null);
+
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  const adopt = store.slice(
+    store.indexOf("adoptDefaultThreadRun: (threadId) =>"),
+    store.indexOf("runKeyForOwner: (fallbackKey, owner) =>"),
+  );
+  assert.match(
+    adopt,
+    /if \(moved\.runningByThreadId\) \{[\s\S]*adoptFirstTurnConfirmations\([\s\S]*state\.toolConfirmations,[\s\S]*moved\.toolConfirmations = confirmations/,
+  );
+});
