@@ -440,6 +440,44 @@ def test_the_opt_in_restores_private_hosts_and_archives(monkeypatch, loopback_se
         _decode_without_io(monkeypatch, "zip://a.png::https://images.example.org/x.zip")
 
 
+@pytest.mark.parametrize("known_size", [True, False])
+def test_the_opt_in_keeps_the_image_size_cap(monkeypatch, loopback_server, known_size):
+    from utils.datasets import remote_images
+    from utils.datasets.format_conversion import _fetch_row_image
+
+    base, hits = loopback_server
+    monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+    _single_user(monkeypatch)
+    assert isinstance(_fetch_row_image(f"{base}/small.png"), Image.Image)
+    monkeypatch.setattr(remote_images, "_MAX_IMAGE_BYTES", 16)
+    reads = []
+    if not known_size:
+        # A server without Content-Length: the read itself has to stop at the cap.
+        import contextlib
+
+        import fsspec
+
+        real_open = fsspec.open
+
+        class _Unsized:
+            def __init__(self, handle):
+                self._handle = handle
+
+            def read(self, n = -1):
+                reads.append(n)
+                return self._handle.read(n)
+
+        @contextlib.contextmanager
+        def unsized_open(url, mode):
+            with real_open(url, mode) as handle:
+                yield _Unsized(handle)
+
+        monkeypatch.setattr(fsspec, "open", unsized_open)
+    with pytest.raises(OSError, match = "larger than"):
+        _fetch_row_image(f"{base}/big.png")
+    assert reads == ([] if known_size else [17])
+
+
 def test_unencoded_spaces_are_quoted_before_the_guard(monkeypatch):
     calls = _recording_fetch(monkeypatch, _png())
     _typed_image_dataset("https://example.com/my images/a b.png")[0]

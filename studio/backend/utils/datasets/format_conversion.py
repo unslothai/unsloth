@@ -8,6 +8,7 @@ import os
 from .cells import cell_text
 from .iterable import is_streaming_dataset
 from .remote_images import (
+    fetch_opted_in_image_bytes,
     fetch_untrusted_image_bytes,
     is_network_share,
     private_sources_allowed,
@@ -407,11 +408,8 @@ def _fetch_row_image(url):
 
     from PIL import Image
 
-    if private_sources_allowed():
-        import fsspec
-        with fsspec.open(url, "rb") as handle:
-            return Image.open(BytesIO(handle.read())).convert("RGB")
-    return Image.open(BytesIO(fetch_untrusted_image_bytes(url))).convert("RGB")
+    fetch = fetch_opted_in_image_bytes if private_sources_allowed() else fetch_untrusted_image_bytes
+    return Image.open(BytesIO(fetch(url))).convert("RGB")
 
 
 def convert_to_vlm_format(

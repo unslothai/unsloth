@@ -126,6 +126,18 @@ def fetch_untrusted_image_bytes(url):
     return body
 
 
+def fetch_opted_in_image_bytes(url):
+    """The owner's opt-in: fetched the way fsspec / datasets fetch it, but still size capped."""
+    import fsspec
+
+    with fsspec.open(url, "rb") as handle:
+        size = getattr(handle, "size", None) or 0
+        body = handle.read(_MAX_IMAGE_BYTES + 1) if size <= _MAX_IMAGE_BYTES else None
+    if body is None or len(body) > _MAX_IMAGE_BYTES:
+        raise OSError(f"Image is larger than {_MAX_IMAGE_BYTES >> 20} MB: {url}")
+    return body
+
+
 def install_guarded_image_decode(hf_image = None):
     """``datasets.Image`` decodes a bytes-less URL cell by fetching it itself, wherever a row is
     read (detection, previews, conversion, streaming, nested features). Route those fetches through
