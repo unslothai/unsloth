@@ -470,9 +470,28 @@ def test_a_lora_load_keeps_sd_cpp_under_the_mlx_opt_in(monkeypatch, gguf):
     assert "LoRA" in (r.annotate_status({})["mlx_fallback_reason"] or "")
 
 
-def test_a_lora_load_without_a_native_binary_falls_back_to_diffusers_not_mlx(monkeypatch):
+@pytest.mark.parametrize("sd_cpp_off", [False, True])
+def test_a_lora_load_with_no_lora_capable_fallback_is_refused_before_the_switch(
+    monkeypatch, sd_cpp_off
+):
+    # No native engine (absent, or UNSLOTH_DIFFUSION_SD_CPP=0): diffusers cannot apply LoRAs on a GGUF here, nor
+    # build a family its diffusers lacks, so the load is refused before it unloads the resident model.
     _apple(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    if sd_cpp_off:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = "z-image-turbo-Q4_K_M.gguf", with_loras = True)
+    r._active_engine_name = ENGINE_MLX
+    with pytest.raises(ValueError, match = "LoRA"):
+        r.predict_engine(fam, **kw)
+    with pytest.raises(ValueError, match = "LoRA"):
+        r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_MLX
+
+
+def test_a_lora_load_without_the_mlx_opt_in_still_falls_back_to_diffusers(monkeypatch):
+    _apple(monkeypatch)
     fam = detect_family("z-image")
     kw = dict(model_kind = "gguf", gguf_filename = "z-image-turbo-Q4_K_M.gguf", with_loras = True)
     assert r.predict_engine(fam, **kw) == ENGINE_DIFFUSERS
