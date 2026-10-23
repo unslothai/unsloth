@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   DEFAULT_ENGINE_LAUNCH_FIELDS,
   engineLaunchFieldsFrom,
@@ -107,7 +108,6 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  ChevronDownIcon,
   Columns2Icon,
   HeadphonesIcon,
   MoreHorizontalIcon,
@@ -541,12 +541,12 @@ function PendingImageThumb({
     return () => URL.revokeObjectURL(url);
   }, [file]);
   if (!src)
-    return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
+    return <div className="size-14 animate-pulse rounded-lg bg-muted" />;
   return (
     <div
       data-reload-snapshot-sensitive
       data-composer-attachment="image"
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
+      className="relative size-14 shrink-0 overflow-hidden rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -2557,6 +2557,21 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // The open menu inerts the composer, so closing skips the gate.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
   useShortcut("stopGeneration", stop, {
     enabled: chatActive && busy,
     claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
@@ -2874,7 +2889,7 @@ export function SharedComposer({
             <div
               key={clip.id}
               data-composer-attachment="audio"
-              className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
+              className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
             >
               <HeadphonesIcon className="size-3.5 text-muted-foreground" />
               <span data-reload-snapshot-sensitive className="max-w-48 truncate">
@@ -2936,15 +2951,12 @@ export function SharedComposer({
             />
             {/* Same + menu as single-chat (ComposerToolsMenu), wired to the compare composer's own file/audio
                 inputs and tools. */}
-            <DropdownMenu
-              onOpenChange={(open) => {
-                if (open) void refreshRecentPrompts();
-              }}
-            >
+            <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
               <DropdownMenuTrigger asChild={true}>
                 <button
                   type="button"
                   aria-label="Tools and attachments"
+                  data-pill-label="Add files and more"
                   className="unsloth-composer-plus"
                 >
                   <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
@@ -3261,7 +3273,7 @@ export function SharedComposer({
                 }
                 aria-expanded={isWritingExpanded}
                 aria-controls={inputId}
-                className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-full bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={toggleWritingExpanded}
               >
@@ -3321,7 +3333,7 @@ export function SharedComposer({
                             : "Thinking"}
                         </span>
                       ) : null}
-                      <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
+                      <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
                     </button>
                   )}
                 >
@@ -3541,7 +3553,7 @@ export function SharedComposer({
                     stop();
                   }}
                   aria-label="Stop prompt queue"
-                  className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="btn-fill flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground "
                 >
                   <SquareIcon className="size-2.5 shrink-0 fill-current" />
                   <span className="tabular-nums">
@@ -3552,7 +3564,7 @@ export function SharedComposer({
             ) : busy ? (
               <Button
                 type="button"
-                variant="default"
+                variant="primary"
                 size="icon"
                 className="aui-composer-cancel ml-1.5 size-9 rounded-full"
                 aria-label="Stop generating"
@@ -3567,7 +3579,7 @@ export function SharedComposer({
                   t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
                 }
                 side="bottom"
-                variant="default"
+                variant="primary"
                 size="icon"
                 className="aui-composer-send ml-1.5 size-9 rounded-full"
                 onClick={send}

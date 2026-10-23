@@ -3447,3 +3447,19 @@ def test_the_image_unload_answers_are_declared_in_the_schema(token_client):
     assert set(named) == set(plain) | {"unloaded", "outcome"}
     stale = client.post("/api/inference/images/unload", json = {"expected_load_id": "t2"}).json()
     assert stale == {"unloaded": False, "outcome": "superseded"}
+
+
+def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it():
+    # Weight 0 disables an adapter and every loader drops it, so an all-zero list is no LoRA load.
+    from fastapi import HTTPException
+    from models.inference import DiffusionLoadRequest, LoraSpec
+
+    off = DiffusionLoadRequest(model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0)])
+    inference_routes._refuse_mlx_loras(off)
+    assert inference_routes._has_active_loras(off.loras) is False
+    on = DiffusionLoadRequest(
+        model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0), LoraSpec(id = "b", weight = 0.5)]
+    )
+    assert inference_routes._has_active_loras(on.loras) is True
+    with pytest.raises(HTTPException):
+        inference_routes._refuse_mlx_loras(on)

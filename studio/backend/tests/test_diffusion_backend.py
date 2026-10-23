@@ -203,7 +203,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_MIRROR_PAIRS) == 32
+    assert len(_MIRROR_PAIRS) == 34
     for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -223,7 +223,7 @@ def test_only_the_genuinely_gated_half_reads_as_gated():
     is mirrored, and which the Hub serves anonymously.
     """
     assert len(_GATED_MIRROR_PAIRS) == 14
-    assert len(_UNGATED_MIRROR_PAIRS) == 18
+    assert len(_UNGATED_MIRROR_PAIRS) == 20
     for upstream, _mirror in _GATED_MIRROR_PAIRS:
         assert upstream_is_gated(upstream), upstream
         assert upstream_is_gated(upstream.upper()), upstream
@@ -11110,7 +11110,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
 def test_quadratic_attention_follows_the_engaged_backend(monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     assert dmod._quadratic_attention(object()) is True
     assert dmod._quadratic_attention(object(), None) is True
     assert dmod._quadratic_attention(object(), "native") is True
@@ -11124,7 +11124,7 @@ def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_til
     from core.inference import diffusion as dmod
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
     with pytest.raises(ValueError, match = "2048x2048"):
@@ -14325,6 +14325,63 @@ def test_untrusted_hub_single_file_header_is_checked_before_the_flux2_gguf_probe
             monkeypatch, tmp_path, lambda p: p.write_bytes(b"GGUF" + b"\x00" * 64), card_tag = None
         )
     assert probed == []
+
+
+def test_generate_holds_cudnn_benchmark_off_for_an_opted_out_family(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """cudnn.benchmark is process-wide: a family that opts out holds it off around its own render (decode included),
+    whatever a co-resident or earlier load left it at."""
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend(tmp_path)
+    assert backend._state.family.cudnn_benchmark is False  # z-image
+    object.__setattr__(backend._state, "device", "cuda")
+    events = []
+
+    @contextlib.contextmanager
+    def scope(family, device):
+        events.append(("enter", family.name, device))
+        yield
+        events.append(("exit",))
+
+    monkeypatch.setattr(dmod, "family_render_cudnn_scope", scope)
+    pipe_cls = type(backend._state.pipe)
+    stock_call = pipe_cls.__call__
+
+    def call(self, *args, **kwargs):
+        events.append(("pipe",))
+        return stock_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_cls, "__call__", call)
+    backend.generate(prompt = "a sloth", steps = 4)
+    assert events == [("enter", "z-image", "cuda"), ("pipe",), ("exit",)]
+
+
+def test_family_render_cudnn_scope_overrides_an_inherited_benchmark():
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "backends") or not hasattr(torch.backends, "cudnn"):
+        pytest.skip("torch without cudnn backend flags")
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_speed import family_render_cudnn_scope
+
+    cudnn = torch.backends.cudnn
+    before = cudnn.benchmark
+    try:
+        cudnn.benchmark = True  # left on by another load in this process
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cuda:0"
+        ):
+            assert cudnn.benchmark is False
+        assert cudnn.benchmark is True
+        with family_render_cudnn_scope(detect_family("krea/Krea-2-Turbo"), "cuda"):
+            assert cudnn.benchmark is True  # a family that keeps the benchmark is left alone
+        with family_render_cudnn_scope(
+            detect_family("black-forest-labs/FLUX.2-klein-base-4B"), "cpu"
+        ):
+            assert cudnn.benchmark is True
+    finally:
+        cudnn.benchmark = before
 
 
 def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):

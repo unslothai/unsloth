@@ -15,6 +15,7 @@ __all__ = [
     "NATIVE_BACKEND_TABLE",
     "native_backend_conflicts",
     "refuse_native_backend_conflicts",
+    "install_raw_accelerator_fsdp2_fallback",
 ]
 
 _TRUTHY = ("1", "true", "yes", "on")
@@ -325,6 +326,11 @@ def apply_unsloth_fsdp2_launch_env():
                     "(ACCELERATE_USE_FSDP and FSDP_VERSION unset)."
                 )
         return False
+    return _export_accelerate_fsdp2_env()
+
+
+def _export_accelerate_fsdp2_env():
+    """What `accelerate launch` exports for an FSDP2 config (explicit FSDP_* values win)."""
     if _env_flag("ACCELERATE_USE_DEEPSPEED"):
         raise RuntimeError(
             "Unsloth: UNSLOTH_FSDP2=1 was set on a DeepSpeed launch. Unset one of them."
@@ -351,4 +357,103 @@ def apply_unsloth_fsdp2_launch_env():
             "false" if reshard.strip().lower() in _FALSY else "true",
         )
     os.environ.setdefault("FSDP_STATE_DICT_TYPE", "FULL_STATE_DICT")
+    return True
+
+
+_RAW_ACCELERATOR_PATCHED = "_unsloth_fsdp2_raw_accelerator_fallback"
+
+
+def _built_by_trainer(frame, max_depth = 64):
+    """An Accelerator built inside Trainer.create_accelerator_and_postprocess (native FSDP2 shards the
+    Trainer's model itself), told apart from one a custom loop builds."""
+    while frame is not None and max_depth > 0:
+        if frame.f_code.co_name == "create_accelerator_and_postprocess":
+            owner = frame.f_locals.get("self", None)
+            if owner is not None and hasattr(owner, "args"):
+                return True
+        frame = frame.f_back
+        max_depth -= 1
+    return False
+
+
+def _raw_accelerator_wants_fsdp2(kwargs):
+    """UNSLOTH_FSDP2=1 picked native FSDP2 by default (no UNSLOTH_FSDP2_BACKEND), and this Accelerator
+    is the first one, built by a custom loop that chose no distributed plugin itself."""
+    if _env_value("UNSLOTH_FSDP2_BACKEND") != "" or not unsloth_fsdp2_native_requested():
+        return False
+    if any(
+        kwargs.get(name) is not None
+        for name in (
+            "fsdp_plugin",
+            "deepspeed_plugin",
+            "deepspeed_plugins",
+            "megatron_lm_plugin",
+            "torch_tp_plugin",
+            "parallelism_config",
+        )
+    ):
+        return False
+    if kwargs.get("cpu") or _env_flag("ACCELERATE_USE_CPU"):
+        return False  # accelerate has no FSDP on the CPU
+    try:
+        from accelerate.state import AcceleratorState
+        if getattr(AcceleratorState, "_shared_state", {}):
+            return False  # an earlier Accelerator already fixed the launch for this process
+    except Exception:
+        return False
+    native = sys.modules.get("unsloth.models.fsdp2_native", None)
+    if native is not None and getattr(native, "_SHARDED_ANY", False):
+        return False  # shard_model already sharded a model natively
+    return True
+
+
+def install_raw_accelerator_fsdp2_fallback():
+    """UNSLOTH_FSDP2=1 shards natively inside the Trainer only. A custom loop that builds its own
+    Accelerator and calls accelerator.prepare(model, optimizer) on an unsharded model would get a
+    plain DDP wrap (no parameter or optimizer sharding). The first such Accelerator instead gets the
+    accelerate FSDP2 launch env that UNSLOTH_FSDP2=1 exported before native FSDP2 existed (the same as
+    UNSLOTH_FSDP2_BACKEND=accelerate). An explicit UNSLOTH_FSDP2_BACKEND is left alone. Idempotent."""
+    if not unsloth_fsdp2_requested() or _env_world_size() <= 1:
+        return False
+    try:
+        from accelerate import Accelerator
+    except Exception:
+        return False
+    if getattr(Accelerator, _RAW_ACCELERATOR_PATCHED, False):
+        return True
+    import functools
+    import inspect
+
+    original_init = Accelerator.__init__
+
+    try:
+        signature = inspect.signature(original_init)
+    except (TypeError, ValueError):
+        signature = None
+
+    def _named(self, args, kwargs):
+        # Options passed positionally count as explicit too.
+        if signature is None or not args:
+            return kwargs
+        try:
+            return dict(signature.bind_partial(self, *args, **kwargs).arguments)
+        except TypeError:
+            return kwargs
+
+    @functools.wraps(original_init)
+    def __init__(self, *args, **kwargs):
+        if _raw_accelerator_wants_fsdp2(_named(self, args, kwargs)) and not _built_by_trainer(
+            sys._getframe(1)
+        ):
+            _export_accelerate_fsdp2_env()
+            if str(os.environ.get("RANK", "0")).strip() in ("", "0"):
+                print(
+                    "Unsloth: UNSLOTH_FSDP2=1 with an Accelerator built outside a Trainer: accelerate's "
+                    "FSDP2 shards this loop (as UNSLOTH_FSDP2_BACKEND=accelerate). Set "
+                    "UNSLOTH_FSDP2_BACKEND explicitly to choose the backend."
+                )
+        original_init(self, *args, **kwargs)
+
+    Accelerator.__init__ = __init__
+    setattr(Accelerator, _RAW_ACCELERATOR_PATCHED, True)
     return True

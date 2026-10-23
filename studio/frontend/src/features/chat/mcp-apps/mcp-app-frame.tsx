@@ -421,7 +421,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       : null);
   if (failure) {
     return (
-      <div className="mt-2 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5 text-muted-foreground">
+      <div className="mt-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-ui-12p5 text-muted-foreground">
         Could not load this MCP app's interface: {failure}
       </div>
     );
@@ -429,7 +429,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
   if (!frame) {
     return (
       <div
-        className="mt-2 animate-pulse rounded border border-border bg-muted/30"
+        className="mt-2 animate-pulse rounded-xl border border-border bg-muted/30"
         style={{ height: MIN_HEIGHT }}
       />
     );
@@ -457,7 +457,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         style={{ height }}
         title={`${toolName} app`}
         className={cn(
-          "mt-2 block w-full rounded border border-border bg-background",
+          "mt-2 block w-full rounded-xl border border-border bg-background",
           className,
         )}
       />
@@ -465,7 +465,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         <div
           role="group"
           aria-label="Tool request from this app"
-          className="mt-1 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
+          className="mt-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
         >
           <div>
             {asking.link ? "This app wants to open " : "This app wants to run "}
