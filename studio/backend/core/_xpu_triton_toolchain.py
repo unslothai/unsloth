@@ -139,9 +139,12 @@ def _vcvars_path() -> str | None:
                 "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
                 "-property",
                 "installationPath",
+                "-utf8",
             ],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
             **windows_hidden_subprocess_kwargs(),
         )

@@ -19,6 +19,8 @@ from .rocm_bf16 import is_rocm_torch
 
 SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST"
 HOST_RAM_CHECK_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_CHECK"
+# test hook: caps every host reading the guards take (total, available, commit)
+HOST_RAM_LIMIT_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB"
 SMALL_HOST_ATTR = "_unsloth_small_host"
 
 _MIB = 1024 * 1024
@@ -79,6 +81,7 @@ class StoredComponent:
     dtype: str  # dominant stored float dtype ("bfloat16", "float16", "float32", ...)
     # stored MiB of ``_keep_in_fp32_modules`` tensors: they convert to fp32 on the host even on the route
     kept_fp32_mib: int = 0
+    library: str = ""
 
 
 def _keep_fp32_from_config(sub: Path) -> tuple[str, ...]:
@@ -110,6 +113,10 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
         root = Path(snapshot)
         if not root.is_dir():
             return out
+        try:
+            index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
+        except Exception:  # noqa: BLE001
+            index = {}
         for sub in sorted(p for p in root.iterdir() if p.is_dir()):
             totals: dict[str, int] = {}
             keep = _keep_fp32_from_config(sub) if sub.name.startswith("text_encoder") else ()
@@ -120,8 +127,10 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
             if not totals:
                 continue
             dtype = max(totals.items(), key = lambda kv: kv[1])[0]
+            entry = index.get(sub.name)
+            library = str(entry[0]) if isinstance(entry, list) and entry and entry[0] else ""
             out[sub.name] = StoredComponent(
-                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB)
+                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB), library
             )
     except Exception:  # noqa: BLE001 - no claim
         return {}
@@ -144,10 +153,33 @@ def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Pa
     return None
 
 
+def _host_ram_limit_mib() -> int:
+    try:
+        return max(0, int((os.environ.get(HOST_RAM_LIMIT_ENV) or "").strip()))
+    except ValueError:
+        return 0
+
+
+def _capped(value: Optional[int], limit: int) -> Optional[int]:
+    if limit <= 0:
+        return value
+    return limit if value is None else min(value, limit)
+
+
 def host_ram_mib() -> tuple[Optional[int], Optional[int]]:
-    """(total, available) host MiB, both capped by an enforcing cgroup."""
+    """(total, available) host MiB, both capped by an enforcing cgroup and the ``HOST_RAM_LIMIT_ENV`` test hook."""
     from .diffusion_memory import _available_system_memory_mib, _host_ram_capacity_mib
-    return _host_ram_capacity_mib(), _available_system_memory_mib()
+
+    limit = _host_ram_limit_mib()
+    return _capped(_host_ram_capacity_mib(), limit), _capped(_available_system_memory_mib(), limit)
+
+
+def host_commit_mib() -> Optional[int]:
+    """Windows commit headroom MiB (None elsewhere or unreadable), capped by the ``HOST_RAM_LIMIT_ENV`` test hook."""
+    from .diffusion_memory import _windows_commit_headroom_mib
+
+    headroom = _windows_commit_headroom_mib()
+    return None if headroom is None else _capped(headroom, _host_ram_limit_mib())
 
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:
@@ -172,6 +204,8 @@ class SmallHostDecision:
     total_mib: Optional[int] = None
     dense_host_mib: int = 0
     route_host_mib: int = 0
+    commit_mib: Optional[int] = None
+    dense_commit_mib: int = 0
     # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
@@ -185,9 +219,13 @@ def decide_small_host(
     host_total_mib: Optional[int],
     host_available_mib: Optional[int],
     lora_active: bool = False,
+    host_commit_mib: Optional[int] = None,
+    pread_libraries: tuple[str, ...] = (),
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
-    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped."""
+    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
+    also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
+    violation in native code, not a Python error (#13432, #14513)."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
     if str(device) != "cuda":
@@ -216,29 +254,50 @@ def decide_small_host(
         for n, c in converted.items()
     )
     reserve = host_reserve_mib(host_total_mib)
+    # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
+    # converted copy; a component read through ``pread`` (``pread_libraries``) holds no view. Linux / macOS do not
+    # enforce commit.
+    dense_commit = dense + int(
+        sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
+    )
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
-    fits = host_available_mib is not None and dense + reserve <= int(host_available_mib)
+    commit = None if host_commit_mib is None else int(host_commit_mib)
+    commit_fits = commit is None or dense_commit + reserve <= commit
+    fits = (
+        host_available_mib is not None
+        and dense + reserve <= int(host_available_mib)
+        and commit_fits
+    )
+    commit_note = (
+        ""
+        if commit is None
+        else f", {commit} MiB commit headroom (dense needs ~{dense_commit} MiB)"
+    )
+    extra = {"commit_mib": commit, "dense_commit_mib": dense_commit}
     if fits and not forced:
         return SmallHostDecision(
             False,
-            f"dense {compute} load ({dense} MiB) fits {host_available_mib} MiB available host RAM",
+            f"dense {compute} load ({dense} MiB) fits {host_available_mib} MiB available host RAM{commit_note}",
             host_available_mib,
             host_total_mib,
             dense,
             route,
+            **extra,
         )
     if lora_active and not forced:
         # the int8 denoiser cannot carry adapters
         return SmallHostDecision(
             False,
-            f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available)",
+            f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available"
+            f"{commit_note})",
             host_available_mib,
             host_total_mib,
             dense,
             route,
+            **extra,
         )
     refuse = None
     if (
@@ -251,10 +310,18 @@ def decide_small_host(
         f"{SMALL_HOST_ENV}=1"
         if forced and fits
         else f"dense {compute} load needs ~{dense} MiB + {reserve} MiB reserve of host RAM, "
-        f"{host_available_mib} MiB available"
+        f"{host_available_mib} MiB available{commit_note}"
     )
     return SmallHostDecision(
-        True, why, host_available_mib, host_total_mib, dense, route, storage, refuse
+        True,
+        why,
+        host_available_mib,
+        host_total_mib,
+        dense,
+        route,
+        storage_dtypes = storage,
+        refuse = refuse,
+        **extra,
     )
 
 

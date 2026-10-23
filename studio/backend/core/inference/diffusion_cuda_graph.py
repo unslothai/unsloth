@@ -480,18 +480,36 @@ def capture_in_progress() -> bool:
         return _CAPTURE_DEPTH > 0
 
 
+_CAPTURE_STREAMS: dict = {}
+
+
+def _capture_stream(index: int) -> Any:
+    """One capture stream per card: torch's default capture stream lives on the first card that captured, so a
+    capture for another card recorded none of its kernels. Pool blocks are reused only from the recording stream."""
+    torch = _torch()
+    stream = _CAPTURE_STREAMS.get(index)
+    if stream is None:
+        default = getattr(torch.cuda.graph, "default_capture_stream", None)
+        if default is not None and getattr(default, "device", None) == torch.device("cuda", index):
+            stream = default
+        else:
+            stream = torch.cuda.Stream(device = index)
+        stream = _CAPTURE_STREAMS.setdefault(index, stream)
+    return stream
+
+
 @contextlib.contextmanager
-def _graph_without_flush(graph: Any, pool: Any = None):
+def _graph_without_flush(
+    graph: Any,
+    pool: Any = None,
+    stream: Any = None,
+):
     """``torch.cuda.graph`` minus its ``empty_cache`` / host ``emptyCache``: same capture stream discipline, same
     global capture mode, same pool."""
     torch = _torch()
     torch.cuda.synchronize()
-    # torch.cuda.graph's own capture stream: pool blocks are reused only from the stream that recorded them.
-    stream = getattr(torch.cuda.graph, "default_capture_stream", None)
-    if stream is None or getattr(stream, "device", None) != torch.device(
-        "cuda", torch.cuda.current_device()
-    ):
-        stream = torch.cuda.Stream()
+    if stream is None:
+        stream = _capture_stream(torch.cuda.current_device())
     with torch.cuda.stream(stream):
         graph.capture_begin(pool = pool, capture_error_mode = "global")
         try:
@@ -1803,9 +1821,12 @@ class GraphedForward:
             if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
                 pool = torch.cuda.graph_pool_handle()
             recorder = _graph_without_flush if recapture else torch.cuda.graph
+            card = next((t.device.index for t in live if t.device.index is not None), None)
+            if card is None:
+                card = torch.cuda.current_device()
             try:
                 # _capturing hands back any retired pool first, so the no-flush re-record never records beside one.
-                with _capturing(), recorder(graph, pool = pool):
+                with _capturing(), recorder(graph, pool = pool, stream = _capture_stream(card)):
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
                 # A refusal is raised before the recording begins: the graph and the pool were never touched.
