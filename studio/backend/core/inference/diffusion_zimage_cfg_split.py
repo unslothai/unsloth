@@ -82,11 +82,21 @@ def _skip_keys_calls_apart(skip: Any) -> bool:
     return getattr(skip, "context", None) is None and bool(getattr(skip, "step_signal", False))
 
 
-def _groups_stream(slots: dict) -> bool:
-    """Whether any offload group streams now (unknown = streaming)."""
+def _has_offload_groups(module: Any) -> bool:
+    """Whether ``module`` carries diffusers offload groups (unknown = it does)."""
+    try:
+        from .diffusion_memory import _offload_groups
+        return bool(_offload_groups(module))
+    except Exception:  # noqa: BLE001 - unknown: streaming
+        return True
+
+
+def _groups_stream(module: Any, slots: dict) -> bool:
+    """Whether any offload group streams now (unknown = streaming). A transformer with no record and no groups is the
+    resident-transformer group tier (only the text encoders stream)."""
     state = slots.get(_STREAM_STATE_ATTR)
     if not isinstance(state, dict):
-        return True
+        return _has_offload_groups(module)
     try:
         return int(state.get("streamed", 1)) > 0
     except (TypeError, ValueError):
@@ -95,7 +105,7 @@ def _groups_stream(slots: dict) -> bool:
 
 def _declined_now(module: Any) -> Optional[str]:
     slots = getattr(module, "__dict__", {})
-    if slots.get(_POLICY_ATTR) == _GROUP_POLICY and _groups_stream(slots):
+    if slots.get(_POLICY_ATTR) == _GROUP_POLICY and _groups_stream(module, slots):
         return "denoiser blocks stream (group offload)"
     # FBCache keeps one residual per cache_context; two calls in one context would compare cond against uncond.
     if getattr(module, "_unsloth_step_cache", None):
@@ -411,6 +421,33 @@ def install_zimage_cfg_split(
         if logger is not None:
             logger.info("diffusion.zimage_cfg_split: not armed (%s: %s)", type(exc).__name__, exc)
         return f"{type(exc).__name__}: {exc}"
+
+
+# Workflows whose Z-Image call is the plain one ``_halves`` splits (upscale / hires refine run the img2img pipeline).
+SPLIT_PRICED_WORKFLOWS = ("txt2img", "img2img", "inpaint", "upscale")
+
+
+def split_aware_request_extra(
+    pipe: Any,
+    cfg: Optional[bool],
+    workflow: str,
+    price: Any,
+    *,
+    step_cache: bool = False,
+) -> tuple:
+    """``(cfg priced, extra MiB)`` for the request guard; ``price(cfg)`` is the guard's extra MiB. A split guided render
+    is priced at the guidance-off batch only when that needs nothing released: releasing groups, or an AUTO step cache
+    engaging after the guard (``step_cache``), declines the split and the doubled call runs, so it is priced doubled."""
+    if (
+        cfg is not False
+        and workflow in SPLIT_PRICED_WORKFLOWS
+        and not step_cache
+        and guided_runs_at_guidance_off_batch(pipe)
+    ):
+        extra = int(price(False))
+        if extra <= 0:
+            return False, extra
+    return cfg, int(price(cfg))
 
 
 def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:

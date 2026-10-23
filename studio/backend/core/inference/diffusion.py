@@ -115,8 +115,8 @@ from .diffusion_device import (
 )
 from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
 from .diffusion_zimage_cfg_split import (
-    guided_runs_at_guidance_off_batch,
     install_zimage_cfg_split,
+    split_aware_request_extra,
     uninstall_zimage_cfg_split,
     zimage_cfg_split_status,
 )
@@ -305,6 +305,7 @@ from .diffusion_cache import (
     TC_STATIC,
     apply_step_cache,
     auto_static_skip_plan,
+    auto_step_cache_mode,
     auto_step_cache_allowed,
     skip_tier,
     cache_breaks_graph,
@@ -13027,6 +13028,23 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
+
+                # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
+                strength_applied = effective_request_strength(
+                    strength,
+                    init_pil is not None,
+                    "strength" in call_params,
+                    call_params["strength"].default if "strength" in call_params else None,
+                )
+                denoise_steps = effective_denoise_steps(steps, strength_applied)
+                # The AUTO cache toggle runs after the request guard; the guard prices the cache it will engage.
+                auto_step_cache_on = False
+                if state.cache_auto:
+                    # Judged against the pipeline that RUNS this call: a from_pipe workflow (FLUX.1 img2img /
+                    # inpaint) shares the denoiser but opens no cache_context, which the FBCache hooks need.
+                    from .diffusion_autoopt.runtime import auto_cache_steps
+                    cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
+                    auto_step_cache_on = auto_step_cache_mode(cache_steps) is not None
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
 
@@ -13071,13 +13089,6 @@ class DiffusionBackend:
                         guard_cfg = _negative_prompt_engaged(fam, guidance)
                     except Exception:  # noqa: BLE001 - unknown: sized as a CFG request
                         guard_cfg = None
-                    if (
-                        guard_cfg is not False
-                        and workflow in ("txt2img", "img2img", "inpaint")
-                        and guided_runs_at_guidance_off_batch(state.pipe)
-                    ):
-                        # CFG split = two guidance-off calls; control calls stay batched, so plain pipelines only
-                        guard_cfg = False
                     # a reference family's source image joins the denoiser's sequence, and only FLUX.3 and the
                     # ``reference_resolutions`` families price it in guard_condition_pixels
                     guard_unpriced_refs = bool(
@@ -13086,14 +13097,21 @@ class DiffusionBackend:
                         and ref_resolution is None
                         and not is_flux3_family(fam)
                     )
-                    extra_mib = measured_request_extra_mib(
+                    # CFG split = two guidance-off calls (plain pipelines only; control calls stay batched)
+                    guard_cfg, extra_mib = split_aware_request_extra(
                         state.pipe,
-                        width = guard_width,
-                        height = guard_height,
-                        batch_size = guard_batch,
-                        condition_pixels = guard_condition_pixels,
-                        cfg = guard_cfg,
-                        unpriced_references = guard_unpriced_refs,
+                        guard_cfg,
+                        workflow,
+                        lambda cfg: measured_request_extra_mib(
+                            state.pipe,
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            condition_pixels = guard_condition_pixels,
+                            cfg = cfg,
+                            unpriced_references = guard_unpriced_refs,
+                        ),
+                        step_cache = auto_step_cache_on,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
@@ -13272,22 +13290,8 @@ class DiffusionBackend:
                     ):
                         return pipe(**chunk_kwargs).images
 
-                # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
-                strength_applied = effective_request_strength(
-                    strength,
-                    init_pil is not None,
-                    "strength" in call_params,
-                    call_params["strength"].default if "strength" in call_params else None,
-                )
-                denoise_steps = effective_denoise_steps(steps, strength_applied)
-
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
-                    # Judged against the pipeline that RUNS this call: a from_pipe workflow (FLUX.1 img2img /
-                    # inpaint) shares the denoiser but opens no cache_context, which the FBCache hooks need.
-                    from .diffusion_autoopt.runtime import auto_cache_steps
-
-                    cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
                     toggled = maybe_toggle_step_cache(
                         state.pipe,
                         steps = cache_steps,

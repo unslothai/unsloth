@@ -182,8 +182,9 @@ def test_group_offload_with_every_group_resident_splits():
 
 
 @pytest.mark.parametrize("state", [None, {"streamed": 3}, {"streamed": "?"}])
-def test_group_offload_while_groups_stream_keeps_the_batched_call(state):
-    """Streaming groups (partial, released, or no record) keep the batched call."""
+def test_group_offload_while_groups_stream_keeps_the_batched_call(state, monkeypatch):
+    """Streaming groups (partial, released, or hooked with no record) keep the batched call."""
+    monkeypatch.setattr(zs, "_has_offload_groups", lambda module: True)
     model = _model()
     pipe = types.SimpleNamespace(transformer = model)
     assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
@@ -497,13 +498,84 @@ def test_compiled_only_eager_oom_retries_split_for_the_render(monkeypatch):
         _run(model, *args)
 
 
-def test_request_guard_sizes_a_split_guided_render_as_guidance_off():
+def test_group_offload_resident_transformer_tier_splits():
+    """stream_transformer=False: only the text encoders stream, the transformer has no groups and no residency record."""
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+    _compile_blocks(model)
+    t = torch.tensor([0.4])
+    with zs.render(pipe, 1):
+        _run(model, [_latent(0)], t, [_caption(9, 0)])
+        _run(model, [_latent(1)], t, [_caption(45, 1)])
+        warm = _graphs()
+        _run(model, *_guided_args(_latent(2), t, 45, 9, 2))
+    assert _graphs() == warm
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_request_guard_reprices_doubled_when_the_split_would_be_declined():
+    """Releasing groups or an AUTO FBCache engaging after the guard declines the split: the doubled call is priced."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+
+    def price(extra_split, extra_cfg):
+        def _price(cfg):
+            return extra_split if cfg is False else extra_cfg
+
+        return _price
+
+    for workflow in ("txt2img", "img2img", "inpaint", "upscale"):
+        assert zs.split_aware_request_extra(pipe, True, workflow, price(0, 900)) == (False, 0)
+    assert zs.split_aware_request_extra(pipe, None, "upscale", price(-5, 900)) == (False, -5)
+    # Fits only after a release: the release can demote denoiser groups, so the batched call is priced.
+    assert zs.split_aware_request_extra(pipe, True, "txt2img", price(100, 900)) == (True, 900)
+    assert zs.split_aware_request_extra(pipe, None, "txt2img", price(100, 900)) == (None, 900)
+    # AUTO FBCache will engage after the guard.
+    assert zs.split_aware_request_extra(pipe, True, "txt2img", price(0, 900), step_cache = True) == (
+        True,
+        900,
+    )
+    assert zs.split_aware_request_extra(pipe, True, "controlnet", price(0, 900)) == (True, 900)
+    assert zs.split_aware_request_extra(pipe, False, "txt2img", price(0, 900)) == (False, 0)
+    model._unsloth_step_cache = object()
+    assert zs.split_aware_request_extra(pipe, True, "txt2img", price(0, 900)) == (True, 900)
+
+
+def test_studio_guard_passes_the_auto_step_cache_prediction():
+    import ast
+    import pathlib
+
+    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text()
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "split_aware_request_extra"
+    ]
+    assert len(calls) == 1
+    assert {k.arg for k in calls[0].keywords} == {"step_cache"}
+    assert "guided_runs_at_guidance_off_batch(" not in source
+    # The prediction is made before the guard, from the same steps the AUTO toggle later sees.
+    predict = source.index("auto_step_cache_on = auto_step_cache_mode(cache_steps)")
+    assert predict < source.index("guard_cfg, extra_mib = split_aware_request_extra(")
+    assert predict < source.index("toggled = maybe_toggle_step_cache(")
+
+
+def test_request_guard_sizes_a_split_guided_render_as_guidance_off(monkeypatch):
     """Pricing a split render doubled released 5 GiB of resident groups, declining the split; it needs no extra memory."""
+    monkeypatch.setattr(zs, "_has_offload_groups", lambda module: True)
     model = _model()
     pipe = types.SimpleNamespace(transformer = model)
     assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # not armed
     zs.install_zimage_cfg_split(pipe, offload_policy = "group")
-    assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # no residency record: groups stream
+    assert (
+        zs.guided_runs_at_guidance_off_batch(pipe) is False
+    )  # hooked, no residency record: groups stream
     model._unsloth_stream_state = {"streamed": 0}
     assert zs.guided_runs_at_guidance_off_batch(pipe) is True
     model._unsloth_stream_state = {"streamed": 2}
