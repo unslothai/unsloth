@@ -263,8 +263,11 @@ class DiffusionFamily:
 
 
 # Fresh servers rendered 2-4 variants of one seed here (FLUX.1, Z-Image, Qwen-Image; the edit siblings share their DiT):
-# near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200: FLUX.1 measured deterministic.
+# near-tied norm-reduction configs, benchmarked per process, sum in different orders.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
+# FLUX.1 races on B200 too (schnell int8, cold inductor cache): 15 fresh processes denoised one seed into 3 latents; with
+# the filter 12/12 matched bitwise. Kontext runs the same DiT.
+_FLUX1_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 # Qwen-Image races on B200 too (torch 2.14): fresh processes rendered one seed 26 dB apart; with the filter 6/6 matched bitwise.
 _QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 
@@ -377,6 +380,8 @@ _FLUX3_SD_CPP_TEXT_ENCODERS = (
 # FLUX.3 landed upstream in master-968 (leejet/stable-diffusion.cpp#2143), after builds were in the wild. The model
 # version name is in every sd-cli / sd-server that can run it and in none before.
 _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
+# Krea 2 support: sd.cpp master-721 (leejet/stable-diffusion.cpp#1705).
+_KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
@@ -403,7 +408,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         uses_negative_prompt = False,
@@ -470,6 +475,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "Flux2KleinPipeline",
         # B200: a per-process XBLOCK pick for the q/k RMSNorm reduction changed the latent and stuck to the compile home.
         filter_reduction_configs_archs = ((10, 0),),
+        # Same VAE as FLUX.2-dev: cudnn.benchmark's per-process conv pick decoded one latent into 6 images over 9 fresh
+        # B200 processes; with it off every process matched.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
@@ -697,7 +705,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.1-kontext",
         comfy_shift_node = "flux",
         profile = FamilyProfile(preview_factors = "flux1"),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
+        # FLUX.1 VAE, as flux.1: with cudnn.benchmark one 768 px latent decoded 4 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = flux_mu_shift(
             1.15
         ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
@@ -737,6 +747,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "qwen_image",
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # Qwen-Image VAE, as qwen-image: cudnn.benchmark split one latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         comfy_flow_shift_variants = (
             ("qwen-image-edit-2511", 3.1),
@@ -811,6 +823,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # RGBA Qwen-Image VAE: cudnn.benchmark split one 768 px latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
         comfy_flow_shift = 1.0,
         layer_count = 2,
@@ -1158,6 +1172,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Adapters trained on Raw run on Turbo; deploy previews them there (same bf16 precision).
         deploy_base_repo = "krea/Krea-2-Turbo",
         fp16_incompatible = True,
+        # VAE is byte-identical in Raw and Turbo; the text encoder is stock Qwen3-VL-4B, shared with FLUX.3.
+        sd_cpp_vae = ("unsloth/Krea-2-Turbo", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _KREA2_SD_CPP_ARCH_MARKER,
     ),
     # Lumina Image 2.0: a 2.6B single-stream DiT with a Gemma2-2B encoder and a standard AutoencoderKL, so the generic
     # from_pretrained path loads it. NOT aliased to bare "lumina": Lumina-Next checkpoints are a different arch.
@@ -1524,9 +1543,32 @@ def detect_family_for_pick(
         fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    if fam is None and not override:
+        fam = _family_from_hub_evidence(repo_id, gguf_filename)
     if not override:
         fam = _family_from_content(fam, repo_id, gguf_filename)
     return fam
+
+
+def _family_from_hub_evidence(
+    repo_id: str, gguf_filename: Optional[str]
+) -> Optional[DiffusionFamily]:
+    """A Hub single-file pick named for no family (``Laxhar/noobai-XL-Vpred-1.0``): the family its
+    checkpoint header declares. Never overrides a name that said no or an excluded repo, and never
+    answers for a repo or file named for a variant (``edit`` / ``inpaint`` / ...): the header cannot
+    tell an SDXL inpaint checkpoint from a plain one, and the base pipeline would load it. No network."""
+    needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
+    if any(_best_family_match(model_identity(n).lower()) is not None for n in needles):
+        return None
+    segments = [seg for n in needles for seg in re.split(r"[/\\]+", n.lower()) if seg]
+    if any(_token_in_needle(kw, seg) for kw in _EDIT_KEYWORDS for seg in segments):
+        return None
+    if excluded_model_reason(repo_id):
+        return None
+    from .diffusion_hub_evidence import cached_family
+
+    name = cached_family(repo_id, gguf_filename)
+    return detect_family("", override = name) if name else None
 
 
 def _family_from_content(
@@ -2017,6 +2059,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.1-krea", 20, 3.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
+    # The same Raw checkpoint as GGUFs name it (realrebelai/KREA-2_GGUFs BASE/Krea-2-Base-*, krea2_raw-*).
+    ("krea-2-base", 52, 3.5),
+    ("krea2-raw", 52, 3.5),
+    ("krea2-base", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
     ("flux1-krea", 20, 3.5),  # before Krea-2's generic row
     ("krea", 8, 0.0),
@@ -2156,14 +2202,37 @@ def transformer_variant_differs_from_base(
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
-def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
-    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+def _generation_defaults_row(*identifiers: Optional[str]) -> Optional[tuple[str, int, float]]:
     for identifier in identifiers:
         needle = model_identity(identifier).lower()
-        for key, steps, guidance in _GENERATION_DEFAULTS:
-            if name_key_in(key, needle):
-                return steps, guidance
+        for row in _GENERATION_DEFAULTS:
+            if name_key_in(row[0], needle):
+                return row
     return None
+
+
+def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
+    """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
+    row = _generation_defaults_row(*identifiers)
+    return (row[1], row[2]) if row is not None else None
+
+
+_KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})
+
+
+def krea2_raw_checkpoint(*identifiers: Optional[str]) -> bool:
+    """Whether the identifiers name Krea 2 Raw, with the same precedence as the generation defaults."""
+    row = _generation_defaults_row(*identifiers)
+    return row is not None and row[0] in _KREA2_RAW_KEYS
+
+
+def krea2_sd_cpp_flow_shift(width: int, height: int) -> float:
+    """sd.cpp ``--flow-shift`` matching diffusers' Krea 2 Raw schedule. Raw computes mu from the packed latent tokens
+    (calculate_shift: 0.5 at 256 tokens, 1.15 at 6400); Turbo fixes mu = 1.15, sd.cpp's Krea2 default. sd.cpp's FLUX
+    flow denoiser takes the shift as mu itself."""
+    tokens = (int(height) // 16) * (int(width) // 16)
+    slope = (1.15 - 0.5) / (6400 - 256)
+    return tokens * slope + (0.5 - slope * 256)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
@@ -3067,6 +3136,9 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # A full mirror of a loadable base stays loadable even when used as a VAE source (unsloth/Krea-2-Turbo).
+    loadable_lower = {r.strip().lower() for r in loadable if r}
+    loadable.update(m for u, m in _ALL_MIRROR_PAIRS if u.strip().lower() in loadable_lower)
     return (
         frozenset(r.strip().lower() for r in companions - loadable if r)
         | _RETIRED_SD_CPP_COMPANION_REPOS

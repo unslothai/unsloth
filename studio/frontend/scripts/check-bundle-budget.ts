@@ -387,11 +387,14 @@ export const BUDGET = {
   // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
   // (a CI build measured about 100 B over a local one). Raised by that.
+  // Install Training button under the greyed Train row's hint: +424 B raw / +141 B transfer against ee55c3c9a
+  // (6,920,512 -> 6,920,936 B raw, 2,084,382 -> 2,084,523 B transfer, Node 24, 97 chunks). Raised by that.
   // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
-  // adopt-only pick in the chat runtime, +1,709 B raw / +510 B transfer (6,920,141 -> 6,921,850 B raw,
-  // 2,084,275 -> 2,084,785 B transfer against 772ac8b1f, Node 24, 97 chunks). Raised by that.
-  transferBytes: 2_085_206,
-  rawBytes: 6_922_530,
+  // adopt-only pick in the chat runtime, +1,962 B raw / +667 B transfer (6,921,127 -> 6,923,089 B raw,
+  // 2,084,602 -> 2,085,269 B transfer against ca7b16716, Node 24, 97 chunks), plus about 300 B raw / 100 B
+  // transfer (a CI build measured about 100 B over a local one). Raised by that.
+  transferBytes: 2_085_604,
+  rawBytes: 6_923_507,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

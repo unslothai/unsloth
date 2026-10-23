@@ -42,6 +42,8 @@ from core.inference.diffusion_device import (
     resolve_selected_cuda_ordinal,
 )
 from core.inference.diffusion_families import (
+    krea2_raw_checkpoint,
+    krea2_sd_cpp_flow_shift,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
@@ -2744,6 +2746,10 @@ class _SdGen:
     step: int = 0
     first_step_at: float = 0.0
     eta_seconds: Optional[float] = None
+    # Per sampling pass denominators (Hires fix: base, refine); empty = one pass of ``total_steps``.
+    passes: tuple[int, ...] = ()
+    pass_index: int = 0
+    pass_offset: int = 0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -2754,7 +2760,21 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
+    """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
+    if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
+        state.gguf_filename,
+        getattr(state, "display_repo_id", None),
+        state.repo_id,
+        state.base_repo,
+    ):
+        return krea2_sd_cpp_flow_shift(width, height)
+    return state.flow_shift
+
+
 _EMBEDDED_GUIDANCE_FAMILIES = ("flux.1", "flux.1-kontext", "flux.2-dev")
+# diffusers computes cond + g * (cond - uncond): g is standard CFG minus 1, and any g > 0 enables guidance.
+_CFG_MINUS_ONE_FAMILIES = ("z-image", "krea-2")
 
 
 def _map_guidance(
@@ -2764,8 +2784,7 @@ def _map_guidance(
     (FLUX.2-klein included: no guidance embedder) use real CFG, 1.0 when <= 1. Always explicit: sd.cpp defaults to 7.0."""
     if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return 1.0, (float(guidance) if guidance is not None else None)
-    if fam.name == "z-image":
-        # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
+    if fam.name in _CFG_MINUS_ONE_FAMILIES:
         return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
@@ -2775,7 +2794,7 @@ def _negative_prompt_guidance_threshold(fam: DiffusionFamily) -> Optional[float]
     """sd.cpp drops a negative prompt unless _map_guidance gives cfg > 1; embedded-guidance families never use one."""
     if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return None
-    return 0.0 if fam.name == "z-image" else 1.0
+    return 0.0 if fam.name in _CFG_MINUS_ONE_FAMILIES else 1.0
 
 
 def _assert_shards_beside_index(kind: str, path: str) -> None:
@@ -3849,10 +3868,11 @@ class SdCppDiffusionBackend:
             logger.error("sd_cpp.load_failed: %s", exc)
             if self._state is not None:
                 # Displaced pipeline: give its account back GPU residency, drop its records.
-                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from .gpu_arbiter import DIFFUSION, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(DIFFUSION)
+                restore_media_need(DIFFUSION)
                 restore_resident_metadata("diffusion")
             # Redact filesystem paths before this reaches /images/load-progress (as diffusers does).
             from utils.native_path_leases import redact_native_paths
@@ -4364,6 +4384,7 @@ class SdCppDiffusionBackend:
         expected_load: Optional[LoadIdentity] = None,
         # Interface parity only: the activation guard is diffusers-only.
         allow_oversized: bool = False,
+        hires: Any = None,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -4508,6 +4529,24 @@ class SdCppDiffusionBackend:
                 else:
                     from core.inference.diffusion_conditioning import check_output_size
                     check_output_size(state.family, int(width), int(height))
+                hires_plan = None
+                if hires is not None:
+                    from core.inference import diffusion_hires
+
+                    if conditioned:
+                        raise ValueError("Hires fix runs on text to image only.")
+                    hires_plan = diffusion_hires.plan_sd_cpp(
+                        state.family,
+                        hires,
+                        mode = state.mode,
+                        binary = getattr(state.server, "binary", None),
+                        width = int(width),
+                        height = int(height),
+                        steps = int(steps),
+                    )
+                    # sd.cpp samples the base and Hires schedules separately, each reporting its own denominator.
+                    passes = (int(steps), int(hires_plan.refine_steps))
+                    self._gen = _SdGen(total_steps = sum(passes), passes = passes)
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
                 else:
@@ -4553,6 +4592,7 @@ class SdCppDiffusionBackend:
                             cancel = cancel,
                             ref_pngs = ref_pngs,
                             layers = _layer_count(state.family) or None,
+                            hires_plan = hires_plan,
                         )
                     else:
                         images, seeds = self._generate_oneshot(
@@ -4626,6 +4666,8 @@ class SdCppDiffusionBackend:
                     if conditioned
                     else None,
                 }
+                if hires_plan is not None:
+                    result["hires"] = diffusion_hires.result_block(hires_plan)
                 logger.info(
                     "diffusion.generated: %s",
                     format_generation_for_log(
@@ -4663,6 +4705,7 @@ class SdCppDiffusionBackend:
         cancel: threading.Event,
         ref_pngs: Optional[list[bytes]] = None,
         layers: Optional[int] = None,
+        hires_plan: Any = None,
     ) -> tuple[list, list[int]]:
         """Generate via the resident sd-server (no model reload).
 
@@ -4712,7 +4755,36 @@ class SdCppDiffusionBackend:
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
+        hires_payload: Optional[dict] = None
+        hires_staged: list[Path] = []
+
+        def _stage_hires(server: Any) -> Optional[dict]:
+            """The ``hires`` block, with a model upscaler staged into THIS server's upscaler dir."""
+            if hires_plan is None:
+                return None
+            from core.inference import diffusion_hires, diffusion_upscalers
+
+            upscaler_id = hires_plan.params.upscaler
+            staged_name = None
+            if diffusion_upscalers.is_model_upscaler(upscaler_id):
+                if not server.lora_dir:
+                    raise ValueError(
+                        "The native server has no upscaler directory for a model upscaler."
+                    )
+                staged_name, staged = diffusion_hires.stage_sd_cpp_upscaler(
+                    upscaler_id, server.lora_dir, cancel = cancel
+                )
+                hires_staged.append(staged)
+            return diffusion_hires.sd_cpp_payload(
+                hires_plan.params,
+                int(steps),
+                hires_plan.target,
+                diffusion_hires.sd_cpp_upscaler_name(upscaler_id, staged_name),
+                request_steps = hires_plan.request_steps,
+            )
+
         try:
+            hires_payload = _stage_hires(state.server)
             for offset in range(0, total, _MAX_SERVER_BATCH):
                 if cancel.is_set():
                     raise SdCppCancelled("sd-server generation was cancelled.")
@@ -4727,7 +4799,7 @@ class SdCppDiffusionBackend:
                     seed = chunk_seed,
                     batch_count = count,
                     sample_method = state.sampling_method,
-                    flow_shift = state.flow_shift,
+                    flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
                         if state.sample_sigmas
@@ -4741,6 +4813,7 @@ class SdCppDiffusionBackend:
                         for b in ref_pngs or []
                     ],
                     qwen_image_layers = layers,
+                    hires = hires_payload,
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -4759,6 +4832,10 @@ class SdCppDiffusionBackend:
                     with self._lock:
                         if self._state is not None and self._state.server is not None:
                             self._state = state
+                    if hires_plan is not None:
+                        # The replacement server has its own scratch dir: stage the upscaler there again.
+                        hires_payload = _stage_hires(server)
+                        payload["hires"] = dict(hires_payload)
                     blobs = server.img_gen(
                         payload,
                         on_step = self._on_log,
@@ -4783,6 +4860,11 @@ class SdCppDiffusionBackend:
         finally:
             if lora_stage is not None:
                 shutil.rmtree(lora_stage, ignore_errors = True)
+            for staged in hires_staged:
+                try:
+                    staged.unlink()
+                except OSError:
+                    pass
         return images, seeds
 
     def _restart_server_on_cpu_backend(
@@ -4878,8 +4960,9 @@ class SdCppDiffusionBackend:
         extra_args: list[str] = []
         if state.vae_format:
             extra_args += ["--vae-format", state.vae_format]
-        if state.flow_shift is not None:
-            extra_args += ["--flow-shift", repr(float(state.flow_shift))]
+        flow_shift = _request_flow_shift(state, int(width), int(height))
+        if flow_shift is not None:
+            extra_args += ["--flow-shift", repr(float(flow_shift))]
         if state.sample_sigmas:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
@@ -4973,12 +5056,30 @@ class SdCppDiffusionBackend:
         if gen is None or gen.total_steps <= 0:
             return
         for a, b in _STEP_RE.findall(line):
-            if int(b) == gen.total_steps:
-                now = time.time()
-                gen.step = min(int(a), gen.total_steps)
-                if gen.first_step_at == 0.0:
-                    gen.first_step_at = now
-                gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
+            a, b = int(a), int(b)
+            if gen.passes:
+                i = gen.pass_index
+                nxt = (i + 1) % len(gen.passes)
+                # The next pass (the next image's base pass after the last one) starts once this one completed; a
+                # repeat of this pass's last line is not a start.
+                if (
+                    nxt != i
+                    and b == gen.passes[nxt]
+                    and gen.step >= gen.pass_offset + gen.passes[i]
+                    and (b != gen.passes[i] or a < b)
+                ):
+                    gen.pass_offset = gen.pass_offset + gen.passes[i] if nxt else 0
+                    gen.pass_index = i = nxt
+                if b != gen.passes[i]:
+                    continue
+                a += gen.pass_offset
+            elif b != gen.total_steps:
+                continue
+            now = time.time()
+            gen.step = min(a, gen.total_steps)
+            if gen.first_step_at == 0.0:
+                gen.first_step_at = now
+            gen.eta_seconds = _estimate_eta(gen.total_steps, gen.step, gen.first_step_at, now)
 
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
@@ -5191,7 +5292,23 @@ class SdCppDiffusionBackend:
             # txt2img always; reference and edit only where this build and its loaded assets run them.
             "workflows": workflows,
             "conditioning": conditioning,
+            **_native_hires_status(state),
         }
+
+
+def _native_hires_status(state: Any) -> dict[str, Any]:
+    try:
+        from core.inference import diffusion_hires
+        hires, reason = diffusion_hires.sd_cpp_capability(
+            state.family,
+            mode = state.mode,
+            binary = getattr(getattr(state, "server", None), "binary", None),
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken probe hides the control, never the status
+        logger.debug("sd_cpp.hires: capability probe failed: %s", exc)
+        hires, reason = None, None
+    # No img2img on this engine, so the Upscale workflow (and its model upscalers) is not offered.
+    return {"hires": hires, "hires_unavailable_reason": reason, "upscale_models": []}
 
 
 def _install_allowed() -> bool:
