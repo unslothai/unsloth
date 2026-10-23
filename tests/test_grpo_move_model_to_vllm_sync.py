@@ -274,10 +274,11 @@ def test_lora_sync_never_touches_frozen_base(dtype):
     assert len(rec.tensors) == 9
 
 
-def test_dora_uses_trl_peft_branch():
-    # DoRA needs PEFT's own merge (magnitude vector): fall back to TRL's body, which still syncs.
+def test_dora_syncs_out_of_place():
+    # DoRA needs PEFT's own merge (magnitude vector): it runs on a copy of the base weight.
     trainer, rec, model = _lora_trainer("colocate", torch.float32, use_dora = True)
     assert _patched_method()(trainer) is None
+    assert trainer._unsloth_vllm_sync_kind == "peft_merged"
     assert "0.weight" in rec.loaded and not model.base_model.model[0].merged
     assert rec.resets == 1
 
@@ -387,16 +388,16 @@ def _non_lora_config(kind):
 
 
 @pytest.mark.parametrize("kind", ["loha", "lokr", "ia3", "vera"])
-def test_non_lora_peft_syncs_merged_weights_via_trl(kind):
-    # VeRA / LoHa / LoKr / IA3 have no lora_A: the out-of-place LoRA merge would push the frozen base
-    # weight. TRL's PEFT branch merges them with PEFT's own merge_adapter, so it must be used.
+def test_non_lora_peft_syncs_merged_weights(kind):
+    # VeRA / LoHa / LoKr / IA3 have no lora_A: the plain LoRA merge would push the frozen base weight.
+    # PEFT's own merge must build what is pushed (on a copy of the base, see the drift test below).
     peft = pytest.importorskip("peft")
     model = peft.get_peft_model(_base_mlp(), _non_lora_config(kind))
     _perturb_trainable(model)
     expected = _merged_state(model)
     trainer, rec = _peft_trainer(model)
     assert _patched_method()(trainer) is None
-    assert trainer._unsloth_vllm_sync_kind == "trl"
+    assert trainer._unsloth_vllm_sync_kind == "peft_merged"
     pushed = dict(rec.tensors)
     assert sorted(pushed) == ["0.weight", "1.bias", "1.weight"]
     assert not torch.equal(pushed["0.weight"], model.base_model.model[0].base_layer.weight)
@@ -450,7 +451,7 @@ def test_target_parameters_param_wrapper_syncs_merged_experts():
     expected = _merged_state(model)
     trainer, rec = _peft_trainer(model)
     assert _patched_method()(trainer) is None
-    assert trainer._unsloth_vllm_sync_kind == "trl"
+    assert trainer._unsloth_vllm_sync_kind == "peft_merged"
     pushed = dict(rec.tensors)
     assert sorted(pushed) == ["0.weight", "experts.gate_up_proj"]
     torch.testing.assert_close(pushed["experts.gate_up_proj"], expected["experts.gate_up_proj"])
@@ -499,3 +500,152 @@ def test_trainable_token_indices_raises(monkeypatch):
     with pytest.raises(RuntimeError, match = "trainable"):
         _patched_method()(trainer)
     assert rec.loaded == [] and rec.resets == 0
+
+
+# Codex review round 3: layer_replication, and the in-place merge / unmerge drift of the frozen base.
+
+
+def _tiny_llama(dtype = torch.float32):
+    transformers = pytest.importorskip("transformers")
+    torch.manual_seed(1)
+    config = transformers.LlamaConfig(
+        vocab_size = 32,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        attention_bias = True,
+        mlp_bias = True,
+    )
+    return transformers.LlamaForCausalLM(config).to(dtype)
+
+
+def test_layer_replication_raises(monkeypatch):
+    # Replicas share one base tensor (named_parameters yields it once) but train separate adapters,
+    # and vLLM loads the checkpoint's layer count: no name can carry each replica's merged weight.
+    peft = pytest.importorskip("peft")
+    if "layer_replication" not in peft.LoraConfig.__dataclass_fields__:
+        pytest.skip("this PEFT has no layer_replication")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    config = peft.LoraConfig(
+        r = 2,
+        target_modules = ["q_proj"],
+        layer_replication = [[0, 2], [1, 2]],
+        init_lora_weights = False,
+    )
+    model = peft.get_peft_model(_tiny_llama(), config)
+    assert len(model.base_model.model.model.layers) == 3
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "layer_replication"):
+        _patched_method()(trainer)
+    assert rec.loaded == [] and rec.resets == 0
+
+
+def _drift_config(kind):
+    peft = pytest.importorskip("peft")
+    targets = ["q_proj", "v_proj", "down_proj"]
+    if kind == "dora":
+        return peft.LoraConfig(r = 2, target_modules = targets, use_dora = True, init_lora_weights = False)
+    if kind == "lora_bias":
+        return peft.LoraConfig(r = 2, target_modules = targets, lora_bias = True, init_lora_weights = False)
+    if kind == "loha":
+        return peft.LoHaConfig(r = 2, target_modules = targets, init_weights = False)
+    if kind == "lokr":
+        return peft.LoKrConfig(r = 2, target_modules = targets, init_weights = False)
+    if kind == "ia3":
+        return peft.IA3Config(target_modules = targets, feedforward_modules = ["down_proj"])
+    return peft.VeraConfig(r = 2, target_modules = ["q_proj", "v_proj"])
+
+
+@pytest.mark.parametrize("kind", ["dora", "lora_bias", "loha", "lokr", "ia3", "vera"])
+def test_bf16_non_plain_peft_never_drifts_frozen_base(kind):
+    # TRL's body merge_adapter()s and unmerge_adapter()s the live bf16 model every sync; those rounded
+    # in-place edits are not lossless, so the frozen base drifted outside the optimizer. The merge now
+    # runs on a copy: after 10 syncs every frozen tensor keeps its exact bytes, and each sync pushes
+    # exactly what PEFT's own merge of the current adapter gives.
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(_tiny_llama(torch.bfloat16), _drift_config(kind))
+    frozen = {n: p.detach().clone() for n, p in model.named_parameters() if not p.requires_grad}
+    trainer, rec = _peft_trainer(model)
+    method = _patched_method()
+    for _ in range(10):
+        _perturb_trainable(model)
+        expected = _merged_state(model)
+        before = len(rec.tensors)
+        assert method(trainer) is None
+        pushed = dict(rec.tensors[before:])
+        assert pushed["model.layers.0.self_attn.q_proj.weight"].dtype == torch.bfloat16
+        for name in ("model.layers.0.self_attn.q_proj.weight", "model.layers.1.self_attn.v_proj.weight"):
+            assert torch.equal(pushed[name], expected[name]), name
+    drift = max(
+        (p.detach().float() - frozen[n].float()).abs().max().item()
+        for n, p in model.named_parameters()
+        if n in frozen
+    )
+    assert drift == 0.0
+    assert trainer._unsloth_vllm_sync_kind == "peft_merged"
+    for module in model.modules():
+        assert not getattr(module, "merged", False)
+        assert not getattr(module, "_caches", {})
+
+
+def test_bf16_target_parameters_never_drifts_frozen_base():
+    peft = pytest.importorskip("peft")
+    if "target_parameters" not in peft.LoraConfig.__dataclass_fields__:
+        pytest.skip("this PEFT has no target_parameters")
+    torch.manual_seed(1)
+    base = torch.nn.Sequential(torch.nn.Linear(16, 16, bias = False))
+    base.add_module("experts", _Experts())
+    base = base.to(torch.bfloat16)
+    config = peft.LoraConfig(
+        r = 2,
+        target_modules = ["0"],
+        target_parameters = ["experts.gate_up_proj"],
+        init_lora_weights = False,
+    )
+    model = peft.get_peft_model(base, config)
+    gate_up = model.base_model.model.experts.base_layer.gate_up_proj
+    before = gate_up.detach().clone()
+    trainer, rec = _peft_trainer(model)
+    method = _patched_method()
+    for _ in range(10):
+        _perturb_trainable(model)
+        expected = _merged_state(model)
+        start = len(rec.tensors)
+        assert method(trainer) is None
+        pushed = dict(rec.tensors[start:])
+        assert torch.equal(pushed["experts.gate_up_proj"], expected["experts.gate_up_proj"])
+    assert torch.equal(gate_up, before)
+
+
+def _sharded(trainer, fsdp = False, zero3 = False):
+    trainer.is_fsdp_enabled = fsdp
+    if zero3:
+        trainer.accelerator.state.deepspeed_plugin = types.SimpleNamespace(zero_stage = 3)
+    return trainer
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_fsdp_low_precision_peft_raises(dtype, monkeypatch):
+    # FSDP keeps TRL's in-place merge_adapter + unmerge_adapter on the sharded weights: in fp16 / bf16
+    # that drifts the frozen base every sync, so refuse instead.
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    trainer, rec, model = _lora_trainer("colocate", dtype)
+    _sharded(trainer, fsdp = True)
+    with pytest.raises(RuntimeError, match = "FSDP"):
+        _patched_method()(trainer)
+    assert rec.loaded == [] and rec.resets == 0
+
+
+def test_fsdp_fp32_and_zero3_keep_trl_body():
+    # fp32 FSDP: TRL's round trip moves the base by fp32 rounding only. ZeRO-3: TRL merges inside
+    # GatheredParameters(modifier_rank = None), whose in-place edits are discarded on exit.
+    trainer, rec, model = _lora_trainer("colocate", torch.float32)
+    _sharded(trainer, fsdp = True)
+    assert _patched_method()(trainer) is None
+    assert trainer._unsloth_vllm_sync_kind == "trl" and "0.weight" in rec.loaded
+    trainer, rec, model = _lora_trainer("colocate", torch.bfloat16)
+    _sharded(trainer, zero3 = True)
+    assert _patched_method()(trainer) is None
+    assert trainer._unsloth_vllm_sync_kind == "trl" and "0.weight" in rec.loaded

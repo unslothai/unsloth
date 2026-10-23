@@ -2550,6 +2550,10 @@ def _unsloth_vllm_peft_unsupported(model):
             problems.append(f"aLoRA adapter '{name}'")
         if getattr(config, "arrow_config", None) is not None:
             problems.append(f"Arrow adapter '{name}'")
+        # Replicas share one base tensor but train separate adapters, and vLLM loads the checkpoint's
+        # layer count: there is no per-replica weight to send (PEFT also refuses to merge these).
+        if getattr(config, "layer_replication", None):
+            problems.append(f"layer_replication on adapter '{name}'")
     for module_name, module in model.named_modules():
         # trainable_token_indices: TRL pushes token_adapter.* names that do not exist in vLLM.
         if type(module).__name__ in ("TrainableTokensWrapper", "TrainableTokensLayer"):
@@ -2615,8 +2619,8 @@ def _unsloth_vllm_plain_lora(model):
 
 def _unsloth_vllm_sync_kind(trainer):
     """How _move_model_to_vllm syncs TRL's own vLLM engine (fast_inference = False):
-    "trl" = TRL's body (dense, or PEFT it merges in place), "peft_merged" = plain LoRA merged out of
-    place, "skip" = no sync (explicit opt-in only). Anything that cannot be synced raises: rollouts
+    "trl" = TRL's body (dense, or sharded PEFT where its in-place merge cannot drift the base),
+    "peft_merged" = PEFT merged out of place, "skip" = no sync (explicit opt-in only). Anything that cannot be synced raises: rollouts
     would come from the initial weights all run."""
     model = trainer.model
     allow_stale = os.environ.get("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "0") == "1"
@@ -2642,7 +2646,26 @@ def _unsloth_vllm_sync_kind(trainer):
         deepspeed_plugin is not None and getattr(deepspeed_plugin, "zero_stage", 0) == 3
     )
     problems = _unsloth_vllm_peft_unsupported(model)
-    kind = "peft_merged" if not sharded and _unsloth_vllm_plain_lora(model) else "trl"
+    # Unsharded: every mergeable PEFT setup is merged out of place, so the frozen base never moves.
+    # ZeRO-3: TRL merges inside GatheredParameters(modifier_rank = None), which discards in-place edits
+    # of the gathered copy on exit, so its merge / unmerge cannot drift the stored base either.
+    # FSDP: TRL's merge_adapter + unmerge_adapter edit the sharded parameters in place; that round trip
+    # is lossy in fp16 / bf16 and would drift the frozen base every sync, so only fp32 is allowed.
+    kind = "peft_merged" if not sharded else "trl"
+    if getattr(trainer, "is_fsdp_enabled", False):
+        low_precision = sorted(
+            {
+                str(param.dtype).removeprefix("torch.")
+                for param in model.parameters()
+                if param.dtype in (torch.float16, torch.bfloat16)
+            }
+        )
+        if low_precision:
+            problems.append(
+                f"FSDP with {'/'.join(low_precision)} weights (TRL's in-place merge_adapter + "
+                "unmerge_adapter round trip rounds and drifts the frozen base every sync; use an fp32 "
+                "base, DeepSpeed ZeRO-3 or a single process)"
+            )
     if kind == "trl":
         # TRL strips only "modules_to_save.default.", so other adapter names reach vLLM as is.
         for wrapper, _, adapters in _unsloth_vllm_modules_to_save(model):
@@ -2664,8 +2687,6 @@ def _unsloth_vllm_sync_kind(trainer):
             "weights while the policy trains.\n"
             "Use a plain LoRA adapter, or set UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS=1 to train anyway."
         )
-    # Sharded params need TRL's gathers; non-LoRA tuners, DoRA, lora_bias, other mergeable variants
-    # and ParamWrapper (target_parameters) need PEFT's own merge_adapter: TRL's PEFT branch does both.
     return kind
 
 
@@ -2692,6 +2713,49 @@ def _unsloth_vllm_merged_weight(module, weight):
     return (weight.float() + merged).to(weight.dtype)
 
 
+def _unsloth_vllm_tuner_groups(model):
+    """{id(base param): (real base module, [tuner layers wrapping it])} for PEFT's own merge."""
+    from peft.tuners.tuners_utils import BaseTunerLayer
+
+    groups = {}
+    for module in model.modules():
+        if isinstance(module, BaseTunerLayer):
+            base = module.get_base_layer()
+            groups.setdefault(id(base), (base, []))[1].append(module)
+    return {
+        id(param): group
+        for group in groups.values()
+        for param in group[0].parameters(recurse = False)
+    }
+
+
+def _unsloth_vllm_peft_merge_out_of_place(base, layers):
+    """Run PEFT's own merge (DoRA, lora_bias, LoHa, LoKr, IA3, VeRA, ParamWrapper, ...) on copies of
+    the base tensors and return {id(param): merged tensor}; the live parameters keep their exact bytes."""
+    params = list(base.parameters(recurse = False))
+    originals = [param.data for param in params]
+    states = [
+        (layer, list(getattr(layer, "merged_adapters", [])), dict(getattr(layer, "_caches", {})))
+        for layer in layers
+    ]
+    try:
+        for param, data in zip(params, originals):
+            param.data = data.clone()
+        # model.modules() order, as PeftModel.merge_adapter merges them.
+        for layer in layers:
+            layer.merge()
+        return {id(param): param.data for param in params}
+    finally:
+        for param, data in zip(params, originals):
+            param.data = data
+        for layer, merged_adapters, caches in states:
+            if hasattr(layer, "merged_adapters"):
+                layer.merged_adapters[:] = merged_adapters
+            if isinstance(getattr(layer, "_caches", None), dict):
+                layer._caches.clear()
+                layer._caches.update(caches)
+
+
 _UNSLOTH_VLLM_MODULES_TO_SAVE = re.compile(r"\.(?:modules_to_save\.[^.]+|original_module)\.")
 
 
@@ -2699,11 +2763,18 @@ _UNSLOTH_VLLM_MODULES_TO_SAVE = re.compile(r"\.(?:modules_to_save\.[^.]+|origina
 def _unsloth_vllm_sync_peft_merged(trainer):
     """TRL's PEFT sync (merged weights under the base-layer names), without mutating the model."""
     model = trainer.model
+    # Plain LoRA: W + sum of deltas in fp32, rounded once. Anything else: PEFT's merge on a copy.
+    plain = _unsloth_vllm_plain_lora(model)
     lora_of = {}
-    for module in _unsloth_vllm_lora_layers(model):
-        weight = getattr(module.base_layer, "weight", None)
-        if weight is not None:
-            lora_of[id(weight)] = module
+    groups = {}
+    if plain:
+        for module in _unsloth_vllm_lora_layers(model):
+            weight = getattr(module.base_layer, "weight", None)
+            if weight is not None:
+                lora_of[id(weight)] = module
+    else:
+        groups = _unsloth_vllm_tuner_groups(model)
+    merged_cache = {}
     # modules_to_save: push the copy the active adapter trains (any adapter name), never the rest.
     unserved = []
     for wrapper, served, adapters in _unsloth_vllm_modules_to_save(model):
@@ -2724,8 +2795,17 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         if prefix in name:
             continue
         name = trainer._fix_param_name_to_vllm(_UNSLOTH_VLLM_MODULES_TO_SAVE.sub(".", name))
-        module = lora_of.get(id(param))
-        tensor = param.data if module is None else _unsloth_vllm_merged_weight(module, param)
+        if plain:
+            module = lora_of.get(id(param))
+            tensor = param.data if module is None else _unsloth_vllm_merged_weight(module, param)
+        elif id(param) in groups:
+            # One base module at a time: its weight and bias are adjacent in named_parameters.
+            if id(param) not in merged_cache:
+                merged_cache.clear()
+                merged_cache.update(_unsloth_vllm_peft_merge_out_of_place(*groups[id(param)]))
+            tensor = merged_cache.pop(id(param))
+        else:
+            tensor = param.data
         if mode == "server":
             if is_main:
                 trainer.vllm_client.update_named_param(name, tensor)
@@ -2764,7 +2844,9 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
     # - Plain LoRA on a 16-bit base: merged weights under the base-layer names, as TRL does, but
     #   computed out of place. merge_adapter + unmerge_adapter on the live model is a lossy round
     #   trip in fp16 / bf16, so the frozen base would drift every sync.
-    # - Other mergeable PEFT (LoHa, LoKr, IA3, VeRA, DoRA, target_parameters, sharded): TRL's body.
+    # - Other mergeable PEFT (LoHa, LoKr, IA3, VeRA, DoRA, lora_bias, target_parameters): PEFT's own
+    #   merge run on copies of the base tensors, so the live base keeps its exact bytes.
+    # - ZeRO-3: TRL's body (its gathered copy is discarded on exit). FSDP: TRL's body on fp32 only.
     # - Quantized bases (bitsandbytes, GPTQ, AWQ, HQQ, FP8, ...), unmergeable adapters (aLoRA, Arrow,
     #   trainable tokens, prompt learning): raise instead of sampling from the initial weights all run.
     guard = (
