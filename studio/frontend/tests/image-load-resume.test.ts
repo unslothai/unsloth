@@ -10,7 +10,10 @@ import test from "node:test";
 import {
   clearPendingImageLoad,
   finishedLoadTarget,
+  forgetStaleResidentComponents,
   readImageComponents,
+  readImageModel,
+  rememberImageModel,
   rememberLoadedImageComponents,
   rememberPendingImageLoad,
 } from "../src/features/images/image-model-recall.ts";
@@ -91,7 +94,7 @@ test("a load that finished while the page was closed records its paths before th
   // pending request with the resident build itself, the same way the poll does.
   assert.match(
     probe,
-    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = await getDiffusionStatus\(\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded\);/,
+    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded\);/,
   );
   // The shared recorder saves the model and its component files only for the build that is resident.
   const recorder = source.slice(source.indexOf("const rememberFinishedLoad = useCallback"));
@@ -107,4 +110,32 @@ test("a load that finished while the page was closed records its paths before th
   assert.deepEqual(resumed?.fieldFiles, zFiles);
   assert.deepEqual(rememberLoadedImageComponents(resumed!, ready), zFiles);
   assert.deepEqual(readImageComponents(zImage), zFiles);
+});
+
+test("the mount probe publishes the finished build's status before the reconcilers run", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const mount = source.slice(source.indexOf("inFlight = isLoadInFlightPhase(p.phase);"));
+  const probe = mount.slice(0, mount.indexOf('setInitialLoadProbe(inFlight ? "loading" : "idle");'));
+  // The first refreshStatus may have read the build being replaced. Releasing the probe gate reconciles the saved
+  // files against the page's status, so the ready branch must publish its fresh read, under a ticket taken before
+  // the await so a newer status read still wins.
+  assert.match(
+    probe,
+    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const ticket = \+\+statusTicket\.current;\s*const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);/,
+  );
+
+  // Why: reconciling the just-saved files against the replaced build forgets them from both saved locations.
+  const newFiles = { vaeFile: "/models/new-vae.safetensors" };
+  const oldBuild = { ...ready, component_files: { vae: "old-vae.safetensors" } };
+  const newBuild = { ...ready, component_files: { vae: "new-vae.safetensors" } };
+  store.clear();
+  rememberPendingImageLoad({ ...zImage, fieldFiles: newFiles });
+  const resumed = finishedLoadTarget(null, newBuild)!;
+  rememberLoadedImageComponents(resumed, newBuild);
+  rememberImageModel({ ...zImage, ...newFiles });
+  forgetStaleResidentComponents(newBuild);
+  assert.deepEqual(readImageComponents(zImage), newFiles);
+  assert.equal(readImageModel()?.vaeFile, newFiles.vaeFile);
+  forgetStaleResidentComponents(oldBuild);
+  assert.equal(readImageComponents(zImage), null);
 });

@@ -3632,8 +3632,11 @@ export function ImagesPage({
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           // A load this page started finished while it was closed: record the paths it was started with, which
-          // the status cannot give back, before its pending descriptor goes.
+          // the status cannot give back, before its pending descriptor goes. Publish this build's status too: the
+          // first read may be the build it replaced, and releasing the probe reconciles saved files against it.
+          const ticket = ++statusTicket.current;
           const loaded = await getDiffusionStatus();
+          setStatusIfNewest(ticket, loaded);
           const resumed = finishedLoadTarget<LastLoad>(null, loaded);
           if (resumed) {
             lastLoad.current = resumed;
@@ -3669,7 +3672,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
 
   // Seed the sliders from a resident model's recipe when the page finds one it did not load,
   // else a resident flux.1-dev generates garbage at 9 steps. Guarded by a per-repo ref.
