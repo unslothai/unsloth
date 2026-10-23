@@ -22,6 +22,8 @@ w2's own (rotating) forward. Same ops on the same values as the three stock rota
 quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
 Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
 quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
+A rotated input (ConvRot) is rotated and quantized by one kernel (``_rotated_act_quant``: ``rotq_h16`` of
+``diffusion_convrot_quant``) on an unlisted-arch card it was armed for, else rotation GEMM + act quant.
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
 """
 
@@ -52,6 +54,8 @@ _OP_HANDLE: Any = None
 _ACTQ_HANDLE: Any = None
 # device indices whose own probe passed; the kernel never runs on a device that failed or was never probed
 _ACTQ_DEVICES: frozenset = frozenset()
+_RQ_HANDLE: Any = None
+_RQ_DEVICES: frozenset = frozenset()
 # UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
 _LINEAR_OFF = False
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
@@ -1309,8 +1313,9 @@ def int8_linear_core(module: Any, x: Any) -> Any:
     ):
         return _stock_call(module, x)
     if rotated:
-        x2d = _rotate(x2d, module.convrot_groupsize)
-    xq, xs = _fast_act_quant(x2d, weight)
+        xq, xs = _rotated_act_quant(x2d, module.convrot_groupsize, weight)
+    else:
+        xq, xs = _fast_act_quant(x2d, weight)
     y = _torchao_epilogue(
         _int_mm(xq.reshape(-1, xq.shape[-1]), weight), xs, weight.scale, module.bias, x.dtype
     )
@@ -1329,6 +1334,48 @@ def _rotate(x2d: Any, group: int) -> Any:
     return rotate_convrot_activation(
         x2d, build_convrot_hadamard(group, device = x2d.device, dtype = x2d.dtype), group
     )
+
+
+def _rotated_act_quant(x2d: Any, group: int, weight: Any) -> tuple:
+    """``_fast_act_quant(_rotate(x2d, group), weight)``: one fused rotation + quant kernel (``rotq_h16``) on a device
+    it was armed for (an arch the tiled ``rotq_i8`` does not cover), else the rotation GEMM + act quant."""
+    import torch
+
+    if (
+        _RQ_HANDLE is not None
+        and group == 256
+        and x2d.is_cuda
+        and x2d.device.index in _RQ_DEVICES
+        and x2d.dtype == torch.bfloat16
+        and x2d.dim() == 2
+        and x2d.shape[0] > 0
+        and x2d.shape[1] % 256 == 0
+    ):
+        q, s = _RQ_HANDLE(x2d, group, True)
+        return q, s.reshape(-1, 1)
+    return _fast_act_quant(_rotate(x2d, group), weight)
+
+
+def arm_rotated(index: int) -> bool:
+    """Arm ``rotq_h16`` for card ``index`` (outside any trace); False keeps the rotation GEMM + act quant."""
+    global _RQ_HANDLE, _RQ_DEVICES
+    if int8_fused_disabled():
+        return False
+    try:
+        from .diffusion_convrot_quant import _rotq_op, unlisted_device_ok
+
+        actq = _act_quant_op() if _act_quant_device_ok(index) else None
+        ok = unlisted_device_ok(index, actq)
+        handle = _rotq_op() if ok else None
+    except Exception:  # noqa: BLE001 - optimisation only
+        ok, handle = False, None
+    with _LOCK:
+        if ok and handle is not None:
+            _RQ_HANDLE = handle
+            _RQ_DEVICES = _RQ_DEVICES | {index}
+            return True
+        _RQ_DEVICES = _RQ_DEVICES - {index}
+    return False
 
 
 def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any:
@@ -1357,8 +1404,7 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
         return type(self).forward(self, hidden_states, *args, **kwargs)
     down = _get(self, down_name)
     if in_group:
-        x2d = _rotate(x2d, in_group)
-        xq, xs = _fast_act_quant(x2d, fused_in.weight)
+        xq, xs = _rotated_act_quant(x2d, in_group, fused_in.weight)
     else:
         xq, xs = _act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
@@ -1569,11 +1615,12 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    global _ACTQ_HANDLE, _ACTQ_DEVICES, _LINEAR_OFF
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF
     if int8_fused_disabled():
         # process-global: a previous load's probe must not outlive the kill switch
         _ACTQ_HANDLE = None
         _ACTQ_DEVICES = frozenset()
+        _RQ_DEVICES = frozenset()
         _LINEAR_OFF = True
         return 0
     _LINEAR_OFF = False
@@ -1655,6 +1702,14 @@ def _swiglu_eligible(module: Any) -> bool:
         return False
 
 
+def _has_rotated(transformer: Any) -> bool:
+    try:
+        from .diffusion_convrot import is_rotated_linear
+        return any(is_rotated_linear(m) for m in transformer.modules())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _has_eligible(transformer: Any) -> bool:
     return any(
         _MARK in m.__dict__ or _ff_eligible(m) or _swiglu_eligible(m) or _flux_single_eligible(m)
@@ -1693,6 +1748,9 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
         indices = [dev.index if dev.index is not None else torch.cuda.current_device()]
     count = 0
     rearm = False
+    if _has_rotated(transformer):
+        for index in indices:
+            arm_rotated(index)
     actq_ok = {index: _act_quant_device_ok(index) for index in indices}
     actq = _act_quant_op() if any(actq_ok.values()) else None
     with _LOCK:
@@ -1800,10 +1858,13 @@ def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
                 index = _module_card(module)
                 if index is not None:
                     cards.setdefault(index, []).append(module)
+    rotated = _has_rotated(transformer)
     for index, modules in cards.items():
         if _device_ok(index):
             if _act_quant_device_ok(index) and _ACTQ_HANDLE is not None:
                 _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+            if rotated:
+                arm_rotated(index)
             continue
         for module in modules:
             _restore_module(module)

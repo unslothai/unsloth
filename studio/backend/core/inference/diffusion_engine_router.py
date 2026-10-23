@@ -430,6 +430,24 @@ def _mlx_runtime_refusal() -> Optional[str]:
     return None
 
 
+def has_active_loras(loras: Any) -> bool:
+    """Every loader drops weight-0 entries (``diffusion_lora.resolve_specs``, sd.cpp's ``active_loras``),
+    so routing must ignore them too. An unreadable weight counts as active so a real adapter never hits MLX."""
+    for entry in loras or ():
+        weight = getattr(entry, "weight", None)
+        if weight is None:
+            try:
+                _lid, weight = entry
+            except (TypeError, ValueError):
+                return True
+        try:
+            if float(weight) != 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def mlx_selection(
     fam: Optional[DiffusionFamily],
     *,
@@ -437,9 +455,11 @@ def mlx_selection(
     gguf_filename: Optional[str],
     backend: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
-    cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field)."""
+    cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field);
+    ``with_loras``: MLX cannot apply LoRAs, so such a load keeps its non-MLX engine."""
     if not _mlx_requested():
         return False, None
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
@@ -449,6 +469,8 @@ def mlx_selection(
         return False, f"the load asked for the {engine} engine"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
+    if with_loras:
+        return False, "the MLX engine does not apply LoRA adapters yet"
     if fam is None or not family_mlx_supported(fam):
         name = getattr(fam, "name", None) or "unknown"
         return False, f"family '{name}' has no MLX implementation"
@@ -468,6 +490,36 @@ def mlx_selection(
     if runtime:
         return False, runtime
     return True, None
+
+
+def _refuse_lora_fallback(
+    fam: DiffusionFamily,
+    choice: str,
+    *,
+    with_loras: bool,
+    model_kind: Optional[str],
+    gguf_filename: Optional[str],
+    engine: Optional[str],
+) -> None:
+    """Raise before unloading when MLX is skipped for LoRAs and the fallback engine cannot apply them."""
+    if (
+        not with_loras
+        or not mlx_selection(
+            fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = engine
+        )[0]
+    ):
+        return
+    from .diffusion_lora import supports_lora
+
+    if supports_lora(engine = choice, family = fam.name, model_kind = "gguf", transformer_quant = None):
+        return
+    via = (
+        "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine on a GGUF"
+    )
+    raise ValueError(
+        "LoRA adapters are not supported on the MLX engine yet, and this load would fall back to "
+        f"{via}, which cannot apply them here either. Load it without LoRA adapters."
+    )
 
 
 def _note_mlx_refusal(reason: Optional[str]) -> None:
@@ -712,6 +764,7 @@ def select_and_activate_engine(
     before_fallback: Optional[Callable[[], None]] = None,
     gguf_filename: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 
@@ -729,7 +782,11 @@ def select_and_activate_engine(
     requested = _requested_engine(engine)
     refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
     use_mlx, mlx_refusal = mlx_selection(
-        fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested
+        fam,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+        with_loras = with_loras,
     )
     _note_mlx_refusal(mlx_refusal)
     if use_mlx:
@@ -747,8 +804,17 @@ def select_and_activate_engine(
             else "forced (UNSLOTH_DIFFUSION_ENGINE=diffusers)",
         )
 
+    lora_guard = functools.partial(
+        _refuse_lora_fallback,
+        fam,
+        with_loras = with_loras,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+    )
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
+        lora_guard(ENGINE_DIFFUSERS)
         return _activate(ENGINE_DIFFUSERS, "native engine disabled (UNSLOTH_DIFFUSION_SD_CPP=0)")
     if native_gguf_only(fam, model_kind):
         prefer_native = True
@@ -858,6 +924,7 @@ def select_and_activate_engine(
     choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
+    lora_guard(choice)
     if choice == ENGINE_SD_CPP:
         return _activate(ENGINE_SD_CPP, None)
 
@@ -981,6 +1048,7 @@ def predict_engine(
     gpu_ordinal: Optional[int] = None,
     gguf_filename: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
 ) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect. ``engine`` is the load's own
     pick, as in ``select_and_activate_engine``; a pick selection would refuse raises the same ValueError here.
@@ -1000,7 +1068,13 @@ def predict_engine(
     requested = _requested_engine(engine)
     # The plan must refuse what the load will refuse, rather than plan (and stage) for the other engine.
     refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
-    if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested)[0]:
+    if mlx_selection(
+        fam,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+        with_loras = with_loras,
+    )[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
         return ENGINE_DIFFUSERS
@@ -1008,8 +1082,17 @@ def predict_engine(
     forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
     if forced == ENGINE_DIFFUSERS:
         return ENGINE_DIFFUSERS
+    lora_guard = functools.partial(
+        _refuse_lora_fallback,
+        fam,
+        with_loras = with_loras,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+    )
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
+        lora_guard(ENGINE_DIFFUSERS)
         return ENGINE_DIFFUSERS
     if native_gguf_only(fam, model_kind):
         prefer_native = True
@@ -1020,6 +1103,7 @@ def predict_engine(
         gpu_ordinal = None
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     if not (policy_eligible and family_sd_cpp_supported(fam)):
+        lora_guard(ENGINE_DIFFUSERS)
         return ENGINE_DIFFUSERS
 
     # A permitted install counts as available only where selection would actually perform one.
@@ -1047,6 +1131,7 @@ def predict_engine(
             else f"no usable sd.cpp build here supports '{fam.name}'"
         )
         raise ValueError(f"The native sd.cpp engine cannot load this model here: {why}.")
+    lora_guard(choice)
     return choice
 
 
