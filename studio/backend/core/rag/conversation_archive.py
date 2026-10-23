@@ -1132,9 +1132,7 @@ def _flushes_local_pair(part: dict) -> bool:
 
 
 def _with_attachments(message: dict):
-    """A stored row's content with its attachments appended, as `collectTextParts` (chat-adapter.ts) sends it
-    after `modelVisibleMessage` drops tool-only images. Without them a turn sent with a document matched no seat
-    and `_fallback_ordinal` numbered it after every later turn. Assistant attachments add no text on the wire."""
+    """Content plus attachments, as `collectTextParts` (chat-adapter.ts) sends it; else the turn takes `_fallback_ordinal`."""
     content = message.get("content")
     attachments = message.get("attachments")
     if not isinstance(attachments, list) or str(message.get("role") or "") == "assistant":
@@ -1293,8 +1291,7 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     return wire
 
 
-# The note `withSandboxAttachmentPaths` (sandbox-attachments.ts) puts before an attachment while the python tool is on,
-# one line each, in the two forms `checkpoint._ATTACHMENT` also recognises.
+# `withSandboxAttachmentPaths` (sandbox-attachments.ts) path notes, as `checkpoint._ATTACHMENT` matches them.
 _SANDBOX_NOTE = re.compile(
     r"^\[[^\n]*(?: is saved at \.unsloth_attachments/[0-9a-f]{12}/[^\n]* in the python tool's working directory"
     r"|: its text is below, so answer from it\. For calculations, the python tool has the file at "
@@ -1304,8 +1301,7 @@ _SANDBOX_NOTE = re.compile(
 
 
 def _seat_text(message: dict) -> str:
-    """The probe seat matching compares, minus the python tool's path notes: the client adds them to the
-    request only, so a stored row never has them."""
+    """The seat-matching probe minus python path notes, which only the request carries."""
     text = _probe_text(message)
     if str(message.get("role") or "") == "user":
         text = _SANDBOX_NOTE.sub("", text)
