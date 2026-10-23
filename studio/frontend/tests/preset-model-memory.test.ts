@@ -371,13 +371,18 @@ test("a preset saved from hand edits does not come back after ejecting and picki
   assert.deepEqual(presetOwnedKeys(byModel[GEMMA]), [], "nothing comes back on the next launch");
 });
 
-// Source-level, since the sheet needs a DOM: savePreset above stands in for this call.
+// Source-level, since the sheet needs a DOM: savePreset above stands in for this call. Clicking Save
+// blurs a number box during mousedown, and onClick runs before React re-renders, so the render's
+// `params` is the screen from before that entry: the save reads the store, as set() does.
 test("saving a preset hands the loaded model's sampling to it, as a pick does", () => {
   const save = readSrc("features/chat/chat-settings-sheet.tsx").match(
     /function savePresetWithName\([^)]*\) \{[\s\S]*?\n {2}\}\n/,
   )?.[0];
   assert.ok(save, "savePresetWithName");
-  assert.match(save, /setParams\(paramsWithCommittedSeed, \{ fromPreset: true \}\);/);
+  assert.match(save, /const live = useChatRuntimeStore\.getState\(\)\.params;/);
+  assert.match(save, /params: toPresetParams\(saved\),/);
+  assert.match(save, /setParams\(saved, \{ fromPreset: true \}\);/);
+  assert.doesNotMatch(save, /paramsWithCommittedSeed/);
 });
 
 // Last: the open chat's pairing stays for the rest of the module.
