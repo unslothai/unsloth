@@ -232,12 +232,31 @@ class StoryCharacter(_Strict):
     side: Literal["left", "right", "center"] = "left"
 
 
+StoryTransition = Literal["dissolve", "fade", "flash", "slideleft", "slideright", "none"]
+StoryPosition = Literal["left", "center", "right", "twoleft", "tworight"]
+
+
+class StoryStage(_Strict):
+    """Ren'Py-style directions applied when the reader reaches the line; a line with empty text is only these."""
+
+    show: Optional[str] = None  # character id
+    hide: Optional[str] = None
+    at: Optional[StoryPosition] = None
+    expression: Optional[str] = None
+    with_: Optional[StoryTransition] = Field(default = None, alias = "with")
+    sound: Optional[str] = None  # key into StoryManifest.sounds
+    pause: Optional[float] = Field(default = None, ge = 0, le = 30)
+
+    model_config = ConfigDict(extra = "forbid", populate_by_name = True)
+
+
 class StoryLine(_Strict):
     speaker: Optional[str] = None  # character id, None = narrator
     text: str
     expression: Optional[str] = None
     cond: Expr = Field(default = None, alias = "if")
     voice: Optional[dict[str, Any]] = None  # MediaValue (pre-rendered narration)
+    stage: Optional[StoryStage] = None
 
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
 
@@ -278,6 +297,7 @@ class StoryScene(_Strict):
     # Live generation: the player asks the engine to fill these when the scene is entered.
     generate_background: bool = False
     generate_lines: bool = False
+    transition: Optional[StoryTransition] = None  # background change on entry; None = dissolve
 
 
 class StoryManifest(_Strict):
@@ -289,6 +309,7 @@ class StoryManifest(_Strict):
     # "infinite": the player asks the flow's `next_scene` entrypoint for a new scene after every choice.
     mode: Literal["fixed", "live", "infinite"] = "fixed"
     style: Optional[str] = None  # art style appended to background/portrait prompts
+    sounds: Optional[dict[str, dict[str, Any]]] = None  # name -> MediaValue, for `[sound name]`
     entry_points: dict[str, str] = Field(
         default_factory = dict
     )  # name -> node id of a subgraph output
