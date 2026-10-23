@@ -114,7 +114,12 @@ export function useEditorShortcuts(active: boolean): void {
       }
       if (mod && key === "enter") {
         event.preventDefault();
-        void runFlow();
+        // Same path as the Run button, so a flow with inputs opens the Run dialog first.
+        const run = document.querySelector<HTMLButtonElement>(
+          '[data-testid="flows-run"]',
+        );
+        if (run) run.click();
+        else void runFlow();
         return;
       }
       if (isTyping(event.target)) return;

@@ -472,3 +472,24 @@ def test_a_truncated_recipe_is_reported():
     rows = asyncio.run(data.recipe_rows(ctx, "job1", limit = 1000))
     assert len(rows) == 1000
     assert ctx.logs and ctx.logs[0][0] == "warning" and "2000" in ctx.logs[0][1]
+
+
+def test_a_maximum_size_grid_stays_bounded():
+    import io
+
+    from PIL import Image
+
+    from core.flows.nodes.image import MAX_GRID_SIDE, compose_grid
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (200, 10, 10)).save(buf, "PNG")
+    out = compose_grid(
+        [buf.getvalue()] * 64,
+        [""] * 64,
+        columns = 8,
+        gap = 24,
+        background = "#111",
+        caption_style = "none",
+        cell = 2048,
+    )
+    assert max(Image.open(io.BytesIO(out)).size) <= MAX_GRID_SIDE

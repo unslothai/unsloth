@@ -13,6 +13,25 @@ import type {
   WorldSpec,
 } from "../types";
 
+/** Answered on demand through /invoke while playing; a re-roll leaves them alone. */
+const PLAYER_ENTRYPOINTS = new Set([
+  "story.next_scene",
+  "story.scene_art",
+  "world.npc_reply",
+]);
+
+/** Only what the story or world is built from: a side branch (Fine-tune, Export, Save to Library) must not run. */
+export function rerollTargets(doc: FlowDocument): string[] {
+  return doc.nodes
+    .filter(
+      (n) =>
+        /^(story|world)\./.test(n.type) &&
+        !PLAYER_ENTRYPOINTS.has(n.type) &&
+        !n.disabled,
+    )
+    .map((n) => n.id);
+}
+
 export interface SessionRecord {
   slot: string;
   state: unknown;
@@ -162,12 +181,17 @@ export const playerApi: PlayerApi = {
       await authFetch(`/api/flows/${enc(flowId)}`),
     );
     const doc = { ...rec.doc, seed };
+    const targets = rerollTargets(doc);
     const { run_id } = await json<{ run_id: string }>(
       await authFetch(`/api/flows/${enc(flowId)}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // A shared story ships its generator output baked; a re-roll has to run it again.
-        body: JSON.stringify({ doc, ignore_baked: true }),
+        body: JSON.stringify({
+          doc,
+          ignore_baked: true,
+          ...(targets.length ? { target_nodes: targets } : {}),
+        }),
         signal,
       }),
     );

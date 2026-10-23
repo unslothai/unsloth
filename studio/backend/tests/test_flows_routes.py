@@ -286,3 +286,15 @@ def test_deleting_a_flow_stops_its_run(client):
     assert client.get(f"/api/flows/runs/{run_id}").json()["run"]["status"] in ("queued", "running")
     assert client.delete("/api/flows/flow1").status_code == 204
     assert _wait_terminal(client, run_id)["run"]["status"] == "cancelled"
+
+
+def test_deleting_a_flow_removes_its_run_history(client):
+    client.post("/api/flows", json = {"doc": _simple()})
+    run_id = client.post("/api/flows/flow1/runs", json = {}).json()["run_id"]
+    _wait_terminal(client, run_id)
+    assert client.get("/api/flows/flow1/runs").json()["runs"]
+    assert client.delete("/api/flows/flow1").status_code == 204
+    from storage import flows_db
+
+    assert flows_db.get_run(run_id) is None
+    assert flows_db.events_after(run_id, 0) == []

@@ -74,7 +74,8 @@ export type StoryAction =
   | { type: "addScene"; scene: StoryScene; asId: string; rev: number }
   | { type: "generationFailed"; message: string; rev: number }
   | { type: "setBackground"; sceneId: string; media: MediaValue; rev: number }
-  | { type: "setLines"; sceneId: string; lines: StoryLine[]; rev: number };
+  | { type: "setLines"; sceneId: string; lines: StoryLine[]; rev: number }
+  | { type: "linesFailed"; sceneId: string; rev: number };
 
 export function sceneOf(
   m: StoryManifest,
@@ -326,6 +327,8 @@ export function reduce(
       const scene = sceneOf(m, s, s.sceneId);
       if (!scene) return fail(s, "Missing scene");
       const lines = visibleLines(scene, s.vars);
+      // Its dialogue is still being written: the "..." placeholder cannot be read past.
+      if (lines.length === 0 && scene.generate_lines) return s;
       if (s.line + 1 < lines.length) {
         return {
           ...s,
@@ -376,6 +379,18 @@ export function reduce(
     case "setBackground":
       if (a.rev !== s.rev) return s;
       return { ...s, backgrounds: { ...s.backgrounds, [a.sceneId]: a.media } };
+    case "linesFailed": {
+      if (a.rev !== s.rev) return s;
+      const scene = sceneOf(m, s, a.sceneId);
+      if (!scene?.generate_lines) return s;
+      return {
+        ...s,
+        extraScenes: {
+          ...s.extraScenes,
+          [a.sceneId]: { ...scene, generate_lines: false },
+        },
+      };
+    }
     case "setLines": {
       if (a.rev !== s.rev) return s;
       const scene = sceneOf(m, s, a.sceneId);

@@ -258,3 +258,49 @@ test("a scene whose dialogue is still being written waits for it", () => {
     "the earlier line stays in the history",
   );
 });
+
+test("the placeholder cannot be read past until the lines arrive or fail", () => {
+  const m: Manifest = {
+    title: "W",
+    start: "a",
+    vars: {},
+    characters: [],
+    mode: "live",
+    entry_points: { next_scene: "next" },
+    scenes: [
+      {
+        id: "a",
+        lines: [],
+        generate_lines: true,
+        choices: [{ id: "go", text: "", goto: "b" }],
+      },
+      { id: "b", lines: [{ text: "Next." }], choices: [] },
+    ],
+  };
+  let s = R.initialState(m);
+  assert.equal(R.currentLine(m, s)?.text, "...");
+  assert.equal(
+    R.reduce(m, s, { type: "advance" }),
+    s,
+    "advance waits for the lines",
+  );
+  s = R.reduce(m, s, { type: "linesFailed", sceneId: "a", rev: s.rev });
+  s = R.reduce(m, s, { type: "advance" });
+  assert.equal(s.sceneId, "b");
+});
+
+test("a re-roll rebuilds only the story or world, never a side branch", async () => {
+  const { rerollTargets } = await import(
+    "../src/features/flows/player/player-api.ts"
+  );
+  const doc = {
+    nodes: [
+      { id: "gen", type: "story.generator" },
+      { id: "art", type: "story.scene_art" },
+      { id: "train", type: "training.finetune" },
+      { id: "save", type: "output.library" },
+      { id: "off", type: "story.illustrate", disabled: true },
+    ],
+  } as never;
+  assert.deepEqual(rerollTargets(doc), ["gen"]);
+});

@@ -161,6 +161,9 @@ def _font(size: int) -> Any:
         return ImageFont.load_default()
 
 
+MAX_GRID_SIDE = 6144
+
+
 def compose_grid(
     frames: list[bytes],
     captions: list[str],
@@ -175,6 +178,16 @@ def compose_grid(
 
     columns = max(1, min(columns, len(frames)))
     rows = (len(frames) + columns - 1) // columns
+    # Big grids shrink their cells so the page stays under MAX_GRID_SIDE (8x8 of 2048 px would be ~1 GiB).
+    gap = max(0, min(gap, MAX_GRID_SIDE // (4 * (max(columns, rows) + 1))))
+    cell = max(
+        16,
+        min(
+            cell,
+            (MAX_GRID_SIDE - (columns + 1) * gap) // columns,
+            (MAX_GRID_SIDE - (rows + 1) * gap) // rows,
+        ),
+    )
     width = columns * cell + (columns + 1) * gap
     height = rows * cell + (rows + 1) * gap
     try:

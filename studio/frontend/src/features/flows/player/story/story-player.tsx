@@ -482,8 +482,12 @@ export function StoryPlayer({
                 lines: written.lines,
                 rev,
               });
+            else dispatch({ type: "linesFailed", sceneId: scene.id, rev });
           })
-          .catch(() => undefined);
+          // Without lines the scene still plays on, so the reader is never stuck on "...".
+          .catch(() =>
+            dispatch({ type: "linesFailed", sceneId: scene.id, rev }),
+          );
       }
     }
     // Only when the scene changes.

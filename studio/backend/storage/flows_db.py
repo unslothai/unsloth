@@ -128,6 +128,8 @@ def delete_flow(flow_id: str) -> None:
     try:
         conn.execute("DELETE FROM flows WHERE id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_sessions WHERE flow_id = ?", (flow_id,))
+        # Run history goes too; its events and node results cascade.
+        conn.execute("DELETE FROM flow_runs WHERE flow_id = ?", (flow_id,))
         conn.execute(
             "INSERT OR IGNORE INTO flow_tombstones (id, deleted_at) VALUES (?, ?)",
             (flow_id, now_ms()),
