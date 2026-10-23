@@ -3,9 +3,7 @@
 
 """MLX (mflux) image engine for Apple Silicon on Studio's GGUF.
 
-Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``. By default it runs
-behind ``mlx_diffusion_routing`` (text-to-image here, everything else on diffusers); ``UNSLOTH_DIFFUSION_MLX=1``
-runs it alone.
+Same duck-typed surface as the other image engines; selected only by ``diffusion_engine_router``.
 """
 
 from __future__ import annotations

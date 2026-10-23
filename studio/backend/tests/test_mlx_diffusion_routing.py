@@ -365,11 +365,11 @@ def test_status_advertises_the_fallback_workflows_while_mlx_is_resident(rig):
     "mlx_gib, diffusers_gib, budget_gib, expected",
     [
         (6, 4, 10.7, True),
-        (7.5, 12, 10.7, False),  # a 16 GB Mac with Z-Image Q4: never both
+        (7.5, 12, 10.7, False),
         (2, 3, 5.01, True),
-        (0, 3, 5.01, False),  # unknown MLX size (RAM-rule plan)
-        (3, 0, 5.01, False),  # unreadable diffusers size
-        (3, 3, 0, False),  # unknown working set
+        (0, 3, 5.01, False),
+        (3, 0, 5.01, False),
+        (3, 3, 0, False),
     ],
 )
 def test_engines_coexist_only_when_both_fit(
@@ -419,7 +419,7 @@ def test_the_real_fit_check_reads_the_mlx_plan_and_the_budget(tmp_path, monkeypa
     monkeypatch.delenv(routing.COEXIST_ENV, raising = False)
     small = routing.RoutedMlxEngine(mlx_factory = lambda: mlx, budget_fn = lambda: 9 * GIB)
     big = routing.RoutedMlxEngine(mlx_factory = lambda: mlx, budget_fn = lambda: 11 * GIB)
-    assert small._engines_fit_together() is False  # 6 + 4 > 9
+    assert small._engines_fit_together() is False
     assert big._engines_fit_together() is True
 
 
@@ -625,7 +625,7 @@ def test_unload_during_the_fallback_begin_load_waits_for_its_teardown(rig):
     unloader = threading.Thread(target = lambda: unloaded.append(rig.engine.unload()))
     unloader.start()
     time.sleep(0.05)
-    assert unloaded == []  # still draining the fallback
+    assert unloaded == []
     release.set()
     unloader.join(5)
     worker.join(5)

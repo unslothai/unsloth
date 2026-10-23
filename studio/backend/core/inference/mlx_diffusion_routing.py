@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-request engine routing on Apple Silicon: MLX for plain text-to-image, diffusers MPS for the rest.
-
-When both engines do not fit the Metal working set, MLX is unloaded first and later requests stay on diffusers
-(no ping-pong reloads) until the model is loaded again. ``UNSLOTH_DIFFUSION_MLX=0`` never builds this engine;
-``=1`` runs the MLX engine alone.
-"""
+"""Apple Silicon routing: MLX for plain text-to-image, diffusers MPS for the rest (MLX unloads if both do not fit)."""
 
 from __future__ import annotations
 
