@@ -17,14 +17,25 @@ _TOKEN_COLUMNS = (
 _MASK_COLUMNS = ("completion_mask", "assistant_masks")
 
 
+def _collator_masks_user_labels() -> bool:
+    """TRL < 1.7's collator applies the masks on top of a row's own labels; 1.7+ uses the labels as they are."""
+    try:
+        import trl
+        from packaging.version import Version
+
+        return Version(trl.__version__) < Version("1.7.0")
+    except Exception:
+        return True
+
+
 def _checked_masks(columns, completion_only_loss = None) -> tuple:
     """Masks the trainer will apply, the only ones checked and truncated.
 
-    User labels are the whole objective, so the masks are then unused. TRL applies
-    `assistant_masks` on presence but `completion_mask` only under `completion_only_loss`, which,
-    left unset, it resolves from the dataset shape (prompt plus completion columns).
+    TRL applies `assistant_masks` on presence but `completion_mask` only under
+    `completion_only_loss`, which, left unset, it resolves from the dataset shape (prompt plus
+    completion columns). Beside user labels the masks are applied only by TRL < 1.7's collator.
     """
-    if "labels" in columns:
+    if "labels" in columns and not _collator_masks_user_labels():
         return ()
     if completion_only_loss is None:
         completion_only_loss = "prompt" in columns and "completion" in columns

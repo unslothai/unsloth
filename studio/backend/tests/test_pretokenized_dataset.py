@@ -192,6 +192,54 @@ def test_prepare_leaves_unused_null_masks_next_to_labels_alone():
     assert out[0]["completion_mask"] is None
 
 
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("mask", ["assistant_masks", "completion_mask"])
+def test_prepare_truncates_masks_next_to_labels_when_the_collator_applies_them(
+    monkeypatch, mask, streamed
+):
+    # TRL < 1.7's collator applies these masks on top of the row's labels: a 6-token mask beside
+    # 4-token labels fails the boolean index on the first step.
+    import utils.datasets.pretokenized as pretokenized
+
+    monkeypatch.setattr(pretokenized, "_collator_masks_user_labels", lambda: True, raising = False)
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4, 5, 6]],
+            "labels": [[-100, 2, 3, 4, 5, 6]],
+            mask: [[0, 1, 1, 1, 1, 1]],
+        }
+    )
+    if streamed:
+        ds = ds.to_iterable_dataset()
+    out = list(
+        prepare_pretokenized_dataset(
+            ds, max_seq_length = 4, vocab_size = 100, completion_only_loss = True
+        )
+    )
+    assert out[0]["labels"] == [-100, 2, 3, 4] and out[0][mask] == [0, 1, 1, 1]
+    bad = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3]], "labels": [[1, 2, 3]], mask: [[0, 1]]}
+    )
+    with pytest.raises(ValueError, match = f"'{mask}' must have the same length"):
+        prepare_pretokenized_dataset(
+            bad, max_seq_length = 2048, vocab_size = 100, completion_only_loss = True
+        )
+
+
+def test_prepare_leaves_masks_next_to_labels_alone_when_the_collator_ignores_them(monkeypatch):
+    # TRL 1.7+ trains on the labels as given and never reads the masks beside them.
+    import utils.datasets.pretokenized as pretokenized
+
+    monkeypatch.setattr(pretokenized, "_collator_masks_user_labels", lambda: False, raising = False)
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4, 5, 6]], "labels": [[1, 2, 3, 4, 5, 6]], "assistant_masks": [[0, 1]]}
+    )
+    out = prepare_pretokenized_dataset(
+        ds, max_seq_length = 4, vocab_size = 100, completion_only_loss = True
+    )
+    assert out[0]["labels"] == [1, 2, 3, 4] and out[0]["assistant_masks"] == [0, 1]
+
+
 def test_prepare_checks_streamed_loss_masks():
     ds = Dataset.from_dict(
         {"input_ids": [[1, 2, 3, 4, 5, 6]], "completion_mask": [[0, 1]]}
