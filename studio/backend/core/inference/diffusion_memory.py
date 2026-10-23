@@ -21,6 +21,7 @@ import contextvars
 import functools
 import os
 import sys
+import threading
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
@@ -1258,6 +1259,85 @@ def _budget_reserve_kind(memory: DeviceMemory) -> str:
     return _ROCM_APU_POOL if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
+# The VRAM Budget fraction each committed image / video pipeline was planned with, keyed by owner ("image", "video").
+# The setting applies on the next load, so a pipeline's generation-time guards keep the fraction its placement used
+# until that pipeline reloads or unloads (the companion of the measured reserve a load stores on its pipe).
+_LOAD_BUDGET_FRACTIONS: dict[str, float] = {}
+_LOAD_BUDGET_LOCK = threading.Lock()
+# ("load", owner, fraction) inside a load: the live value snapshotted when it began, so its planner reads one value.
+# ("generate", owner, None) inside a generation: the owner's committed snapshot.
+_BUDGET_SCOPE: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
+    "unsloth_vram_budget_scope", default = None
+)
+
+
+def _live_vram_budget_fraction() -> float:
+    from utils.vram_budget_settings import get_vram_budget_fraction
+    return float(get_vram_budget_fraction())
+
+
+def _vram_budget_fraction() -> float:
+    """The fraction the reserve readers charge. A load reads the value it began with; a generation reads its
+    pipeline's load-time snapshot; any other thread the tighter committed snapshot, else the live setting. Raises
+    like the setting read."""
+    scope = _BUDGET_SCOPE.get()
+    with _LOAD_BUDGET_LOCK:
+        if scope is not None and scope[0] == "load" and scope[2] is not None:
+            return float(scope[2])
+        if scope is not None and scope[1] in _LOAD_BUDGET_FRACTIONS:
+            return _LOAD_BUDGET_FRACTIONS[scope[1]]
+        pinned = tuple(_LOAD_BUDGET_FRACTIONS.values())
+    return min(pinned) if pinned else _live_vram_budget_fraction()
+
+
+def vram_budget_scope(owner: str, *, load: bool = False) -> Callable:
+    """Decorator: run a backend's load (``load=True``, snapshots the live setting) or generation under ``owner``'s
+    VRAM Budget scope. Nested loads keep the outer snapshot."""
+
+    def wrap(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def scoped(*args: Any, **kwargs: Any) -> Any:
+            outer = _BUDGET_SCOPE.get()
+            if load and outer is not None and outer[0] == "load" and outer[1] == owner:
+                return fn(*args, **kwargs)
+            if load:
+                try:
+                    fraction: Optional[float] = _live_vram_budget_fraction()
+                except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
+                    fraction = None
+                scope = ("load", owner, fraction)
+            else:
+                scope = ("generate", owner, None)
+            token = _BUDGET_SCOPE.set(scope)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _BUDGET_SCOPE.reset(token)
+
+        return scoped
+
+    return wrap
+
+
+def commit_load_budget_fraction(owner: str) -> None:
+    """Publish the fraction ``owner``'s load planned with, alongside its committed state. Never raises."""
+    scope = _BUDGET_SCOPE.get()
+    fraction = scope[2] if scope is not None and scope[0] == "load" and scope[1] == owner else None
+    if fraction is None:
+        try:
+            fraction = _live_vram_budget_fraction()
+        except Exception:  # noqa: BLE001
+            return
+    with _LOAD_BUDGET_LOCK:
+        _LOAD_BUDGET_FRACTIONS[owner] = float(fraction)
+
+
+def release_load_budget_fraction(owner: str) -> None:
+    """Drop ``owner``'s snapshot when its committed pipeline is torn down."""
+    with _LOAD_BUDGET_LOCK:
+        _LOAD_BUDGET_FRACTIONS.pop(owner, None)
+
+
 def _user_budget_reserve_mib(base: Optional[int]) -> int:
     """What the user's VRAM Budget setting keeps free of ``base``. 0 at or above the default, where the reserves above
     are already tuned (3% of a 192 GiB card would exceed the discrete cap), so an untouched setting changes nothing.
@@ -1266,8 +1346,8 @@ def _user_budget_reserve_mib(base: Optional[int]) -> int:
     if not base or int(base) <= 0:
         return 0
     try:
-        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT, get_vram_budget_fraction
-        fraction = float(get_vram_budget_fraction())
+        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT
+        fraction = _vram_budget_fraction()
     except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
         return 0
     if not fraction < VRAM_FRACTION_DEFAULT:
@@ -1279,8 +1359,8 @@ def user_budget_reserve_share() -> float:
     """The share of each card the user's VRAM Budget keeps free: ``1 - fraction`` below the default, else 0.0 (as
     :func:`_user_budget_reserve_mib`). For a child process that reads its own card's total."""
     try:
-        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT, get_vram_budget_fraction
-        fraction = float(get_vram_budget_fraction())
+        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT
+        fraction = _vram_budget_fraction()
     except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
         return 0.0
     return 1.0 - fraction if fraction < VRAM_FRACTION_DEFAULT else 0.0

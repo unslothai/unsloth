@@ -593,14 +593,18 @@ def _group_tensors(group: Any) -> list:
 
 def _prefetch_budget_bytes(device: Any) -> int:
     """Bytes of encoder groups the prefetcher may hold on ``device`` ahead of compute: an eighth of free VRAM less the
-    user's VRAM Budget reserve (raw at the default), clamped to [128, 384] MiB."""
+    user's VRAM Budget reserve (raw at the default), clamped to [128, 384] MiB. 0 (no prefetch) when a lowered budget
+    leaves less than the 128 MiB floor: the worker always copies one group, so the floor would spend the reserve."""
     try:
         import torch
 
         from .diffusion_memory import user_budget_reserve_bytes
 
         free, total = torch.cuda.mem_get_info(device)
-        free = max(0, int(free) - user_budget_reserve_bytes(device, total))
+        reserve = user_budget_reserve_bytes(device, total)
+        free = max(0, int(free) - reserve)
+        if reserve > 0 and free < _PREFETCH_MIN_BYTES:
+            return 0
         return max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, free // 8))
     except Exception:  # noqa: BLE001
         return _PREFETCH_MIN_BYTES
@@ -781,6 +785,8 @@ class _EncoderPrefetcher:
         if not self.order:
             return  # first forward: synchronous copies, and it records the order
         self.budget = _prefetch_budget_bytes(self.device)
+        if self.budget <= 0:
+            return  # no budgeted room: every group copies synchronously, as on the first forward
         self._order_after_compute()
         self.worker = threading.Thread(
             target = self._run, args = (list(self.order),), daemon = True, name = "unsloth-encoder-prefetch"

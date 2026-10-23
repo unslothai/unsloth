@@ -260,7 +260,23 @@ def test_encoder_prefetch_window_reads_free_less_the_reserve(fraction, card):
     assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == S._PREFETCH_MAX_BYTES
     fraction["value"] = 0.50
     assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == 2 * GIB // 8
-    card["free"] = 12 * GIB
+    card["free"] = 12 * GIB + 512 * 1024**2
+    assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == S._PREFETCH_MIN_BYTES
+
+
+def test_encoder_prefetch_is_off_when_the_budget_leaves_under_the_floor(fraction, card):
+    """#14816 r9: the 128 MiB floor must not hand the worker a group the budgeted room cannot hold."""
+    from core.inference import diffusion_small_host as S
+
+    fraction["value"] = 0.50
+    for room in (0, 100 * 1024**2, S._PREFETCH_MIN_BYTES - 1):
+        card["free"] = 12 * GIB + room
+        assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == 0
+    card["free"] = 2 * GIB  # under the reserve: still nothing
+    assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == 0
+    # Default budget: the floor still applies to a nearly full card, as before.
+    fraction["value"] = vram_budget_settings.VRAM_FRACTION_DEFAULT
+    card["free"] = 64 * 1024**2
     assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == S._PREFETCH_MIN_BYTES
 
 

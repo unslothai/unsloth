@@ -154,6 +154,25 @@ def test_prefetch_stays_within_the_byte_budget():
     assert pf.peak_inflight <= pf.budget + sh._PREFETCH_MIN_BYTES // 4
 
 
+def test_prefetch_with_no_budgeted_room_starts_no_worker(monkeypatch):
+    """#14816 r9: a zero budget copies every group synchronously instead of one group ahead."""
+    monkeypatch.setattr(sh, "_prefetch_budget_bytes", lambda device: 0)
+    groups = [_FakeGroup(f"g{i}", 10) for i in range(6)]
+    pf = _FakePrefetcher(groups)
+    _forward(pf, groups)
+    pf.copies.clear()
+    pf.begin()
+    try:
+        assert pf.worker is None
+        for g in groups:
+            pf.onload(g)
+    finally:
+        pf.end()
+    assert pf.stats["prefetched"] == 0 and pf.stats["sync"] == 12
+    assert all(main for _n, main in pf.copies) and pf.inflight == 0 and not pf.ready
+    assert pf.order == [id(g) for g in groups]
+
+
 def test_prefetch_one_oversized_group_still_progresses():
     groups = [_FakeGroup("big", sh._PREFETCH_MAX_BYTES * 4), _FakeGroup("small", 1)]
     pf = _FakePrefetcher(groups)

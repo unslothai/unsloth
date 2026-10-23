@@ -169,6 +169,9 @@ from .diffusion_small_host import (
 )
 from .model_ids import hf_cache_repo_id
 from .diffusion_memory import (
+    commit_load_budget_fraction,
+    release_load_budget_fraction,
+    vram_budget_scope,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     ACTIVATION_TILE,
@@ -4648,6 +4651,7 @@ class DiffusionBackend:
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
     @_account_owned_load
+    @vram_budget_scope("image", load = True)
     def begin_load(
         self,
         repo_id: str,
@@ -4802,6 +4806,7 @@ class DiffusionBackend:
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
     @scoped_local_files_only
+    @vram_budget_scope("image", load = True)
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -6117,6 +6122,7 @@ class DiffusionBackend:
                 failures_out.append(exc)
         return total, base_files
 
+    @vram_budget_scope("image", load = True)
     def download_plan(
         self,
         repo_id: str,
@@ -7406,6 +7412,7 @@ class DiffusionBackend:
     @_plans_at_requested_speed
     @scoped_local_files_only
     @_with_supplied_components
+    @vram_budget_scope("image", load = True)
     def load_pipeline(
         self,
         repo_id: str,
@@ -10185,6 +10192,7 @@ class DiffusionBackend:
                         self._raise_if_load_cancelled(_load_token)
                         self._state = state
                         state_committed = True
+                        commit_load_budget_fraction("image")
                     try:
                         from . import diffusion_vae_prebuild
                         diffusion_vae_prebuild.maybe_kick(pipe, compile_ctx, logger)
@@ -12421,6 +12429,7 @@ class DiffusionBackend:
 
     @_release_render_on_unload
     @with_hires
+    @vram_budget_scope("image")
     def generate(
         self,
         *,
@@ -13748,6 +13757,7 @@ class DiffusionBackend:
         return self.status()
 
     def _unload_locked(self) -> None:
+        release_load_budget_fraction("image")
         state = self._state
         if state is None:
             return

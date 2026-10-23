@@ -634,3 +634,103 @@ def test_primary_card_rank_uses_the_reserve_the_planner_enforces(fraction, monke
     safe = {o: dm._safe_device_budget_mib(_card(f >> 20, t >> 20)) for o, (f, t) in cards.items()}
     assert safe[1] > safe[0]
     assert dd.rank_cuda_ordinals([0, 1]) == [1, 0]
+
+
+# -- #14816 r9: a loaded pipeline keeps the budget it was planned with ------------------------------------------------
+
+
+@pytest.fixture
+def no_pins(monkeypatch):
+    monkeypatch.setattr(dm, "_LOAD_BUDGET_FRACTIONS", {})
+
+
+def test_generation_guards_keep_the_load_time_budget(fraction, no_pins):
+    """Editing the Budget while a pipeline stays loaded must not move its generation-time reserve: the setting
+    applies on the next load."""
+
+    @dm.vram_budget_scope("image", load = True)
+    def load():
+        assert dm._user_budget_reserve_mib(10 * GiB) == 5 * GiB
+        fraction["value"] = (
+            0.70  # edited mid-load: this load still plans with the value it began with
+        )
+        assert dm._user_budget_reserve_mib(10 * GiB) == 5 * GiB
+        dm.commit_load_budget_fraction("image")
+
+    @dm.vram_budget_scope("image")
+    def generate():
+        return dm._user_budget_reserve_mib(10 * GiB), dm.user_budget_reserve_share()
+
+    fraction["value"] = 0.50
+    load()
+    fraction["value"] = 0.75
+    assert generate() == (5 * GiB, pytest.approx(0.50))
+    # A thread outside any scope (a worker the generation spawned) reads the committed snapshot too.
+    assert dm._user_budget_reserve_mib(10 * GiB) == 5 * GiB
+    # The next load reads the live value, and its commit replaces the snapshot.
+    load_again = dm.vram_budget_scope("image", load = True)(
+        lambda: (dm._user_budget_reserve_mib(10 * GiB), dm.commit_load_budget_fraction("image"))[0]
+    )
+    assert load_again() == 2560
+    assert generate()[0] == 2560
+    dm.release_load_budget_fraction("image")
+    fraction["value"] = 0.625
+    assert dm._user_budget_reserve_mib(10 * GiB) == 3840
+    fraction["value"] = vram_budget_settings.VRAM_FRACTION_DEFAULT
+    assert generate() == (0, 0.0)
+
+
+def test_each_backend_reads_its_own_snapshot(fraction, no_pins):
+    for owner, value in (("image", 0.50), ("video", 0.75)):
+        fraction["value"] = value
+        dm.vram_budget_scope(owner, load = True)(lambda o = owner: dm.commit_load_budget_fraction(o))()
+    fraction["value"] = vram_budget_settings.VRAM_FRACTION_DEFAULT
+    image = dm.vram_budget_scope("image")(lambda: dm._user_budget_reserve_mib(10 * GiB))
+    video = dm.vram_budget_scope("video")(lambda: dm._user_budget_reserve_mib(10 * GiB))
+    assert (image(), video()) == (5 * GiB, 2560)
+    # Unscoped: the tighter of the two resident plans.
+    assert dm._user_budget_reserve_mib(10 * GiB) == 5 * GiB
+
+
+def test_default_budget_reserve_stays_zero_with_a_pipeline_loaded(fraction, no_pins):
+    dm.vram_budget_scope("image", load = True)(lambda: dm.commit_load_budget_fraction("image"))()
+    assert dm._user_budget_reserve_mib(10 * GiB) == 0 and dm.user_budget_reserve_share() == 0.0
+
+
+def _scopes(fn, seen = None):
+    """Every ``vram_budget_scope`` wrapper in ``fn``'s decorator chain, followed through ``__wrapped__`` and through
+    closures (not every decorator here uses functools.wraps)."""
+    seen = set() if seen is None else seen
+    if not callable(fn) or id(fn) in seen or not hasattr(fn, "__code__"):
+        return []
+    seen.add(id(fn))
+    cells = dict(zip(fn.__code__.co_freevars, fn.__closure__ or ()))
+    found = []
+    if fn.__code__ is dm.vram_budget_scope("x")(lambda: None).__code__:
+        found.append((cells["owner"].cell_contents, cells["load"].cell_contents))
+    for inner in [getattr(fn, "__wrapped__", None)] + [c.cell_contents for c in cells.values()]:
+        found += _scopes(inner, seen)
+    return found
+
+
+def test_backend_entry_points_run_under_their_budget_scope():
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+    for cls, owner, loads, gens in (
+        (
+            DiffusionBackend,
+            "image",
+            ("begin_load", "_run_load", "download_plan", "load_pipeline"),
+            ("generate",),
+        ),
+        (
+            VideoBackend,
+            "video",
+            ("begin_load", "_run_load", "_run_load_h3_native", "download_plan", "load_pipeline"),
+            ("begin_generate", "generate"),
+        ),
+    ):
+        for name in loads:
+            assert (owner, True) in _scopes(getattr(cls, name)), (cls.__name__, name)
+        for name in gens:
+            assert (owner, False) in _scopes(getattr(cls, name)), (cls.__name__, name)

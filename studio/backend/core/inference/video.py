@@ -125,6 +125,9 @@ from .diffusion_multigpu import (
     with_load_selection,
 )
 from .diffusion_memory import (
+    commit_load_budget_fraction,
+    release_load_budget_fraction,
+    vram_budget_scope,
     DEFAULT_BASE_OVERHEAD_MIB,
     DEFAULT_GROUP_BLOCKS,
     MEMORY_MODE_AUTO,
@@ -4508,6 +4511,7 @@ class VideoBackend:
 
     # ── background load + progress ───────────────────────────────────────────
 
+    @vram_budget_scope("video", load = True)
     def begin_load(
         self,
         repo_id: str,
@@ -4667,6 +4671,7 @@ class VideoBackend:
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
     @scoped_local_files_only
+    @vram_budget_scope("video", load = True)
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -5158,6 +5163,7 @@ class VideoBackend:
                     self._loading.error = modelscope_missing(exc) or redact_native_paths(str(exc))
                     self._loading.error_code = unified_memory_refusal_code(exc)
 
+    @vram_budget_scope("video", load = True)
     def _run_load_h3_native(
         self,
         *,
@@ -5869,6 +5875,7 @@ class VideoBackend:
                             }
                         ),
                     )
+                    commit_load_budget_fraction("video")
                 finally:
                     self._teardown_waiters -= 1
         if native_device == "cpu":
@@ -7016,6 +7023,7 @@ class VideoBackend:
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
 
+    @vram_budget_scope("video", load = True)
     def download_plan(
         self,
         repo_id: str,
@@ -7985,6 +7993,7 @@ class VideoBackend:
     @scoped_allow_oversized_load
     @rocm_probe_load_scoped
     @scoped_local_files_only
+    @vram_budget_scope("video", load = True)
     def load_pipeline(
         self,
         repo_id: str,
@@ -9964,6 +9973,7 @@ class VideoBackend:
                     resolved = resolved,
                     bg_compile = load_bg_compile,
                 )
+                commit_load_budget_fraction("video")
                 self._precommit_globals = None
                 pending_encoder = self._ltx25_pending_encoder
                 if (
@@ -11202,6 +11212,7 @@ class VideoBackend:
                 h3_residency = residency,
                 resolved = resolved,
             )
+            commit_load_budget_fraction("video")
             self._precommit_globals = None
         logger.info(
             "video.loaded: %s (%s, modular diffusers, speed=%s%s, transformer_quant=%s, "
@@ -11346,6 +11357,7 @@ class VideoBackend:
                 except Exception:  # noqa: BLE001 -- reset is best-effort, never fail a generation
                     pass
 
+    @vram_budget_scope("video")
     def begin_generate(
         self,
         *,
@@ -11730,6 +11742,7 @@ class VideoBackend:
                     video_id = (video or {}).get("id"),
                 )
 
+    @vram_budget_scope("video")
     def generate(
         self,
         *,
@@ -13445,6 +13458,7 @@ class VideoBackend:
         """Free the committed state. The caller holds _generate_lock (no generation
         in flight) AND _lock, so the whole teardown is one atomic step: a generation
         cannot observe a half-torn-down backend."""
+        release_load_budget_fraction("video")
         state, self._state = self._state, None
         if state is not None:
             server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)

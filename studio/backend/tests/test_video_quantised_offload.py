@@ -604,11 +604,19 @@ def test_conventional_video_generate_guard_charges_the_reserve(
             memory_reserved = lambda device = None: 0,
         ),
     )
-    backend._state = dataclasses.replace(
-        backend._state, device = "cuda", offload_policy = "model", vram_floor_mib = 27300
-    )
+
+    def _as_on_cuda():
+        backend._state = dataclasses.replace(
+            backend._state, device = "cuda", offload_policy = "model", vram_floor_mib = 27300
+        )
+
+    _as_on_cuda()
     backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
     fraction["value"] = 0.80  # 40 GIB free less a 16 GIB reserve cannot hold the 27.3 GIB floor
+    # #14816 r9: the Budget applies on the next load, so the loaded pipeline keeps the guard it was placed with.
+    backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
+    _load_gguf(backend, tmp_path)
+    _as_on_cuda()
     with pytest.raises(RuntimeError, match = "needs about"):
         backend.generate(prompt = "a sloth", width = 256, height = 256, num_frames = 9, fps = 8)
 
