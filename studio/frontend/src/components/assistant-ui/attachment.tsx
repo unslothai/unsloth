@@ -267,7 +267,7 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
         <HoverCardContent
           side="top"
           align="start"
-          className="w-[min(26rem,calc(100vw-2rem))] rounded-[14px] p-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[0_8px_28px_-6px_var(--background)]"
+          className="w-[min(26rem,calc(100vw-2rem))] rounded-xl p-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[0_8px_28px_-6px_var(--background)]"
         >
           <div className="flex max-h-80 flex-col divide-y divide-border/60 overflow-y-auto">
             {annotations.items.map((item, index) => (
@@ -408,7 +408,7 @@ const PastedTextAttachmentUI: FC<{
     variant === "card" ? (
       <button
         className={cn(
-          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
+          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
           CARD_SIZE,
           CARD_EDGE,
           CARD_SURFACE,
@@ -442,7 +442,7 @@ const PastedTextAttachmentUI: FC<{
     ) : variant === "row" ? (
       <button
         className={cn(
-          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-[18px] px-4 py-3 text-left transition-colors",
+          "aui-pasted-text-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
           SENT_ROW_WIDTH,
           CARD_EDGE,
           "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",
@@ -557,7 +557,7 @@ const ComposerAttachmentCard: FC = () => {
       <AttachmentPreviewDialog redactFromReload={true}>
         <button
           className={cn(
-            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
+            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-lg text-left transition-colors",
             CARD_SIZE,
             CARD_EDGE,
             !src && CARD_SURFACE,
@@ -587,7 +587,7 @@ const SentImageTile: FC = () => {
       <AttachmentPreviewDialog redactFromReload={false}>
         <button
           className={cn(
-            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-[18px] transition-opacity hover:opacity-85",
+            "aui-attachment-image-tile block cursor-pointer overflow-hidden rounded-lg transition-opacity hover:opacity-85",
             layout === "list" ? SENT_IMAGE_SIZE : SENT_IMAGE_SIZE_COMPACT,
             CARD_EDGE,
           )}
@@ -657,7 +657,7 @@ const SentFileItem: FC = () => {
         {layout === "list" ? (
           <button
             className={cn(
-              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-[18px] px-4 py-3 text-left transition-colors",
+              "aui-attachment-row flex max-w-full cursor-pointer items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors",
               SENT_ROW_WIDTH,
               CARD_EDGE,
               "hover:bg-[color-mix(in_oklab,var(--foreground)_5%,transparent)]",

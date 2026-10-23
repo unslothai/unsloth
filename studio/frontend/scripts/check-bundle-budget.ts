@@ -393,21 +393,26 @@ export const BUDGET = {
   // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
+  // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
+  // adopt-only pick in the chat runtime, +1,970 B raw / +627 B transfer (6,922,858 -> 6,924,828 B raw,
+  // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
+  // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
+  // about 100 B over a local one).
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
   // eager providers-api chunk, not new code. Raised by that.
-  // Merged with main at d436a92f2 the build measures 6,925,089 B raw / 2,085,994 B transfer (Node 24, 98 chunks).
+  // Merged with main at 85ee7d903 the build measures 6,927,839 B raw / 2,086,988 B transfer (Node 24).
   // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
   // The chat's Unsloth tools preset and the "Not in chat" note add 233 B raw / 15 B transfer (measured
   // against the MCP tab build, one machine and build, Node 24, 97 chunks), in the eager chat chunk and English
   // catalog. Raised by that.
   // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
   // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
-  // Merged with the MCP tab branch at 09e8117e2 the build measures 6,925,496 B raw / 2,086,182 B transfer (Node 24,
-  // 98 chunks). Raised to that plus 500 B raw / 200 B transfer.
-  transferBytes: 2_086_382,
-  rawBytes: 6_925_996,
+  // Merged with the MCP tab branch at 20d148829 the build measures 6,928,242 B raw / 2,087,124 B transfer (Node 24).
+  // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
+  transferBytes: 2_087_324,
+  rawBytes: 6_928_742,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -4022,7 +4022,8 @@ def _request_may_use_saved_provider_key(request: Any) -> bool:
         verified = auth_storage.validate_api_key_account(token, touch = False)
         if verified is None or verified[0].get("role") not in (None, "owner"):
             return False
-        if verified[0].get("key_name") != auth_storage.UNSLOTH_START_API_KEY_NAME:
+        # The purpose, not the name: a pre-reservation namesake carries no purpose.
+        if verified[0].get("key_purpose") != auth_storage.UNSLOTH_START_API_KEY_PURPOSE:
             return False
         return not auth_storage.is_internal_api_key(token)
     except Exception:
@@ -4358,6 +4359,9 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
             };
           }
         };
+        const annotationFactory = (post) => {
+          /* ANNOTATE_JS */
+        };
         // Named for canvasStack() in the frontend, which trims from this frame down.
         const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
@@ -4369,6 +4373,22 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           captureConsole();
           document.write(html);
           document.close();
+          // Instantiate only on a parent command; the factory predates the page's meta CSP.
+          let annotation = null;
+          const postAnnotation = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
+          window.addEventListener("message", (event) => {
+            if (event.source !== parent) return;
+            const data = event.data;
+            if (!data || data.type !== "unsloth:browser-command") return;
+            if (data.command === "annotateInstall") {
+              if (!annotation) annotation = annotationFactory(postAnnotation);
+            } else if (data.command === "annotate") {
+              if (data.on === true) annotation?.start(data.color);
+              else annotation?.stop();
+            } else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
+            else if (data.command === "annotateNumbers") annotation?.number(data.numbers);
+          });
+          postAnnotation({ type: "annotate", event: "ready" });
           // document.open() drops listeners bound before it, so rebind here.
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
@@ -4386,6 +4406,12 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
     </script>
   </body>
 </html>"""
+
+
+def _artifact_preview_frame_html() -> str:
+    # Imported at request time: browser also uses the frame-ancestors policy from this module.
+    from routes.browser import _ANNOTATE_JS
+    return _ARTIFACT_PREVIEW_FRAME_HTML.replace("/* ANNOTATE_JS */", _ANNOTATE_JS, 1)
 
 
 async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
@@ -4412,7 +4438,7 @@ async def artifact_preview_frame(allow_network: bool = False):
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
     )
     return Response(
-        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        content = _artifact_preview_frame_html(),
         media_type = "text/html; charset=utf-8",
         headers = {
             "Cache-Control": "no-store",
@@ -4630,7 +4656,7 @@ async def mcp_app_frame(
         _mcp_app_domains(base_uri, local_schemes = False),
     )
     return Response(
-        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        content = _artifact_preview_frame_html(),
         media_type = "text/html; charset=utf-8",
         headers = {
             "Cache-Control": "no-store",
@@ -32644,26 +32670,36 @@ def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
 
 # Provider replay metadata agent clients drop: Gemini 3 answers 400 to a functionCall without its
 # thoughtSignature (tool call extra_content), and Anthropic to a tool continuation without its signed
-# thinking (message extra_content). Keep both by the tool ids the client echoes back.
+# thinking (message extra_content). Keep both by echoed tool id, capped per subject and overall.
 _CONNECTION_TOOL_EXTRAS: collections.OrderedDict = collections.OrderedDict()
 _CONNECTION_TOOL_EXTRAS_MAX = 4096
+_CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX = 64
 _CONNECTION_TOOL_EXTRAS_LOCK = threading.Lock()
 
 
 def _remember_connection_extra(subject: Optional[str], kind: str, tool_id: Any, extra: Any) -> None:
     if not isinstance(tool_id, str) or not tool_id or not isinstance(extra, dict) or not extra:
         return
-    key = (subject or "", kind, tool_id)
+    key = (kind, tool_id)
     with _CONNECTION_TOOL_EXTRAS_LOCK:
-        _CONNECTION_TOOL_EXTRAS[key] = extra
-        _CONNECTION_TOOL_EXTRAS.move_to_end(key)
-        while len(_CONNECTION_TOOL_EXTRAS) > _CONNECTION_TOOL_EXTRAS_MAX:
+        extras = _CONNECTION_TOOL_EXTRAS.setdefault(subject or "", collections.OrderedDict())
+        _CONNECTION_TOOL_EXTRAS.move_to_end(subject or "")
+        extras[key] = extra
+        extras.move_to_end(key)
+        while len(extras) > _CONNECTION_TOOL_EXTRAS_MAX:
+            extras.popitem(last = False)
+        while len(_CONNECTION_TOOL_EXTRAS) > _CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX:
             _CONNECTION_TOOL_EXTRAS.popitem(last = False)
 
 
 def _connection_extra(subject: Optional[str], kind: str, tool_id: Any) -> Optional[dict]:
     with _CONNECTION_TOOL_EXTRAS_LOCK:
-        return _CONNECTION_TOOL_EXTRAS.get((subject or "", kind, tool_id))
+        extras = _CONNECTION_TOOL_EXTRAS.get(subject or "")
+        extra = extras.get((kind, tool_id)) if extras is not None else None
+        if extra is not None:
+            # A replay keeps the account recent, so a new account does not evict its history.
+            _CONNECTION_TOOL_EXTRAS.move_to_end(subject or "")
+        return extra
 
 
 class _ConnectionExtrasRecorder:

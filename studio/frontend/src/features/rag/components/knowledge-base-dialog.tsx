@@ -331,15 +331,15 @@ export function KnowledgeBaseDialog({
               </div>
             ) : ragUnavailable ? (
               // An empty list on this host is not an empty store, so say which one it is.
-              <div className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
                 {ragUnavailableReason ?? "Knowledge bases are unavailable."}
               </div>
             ) : kbs.length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground">
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-md border">
+              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-xl border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -503,7 +503,7 @@ function KnowledgeBaseDocuments({
       ) : documents.length === 0 ? (
         <div
           className={cn(
-            "rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
+            "rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
             dragging && "border-primary/60 bg-primary/5 text-foreground",
           )}
         >
@@ -513,7 +513,7 @@ function KnowledgeBaseDocuments({
       ) : (
         <div
           className={cn(
-            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-md pr-0.5 transition-colors",
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-xl pr-0.5 transition-colors",
             dragging && "bg-primary/5 ring-1 ring-primary/60",
           )}
         >

@@ -566,12 +566,13 @@ export function HighlightedCode({
     [code, language],
   );
   return (
+    // Intrinsic code width keeps scrolling on the focusable section.
     <section
       // Safari never focuses a scroller on its own, so long examples need a tab stop.
       // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
       tabIndex={0}
       aria-label={label}
-      className="max-h-96 max-w-full overflow-auto scroll-rounded rounded-lg p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
+      className="max-h-96 max-w-full overflow-auto scroll-rounded rounded-lg p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre [&_pre]:!break-normal [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!min-w-max [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
       data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
     >
       <Streamdown
@@ -906,7 +907,7 @@ export function UsageExamples({
       <h2 className="settings-heading mb-2 text-sm font-semibold">
         {t("settings.apiKeys.usageExamples")}
       </h2>
-      <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
+      <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-muted/20">
         {/* No model-auto-switch row: ModelAutoSwitchSection renders that setting just below. */}
         {cloudflareUrl ? (
           <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
@@ -927,7 +928,7 @@ export function UsageExamples({
                       {/* Inline on the baseline, like a glyph after the label. */}
                       <button
                         type="button"
-                        className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("settings.apiKeys.secureHttpsHint")}
                       >
                         {/* Follows the UI font size, like the SettingsRow hint
@@ -949,7 +950,7 @@ export function UsageExamples({
               type="button"
               onClick={handleCopyUrl}
               className={cn(
-                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 !useTunnel && "opacity-50",
               )}
               title={cloudflareUrl}
@@ -1037,7 +1038,7 @@ export function UsageExamples({
             <button
               type="button"
               onClick={handleCopy}
-              className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="btn-fill absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               aria-label={t("settings.apiKeys.copySnippet")}
             >
               <HugeiconsIcon
@@ -1109,7 +1110,7 @@ export function UsageExamples({
           </div>
           <div className="relative mt-0.5 min-w-0">
             <code
-              className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground"
+              className="block min-w-0 overflow-x-auto rounded-full border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-ui-11 text-foreground"
               data-reload-snapshot-sensitive={apiKey ? "" : undefined}
             >
               {agentCommand}
@@ -1117,7 +1118,7 @@ export function UsageExamples({
             <button
               type="button"
               onClick={handleCopyAgent}
-              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="btn-fill absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               aria-label={t("settings.apiKeys.copySnippet")}
             >
               <HugeiconsIcon
@@ -1149,7 +1150,7 @@ export function UsageExamples({
               href={link.href}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-0.5 rounded font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex items-center gap-0.5 rounded-full font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {link.label}
               <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />

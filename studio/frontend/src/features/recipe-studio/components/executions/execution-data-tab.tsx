@@ -70,7 +70,7 @@ function RunningDatasetEmptyState({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex min-w-0 gap-3">
             <div
-              className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20"
+              className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/20"
             >
               {showProgress ? (
                 <HugeiconsIcon icon={GithubIcon} className="size-4 text-muted-foreground" />

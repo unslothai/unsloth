@@ -363,7 +363,7 @@ export function ProjectSourceDropzone({
           addFiles(Array.from(e.dataTransfer.files ?? []));
         }}
         className={cn(
-          "rounded-[22px] border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
+          "rounded-2xl border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
           dragging && "border-primary/60 bg-primary/5",
           disabled && "opacity-60",
         )}
@@ -386,7 +386,7 @@ export function ProjectSourceDropzone({
             aria-label="Add sources"
             disabled={disabled}
             onClick={() => inputRef.current?.click()}
-            className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-[22px] px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <HugeiconsIcon
               icon={FolderPlusIcon}
@@ -403,7 +403,7 @@ export function ProjectSourceDropzone({
               {staged.map((entry) => (
                 <li
                   key={entry.id}
-                  className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 hover:bg-muted/50"
+                  className="flex items-center gap-2.5 rounded-md px-2.5 py-2 hover:bg-muted/50"
                 >
                   <HugeiconsIcon
                     icon={FileEmpty02Icon}
@@ -439,7 +439,7 @@ export function ProjectSourceDropzone({
               type="button"
               disabled={disabled}
               onClick={() => inputRef.current?.click()}
-              className="flex items-center justify-center gap-2 rounded-[10px] py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="flex items-center justify-center gap-2 rounded-md py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={FolderPlusIcon}

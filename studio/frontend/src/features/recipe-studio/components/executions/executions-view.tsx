@@ -167,7 +167,7 @@ export function ExecutionsView({
                 src={imagePreview.src}
                 alt={`${name} preview`}
                 loading="lazy"
-                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-md border border-border/60 bg-muted/20 object-contain"
+                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-lg border border-border/60 bg-muted/20 object-contain"
               />
             </div>
           );
@@ -461,7 +461,7 @@ export function ExecutionsView({
 
             {(selectedExecution.status === "error" ||
               selectedExecution.status === "cancelled") && (
-              <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3">
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
                 <p className="text-sm font-semibold text-destructive">
                   {selectedExecution.status === "cancelled"
                     ? "Execution cancelled"

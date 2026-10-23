@@ -592,7 +592,7 @@ export function GeneralTab() {
               <button
                 type="button"
                 onClick={() => setShowToken((s) => !s)}
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
                 aria-label={
                   showToken
                     ? t("settings.general.hideToken")
@@ -795,7 +795,7 @@ export function GeneralTab() {
             variant="outline"
             size="sm"
             onClick={() => setRevokePreviewOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.previewSharing.revokeAction")}
           </Button>
@@ -899,7 +899,7 @@ export function GeneralTab() {
             variant="outline"
             size="sm"
             onClick={() => setConfirmOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.resetPreferences.action")}
           </Button>

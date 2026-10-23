@@ -29,7 +29,7 @@ function HubSectionRowSkeleton({
       {SKELETON_KEYS.map((key) => (
         <Skeleton
           key={key}
-          className="shrink-0 rounded-[20px]"
+          className="shrink-0 rounded-2xl"
           style={{ width, height }}
         />
       ))}
@@ -71,7 +71,7 @@ export const HubSectionRow = memo(function HubSectionRow({
           type="button"
           onClick={onOpenList}
           aria-label={`See all ${title}`}
-          className="hub-section-title group/section -mx-1 inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1 text-ui-18 font-semibold tracking-[-0.02em] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="hub-section-title group/section -mx-1 inline-flex cursor-pointer items-center gap-1.5 rounded-full px-1 text-ui-18 font-semibold tracking-[-0.02em] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {title}
           <ChevronRightIcon

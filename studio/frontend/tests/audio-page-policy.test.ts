@@ -440,7 +440,7 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
 test("history-only downloads save the fetched blob without caching a URL", () => {
   assert.match(
     audioPageSource,
-    /handleDownloadClipById[\s\S]*galleryCache\.srcById\.get\(clip\.id\) \?\? null,\s*\(\) => fetchClipBlob\(clip\.url\),/,
+    /handleDownloadClipById[\s\S]*saveAudio\(\s*clipFileName\(clip\),\s*null,\s*\(\) => fetchClipBlob\(clip\.url\),/,
   );
   assert.doesNotMatch(
     audioPageSource,
