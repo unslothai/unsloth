@@ -401,10 +401,10 @@ export const BUDGET = {
   // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +146 B transfer (6,925,639 ->
   // 6,926,187 B raw, 2,086,290 -> 2,086,436 B transfer against 0ee5cfc58, Node 24, 98 chunks), where main
   // was already over the line above. Set to the merged build plus about 200 B.
-  // Browser use step names, docs link and card fence strip (#14681): about +1.9 KB raw / +0.7 KB transfer
-  // (6,764.4 KB raw, 2,037.7 KB transfer merged onto bb89072db, Node 24, 98 chunks). Measured plus the same margin.
-  transferBytes: 2_086_630,
-  rawBytes: 6_926_390,
+  // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +288 B transfer (6,924,738 ->
+  // 6,925,827 B raw, 2,086,221 -> 2,086,509 B transfer against bf172053ac, Node 26, 99 chunks). Raised by that.
+  transferBytes: 2_086_918,
+  rawBytes: 6_927_479,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
