@@ -1795,11 +1795,12 @@ def test_padded_null_is_dropped_where_the_schema_does_not_allow_null():
         "units": {"type": "string"},
         "note": {"type": ["string", "null"]},
         "tag": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "reset": {"const": None},
     }
     tools = [
         {"type": "function", "function": {"name": "weather", "parameters": {"properties": props}}}
     ]
-    args = {"city": "Paris", "units": None, "note": None, "tag": None}
+    args = {"city": "Paris", "units": None, "note": None, "tag": None, "reset": None}
     msgs = [
         {"role": "assistant", "tool_calls": [{"function": {"name": "weather", "arguments": args}}]}
     ]
@@ -1807,6 +1808,7 @@ def test_padded_null_is_dropped_where_the_schema_does_not_allow_null():
         "city": "Paris",
         "note": None,
         "tag": None,
+        "reset": None,
     }
 
 
