@@ -2499,8 +2499,7 @@ def _scaler_for_native(trainer):
             # counts), so 2+ ranks overflowing stepped on inf / NaN gradients. Clamp to 0 / 1.
             state = self._per_optimizer_states[id(optimizer)]
             state["found_inf_per_device"] = {
-                d: t.clamp(max = 1.0).reshape(())
-                for d, t in state["found_inf_per_device"].items()
+                d: t.clamp(max = 1.0).reshape(()) for d, t in state["found_inf_per_device"].items()
             }
 
     kwargs = {}
