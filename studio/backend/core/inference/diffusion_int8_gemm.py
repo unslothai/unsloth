@@ -587,8 +587,7 @@ def stock_gemm(xq: Any, wq: Any, xs: Any, ws: Any, bias: Any) -> Any:
 
 
 def _payload(kind: str, weight: Any) -> tuple:
-    """(int8 [N, K], scale [N]) off the live parameter, never a cached alias: a moved weight must not leave a stale
-    device or pin a copy."""
+    """(int8 [N, K], scale [N]) off the live parameter, never a cached alias (a moved weight must not go stale)."""
     if kind == "v1":
         impl = weight.original_weight_tensor.tensor_impl
         return impl.int_data, impl.scale.reshape(-1)
@@ -640,8 +639,7 @@ def _linear_forward(self: Any, x: Any) -> Any:
 
 
 def _hooked(module: Any) -> bool:
-    """A forward hook / pre-hook (the module's own or a global one) or an instance ``forward`` override: a fused path
-    that skips calling ``module`` would bypass it. Plain dict lookups, as in ``_swapped_rec``."""
+    """A forward (pre-)hook, own or global, or an instance ``forward``: a fused path skipping ``module`` would bypass it."""
     import torch
 
     d = module.__dict__
@@ -652,18 +650,14 @@ def _hooked(module: Any) -> bool:
 
 
 def _swapped_rec(module: Any) -> Optional[tuple]:
-    """The record of a Linear this module swapped, holding its install-time weight and no offload hook, else None: a
-    diffusers / accelerate hook on the Linear itself (leaf-level streaming) has to see the call, and a replaced weight
-    takes the stock path, as does a ``forward`` assigned over the installed ``_linear_forward``. A forward hook or
-    pre-hook (the module's own or a global one) also declines: the shared paths run the GEMM without calling the
-    module, so the hook would never see the call."""
+    """Record of a Linear we swapped with its install-time weight and no offload / forward hook or override, else None:
+    the shared paths run the GEMM without calling the module, so any of those would be bypassed."""
     import torch
 
     d = module.__dict__
     rec = d.get(_REC)
     if rec is None or _MARK not in d or "_diffusers_hook" in d or "_hf_hook" in d:
         return None
-    # a forward assigned over the installed one is what a module call runs: the shared paths would skip it
     if getattr(d.get("forward"), "__func__", None) is not _linear_forward:
         return None
     if d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
@@ -744,9 +738,7 @@ def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
 
 
 def _plain_silu(act: Any) -> bool:
-    """``act`` is still an exact, unhooked ``nn.SiLU`` (the one activation the fused prologue computes): one swapped
-    after install for GELU, a custom module or a ``SiLU`` subclass has to run itself. ``type() is`` folds to a guard
-    under dynamo, no graph break."""
+    """``act`` is an exact, unhooked ``nn.SiLU`` (the fused prologue hard-codes SiLU); ``type() is`` avoids a graph break."""
     from torch import nn
     return type(act) is nn.SiLU and not _hooked(act)
 
