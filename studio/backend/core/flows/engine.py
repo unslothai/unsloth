@@ -869,6 +869,9 @@ class FlowEngine:
         child.hf_token = parent.hf_token
         child.caller = parent.caller
         child.key_id = parent.key_id
+        # The called flow runs for whoever started the parent, but only with what its owner approved for that flow.
+        child.origin = parent.origin
+        child.approvals = await asyncio.to_thread(flows_db.get_capabilities, flow_id)
         ctx.on_cancel(lambda: self._fire_cancel_hooks(child))
         top = [
             n
