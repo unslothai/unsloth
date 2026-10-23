@@ -295,3 +295,10 @@ def test_join_videos_keeps_order_size_and_every_frame():
     assert len(frames) == 9
     assert frames[0].shape == frames[-1].shape == (48, 64, 3)
     assert frames[0][24, 32, 0] > 200 and frames[-1][24, 32, 2] > 200
+
+
+def test_grid_row_labels_wrap_between_words():
+    font = image_nodes._font(max(14, 384 // 18))
+    assert image_nodes._wrap_label("watercolor", 128, font) == "watercolor"
+    text = "film photo of a red fox"
+    assert image_nodes._wrap_label(text, 128, font).split() == text.split()

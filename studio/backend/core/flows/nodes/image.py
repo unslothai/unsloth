@@ -278,6 +278,15 @@ def _font(size: int) -> Any:
 
 
 MAX_GRID_SIDE = 6144
+
+
+def _wrap_label(text: str, width_px: int, font: Any) -> str:
+    """Wrap a row label to `width_px` between words, never inside one."""
+    return textwrap.fill(
+        text, width = max(6, width_px // max(8, font.size // 2 + 4)), break_long_words = False
+    )
+
+
 # Pillow's built-in caption font has no dashes or ellipsis; they would draw as empty boxes.
 _ASCII_PUNCT = str.maketrans({"\u2014": "-", "\u2013": "-", "\u2026": "..."})
 
@@ -313,7 +322,11 @@ def compose_grid(
     column_labels = [str(t).strip().translate(_ASCII_PUNCT) for t in column_labels or []][:columns]
     # XY plots: a header band above the columns and a label strip left of the rows; none without labels.
     top = (font.size * 2 + gap) if any(column_labels) else 0
-    left = min(cell, max(font.size * 6, cell // 3)) + gap if any(row_labels) else 0
+    # Wide enough for the longest word, so a row label wraps between words, never inside one.
+    longest = max((font.getlength(w) for t in row_labels for w in t.split()), default = 0)
+    left = (
+        min(cell, max(font.size * 6, cell // 3, int(longest) + gap)) + gap if any(row_labels) else 0
+    )
     width = left + columns * cell + (columns + 1) * gap
     height = top + rows * cell + (rows + 1) * gap
     try:
@@ -337,7 +350,7 @@ def compose_grid(
         )
     for r, text in enumerate(row_labels):
         y = top + gap + r * (cell + gap)
-        wrapped = textwrap.fill(text, width = max(6, (left - gap) // max(8, font.size // 2 + 4)))
+        wrapped = _wrap_label(text, left - gap, font)
         box = draw.multiline_textbbox((0, 0), wrapped, font = font, spacing = 4)
         draw.multiline_text(
             (gap, y + (cell - (box[3] - box[1])) // 2 - box[1]),
