@@ -286,7 +286,11 @@ def _open_window(module: Any, dev: Any) -> Any:
     graphs = _live_graphs(dev)
     generation = _capture_generation(dev)
     accounted = getattr(module, "_unsloth_video_graphs", None)
-    if accounted is None or graphs < accounted:
+    if graphs == 0:
+        # nothing alive on the card (a dropped graph freed its pool): nothing unaccounted can remain, as image probes
+        module._unsloth_video_graphs = accounted = 0
+        module._unsloth_video_graph_gen = generation
+    elif accounted is None or graphs < accounted:
         # the load's own graphs (every request starts above them), or fewer after a reset freed some
         first = accounted is None
         module._unsloth_video_graphs = accounted = graphs
@@ -343,6 +347,20 @@ def _failed_captures() -> int:
         return failed_capture_count()
     except Exception:  # noqa: BLE001
         return 0
+
+
+def live_speed_optims(pipe: Any, speed_optims: Any) -> tuple:
+    """``speed_optims`` without ``cuda_graph`` once this load's graphs were dropped or never engaged, so a request
+    keys on what it runs: a streamed load whose speed check dropped its graph runs eager and records eager peaks."""
+    optims = tuple(speed_optims or ())
+    if "cuda_graph" not in optims:
+        return optims
+    try:
+        from .diffusion_cuda_graph import live_status
+        _, live = live_status(None, optims, tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()))
+        return tuple(live)
+    except Exception:  # noqa: BLE001 - unreadable: keep the load's record
+        return optims
 
 
 def _keyed_graphs_live(pipe: Any, key: Any) -> bool:
