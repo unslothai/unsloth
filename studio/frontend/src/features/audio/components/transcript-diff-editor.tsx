@@ -74,13 +74,13 @@ export function TranscriptDiffEditor({
         disabled={disabled}
         aria-describedby={`${hintId} ${diffId}`}
         onChange={(event) => onChange(event.target.value)}
-        className="min-h-16 rounded-lg"
+        className="min-h-16"
       />
       {segments && changes ? (
         <p
           id={diffId}
           aria-label="Changes from the transcript"
-          className="rounded-xl bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
+          className="rounded-lg bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
         >
           {segments.map((segment, index) => {
             return (

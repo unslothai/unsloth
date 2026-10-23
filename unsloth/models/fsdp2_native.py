@@ -48,6 +48,8 @@ __all__ = [
 ]
 
 _PATCHED = "_unsloth_fsdp2_native_patched"
+# Set once shard_model sharded a model in this process.
+_SHARDED_ANY = False
 _NATIVE_FLAG = "_unsloth_fsdp2_native"
 # Leaf module types that are never a shard unit on their own, even when repeated in a ModuleList.
 _LEAF_TYPES = (
@@ -1470,6 +1472,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         from .fsdp2_save import install_dcp_bnb_state_dict
         install_dcp_bnb_state_dict()
     install_native_fsdp2_hooks()
+    global _SHARDED_ANY
+    _SHARDED_ANY = True  # fsdp2_launch then leaves a custom loop's Accelerator alone
     classes = sorted({type(u).__name__.removeprefix("FSDP") for u in wrapped})
     note = ""
     if qlora is not None:
@@ -1621,6 +1625,32 @@ def native_full_state_dict(
     return get_model_state_dict(model, options = options)
 
 
+def _reshard_after_forward_off(unit):
+    """Keep `unit` gathered after its forward. FSDPModule.set_reshard_after_forward exists from torch
+    2.8; on 2.6 / 2.7 set the param group's post-forward mesh the same way (None is what
+    reshard_after_forward = False resolves to). Returns what _reshard_after_forward_restore needs."""
+    if hasattr(unit, "set_reshard_after_forward"):
+        unit.set_reshard_after_forward(False, recurse = False)
+        return None
+    group = getattr(unit._get_fsdp_state(), "_fsdp_param_group", None)
+    if group is None:
+        return None
+    previous = group.post_forward_mesh_info
+    group.post_forward_mesh_info = None
+    return (group, previous)
+
+
+def _reshard_after_forward_restore(unit, saved):
+    if hasattr(unit, "set_reshard_after_forward"):
+        unit.set_reshard_after_forward(
+            getattr(unit, "_unsloth_reshard_after_forward", True), recurse = False
+        )
+        return
+    if saved is not None:
+        group, previous = saved
+        group.post_forward_mesh_info = previous
+
+
 @contextlib.contextmanager
 def native_fsdp2_unsharded(model):
     """Collective (every rank must enter): gather every unit's whole weights and keep them gathered,
@@ -1642,9 +1672,10 @@ def native_fsdp2_unsharded(model):
             root.__dict__["_unsloth_unsharded_depth"] -= 1
         return
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
+    saved = {}
     try:
         for unit in units:
-            unit.set_reshard_after_forward(False, recurse = False)
+            saved[id(unit)] = _reshard_after_forward_off(unit)
         for unit in units:
             unit.unshard()
         yield model
@@ -1652,9 +1683,8 @@ def native_fsdp2_unsharded(model):
         root.__dict__["_unsloth_unsharded_depth"] = 0
         for unit in units:
             unit.reshard()
-            unit.set_reshard_after_forward(
-                getattr(unit, "_unsloth_reshard_after_forward", True), recurse = False
-            )
+            if id(unit) in saved:
+                _reshard_after_forward_restore(unit, saved[id(unit)])
 
 
 @contextlib.contextmanager

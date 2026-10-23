@@ -49,6 +49,9 @@ function searchHarness(request: typeof fetch) {
         usePlatformStore: (select: (s: unknown) => unknown) =>
           select({ deviceType: "linux" }),
       },
+      "@/lib/model-size": {
+        ggufRepoParams: (_id: string, total: number | undefined) => total,
+      },
       "@/lib/hf-endpoint": {
         getHfEndpoint: () => endpoint,
         useHfEndpoint: () => endpoint,

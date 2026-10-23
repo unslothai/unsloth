@@ -422,7 +422,7 @@ function ToolFallbackResult({
                 src={`data:${img.mimeType};base64,${img.data}`}
                 alt={`Tool result ${i + 1}`}
                 loading="lazy"
-                className="max-w-full rounded border border-border"
+                className="max-w-full rounded-lg border border-border"
               />
             ))}
           </div>
