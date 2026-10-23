@@ -525,12 +525,17 @@ def test_while_leased_other_callers_get_409_and_plain_reasserts_pass(no_lease, m
 def test_a_reassert_under_a_lease_never_evicts_the_leased_model(no_lease, monkeypatch):
     from core.inference import gpu_residency
 
-    made_room = []
+    made_room, released = [], []
     monkeypatch.setattr(gpu_residency, "coreside_locked", lambda *a, **k: made_room.append(a))
+    monkeypatch.setattr(arb, "_release_mask_segmenter", lambda *a, **k: released.append("mask"))
+    monkeypatch.setattr(
+        arb, "_release_idle_video_servers", lambda *a, **k: released.append("video")
+    )
     monkeypatch.setattr(arb, "_owner", arb.CHAT)
     monkeypatch.setattr(arb, "_residents", {arb.DIFFUSION: None, arb.CHAT: None})
     arb.acquire_for(arb.CHAT, policy = "fit")  # no lease: a re-assert makes room as before
     assert len(made_room) == 1
+    released.clear()
     lease = arb.operation_lease("bench", "run-1", 60, label = "Benchmark Image")
     lease.__enter__()
     arb._lease_holder.set(None)  # a chat request from outside the lease
@@ -539,7 +544,7 @@ def test_a_reassert_under_a_lease_never_evicts_the_leased_model(no_lease, monkey
         arb.acquire_for(arb.CHAT)  # Off would evict the other resident outright
     finally:
         arb._lease = None
-    assert len(made_room) == 1
+    assert len(made_room) == 1 and released == []  # the segmenter and video servers stay up too
     assert arb.DIFFUSION in arb._residents
 
 
