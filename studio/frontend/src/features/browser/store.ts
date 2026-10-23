@@ -3,7 +3,7 @@
 
 import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
-import { unwrapRedirect } from "./address";
+import { localOriginOf, unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
 import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
@@ -726,9 +726,18 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (!isWeb(request.url)) return;
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
-          const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
+          let current = currentEntry(tab);
+          // A native view is rebuilt, losing its history, when it enters or leaves a local origin.
+          const rebuilt = nativeWebHistory && current.kind === "web" && localOriginOf(current.url) !== localOriginOf(request.url);
+          const replace = options?.replace ?? (nativeWebHistory && current.kind === "web" && !rebuilt);
+          // So the page it leaves is kept as reached (after redirects and router moves), not as requested.
+          if (rebuilt && !replace && current.kind === "web" && current.method !== "POST" && tab.displayUrl && isWeb(tab.displayUrl) && tab.displayUrl !== current.url) {
+            const reached = webEntry(tab.displayUrl, "GET", undefined, undefined, current.temporary);
+            tab = { ...tab, history: tab.history.map((item) => (item === current ? reached : item)) };
+            current = reached;
+          }
           const entry = webEntry(request.url, request.method, request.body, request.from, request.temporary);
-          if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
+          if (request.from && !replace) sentFrom.set(entry, current);
           return pushEntry(tab, entry, replace);
         }),
       }));

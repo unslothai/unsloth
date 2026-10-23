@@ -119,6 +119,7 @@ export const he = {
     reload: "טען מחדש",
     more: "עוד",
     addressPlaceholder: "חפש או הזן URL",
+    local: "מקומי",
     suggested: "מוצעים",
     suggestedMenu: {
       open: "פתח",
@@ -486,6 +487,8 @@ export const he = {
       notMarked: "{name} נשמר, אך לא ניתן היה לסמן אותו כקובץ שהורד מהאינטרנט, ולכן המערכת לא תזהיר לפני שתפתח אותו.",
       blocked:
         "לא ניתן לפתוח כתובת זו בחלונית הדפדפן. היא פותחת רק אתרים ציבוריים.",
+      blockedLocal: "לא ניתן לפתוח כאן את הכתובת המקומית הזו. הקלד אותה בשורת הכתובת כדי לפתוח אותה.",
+      studioAddress: "זו הכתובת של Unsloth עצמו, ולכן לא ניתן לפתוח אותה בחלונית הדפדפן.",
       clearDataSettingDescription:
         "נקה את היסטוריית הגלישה, היסטוריית ההורדות, הדפים השמורים במטמון וקובצי ה-Cookie ונתוני האתרים שהדפים שומרים, מה שינתק אותך מאתרים.",
       clearDataDescription:
@@ -708,6 +711,8 @@ export const he = {
     temporaryChatDescription: "הצ'אט הזה לא יופיע בהיסטוריה שלך ולא נשמר. הוא נעלם כשתעזוב.",
   },
   picker: {
+    unifiedTightFit: "התאמה צפופה",
+    unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",
@@ -1155,6 +1160,7 @@ export const he = {
     },
     keyboardShortcuts: {
       title: "קיצורי מקשים",
+      intro: "כדי לשנות קיצור דרך, בחר את צירוף המקשים ואז הקש את המקשים החדשים",
       searchPlaceholder: "חיפוש קיצורי דרך…",
       keystrokePlaceholder: "הקש קיצור כדי לחפש",
       searchByKeystrokes: "חיפוש לפי הקשות",
@@ -1162,18 +1168,23 @@ export const he = {
       noResults: "לא נמצאו קיצורי דרך תואמים.",
       unassigned: "לא הוקצה",
       recording: "הקש על מקשים…",
-      recordingHint: "הקש על צירוף המקשים החדש, או Esc לביטול.",
       needsModifier: "הוסף ⌘, Ctrl או Alt. מקש בודד יחסום הקלדה רגילה.",
       conflict: "בשימוש גם בקיצור דרך אחר",
       conflictShadowed: "קיצור דרך אחר משתמש בצירוף זה ויופעל במקומו",
       edit: "שנה קיצור דרך",
-      clear: "הסר קיצור דרך",
       reset: "שחזר ברירת מחדל",
       resetAll: "אפס הכל לברירות מחדל",
-      primarySlot: "קיצור דרך",
-      alternateSlot: "קיצור דרך חלופי",
       browserReserved:
         "הדפדפן שלך עשוי לשמור צירוף זה לעצמו. הוא יעבוד באפליקציית שולחן העבודה.",
+      metaUnsupported: "לא ניתן להשתמש במקש Windows בקיצורי מקשים.",
+      altGraphUnsupported: "לא ניתן להשתמש בצירופי AltGr כקיצורי מקשים.",
+      desktopOnly: "באפליקציית שולחן העבודה בלבד",
+      groups: {
+        composer: "תיבת הכתיבה",
+        chat: "צ'אט",
+        navigation: "ניווט",
+        app: "אפליקציה",
+      },
       actions: {
         findInPage: {
           label: "חיפוש בדף",
@@ -1364,6 +1375,10 @@ export const he = {
           label: "צרף תמונות וקבצים",
           description: "הוסף קובץ מצורף לתיבת ההודעה",
         },
+        openComposerMenu: {
+          label: "פתיחת תפריט +",
+          description: "פתיחת תפריט + של תיבת הכתיבה עם כלים וקבצים מצורפים",
+        },
         sendMessage: {
           label: "שלח הודעה",
           description: "שלח את תוכן תיבת ההודעה",
@@ -1376,6 +1391,10 @@ export const he = {
           label: "הכוונת התשובה",
           description: "עצור את התשובה הנוכחית ושלח את הטיוטה מיד אחריה",
         },
+        stopGeneration: {
+          label: "עצירת היצירה",
+          description: "עצירת התשובה שנכתבת",
+        },
         cycleReasoningEffort: {
           label: "החלף רמת מאמץ חשיבה",
           description: "עבור בין רמות מאמץ החשיבה השונות",
@@ -1387,10 +1406,6 @@ export const he = {
         decreaseReasoningEffort: {
           label: "הפחת מאמץ חשיבה",
           description: "הורד את רמת מאמץ החשיבה בדרגה אחת",
-        },
-        toggleFastMode: {
-          label: "הפעל/השבת מצב מהיר",
-          description: "הפעל או כבה את המצב המהיר",
         },
         renameChat: {
           label: "שינוי שם צ'אט",
@@ -1919,20 +1934,14 @@ export const he = {
       },
       notifications: {
         sectionTitle: "התראות",
-        showLlamaUpdates: "התראות עדכון llama.cpp",
-        showLlamaUpdatesDescription:
-          "הודע כאשר גרסה חדשה יותר של llama.cpp זמינה להרצת מודלים חדשים. כבה אם אתה רק מאמן מודלים.",
-        showLoadedModels: "חיווי מודלים טעונים",
-        showLoadedModelsDescription:
-          "הצג כרטיס קטן בפינה הימנית התחתונה המפרט כל מודל שנמצא כרגע בזיכרון (צ'אט, דיבור, תמונה, וידאו), עם כפתור לפריקת כל אחד מהם.",
-        showAudioCppUpdates: "התראות עדכון של audio.cpp",
-        showAudioCppUpdatesDescription:
-          "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
-        showUnslothUpdates: "התראות עדכון של Unsloth",
-        showUnslothUpdatesDescription:
-          "הודעה כשגרסה חדשה יותר של Unsloth זמינה להתקנה.",
+        showLoadedModels: "כרטיס מודלים טעונים",
+        showLoadedModelsDescription: "כרטיס בפינה עם כל מודל טעון, לפריקה בלחיצה.",
+        updateReminders: "תזכורות עדכון",
+        updateRemindersDescription: "באיזו תדירות להציע גרסה חדשה כשהיא מוכנה.",
+        llamaHint: "מודלי צ'אט ו-GGUF",
+        audioHint: "דיבור, מוזיקה ותמלול",
         frequency: {
-          always: "תמיד",
+          always: "כשזמין",
           daily: "פעם ביום",
           weekly: "פעם בשבוע",
           biweekly: "כל שבועיים",
@@ -2092,6 +2101,18 @@ export const he = {
         openError: "לא ניתן לפתוח את התיקייה",
         copyError: "לא ניתן להעתיק את הנתיב",
       },
+      fullInstall: {
+        label: "סוג התקנה",
+        description:
+          "צ'אט בלבד (GGUF). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
+        action: "שדרג להתקנה מלאה",
+        confirmTitle: "לשדרג להתקנה המלאה?",
+        confirmDescription:
+          "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט (לפחות 5 GB של שטח דיסק) ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmAction: "שדרג",
+        keywords:
+          "full install upgrade סוג התקנה התקנה מלאה שדרוג צ'אט בלבד chat only gguf add training אימון train fine-tune pytorch torch ייצוא וידאו יצירת תמונות safetensors",
+      },
       repairInstall: {
         label: "תיקון התקנה",
         description:
@@ -2100,6 +2121,8 @@ export const he = {
         confirmTitle: "לתקן התקנה זו?",
         confirmDescription:
           "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה, אשר מתקינה מחדש את PyTorch עבור ה-GPU של מכונה זו בגרסה הנתמכת החדשה ביותר. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmDescriptionChatOnly:
+          "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה. זוהי התקנה של צ'אט בלבד, ולכן תוכנית ההתקנה גם משדרגת אותה להתקנה המלאה עם PyTorch, כמה ג'יגה-בייט בסך הכול. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "תקן כעת",
       },
       resetPreferences: {
@@ -2161,9 +2184,9 @@ export const he = {
         longestStreak: "רצף שיא",
         activityTitle: "פעילות טוקנים",
         activityDescription: {
-          daily: "{total} במהלך {weeks} האחרונים",
-          weekly: "שבוע שיא: {total} · {weeks} אחרונים",
-          cumulative: "{total} נצברו במהלך {weeks} האחרונים",
+          daily: "{total} מאז {since}",
+          weekly: "השבוע העמוס ביותר {total} · מאז {since}",
+          cumulative: "{total} בסך הכול מאז {since}",
         },
         mode: {
           daily: "יומי",
@@ -2172,8 +2195,9 @@ export const he = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "שבוע של {date} · {tokens}",
-        chartToggle: "תרשים",
-        chartToggleHint: "הצגת שבועי ומצטבר כתרשים עם צירים מסומנים",
+        emptyDayTooltip: "{date} · אין פעילות",
+        apiRequests: "{count} דרך API",
+        cumulativeTooltip: "עד שבוע {date} · {tokens} בסך הכול",
         less: "פחות",
         more: "יותר",
         insightsTitle: "תובנות פעילות",
@@ -2820,6 +2844,10 @@ export const he = {
         "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
+      showReplyTimes: "זמני תשובות",
+      showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
+      showReplyTimesKeywords:
+        "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
@@ -3231,6 +3259,7 @@ export const he = {
       relativeNever: "אף פעם",
       relativeJustNow: "זה עתה",
       expired: "פג תוקף",
+      expiredStatus: "פג תוקף",
       today: "היום",
       created: "נוצר {value}",
       used: "שימוש אחרון {value}",
@@ -3260,6 +3289,14 @@ export const he = {
         autoSwitchOff:
           "המודל נטען לפי שם רק כשהחלפת מודל אוטומטית פועלת. הפעל אותה, או טען קודם את המודל בדף השמע שלו.",
         useViaApi: "שימוש דרך API",
+      },
+      mediaApi: {
+        title: "API לתמונות ולווידאו",
+        description: "צרו תמונות וסרטונים מהקוד שלכם דרך נקודות הקצה התואמות ל-OpenAI.",
+        images: "תמונות",
+        video: "וידאו",
+        placeholderModel: "המודל המוצג הוא דוגמה. טענו מודל בדף התמונות או הווידאו ופתחו את זה מכפתור ה-API שלו כדי למלא אותו.",
+        autoSwitchOff: "המעבר האוטומטי למדיה כבוי, ולכן הבקשות רצות על המודל שהדף טען, לא משנה איזה שם הן נותנות.",
       },
       decisionApi: {
         title: "ממשק API להחלטות",
@@ -3342,6 +3379,24 @@ export const he = {
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
       audioCppVersion: "גרסת audio.cpp",
+      whisperCppVersion: "גרסת whisper.cpp",
+      engines: {
+        title: "מנועים",
+        description: "סביבות ההרצה ש-Unsloth משתמש בהן כדי להריץ מודלים. העדכונים מותקנים ברקע, ללא הפעלה מחדש.",
+        updatesLabel: "עדכוני מנועים",
+        notInstalled: "לא מותקן",
+        available: "{version} זמין",
+        upToDate: "מעודכן",
+        updatesAvailable: "יש עדכונים",
+        checking: "מחפש עדכונים...",
+        checkFailed: "לא ניתן היה לחפש עדכונים. נסה שוב מאוחר יותר.",
+        unsupported: "המנועים של התקנה זו מנוהלים מחוץ ל-Unsloth.",
+        checkForUpdates: "חיפוש עדכונים",
+        update: "עדכון",
+        updating: "מעדכן...",
+        updated: "המנועים עודכנו.",
+        updateFailed: "העדכון נכשל: {error}",
+      },
       hardware: "חומרה",
       gpu: "GPU",
       gpuIntegrated: "משולב",
@@ -3424,6 +3479,9 @@ export const he = {
         docsUpdating: "עדכון",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4780,5 +4838,42 @@ export const he = {
     cantRun: "לא ניתן היה להריץ",
     failed: "שגיאה {status}",
     invalidJson: "גוף הבקשה אינו JSON תקין.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "מודלים טעונים",
+      countOne: "{count} מודל טעון",
+      countMany: "{count} מודלים טעונים",
+      pillLabel: "{count}. הצג פרטים, או גרור כדי להזיז",
+      dragToMove: "גרור כדי להזיז",
+      dragHandleLabel: "הזז את המודלים הטעונים. מקשי החיצים מזיזים אותו מעט.",
+      collapse: "כווץ",
+      collapseLabel: "כווץ את המודלים הטעונים",
+      close: "סגירה",
+      closeLabel: "סגור את המודלים הטעונים",
+      backOnNextLoad: "יחזור בטעינת המודל הבאה",
+      ejectToFree: "הוצא כדי לפנות זיכרון",
+      ejectLabel: "הוצא את {model}",
+      openTarget: "פתח את {target}",
+      rowLabel: "{model}. פתח את {target}",
+      loading: "טוען",
+      ejecting: "מוציא",
+      stillInMemory: "עדיין בזיכרון",
+      alsoServing: "מספק שירות גם ל־",
+      noneLoaded: "אין מודלים טעונים",
+      noneLoadedDetail: "מודלים שתטען יוצגו כאן.",
+      otherAccount: "בשימוש בחשבון אחר",
+      otherAccountDetail: "הזיכרון תפוס על ידי מודל שאינך יכול לראות",
+      toastStillResident: "„{model}” נטען בזמן ההוצאה, ולכן עדיין משתמש בזיכרון. הוצא אותו שוב כדי לפנות אותו.",
+      toastUnverified: "התבקשה הוצאה של {model}, אך סביבת ההרצה לא אישרה זאת. בדוק את הכרטיס בעוד רגע.",
+      toastAlreadyFree: "{model} כבר לא היה טעון.",
+      toastReplaced: "{model} אינו טעון עוד. „{resident}” תפס את מקומו ולא נגעו בו.",
+      toastEjected: "{model} הוצא",
+      toastFailed: "הוצאת {model} נכשלה",
+    },
+    monitor: {
+      dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
+      reconnecting: "מתחבר מחדש...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

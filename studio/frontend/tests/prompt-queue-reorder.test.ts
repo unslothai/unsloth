@@ -40,7 +40,6 @@ test("nothing crosses the item about to dispatch", () => {
   // activeIndex 1: "a" is spent, so it is neither a source nor a destination.
   assert.equal(reorderPromptQueueItems(QUEUE, 0, 2, 1), null);
   assert.equal(reorderPromptQueueItems(QUEUE, 2, 0, 1), null);
-  // Moves at or past the active slot still go through.
   assert.deepEqual(reorderPromptQueueItems(QUEUE, 1, 3, 1), [
     "a",
     "c",
@@ -83,7 +82,6 @@ test("a move below the active slot leaves the dispatch target alone", () => {
 });
 
 test("a run with no active item reports no change", () => {
-  // run.index is -1 before the first dispatch, so there is nothing to retarget.
   assert.equal(
     promptQueueActiveItemChanged(QUEUE, ["b", "a", "c", "d"], -1),
     false,

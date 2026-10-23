@@ -2527,17 +2527,30 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
 
 
 def _h3_card_memory_bytes(
-    device: Optional[str], ordinal: Optional[int]
+    device: Optional[str],
+    ordinal: Optional[int],
+    *,
+    allow_context: bool = True,
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
-    ordinal 0."""
+    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / amd-smi / sysfs
+    first (no CUDA context); torch only when none answers and ``allow_context``, as the residency and pressure reads
+    always did. The pre-spawn budget passes False: it never pays for a context."""
     if device != "cuda":
         return None, None
+    found = _h3_read_card_memory_bytes(ordinal, no_context = True)
+    if found == (None, None) and allow_context:
+        found = _h3_read_card_memory_bytes(ordinal, no_context = False)
+    return found
+
+
+def _h3_read_card_memory_bytes(
+    ordinal: Optional[int], *, no_context: bool
+) -> tuple[Optional[int], Optional[int]]:
     try:
         from utils.hardware import get_visible_gpu_utilization, gpu_query
 
         with gpu_query.fresh_reads():
-            devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
+            devices = get_visible_gpu_utilization(no_context = no_context).get("devices", [])
         want = 0 if ordinal is None else int(ordinal)
         for entry in devices:
             if entry.get("visible_ordinal") != want:
@@ -2558,12 +2571,14 @@ def _h3_card_free_bytes(
     ordinal: Optional[int],
     *,
     single_card_only: bool = False,
+    allow_context: bool = True,
 ) -> Optional[int]:
     """Free VRAM of the H3 render card, or None. ``single_card_only``: None on multi-card boxes, where one card's
-    scalar budget applied to every card would steer sd.cpp's own device pick."""
+    scalar budget applied to every card would steer sd.cpp's own device pick. ``allow_context``: see
+    ``_h3_card_memory_bytes``."""
     if single_card_only and _h3_visible_card_count(device) != 1:
         return None
-    return _h3_card_memory_bytes(device, ordinal)[0]
+    return _h3_card_memory_bytes(device, ordinal, allow_context = allow_context)[0]
 
 
 def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
@@ -4995,10 +5010,11 @@ class VideoBackend:
                 return
             logger.error("video.load_failed: %s", exc)
             if self._state is not None:
-                from .gpu_arbiter import VIDEO, restore_owner_account
+                from .gpu_arbiter import VIDEO, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(VIDEO)
+                restore_media_need(VIDEO)
                 restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             # NVFP4 caches pin the denoiser, but a failed replacement keeps the old model, whose graph still uses them.
@@ -5625,6 +5641,7 @@ class VideoBackend:
                     native_device,
                     native_ordinal if native_device_name else None,
                     single_card_only = not native_device_name,
+                    allow_context = False,
                 )
                 if native_device != "cpu"
                 else None
@@ -9732,8 +9749,9 @@ class VideoBackend:
                 logger = logger,
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
-            # both branches through one offloaded forward; declines when CFG-parallel took the slot
-            install_cfg_batch(pipe, offload_policy = offload_policy, logger = logger)
+            install_cfg_batch(
+                pipe, offload_policy = offload_policy, speed_mode = speed_mode, logger = logger
+            )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
@@ -13539,6 +13557,7 @@ class VideoBackend:
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
+            "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
@@ -13574,6 +13593,17 @@ def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
 
 _backend: Optional[VideoBackend] = None
 _backend_lock = threading.Lock()
+
+
+def _graph_engagement(pipe: Any) -> Optional[dict]:
+    """``diffusion_cuda_graph.engagement`` for the loaded pipe; None when unreadable (never fails a status poll)."""
+    try:
+        from . import diffusion_cuda_graph
+        return diffusion_cuda_graph.engagement(
+            tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def get_video_backend() -> VideoBackend:

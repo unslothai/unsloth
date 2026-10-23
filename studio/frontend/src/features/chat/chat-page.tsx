@@ -232,7 +232,6 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
-  providerSupportsFastMode,
   reasoningFieldsAfterCatalogRefresh,
   resolveExternalReasoningEffort,
   subscribeModelCatalog,
@@ -436,7 +435,7 @@ function BrowserOverlay(): ReactElement {
         aria-label={t("browser.title")}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className="size-full overflow-hidden border-border bg-background outline-none sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-2xl sm:border sm:shadow-xl"
+        className="size-full overflow-hidden border-border bg-background outline-none sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-3xl sm:border sm:shadow-xl"
       >
         <Suspense fallback={null}>
           <BrowserPanel active={true} />
@@ -2237,7 +2236,7 @@ function ProjectLanding({
           {/* Slightly narrower than the composer max; every block shares this. */}
           <div className="mx-auto flex w-full max-w-[calc(44rem*var(--ui-space-scale,1))] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
             <div className="mb-12 flex items-center gap-4">
-              <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+              <span className="flex size-13 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground/80">
                 <HugeiconsIcon
                   icon={Folder02Icon}
                   strokeWidth={1.75}
@@ -2301,7 +2300,7 @@ function ProjectLanding({
             {projectTab === "sources" ? (
               <Suspense
                 fallback={
-                  <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                  <div className="mt-8 rounded-2xl bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
                     Loading sources…
                   </div>
                 }
@@ -2320,7 +2319,7 @@ function ProjectLanding({
                     return (
                       <div
                         key={`${item.type}:${item.id}`}
-                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] px-4 py-2"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md px-4 py-2"
                       >
                         <div className="min-w-0 flex-1">
                           <input
@@ -2367,7 +2366,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
                     >
                       <button
                         type="button"
@@ -2380,7 +2379,7 @@ function ProjectLanding({
                                 : { compare: item.id, project: projectId },
                           });
                         }}
-                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-[14px] px-4 py-2 text-left"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-md px-4 py-2 text-left"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-ui-15 leading-5 text-foreground">
@@ -3843,16 +3842,26 @@ export function ChatPage({
     onAttachVideo: handleNativeVideoDrop,
   });
 
+  // Every user pick, staged and no-op included: an automatic switch dispatched earlier must not land after it.
+  const userPickCountRef = useRef(0);
   const handleCheckpointChange = useCallback(
     (
       value: string,
       // Partial: the switch-back carries only what the resolver cannot recover.
-      meta?: Partial<ModelSelectorChangeMeta>,
+      meta?: Partial<ModelSelectorChangeMeta> & {
+        adoptOnly?: boolean;
+        stillWanted?: () => boolean;
+      },
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
+      if (!meta?.adoptOnly) userPickCountRef.current += 1;
       if (!value) return;
+      // NPU picks have no adopt path: loadNpuModel always reaches /load.
+      if (meta?.adoptOnly && (isNpuModelId(value) || isExternalModelId(value))) {
+        return;
+      }
       setPendingHubAutoLoad(null);
       const isExternalSelection =
         meta?.source === "external" || isExternalModelId(value);
@@ -4118,6 +4127,8 @@ export function ChatPage({
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
           forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
+          adoptOnly: meta?.adoptOnly,
+          stillWanted: meta?.stillWanted,
         };
         await stageOrLoad(selection);
       })();
@@ -4230,26 +4241,18 @@ export function ChatPage({
   const headerPickersShown = active && view.mode !== "compare";
   // This page stays mounted under a dialog, so `enabled` still says yes while the header is inert; without a
   // press-time check the chord opens a popover on the covered surface. Backgrounded, not "not in the foreground":
-  // an unrendered layout is not a covered one.
-  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
-  useShortcut(
-    "openModelPicker",
-    () => {
-      if (chatCovered()) return;
-      toggleModelSelector();
-    },
-    { enabled: headerPickersShown },
-  );
+  // an unrendered layout is not a covered one. A claim, so a covered press still reaches the dialog.
+  const chatUncovered = () => !isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut("openModelPicker", toggleModelSelector, {
+    enabled: headerPickersShown,
+    claims: chatUncovered,
+  });
   // The same condition the switcher renders by, so the chord cannot open a control that is not there.
   const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
-  useShortcut(
-    "openProjectPicker",
-    () => {
-      if (chatCovered()) return;
-      setProjectPickerOpen(true);
-    },
-    { enabled: projectSwitcherShown },
-  );
+  useShortcut("openProjectPicker", () => setProjectPickerOpen(true), {
+    enabled: projectSwitcherShown,
+    claims: chatUncovered,
+  });
   // A picker left open would come back on the next visit as a ghost. Off-route is one way to leave it (this page
   // stays mounted), and so is entering Compare or a standalone chat taking the project away. Adjusted during
   // render, as React prescribes for derived state.
@@ -4287,46 +4290,20 @@ export function ChatPage({
     },
     [],
   );
-  useShortcut(
-    "cycleReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(1, true);
-    },
-    { enabled: active },
-  );
-  useShortcut(
-    "increaseReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(1, false);
-    },
-    { enabled: active },
-  );
+  useShortcut("cycleReasoningEffort", () => shiftReasoningEffort(1, true), {
+    enabled: active,
+    claims: chatUncovered,
+  });
+  useShortcut("increaseReasoningEffort", () => shiftReasoningEffort(1, false), {
+    enabled: active,
+    claims: chatUncovered,
+  });
   useShortcut(
     "decreaseReasoningEffort",
-    () => {
-      if (chatCovered()) return;
-      shiftReasoningEffort(-1, false);
-    },
-    { enabled: active },
+    () => shiftReasoningEffort(-1, false),
+    { enabled: active, claims: chatUncovered },
   );
 
-  const fastModeSupported = providerSupportsFastMode(
-    activeExternalProviderType,
-    parseExternalModelId(inferenceCheckpoint)?.modelId ?? null,
-  );
-  useShortcut(
-    "toggleFastMode",
-    () => {
-      if (chatCovered()) return;
-      const state = useChatRuntimeStore.getState();
-      const next = !state.params.fastMode;
-      state.setParams({ ...state.params, fastMode: next });
-      toast.success(next ? "Fast mode on" : "Fast mode off");
-    },
-    { enabled: active && fastModeSupported },
-  );
   const { isMobile, pinned } = useSidebar();
   // The tour's orientation step spotlights the nav, so hold it open for that step. The hold is
   // never persisted, so a tour cannot rewrite the user's pin or the width default.
@@ -4528,6 +4505,19 @@ export function ChatPage({
         target.modelId,
         chatModelSwitchMeta(target, loraModels),
       );
+    },
+    [handleCheckpointChange, loraModels],
+  );
+  // Opening a chat may only take a slot that already serves its model as is: a reload stays a click.
+  const handleAutoSwitchToChatModel = useCallback(
+    (target: ChatModelSwitchTarget, stillWanted: () => boolean) => {
+      const picks = userPickCountRef.current;
+      handleCheckpointChange(target.modelId, {
+        ...chatModelSwitchMeta(target, loraModels),
+        isDownloaded: true,
+        adoptOnly: true,
+        stillWanted: () => stillWanted() && userPickCountRef.current === picks,
+      });
     },
     [handleCheckpointChange, loraModels],
   );
@@ -4825,7 +4815,9 @@ export function ChatPage({
                 checkpoint={inferenceCheckpoint}
                 activeGgufVariant={activeGgufVariant}
                 selectableModelIds={selectableModelIds}
+                loadedModels={loadedModels}
                 onSwitch={handleSwitchBackToChatModel}
+                onAutoSwitch={handleAutoSwitchToChatModel}
               />
             )}
             {view.mode !== "compare" && currentProjectId && (

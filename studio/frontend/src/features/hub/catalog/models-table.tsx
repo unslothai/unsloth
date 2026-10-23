@@ -405,7 +405,7 @@ export const ResultCard = memo(function ResultCard({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-[13px] max-md:text-ui-14 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-lg text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-md max-md:text-ui-14 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -532,12 +532,12 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-accent"
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-accent"
     >
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-8 shrink-0 rounded-[9px] text-ui-12"
+        className="size-8 shrink-0 rounded-sm text-ui-12"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">

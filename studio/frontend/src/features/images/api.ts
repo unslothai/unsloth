@@ -12,6 +12,8 @@ import {
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
+import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
+import type { SdControlsCapability } from "./lib/sd-controls";
 import type { ShiftControl } from "./lib/shift-choice";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
@@ -36,6 +38,7 @@ export interface DiffusionStatus {
   repo_id: string | null;
   /** Logical Hub identity when repo_id is an exact local snapshot. */
   display_repo_id?: string | null;
+  resident_mib?: number | null;
   family: string | null;
   supported_families?: string[];
   // Of those, the families shipped as Modular Diffusers pipelines (the family override classes an opaque folder).
@@ -69,6 +72,7 @@ export interface DiffusionStatus {
   // Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), null = default SDPA.
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  baked_loras?: string[] | null;
   vae_tiling?: boolean;
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or
   // on the native engine.
@@ -103,6 +107,7 @@ export interface DiffusionStatus {
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
+  sd_controls?: SdControlsCapability | null;
   // The Shift override the loaded flow-matching model takes; null/absent = no Shift control.
   shift_control?: ShiftControl | null;
   // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
@@ -116,6 +121,11 @@ export interface DiffusionStatus {
   // an older backend: no Enhance prompt toggle.
   supports_prompt_upsampler?: boolean;
   prompt_upsampler_default?: boolean;
+  // Hires fix the loaded model takes; null/absent = hidden (no img2img path, or an engine without it).
+  hires?: HiresCapability | null;
+  hires_unavailable_reason?: string | null;
+  // Model upscalers the Upscale workflow can use; empty/absent = Lanczos only.
+  upscale_models?: Array<{ id: string; label: string; scale: number }>;
 }
 
 export interface DiffusionSamplerOption {
@@ -269,6 +279,12 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
+  // Sent only off their defaults (lib/sd-controls); refused (400) for a model without them.
+  prompt_weighting?: boolean;
+  clip_skip?: number;
+  cfg_rescale?: number;
+  variation_seed?: number;
+  variation_strength?: number;
   // `shift` for "sd3", `base_shift` / `max_shift` for "flux"; omitted = the model's own schedule.
   shift?: number;
   base_shift?: number;
@@ -276,6 +292,10 @@ export interface DiffusionGenerateRequest {
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
+  // Hires fix (text to image only); omitted = off.
+  hires?: HiresRequest;
+  // Upscale workflow: a model upscaler id from status.upscale_models; omitted = Lanczos.
+  upscale_model?: string | null;
 }
 
 // One LoRA selection sent with a generation.
@@ -336,6 +356,8 @@ export interface GalleryImage {
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
+  // Engine that ran it ("diffusers" | "sd_cpp" | "mlx"); the same seed draws different noise on each.
+  engine?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
   transformer_quant?: string | null;
@@ -364,6 +386,11 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
+  prompt_weighting?: boolean | null;
+  clip_skip?: number | null;
+  cfg_rescale?: number | null;
+  variation_seed?: number | null;
+  variation_strength?: number | null;
   shift?: number | null;
   base_shift?: number | null;
   max_shift?: number | null;
@@ -374,6 +401,15 @@ export interface GalleryImage {
   mask_blur?: number | null;
   inpaint_only_masked?: boolean | null;
   inpaint_padding?: number | null;
+  upscale_model?: string | null;
+  // Hires fix; `width` / `height` stay the output size, hires_base_* the base pass.
+  hires_scale?: number | null;
+  hires_denoise?: number | null;
+  hires_steps?: number | null;
+  hires_upscaler?: string | null;
+  hires_guidance?: number | null;
+  hires_base_width?: number | null;
+  hires_base_height?: number | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
@@ -576,17 +612,6 @@ export async function listDiffusionLoras(family?: string): Promise<DiffusionLora
   return data.loras ?? [];
 }
 
-/** List diffusion ControlNet models, optionally filtered to a model family. */
-export async function listDiffusionControlNets(
-  family?: string,
-): Promise<DiffusionControlNetInfo[]> {
-  const qs = family ? `?family=${encodeURIComponent(family)}` : "";
-  const data = await parseJson<{ controlnets: DiffusionControlNetInfo[] }>(
-    await authFetch(`/api/models/diffusion-controlnets${qs}`),
-  );
-  return data.controlnets ?? [];
-}
-
 export interface GalleryPage {
   images: GalleryImage[];
   has_more: boolean;
@@ -602,31 +627,6 @@ export async function getGallery(offset = 0, limit = 50, archived = false): Prom
 }
 
 /** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
-/** Move one image to just after `afterId` (null = front). The server also decides the pin. */
-export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/move`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ after_id: afterId }),
-    }),
-  );
-}
-
-/** Copy one image into a chat project's folder. */
-export async function addGalleryImageToProject(
-  id: string,
-  projectId: string,
-): Promise<{ path: string; already: boolean }> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/project`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: projectId }),
-    }),
-  );
-}
-
 export async function setGalleryImageFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },

@@ -36,7 +36,7 @@ export function VariationGroupRow({
         className="size-3.5 shrink-0 text-muted-foreground"
       />
       <span className="min-w-0 flex-1 truncate">{first.prompt}</span>
-      <span className="shrink-0 rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground">
+      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground">
         {variationLabel(clips.length)}
       </span>
       <span

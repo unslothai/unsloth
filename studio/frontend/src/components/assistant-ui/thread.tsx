@@ -51,6 +51,7 @@ import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-lis
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
+import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
@@ -178,7 +179,10 @@ import {
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
-import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import {
+  sortProjectsByActivity,
+  useChatProjects,
+} from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { ResearchMessage } from "@/features/chat/components/research-message";
 import {
@@ -244,12 +248,15 @@ import {
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
+  isModEnter,
   isSurfaceInForeground,
   shortcutMatchingEvent,
   useKeyboardShortcutsStore,
   useShortcut,
+  useShortcutAvailable,
   useSettingsDialogStore,
   isMacPlatform,
+  resolveBindings,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
@@ -333,6 +340,7 @@ import {
   subscribeForkCounts,
   useForkInFlight,
   showForkCreatedToast,
+  showForkFailedToast,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -1929,6 +1937,21 @@ const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
   }, [threadId, anchor]);
 };
 
+// One read per source chat for the divider's label; a failed read is dropped so a later mount retries.
+const forkSourceTitles = new Map<string, Promise<string | null>>();
+
+function forkSourceTitle(sourceThreadId: string): Promise<string | null> {
+  let title = forkSourceTitles.get(sourceThreadId);
+  if (!title) {
+    title = readBackendChatThread(sourceThreadId).then((source) => {
+      if (source === undefined) forkSourceTitles.delete(sourceThreadId);
+      return source?.title?.trim() || null;
+    });
+    forkSourceTitles.set(sourceThreadId, title);
+  }
+  return title;
+}
+
 // Closes the history a fork inherited. Rendered by the message it follows, since the row slot
 // is propless and the boundary arrives through the store.
 const ForkContinuationRule: FC = () => {
@@ -1945,11 +1968,28 @@ const ForkContinuationRule: FC = () => {
       : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
   );
   const navigate = useNavigate();
+  const isAnchor = anchor !== undefined && anchor === messageId;
+  const [source, setSource] = useState<{ id: string; title: string | null } | null>(null);
+  useEffect(() => {
+    if (!isAnchor || !sourceThreadId) return;
+    let live = true;
+    void forkSourceTitle(sourceThreadId).then((title) => {
+      if (live) setSource({ id: sourceThreadId, title });
+    });
+    return () => {
+      live = false;
+    };
+  }, [isAnchor, sourceThreadId]);
   if (anchor === undefined || anchor !== messageId) return null;
+  const sourceTitle = source?.id === sourceThreadId ? source.title : null;
   const label = (
     <>
       <HugeiconsIcon icon={WorkflowCircle05Icon} strokeWidth={1.75} className="size-3.5" />
-      Continued from chat
+      {sourceTitle ? (
+        <span className="max-w-80 truncate">Forked from {sourceTitle}</span>
+      ) : (
+        "Continued from chat"
+      )}
     </>
   );
   const labelClass =
@@ -2525,6 +2565,23 @@ const GeneratedImageViewportOverlay: FC<{
   );
 };
 
+// From the end: the footer follows every message row, and a forward walk costs O(rows) where Chromium's `:scope >` is O(1).
+const childWithClass = (
+  parent: Element | null | undefined,
+  className: string,
+): HTMLElement | null => {
+  for (
+    let child = parent?.lastElementChild ?? null;
+    child;
+    child = child.previousElementSibling
+  ) {
+    if (child instanceof HTMLElement && child.classList.contains(className)) {
+      return child;
+    }
+  }
+  return null;
+};
+
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
@@ -2583,17 +2640,13 @@ const ThreadComposerDock: FC<{
   useLayoutEffect(() => {
     const dock = dockRef.current;
     const inner = dockInnerRef.current;
-    const viewport = dock?.parentElement?.querySelector<HTMLElement>(
-      ":scope > .aui-thread-viewport",
-    );
+    const viewport = childWithClass(dock?.parentElement, "aui-thread-viewport");
     if (!dock || !inner || !viewport) return;
     const resizeObserver = new ResizeObserver(() => apply());
     let observedFooter: Element | null = null;
     const apply = () => {
       // The footer is the real column box: WebKit's both-edges gutter reserves 2x the scrollbar on the right, clientWidth 1x.
-      const footer = viewport.querySelector(
-        ":scope > .aui-thread-viewport-footer",
-      );
+      const footer = childWithClass(viewport, "aui-thread-viewport-footer");
       if (footer && footer !== observedFooter) {
         if (observedFooter) resizeObserver.unobserve(observedFooter);
         resizeObserver.observe(footer);
@@ -2849,7 +2902,7 @@ const PendingAudioChip: FC = () => {
   }
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
         <button
@@ -3864,6 +3917,14 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
+  // assistant-ui's Escape cancels the run and prevents the key, which would block declining a tool request.
+  // Only when decline would take that Escape: its card is keyboard-ready on this screen (not parked in a
+  // background chat, where Escape would then stop nothing), and not once rebound.
+  const declineMounted = useShortcutAvailable("declineToolRequest", true);
+  const declineOwnsEscape = useKeyboardShortcutsStore((s) => {
+    const bindings = resolveBindings(s.overrides, "declineToolRequest");
+    return bindings.primary === "Escape" || bindings.alternate === "Escape";
+  });
   const composerFocusable = useContext(ChatComposerFocusableContext);
   // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
   // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
@@ -5844,6 +5905,7 @@ const Composer: FC<{
                 // no effect on Latin / CJK / Devanagari.
                 dir="auto"
                 {...inputProps}
+                cancelOnEscape={!(declineMounted && declineOwnsEscape)}
                 // Capture, so inputProps keeps the handlers it already owns.
                 onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
@@ -5860,7 +5922,7 @@ const Composer: FC<{
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-full bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
@@ -6965,11 +7027,8 @@ const ComposerToolsMenu: FC<{
         externalSelection?.modelId,
       ) !== true) ||
     incognito;
-  // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
-  const recentProjects = [...projects]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 3);
+  const recentProjects = sortProjectsByActivity(projects).slice(0, 3);
   const openProject = (projectId: string) => {
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
@@ -7049,6 +7108,22 @@ const ComposerToolsMenu: FC<{
       if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
+
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // The open menu inerts the composer, so closing skips the gate.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
 
   const runPromptList = useCallback(
     (items: string[], fromDialog = false) => {
@@ -7313,15 +7388,12 @@ const ComposerToolsMenu: FC<{
       }}
       onRunList={(items) => runPromptList(items, true)}
     />
-    <DropdownMenu
-      onOpenChange={(open) => {
-        if (open) void refreshRecentPrompts();
-      }}
-    >
+    <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
           aria-label="Tools and attachments"
+          data-pill-label="Add files and more"
           className="unsloth-composer-plus"
           data-tour="chat-plus-menu"
         >
@@ -7596,8 +7668,32 @@ const ComposerRightControls: FC<{
     // A reply replayed after a reload has no adapter run for Cancel to abort.
     stopRecoveredRun(threadRemoteId);
   };
+  const aui = useAui();
+  const chatActive = useChatActive();
+  const threadRunning = useAuiState(({ thread }) => thread.isRunning);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  // Claimed only while foreground: Compare keeps this composer mounted and inert behind its own.
+  useShortcut(
+    "stopGeneration",
+    () => {
+      const research = isResearchActive;
+      stop();
+      if (research) return;
+      const composer = aui.composer();
+      if (composer.getState().canCancel) composer.cancel();
+    },
+    {
+      enabled: chatActive && (threadRunning || isResearchActive),
+      claims: () =>
+        controlsRef.current !== null &&
+        !controlsRef.current.closest('[aria-hidden="true"], [inert]'),
+    },
+  );
   return (
-    <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+    <div
+      ref={controlsRef}
+      className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5"
+    >
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
@@ -7766,14 +7862,14 @@ const MessageError: FC = () => {
   const researchActive = useThreadResearchActive();
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
+      <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
         {/* Recovery path for interrupted/failed turns: regenerate in place. */}
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
               type="button"
-              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+              className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
               <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
               Retry
@@ -8143,7 +8239,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
     // The run is starting this tick; showing the bar first would flash a question that is
     // already being answered.
     return (
-      <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
+      <div className="aui-continue-bar mt-2 flex items-center gap-2 rounded-lg border border-border/70 bg-muted/50 p-2.5 text-sm text-muted-foreground">
         <Loader2Icon className="size-3.5 animate-spin" strokeWidth={1.75} />
         Continuing automatically.
       </div>
@@ -8151,7 +8247,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
   }
 
   return (
-    <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm">
+    <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border/70 bg-muted/50 p-2.5 text-sm">
       <span className="min-w-0 flex-1 text-muted-foreground">
         {incompleteLabel(reason)}.{remedy ? ` ${remedy}.` : ""}
       </span>
@@ -8401,7 +8497,7 @@ const AssistantMessage: FC = () => {
         {isEditing ? (
           // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
           // index.css zeroes the margin-bottom of the reply's last descendants.
-          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-2xl bg-muted pb-3">
+          <div className="aui-assistant-edit-root flex w-full flex-col overflow-hidden rounded-3xl bg-muted pb-3">
             <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent ?? [])}
@@ -8410,7 +8506,7 @@ const AssistantMessage: FC = () => {
               onInput={adjustHeight}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                if (isModEnter(e)) {
                   handleSave();
                 }
                 if (e.key === 'Escape') {
@@ -8453,6 +8549,8 @@ const AssistantMessage: FC = () => {
       </div>
 
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+        {/* First, so the action bar mounting on hover never moves it. */}
+        <AssistantMessageTime />
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
@@ -8534,7 +8632,7 @@ const ForkCountBadge: FC = () => {
   if (count <= 0) return null;
   return (
     <span
-      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
+      className="mx-1 inline-flex items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
       title={`${count} fork${count === 1 ? "" : "s"} from this message`}
     >
       <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-3" />
@@ -8589,12 +8687,10 @@ const useForkMessageAction = () => {
         search: { thread: result.thread.id },
         replace: false,
       });
-      showForkCreatedToast(result.containerSnapshotWarning);
+      showForkCreatedToast(result.containerSnapshotWarning, result.thread.title);
     } catch (error) {
       console.error("Failed to fork", error);
-      toast.error("Failed to fork", {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      showForkFailedToast(error);
     } finally {
       setPending(false);
     }
@@ -8642,7 +8738,7 @@ const ForkMessageButton: FC = () => {
 
   return (
     <TooltipIconButton
-      tooltip="Fork in new chat"
+      tooltip="Fork from here"
       disabled={forkDisabled}
       onClick={forkMessage}
     >
@@ -8783,7 +8879,7 @@ const DeleteMessageButton: FC = () => {
 };
 
 const MORE_MENU_CONTENT_CLASS =
-  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -8913,7 +9009,7 @@ const ContinueResponseMenuItemForLastMessage: FC = () => {
       onSelect={() => {
         startContinuation();
       }}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={ContinueArrowIcon} strokeWidth={1.75} className="size-icon" />
       Continue response
@@ -8935,7 +9031,7 @@ const EditAssistantMessageMenuItem: FC = () => {
     <ActionBarMorePrimitive.Item
       disabled={isRunning || researchActive}
       onSelect={() => setEditingId(messageId)}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={EditResponseIcon} strokeWidth={1.75} className="size-icon" />
       Edit response
@@ -9063,7 +9159,7 @@ const AssistantActionBar: FC = () => {
                 asChild={true}
                 onExport={exportMessageMarkdown}
               >
-                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                   <HugeiconsIcon
                     icon={Download01Icon}
                     strokeWidth={1.75}
@@ -9115,7 +9211,7 @@ const AssistantActionBar: FC = () => {
                       );
                     })();
                   }}
-                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                 >
                   <HugeiconsIcon
                     icon={FolderAttachmentIcon}
@@ -9147,7 +9243,7 @@ const UserMessageAudio: FC = () => {
   }
   return (
     <div className="col-start-2 flex justify-end">
-      <div className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
+      <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HeadphonesIcon className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
       </div>
@@ -9173,7 +9269,7 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
         {hasContent ? (
-          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}
@@ -9259,7 +9355,7 @@ const EditComposer: FC = () => {
   return (
     <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col py-3">
       <ComposerPrimitive.Root
-        className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-2xl bg-muted"
+        className="aui-edit-composer-root ml-auto flex w-full max-w-[85%] flex-col rounded-3xl bg-muted"
         onSubmit={(event) => {
           event.preventDefault();
           submitEdit();

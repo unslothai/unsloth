@@ -365,7 +365,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       </div>
       {/* Not a live region: it re-renders every second, so it would be read aloud on every tick. */}
       {deadlineAt !== null && (
-        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
+        <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-600">
           {hasExpired(deadlineAt - nowMs) ? (
             <>
               This instance is shutting down: it was reachable on the network
