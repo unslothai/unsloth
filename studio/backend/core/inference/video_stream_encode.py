@@ -562,6 +562,8 @@ def claim_stream(
     if session is None:
         return None
     _offered.session = None
+    if audio is None:
+        return session.take(video_frames, fps)
     return session.take(video_frames, fps, audio, audio_sample_rate)
 
 
