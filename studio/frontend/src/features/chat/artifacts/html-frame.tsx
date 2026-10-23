@@ -61,7 +61,7 @@ const NOTICE =
 const NOTICE_BODY =
   "text-ui-13 leading-[1.4] text-muted-foreground [&_p:not(:last-child)]:mb-2.5";
 const NOTICE_BUTTON = "h-6 rounded-full px-2 text-ui-12 font-medium";
-const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-foreground text-background hover:bg-foreground hover:opacity-90`;
+const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-action text-background hover:bg-action hover:opacity-90`;
 const NOTICE_SECONDARY = `${NOTICE_BUTTON} border-transparent bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]`;
 const NOTICE_CLOSE =
   "size-5 rounded-full bg-popover text-popover-foreground hover:bg-muted hover:text-popover-foreground dark:bg-card dark:hover:bg-muted";

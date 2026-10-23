@@ -14,8 +14,8 @@ import {
   Alert02Icon,
   Cancel01Icon,
   Mic01Icon,
+  PlusSignIcon,
   StopIcon,
-  Upload04Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -269,6 +269,7 @@ export function AudioSourceInput({
               fileRef.current?.click();
             }}
           >
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             Add it again
           </Button>
         </div>
@@ -390,7 +391,7 @@ export function AudioSourceInput({
               onClick={() => fileRef.current?.click()}
               className="flex min-h-[calc(88px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <HugeiconsIcon icon={Upload04Icon} className="size-5" />
+              <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
               <span>Drop an audio file here, or choose one</span>
               {hint ? <span className="text-ui-11p5">{hint}</span> : null}
             </button>

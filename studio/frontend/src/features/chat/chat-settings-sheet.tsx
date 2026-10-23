@@ -67,7 +67,7 @@ import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
 import { Edit03Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Braces, ChevronDown, ExternalLink } from "lucide-react";
+import { Braces, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
@@ -371,7 +371,8 @@ function CollapsibleSection({
             aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
             className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
           >
-            <ChevronDown
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
               className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
             />
           </button>
@@ -393,7 +394,8 @@ function CollapsibleSection({
               aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
               className="flex shrink-0 cursor-pointer items-center leading-none transition-colors hover:text-nav-fg"
             >
-              <ChevronDown
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
                 className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
               />
             </button>
@@ -407,7 +409,8 @@ function CollapsibleSection({
         >
           <span className="leading-none">{label}</span>
           <span className="flex shrink-0 items-center leading-none">
-            <ChevronDown
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
               className={cn("size-3.5", open ? "rotate-0" : "-rotate-90")}
             />
           </span>
@@ -1293,7 +1296,7 @@ export function ChatSettingsPanel({
                       className={cn(
                         "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
                         presetSaveState.isSaveReady &&
-                          "placeholder:text-primary/50",
+                          "placeholder:text-foreground/50",
                       )}
                       aria-label="Inference preset name"
                     />
@@ -1356,7 +1359,7 @@ export function ChatSettingsPanel({
                 className={cn(
                   "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
-                    "bg-primary text-primary-foreground hover:bg-primary/90",
+                    "bg-secondary text-secondary-foreground hover:bg-secondary/80",
                 )}
                 title={presetSaveState.title}
                 aria-label={presetSaveState.title}
@@ -1367,7 +1370,7 @@ export function ChatSettingsPanel({
                 type="button"
                 onClick={() => deletePreset(activePreset)}
                 disabled={!(settingsHydrated && activeCustomPreset)}
-                variant="outline"
+                variant="destructive"
                 size="sm"
                 className="h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
                 title={
@@ -1779,7 +1782,8 @@ export function ChatSettingsPanel({
                 >
                   <Braces className="size-3.5" />
                   Variables
-                  <ChevronDown
+                  <HugeiconsIcon
+                    icon={ChevronDownStandardIcon}
                     className={cn(
                       "size-3.5 transition-transform",
                       systemVariablesOpen && "rotate-180",

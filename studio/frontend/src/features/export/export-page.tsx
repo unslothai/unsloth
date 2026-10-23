@@ -111,6 +111,7 @@ import {
   reapRequest,
   reapSummaryLabel,
 } from "./lib/reap";
+import { exportRemoteCodeConsent } from "./lib/remote-code-consent";
 import { saveDirectoryField } from "./lib/save-directory";
 import { exportUnsupportedText } from "./lib/unsupported-text";
 import {
@@ -998,24 +999,25 @@ export function ExportPage() {
           exportMethod);
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
-    // Consent gate for an HF source's custom (auto_map) code, before handing off to runExport.
-    // A local checkpoint/model the user exported is trusted by default.
-    let trustRemoteCode = modelSource !== "hf";
+    // Consent gate for custom (auto_map) code, before handing off to runExport.
+    const consent = exportRemoteCodeConsent({
+      sourceMode,
+      modelSource,
+      source,
+      checkpointPath,
+    });
+    let trustRemoteCode = consent.trustByDefault;
     let approvedRemoteCodeFingerprint: string | null = null;
-    if (sourceMode !== "checkpoint") {
-      const remoteCodeOk = await confirmRemoteCodeIfNeeded({
-        modelName: source,
-        hfToken: actionHfToken || null,
-        // An HF source can need trust_remote_code via its YAML default with no auto_map to review;
-        // signal it so a YAML-only model does not export with it false.
-        requiresTrustRemoteCode: modelSource === "hf",
-        onApprove: (fingerprint) => {
-          trustRemoteCode = true;
-          approvedRemoteCodeFingerprint = fingerprint;
-        },
-      });
-      if (!remoteCodeOk) return;
-    }
+    const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+      modelName: consent.scanTarget,
+      hfToken: actionHfToken || null,
+      requiresTrustRemoteCode: consent.requiresTrustRemoteCode,
+      onApprove: (fingerprint) => {
+        trustRemoteCode = true;
+        approvedRemoteCodeFingerprint = fingerprint;
+      },
+    });
+    if (!remoteCodeOk) return;
 
     let installMissingDependencies = false;
     if (effectiveMethod === "merged") {
@@ -1725,7 +1727,7 @@ export function ExportPage() {
                             <Button
                               key={f.value}
                               type="button"
-                              variant={active ? "default" : "outline"}
+                              variant={active ? "dark" : "outline"}
                               size="sm"
                               onClick={() => toggleFormat(f.value)}
                               title={f.hint}
@@ -1850,7 +1852,7 @@ export function ExportPage() {
                       <div className="flex flex-wrap gap-2">
                         <Button
                           type="button"
-                          variant={loraAsGguf ? "outline" : "default"}
+                          variant={loraAsGguf ? "outline" : "dark"}
                           size="sm"
                           onClick={() => setLoraAsGguf(false)}
                           title="Adapter weights as safetensors."
@@ -1859,7 +1861,7 @@ export function ExportPage() {
                         </Button>
                         <Button
                           type="button"
-                          variant={loraAsGguf ? "default" : "outline"}
+                          variant={loraAsGguf ? "dark" : "outline"}
                           size="sm"
                           onClick={() => setLoraAsGguf(true)}
                           disabled={diffusionDisabledMethods.includes("gguf")}
@@ -1895,7 +1897,7 @@ export function ExportPage() {
                           <Button
                             type="button"
                             variant={
-                              adapterFormat === "mlx" ? "default" : "outline"
+                              adapterFormat === "mlx" ? "dark" : "outline"
                             }
                             size="sm"
                             onClick={() => setAdapterFormat("mlx")}
@@ -1906,7 +1908,7 @@ export function ExportPage() {
                           <Button
                             type="button"
                             variant={
-                              adapterFormat === "peft" ? "default" : "outline"
+                              adapterFormat === "peft" ? "dark" : "outline"
                             }
                             size="sm"
                             onClick={() => setAdapterFormat("peft")}
@@ -2000,7 +2002,7 @@ export function ExportPage() {
                         <Button
                           type="button"
                           variant={
-                            ggufTarget === "model" ? "default" : "outline"
+                            ggufTarget === "model" ? "dark" : "outline"
                           }
                           size="sm"
                           onClick={() => setGgufTarget("model")}
@@ -2011,7 +2013,7 @@ export function ExportPage() {
                         <Button
                           type="button"
                           variant={
-                            ggufTarget === "lora" ? "default" : "outline"
+                            ggufTarget === "lora" ? "dark" : "outline"
                           }
                           size="sm"
                           onClick={() => setGgufTarget("lora")}
@@ -2266,6 +2268,7 @@ export function ExportPage() {
               {!showPanel && (
                 <div className="flex items-center justify-end">
                   <Button
+                    variant="dark"
                     data-tour="export-cta"
                     disabled={!canExport}
                     onClick={handleOpenPanel}

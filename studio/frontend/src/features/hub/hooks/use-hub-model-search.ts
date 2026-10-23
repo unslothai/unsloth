@@ -30,6 +30,7 @@ import {
   providerSearchTerms,
 } from "../lib/provider-search";
 import { fetchWithTimeout } from "../lib/network";
+import { LruMap } from "../lib/lru-map";
 import {
   type UnslothSupport,
   type UnslothSupportStatus,
@@ -38,6 +39,7 @@ import {
 import {
   filterModelListing,
   hasModelSearchFilters,
+  needsModelMetadata,
   parameterRange,
   type ModelSearchFilters,
 } from "../lib/model-search-filters";
@@ -124,6 +126,7 @@ export interface HfModelResult {
 // HF rejects direction=1 (asc) for trendingScore — only descending is supported.
 const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
 const HF_SEARCH_TIMEOUT_MS = 15_000;
+const FILTER_METADATA_TTL_MS = 5 * 60 * 1000;
 
 // The HF listModels lib doesn't whitelist gguf metadata, but the listing supports it. Append
 // expand=gguf so GGUF repos report a param count for the size / OOM badge even when the name
@@ -876,6 +879,8 @@ export function useHubModelSearch(
     hideEmptyUploads?: boolean;
     channel?: HfModelSearchChannel | null;
     filters?: ModelSearchFilters;
+    /** False for a result the caller hides anyway; such rows skip per-row filter lookups. */
+    keepResult?: (result: HfModelResult) => boolean;
   },
 ) {
   const {
@@ -892,6 +897,7 @@ export function useHubModelSearch(
     hideEmptyUploads = false,
     channel = null,
     filters,
+    keepResult,
   } = options ?? {};
   const unslothOnly = ownerScope === "unsloth";
 
@@ -924,6 +930,16 @@ export function useHubModelSearch(
     [isPublisherQuery, trimmed],
   );
   const hfEndpoint = useHfEndpoint();
+  // Filter changes and retries reuse settled metadata; another Hub or token must not.
+  const filterMetadata = useMemo(
+    () =>
+      new LruMap<
+        string,
+        { data: Record<string, unknown> | null; expires: number }
+      >(2048),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hfEndpoint, accessToken],
+  );
   const hasFilters = !!filters && hasModelSearchFilters(filters);
   const filterRange = filters ? parameterRange(filters) : "";
   const createListing = useCallback(
@@ -1112,74 +1128,6 @@ export function useHubModelSearch(
     ],
   );
 
-  const createIter = useCallback(
-    (signal: AbortSignal) => {
-      if (!filters || !hasFilters) return createListing(signal);
-      const metadata = new Map<
-        string,
-        Promise<Record<string, unknown> | null>
-      >();
-      const requestJson = async (path: string) => {
-        const response = await fetchWithTimeout(
-          `${hfEndpoint}${path}`,
-          {
-            signal,
-            ...(accessToken
-              ? { headers: { Authorization: `Bearer ${accessToken}` } }
-              : {}),
-          },
-          HF_SEARCH_TIMEOUT_MS,
-        );
-        if ([401, 403, 404].includes(response.status)) return null;
-        if (!response.ok) {
-          throw new Error(
-            `Model filter metadata request failed (HTTP ${response.status})`,
-          );
-        }
-        // One repo's malformed config.json must not abort the whole search.
-        return response.json().catch(() => null);
-      };
-      const fetchJson = (path: string) => {
-        let request = metadata.get(path);
-        if (!request) {
-          request = requestJson(path);
-          metadata.set(path, request);
-        }
-        return request;
-      };
-      const filterPriority: ModelListingTransform = (iterator) =>
-        filterModelListing(iterator, filters, fetchJson);
-      const iterator = createListing(signal, filterPriority);
-      const pinnedPromise =
-        pinnedId &&
-        !unslothOnly &&
-        !channelOwner &&
-        !channelTagsKey &&
-        !channelQuery
-          ? modelInfo({
-              hubUrl: hfEndpoint,
-              name: pinnedId,
-              additionalFields: ALL_FIELDS,
-              fetch: makeHfFetch(signal),
-              ...(accessToken ? { credentials: { accessToken } } : {}),
-            }).catch(() => null)
-          : undefined;
-      return filterModelListing(iterator, filters, fetchJson, pinnedPromise);
-    },
-    [
-      createListing,
-      filters,
-      hasFilters,
-      pinnedId,
-      unslothOnly,
-      channelOwner,
-      channelTagsKey,
-      channelQuery,
-      hfEndpoint,
-      accessToken,
-    ],
-  );
-
   const deviceType = usePlatformStore((s) => s.deviceType);
   const mapModel = useMemo(
     () =>
@@ -1198,6 +1146,112 @@ export function useHubModelSearch(
       hideEmptyUploads,
     ],
   );
+  const needsMetadata = !!filters && needsModelMetadata(filters);
+  // Only a row the list can show is worth a per-row Hub request.
+  const keepRow = useMemo(
+    () =>
+      needsMetadata
+        ? (raw: unknown) => {
+            try {
+              const result = mapModel(raw);
+              return result !== null && (keepResult?.(result) ?? true);
+            } catch {
+              // Pagination skips a row its mapper throws on; skip it here too, not the search.
+              return false;
+            }
+          }
+        : undefined,
+    [needsMetadata, mapModel, keepResult],
+  );
+
+  const createIter = useCallback(
+    (signal: AbortSignal) => {
+      if (!filters || !hasFilters) return createListing(signal);
+      const metadata = new Map<
+        string,
+        Promise<Record<string, unknown> | null>
+      >();
+      const requestJson = async (path: string) => {
+        const cached = filterMetadata.get(path);
+        if (cached && cached.expires > Date.now()) return cached.data;
+        const response = await fetchWithTimeout(
+          `${hfEndpoint}${path}`,
+          {
+            signal,
+            ...(accessToken
+              ? { headers: { Authorization: `Bearer ${accessToken}` } }
+              : {}),
+          },
+          HF_SEARCH_TIMEOUT_MS,
+        );
+        if ([401, 403].includes(response.status)) return null;
+        if (!response.ok && response.status !== 404) {
+          throw new Error(
+            `Model filter metadata request failed (HTTP ${response.status})`,
+          );
+        }
+        try {
+          const data = response.status === 404 ? null : await response.json();
+          if (!signal.aborted) {
+            filterMetadata.set(path, {
+              data,
+              expires: Date.now() + FILTER_METADATA_TTL_MS,
+            });
+          }
+          return data;
+        } catch {
+          return null;
+        }
+      };
+      const fetchJson = (path: string) => {
+        let request = metadata.get(path);
+        if (!request) {
+          request = requestJson(path);
+          metadata.set(path, request);
+        }
+        return request;
+      };
+      const filterPriority: ModelListingTransform = (iterator) =>
+        filterModelListing(iterator, filters, fetchJson, undefined, keepRow);
+      const iterator = createListing(signal, filterPriority);
+      const pinnedPromise =
+        pinnedId &&
+        !unslothOnly &&
+        !channelOwner &&
+        !channelTagsKey &&
+        !channelQuery
+          ? modelInfo({
+              hubUrl: hfEndpoint,
+              name: pinnedId,
+              additionalFields: ALL_FIELDS,
+              fetch: makeHfFetch(signal),
+              ...(accessToken ? { credentials: { accessToken } } : {}),
+            }).catch(() => null)
+          : undefined;
+      return filterModelListing(
+        iterator,
+        filters,
+        fetchJson,
+        pinnedPromise,
+        keepRow,
+      );
+    },
+    [
+      createListing,
+      filters,
+      hasFilters,
+      pinnedId,
+      unslothOnly,
+      channelOwner,
+      channelTagsKey,
+      channelQuery,
+      hfEndpoint,
+      accessToken,
+      filterMetadata,
+      keepRow,
+    ],
+  );
+
   const search = useHubPaginatedSearch(createIter, mapModel, { enabled });
 
   // Secondary sort only with no user query (the merged iterator already floats unsloth results) and
