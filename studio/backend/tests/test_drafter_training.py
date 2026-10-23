@@ -141,6 +141,45 @@ def test_examples_respect_masks_and_packing():
     assert len(collect_examples(rows, 2, 2048)) == 2
 
 
+def test_examples_split_trl_packed_rows_at_seq_lengths():
+    """TRL's packed dataset keeps the boundaries in `seq_lengths` (position_ids come later, in its
+    collator): each packed document is its own drafter example and keeps its own prompt."""
+    from datasets import Dataset
+    from trl.data_utils import pack_dataset
+
+    from core.training.drafter import _prompt_end, collect_examples
+
+    docs = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12, 13]],
+            "completion_mask": [[0, 0, 1, 1], [0, 0, 1, 1], [0, 0, 0, 1, 1]],
+        }
+    )
+    packed = pack_dataset(docs, seq_length = 9, strategy = "bfd")
+    assert "seq_lengths" in packed.column_names and "position_ids" not in packed.column_names
+    out = collect_examples(packed, 100, 2048)
+    assert sorted(ex["input_ids"] for ex in out) == [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12, 13]]
+    by_first = {ex["input_ids"][0]: ex["labels"] for ex in out}
+    assert by_first == {
+        1: [-100, -100, 3, 4],
+        5: [-100, -100, 7, 8],
+        9: [-100, -100, -100, 12, 13],
+    }
+    # Regenerate finds one prompt per packed document, not one per packed row.
+    assert [_prompt_end(ex["input_ids"], ex["labels"], []) for ex in out] == [
+        len(ex["labels"]) - 2 for ex in out
+    ]
+
+    row = {"input_ids": [10, 11, 12, 13, 20, 21, 22, 23], "seq_lengths": [4, 4]}
+    assert [ex["input_ids"] for ex in collect_examples([row], 100, 2048)] == [
+        [10, 11, 12, 13],
+        [20, 21, 22, 23],
+    ]
+    # Lengths that do not describe the row are ignored rather than trusted.
+    bad = dict(row, seq_lengths = [4, 3])
+    assert len(collect_examples([bad], 100, 2048)) == 1
+
+
 # ---------------------------------------------------------------- the phase, with a fake trainer
 
 
@@ -1177,6 +1216,56 @@ def test_export_reattaches_a_full_fine_tunes_stitched_head(tmp_path, monkeypatch
     (tmp_path / "drafter.json").write_text(json.dumps({"strategy": "eagle3"}))
     backend._attach_full_checkpoint_mtp_head(str(tmp_path))
     assert len(calls) == 1
+
+
+def test_export_reattaches_the_head_of_a_hub_full_fine_tune(tmp_path, monkeypatch):
+    """A full fine-tune loaded by Hub id: its manifest is read from the Hub with the load's token and
+    the head is attached from the snapshot the load cached, at the loaded commit."""
+    from core.export import export as export_module
+    import huggingface_hub
+
+    calls = []
+    unsloth = types.ModuleType("unsloth")
+    unsloth.FastModel = types.SimpleNamespace(
+        get_mtp_head = lambda model, source = None: calls.append((model, source))
+    )
+    monkeypatch.setitem(sys.modules, "unsloth", unsloth)
+    manifest_dir = tmp_path / "manifest"
+    manifest_dir.mkdir()
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    downloads, snapshots = [], []
+
+    def fake_download(repo_id, filename, token = None, revision = None, local_files_only = False):
+        if local_files_only:
+            snapshots.append((repo_id, filename, revision, token))
+            (snapshot / filename).write_text("{}")
+            return str(snapshot / filename)
+        downloads.append((repo_id, filename, token))
+        if filename != "drafter.json":
+            raise FileNotFoundError(filename)
+        (manifest_dir / filename).write_text(json.dumps({"strategy": "mtp"}))
+        return str(manifest_dir / filename)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    model = types.SimpleNamespace(config = types.SimpleNamespace(_commit_hash = "abc123"))
+    backend = object.__new__(export_module.ExportBackend)
+    backend.current_model = model
+    backend._checkpoint_token = "hf_secret"
+    backend._attach_full_checkpoint_mtp_head("org/trained-full-mtp")
+    assert calls == [(model, str(snapshot))]
+    assert snapshots == [("org/trained-full-mtp", "config.json", "abc123", "hf_secret")]
+    assert downloads and all(token == "hf_secret" for _, _, token in downloads)
+
+    # No manifest on the Hub (an ordinary full checkpoint): nothing is attached.
+    calls.clear()
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("drafter.json")),
+    )
+    backend._attach_full_checkpoint_mtp_head("org/plain-full")
+    assert calls == []
 
 
 def test_in_place_eagle3_export_keeps_the_only_drafter_copy(tmp_path):

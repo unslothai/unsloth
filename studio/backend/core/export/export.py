@@ -2166,19 +2166,44 @@ class ExportBackend:
         try:
             from core.export.drafter_export import training_manifest
 
-            if not os.path.isdir(checkpoint_path) or os.path.isfile(
-                os.path.join(checkpoint_path, "adapter_config.json")
-            ):
-                return
-            manifest = training_manifest(checkpoint_path)
+            token = getattr(self, "_checkpoint_token", None)
+            # A Hub id reads its manifest from the Hub with the load's credential.
+            manifest = training_manifest(checkpoint_path, token)
             if not manifest or manifest.get("strategy") != "mtp":
+                return
+            source = checkpoint_path
+            if not os.path.isdir(source):
+                # The head's shards are in the snapshot the load just cached, at the loaded commit.
+                source = self._loaded_hub_snapshot(checkpoint_path, token)
+                if source is None:
+                    logger.warning(
+                        f"Could not find the cached files of {checkpoint_path} to attach its trained MTP head"
+                    )
+                    return
+            if os.path.isfile(os.path.join(source, "adapter_config.json")):
                 return
             from unsloth import FastModel
 
-            FastModel.get_mtp_head(self.current_model, source = checkpoint_path)
+            FastModel.get_mtp_head(self.current_model, source = source)
             logger.info(f"Attached the trained MTP head from {checkpoint_path}")
         except Exception as exception:
             logger.warning(f"Could not attach the trained MTP head: {exception}")
+
+    def _loaded_hub_snapshot(self, repo_id: str, token) -> Optional[str]:
+        """The local snapshot folder of a Hub checkpoint the current model was loaded from."""
+        revision = getattr(getattr(self.current_model, "config", None), "_commit_hash", None)
+        try:
+            from huggingface_hub import hf_hub_download
+
+            # Every load caches config.json beside the shards (a cached snapshot can still lack
+            # files the load never needed, which snapshot_download refuses offline).
+            config = hf_hub_download(
+                repo_id, "config.json", revision = revision, token = token, local_files_only = True
+            )
+        except Exception:
+            return None
+        path = os.path.dirname(config)
+        return path if os.path.isdir(path) else None
 
     def _package_drafter_merged(
         self,
