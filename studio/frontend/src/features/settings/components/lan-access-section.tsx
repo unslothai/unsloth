@@ -528,7 +528,7 @@ export function LanAccessSection() {
               >
                 <SelectTrigger
                   size="sm"
-                  className="w-28"
+                  className="w-32"
                   aria-label="LAN port mode"
                 >
                   <SelectValue />
@@ -606,7 +606,7 @@ export function LanAccessSection() {
                 >
                   <SelectTrigger
                     size="sm"
-                    className="w-28"
+                    className="w-32"
                     aria-label="LAN address mode"
                   >
                     <SelectValue />
