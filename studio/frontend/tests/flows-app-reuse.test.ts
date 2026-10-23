@@ -188,3 +188,12 @@ test("an untouched seed keeps randomizing, a typed-in seed is used as is", () =>
   assert.equal(seedOf(42).randomize, true);
   assert.deepEqual(seedOf(7), { value: 7, randomize: false });
 });
+
+test("the app's file input is cleared after each pick, so a retry with the same file uploads again", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(
+    new URL("../src/features/flows/app/flow-app-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const file = e\.target\.files\?\.\[0\];[\s\S]{0,120}e\.target\.value = "";/);
+});

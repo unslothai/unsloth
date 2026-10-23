@@ -825,6 +825,9 @@ class FlowEngine:
             cancel_event = parent.cancel_event,
             gpu_parent = parent,
         )
+        if ctx.node_id in set(parent.options.get("force_nodes") or []):
+            # Re-roll on the Run Flow block re-runs the called flow too, cache and baked outputs included.
+            child.options["force_nodes"] = list(plan.order)
         child.hf_token = parent.hf_token
         child.caller = parent.caller
         child.key_id = parent.key_id

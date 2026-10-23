@@ -121,6 +121,8 @@ function FieldInput({
             className="text-sm"
             onChange={(e) => {
               const file = e.target.files?.[0];
+              // Cleared at once, so picking the same file again (a retry) fires another change.
+              e.target.value = "";
               if (!file) return;
               setUploading(true);
               void uploadAsset(file)

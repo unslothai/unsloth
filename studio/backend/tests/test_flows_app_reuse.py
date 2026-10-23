@@ -322,3 +322,21 @@ def test_a_pin_holding_deleted_media_runs_the_block_again(monkeypatch):
     monkeypatch.setattr(_common, "gallery_media_present", lambda value: True)
     rs = asyncio.run(_run(eng, d, pinned = pin))
     assert rs.nodes["a"].status == "cached" and calls == [1]
+
+
+@run_async
+async def test_rerolling_a_run_flow_block_reruns_the_called_flow():
+    _child("rechild")
+    calls = []
+
+    async def template(ctx):
+        calls.append(1)
+        return {"text": f"take {len(calls)}"}
+
+    eng = _engine(_handlers(**{"text.template": template}))
+    d = _caller_doc("rechild", {"topic": "otters"})
+    first = await _run(eng, d)
+    again = await _run(eng, d)
+    assert again.outputs["got"] == first.outputs["got"] and len(calls) == 1
+    rerolled = await _run(eng, d, force_nodes = ["call"])
+    assert len(calls) == 2 and rerolled.outputs["got"] != first.outputs["got"]
