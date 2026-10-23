@@ -409,11 +409,11 @@ export const BUDGET = {
   // catalog. Raised by that.
   // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
   // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
-  // Fetching the chat tools' unsigned backend links and images with the session adds 916 B raw / 285 B transfer.
-  // Merged with the MCP tab branch at 840f4d903 the build measures 6,929,158 B raw / 2,087,409 B transfer (Node 24).
+  // Fetching the chat tools' unsigned backend links and images with the session adds 931 B raw / 310 B transfer.
+  // Merged with the MCP tab branch at 840f4d903 the build measures 6,929,173 B raw / 2,087,434 B transfer (Node 24).
   // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
-  transferBytes: 2_087_609,
-  rawBytes: 6_929_658,
+  transferBytes: 2_087_634,
+  rawBytes: 6_929_673,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

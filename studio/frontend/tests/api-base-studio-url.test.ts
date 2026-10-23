@@ -72,11 +72,13 @@ test("an unsigned backend link is fetched with the session, a signed or outside 
   for (const path of [
     "/v1/audio/voices/v1/file",
     "/api/gallery/x?archived=1",
+    "/studio/v1/audio/voices/v1/file",
   ]) {
     assert.equal(protectedBackendPath(path), path, path);
   }
   for (const other of [
     "/v1/audio/gallery/a/file-signed?token=t",
+    "/studio/api/inference/images/gallery/a/file-signed?token=t",
     "/chat",
     "https://example.com/v1/x",
     "//example.com/v1/x",
