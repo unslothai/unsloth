@@ -7732,11 +7732,9 @@ _AGENT_ARGS = {"claude": ["-p", "hi"], "opencode": ["run", "hi"]}
 def test_agent_checks_the_context_fits_its_own_prompt(
     fake_studio, launched, agent, window, outcome, suggested, mode
 ):
-    # A Flint GGUF fitted to 8,192 tokens: the agent's own prompt overflows it, so it compacts before the first reply.
     fake_studio.state["models"] = [{**MODEL, "context_length": window}]
     args = {"tui": [], "args": _AGENT_ARGS[agent], "no-launch": ["--no-launch"]}[mode]
     result = CliRunner().invoke(start.start_app, [agent, *args])
-    # Only the bare TUI launch, whose prompt is the stock one and whose screen would hide a warning, is refused.
     refused = outcome == "too few" and mode == "tui"
     assert result.exit_code == (1 if refused else 0), result.output
     assert (f"loaded with {window:,} tokens of context, too few" in result.output) is (

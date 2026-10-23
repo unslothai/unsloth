@@ -5378,7 +5378,6 @@ def _agent_compacts_at(
     max_tokens: Optional[int] = None,
 ) -> int:
     if agent == "claude":
-        # The env _claude_local_env writes: a 90% override, but never past min(max output, 20k) + 3k of headroom.
         output = min(opencode_output_limit(window), _CLAUDE_COMPACT_OUTPUT_RESERVE)
         return min(window * 9 // 10, window - output - _CLAUDE_COMPACT_BUFFER)
     return window - opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))
@@ -5429,7 +5428,6 @@ def _check_agent_context(
             "(a smaller quant if that does not fit in memory)."
         )
     state = "is loaded" if loaded else "would load"
-    # Its own prompt is past the compaction point, so every turn compacts and compacting a single exchange fails.
     if compacts_at < prompt_tokens:
         message = (
             f"{entry['id']} {state} with {window:,} tokens of context, too few for {name}: "
@@ -7485,7 +7483,6 @@ def opencode(
     command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
     opencode_prompt_tokens = _OPENCODE_V2_PROMPT_TOKENS if opencode_v2 else _OPENCODE_PROMPT_TOKENS
-    # Same rule as claude: refuse only the bare TUI launch.
     refuse_small_context = launch and not ctx.args
     if max_seq_length > 0 and not as_subagent and not app:
         _check_agent_context(
