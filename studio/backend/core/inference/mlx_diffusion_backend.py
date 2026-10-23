@@ -361,6 +361,19 @@ def vae_tiling_needed(width: int, height: int, free_bytes: Optional[int]) -> boo
     return untiled_decode_bytes(width, height) > free_bytes
 
 
+def release_buffer_cache(mx: Any) -> None:
+    """Synchronize, then clear MLX's buffer cache (clearing with work in flight can free buffers the GPU still writes).
+    Best effort: runs in cleanup paths and must not mask the caller's exception."""
+    try:
+        mx.synchronize()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.drain_skipped: %s", exc)
+    try:
+        mx.clear_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("mlx_diffusion.clear_cache_skipped: %s", exc)
+
+
 class MfluxRuntime:
     """The only code that imports mlx / mflux. Tests replace it with a fake (``backend.runtime_factory``)."""
 
@@ -433,8 +446,9 @@ class MfluxRuntime:
         callback = _StepCallback()
         model.callbacks.register(callback)
         cancelled = False
+        image = None
         try:
-            result = model.generate_image(
+            image = model.generate_image(
                 seed = int(seed),
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -442,7 +456,7 @@ class MfluxRuntime:
                 width = int(width),
                 height = int(height),
                 guidance = guidance,
-            )
+            ).image
         except StopImageGenerationException as exc:
             # The unwound mflux frames hold the model; uncleared, it survives unload().
             drop_exception_frames(exc)
@@ -456,9 +470,11 @@ class MfluxRuntime:
                 model.callbacks.in_loop.remove(callback)
             except (AttributeError, ValueError):
                 pass
+            # Cached activations are idle system RAM on unified memory; live weights are untouched.
+            release_buffer_cache(mx)
         if cancelled:
             raise MlxCancelled("cancelled")
-        return result.image
+        return image
 
     def free_working_set_bytes(self) -> Optional[int]:
         """Metal's recommended working set minus what MLX holds live now (the resident model), or None."""
@@ -511,9 +527,9 @@ class MfluxRuntime:
         gc.collect()
         try:
             import mlx.core as mx
-            mx.clear_cache()
         except Exception:  # noqa: BLE001
-            pass
+            return
+        release_buffer_cache(mx)
 
     def supports_guidance(self, model: Any) -> bool:
         return bool(getattr(getattr(model, "model_config", None), "supports_guidance", False))
