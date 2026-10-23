@@ -200,8 +200,7 @@ print("PEAK_MIB", (counters().PeakPagefileUsage - base) >> 20)
 )
 @requires_backend
 def test_windows_converting_load_commits_about_one_copy(tmp_path):
-    """Real Windows commit for a ~1.5 GB bf16 checkpoint loaded at fp16 (fp16-only GPUs): mmap charges the stored bytes
-    on top of the fp16 copy, pread does not."""
+    """bf16 -> fp16 load on Windows: mmap also commits the stored bytes, pread does not."""
     from transformers import LlamaConfig, LlamaForCausalLM
 
     config = LlamaConfig(
@@ -236,8 +235,6 @@ def test_windows_converting_load_commits_about_one_copy(tmp_path):
             next(l for l in out.stdout.splitlines() if l.startswith("PEAK_MIB")).split()[1]
         )
     warnings.warn(f"windows commit for a {stored_mib} MiB bf16 -> fp16 load: {peaks}")
-    # windows-latest, 1426 MiB: mmap 3477, pread 2077 (both carry ~0.6 GB of load-time allocations besides the
-    # fp16 copy); pread drops the copy-on-write charge for the stored bytes
     assert peaks["mmap"] - peaks["pread"] >= stored_mib * 0.85, peaks
 
 
