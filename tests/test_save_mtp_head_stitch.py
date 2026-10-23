@@ -675,7 +675,11 @@ def test_every_saved_adapter_folder_gets_the_head(save_module, tmp_path, monkeyp
     model = torch.nn.Module()
     object.__setattr__(model, "peft_config", {"default": None, "task": None})
 
-    def transformers_save(save_directory, push_to_hub = False, **kwargs):
+    def transformers_save(
+        save_directory,
+        push_to_hub = False,
+        **kwargs,
+    ):
         for name in ("default", "task"):
             folder = Path(save_directory) / ("" if name == "default" else name)
             folder.mkdir(parents = True, exist_ok = True)

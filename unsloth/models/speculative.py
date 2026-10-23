@@ -230,7 +230,9 @@ def _wrap_save_pretrained(model):
             for folder in adapter_dirs:
                 if _save_mtp_head_beside_adapter(model, os.path.join(save_directory, folder)):
                     files.append(
-                        "/".join(filter(None, (folder.replace(os.sep, "/"), "mtp_head.safetensors")))
+                        "/".join(
+                            filter(None, (folder.replace(os.sep, "/"), "mtp_head.safetensors"))
+                        )
                     )
         else:
             report = _stitch_mtp_head(model, save_directory)
