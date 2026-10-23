@@ -328,7 +328,7 @@ const RewindChoices: FC<{
             {t("rewind.confirmTitle")}
           </DialogTitle>
         </DialogHeader>
-        <p className="line-clamp-3 rounded-xl bg-muted px-4 py-3 text-sm wrap-break-word">
+        <p className="line-clamp-3 rounded-lg bg-muted px-4 py-3 text-sm wrap-break-word">
           {preview || (
             <span className="text-muted-foreground">
               {t("rewind.attachmentOnly")}

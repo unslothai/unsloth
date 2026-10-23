@@ -307,7 +307,7 @@ export function OnDeviceFoldersDialog({
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
             <section
               aria-labelledby="models-folder-heading"
-              className="rounded-xl border border-border/70 bg-muted/20 p-3"
+              className="rounded-lg border border-border/70 bg-muted/20 p-3"
             >
               <div
                 id="models-folder-heading"

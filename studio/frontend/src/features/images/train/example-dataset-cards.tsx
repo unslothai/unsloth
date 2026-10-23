@@ -124,7 +124,7 @@ export function ExampleDatasetCards({
         {examples.map((ex) => (
           <div
             key={ex.id}
-            className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border px-4 py-3"
+            className="flex min-w-0 flex-col gap-2.5 rounded-lg border border-border px-4 py-3"
           >
             <div className="flex min-w-0 items-center gap-1.5">
               {/* Both are truncated, so the full text lives in a tooltip. */}

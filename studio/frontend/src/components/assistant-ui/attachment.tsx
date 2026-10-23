@@ -327,7 +327,7 @@ const PastedTextPreviewDialog: FC<
       <DialogContent className="aui-pasted-text-dialog flex max-h-[88dvh] w-[min(68rem,94vw)] max-w-none flex-col gap-3 overflow-hidden">
         <DialogTitle className="truncate pr-8 text-sm">{name}</DialogTitle>
         <ScrollPane
-          className="aui-pasted-text-dialog-body rounded-xl border bg-muted/40 p-3"
+          className="aui-pasted-text-dialog-body rounded-lg border bg-muted/40 p-3"
           scrollerClassName="max-h-[72dvh] overflow-auto whitespace-pre-wrap break-words text-left font-mono text-xs leading-relaxed"
         >
           {preview?.text ?? "Loading…"}

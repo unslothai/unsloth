@@ -174,7 +174,7 @@ export function ExecutionOverviewTab({
             </div>
           </div>
           {(llmColumnCount > 0 || modelUsageRows.length > 0) && (
-            <div className="rounded-xl border border-border/60 bg-card/55 p-3">
+            <div className="rounded-lg border border-border/60 bg-card/55 p-3">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">Model usage</p>
                 <HugeiconsIcon icon={Flag02Icon} className="size-4 text-muted-foreground" />
@@ -212,7 +212,7 @@ export function ExecutionOverviewTab({
         </div>
       )}
       {sourceProgress?.source === "github" && (
-        <div className="rounded-xl border border-border/60 bg-card/55 p-3">
+        <div className="rounded-lg border border-border/60 bg-card/55 p-3">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs text-muted-foreground">Source data</p>
             <HugeiconsIcon icon={GithubIcon} className="size-4 text-muted-foreground" />

@@ -1359,7 +1359,7 @@ function ExportModal({
               {/* */}
               <label
                 className={cn(
-                  "flex w-full cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition-all",
+                  "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "single"
                     ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
@@ -1382,7 +1382,7 @@ function ExportModal({
               {/* */}
               <label
                 className={cn(
-                  "flex w-full cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-all",
+                  "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "training"
                     ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",

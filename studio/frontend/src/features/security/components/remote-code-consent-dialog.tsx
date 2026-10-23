@@ -107,7 +107,7 @@ function SnippetLine({
 
 function UnsafeFileCard({ file }: { file: UnsafeFile }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border bg-muted/40 px-3 py-2">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-muted/40 px-3 py-2">
       <Badge
         variant="outline"
         className={cn(

@@ -30,7 +30,7 @@ export function ReapCard({
   const set = (patch: Partial<ReapSettings>) =>
     onChange({ ...settings, ...patch });
   return (
-    <div className="space-y-3 rounded-xl border p-3">
+    <div className="space-y-3 rounded-lg border p-3">
       <div className="flex items-center justify-between gap-3">
         <div className="space-y-0.5">
           <div className="text-sm font-medium">Prune experts (REAP)</div>

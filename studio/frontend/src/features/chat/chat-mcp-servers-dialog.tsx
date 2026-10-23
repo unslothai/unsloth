@@ -958,7 +958,7 @@ export function ChatMcpServersDialog({
         {showForm ? (
           <div className="flex flex-col gap-4">
             {view.kind === "create" && (
-              <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed px-3 py-2">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed px-3 py-2">
                 <span className="text-xs text-muted-foreground">
                   Import servers from a config file.
                 </span>
@@ -1101,7 +1101,7 @@ export function ChatMcpServersDialog({
             )}
 
             {form.transport === "http" && form.useOauth && (
-              <div className="grid gap-3 rounded-xl border p-3">
+              <div className="grid gap-3 rounded-lg border p-3">
                 <div className="grid gap-2">
                   <Label htmlFor="mcp-oauth-client-id">OAuth client ID</Label>
                   <Input

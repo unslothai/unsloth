@@ -127,7 +127,7 @@ function SampleCard({
     }
   };
   return (
-    <div className="flex flex-col gap-2 rounded-xl border bg-card p-3">
+    <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         {label ? <span className="font-medium">{label}</span> : null}
         <span className="text-muted-foreground">

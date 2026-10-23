@@ -365,7 +365,7 @@ const ActivityRow = memo(function ActivityRow({
       {activity.input ? (
         <p
           className={cn(
-            "line-clamp-3 break-words rounded-xl bg-muted/45 px-3 py-2 text-foreground/80",
+            "line-clamp-3 break-words rounded-lg bg-muted/45 px-3 py-2 text-foreground/80",
             activity.kind === "step" &&
               "bg-primary/[0.045] ring-1 ring-primary/10",
           )}
@@ -374,7 +374,7 @@ const ActivityRow = memo(function ActivityRow({
         </p>
       ) : null}
       {activity.previewLabels?.length ? (
-        <ul className="space-y-1 rounded-xl bg-muted/35 px-3 py-2">
+        <ul className="space-y-1 rounded-lg bg-muted/35 px-3 py-2">
           {activity.previewLabels.map((label, index) => (
             <li
               key={`${activity.id}-preview-${index}`}
@@ -398,7 +398,7 @@ const ActivityRow = memo(function ActivityRow({
         </div>
       ) : null}
       {activity.plan ? (
-        <div className="space-y-2 rounded-xl bg-muted/35 px-3 py-2.5">
+        <div className="space-y-2 rounded-lg bg-muted/35 px-3 py-2.5">
           <p className="font-medium text-foreground/85">
             {activity.plan.title}
           </p>
@@ -458,7 +458,7 @@ const ActivityRow = memo(function ActivityRow({
       {activity.evidenceSources?.map((source) => (
         <div
           key={`${activity.id}-${source.chunkId}`}
-          className="rounded-xl bg-muted/45 px-3 py-2"
+          className="rounded-lg bg-muted/45 px-3 py-2"
         >
           <p className="line-clamp-2 break-words font-medium text-foreground/85">
             {source.filename}
@@ -472,7 +472,7 @@ const ActivityRow = memo(function ActivityRow({
         </div>
       ))}
       {activity.excerpt ? (
-        <p className="line-clamp-5 whitespace-pre-wrap break-words rounded-xl bg-muted/45 px-3 py-2 leading-relaxed">
+        <p className="line-clamp-5 whitespace-pre-wrap break-words rounded-lg bg-muted/45 px-3 py-2 leading-relaxed">
           {activity.excerpt}
         </p>
       ) : null}

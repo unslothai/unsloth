@@ -402,7 +402,7 @@ export function LinkedFoldersManager({
           <Spinner />
         </div>
       ) : manager.folders.length === 0 ? (
-        <div className="rounded-xl border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
+        <div className="rounded-lg border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
           No source folders.
         </div>
       ) : (
@@ -415,7 +415,7 @@ export function LinkedFoldersManager({
             return (
               <li
                 key={folder.id}
-                className="flex min-w-0 items-start gap-3 rounded-xl border border-border/70 bg-background px-3 py-2.5"
+                className="flex min-w-0 items-start gap-3 rounded-lg border border-border/70 bg-background px-3 py-2.5"
               >
                 <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">

@@ -6852,7 +6852,7 @@ export function ImagesPage({
                       // remounts the row and drops focus on the first character typed. The list is
                       // index-addressed and rows are removed explicitly.
                       key={i}
-                      className="space-y-1.5 rounded-xl border border-border bg-muted/30 p-2"
+                      className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                     >
                       <div className="flex items-center gap-2">
                         <Input
@@ -6938,7 +6938,7 @@ export function ImagesPage({
                 label="ControlNet"
                 hint="Condition the image on a control map (edges / depth / pose). Union models cover many types. Use 'Canny' to trace edges from your image, or 'Passthrough' if it is already a control map."
               >
-                <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-2">
+                <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
                   <Select value={controlnetId || undefined} onValueChange={setControlnetId}>
                     <SelectTrigger className="h-8 w-full text-xs">
                       <SelectValue placeholder="Select a ControlNet" />

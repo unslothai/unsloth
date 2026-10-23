@@ -599,7 +599,7 @@ export function DatasetPreviewDialog({
           {/* Error */}
           {error && (
             <div className="py-20 flex flex-col items-center justify-center gap-3">
-              <div className="rounded-xl corner-squircle bg-destructive/10 p-3">
+              <div className="rounded-lg corner-squircle bg-destructive/10 p-3">
                 <HugeiconsIcon
                   icon={AlertCircleIcon}
                   className="size-5 text-destructive"
@@ -618,7 +618,7 @@ export function DatasetPreviewDialog({
           {!loading && !error && data && (
             <>
               {/* Metadata card */}
-              <div className="rounded-xl corner-squircle ring-1 ring-border/60 bg-muted/30 px-5 py-4 mb-4 space-y-2">
+              <div className="rounded-lg corner-squircle ring-1 ring-border/60 bg-muted/30 px-5 py-4 mb-4 space-y-2">
                 <MetaRow label="Source" value={sourceLabel} />
                 <MetaRow
                   label="Format"

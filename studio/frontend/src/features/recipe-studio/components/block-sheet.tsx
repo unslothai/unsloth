@@ -715,7 +715,7 @@ export function BlockSheet({
                       setSheetOpen(false);
                       onOpenProcessors();
                     }}
-                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
+                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
                   >
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground">

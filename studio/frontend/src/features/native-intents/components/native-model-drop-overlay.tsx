@@ -47,7 +47,7 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
       aria-live="polite"
       aria-hidden={isIdle}
     >
-      <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-card/96 px-3 py-2.5 shadow-sm shadow-black/10 backdrop-blur-sm dark:shadow-black/30">
+      <div className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-card/96 px-3 py-2.5 shadow-sm shadow-black/10 backdrop-blur-sm dark:shadow-black/30">
         <div
           className={cn(
             "flex size-8 shrink-0 items-center justify-center rounded-md border transition-colors duration-200 ease-out",

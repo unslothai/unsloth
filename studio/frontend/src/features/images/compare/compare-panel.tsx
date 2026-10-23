@@ -263,7 +263,7 @@ export default function ComparePanel(props: ComparePanelProps) {
         </div>
       </div>
       {enabled && (
-        <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-2">
+        <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
           {effective.map((axis, i) => {
             const def = defs.find((d) => d.id === axis.axisId);
             return (

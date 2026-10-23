@@ -227,7 +227,7 @@ function OwnerAccountsTab() {
       </div>
 
       {error && !confirming && !editorOpen && !modelAccess && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/20 bg-destructive/5 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
           <p
             role="alert"
             className="min-w-0 break-words text-xs text-destructive"

@@ -106,7 +106,7 @@ export function DatasetMappingCard({
   return (
     <div
       className={cn(
-        "rounded-xl corner-squircle ring-1 px-5 py-4 mb-4",
+        "rounded-lg corner-squircle ring-1 px-5 py-4 mb-4",
         mappingOk
           ? "ring-emerald-200/70 bg-emerald-50/70 text-emerald-950 dark:ring-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-50"
           : "ring-amber-200/70 bg-amber-50/70 text-amber-950 dark:ring-amber-900/50 dark:bg-amber-950/30 dark:text-amber-50",

@@ -336,7 +336,7 @@ export function DiscoverFetchMoreFooter({
   onRetry?: () => void;
 }) {
   return (
-    <div className="relative z-10 flex flex-col items-center gap-2 rounded-2xl bg-card px-4 py-4 text-center">
+    <div className="relative z-10 flex flex-col items-center gap-2 rounded-lg bg-card px-4 py-4 text-center">
       {/* Only warn about hidden results when a filter is actually narrowing them. */}
       {hasActiveFilters && (
         <p className="text-ui-11p5 leading-4 text-muted-foreground">

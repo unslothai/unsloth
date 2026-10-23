@@ -519,7 +519,7 @@ export function DataRecipesPage(): ReactElement {
               {recipes.map((recipe) => (
                 <div
                   key={recipe.id}
-                  className="flex items-center gap-3 rounded-2xl border bg-card px-4 py-3"
+                  className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3"
                 >
                   <button
                     type="button"

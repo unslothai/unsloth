@@ -734,7 +734,7 @@ function MilestoneCallout({
   }
 
   return (
-    <div className="corner-squircle rounded-xl border border-border/60 bg-muted/30 px-3 py-2.5">
+    <div className="corner-squircle rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
@@ -833,7 +833,7 @@ function GpuStat({
   }
 
   return (
-    <div className="corner-squircle flex flex-col gap-2 rounded-xl border border-border/50 bg-background/60 p-3">
+    <div className="corner-squircle flex flex-col gap-2 rounded-lg border border-border/50 bg-background/60 p-3">
       <div className="flex items-center justify-between text-xs">
         <span className="flex items-center gap-1.5 text-muted-foreground">
           {icon}

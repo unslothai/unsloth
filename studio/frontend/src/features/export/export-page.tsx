@@ -1578,7 +1578,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
+                      <div className="rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
                         <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -1587,7 +1587,7 @@ export function ExportPage() {
                   )}
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
+                    <div className="rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
                       <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -2037,7 +2037,7 @@ export function ExportPage() {
                         onChange={setQuantLevels}
                         sizes={quantSizeLabels}
                       />
-                      <div className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
                         <div className="space-y-0.5">
                           <div className="text-sm font-medium">
                             Importance matrix (imatrix)
@@ -2088,7 +2088,7 @@ export function ExportPage() {
                           </p>
                         </div>
                       )}
-                      <div className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
                         <div className="space-y-0.5">
                           <div className="text-sm font-medium">
                             Also convert to Q4NX (AMD NPU)

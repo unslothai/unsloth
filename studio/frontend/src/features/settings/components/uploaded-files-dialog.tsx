@@ -528,7 +528,7 @@ export function UploadedFilesView() {
   return (
     <div className="flex flex-col gap-4">
       {ragFiles.status === "error" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
           <span>RAG documents unavailable: {ragFiles.error}</span>
           <button
             type="button"
@@ -540,7 +540,7 @@ export function UploadedFilesView() {
         </div>
       ) : null}
       {chatFiles.status === "error" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm">
           <span>Chat attachments unavailable: {chatFiles.error}</span>
           <button
             type="button"

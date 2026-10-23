@@ -1083,7 +1083,7 @@ export function SeedDialog({
           )}
 
           {mode !== "unstructured" && mode !== "github_repo" && (
-            <div className="space-y-2 rounded-xl corner-squircle border border-border/60 p-3">
+            <div className="space-y-2 rounded-lg corner-squircle border border-border/60 p-3">
               <FieldLabel
                 label="Drop specific seed columns"
                 hint="Dropped columns stay usable in prompts/expressions but are omitted from final dataset."

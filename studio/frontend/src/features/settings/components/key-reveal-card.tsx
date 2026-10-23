@@ -44,7 +44,7 @@ export function KeyRevealCard({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
+    <div className="flex flex-col gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
       <div className="flex items-center gap-1.5">
         <HugeiconsIcon
           icon={Tick02Icon}
