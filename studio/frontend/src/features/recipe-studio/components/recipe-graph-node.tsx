@@ -565,29 +565,11 @@ function RecipeGraphNodeBase({
             handleClassName={NODE_HANDLE_CLASS}
           />
           <LabeledHandle
-            id={HANDLE_IDS.dataOutLeft}
-            title="Data output"
-            type="source"
-            position={Position.Left}
-            className="absolute inset-0 pointer-events-none opacity-0"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
             id={HANDLE_IDS.dataInTop}
             title="Data input"
             type="target"
             position={Position.Top}
             className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataOutTop}
-            title="Data output"
-            type="source"
-            position={Position.Top}
-            className="absolute inset-0 pointer-events-none opacity-0"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
           />
@@ -601,29 +583,11 @@ function RecipeGraphNodeBase({
             handleClassName={NODE_HANDLE_CLASS}
           />
           <LabeledHandle
-            id={HANDLE_IDS.dataInRight}
-            title="Data input"
-            type="target"
-            position={Position.Right}
-            className="absolute inset-0 pointer-events-none opacity-0"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
             id={HANDLE_IDS.dataOutBottom}
             title="Data output"
             type="source"
             position={Position.Bottom}
             className="absolute inset-0 pointer-events-none"
-            labelClassName="sr-only"
-            handleClassName={NODE_HANDLE_CLASS}
-          />
-          <LabeledHandle
-            id={HANDLE_IDS.dataInBottom}
-            title="Data input"
-            type="target"
-            position={Position.Bottom}
-            className="absolute inset-0 pointer-events-none opacity-0"
             labelClassName="sr-only"
             handleClassName={NODE_HANDLE_CLASS}
           />

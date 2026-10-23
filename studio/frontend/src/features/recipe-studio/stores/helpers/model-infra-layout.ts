@@ -205,20 +205,14 @@ function sortPreferredLlmTargetHandles(
 ): string[] {
   const sourceCenter = sourceNode ? getNodeCenter(sourceNode) : { x: 0, y: 0 };
   const targetCenter = targetNode ? getNodeCenter(targetNode) : { x: 0, y: 0 };
-
-  if (direction === "TB") {
-    const horizontalFirst =
-      sourceCenter.x <= targetCenter.x
-        ? [HANDLE_IDS.dataIn, HANDLE_IDS.dataInRight]
-        : [HANDLE_IDS.dataInRight, HANDLE_IDS.dataIn];
-    return [...horizontalFirst, HANDLE_IDS.dataInTop, HANDLE_IDS.dataInBottom];
-  }
-
-  const verticalFirst =
-    sourceCenter.y <= targetCenter.y
-      ? [HANDLE_IDS.dataInTop, HANDLE_IDS.dataInBottom]
-      : [HANDLE_IDS.dataInBottom, HANDLE_IDS.dataInTop];
-  return [...verticalFirst, HANDLE_IDS.dataIn, HANDLE_IDS.dataInRight];
+  // Only top and left take inputs; prefer the one facing the model card.
+  const fromAbove =
+    direction === "TB"
+      ? sourceCenter.x > targetCenter.x
+      : sourceCenter.y <= targetCenter.y;
+  return fromAbove
+    ? [HANDLE_IDS.dataInTop, HANDLE_IDS.dataIn]
+    : [HANDLE_IDS.dataIn, HANDLE_IDS.dataInTop];
 }
 
 function getProviderSourceHandleCandidates(

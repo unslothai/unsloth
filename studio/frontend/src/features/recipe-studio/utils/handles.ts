@@ -6,108 +6,83 @@ import type { LayoutDirection } from "../types";
 
 export const HANDLE_IDS = {
   // data flow lanes
+  // Inputs enter from the top or left, outputs leave from the right or bottom.
   dataIn: "data-in",
   dataInTop: "data-in-top",
-  dataInRight: "data-in-right",
-  dataInBottom: "data-in-bottom",
   dataOut: "data-out",
-  dataOutLeft: "data-out-left",
-  dataOutTop: "data-out-top",
   dataOutBottom: "data-out-bottom",
   // semantic dependency lanes
   semanticIn: "semantic-in",
   semanticInTop: "semantic-in-top",
-  semanticInRight: "semantic-in-right",
-  semanticInBottom: "semantic-in-bottom",
-  semanticInLeft: "semantic-in-left",
   semanticOut: "semantic-out",
-  semanticOutLeft: "semantic-out-left",
-  semanticOutTop: "semantic-out-top",
   semanticOutBottom: "semantic-out-bottom",
-  semanticOutRight: "semantic-out-right",
   // llm prompt/scorer lanes
-  llmInputOutLeft: "llm-input-out-left",
   llmInputOutRight: "llm-input-out-right",
-  llmInputOutTop: "llm-input-out-top",
   llmInputOutBottom: "llm-input-out-bottom",
 } as const;
 
 export type RecipeHandleId = (typeof HANDLE_IDS)[keyof typeof HANDLE_IDS];
 
-const LEGACY_HANDLE_ALIAS_MAP: Record<string, string> = {
-  [HANDLE_IDS.semanticInLeft]: HANDLE_IDS.semanticIn,
-  [HANDLE_IDS.semanticOutRight]: HANDLE_IDS.semanticOut,
+// Handles older recipes may still reference. Each maps to the legal handle on the same axis,
+// so an LR recipe stays horizontal and a TB one stays vertical; the edge itself is kept.
+export const LEGACY_HANDLE_ALIAS_MAP: Record<string, string> = {
+  "semantic-in-left": HANDLE_IDS.semanticIn,
+  "semantic-out-right": HANDLE_IDS.semanticOut,
+  "data-in-right": HANDLE_IDS.dataIn,
+  "data-in-bottom": HANDLE_IDS.dataInTop,
+  "data-out-left": HANDLE_IDS.dataOut,
+  "data-out-top": HANDLE_IDS.dataOutBottom,
+  "semantic-in-right": HANDLE_IDS.semanticIn,
+  "semantic-in-bottom": HANDLE_IDS.semanticInTop,
+  "semantic-out-left": HANDLE_IDS.semanticOut,
+  "semantic-out-top": HANDLE_IDS.semanticOutBottom,
+  "llm-input-out-left": HANDLE_IDS.llmInputOutRight,
+  "llm-input-out-top": HANDLE_IDS.llmInputOutBottom,
 };
 
 const DATA_TARGET_HANDLES = new Set<string>([
   HANDLE_IDS.dataIn,
   HANDLE_IDS.dataInTop,
-  HANDLE_IDS.dataInRight,
-  HANDLE_IDS.dataInBottom,
 ]);
 
 const DATA_SOURCE_HANDLES = new Set<string>([
   HANDLE_IDS.dataOut,
-  HANDLE_IDS.dataOutLeft,
-  HANDLE_IDS.dataOutTop,
   HANDLE_IDS.dataOutBottom,
 ]);
 
 const SEMANTIC_TARGET_HANDLES = new Set<string>([
   HANDLE_IDS.semanticIn,
   HANDLE_IDS.semanticInTop,
-  HANDLE_IDS.semanticInRight,
-  HANDLE_IDS.semanticInBottom,
-  HANDLE_IDS.semanticInLeft,
 ]);
 
 const SEMANTIC_SOURCE_HANDLES = new Set<string>([
   HANDLE_IDS.semanticOut,
-  HANDLE_IDS.semanticOutLeft,
-  HANDLE_IDS.semanticOutTop,
   HANDLE_IDS.semanticOutBottom,
-  HANDLE_IDS.semanticOutRight,
 ]);
 
-const DATA_TARGET_HORIZONTAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataIn,
-  HANDLE_IDS.dataInRight,
-]);
+const DATA_TARGET_HORIZONTAL_HANDLES = new Set<string>([HANDLE_IDS.dataIn]);
 
-const DATA_TARGET_VERTICAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataInTop,
-  HANDLE_IDS.dataInBottom,
-]);
+const DATA_TARGET_VERTICAL_HANDLES = new Set<string>([HANDLE_IDS.dataInTop]);
 
-const DATA_SOURCE_HORIZONTAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataOut,
-  HANDLE_IDS.dataOutLeft,
-]);
+const DATA_SOURCE_HORIZONTAL_HANDLES = new Set<string>([HANDLE_IDS.dataOut]);
 
 const DATA_SOURCE_VERTICAL_HANDLES = new Set<string>([
-  HANDLE_IDS.dataOutTop,
   HANDLE_IDS.dataOutBottom,
 ]);
 
 const SEMANTIC_TARGET_HORIZONTAL_HANDLES = new Set<string>([
   HANDLE_IDS.semanticIn,
-  HANDLE_IDS.semanticInRight,
-  HANDLE_IDS.semanticInLeft,
 ]);
 
 const SEMANTIC_TARGET_VERTICAL_HANDLES = new Set<string>([
   HANDLE_IDS.semanticInTop,
-  HANDLE_IDS.semanticInBottom,
 ]);
 
 const SEMANTIC_SOURCE_HORIZONTAL_HANDLES = new Set<string>([
   HANDLE_IDS.semanticOut,
-  HANDLE_IDS.semanticOutLeft,
-  HANDLE_IDS.semanticOutRight,
 ]);
 
 const SEMANTIC_SOURCE_VERTICAL_HANDLES = new Set<string>([
-  HANDLE_IDS.semanticOutTop,
   HANDLE_IDS.semanticOutBottom,
 ]);
 
@@ -118,6 +93,35 @@ export function normalizeRecipeHandleId(
     return null;
   }
   return LEGACY_HANDLE_ALIAS_MAP[handleId] ?? handleId;
+}
+
+export type RecipeHandleSide = "left" | "top" | "right" | "bottom";
+
+/** Side a handle sits on. Targets are only ever left/top, sources right/bottom. */
+export function getRecipeHandleSide(
+  handleId: string | null | undefined,
+  kind: "source" | "target",
+): RecipeHandleSide {
+  const normalized = normalizeRecipeHandleId(handleId) ?? "";
+  if (kind === "target") {
+    return normalized.endsWith("-top") ? "top" : "left";
+  }
+  return normalized.endsWith("-bottom") ? "bottom" : "right";
+}
+
+/** Rewrites removed handle ids on a stored edge to their legal replacement. */
+export function migrateRecipeEdgeHandles<
+  T extends { sourceHandle?: string | null; targetHandle?: string | null },
+>(edge: T): T {
+  const sourceHandle = normalizeRecipeHandleId(edge.sourceHandle);
+  const targetHandle = normalizeRecipeHandleId(edge.targetHandle);
+  if (
+    sourceHandle === (edge.sourceHandle ?? null) &&
+    targetHandle === (edge.targetHandle ?? null)
+  ) {
+    return edge;
+  }
+  return { ...edge, sourceHandle, targetHandle };
 }
 
 export function normalizeRecipeConnectionHandles(

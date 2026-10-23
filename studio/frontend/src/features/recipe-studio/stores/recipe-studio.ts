@@ -32,6 +32,7 @@ import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import {
   HANDLE_IDS,
+  migrateRecipeEdgeHandles,
   normalizeRecipeHandleId,
   remapRecipeEdgeHandlesForLayout,
 } from "../utils/handles";
@@ -357,8 +358,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         displayGraph.edges,
         {
           direction: state.layoutDirection,
-          nodesep: isTopBottom ? 120 : 80,
-          ranksep: isTopBottom ? 140 : 80,
+          // Wide enough gaps for the router to lay several wires side by side.
+          nodesep: isTopBottom ? 140 : 88,
+          ranksep: isTopBottom ? 120 : 140,
           configs: state.configs,
         },
       );
@@ -733,7 +735,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         snapshot.configs,
         snapshot.layoutDirection,
       ),
-      edges: snapshot.edges,
+      edges: snapshot.edges.map(migrateRecipeEdgeHandles),
       processors: snapshot.processors,
       layoutDirection: snapshot.layoutDirection,
       nextId: snapshot.nextId,

@@ -91,25 +91,9 @@ function AuxNodeBase({
   const sourceHandles = (
     <>
       <Handle
-        id={HANDLE_IDS.llmInputOutLeft}
-        type="source"
-        position={Position.Left}
-        isConnectable={false}
-        isConnectableStart={false}
-        className={AUX_HANDLE_CLASS}
-      />
-      <Handle
         id={HANDLE_IDS.llmInputOutRight}
         type="source"
         position={Position.Right}
-        isConnectable={false}
-        isConnectableStart={false}
-        className={AUX_HANDLE_CLASS}
-      />
-      <Handle
-        id={HANDLE_IDS.llmInputOutTop}
-        type="source"
-        position={Position.Top}
         isConnectable={false}
         isConnectableStart={false}
         className={AUX_HANDLE_CLASS}

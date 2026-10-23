@@ -37,6 +37,7 @@ import { RunValidateFloatingControls } from "./components/controls/run-validate-
 import { ViewportControls } from "./components/controls/viewport-controls";
 import { ExecutionsView } from "./components/executions/executions-view";
 import { InternalsSync } from "./components/graph/internals-sync";
+import { WireRouter } from "./components/graph/wire-routing";
 import {
   RecipeGraphAuxNode,
   type RecipeGraphAuxNodeData,
@@ -689,6 +690,7 @@ export function RecipeStudioPage({
           onToggleDirection={handleToggleDirection}
         />
         <InternalsSync nodeIds={displayNodeIds} />
+        <WireRouter />
         <Background
           variant={BackgroundVariant.Dots}
           gap={18}

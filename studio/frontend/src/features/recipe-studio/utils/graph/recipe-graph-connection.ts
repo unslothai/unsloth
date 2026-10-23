@@ -271,12 +271,7 @@ function chooseModelSemanticHandles(
       ? layoutDirection === "TB"
         ? [HANDLE_IDS.semanticIn, HANDLE_IDS.semanticInTop]
         : [HANDLE_IDS.semanticInTop, HANDLE_IDS.semanticIn]
-      : [
-          HANDLE_IDS.dataInTop,
-          HANDLE_IDS.dataInBottom,
-          HANDLE_IDS.dataIn,
-          HANDLE_IDS.dataInRight,
-        ];
+      : [HANDLE_IDS.dataInTop, HANDLE_IDS.dataIn];
 
   const sourceHandle = pickLeastUsedHandle(
     sourceCandidates,

@@ -10,12 +10,14 @@ import {
   getDefaultDataTargetHandle,
   getDefaultSemanticSourceHandle,
   getDefaultSemanticTargetHandle,
+  getRecipeHandleSide,
   HANDLE_IDS,
   isDataSourceHandle,
   isDataTargetHandle,
   isSemanticSourceHandle,
   isSemanticTargetHandle,
   normalizeRecipeHandleId,
+  type RecipeHandleSide,
 } from "../handles";
 import { readNodeHeight, readNodeWidth } from "../rf-node-dimensions";
 import { isSemanticRelation } from "./relations";
@@ -200,72 +202,12 @@ function findNonOverlappingPosition(
   return preferred;
 }
 
-type HandleSide = "left" | "right" | "top" | "bottom";
+type HandleSide = RecipeHandleSide;
 
-const SIDE_TO_TARGET_HANDLE: Record<HandleSide, string> = {
+const SIDE_TO_TARGET_HANDLE: Partial<Record<HandleSide, string>> = {
   left: HANDLE_IDS.dataIn,
-  right: HANDLE_IDS.dataInRight,
   top: HANDLE_IDS.dataInTop,
-  bottom: HANDLE_IDS.dataInBottom,
 };
-
-function getTargetSide(
-  handleId: string | null | undefined,
-  direction: LayoutDirection,
-): HandleSide {
-  const normalized = normalizeRecipeHandleId(handleId);
-  if (!normalized) {
-    return direction === "TB" ? "top" : "left";
-  }
-  if (
-    normalized === HANDLE_IDS.dataInRight ||
-    normalized === HANDLE_IDS.semanticInRight
-  ) {
-    return "right";
-  }
-  if (
-    normalized === HANDLE_IDS.dataInBottom ||
-    normalized === HANDLE_IDS.semanticInBottom
-  ) {
-    return "bottom";
-  }
-  if (
-    normalized === HANDLE_IDS.dataInTop ||
-    normalized === HANDLE_IDS.semanticInTop
-  ) {
-    return "top";
-  }
-  return "left";
-}
-
-function getSourceSide(
-  handleId: string | null | undefined,
-  direction: LayoutDirection,
-): HandleSide {
-  const normalized = normalizeRecipeHandleId(handleId);
-  if (!normalized) {
-    return direction === "TB" ? "bottom" : "right";
-  }
-  if (
-    normalized === HANDLE_IDS.dataOutLeft ||
-    normalized === HANDLE_IDS.semanticOutLeft
-  ) {
-    return "left";
-  }
-  if (
-    normalized === HANDLE_IDS.dataOutTop ||
-    normalized === HANDLE_IDS.semanticOutTop
-  ) {
-    return "top";
-  }
-  if (
-    normalized === HANDLE_IDS.dataOutBottom ||
-    normalized === HANDLE_IDS.semanticOutBottom
-  ) {
-    return "bottom";
-  }
-  return "right";
-}
 
 function pickAuxTargetHandle(
   llmId: string,
@@ -278,38 +220,18 @@ function pickAuxTargetHandle(
       continue;
     }
     if (edge.target === llmId) {
-      occupied.add(getTargetSide(edge.targetHandle, direction));
-    }
-    if (edge.source === llmId) {
-      occupied.add(getSourceSide(edge.sourceHandle, direction));
+      occupied.add(getRecipeHandleSide(edge.targetHandle, "target"));
     }
   }
 
   const priority: HandleSide[] =
-    direction === "LR"
-      ? ["left", "right", "bottom", "top"]
-      : ["top", "bottom", "right", "left"];
-  for (const side of priority) {
-    if (!occupied.has(side)) {
-      return SIDE_TO_TARGET_HANDLE[side];
-    }
-  }
-
-  const fallback: HandleSide = direction === "LR" ? "bottom" : "right";
-  return SIDE_TO_TARGET_HANDLE[fallback];
+    direction === "LR" ? ["left", "top"] : ["top", "left"];
+  const side = priority.find((candidate) => !occupied.has(candidate));
+  return SIDE_TO_TARGET_HANDLE[side ?? priority[1]] ?? HANDLE_IDS.dataIn;
 }
 
 function getHandleSideFromTargetHandle(targetHandle: string): HandleSide {
-  if (targetHandle === HANDLE_IDS.dataInRight) {
-    return "right";
-  }
-  if (targetHandle === HANDLE_IDS.dataInTop) {
-    return "top";
-  }
-  if (targetHandle === HANDLE_IDS.dataInBottom) {
-    return "bottom";
-  }
-  return "left";
+  return getRecipeHandleSide(targetHandle, "target");
 }
 
 function pickAuxSourceHandle(
@@ -331,10 +253,10 @@ function pickAuxSourceHandle(
   const dx = llmCenter.x - auxCenter.x;
   const dy = llmCenter.y - auxCenter.y;
 
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    return dx >= 0 ? HANDLE_IDS.llmInputOutRight : HANDLE_IDS.llmInputOutLeft;
-  }
-  return dy >= 0 ? HANDLE_IDS.llmInputOutBottom : HANDLE_IDS.llmInputOutTop;
+  // Outputs only leave right or bottom; the router takes the wire around if the box sits past the LLM.
+  return Math.abs(dx) >= Math.abs(dy)
+    ? HANDLE_IDS.llmInputOutRight
+    : HANDLE_IDS.llmInputOutBottom;
 }
 
 type AppendAuxNodeAndEdgeInput = {
