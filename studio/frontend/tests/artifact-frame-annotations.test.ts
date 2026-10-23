@@ -83,3 +83,9 @@ test("Request edits preserves the selected file view", () => {
   assert.doesNotMatch(panel, /if \(annotating && htmlPreview\).*setAnnotating\(null\)/);
   assert.match(panel, /htmlAnnotating \? \(\s*<WebAnnotateLayer/);
 });
+
+test("switching a file's view keeps its saved annotations", () => {
+  const panel = readFileSync(new URL("../src/features/browser/browser-panel.tsx", import.meta.url), "utf8");
+  // A view in the key remounts the layer, dropping saved comments on a Markdown Preview/Source switch.
+  assert.match(panel, /<AnnotateLayer\s+key=\{`\$\{activeTab\.id\}:\$\{activeEntry\.fileId\}`\}/);
+});

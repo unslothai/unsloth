@@ -2614,7 +2614,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               />
             ) : (
               <AnnotateLayer
-                key={`${activeTab.id}:${activeEntry.fileId}:${fileMode}`}
+                key={`${activeTab.id}:${activeEntry.fileId}`}
                 page={pageElement}
                 fileName={activeEntry.name}
                 zoom={activeTab.zoom}
