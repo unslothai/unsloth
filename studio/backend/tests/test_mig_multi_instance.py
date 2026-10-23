@@ -786,3 +786,45 @@ def test_a_retired_probe_does_not_replace_the_worker_map():
         with patch.object(subprocess, "run", run):
             assert len(mig.visible_devices(fresh = True)) == 1
         assert os.environ[mig._ENV] == current
+
+
+def test_untranslatable_optional_engine_ids_keep_the_physical_behaviour(monkeypatch):
+    from core.inference import engine_install, managed_engine
+
+    monkeypatch.setattr(engine_install, "gpu_platform", lambda: "cuda")
+    checked = []
+
+    def support_reason(engine, gpu_id, **kwargs):
+        checked.append(gpu_id)
+        return "stop here"
+
+    monkeypatch.setattr(managed_engine, "support_reason", support_reason)
+    request = types.SimpleNamespace(gpu_ids = [1], gguf_variant = None, model_path = "org/model")
+    with host():
+        monkeypatch.setattr(mig, "mask_for", lambda ids: None)
+        # No refusal: the check and the mask are exactly the pre-MIG ones for this launch.
+        with pytest.raises(ValueError, match = "GPU 1: stop here"):
+            managed_engine.validate_load("vllm", request)
+        assert checked == [1]
+        assert managed_engine._child_cuda_mask([1]) == "1"
+
+
+def test_a_slice_without_a_memory_reading_budgets_through_nvidia_smi():
+    from core.inference import engine_adapters
+
+    with host() as probe:
+        assert len(B._get_gpu_memory()) == 3
+        probe["source"] = "failed"
+        _age_cache(mig._FRESH_SHARE_S + 1)
+        inner = subprocess.run
+        queried = []
+
+        def run(cmd, *args, **kw):
+            if "--query-gpu=memory.total,memory.free" in cmd:
+                queried.append(cmd)
+                return types.SimpleNamespace(returncode = 0, stdout = "81920, 78000\n", stderr = "")
+            return inner(cmd, *args, **kw)
+
+        with patch.object(subprocess, "run", run):
+            assert engine_adapters._nvidia_memory_rows([0]) == [(81920.0, 78000.0)]
+        assert len(queried) == 1
