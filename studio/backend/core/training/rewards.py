@@ -536,7 +536,10 @@ def score_rule(
             if text is None:
                 return rule["score"]["miss"]
         if rule["mode"] == "fullmatch":
-            hit = _match(rule["pattern"], text.strip(), fullmatch = True)
+            # Stripped as a fallback only: a pattern may require boundary whitespace itself.
+            hit = _match(rule["pattern"], text, fullmatch = True) or (
+                text != text.strip() and _match(rule["pattern"], text.strip(), fullmatch = True)
+            )
         else:
             hit = _match(rule["pattern"], text)
         return rule["score"]["match" if hit else "miss"]
