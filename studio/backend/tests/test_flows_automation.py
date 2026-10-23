@@ -339,6 +339,8 @@ def test_webhook_needs_its_secret_approval_and_a_small_json_body(client):
     snap = _wait(client, run_id)
     assert snap["nodes"]["w"]["outputs"]["payload"] == {"a": 1}
     assert client.post(path, content = b"not json").status_code == 400
+    # NaN / Infinity would make the triggered run's snapshot unreadable.
+    assert client.post(path, content = b'{"a": NaN}').status_code == 400
     big = json.dumps({"x": "y" * (flows_routes.WEBHOOK_MAX_BYTES + 1)})
     assert client.post(path, content = big).status_code == 413
 

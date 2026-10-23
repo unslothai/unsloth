@@ -923,6 +923,10 @@ def rotate_trigger(flow_id: str, node_id: str) -> dict:
     return list_flow_triggers(flow_id)
 
 
+def _reject_constant(name: str):
+    raise ValueError(f"{name} is not valid JSON")
+
+
 @hooks_router.post("/{token}")
 async def call_webhook(request: Request, token: str) -> dict:
     from utils.account_context import OWNER, run_as
@@ -940,7 +944,8 @@ async def call_webhook(request: Request, token: str) -> dict:
         raise HTTPException(status_code = 409, detail = "This webhook is switched off")
     data = await _read_body(request, WEBHOOK_MAX_BYTES)
     try:
-        payload = json.loads(data) if data.strip() else {}
+        # Strict like the Python and HTTP blocks: NaN / Infinity would make the run's snapshot unreadable.
+        payload = json.loads(data, parse_constant = _reject_constant) if data.strip() else {}
     except ValueError:
         raise HTTPException(status_code = 400, detail = "The body must be JSON")
     from utils.account_context import arun_as
