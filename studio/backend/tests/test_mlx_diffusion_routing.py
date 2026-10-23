@@ -1012,7 +1012,6 @@ def _z_image_rig(rig, monkeypatch):
 def test_status_offers_the_fallback_shift_control_from_the_cached_scheduler(
     rig, monkeypatch, tmp_path, config
 ):
-    # A request with a shift routes to diffusers, so the Images page must show the Shift control diffusers serves.
     pytest.importorskip("diffusers")
     _z_image_rig(rig, monkeypatch)
     _cache_base(
