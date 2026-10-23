@@ -484,7 +484,8 @@ class PeakProbe:
             self.window = open_window(dev)
             torch.cuda.synchronize(dev)
             torch.cuda.reset_peak_memory_stats(dev)
-            self.base = int(torch.cuda.memory_allocated(dev))
+            _reset_range_peak(dev)
+            self.base = int(torch.cuda.memory_allocated(dev)) + _range_bytes(dev)
             self.device = dev
         except Exception:  # noqa: BLE001 - measurement only
             self.device = None
@@ -495,13 +496,43 @@ class PeakProbe:
         try:
             import torch
             torch.cuda.synchronize(self.device)
-            peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
+            # Stable-range bytes sit outside the allocator: count their high-water mark (not what is still mapped:
+            # a model-offload range is unmapped before decode ends) so the peak stays on the stock scale.
+            peak = (
+                int(torch.cuda.max_memory_allocated(self.device))
+                + _range_peak_bytes(self.device)
+                - self.base
+            )
         except Exception:  # noqa: BLE001
             peak = None
         # closed only after the read: a render arming in between would otherwise reset the peak unseen
         if not close_window(self.device, getattr(self, "window", None)) or peak is None:
             return None
         return -(-peak // (1024 * 1024)) if peak > 0 else None
+
+
+def _range_bytes(dev: Any) -> int:
+    try:
+        from .diffusion_stable_arena import mapped_bytes
+        return mapped_bytes(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        return 0
+
+
+def _range_peak_bytes(dev: Any) -> int:
+    try:
+        from .diffusion_stable_arena import peak_mapped_bytes
+        return peak_mapped_bytes(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        return 0
+
+
+def _reset_range_peak(dev: Any) -> None:
+    try:
+        from .diffusion_stable_arena import reset_peak_mapped
+        reset_peak_mapped(dev.index)
+    except Exception:  # noqa: BLE001 - no stable ranges
+        pass
 
 
 def current_device_name() -> Optional[str]:

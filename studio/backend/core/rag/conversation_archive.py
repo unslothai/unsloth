@@ -20,8 +20,13 @@ import hashlib
 import logging
 import bisect
 import json
+import os
 import re
-from typing import Optional
+import threading
+import time
+from collections import OrderedDict
+from contextlib import contextmanager
+from typing import Callable, Optional
 
 from storage import rag_db
 
@@ -30,6 +35,17 @@ from .chunking import chunk_pages
 from .parsers import Page
 
 logger = logging.getLogger(__name__)
+
+_ARCHIVE_EMBED_BATCH = 64
+# Per call; the rest is archived by later requests, which re-evict the same turns.
+_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
+# Background pre-embedding runs only while no inference runs (tool calls, between turns); small batches so
+# a new generation waits at most one of them.
+_PREWARM_BATCH = 16
+_PREWARM_MAX_CHUNKS = 2048
+_VECTOR_CACHE_MAX = 8192
+_NOTED_MAX = 8
+_PAUSE_JOIN_S = 10.0
 
 # Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
 # user-authored text.
@@ -358,11 +374,389 @@ def can_archive(thread_id: Optional[str]) -> bool:
         return False
 
 
+def _archive_embed_max_chunks() -> int:
+    raw = os.environ.get("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "").strip()
+    if not raw:
+        return _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT
+
+
+def _chunk_key(identity: str, text: str) -> tuple[str, str]:
+    return identity, hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+
+
+_vector_cache: "OrderedDict[tuple[str, str], object]" = OrderedDict()
+_vector_cache_lock = threading.Lock()
+
+
+def _cached_vectors(identity: Optional[str], texts: list[str]) -> list:
+    """The cached vector per text, None for a miss. Keyed by content, so an edited turn simply misses."""
+    if not identity:
+        return [None] * len(texts)
+    with _vector_cache_lock:
+        out = []
+        for text in texts:
+            key = _chunk_key(identity, text)
+            vector = _vector_cache.get(key)
+            if vector is not None:
+                _vector_cache.move_to_end(key)
+            out.append(vector)
+        return out
+
+
+def _remember_vectors(identity: str, texts: list[str], vectors) -> None:
+    with _vector_cache_lock:
+        for text, vector in zip(texts, vectors):
+            key = _chunk_key(identity, text)
+            # A row of an (N, dim) batch is a view: cached as is, it would keep the whole batch alive.
+            copy = getattr(vector, "copy", None)
+            _vector_cache[key] = copy() if copy is not None else vector
+            _vector_cache.move_to_end(key)
+        while len(_vector_cache) > _VECTOR_CACHE_MAX:
+            _vector_cache.popitem(last = False)
+
+
+def _turn_chunks(text: str, chunk_limit: int, count) -> list:
+    """The exact chunking archive_turns stores, shared so pre-embedded vectors match it."""
+    return chunk_pages(
+        [Page(text = text, page_number = None, char_count = len(text))],
+        max_tokens = chunk_limit,
+        overlap = config.CHUNK_OVERLAP,
+        count = count,
+    )
+
+
+def _embed_pending_chunks(
+    texts: list[str],
+    *,
+    model_name: str,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    expected_identity: Optional[str] = None,
+    cached: Optional[list] = None,
+    max_encode: Optional[int] = None,
+):
+    """``(vectors, identity, cancelled, error)``, partial after a cancel or a late failure:
+    write only groups ``vectors`` fully covers. A failing first batch raises. Only cache misses
+    are encoded."""
+    # `cached` is the lookup the caller's cap was computed from; a second lookup could see a later eviction.
+    vectors = list(cached) if cached is not None else _cached_vectors(expected_identity, texts)
+    identity = expected_identity if any(v is not None for v in vectors) else None
+    misses = [i for i, v in enumerate(vectors) if v is None]
+    restarted = cancelled = False
+    error = None
+    k = 0
+    while k < len(misses):
+        if cancel_check is not None and cancel_check():
+            cancelled = True
+            break
+        idx = misses[k : k + _ARCHIVE_EMBED_BATCH]
+        try:
+            out, batch_identity = embeddings.encode_with_identity(
+                [texts[i] for i in idx], model_name = model_name, normalize = True
+            )
+        except Exception as exc:
+            # Keep finished batches, or a late timeout makes every request redo the whole pass.
+            error = exc
+            break
+        if identity is not None and batch_identity != identity:
+            if restarted:
+                break
+            # An ST failure swaps to llama-server for good: restart in the new space, as ingestion does.
+            logger.warning("conversation_archive.embedder_changed_mid_pass; re-embedding")
+            vectors, identity, restarted, k = [None] * len(texts), None, True, 0
+            # Former cache hits are re-encoded too, so the restart honours the request's cap itself.
+            misses = list(range(len(texts) if max_encode is None else min(len(texts), max_encode)))
+            continue
+        identity = batch_identity
+        for i, vector in zip(idx, out):
+            vectors[i] = vector
+        _remember_vectors(batch_identity, [texts[i] for i in idx], out)
+        k += _ARCHIVE_EMBED_BATCH
+    prefix = []
+    for vector in vectors:
+        if vector is None:
+            break
+        prefix.append(vector)
+    if error is not None and not prefix:
+        raise error
+    return prefix, identity or embeddings.embedding_identity(model_name), cancelled, error
+
+
+_gap = threading.Lock()
+_inference_depth = 0
+_noted_branches: dict = {}
+_prewarm_worker: Optional[threading.Thread] = None
+_prewarm_stop = threading.Event()
+
+
+def note_branch(
+    thread_id: Optional[str],
+    messages: list[dict],
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Remember a thread's latest transcript for the next idle gap; replaces the previous snapshot."""
+    if not thread_id or not messages or not enabled():
+        return
+    from utils.account_context import current_account
+
+    # Captured here: the worker is a plain thread, which would otherwise read the owner's databases.
+    account = current_account()
+    with _gap:
+        # A stopped request whose stream never opened would otherwise keep its transcript here indefinitely.
+        for key, job in list(_noted_branches.items()):
+            if job[3] is not None and job[3]():
+                del _noted_branches[key]
+        key = (account.account_id, thread_id)
+        _noted_branches.pop(key, None)
+        while len(_noted_branches) >= _NOTED_MAX:
+            del _noted_branches[next(iter(_noted_branches))]
+        _noted_branches[key] = (
+            account,
+            thread_id,
+            list(messages),
+            cancel_check,
+        )
+
+
+@contextmanager
+def _busy(restart: bool):
+    global _inference_depth
+    with _gap:
+        _inference_depth += 1
+    _pause_prewarm()
+    try:
+        yield
+    finally:
+        with _gap:
+            _inference_depth -= 1
+        if restart:
+            _start_prewarm()
+
+
+def inference_running():
+    """Hold while llama.cpp generates. Stops background embedding and waits out its batch in flight."""
+    return _busy(restart = True)
+
+
+def prewarm_running() -> bool:
+    worker = _prewarm_worker
+    return worker is not None and worker.is_alive()
+
+
+def hold_inference() -> Callable[[], None]:
+    """``inference_running`` for the event loop: never blocks (the batch in flight, at most ``_PREWARM_BATCH``
+    chunks, finishes on its own) and returns the release, to be called exactly once."""
+    global _inference_depth
+    with _gap:
+        _inference_depth += 1
+    _prewarm_stop.set()
+
+    def release() -> None:
+        global _inference_depth
+        with _gap:
+            _inference_depth -= 1
+        _start_prewarm()
+
+    return release
+
+
+def _pause_prewarm() -> None:
+    """Stop the gap worker and wait out its batch in flight; it restarts at the next stream's end. Bounded, so a
+    wedged embedder can never hold a generation back."""
+    _prewarm_stop.set()
+    worker = _prewarm_worker
+    if worker is not None and worker is not threading.current_thread():
+        worker.join(_PAUSE_JOIN_S)
+        if worker.is_alive():
+            logger.warning("conversation_archive.prewarm_pause_timed_out after=%ss", _PAUSE_JOIN_S)
+
+
+def _start_prewarm() -> None:
+    global _prewarm_worker
+    with _gap:
+        if _inference_depth or not _noted_branches:
+            return
+        if _prewarm_worker is not None and _prewarm_worker.is_alive():
+            return
+        jobs = list(_noted_branches.values())
+        _noted_branches.clear()
+        _prewarm_stop.clear()
+        _prewarm_worker = threading.Thread(
+            target = _prewarm_jobs, args = (jobs,), daemon = True, name = "archive-prewarm"
+        )
+        _prewarm_worker.start()
+
+
+def _other_work_busy() -> bool:
+    """Image / video generation or a training run holds the accelerator. Read only from modules already
+    imported (never constructs a service), and an unreadable probe counts as busy."""
+    import sys
+
+    try:
+        for module, attr, probe in (
+            ("core.training.training", "_training_backend", "is_training_active"),
+            ("core.training.diffusion_training_service", "_service", "is_active"),
+        ):
+            service = getattr(sys.modules.get(module), attr, None)
+            if service is not None and getattr(service, probe)():
+                return True
+        residency = sys.modules.get("core.inference.gpu_residency")
+        if residency is not None:
+            for owner in residency.MEDIA_OWNERS:
+                if any(residency._media_busy(owner)):
+                    return True
+    except Exception:  # noqa: BLE001 -- fail closed: skipping a warm-up costs nothing
+        return True
+    return False
+
+
+def _gap_closed() -> bool:
+    return _prewarm_stop.is_set() or _inference_depth > 0 or _other_work_busy()
+
+
+def _requeue(jobs: list) -> None:
+    """Put back what a closed gap interrupted, behind nothing newer: a fresh note for the same chat wins, and a
+    stopped request stays dropped."""
+    with _gap:
+        kept = {
+            (job[0].account_id, job[1]): job
+            for job in jobs
+            if (job[0].account_id, job[1]) not in _noted_branches and not (job[3] and job[3]())
+        }
+        merged = {**kept, **_noted_branches}
+        _noted_branches.clear()
+        _noted_branches.update(list(merged.items())[-_NOTED_MAX:])
+
+
+def _prewarm_jobs(jobs: list) -> None:
+    from utils.account_context import run_as
+    for index, (account, thread_id, messages, cancel_check) in enumerate(jobs):
+        if _gap_closed():
+            _requeue(jobs[index:])
+            return
+        # Chat Stop ends this request's background work too, not only its foreground pass.
+        stopped = cancel_check or (lambda: False)
+        if stopped():
+            continue
+        try:
+            run_as(account, _prewarm_thread, thread_id, messages, stopped)
+        except Exception:  # noqa: BLE001 -- a cache warm-up is never worth a log storm
+            logger.debug(
+                "conversation_archive.prewarm_failed thread_id=%s", thread_id, exc_info = True
+            )
+        if _gap_closed():
+            # Possibly cut short; cached vectors make the redo cheap.
+            _requeue(jobs[index:])
+            return
+
+
+def _prewarm_thread(
+    thread_id: str,
+    messages: list[dict],
+    stopped: Callable[[], bool] = lambda: False,
+) -> None:
+    """Embed this thread's not-yet-archived turns into the vector cache, oldest first (the next to be
+    evicted). Writes nothing to the archive, so an edit or rewind cannot strand a stale row."""
+    if not can_archive(thread_id):
+        return
+    from core.inference.context_window import group_turns
+
+    model = config.effective_embedding_model()
+    if not _embedder_free():
+        return
+    identity = embeddings.embedding_identity(model)
+    scope = store.conversation_archive_scope(thread_id)
+    count = _yielding(embeddings.token_counter(model))
+    chunk_limit = embeddings.chunk_tokens(model)
+    conn = rag_db.get_connection()
+    try:
+        budget, todo, done = _PREWARM_MAX_CHUNKS, [], 0
+        for group in group_turns(messages):
+            if _gap_closed() or stopped() or budget <= 0:
+                break
+            archivable = _archivable(group)
+            text = render_turn(archivable) if archivable else ""
+            if not text:
+                continue
+            digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+            if _archived_under(conn, scope, digest, identity):
+                continue
+            texts = [chunk.text for chunk in _turn_chunks(text, chunk_limit, count)]
+            misses = [t for t, v in zip(texts, _cached_vectors(identity, texts)) if v is None]
+            todo += misses[:budget]
+            budget -= len(misses)
+            while len(todo) >= _PREWARM_BATCH and not (_gap_closed() or stopped()):
+                done += _prewarm_batch(model, identity, todo[:_PREWARM_BATCH])
+                todo = todo[_PREWARM_BATCH:]
+        while todo and not (_gap_closed() or stopped()):
+            done += _prewarm_batch(model, identity, todo[:_PREWARM_BATCH])
+            todo = todo[_PREWARM_BATCH:]
+    except _GapClosed:
+        pass
+    finally:
+        conn.close()
+    if done:
+        logger.info("conversation_archive.prewarmed thread_id=%s chunks=%s", thread_id, done)
+
+
+class _GapClosed(Exception):
+    pass
+
+
+def _yielding(count: Callable[[str], int]) -> Callable[[str], int]:
+    def call(text: str) -> int:
+        if not _embedder_free():
+            raise _GapClosed
+        return count(text)
+
+    return call
+
+
+def _embedder_busy() -> bool:
+    """Whether another caller holds a lock the encode path would wait on: model load / backend build, the ST
+    compute lock, or the llama-server backend's serve lock. Probed without blocking."""
+    locks = [embeddings._backend_lock, embeddings._lock, embeddings._compute_lock]
+    serve = getattr(embeddings._backend, "_serve_lock", None)
+    if serve is not None:
+        locks.append(serve)
+    for lock in locks:
+        if not lock.acquire(blocking = False):
+            return True
+        lock.release()
+    return False
+
+
+def _embedder_free() -> bool:
+    """Wait for the embedder without queueing on its locks: a queued worker cannot see a stop, so a generation
+    would wait behind another caller's (e.g. ingestion's) whole batch."""
+    while _embedder_busy():
+        if _gap_closed():
+            return False
+        time.sleep(0.05)
+    return not _gap_closed()
+
+
+def _prewarm_batch(model: str, identity: str, texts: list[str]) -> int:
+    if not _embedder_free():
+        return 0
+    vectors, got = embeddings.encode_with_identity(texts, model_name = model, normalize = True)
+    if got != identity:
+        # The embedder changed under us; the next request's archive re-embeds in the new space.
+        _prewarm_stop.set()
+        return 0
+    _remember_vectors(got, texts, vectors)
+    return len(texts)
+
+
 def archive_turns(
     thread_id: str,
     evicted: list[dict],
     live: Optional[list[dict]] = None,
     branch: Optional[list[dict]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> int:
     """Index the evicted turns for ``thread_id``. Returns how many were newly written.
 
@@ -373,6 +767,8 @@ def archive_turns(
     ``live`` is the fitted conversation, i.e. what the model can still see. It bounds how many
     copies of a repeated turn the archive is allowed to hold right now; see ``_write_budget``.
     Optional, and omitting it keeps the previous behaviour.
+
+    ``cancel_check`` (Chat Stop) is polled before chunking and between embedding batches.
     """
     if not thread_id or not evicted or not enabled():
         return 0
@@ -381,7 +777,19 @@ def archive_turns(
     if not can_archive(thread_id):
         logger.debug("conversation_archive.skipped_unpersisted_thread thread_id=%s", thread_id)
         return 0
+    # A request's own compaction goes first and stays marked busy: another slot's stream ending must not
+    # restart the gap worker under it. Only a stream's end restarts it, so none starts before this stream.
+    with _busy(restart = False):
+        return _archive_turns(thread_id, evicted, live, branch, cancel_check)
 
+
+def _archive_turns(
+    thread_id: str,
+    evicted: list[dict],
+    live: Optional[list[dict]],
+    branch: Optional[list[dict]],
+    cancel_check: Optional[Callable[[], bool]],
+) -> int:
     # The evictor's own grouper, so an archived unit is exactly the unit the window drops. Imported lazily because the
     # inference layer imports this module.
     from core.inference.context_window import group_turns
@@ -407,6 +815,8 @@ def archive_turns(
     written = 0
     conn = None
     try:
+        if cancel_check is not None and cancel_check():
+            return 0
         count = embeddings.token_counter(model)
         chunk_limit = None
         conn = rag_db.get_connection()
@@ -416,8 +826,12 @@ def archive_turns(
 
         # Chunk everything first, then embed it in ONE pass. Per group, a first compaction of a long chat ran dozens
         # of one-item embedding jobs back to back before the reply could start, and both backends serialise them.
-        pending = []
+        pending, needs, snapshots = [], [], []
+        max_chunks = _archive_embed_max_chunks()
+        collected = skipped = 0
         for group, span in groups:
+            if cancel_check is not None and cancel_check():
+                return 0
             text = render_turn(group)
             if not text:
                 continue
@@ -442,30 +856,108 @@ def archive_turns(
                 )
                 _widen_span(conn, scope, digest, span)
                 continue
+            if collected >= max_chunks:
+                skipped += 1
+                continue
             if chunk_limit is None:
                 chunk_limit = embeddings.chunk_tokens(model)
-            chunks = chunk_pages(
-                [Page(text = text, page_number = None, char_count = len(text))],
-                max_tokens = chunk_limit,
-                overlap = config.CHUNK_OVERLAP,
-                count = count,
-            )
+            chunks = _turn_chunks(text, chunk_limit, count)
             if chunks:
+                # The cap counts what must be encoded now; chunks pre-embedded in an idle gap are free.
+                hits = _cached_vectors(expected_identity, [chunk.text for chunk in chunks])
+                need = sum(v is None for v in hits)
                 pending.append((group, span, digest, chunks, seats, budget))
+                needs.append(need)
+                snapshots.append(hits)
+                collected += need
         if not pending:
             return 0
 
+        if cancel_check is not None and cancel_check():
+            logger.info(
+                "conversation_archive.embed_cancelled_before_encode thread_id=%s groups=%s",
+                thread_id,
+                len(pending),
+            )
+            return 0
+
+        chunk_total = sum(needs)
+        if chunk_total > max_chunks or skipped:
+            kept, used = [], 0
+            for entry, need in zip(pending, needs):
+                # On what was kept, not on chunk count: a fully cached first turn adds nothing to `used`.
+                if kept and used + need > max_chunks:
+                    break
+                if need > max_chunks and not kept:
+                    # An oversized first turn still goes, or it would block the backlog forever.
+                    kept.append(entry)
+                    used += need
+                    break
+                kept.append(entry)
+                used += need
+            deferred = len(pending) - len(kept) + skipped
+            logger.info(
+                "conversation_archive.embed_capped thread_id=%s groups=%s chunks=%s "
+                "cap=%s deferred_groups=%s",
+                thread_id,
+                len(pending),
+                chunk_total,
+                max_chunks,
+                deferred,
+            )
+            snapshots = snapshots[: len(kept)]
+            pending = kept
+            if not pending:
+                return 0
+
+        texts = [chunk.text for entry in pending for chunk in entry[3]]
+        started = time.monotonic()
+        logger.info(
+            "conversation_archive.embed_start thread_id=%s groups=%s chunks=%s batch=%s",
+            thread_id,
+            len(pending),
+            len(texts),
+            _ARCHIVE_EMBED_BATCH,
+        )
         # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
         # with a space they were never in.
-        vectors, identity = embeddings.encode_with_identity(
-            [chunk.text for entry in pending for chunk in entry[3]],
+        vectors, identity, cancelled, embed_error = _embed_pending_chunks(
+            texts,
             model_name = model,
-            normalize = True,
+            cancel_check = cancel_check,
+            expected_identity = expected_identity,
+            cached = [vector for hits in snapshots for vector in hits],
+            max_encode = max(max_chunks, sum(needs[: len(pending)])),
         )
+        logger.info(
+            "conversation_archive.embed_done thread_id=%s vectors=%s/%s cancelled=%s elapsed_ms=%s",
+            thread_id,
+            len(vectors),
+            len(texts),
+            cancelled,
+            int((time.monotonic() - started) * 1000),
+        )
+        if not vectors:
+            return 0
+
+        # Only fully embedded groups; a partial one is left for the next request.
+        complete: list = []
         offset = 0
-        for group, span, digest, chunks, seats, budget in pending:
-            group_vectors = vectors[offset : offset + len(chunks)]
-            offset += len(chunks)
+        for entry in pending:
+            n = len(entry[3])
+            if offset + n > len(vectors):
+                break
+            complete.append((entry, vectors[offset : offset + n]))
+            offset += n
+        if len(complete) < len(pending):
+            logger.info(
+                "conversation_archive.embed_partial thread_id=%s written_groups=%s/%s",
+                thread_id,
+                len(complete),
+                len(pending),
+            )
+
+        for (group, span, digest, chunks, seats, budget), group_vectors in complete:
             roles = " + ".join(
                 dict.fromkeys(str(message.get("role") or "message") for message in group)
             )
@@ -591,6 +1083,8 @@ def archive_turns(
                 written += 1
             if _INGEST_FAILED:
                 globals()["_INGEST_FAILED"] = False
+        if embed_error is not None:
+            raise embed_error
     except embeddings.EmbeddingModelDownloadRequiredError as exc:
         globals()["_INGEST_FAILED"] = True
         _log_embedder_pending(model, exc)

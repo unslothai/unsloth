@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -880,6 +881,7 @@ class MlxDiffusionBackend:
 
     # ── Load ─────────────────────────────────────────────────────────────────
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -1235,6 +1237,7 @@ class MlxDiffusionBackend:
 
     # ── Generate ─────────────────────────────────────────────────────────────
 
+    @holds_inference
     def generate(
         self,
         *,

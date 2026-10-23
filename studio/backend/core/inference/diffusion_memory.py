@@ -122,6 +122,8 @@ def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
 
 OFFLOAD_KEEP_CPU_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_KEEP_CPU"
 _KEEP_ATTR = "_unsloth_offload_keep_cpu"
+# diffusion_vae_upcast.DTYPE_ONLY_TO_ATTR
+_DTYPE_ONLY_TO_ATTR = "_unsloth_dtype_only_to"
 
 
 def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
@@ -757,8 +759,10 @@ def _wrap_cpu_offload_hook(
                     type(mod).__name__,
                 )
         layout = state.get("pin_layout") if onload and _fast_upload_enabled() else None
-        if layout and "to" in mod.__dict__:
-            # An instance-level mover is already installed (stable arena, pinned swap): defer to it.
+        prior_to = mod.__dict__.get("to")
+        if layout and prior_to is not None and not getattr(prior_to, _DTYPE_ONLY_TO_ATTR, False):
+            # An instance-level mover is already installed (stable arena, pinned swap): defer to it. A dtype-only
+            # one (diffusion_vae_upcast) passes device moves through, so the pinned chunks still go up first.
             layout = None
         if not layout:
             out = pre_forward(mod, *args, **kwargs)
@@ -778,8 +782,14 @@ def _wrap_cpu_offload_hook(
             # The stock pre_forward offloads the previous component, then calls module.to(device) only if the module
             # is not there yet. Shadow that one call so the pinned chunks go up first; module.to then moves whatever
             # the chunks did not cover (unpinned or replaced weights) exactly as before.
+            def _put_back_to() -> None:
+                if prior_to is None:
+                    mod.__dict__.pop("to", None)
+                else:
+                    mod.__dict__["to"] = prior_to
+
             def _to(*to_args: Any, **to_kwargs: Any) -> Any:
-                mod.__dict__.pop("to", None)
+                _put_back_to()
                 import torch
 
                 target = to_args[0] if to_args else to_kwargs.get("device")
@@ -799,7 +809,7 @@ def _wrap_cpu_offload_hook(
             try:
                 out = pre_forward(mod, *args, **kwargs)
             finally:
-                mod.__dict__.pop("to", None)
+                _put_back_to()
         if onload:
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
@@ -1488,6 +1498,10 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     # untiled 2048 decode is 9_738. References are charged through ``condition_pixel_weight``. The base (CFG) is
     # unmeasured and keeps the flat estimate.
     "flux.3-klein": ((301, 901, 2_437, 2_437, 3_359), (301, 901, 2_437, 2_437, 3_359)),
+    # FLUX.3 Klein base, B200 bf16: per column the larger of Klein and base (same DiT / VAE, one Flux2 formula in ComfyUI).
+    "flux.3-klein-base": ((301, 901, 2_512, 2_512, 3_359), (301, 901, 2_512, 2_512, 3_359)),
+    # MOSS-Image SFT, B200 bf16 measurements; both tiers take the eager worst.
+    "moss-image": ((1_940, 528, 3_666, 3_662, 3_750), (1_940, 528, 3_666, 3_662, 3_750)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
 }
 
@@ -1503,7 +1517,30 @@ def calibrated_image_activation(
     )
 
 
-DISCRETE_RESERVE_CAP_MIB = 4096
+# ComfyUI's minimum_inference_memory() (comfy/model_management.py); activations are priced separately here.
+COMFY_MIN_INFERENCE_MIB = 800
+COMFY_EXTRA_RESERVED_MIB = 400
+COMFY_EXTRA_RESERVED_WINDOWS_MIB = 600
+COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB = 100
+# Placements measured on T4 / 8-16 GB cards are tuned against 2 GiB; ComfyUI's 1.2 GiB alone flips them.
+DISCRETE_RESERVE_FLOOR_MIB = 2048
+
+
+def comfy_min_inference_mib(total_mib: Optional[int] = None) -> int:
+    """ComfyUI's ``minimum_inference_memory()`` in MiB: 1200 on Linux, 1400 / 1500 (card above 15 GiB) on Windows."""
+    if sys.platform != "win32":
+        return COMFY_MIN_INFERENCE_MIB + COMFY_EXTRA_RESERVED_MIB
+    extra = COMFY_EXTRA_RESERVED_WINDOWS_MIB
+    if int(total_mib or 0) > 15 * 1024:
+        extra += COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB
+    return COMFY_MIN_INFERENCE_MIB + extra
+
+
+def discrete_reserve_mib(total_mib: Optional[int] = None) -> int:
+    """A discrete card's fixed reserve: ComfyUI's, floored at 2 GiB."""
+    return max(DISCRETE_RESERVE_FLOOR_MIB, comfy_min_inference_mib(total_mib))
+
+
 _ROCM_APU_POOL = "rocm_apu_pool"
 
 
@@ -1520,11 +1557,8 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
         # keeps the uncapped 10%.
         return max(2048, int(base * 0.10))
-    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations (the
-    # runtime headroom prices those). 10% of the TOTAL grew with the card: 17.8 GiB on a 178 GiB card, which refused
-    # a resident or companion-split plan on a partly used big card with plenty free. Capped near ComfyUI's fixed
-    # reserve (~1.2 GiB plus its activation estimate); cards up to 40 GiB keep 10% (the 2 GiB floor below 20 GiB).
-    return max(2048, min(int(base * 0.10), DISCRETE_RESERVE_CAP_MIB))
+    # Fixed, not a share: a capped 10% kept 2.4-4 GiB idle on 24-40 GiB cards.
+    return discrete_reserve_mib(base)
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
@@ -2518,6 +2552,11 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
+    if calibrated_activation is not None and "calibrated_headroom_mib" not in estimates:
+        from .diffusion_multigpu import current_selection
+        if current_selection() is not None:
+            # Untiled: a layer split keeps the VAE resident on the primary.
+            estimates["calibrated_split_headroom_mib"] = calibrated_activation.headroom(False)
     split = _multigpu_companion_split(
         target = target,
         device_memory = device_memory,
@@ -2644,7 +2683,9 @@ def _calibrated_faster_tier(
     stream_transformer: bool,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
     """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
-    Every check grows with the budget, so more VRAM never picks a slower tier."""
+    A flat resident-transformer pick whose measured 2048 denoise does not fit beside the weights (the flat runtime
+    headroom undercounts it) is demoted to the fastest tier that does fit, as ComfyUI offloads weights against its
+    activation estimate. Every check grows with the budget, so more VRAM never picks a slower tier."""
     if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
         return None
     te = max(0, int(text_encoder_dense_mib or 0))
@@ -2723,6 +2764,24 @@ def _calibrated_faster_tier(
             ),
         ),
     )
+    # Only the 2048 denoise is checked here: it cannot tile, while an oversized decode is tiled by the generation guard.
+    denoise_fits = (
+        transformer + te + others <= room
+        if flat_rank == 0
+        else te > 0 and transformer + others <= room
+    )
+    if flat_rank <= 1 and not denoise_fits:
+        for fits, (tier_policy, stream_te, stream_tr, tile, reason) in candidates[flat_rank + 1 :]:
+            if fits:
+                return (
+                    tier_policy,
+                    stream_te,
+                    stream_tr,
+                    tile,
+                    "the measured 2048 denoise does not fit beside the flat resident pick; "
+                    + reason,
+                )
+        return None
     for rank, (fits, tier) in enumerate(candidates):
         if rank >= flat_rank:
             return None
@@ -3701,21 +3760,12 @@ def _keep_groups_resident(
         onload = torch.device(device)
         left = int(room_mib) * 1024 * 1024
         kept = 0
-
-        def _tensors(group: Any) -> list:
-            out: list = []
-            seen: set[int] = set()
-            for t in (
-                [p for m in group.modules for p in m.parameters()]
-                + [b for m in group.modules for b in m.buffers()]
-                + list(group.parameters or [])
-                + list(group.buffers or [])
-            ):
-                if id(t) not in seen:
-                    seen.add(id(t))
-                    out.append(t)
-            return out
-
+        try:
+            from .diffusion_stable_arena import pin_group_in_range, stable_repin_wanted
+            stable = stable_repin_wanted(module)
+        except Exception:  # noqa: BLE001 - re-pins move the stock way
+            stable = False
+        _tensors = _resident_tensors
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
 
         def _noop(*args: Any, **kwargs: Any) -> None:
@@ -3779,8 +3829,35 @@ def _keep_groups_resident(
                 continue
             for member in closure:
                 cpu = getattr(member, "cpu_param_dict", None) or {}
-                for t in _tensors(member):
-                    if _placed_on(t, onload.type, is_torchao):
+                members_tensors = _tensors(member)
+                placed: set = set()
+                if stable and onload.type == "cuda":
+                    # The step graph recorded the resident groups' addresses: a re-pin lands where the last one did.
+                    try:
+                        placed = pin_group_in_range(
+                            module,
+                            member,
+                            members_tensors,
+                            lambda t: not _placed_on(t, onload.type, is_torchao),
+                            lambda t, cpu = cpu: cpu.get(t, t),
+                            onload,
+                            go._swap_torchao_tensor,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - the stock move still places the group
+                        placed = set()
+                        # Unmap an empty range so the stock move below does not pay for a second copy.
+                        try:
+                            from .diffusion_stable_arena import release_group_range
+                            release_group_range(module, member, members_tensors)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        if logger is not None:
+                            logger.warning(
+                                "diffusion.memory: stable re-pin range unavailable (%s); the group moves the stock way",
+                                exc,
+                            )
+                for t in members_tensors:
+                    if id(t) in placed or _placed_on(t, onload.type, is_torchao):
                         continue
                     moved = cpu.get(t, t).to(onload)
                     if is_torchao(t):
@@ -3863,6 +3940,22 @@ def _streamed_group_count(groups: list) -> int:
     )
 
 
+def _resident_tensors(group: Any) -> list:
+    """Every tensor of an offload group, each once (its modules' parameters, their buffers, then the group's own)."""
+    out: list = []
+    seen: set[int] = set()
+    for t in (
+        [p for m in group.modules for p in m.parameters()]
+        + [b for m in group.modules for b in m.buffers()]
+        + list(group.parameters or [])
+        + list(group.buffers or [])
+    ):
+        if id(t) not in seen:
+            seen.add(id(t))
+            out.append(t)
+    return out
+
+
 def _release_group(group: Any) -> None:
     onload_, offload_ = getattr(group, "_unsloth_streamed_hooks", (None, None))
     for name, fn in (("onload_", onload_), ("offload_", offload_)):
@@ -3873,6 +3966,14 @@ def _release_group(group: Any) -> None:
     group._unsloth_resident = False
     group.offload_()
     _bump_placement_epoch()
+
+
+def _release_group_range(owner: Any, group: Any) -> None:
+    """A released group's weights are on their host copies again: its stable re-pin range gives the physical memory
+    back (the addresses stay reserved)."""
+    if "_unsloth_repin_range" in getattr(group, "__dict__", {}):
+        from .diffusion_stable_arena import release_group_range
+        release_group_range(owner, group, _resident_tensors(group))
 
 
 def release_resident_groups(
@@ -3952,6 +4053,7 @@ def release_resident_groups(
                     # Recorded before demoting: a release that fails part way is still re-pinned by ``restore``.
                     streamed.add(id(member))
                     _release_group(member)
+                    _release_group_range(module, member)
                     left -= int(getattr(member, "_unsloth_resident_bytes", 0))
         if not released:
             return None

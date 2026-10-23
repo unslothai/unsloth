@@ -406,7 +406,7 @@ def test_studio_load_arms_the_split_compiled_only():
     import ast
     import pathlib
 
-    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text()
+    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
     calls = [
         node
         for node in ast.walk(ast.parse(source))

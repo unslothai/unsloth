@@ -755,6 +755,7 @@ def refine_plan_for_multigpu(
     headroom = int(
         plan.estimates.get("measured_runtime_headroom_mib")
         or plan.estimates.get("calibrated_headroom_mib")
+        or plan.estimates.get("calibrated_split_headroom_mib")
         or plan.estimates.get("runtime_headroom_mib")
         or 0
     )
