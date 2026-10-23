@@ -53793,6 +53793,16 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
+    from core.inference import media_load_ids
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    # The load in the slot, so an unload can name exactly what this answer shows.
+    status_dict = {
+        **status_dict,
+        "load_id": await asyncio.to_thread(
+            media_load_ids.current_id, "diffusion", get_active_diffusion_engine()
+        ),
+    }
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 

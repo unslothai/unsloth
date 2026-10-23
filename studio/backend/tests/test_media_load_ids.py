@@ -11,6 +11,7 @@ import pytest
 
 from core.inference import media_load_ids
 from hub.services.models import account_access
+from utils.account_context import AccountContext, run_as
 
 
 class _Engine:
@@ -194,4 +195,49 @@ def test_remembered_tokens_are_bounded(monkeypatch):
     engine = _Engine()
     for n in range(5):
         _unload(engine, f"gone{n}")
-    assert list(media_load_ids._cancelled["video"]) == ["gone2", "gone3", "gone4"]
+    assert [t for t, _a in media_load_ids._cancelled["video"]] == ["gone2", "gone3", "gone4"]
+
+
+def _as(account: str, fn, *args):
+    return run_as(AccountContext(account_id = account, username = account), fn, *args)
+
+
+def test_a_cancelled_token_refuses_only_the_cancelling_accounts_load():
+    # Another account naming a token in advance cannot stop this account's load with it.
+    engine = _Engine()
+    assert _as("b", _unload, engine, "t1") == ("cancelled", None)
+    _as("a", _load, engine, "t1")
+    assert engine.loading and engine._load_token == 1
+    assert _as("b", _unload, engine, "t2") == ("cancelled", None)
+    with pytest.raises(media_load_ids.LoadCancelledError):
+        _as("b", _load, engine, "t2")
+
+
+def test_status_names_the_load_in_the_slot():
+    engine = _Engine()
+    assert media_load_ids.current_id("video", engine) is None
+    _load(engine, "t1")
+    assert media_load_ids.current_id("video", engine) == "t1"
+    engine.finish()
+    assert media_load_ids.current_id("video", engine) == "t1"
+    # A load without a token gets one from Studio, which an unload can name.
+    _load(engine, None)
+    made = media_load_ids.current_id("video", engine)
+    assert made.startswith("studio-") and made != "t1"
+    assert _unload(engine, "t1") == ("superseded", None)
+    assert _unload(engine, made)[0] == "unloaded"
+    assert media_load_ids.current_id("video", engine) is None
+
+
+def test_a_resident_stays_named_after_a_newer_load_fails():
+    engine = _Engine()
+    _load(engine, "t1")
+    engine.finish()
+    resident = engine._state
+    _load(engine, "t2")
+    assert media_load_ids.current_id("video", engine) == "t2"
+    engine.fail()
+    assert engine._state is resident
+    assert media_load_ids.current_id("video", engine) == "t1"
+    assert _unload(engine, "t2") == ("superseded", None)
+    assert _unload(engine, "t1")[0] == "unloaded"

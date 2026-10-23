@@ -5821,6 +5821,11 @@ class DiffusionDownloadPlanResponse(BaseModel):
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the load in flight or resident (one Studio made up for a "
+        "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
@@ -7508,6 +7513,11 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the load in flight or resident (one Studio made up for a "
+        "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",

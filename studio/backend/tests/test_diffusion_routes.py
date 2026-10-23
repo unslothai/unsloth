@@ -3377,3 +3377,9 @@ def test_an_image_unload_naming_a_load_not_started_yet_refuses_that_load(token_c
     refused = _load_with_token(client, "t1")
     assert refused.status_code == 409 and "cancelled" in refused.json()["detail"]
     assert backend.unloads == 0 and not backend.loaded
+
+
+def test_image_status_names_the_load_an_unload_can_name(token_client):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    assert client.get("/api/inference/images/status").json()["load_id"] == "t1"

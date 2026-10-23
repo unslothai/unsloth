@@ -1857,3 +1857,13 @@ def test_an_unload_without_a_body_unloads_whatever_is_loaded(token_client):
     resp = client.post("/api/inference/video/unload")
     assert resp.status_code == 200 and "outcome" not in resp.json()
     assert backend.unloads == 1 and not backend.loaded
+
+
+def test_status_names_the_load_an_unload_can_name(token_client):
+    client, backend = token_client
+    assert client.get("/api/inference/video/status").json()["load_id"] is None
+    assert _load_with(client, None).status_code == 200
+    made = client.get("/api/inference/video/status").json()["load_id"]
+    assert made.startswith("studio-")
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": made})
+    assert resp.json()["outcome"] == "unloaded" and backend.unloads == 1
