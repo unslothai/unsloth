@@ -386,6 +386,10 @@ def merge_4bit_lora_layer_by_layer(model):
         before = list(getattr(module, "merged_adapters", None) or ())
         try:
             module.merge()
+            result = base_layer._parameters.get("weight", None)
+            if result is not None and getattr(result, "quant_state", None) is not None:
+                result = _restage_4bit(result, "cpu")
+                base_layer._parameters["weight"] = result
         except BaseException:
             base_layer._parameters["weight"] = weight
             # Layers merged earlier in this loop get their unmerged shards back from the gather too.
@@ -393,10 +397,6 @@ def merge_4bit_lora_layer_by_layer(model):
                 merged.append((module, before))
             unmerge_flags(merged)
             raise
-        result = base_layer._parameters.get("weight", None)
-        if result is not None and getattr(result, "quant_state", None) is not None:
-            result = _restage_4bit(result, "cpu")
-            base_layer._parameters["weight"] = result
         if list(getattr(module, "merged_adapters", None) or ()) != before:
             merged.append((module, before))
     return merged

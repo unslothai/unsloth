@@ -146,3 +146,34 @@ def test_streamed_merge_failure_clears_every_merged_layer(monkeypatch):
     with pytest.raises(RuntimeError, match = "merge failed"):
         fsdp2_save.merge_4bit_lora_layer_by_layer(model)
     assert [layer.merged_adapters for layer in model] == [[], [], []]
+
+
+def test_streamed_merge_restage_failure_clears_merge_flags(monkeypatch):
+    # A failing restage after a successful merge must not leave the layer claiming the merge.
+    import torch
+
+    class _Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base_layer = torch.nn.Linear(2, 2, bias = False)
+            self.base_layer.weight.quant_state = object()
+            self.merged_adapters = []
+
+        def merge(self):
+            self.merged_adapters.append("default")
+
+    model = torch.nn.Sequential(_Layer(), _Layer())
+    staged = {id(layer.base_layer.weight): "cuda" for layer in model}
+    monkeypatch.setattr(fsdp2_save, "_STAGED_4BIT", [staged])
+    calls = []
+
+    def restage(weight, device):
+        calls.append(device)
+        if device == "cpu" and len(calls) == 4:
+            raise RuntimeError("host out of memory")
+        return weight
+
+    monkeypatch.setattr(fsdp2_save, "_restage_4bit", restage)
+    with pytest.raises(RuntimeError, match = "host out of memory"):
+        fsdp2_save.merge_4bit_lora_layer_by_layer(model)
+    assert [layer.merged_adapters for layer in model] == [[], []]
