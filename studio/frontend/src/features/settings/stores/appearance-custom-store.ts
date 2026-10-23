@@ -920,7 +920,7 @@ export function applyCustomizationToDocument(
   setVar("--foreground-base", colors.foreground);
   // Clear the token older builds wrote inline; it would pin the ink.
   setVar("--foreground", null);
-  // Black buttons take a custom ink; stock palettes keep their softer fill.
+  // Black buttons follow a custom ink.
   setVar("--action-base", colors.foreground ? "var(--foreground)" : null);
   // keep the full-width inset from making narrow panes smaller than wide.
   setVar(

@@ -310,7 +310,6 @@ test("a measurement that failed leaves the clears disabled", async () => {
   const destructive = [...walk(failed)].filter(
     (element) =>
       element.type === "Button" &&
-      // The dialog's confirm: the row triggers are size="sm".
       element.props?.variant === "destructive" &&
       element.props?.size === undefined,
   );

@@ -395,8 +395,7 @@
 	--control-accent: var(--primary);
 	--control-accent-foreground: var(--primary-foreground);
 
-	/* Black button fill: a step softer than the ink in the stock palettes. Other
-	   palettes, dark mode and a custom foreground (set inline) use the ink. */
+	/* Black-button fill; the ink outside the stock light palettes. */
 	--action-base: #1a1c1f;
 	--action: var(--action-base);
 
@@ -2237,8 +2236,7 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* Neutral selected / drag-over tints (bg-wash-10 = 10% ink), scaled by the
-   contrast setting like the hand-written washes. */
+/* bg-wash-N: N% ink, scaled by the contrast setting. */
 @utility bg-wash-* {
 	background-color: color-mix(in srgb, var(--foreground) min(100%, calc(--value(integer) * 1% * var(--contrast-wash-gain, 1))), transparent);
 }
@@ -5295,7 +5293,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: color-mix(in oklab, color-mix(in oklab, var(--background), black 45%) 78%, transparent);
 }
 
-/* Video tabs: the clip sits on a soft neutral band. */
 .browser-video-band {
 	background:
 		radial-gradient(55% 90% at 18% 30%, color-mix(in oklab, var(--foreground) 12%, transparent), transparent 70%),
