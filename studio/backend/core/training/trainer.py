@@ -4955,12 +4955,21 @@ class UnslothTrainer:
                 except Exception:
                     vocab_size = None
                 max_seq = training_args.get("max_seq_length", 2048)
+                # The SFTConfig's own value (unset here, so TRL resolves it from the dataset shape) decides
+                # whether a completion_mask column is applied, so only then is it checked.
+                completion_only = config_args.get("completion_only_loss")
                 dataset["dataset"] = prepare_pretokenized_dataset(
-                    dataset["dataset"], max_seq_length = max_seq, vocab_size = vocab_size
+                    dataset["dataset"],
+                    max_seq_length = max_seq,
+                    vocab_size = vocab_size,
+                    completion_only_loss = completion_only,
                 )
                 if eval_dataset is not None:
                     eval_dataset = prepare_pretokenized_dataset(
-                        eval_dataset, max_seq_length = max_seq, vocab_size = vocab_size
+                        eval_dataset,
+                        max_seq_length = max_seq,
+                        vocab_size = vocab_size,
+                        completion_only_loss = completion_only,
                     )
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything

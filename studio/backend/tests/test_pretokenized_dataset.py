@@ -147,7 +147,9 @@ def test_prepare_rejects_labels_of_another_length():
 def test_prepare_truncates_loss_masks_with_the_ids(mask):
     # TRL applies these masks to the labels: left at full length they fail on the first step.
     ds = Dataset.from_dict({"input_ids": [[1, 2, 3, 4, 5, 6]], mask: [[0, 0, 1, 1, 1, 1]]})
-    out = prepare_pretokenized_dataset(ds, max_seq_length = 4, vocab_size = 100)
+    out = prepare_pretokenized_dataset(
+        ds, max_seq_length = 4, vocab_size = 100, completion_only_loss = True
+    )
     assert out[0]["input_ids"] == [1, 2, 3, 4]
     assert out[0][mask] == [0, 0, 1, 1]
 
@@ -156,13 +158,17 @@ def test_prepare_truncates_loss_masks_with_the_ids(mask):
 def test_prepare_rejects_loss_masks_of_another_length(mask):
     ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], mask: [[0, 1]]})
     with pytest.raises(ValueError, match = f"'{mask}' must have the same length"):
-        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+        prepare_pretokenized_dataset(
+            ds, max_seq_length = 2048, vocab_size = 100, completion_only_loss = True
+        )
 
 
 def test_prepare_rejects_a_row_without_its_loss_mask():
     ds = Dataset.from_dict({"input_ids": [[1, 2, 3], [4, 5]], "completion_mask": [[0, 1, 1], None]})
     with pytest.raises(ValueError, match = "'completion_mask' must have the same length"):
-        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+        prepare_pretokenized_dataset(
+            ds, max_seq_length = 2048, vocab_size = 100, completion_only_loss = True
+        )
 
 
 def test_prepare_ignores_unused_masks_next_to_user_labels():
@@ -190,9 +196,36 @@ def test_prepare_checks_streamed_loss_masks():
     ds = Dataset.from_dict(
         {"input_ids": [[1, 2, 3, 4, 5, 6]], "completion_mask": [[0, 1]]}
     ).to_iterable_dataset()
-    out = prepare_pretokenized_dataset(ds, max_seq_length = 4, vocab_size = 100)
+    out = prepare_pretokenized_dataset(
+        ds, max_seq_length = 4, vocab_size = 100, completion_only_loss = True
+    )
     with pytest.raises(ValueError, match = "'completion_mask' must have the same length"):
         list(out)
+
+
+@pytest.mark.parametrize("completion_only_loss", [None, False])
+@pytest.mark.parametrize("streamed", [False, True])
+def test_prepare_ignores_completion_masks_the_trainer_will_not_apply(completion_only_loss, streamed):
+    # Studio leaves completion_only_loss unset and TRL resolves it False for input_ids rows, so
+    # TRL never reads completion_mask: a stale one must not reject or alter a dataset that trains.
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4, 5, 6], [7, 8]], "completion_mask": [[0, 1], None]}
+    )
+    if streamed:
+        ds = ds.to_iterable_dataset()
+    out = prepare_pretokenized_dataset(
+        ds, max_seq_length = 4, vocab_size = 100, completion_only_loss = completion_only_loss
+    )
+    rows = list(out)
+    assert [r["input_ids"] for r in rows] == [[1, 2, 3, 4], [7, 8]]
+    assert [r["completion_mask"] for r in rows] == [[0, 1], None]
+
+
+def test_prepare_still_checks_assistant_masks_without_completion_only_loss():
+    # TRL applies assistant_masks on presence alone.
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "assistant_masks": [[0, 1]]})
+    with pytest.raises(ValueError, match = "'assistant_masks' must have the same length"):
+        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
 def test_only_user_labels_turn_off_response_masking():

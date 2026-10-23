@@ -17,9 +17,22 @@ _TOKEN_COLUMNS = (
 _MASK_COLUMNS = ("completion_mask", "assistant_masks")
 
 
-def _checked_masks(columns) -> tuple:
-    # User labels are the whole objective: the masks are then unused and not checked.
-    return () if "labels" in columns else tuple(c for c in _MASK_COLUMNS if c in columns)
+def _checked_masks(columns, completion_only_loss = None) -> tuple:
+    """Masks the trainer will apply, the only ones checked and truncated.
+
+    User labels are the whole objective, so the masks are then unused. TRL applies
+    `assistant_masks` on presence but `completion_mask` only under `completion_only_loss`, which,
+    left unset, it resolves from the dataset shape (prompt plus completion columns).
+    """
+    if "labels" in columns:
+        return ()
+    if completion_only_loss is None:
+        completion_only_loss = "prompt" in columns and "completion" in columns
+    return tuple(
+        c
+        for c in _MASK_COLUMNS
+        if c in columns and (completion_only_loss or c != "completion_mask")
+    )
 
 
 def _mask_error(name):
@@ -67,7 +80,7 @@ def has_custom_labels(dataset) -> bool:
     return "labels" in _column_names(dataset)
 
 
-def _check_arrow_table(table, max_seq_length, vocab_size) -> bool:
+def _check_arrow_table(table, max_seq_length, vocab_size, masks = ()) -> bool:
     import pyarrow.compute as pc
 
     ids = table.column("input_ids")
@@ -78,7 +91,7 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> bool:
             raise ValueError(
                 "Pre-tokenized dataset: 'labels' must have the same length as 'input_ids' in every row."
             )
-    for name in _checked_masks(table.column_names):
+    for name in masks:
         same = pc.equal(lengths, pc.list_value_length(table.column(name)))
         # A row without the mask compares as null: that row fails too.
         if pc.all(same, skip_nulls = False).as_py() is not True:
@@ -102,22 +115,22 @@ def prepare_pretokenized_dataset(
     *,
     max_seq_length,
     vocab_size = None,
+    completion_only_loss = None,
 ):
     """Unsloth's SFT preparation passes tokenized rows through untouched: an over-long row would reach the model whole and an id past the embedding table is a device-side assert mid-run. Idempotent."""
     names = _column_names(dataset)
-    # With user labels the masks are unused: leave them as they are (they may not even be lists).
-    unused = _MASK_COLUMNS if "labels" in names else ()
-    columns = [c for c in _TOKEN_COLUMNS if c in names and c not in unused]
+    masks = _checked_masks(names, completion_only_loss)
+    # A mask the trainer will not apply is left as it is (it may not even be a list).
+    columns = [c for c in _TOKEN_COLUMNS if c in names and (c not in _MASK_COLUMNS or c in masks)]
     table = getattr(dataset, "data", None)
     needs_truncation = True
     if table is not None and hasattr(table, "column"):
         # Covers the whole backing table, rows a select() hid included: a bad id there is still a bad dataset.
-        needs_truncation = _check_arrow_table(table, max_seq_length, vocab_size)
+        needs_truncation = _check_arrow_table(table, max_seq_length, vocab_size, masks)
     if not needs_truncation or not max_seq_length:
         return dataset
 
     if table is None:
-        masks = _checked_masks(columns)
 
         def _truncate(batch):
             # Streamed rows never reach _check_arrow_table: check the masks before slicing.
