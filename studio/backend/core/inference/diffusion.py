@@ -13042,6 +13042,7 @@ class DiffusionBackend:
                 if state.cache_auto:
                     # Judged on the pipeline that RUNS: from_pipe workflows open no cache_context for FBCache.
                     from .diffusion_autoopt.runtime import auto_cache_steps
+
                     cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
                     auto_step_cache_on = auto_step_cache_mode(cache_steps) is not None
                     if not auto_step_cache_on:
