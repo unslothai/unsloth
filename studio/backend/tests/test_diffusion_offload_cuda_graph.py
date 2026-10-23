@@ -361,6 +361,37 @@ def test_a_failed_stable_re_pin_leaves_no_range_mapped(monkeypatch):
     cg.uninstall_all(handles)
 
 
+def test_a_re_pin_failing_midway_rolls_back_the_tensors_it_placed(monkeypatch):
+    """A re-pin that raises after it already put an earlier tensor into the range (a later copy or wrapper rebuild
+    failing) points that tensor back at its original storage before re-raising: the caller can then unmap the range
+    and move the whole group the stock way, instead of keeping the range mapped beside the stock copies. CPU only:
+    a fake range whose second view raises."""
+    buf = torch.zeros(64)
+    calls = [0]
+
+    def view(offset, shape, dtype, stride):
+        calls[0] += 1
+        if calls[0] == 2:
+            raise RuntimeError("wrapper rebuild failed")
+        return buf[offset // 4 : offset // 4 + 8].view(shape)
+
+    arena = types.SimpleNamespace(map = lambda: None, view = view, maps = 0)
+    a = torch.nn.Parameter(torch.randn(8), requires_grad = False)
+    b = torch.nn.Parameter(torch.randn(8), requires_grad = False)
+    host_a = a.data
+    slot = ((0, (8,), (1,), torch.float32),)
+    rng = types.SimpleNamespace(arena = arena, layout = {0: slot, 1: ((128,) + slot[0][1:],)})
+    monkeypatch.setattr(sa, "_range_for", lambda *args: rng)
+    owner, group = types.SimpleNamespace(), types.SimpleNamespace()
+    with pytest.raises(RuntimeError):
+        sa.pin_group_in_range(
+            owner, group, [a, b], lambda t: True, lambda t: t, "cuda:0", lambda t, s: None
+        )
+    lo, hi = buf.data_ptr(), buf.data_ptr() + buf.numel() * 4
+    assert not any(lo <= t.data_ptr() < hi for t in (a, b))
+    assert a.data.data_ptr() == host_a.data_ptr()
+
+
 def _reset_retired(monkeypatch):
     if hasattr(cg, "_RETIRED_POOLS"):
         monkeypatch.setattr(cg, "_RETIRED_POOLS", [0, 0])

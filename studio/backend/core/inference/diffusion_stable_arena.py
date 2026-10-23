@@ -881,33 +881,47 @@ def pin_group_in_range(
     rng.arena.map()
     stats = owner.__dict__.get(_REPIN_STATS)
     placed: set = set()
-    for i, t, src in todo:
-        slots = rng.layout.get(i)
-        pieces = _host_pieces(src)
-        if (
-            slots is None
-            or pieces is None
-            or len(slots) != len(pieces)
-            or any(
-                (tuple(x.shape), tuple(x.stride()), x.dtype) != slot[1:]
-                for slot, (_attr, x) in zip(slots, pieces)
-            )
-        ):
-            continue
-        views = []
-        for slot, (_attr, x) in zip(slots, pieces):
-            view = rng.arena.view(slot[0], slot[1], slot[3], slot[2])
-            view.copy_(x, non_blocking = True)
-            views.append(view)
-        if pieces[0][0] is None:
-            t.data = views[0]
-        else:
-            _names, ctx = src.__tensor_flatten__()
-            rebuilt = type(src).__tensor_unflatten__(
-                dict(zip([a for a, _ in pieces], views)), ctx, src.shape, src.stride()
-            )
-            swap_wrapper(t, rebuilt)
-        placed.add(id(t))
+    undo: list = []  # how to point each tensor installed so far back at its original storage
+    try:
+        for i, t, src in todo:
+            slots = rng.layout.get(i)
+            pieces = _host_pieces(src)
+            if (
+                slots is None
+                or pieces is None
+                or len(slots) != len(pieces)
+                or any(
+                    (tuple(x.shape), tuple(x.stride()), x.dtype) != slot[1:]
+                    for slot, (_attr, x) in zip(slots, pieces)
+                )
+            ):
+                continue
+            views = []
+            for slot, (_attr, x) in zip(slots, pieces):
+                view = rng.arena.view(slot[0], slot[1], slot[3], slot[2])
+                view.copy_(x, non_blocking = True)
+                views.append(view)
+            if pieces[0][0] is None:
+                prev = t.data
+                t.data = views[0]
+                undo.append((t, prev, False))
+            else:
+                _names, ctx = src.__tensor_flatten__()
+                rebuilt = type(src).__tensor_unflatten__(
+                    dict(zip([a for a, _ in pieces], views)), ctx, src.shape, src.stride()
+                )
+                swap_wrapper(t, rebuilt)  # a swap: ``rebuilt`` now holds t's original contents
+                undo.append((t, rebuilt, True))
+            placed.add(id(t))
+    except BaseException:
+        # Nothing may stay in the range: the caller then unmaps it and moves the whole group the stock way, instead
+        # of leaving the range mapped beside the stock copies.
+        for t, prev, wrapped in reversed(undo):
+            if wrapped:
+                swap_wrapper(t, prev)
+            else:
+                t.data = prev
+        raise
     if isinstance(stats, dict):
         stats["pins"] += 1
         stats["maps"] = sum(r.arena.maps for r in owner.__dict__.get("_unsloth_repin_ranges", ()))
