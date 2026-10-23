@@ -227,7 +227,7 @@ def _fake_trainer_class(log):
         def train(self):
             return "trained"
 
-        def evaluate(self):
+        def evaluate(self, eval_dataset = None):
             return "evaluated"
 
         def evaluation_loop(self):
@@ -478,6 +478,156 @@ def test_dpo_and_grpo_objectives_match_without_cp_in_fp64_and_fp32():
         for p in procs:
             p.start()
         results = dict(queue.get(timeout = 180) for _ in procs)
+        for p in procs:
+            p.join(30)
+    assert results == {0: "ok", 1: "ok"}, results
+
+
+# Review follow-ups: evaluation entry checks, pre-CP trainers, split batches, the GRPO DAPO token count.
+def _cp_fake_trainer(monkeypatch, kind, log, installs = None):
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
+    monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
+    monkeypatch.setattr(
+        cp, "_install_accelerator_state", lambda trainer: (installs if installs is not None else []).append(trainer)
+    )
+    monkeypatch.setattr(cp, "ContextParallelManager", lambda size, backend: manager)
+    monkeypatch.setattr(cp, "attach_rl_hooks", lambda m, model: None)
+    monkeypatch.setattr(cp, "_decoders", lambda model: [])
+    Trainer = _fake_trainer_class(log)
+    Trainer.predict = lambda self, test_dataset: "predicted"
+    cp.patch_rl_trainer(Trainer, kind)
+    return Trainer
+
+
+def test_grpo_evaluate_checks_generation_groups_of_a_late_eval_dataset(monkeypatch):
+    # No eval_dataset at construction, so __init__ cannot check the eval batch; evaluate() must.
+    Trainer = _cp_fake_trainer(monkeypatch, "grpo_trainer", [])
+    trainer = Trainer(_args(per_device_eval_batch_size = 3))
+    trainer.eval_dataset = None
+    with pytest.raises(NotImplementedError, match = "multiples of num_generations"):
+        trainer.evaluate(eval_dataset = [{"prompt": "p"}] * 3)
+    ok = Trainer(_args(per_device_eval_batch_size = 8))
+    ok.eval_dataset = None
+    assert ok.evaluate(eval_dataset = [{"prompt": "p"}] * 8) == "evaluated"
+
+
+@pytest.mark.parametrize("kind", ["dpo_trainer", "grpo_trainer"])
+def test_rl_evaluate_and_predict_refuse_iterable_datasets(monkeypatch, kind):
+    class Stream(torch.utils.data.IterableDataset):
+        def __iter__(self):
+            return iter(range(4))
+
+    Trainer = _cp_fake_trainer(monkeypatch, kind, [])
+    trainer = Trainer(_args())
+    trainer.eval_dataset = None
+    with pytest.raises(NotImplementedError, match = "iterable"):
+        trainer.evaluate(eval_dataset = Stream())
+    trainer.eval_dataset = {"held_out": Stream()}
+    with pytest.raises(NotImplementedError, match = "iterable"):
+        trainer.evaluate(eval_dataset = "held_out")
+    with pytest.raises(NotImplementedError, match = "iterable"):
+        trainer.predict(Stream())
+    trainer.eval_dataset = None
+    assert trainer.evaluate(eval_dataset = [1, 2, 3, 4]) == "evaluated"
+    assert trainer.predict([1, 2, 3, 4]) == "predicted"
+
+
+def test_trainers_built_before_cp_restore_the_shared_accelerator_state(monkeypatch):
+    # The generated RL trainers bind self.train on the instance in __init__ (rl.py: MethodType(...)):
+    # a trainer built before CP was enabled keeps that plain method, so it must still drop the CP mesh
+    # a later CP trainer installed on the shared AcceleratorState.
+    installs = []
+    Trainer = _cp_fake_trainer(monkeypatch, "dpo_trainer", [], installs)
+
+    def bind_train(trainer):
+        trainer.train = types.MethodType(type(trainer).train, trainer)
+
+    plain = Trainer(_args(context_parallel_size = 1))
+    bind_train(plain)
+    cp_trainer = Trainer(_args())
+    bind_train(cp_trainer)
+    installs.clear()
+    assert plain.train() == "trained"
+    assert plain in installs, "the pre-CP trainer's bound train() skipped the accelerator restore"
+    installs.clear()
+    assert cp_trainer.train() == "trained" and cp_trainer in installs
+
+
+def test_grpo_refuses_split_batches():
+    # split_batches hands each data parallel slice per_device_train_batch_size / D rows, so a slice holds part
+    # of a generation group and TRL's gather would group peer copies together.
+    trainer = types.SimpleNamespace(
+        args = _args(), _generate = None, eval_dataset = None,
+        accelerator = types.SimpleNamespace(split_batches = True),
+    )
+    with pytest.raises(NotImplementedError, match = "split_batches"):
+        cp._check_rl_config(trainer, "grpo_trainer")
+    trainer.accelerator.split_batches = False
+    cp._check_rl_config(trainer, "grpo_trainer")
+
+
+def _dapo_count_worker(rank, world, init_file, queue):
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = world)
+    try:
+        manager = _manager(rank, world)
+        # Forked and discarded: patch the module directly (no monkeypatch fixture in the child).
+        cp._check_cp_runtime = cp._check_cp_trainer = cp._install_accelerator_state = lambda *a: None
+        cp.ContextParallelManager = lambda size, backend: manager
+        cp.attach_rl_hooks = lambda m, model: None
+
+        def gather(t):
+            parts = [torch.empty_like(t) for _ in range(world)]
+            dist.all_gather(parts, t)
+            return torch.cat(parts)
+
+        # Each rank samples its own completions (rank 0: 2 tokens each, rank 1: 4); peers then adopt rank 0's.
+        completion_ids = [[1] * (2 + 2 * rank) for _ in range(4)]
+        tool_mask = [[1] * (1 + rank) + [0] * (1 + rank) for _ in range(4)]
+        lengths = torch.tensor([len(ids) for ids in completion_ids])
+        tool_lengths = torch.tensor([sum(m) for m in tool_mask])
+        layouts = {
+            # TRL 0.24 / 0.25: prompt_ids, completion_ids, total_completion_tokens, logprobs, extra
+            5: (lambda: (["p"], completion_ids, gather(lengths).sum(), None, {}), 2, 8 * world),
+            # TRL 0.27 - 1.0: prompt_ids, completion_ids, tool_mask, completions, count, logprobs, extra
+            7: (lambda: (["p"], completion_ids, tool_mask, ["c"], gather(tool_lengths).sum(), None, {}), 4, 4 * world),
+            # TRL 1.7 - 1.11: the 7 above plus images, tool_images
+            9: (lambda: (["p"], completion_ids, None, ["c"], gather(lengths).sum(), None, {}, None, None), 4, 8 * world),
+            # TRL >= 1.12 counts after _generate returns: nothing to fix
+            8: (lambda: (["p"], completion_ids, None, ["c"], None, {}, None, None), None, None),
+        }
+        for size, (generate, index, expected) in layouts.items():
+            Trainer = _fake_trainer_class([])
+            Trainer._generate = lambda self, prompts, generate = generate: generate()
+            cp.patch_rl_trainer(Trainer, "grpo_trainer")
+            trainer = Trainer(_args())
+            trainer.accelerator = types.SimpleNamespace(device = torch.device("cpu"), gather = gather)
+            out = trainer._generate(["p"])
+            assert type(out) is tuple and len(out) == size
+            assert out[1] == [[1] * 2] * 4  # rank 0's completions on every peer
+            if index is not None:
+                # TRL's count is gather(lengths).sum() over every process, of the completions actually scored.
+                assert int(out[index]) == expected, (size, int(out[index]), expected)
+        queue.put((rank, "ok"))
+    except BaseException:  # pragma: no cover - reported to the parent
+        import traceback
+
+        queue.put((rank, traceback.format_exc()))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_grpo_dapo_token_count_follows_the_adopted_completions():
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("needs fork")
+    ctx = mp.get_context("fork")
+    queue = ctx.Queue()
+    with tempfile.TemporaryDirectory() as tmp:
+        init_file = os.path.join(tmp, "init")
+        procs = [ctx.Process(target = _dapo_count_worker, args = (r, 2, init_file, queue)) for r in range(2)]
+        for p in procs:
+            p.start()
+        results = dict(queue.get(timeout = 120) for _ in procs)
         for p in procs:
             p.join(30)
     assert results == {0: "ok", 1: "ok"}, results

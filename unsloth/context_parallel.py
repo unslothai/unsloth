@@ -1168,6 +1168,42 @@ def _check_same_prompts(prompts, manager) -> None:
         )
 
 
+def _grpo_eval_groups_fit(args) -> bool:
+    generations = getattr(args, "num_generations_eval", None) or getattr(args, "num_generations", None) or 1
+    return args.per_device_eval_batch_size % generations == 0
+
+
+def _check_rl_eval_entry(self, kind: str, dataset) -> None:
+    # evaluate() / predict() may bring a dataset __init__ never saw.
+    _refuse_iterable_datasets(dataset)
+    if kind == "grpo_trainer" and dataset is not None and not _grpo_eval_groups_fit(self.args):
+        raise NotImplementedError(
+            "Unsloth: GRPO context parallelism needs per_device_eval_batch_size to be multiples of "
+            "num_generations (num_generations_eval)."
+        )
+
+
+def _recount_completion_tokens(trainer, result):
+    """TRL 0.24 - 1.11 return the DAPO token count from _generate, gathered from every rank's own completions
+    before CP peers adopted rank 0's: recount it from the adopted ones (TRL >= 1.12 counts after _generate)."""
+    if not isinstance(result, tuple) or len(result) not in (5, 7, 9):
+        return result
+    index = 2 if len(result) == 5 else 4
+    count = result[index]
+    if not (isinstance(count, torch.Tensor) and count.ndim == 0):
+        return result
+    tool_mask = result[2] if len(result) > 5 else None
+    if tool_mask is not None:  # TRL counts only model-generated tokens
+        local = sum(sum(mask) for mask in tool_mask)
+    else:
+        local = sum(len(ids) for ids in result[1])
+    # As TRL: summed over every process (DAPO later divides by num_processes, which cancels CP copies).
+    total = trainer.accelerator.gather(
+        torch.tensor([int(local)], device = count.device, dtype = count.dtype)
+    ).sum()
+    return (*result[:index], total, *result[index + 1 :])
+
+
 def _check_rl_config(self, kind: str) -> None:
     args = self.args
     if kind == "dpo_trainer":
@@ -1192,13 +1228,15 @@ def _check_rl_config(self, kind: str) -> None:
         )
     if not hasattr(self, "_generate"):
         raise NotImplementedError("Unsloth: GRPO context parallelism needs TRL >= 0.24.")
+    if getattr(getattr(self, "accelerator", None), "split_batches", False):
+        # Each data parallel slice would get per_device_train_batch_size / D rows, part of a generation
+        # group, and TRL's reward gather would then group peer copies together.
+        raise NotImplementedError("Unsloth: GRPO context parallelism does not support split_batches.")
     num_generations = getattr(args, "num_generations", None) or 1
     steps = getattr(args, "steps_per_generation", None) or args.gradient_accumulation_steps
     local = args.per_device_train_batch_size * steps
-    eval_local = args.per_device_eval_batch_size
     if local % num_generations or (
-        getattr(self, "eval_dataset", None) is not None
-        and eval_local % (getattr(args, "num_generations_eval", None) or num_generations)
+        getattr(self, "eval_dataset", None) is not None and not _grpo_eval_groups_fit(args)
     ):
         # Peers duplicate their rank's slice in TRL's global reward gather; a group split across
         # ranks would mix copies into its mean and std.
@@ -1233,6 +1271,7 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             "prediction_step",
             "train",
             "evaluate",
+            "predict",
             "evaluation_loop",
             "compute_loss",
             "_generate",
@@ -1263,6 +1302,10 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         size, backend, _ = context_parallel_options(getattr(self, "args", None))
         if size <= 1:
             _install_accelerator_state(self)
+            if not trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
+                # The generated trainers bind self.train in __init__ (rl.py), around the plain method.
+                pre_cp_trainers[:] = [ref for ref in pre_cp_trainers if ref() is not None]
+                pre_cp_trainers.append(weakref.ref(self))
             return
         if backend != "ulysses":
             raise NotImplementedError(
@@ -1328,7 +1371,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         _check_same_prompts(prompts, manager)
         with _manager_scope(None):
             result = originals["_generate"](self, prompts, *args, **kwargs)
-        return _broadcast_from_group_root(result, manager, self.accelerator.device)
+        result = _broadcast_from_group_root(result, manager, self.accelerator.device)
+        return _recount_completion_tokens(self, result)
 
     @functools.wraps(originals["_prepare_inputs"])
     def patched_prepare_inputs(self, *args, **kwargs):
@@ -1357,8 +1401,24 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
 
     @functools.wraps(originals["evaluate"])
     def patched_evaluate(self, *args, **kwargs):
+        if getattr(self, "_context_parallel_manager", None) is not None:
+            dataset = args[0] if args else kwargs.get("eval_dataset")
+            if dataset is None or isinstance(dataset, str):
+                current = getattr(self, "eval_dataset", None)
+                dataset = (
+                    current.get(dataset)
+                    if isinstance(dataset, str) and isinstance(current, dict)
+                    else current
+                )
+            _check_rl_eval_entry(self, kind, dataset)
         _install_accelerator_state(self)
         return originals["evaluate"](self, *args, **kwargs)
+
+    def patched_predict(self, test_dataset, *args, **kwargs):
+        if getattr(self, "_context_parallel_manager", None) is not None:
+            _check_rl_eval_entry(self, kind, test_dataset)
+        _install_accelerator_state(self)
+        return originals["predict"](self, test_dataset, *args, **kwargs)
 
     @functools.wraps(originals["evaluation_loop"])
     def patched_evaluation_loop(self, *args, **kwargs):
@@ -1367,15 +1427,37 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             self.gather_function = _cp_gather_for_metrics(self.accelerator, manager.size)
         return originals["evaluation_loop"](self, *args, **kwargs)
 
+    # Non-CP trainers built before CP was enabled: like SFT, repair what their __init__ bound on the
+    # instance, so they still drop the mesh a CP trainer installs on the shared AcceleratorState.
+    pre_cp_trainers = []  # weakref.ref per trainer
+
+    def _restoring(trainer, bound):
+        @functools.wraps(bound)
+        def call(*args, **kwargs):
+            _install_accelerator_state(trainer)
+            return bound(*args, **kwargs)
+
+        return call
+
     def install_methods():
         # Only __init__ is wrapped up front (as for SFT): the wrappers below go on the class once a
         # trainer enables CP, so trainers without CP keep their original methods.
         if trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
             return
+        for trainer in [ref() for ref in pre_cp_trainers]:
+            if trainer is None:
+                continue
+            for name in ("train", "evaluate", "predict"):
+                bound = trainer.__dict__.get(name)
+                if bound is not None:
+                    trainer.__dict__[name] = _restoring(trainer, bound)
+        pre_cp_trainers.clear()
         trainer_cls.training_step = _step_wrapper("training_step")
         trainer_cls.prediction_step = _step_wrapper("prediction_step")
         trainer_cls.train = patched_train
         trainer_cls.evaluate = patched_evaluate
+        if originals["predict"] is not None:
+            trainer_cls.predict = functools.wraps(originals["predict"])(patched_predict)
         trainer_cls.evaluation_loop = patched_evaluation_loop
         if kind == "grpo_trainer":
             trainer_cls.compute_loss = _scoped("compute_loss", sticky = True)
