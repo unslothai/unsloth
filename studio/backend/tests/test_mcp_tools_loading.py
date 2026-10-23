@@ -1491,6 +1491,152 @@ def test_a_late_media_unload_runs_after_the_replacement_is_evicted_elsewhere(
     assert state["resident"] is None
 
 
+def test_the_media_registry_keeps_no_hub_token(monkeypatch, fast_polls):
+    # A registered load outlives its request in a module-global map: it must not hold the token.
+    _late_unload_scenario(monkeypatch, post_s = (0.05,))
+    secret = "hf_registry_secret_value"
+
+    async def scenario():
+        result = await loading.load_media(
+            make_caller(),
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = secret,
+            deadline = time.monotonic() + 5,
+        )
+        assert result.loaded is True
+
+    asyncio.run(scenario())
+    generation = loading._MEDIA_GENERATIONS["video"]
+    assert loading._MEDIA_REGISTERED["video"][generation][0] == LTX
+    assert secret not in repr(loading._MEDIA_REGISTERED)
+
+
+def test_a_late_media_unload_leaves_another_variant_of_the_repo_alone(monkeypatch, fast_polls):
+    # The stopped load was Q4_K_S; by the time its POST is back, Q8_0 of the same repo was loaded
+    # outside MCP. That is another model, so the late unload must leave it resident.
+    repo = "unsloth/LTX-Video-GGUF"
+    _late_unload_scenario(monkeypatch, post_s = ())
+    state = {"resident": None, "unloads": []}
+
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        json_body = None,
+        **_kw,
+    ):
+        if path == "/api/hub/gguf-variants":
+            return {"variants": [{"quant": "Q4_K_S", "filename": "ltx-video-Q4_K_S.gguf"}]}
+        if path == "/api/inference/video/load":
+            await asyncio.sleep(0.5)
+            state["resident"] = "Q8_0"  # Loaded from the Studio UI while this POST was out.
+            return {"loaded": True, "repo_id": repo}
+        if path == "/api/inference/video/unload":
+            state["unloads"].append(state["resident"])
+            state["resident"] = None
+            return UNLOADED
+        if path.endswith("/load-progress"):
+            return READY if state["resident"] else {"phase": None}
+        if path == "/api/inference/video/status" and state["resident"]:
+            return {
+                "loaded": True,
+                "repo_id": repo,
+                "model_kind": "gguf",
+                "gguf_variant": state["resident"],
+            }
+        return UNLOADED
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+    monkeypatch.setattr(loading, "try_json", lambda caller, path: route_json("GET", path))
+
+    async def scenario():
+        caller = make_caller()
+        await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = repo,
+            variant = "Q4_K_S",
+            hf_token = None,
+            deadline = time.monotonic() + 0.02,
+        )
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [None]
+    assert state["resident"] == "Q8_0"
+
+
+def test_a_late_media_unload_does_not_defer_its_own_in_flight_load_to_an_evicted_replacement(
+    monkeypatch, fast_polls
+):
+    # A newer load of another model finishes, then is evicted outside unload_model. The stopped
+    # POST then returns with its own load still in flight: that is not the replacement loading,
+    # so the late unload must still go out.
+    other = "Wan-AI/Wan2.1-T2V-1.3B"
+    _late_unload_scenario(monkeypatch, post_s = ())
+    state = {"resident": None, "phase": None, "unloads": []}
+
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        json_body = None,
+        **_kw,
+    ):
+        if path == "/api/inference/video/load":
+            model = json_body["model_path"]
+            if model == LTX:
+                await asyncio.sleep(0.5)
+                state["phase"] = "downloading"  # The POST answers; its load goes on.
+                return {"loaded": False}
+            await asyncio.sleep(0.05)
+            state["resident"] = model
+            return {"loaded": True, "repo_id": model}
+        if path == "/api/inference/video/unload":
+            state["unloads"].append(state["phase"] or state["resident"])
+            state["resident"] = state["phase"] = None
+            return UNLOADED
+        if path.endswith("/load-progress"):
+            if state["phase"]:
+                return {"phase": state["phase"]}
+            return READY if state["resident"] else {"phase": None}
+        if path == "/api/inference/video/status" and state["resident"]:
+            return {"loaded": True, "repo_id": state["resident"]}
+        return UNLOADED
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+    monkeypatch.setattr(loading, "try_json", lambda caller, path: route_json("GET", path))
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        newer = await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = other,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        assert newer.loaded is True
+        state["resident"] = None  # Evicted outside the MCP unload.
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [None, "downloading"]
+
+
 def test_a_stopped_post_that_fails_while_the_unload_runs_needs_no_late_unload(
     monkeypatch, fast_polls
 ):

@@ -81,7 +81,8 @@ class LoadJob(job_store.Job):
     post: Optional[asyncio.Future] = field(default = None, repr = False)
     # This process's media load request number for the slot, taken before the POST (0: none yet).
     generation: int = 0
-    # The media load request's body, so a late unload can tell whether this load is the resident one.
+    # What of the media load request names the load (never its Hub token), so a late unload can tell
+    # whether this load is the resident one.
     body: Optional[dict] = field(default = None, repr = False)
 
     def note(self, fraction: Optional[float], phase: str) -> None:
@@ -659,7 +660,7 @@ async def load_media(
         outcome = _take_media_generation(kind, job)
         try:
             await prepare()
-            job.body = body
+            job.body = _media_identity(body)
             # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
             job.post = asyncio.ensure_future(
                 route_json("POST", routes["load"], caller = caller, json_body = {**body, **knobs})
@@ -684,6 +685,7 @@ async def load_media(
                 None, asyncio.shield(job.post), _media_poll(caller, routes), job
             )
             status = await _media_ready(caller, kind, model, routes, job, body)
+            _MEDIA_READY.setdefault(kind, set()).add(job.generation)
         except Exception as exc:
             if job.post.done():
                 post_answered(job.post)
@@ -701,7 +703,7 @@ async def load_media(
             if job.post.done():
                 post_answered(job.post)
                 if watch:
-                    _hold(_watch_media_outcome(caller, kind, model, routes, job, body, outcome))
+                    _hold(_watch_media_outcome(caller, kind, model, routes, job, job.body, outcome))
                 else:
                     _settle_media_generation(
                         kind, job, outcome, job.generation in _MEDIA_REGISTERED.get(kind, ())
@@ -864,6 +866,7 @@ async def _watch_media_outcome(
                 return
             try:
                 await asyncio.wait_for(_media_ready(caller, kind, model, routes, None, body), left)
+                _MEDIA_READY.setdefault(kind, set()).add(job.generation)
                 return
             except Exception as exc:
                 if getattr(exc, "_unsloth_load_failed", False):
@@ -881,12 +884,19 @@ async def _watch_media_outcome(
 # unload of the slot went out (that unload ended it), and those whose outcome is not known yet.
 _MEDIA_GENERATIONS: dict[str, int] = {}
 _MEDIA_REGISTERED: dict[str, dict[int, tuple[str, Optional[dict]]]] = {}
+# Registered requests whose load the backend showed ready: none of them is a load still in flight.
+_MEDIA_READY: dict[str, set[int]] = {}
 _MEDIA_UNLOADED: dict[str, int] = {}
 _MEDIA_OUTCOMES: dict[str, dict[int, asyncio.Future]] = {}
 # Tries a late unload (or a watch on a newer load's outcome) makes before giving up on route errors.
 _LATE_UNLOAD_ATTEMPTS = 5
 # How long a newer load's outcome is watched after its readiness wait hit a route error.
 _OUTCOME_WATCH_S = 3600.0
+
+
+def _media_identity(body: dict) -> dict:
+    # Only what _resident_matches reads: the registry outlives the request, so never its Hub token.
+    return {key: body[key] for key in ("gguf_filename", "model_kind") if key in body}
 
 
 def _posted_ok(post: Optional[asyncio.Future]) -> bool:
@@ -898,6 +908,7 @@ def _mark_media_unloaded(kind: str) -> None:
     registered = _MEDIA_REGISTERED.get(kind, {})
     _MEDIA_UNLOADED[kind] = max(_MEDIA_UNLOADED.get(kind, 0), max(registered, default = 0))
     registered.clear()
+    _MEDIA_READY.pop(kind, None)
 
 
 def _newer_media_registered(kind: str, generation: int) -> list[int]:
@@ -953,8 +964,9 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
     process requested no newer load of the slot that registered, and the backend shows this
     model resident or a load still in flight (a second load is refused while one runs). A newer
     registered load the backend no longer shows resident was evicted some other way and stops
-    counting. Limit: when the newer load is the same model, the two cannot be told apart, and the
-    resident one is left alone as the model the caller asked for last.
+    counting, as does an in-flight load once every newer one was shown ready. Limit: when the
+    newer load is the same model and variant, the two cannot be told apart, and the resident one
+    is left alone as the model the caller asked for last.
     """
     routes = MEDIA_ROUTES[kind]
     if job.post is None:
@@ -983,9 +995,11 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
             phase = opt_text(progress.get("phase"))
             in_flight = phase not in (None, "ready", "error")
             registered = _MEDIA_REGISTERED.get(kind, {})
+            ready = _MEDIA_READY.get(kind, set())
             replacements = _newer_media_registered(kind, job.generation)
             if replacements:
-                if in_flight or any(
+                # Only a newer load never shown ready may be the one in flight; else it is this job's.
+                if (in_flight and any(g not in ready for g in replacements)) or any(
                     _resident_matches(status, *registered[g]) for g in replacements
                 ):
                     return  # A newer load is (or may be) what is resident: what the caller wants now.
@@ -993,7 +1007,9 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
                 # those registrations are stale and no longer defer this unload.
                 for g in replacements:
                     registered.pop(g, None)
-            if not in_flight and not _resident_matches(status, job.model):
+                    ready.discard(g)
+            # Another variant of the same repo is another model, not the load this job stopped.
+            if not in_flight and not _resident_matches(status, job.model, job.body):
                 return  # Gone or replaced: not a load this job can be shown to own.
             _mark_media_unloaded(kind)
             await route_json("POST", routes["unload"], caller = caller)
