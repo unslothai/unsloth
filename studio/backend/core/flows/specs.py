@@ -30,6 +30,7 @@ CATEGORIES = [
     {"id": "story", "title": "Story Game", "color": "#a855f7"},
     {"id": "world", "title": "World Game", "color": "#22c55e"},
     {"id": "chat", "title": "Chat & Agents", "color": "#14b8a6"},
+    {"id": "memory", "title": "Memory", "color": "#0d9488"},
 ]
 
 PORT_COLORS = {
@@ -1695,6 +1696,150 @@ NODE_SPECS: list[dict] = [
         inputs = [inp("world", "world")],
         outputs = [out("world", "world")],
         icon = "gamepad",
+    ),
+    spec(
+        "memory.add",
+        "Remember",
+        "memory",
+        "Add observations to a memory stream. Rates how important each one is with the language model "
+        "(or a fixed score) and embeds them for retrieval. After Park et al. 2023, Generative Agents.",
+        inputs = [
+            inp("memory", "json", "Memory", optional = True),
+            inp("items", "any", "Texts"),
+            inp("now", "number", "Time (hours)", optional = True),
+        ],
+        outputs = [out("memory", "json", "Memory"), out("added", "list", item = "json")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P(
+                "kind",
+                "select",
+                "observation",
+                "Kind",
+                options = ["observation", "reflection", "plan"],
+            ),
+            P("importance", "select", "llm", "Importance", options = ["llm", "fixed"]),
+            P("fixed_importance", "int", 5, "Fixed importance (1-10)", min = 1, max = 10),
+            P("embed", "bool", True, "Embed for retrieval"),
+            P("max_records", "int", 500, "Keep at most", min = 10, max = 5000),
+        ],
+        lane = "gpu",
+        model_kind = "chat",
+        cacheable = False,
+        icon = "bookmark",
+    ),
+    spec(
+        "memory.retrieve",
+        "Recall",
+        "memory",
+        "Find the memories that matter for a query: recency, importance and relevance, each normalised, "
+        "weighted and summed. Falls back to keyword overlap without an embedding model.",
+        inputs = [
+            inp("memory", "json", "Memory"),
+            inp("query", "text"),
+            inp("now", "number", "Time (hours)", optional = True),
+        ],
+        outputs = [
+            out("memory", "json", "Memory"),
+            out("records", "list", item = "json"),
+            out("context", "text"),
+        ],
+        params = [
+            P("top_k", "int", 8, "Top K", min = 1, max = 100),
+            P("w_recency", "number", 0.5, "Recency weight", min = 0, max = 10, step = 0.1),
+            P("w_importance", "number", 2.0, "Importance weight", min = 0, max = 10, step = 0.1),
+            P("w_relevance", "number", 3.0, "Relevance weight", min = 0, max = 10, step = 0.1),
+            P("decay", "number", 0.995, "Recency decay", min = 0.5, max = 1, step = 0.001),
+            P("recency_mode", "select", "hours", "Recency by", options = ["hours", "rank"]),
+            P(
+                "relevance",
+                "select",
+                "embeddings",
+                "Relevance by",
+                options = ["embeddings", "keywords"],
+            ),
+            P("touch", "bool", True, "Mark recalled memories as used"),
+        ],
+        lane = "gpu",
+        cacheable = False,
+        icon = "sort",
+    ),
+    spec(
+        "memory.reflect",
+        "Reflect",
+        "memory",
+        "Once enough has happened (importance since the last reflection reaches the threshold), ask three "
+        "questions about recent memories and add the insights they lead to, citing their evidence.",
+        inputs = [
+            inp("memory", "json", "Memory"),
+            inp("name", "text", optional = True),
+            inp("now", "number", "Time (hours)", optional = True),
+        ],
+        outputs = [
+            out("memory", "json", "Memory"),
+            out("insights", "list", item = "text"),
+            out("reflected", "bool"),
+        ],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("name", "text", "", "Agent name"),
+            P("threshold", "number", 150, "Threshold", min = 1, max = 10000),
+            P("force", "bool", False, "Reflect now"),
+            P("recent", "int", 100, "Recent memories to read", min = 5, max = 500),
+            P("max_insights", "int", 5, "Insights per question", min = 1, max = 10),
+        ],
+        lane = "gpu",
+        model_kind = "chat",
+        cacheable = False,
+        icon = "sparkles",
+    ),
+    spec(
+        "agent.summary",
+        "Agent Summary",
+        "memory",
+        "A short description of an agent from its memories: core traits, current occupation and how things "
+        "are going. Feeds prompts that need to know who the agent is.",
+        inputs = [
+            inp("memory", "json", "Memory", optional = True),
+            inp("name", "text", optional = True),
+            inp("persona", "text", optional = True),
+            inp("now", "number", "Time (hours)", optional = True),
+        ],
+        outputs = [out("summary", "text")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("name", "text", "", "Agent name"),
+        ],
+        lane = "gpu",
+        model_kind = "chat",
+        cacheable = False,
+        icon = "user",
+    ),
+    spec(
+        "agent.plan",
+        "Plan the Day",
+        "memory",
+        "A day plan in a few broad strokes (start, minutes, activity, place), with places limited to a list "
+        "you give. One model call per day.",
+        inputs = [
+            inp("summary", "text", optional = True),
+            inp("context", "text", "Recent memories", optional = True),
+            inp("places", "list", item = "text", optional = True),
+            inp("name", "text", optional = True),
+        ],
+        outputs = [out("plan", "list", item = "json"), out("text", "text")],
+        params = [
+            P("model", "model", None, "Model", model_kind = "chat"),
+            P("name", "text", "", "Agent name"),
+            P("day", "text", "Monday", "Day"),
+            P("start_hour", "int", 8, "Day starts at (hour)", min = 0, max = 23),
+            P("chunks", "int", 6, "Broad strokes", min = 1, max = 12),
+            P("places", "string_list", [], "Places"),
+            P("seed", "seed", None, "Seed"),
+        ],
+        lane = "gpu",
+        model_kind = "chat",
+        icon = "flag",
     ),
 ]
 

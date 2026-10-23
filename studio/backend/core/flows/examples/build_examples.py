@@ -1404,204 +1404,74 @@ def sticker_pack() -> B:
     return b
 
 
-def summarise_pdf() -> B:
+def remembering_assistant() -> B:
     b = B(
-        "summarise-pdf",
-        "Summarise a Document",
+        "remembering-assistant",
+        "Remembering Assistant",
         "pipeline",
-        "Load a PDF, Word or text file, cut it into chunks, summarise each chunk, then write one summary of the "
-        "whole document.",
-        tags = ["documents", "llm", "for each"],
-        seed = 12,
+        "An assistant with a memory stream (after Park et al. 2023, Generative Agents): it recalls what matters "
+        "for your message by recency, importance and meaning, answers with it, and adds the answer to its memory. "
+        "Each run starts from the facts in What it already knows: add a line there to teach it something.",
+        tags = ["memory", "agent", "chat"],
+        seed = 41,
     ).need("chat")
-    b.n("doc", "input.file", 0, 1, label = "Your document")
-    b.n("read", "doc.load", 1, 1)
-    b.e("doc.file", "read.file")
-    b.n("chunks", "text.split", 2, 1, mode = "chunks", unit = "words", chunk_size = 700, overlap = 50)
-    b.e("read.text", "chunks.text")
-    b.n("each", "logic.for_each", 3, 1, group = "s_loop", max_items = 32)
     b.n(
-        "part",
-        "llm.generate",
-        4,
-        1,
-        group = "s_loop",
-        label = "Summarise a part",
-        model = CHAT,
-        temperature = 0.2,
-        max_tokens = 300,
-        prompt = "Summarise this part of a document in 3 short bullet points:\n\n{{prompt}}",
+        "past",
+        "input.list",
+        0,
+        0.4,
+        label = "What it already knows",
+        items = [
+            "Maya is training for a half marathon in May.",
+            "Maya hurt her left knee running hills last Tuesday.",
+            "Maya's favourite breakfast is oatmeal with blueberries.",
+            "Maya's sister Ana visits next weekend.",
+            "Maya said she wants to cook more at home this month.",
+        ],
     )
-    b.group("s_loop", "For each chunk", (3, 0.4, 2.2, 1.6), "#0d9488")
-    b.e("chunks.items", "each.items")
-    b.e("each.item", "part.prompt")
-    b.e("part.text", "each.collect")
-    b.n("joined", "list.join", 5.4, 1)
-    b.e("each.results", "joined.items")
+    b.n("seed", "memory.add", 1, 0.4, label = "Remember", model = CHAT)
+    b.e("past.items", "seed.items")
     b.n(
-        "summary",
-        "llm.generate",
-        6.4,
-        1,
-        label = "Whole summary",
-        model = CHAT,
-        temperature = 0.3,
-        max_tokens = 700,
-        prompt = "These are notes on each part of one document, in order:\n{{context}}\n\nWrite a clear summary "
-        "of the whole document in one paragraph, then list the 5 key points.",
+        "message",
+        "input.text",
+        0,
+        1.4,
+        label = "Your message",
+        value = "Should I run hills again tomorrow?",
     )
-    b.e("joined.text", "summary.context")
-    b.n("show", "output.preview", 7.4, 1)
-    b.e("summary.text", "show.value")
-    b.note("tip", "Upload a document in the first block, then Run.", 0, 2.2, 1.6, 0.6)
-    return b
-
-
-def ask_documents() -> B:
-    b = B(
-        "ask-documents",
-        "Ask Your Documents",
-        "pipeline",
-        "Add a document to a knowledge base (the same ones chat searches), then answer a question from the passages "
-        "that match it, with the sources cited.",
-        tags = ["documents", "knowledge base", "rag", "llm"],
-        seed = 13,
-    ).need("chat", "embedding")
-    b.n("doc", "input.file", 0, 0.5, label = "Your document")
-    b.n("add", "kb.add", 1, 0.5, knowledge_base = "Flows")
-    b.e("doc.file", "add.file")
-    b.n("question", "input.text", 0, 1.6, value = "What are the main points of this document?")
-    b.n("search", "kb.search", 2, 1.2, knowledge_base = "Flows", top_k = 6)
-    b.e("question.text", "search.query")
-    b.e("add.knowledge_base", "search.after")
+    b.n("recall", "memory.retrieve", 2, 1, label = "Recall", top_k = 3)
+    b.e("seed.memory", "recall.memory")
+    b.e("message.text", "recall.query")
     b.n(
         "answer",
         "llm.generate",
         3,
-        1.2,
+        1,
         label = "Answer",
         model = CHAT,
-        temperature = 0.2,
-        max_tokens = 600,
-        prompt = "Answer the question using only these passages, and cite them like [1].\n\n{{context}}\n\n"
-        "Question: {{prompt}}",
+        temperature = 0.6,
+        max_tokens = 400,
+        system = "You are Maya's friendly assistant. Use what you remember when it helps; keep it short.",
+        prompt = "What you remember:\n{{context}}\n\nMaya says: {{prompt}}",
     )
-    b.e("question.text", "answer.prompt")
-    b.e("search.context", "answer.context")
-    b.n("show", "output.preview", 4, 1.2)
+    b.e("recall.context", "answer.context")
+    b.e("message.text", "answer.prompt")
+    b.n("keep", "memory.add", 4, 1, label = "Remember the answer", model = CHAT)
+    b.e("recall.memory", "keep.memory")
+    b.e("answer.text", "keep.items")
+    b.n("show", "output.preview", 5, 1)
     b.e("answer.text", "show.value")
+    b.e("recall.records", "show.value")
+    b.n("stream", "output.preview", 5, 2, label = "Updated memory")
+    b.e("keep.memory", "stream.value")
     b.note(
         "tip",
-        "Upload a document, then Run. Parsing, embedding and search all run locally on Studio's own models, "
-        "offline once they are downloaded. Later runs can drop the first two blocks and search what is indexed.",
-        0,
-        2.5,
-        1.8,
-        0.7,
-    )
-    return b
-
-
-def contact_cleanup() -> B:
-    b = B(
-        "contact-cleanup",
-        "Clean Up a Contact List",
-        "pipeline",
-        "Paste a messy list or spreadsheet: a local model turns it into rows, then the list blocks drop rows "
-        "without an email, remove duplicates, tidy the fields and sort by name.",
-        tags = ["data", "json", "transform"],
-        seed = 13,
-    ).need("chat")
-    b.n(
-        "pasted",
-        "input.text",
-        0,
-        1,
-        label = "Pasted list",
-        value = "name,email,company\nAna Lima,ANA@example.com,Acme\nben ortiz,ben@example.org,\nAna Lima,"
-        "ana@example.com,Acme Inc\nChris Wu,,Globex\nDee Park,dee@example.net,Initech",
-    )
-    b.n(
-        "rows",
-        "llm.generate",
-        1,
-        1,
-        label = "Read the rows",
-        model = CHAT,
-        temperature = 0.0,
-        max_tokens = 2048,
-        system = "Copy every person in the text into rows exactly as written. Use an empty string for a missing "
-        "field. Do not fix, merge or drop anything.",
-        prompt = "{{prompt}}",
-        json_schema = {
-            "type": "object",
-            "properties": {
-                "rows": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "email": {"type": "string"},
-                            "company": {"type": "string"},
-                        },
-                        "required": ["name", "email", "company"],
-                    },
-                }
-            },
-            "required": ["rows"],
-        },
-    )
-    b.e("pasted.text", "rows.prompt")
-    b.n("list", "json.get", 2, 1, path = "rows")
-    b.e("rows.json", "list.json")
-    b.n(
-        "has_email",
-        "list.filter",
-        3,
-        1,
-        label = "Has an email",
-        condition = {"op": "contains", "args": [{"var": "item.email"}, "@"]},
-    )
-    b.e("list.value", "has_email.items")
-    b.n(
-        "tidy",
-        "json.set",
-        4,
-        1,
-        label = "Tidy fields",
-        fields = {
-            "email": {"op": "lower", "args": [{"var": "item.email"}]},
-            "company": {
-                "op": "if",
-                "args": [{"var": "item.company"}, {"var": "item.company"}, "unknown"],
-            },
-        },
-    )
-    b.e("has_email.items", "tidy.value")
-    b.n("unique", "list.dedupe", 5, 1, label = "One per email", key = {"var": "item.email"})
-    b.e("tidy.value", "unique.items")
-    b.n(
-        "sorted",
-        "list.sort",
-        6,
-        1,
-        label = "Sort by name",
-        key = {"op": "lower", "args": [{"var": "item.name"}]},
-    )
-    b.e("unique.items", "sorted.items")
-    b.n("clean", "output.result", 7, 1, name = "contacts")
-    b.e("sorted.items", "clean.value")
-    b.n("dropped", "output.preview", 4, 2)
-    b.e("has_email.dropped", "dropped.value")
-    b.note(
-        "tip",
-        "Only the first block uses a model; the cleanup after it is plain list blocks, so you can change a rule "
-        "and re-run in a blink.",
-        0,
+        "Recall scores every memory by how recent, how important and how related it is to the message. "
+        "Everything runs on the local chat and embedding models.",
         2,
+        2.0,
         1.8,
-        0.7,
+        0.6,
     )
     return b
 
@@ -2261,6 +2131,208 @@ def model_arena() -> B:
     return b
 
 
+def summarise_pdf() -> B:
+    b = B(
+        "summarise-pdf",
+        "Summarise a Document",
+        "pipeline",
+        "Load a PDF, Word or text file, cut it into chunks, summarise each chunk, then write one summary of the "
+        "whole document.",
+        tags = ["documents", "llm", "for each"],
+        seed = 12,
+    ).need("chat")
+    b.n("doc", "input.file", 0, 1, label = "Your document")
+    b.n("read", "doc.load", 1, 1)
+    b.e("doc.file", "read.file")
+    b.n("chunks", "text.split", 2, 1, mode = "chunks", unit = "words", chunk_size = 700, overlap = 50)
+    b.e("read.text", "chunks.text")
+    b.n("each", "logic.for_each", 3, 1, group = "s_loop", max_items = 32)
+    b.n(
+        "part",
+        "llm.generate",
+        4,
+        1,
+        group = "s_loop",
+        label = "Summarise a part",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 300,
+        prompt = "Summarise this part of a document in 3 short bullet points:\n\n{{prompt}}",
+    )
+    b.group("s_loop", "For each chunk", (3, 0.4, 2.2, 1.6), "#0d9488")
+    b.e("chunks.items", "each.items")
+    b.e("each.item", "part.prompt")
+    b.e("part.text", "each.collect")
+    b.n("joined", "list.join", 5.4, 1)
+    b.e("each.results", "joined.items")
+    b.n(
+        "summary",
+        "llm.generate",
+        6.4,
+        1,
+        label = "Whole summary",
+        model = CHAT,
+        temperature = 0.3,
+        max_tokens = 700,
+        prompt = "These are notes on each part of one document, in order:\n{{context}}\n\nWrite a clear summary "
+        "of the whole document in one paragraph, then list the 5 key points.",
+    )
+    b.e("joined.text", "summary.context")
+    b.n("show", "output.preview", 7.4, 1)
+    b.e("summary.text", "show.value")
+    b.note("tip", "Upload a document in the first block, then Run.", 0, 2.2, 1.6, 0.6)
+    return b
+
+
+def ask_documents() -> B:
+    b = B(
+        "ask-documents",
+        "Ask Your Documents",
+        "pipeline",
+        "Add a document to a knowledge base (the same ones chat searches), then answer a question from the passages "
+        "that match it, with the sources cited.",
+        tags = ["documents", "knowledge base", "rag", "llm"],
+        seed = 13,
+    ).need("chat", "embedding")
+    b.n("doc", "input.file", 0, 0.5, label = "Your document")
+    b.n("add", "kb.add", 1, 0.5, knowledge_base = "Flows")
+    b.e("doc.file", "add.file")
+    b.n("question", "input.text", 0, 1.6, value = "What are the main points of this document?")
+    b.n("search", "kb.search", 2, 1.2, knowledge_base = "Flows", top_k = 6)
+    b.e("question.text", "search.query")
+    b.e("add.knowledge_base", "search.after")
+    b.n(
+        "answer",
+        "llm.generate",
+        3,
+        1.2,
+        label = "Answer",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 600,
+        prompt = "Answer the question using only these passages, and cite them like [1].\n\n{{context}}\n\n"
+        "Question: {{prompt}}",
+    )
+    b.e("question.text", "answer.prompt")
+    b.e("search.context", "answer.context")
+    b.n("show", "output.preview", 4, 1.2)
+    b.e("answer.text", "show.value")
+    b.note(
+        "tip",
+        "Upload a document, then Run. Parsing, embedding and search all run locally on Studio's own models, "
+        "offline once they are downloaded. Later runs can drop the first two blocks and search what is indexed.",
+        0,
+        2.5,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def contact_cleanup() -> B:
+    b = B(
+        "contact-cleanup",
+        "Clean Up a Contact List",
+        "pipeline",
+        "Paste a messy list or spreadsheet: a local model turns it into rows, then the list blocks drop rows "
+        "without an email, remove duplicates, tidy the fields and sort by name.",
+        tags = ["data", "json", "transform"],
+        seed = 13,
+    ).need("chat")
+    b.n(
+        "pasted",
+        "input.text",
+        0,
+        1,
+        label = "Pasted list",
+        value = "name,email,company\nAna Lima,ANA@example.com,Acme\nben ortiz,ben@example.org,\nAna Lima,"
+        "ana@example.com,Acme Inc\nChris Wu,,Globex\nDee Park,dee@example.net,Initech",
+    )
+    b.n(
+        "rows",
+        "llm.generate",
+        1,
+        1,
+        label = "Read the rows",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 2048,
+        system = "Copy every person in the text into rows exactly as written. Use an empty string for a missing "
+        "field. Do not fix, merge or drop anything.",
+        prompt = "{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "company": {"type": "string"},
+                        },
+                        "required": ["name", "email", "company"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    )
+    b.e("pasted.text", "rows.prompt")
+    b.n("list", "json.get", 2, 1, path = "rows")
+    b.e("rows.json", "list.json")
+    b.n(
+        "has_email",
+        "list.filter",
+        3,
+        1,
+        label = "Has an email",
+        condition = {"op": "contains", "args": [{"var": "item.email"}, "@"]},
+    )
+    b.e("list.value", "has_email.items")
+    b.n(
+        "tidy",
+        "json.set",
+        4,
+        1,
+        label = "Tidy fields",
+        fields = {
+            "email": {"op": "lower", "args": [{"var": "item.email"}]},
+            "company": {
+                "op": "if",
+                "args": [{"var": "item.company"}, {"var": "item.company"}, "unknown"],
+            },
+        },
+    )
+    b.e("has_email.items", "tidy.value")
+    b.n("unique", "list.dedupe", 5, 1, label = "One per email", key = {"var": "item.email"})
+    b.e("tidy.value", "unique.items")
+    b.n(
+        "sorted",
+        "list.sort",
+        6,
+        1,
+        label = "Sort by name",
+        key = {"op": "lower", "args": [{"var": "item.name"}]},
+    )
+    b.e("unique.items", "sorted.items")
+    b.n("clean", "output.result", 7, 1, name = "contacts")
+    b.e("sorted.items", "clean.value")
+    b.n("dropped", "output.preview", 4, 2)
+    b.e("has_email.dropped", "dropped.value")
+    b.note(
+        "tip",
+        "Only the first block uses a model; the cleanup after it is plain list blocks, so you can change a rule "
+        "and re-run in a blink.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
 def chat_with_documents() -> B:
     b = B(
         "chat-with-documents",
@@ -2510,9 +2582,7 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
-    summarise_pdf,
-    ask_documents,
-    contact_cleanup,
+    remembering_assistant,
     photo_restyle,
     animate_photo,
     meeting_notes,
@@ -2525,6 +2595,9 @@ BUILDERS = (
     tts_sft,
     embedding_sft,
     model_arena,
+    summarise_pdf,
+    ask_documents,
+    contact_cleanup,
     chat_with_documents,
     support_bot,
     research_agent,
