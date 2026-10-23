@@ -45,8 +45,11 @@ def _cron_field(text: str, low: int, high: int) -> set[int]:
             step = int(step_text)
             if step < 1:
                 raise ValueError("a step must be at least 1")
-        if part in ("*", ""):
+        if part == "*":
             start, end = low, high
+        elif not part:
+            # "0, 9 * * *" (a stray comma) must not quietly mean every minute.
+            raise ValueError("a list in a cron field has an empty item")
         elif "-" in part:
             a, b = part.split("-", 1)
             start, end = int(a), int(b)

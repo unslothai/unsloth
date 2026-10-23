@@ -633,3 +633,9 @@ def test_export_drops_signed_url_credentials_and_approvals_bind_the_full_digest(
     assert encoded == "https://api.example/?api%5Fkey=&x-amz-security%2dtoken=&q=1"
     # A truncated digest would let a crafted program collide with an approved one.
     assert len(capabilities.code_hash("print(1)")) == len("sha256:") + 64
+
+
+@pytest.mark.parametrize("expr", ["0, 9 * * *", "0,,30 * * * *", ",0 9 * * *", "0 9, * * *"])
+def test_a_stray_comma_in_cron_is_an_error_not_every_minute(expr):
+    with pytest.raises(ValueError):
+        triggers.parse_cron(expr)
