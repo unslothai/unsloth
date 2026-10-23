@@ -2965,7 +2965,6 @@ class TestDesktopBackendVersionConstraint:
         spec, calls = self._spec(
             tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}, full = True
         )
-        # The zoo the probe resolved is a floor, so a --no-deps install cannot go below it.
         assert spec == ("unsloth>=2026.8.15", "unsloth-zoo>=2026.10.3")
         assert calls == 1, "an index that has the release answers the one probe"
 
@@ -2992,8 +2991,6 @@ class TestDesktopBackendVersionConstraint:
         assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
 
     def test_lowered_unsloth_carries_its_zoo_pin(self, tmp_path):
-        # The no-torch update installs --no-deps, so a bare unsloth-zoo there is unconstrained
-        # (UV_RESOLUTION=lowest would take the oldest zoo, below unsloth's floor).
         env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
         assert self._spec(tmp_path, env, full = True)[0] == (
             "unsloth==2026.10.3",
@@ -3010,7 +3007,6 @@ class TestDesktopBackendVersionConstraint:
         assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
 
     def test_unsloth_ahead_of_zoo_with_met_floor_is_untouched(self, tmp_path):
-        # unsloth patch releases ship without a zoo release; their floor is still met.
         env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}
         spec, calls = self._spec(
             tmp_path,
@@ -3064,7 +3060,6 @@ class TestDesktopBackendVersionConstraint:
         assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
 
     def test_core_installs_pass_the_zoo_spec(self):
-        # Both base-package installs must take the zoo requirement the helper returns.
         src = inspect.getsource(ips)
         assert src.count("unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)") == 2
         assert src.count("                unsloth_spec,\n                zoo_spec,\n") == 1

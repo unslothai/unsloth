@@ -10600,8 +10600,7 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
 
     def resolve(*requirements: str, deps: bool = False) -> "dict[str, str] | None":
         # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
-        # With deps the unsloth -> unsloth-zoo floor is checked too. Linux x86_64 is fixed so
-        # a platform without torch wheels (Intel Mac, no-torch hosts) still resolves the pair.
+        # Linux x86_64 is fixed so a host without torch wheels (Intel Mac, no-torch) still resolves.
         with tempfile.TemporaryDirectory() as scratch:
             out = Path(scratch) / "probe.txt"
             argv = ["uv", "pip", "compile", "--python", sys.executable]
