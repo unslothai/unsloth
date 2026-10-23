@@ -5,12 +5,12 @@
 A physical card index and a CUDA device ordinal are separate namespaces. Keep the
 UUID with each ordinal so a worker can reproduce exactly the set that was sized.
 """
-
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 from . import gpu_query, nvidia
@@ -18,7 +18,15 @@ from utils.child_stdio import utf8_child_env
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
+# key -> (monotonic time, rows, state); state is "rows", "legacy" (the probe answered: keep the
+# old rule) or "failed" (no answer; rows may hold retained identities with zero memory).
 _cache = {}
+_flights = {}
+_flights_lock = threading.Lock()
+_FAILED_BACKOFF_S = 5.0
+_ROWS_TTL_S = 60.0
+# A fresh sample this young is shared: polling callers never start more than one child per window.
+_FRESH_SHARE_S = 2.0
 # The parent's ordinal -> MIG uuid map, inherited by spawned workers: their apply_gpu_ids runs
 # before any probe there, so it pins the exact instances the parent sized without re-probing.
 _ENV = "UNSLOTH_MIG_CUDA_DEVICES"
@@ -60,13 +68,8 @@ def rows_from_payload(payload):
         if row is None or key in seen:
             return None  # never guess an ordinal-to-UUID mapping
         seen.add(key)
-        rows.append(
-            {
-                **row,
-                "physical_index": row["index"],
-                "index": str(ids[ordinal] if ids is not None else ordinal),
-            }
-        )
+        rows.append({**row, "physical_index": row["index"],
+                     "index": str(ids[ordinal] if ids is not None else ordinal)})
     return rows
 
 
@@ -85,7 +88,7 @@ def _mig_instances(listing):
     return nvidia.get_mig_gpu_indices_or_none()
 
 
-def visible_devices(*, fresh = False, listing = False):
+def visible_devices(*, fresh=False, listing=False):
     """Bounded out-of-process probe, gated off ordinary hosts; cache identities only.
 
     Memory callers request a fresh sample. Failed probes back off and retire at the
@@ -99,48 +102,90 @@ def visible_devices(*, fresh = False, listing = False):
         # unknown) keeps the existing rule, and the NVML probe never starts.
         os.environ.pop(_ENV, None)
         return None
-    key = (
-        raw,
-        os.environ.get("CUDA_DEVICE_ORDER"),
-        gpu_query._static_gen,
-        os.environ.get("UNSLOTH_NVIDIA_PROBE"),
-    )
-    cached = _cache.get(key)
-    if cached is not None and time.monotonic() - cached[0] < (5 if cached[1] is None else 60):
-        if not fresh or cached[1] is None:
-            return cached[1]
-    rows = None
+    key = (raw, os.environ.get("CUDA_DEVICE_ORDER"), gpu_query._static_gen,
+           os.environ.get("UNSLOTH_NVIDIA_PROBE"))
+    hit = _cached_answer(key, fresh)
+    if hit is not _MISS:
+        return hit
+    # One probe child per key at a time: concurrent callers wait for it and share its answer.
+    with _flights_lock:
+        flight = _flights.get(key)
+        leader = flight is None
+        if leader:
+            flight = _flights[key] = threading.Event()
+    if not leader:
+        flight.wait(15)
+        entry = _cache.get(key)
+        return entry[1] if entry is not None else None
+    try:
+        return _refresh(key, raw)
+    finally:
+        with _flights_lock:
+            _flights.pop(key, None)
+        flight.set()
+
+
+_MISS = object()
+
+
+def _cached_answer(key, fresh):
+    entry = _cache.get(key)
+    if entry is None:
+        return _MISS
+    age = time.monotonic() - entry[0]
+    state = entry[2]
+    if state == "failed":
+        # A failed probe backs off even for fresh callers, retained identities or not.
+        return entry[1] if age < _FAILED_BACKOFF_S else _MISS
+    if state == "legacy":
+        # The probe answered that the old rule applies; nothing here carries memory to refresh.
+        return None if age < _ROWS_TTL_S else _MISS
+    if age < _FRESH_SHARE_S or (not fresh and age < _ROWS_TTL_S):
+        return entry[1]
+    return _MISS
+
+
+def _probe():
+    """(rows, answered). ``answered`` is False when the probe child gave no NVML answer."""
     try:
         from utils.prebuilt.update_flow import find_installer_script
-        script = find_installer_script(
-            env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py"
+        script = find_installer_script(env_var="UNSLOTH_NVIDIA_PROBE", script_name="nvidia_probe.py")
+        if script is None:
+            return None, False
+        result = subprocess.run(
+            [sys.executable, "-I", str(script), "--json"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env=utf8_child_env(child_env_without_native_path_secret()),
+            **windows_hidden_subprocess_kwargs(),
         )
-        if script is not None:
-            result = subprocess.run(
-                [sys.executable, "-I", str(script), "--json"],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
-                env = utf8_child_env(child_env_without_native_path_secret()),
-                **windows_hidden_subprocess_kwargs(),
-            )
-            if result.returncode == 0:
-                rows = rows_from_payload(json.loads(result.stdout))
+        if result.returncode != 0:
+            return None, False
+        payload = json.loads(result.stdout)
+        # Only NVML answers the MIG question; the CUDA fallback means NVML itself failed.
+        answered = isinstance(payload, dict) and payload.get("source") == "nvml"
+        return rows_from_payload(payload), answered
     except Exception:
-        pass
-    if rows is None and cached is not None and cached[1] is not None:
-        # A failed memory/identity refresh cannot collapse a known device set to
-        # physical cards. Retain identities, but never reuse stale free memory.
-        rows = [{**r, "memory_free_mib": "0", "memory_total_mib": "0"} for r in cached[1]]
-    _cache[key] = (time.monotonic(), rows)
+        return None, False
+
+
+def _refresh(key, raw):
+    previous = _cache.get(key)
+    rows, answered = _probe()
+    if rows is not None:
+        state = "rows"
+    elif answered:
+        state = "legacy"
+    else:
+        state = "failed"
+        if previous is not None and previous[1] is not None:
+            # A failed memory/identity refresh cannot collapse a known device set to
+            # physical cards. Retain identities, but never reuse stale free memory.
+            rows = [{**r, "memory_free_mib": "0", "memory_total_mib": "0"} for r in previous[1]]
+    _cache[key] = (time.monotonic(), rows, state)
     if rows is not None:
         os.environ[_ENV] = json.dumps(
-            {
-                "key": [raw, os.environ.get("CUDA_DEVICE_ORDER")],
-                "uuids": {str(r["index"]): r["uuid"] for r in rows},
-            }
+            {"key": [raw, os.environ.get("CUDA_DEVICE_ORDER")],
+             "uuids": {str(r["index"]): r["uuid"] for r in rows}}
         )
     else:
         os.environ.pop(_ENV, None)
@@ -151,10 +196,7 @@ def _inherited_uuids():
     """The parent's map when it was made under this process's own mask and order, else None."""
     try:
         data = json.loads(os.environ.get(_ENV) or "null")
-        if data["key"] != [
-            os.environ.get("CUDA_VISIBLE_DEVICES"),
-            os.environ.get("CUDA_DEVICE_ORDER"),
-        ]:
+        if data["key"] != [os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")]:
             return None
         return {int(k): str(v) for k, v in data["uuids"].items()}
     except Exception:

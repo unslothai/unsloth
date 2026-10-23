@@ -7170,6 +7170,36 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     return stale
 
 
+def _mig_backend_visible_gpu_info(raw_mask) -> Optional[Dict[str, Any]]:
+    """The backend-visible inventory on an R570+ MIG host: one row per CUDA device (GPU instance or
+    whole card) with its own slice memory, or None when this is not one."""
+    from . import mig
+
+    rows = mig.visible_devices()
+    if rows is None:
+        return None
+    devices = []
+    for ordinal, row in enumerate(rows):
+        total_mib = int(row.get("memory_total_mib") or 0)
+        devices.append(
+            {
+                "index": int(row["index"]),
+                "index_kind": "cuda_device",
+                "visible_ordinal": ordinal,
+                "name": row.get("name"),
+                "uuid": row["uuid"],
+                "memory_total_gb": round(total_mib / 1024, 2) if total_mib else None,
+            }
+        )
+    return {
+        "available": bool(devices),
+        "backend_cuda_visible_devices": raw_mask,
+        "parent_visible_gpu_ids": [d["index"] for d in devices],
+        "devices": devices,
+        "index_kind": "cuda_device",
+    }
+
+
 def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
@@ -7184,6 +7214,12 @@ def _probe_backend_visible_gpu_info(device) -> Dict[str, Any]:
                 from . import nvidia
 
                 parent_visible_spec = _get_parent_visible_gpu_spec()
+                if parent_visible_spec.get("index_kind") == "cuda_device":
+                    # R570+ MIG: the ids are CUDA devices, not nvidia-smi rows; list each instance.
+                    mig_result = _mig_backend_visible_gpu_info(parent_visible_spec["raw"])
+                    if mig_result is not None:
+                        mig_result["backend"] = _backend_label(device)
+                        return mig_result
                 result = nvidia.get_backend_visible_gpu_info(
                     parent_visible_spec["numeric_ids"],
                     parent_visible_spec["raw"],

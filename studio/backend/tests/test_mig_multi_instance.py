@@ -291,10 +291,16 @@ def test_an_instance_without_a_memory_reading_keeps_its_identity():
         assert B._pinned_child_visibility([0, 1, 2]) == f"{A},{B_UUID},{C}"
 
 
+def _age_cache(seconds):
+    for key, entry in list(mig._cache.items()):
+        mig._cache[key] = (entry[0] - seconds, *entry[1:])
+
+
 def test_a_failed_refresh_keeps_known_identities_without_stale_memory():
     with host() as probe:
         assert len(hw.get_parent_visible_gpu_ids()) == 3
         probe["source"] = "failed"
+        _age_cache(mig._FRESH_SHARE_S + 1)
         assert B._get_gpu_memory() == [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
         assert B._pinned_child_visibility([0, 1, 2]) == f"{A},{B_UUID},{C}"
 
@@ -555,3 +561,120 @@ def test_only_placement_relists_after_a_listing_found_no_instance():
         with patch.object(nvidia, "get_mig_gpu_indices_or_none", lambda: listed.append(1) or set()):
             assert mig.visible_devices(fresh = True, listing = True) is None
         assert listed == [1]
+
+
+@contextlib.contextmanager
+def _counting_probe(gate = None):
+    """Count NVML probe children (``--json``); optionally hold each one until ``gate`` is set."""
+    inner = subprocess.run
+    calls = []
+
+    def run(cmd, *args, **kw):
+        if "--json" in cmd:
+            calls.append(cmd)
+            if gate is not None:
+                gate.wait(10)
+        return inner(cmd, *args, **kw)
+
+    with patch.object(subprocess, "run", run):
+        yield calls
+
+
+def test_the_backend_visible_inventory_lists_every_gpu_instance():
+    with host():
+        info = hw._probe_backend_visible_gpu_info(hw.DeviceType.CUDA)
+    assert info["index_kind"] == "cuda_device"
+    assert [d["index"] for d in info["devices"]] == [0, 1, 2]
+    assert [d["uuid"] for d in info["devices"]] == [A, B_UUID, C]
+    assert [d["memory_total_gb"] for d in info["devices"]] == [39.25, 19.5, 19.5]
+
+
+def test_a_manual_split_under_an_inherited_uuid_mask_pins_those_uuids():
+    with host(f"{B_UUID},{A}"):
+        assert len(B._get_gpu_memory()) == 2
+        env = dict(os.environ)
+        assert B._pin_visible_gpu_order_for_split(env) == (0, 1)
+        assert env["CUDA_VISIBLE_DEVICES"] == f"{B_UUID},{A}"
+        # CUDA device ids never pass for physical card ids.
+        assert B._resolve_visible_physical_ids() is None
+
+
+def test_p2p_vetoes_mig_instances_but_whole_cards_keep_the_physical_matrix(monkeypatch):
+    rows = [
+        dict(index = "0", physical_index = "1", uuid = GPU, name = "NVIDIA A100-SXM4-80GB"),
+        dict(index = "1", physical_index = "0", uuid = A, name = "NVIDIA A100-SXM4-80GB", mig = "1"),
+    ]
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_DC_P2P", raising = False)
+    monkeypatch.setattr(
+        B, "_MIG_DEVICE_SNAPSHOT",
+        (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"), rows),
+        raising = False,
+    )
+    seen = []
+
+    def match(pattern, gpu_indices):
+        seen.append(list(gpu_indices))
+        return False
+
+    monkeypatch.setattr(B, "_all_selected_gpus_match", staticmethod(match))
+    mig_reason = "MIG device UUIDs cannot be verified by the physical-card NVLink matrix"
+    assert B._p2p_veto_reason_inner([1]) == mig_reason
+    assert B._p2p_veto_reason_inner(None) == mig_reason
+    assert B._p2p_veto_reason_inner([0]) != mig_reason
+    assert seen == [[1]]  # the whole card's nvidia-smi index, not its CUDA device id
+
+
+def test_a_failed_refresh_backs_off_for_fresh_callers():
+    with host() as probe:
+        assert len(B._get_gpu_memory()) == 3
+        probe["source"] = "failed"
+        _age_cache(mig._FRESH_SHARE_S + 1)
+        with _counting_probe() as calls:
+            for _ in range(5):
+                rows = mig.visible_devices(fresh = True)
+                assert [r["memory_total_mib"] for r in rows] == ["0", "0", "0"]
+        assert len(calls) == 1
+
+
+def test_concurrent_fresh_callers_share_one_probe_child():
+    import threading
+
+    with host():
+        assert len(B._get_gpu_memory()) == 3
+        _age_cache(mig._FRESH_SHARE_S + 1)
+        gate = threading.Event()
+        with _counting_probe(gate) as calls:
+            results = []
+            threads = [
+                threading.Thread(target = lambda: results.append(mig.visible_devices(fresh = True)))
+                for _ in range(8)
+            ]
+            for t in threads:
+                t.start()
+            while not calls:
+                threading.Event().wait(0.01)
+            threading.Event().wait(0.2)
+            gate.set()
+            for t in threads:
+                t.join(10)
+        assert len(calls) == 1
+        assert len(results) == 8 and all(r is not None and len(r) == 3 for r in results)
+
+
+def test_polling_inside_the_share_window_starts_no_child():
+    with host():
+        assert len(B._get_gpu_memory()) == 3
+        with _counting_probe() as calls:
+            for _ in range(10):
+                mig.visible_devices(fresh = True)
+        assert calls == []
+
+
+def test_a_legacy_answer_is_not_re_probed_by_fresh_callers():
+    with host(driver = "565.57.01"):
+        with _counting_probe() as calls:
+            for _ in range(3):
+                assert mig.visible_devices(fresh = True, listing = True) is None
+                _age_cache(mig._FAILED_BACKOFF_S + 1)
+        assert len(calls) == 1
