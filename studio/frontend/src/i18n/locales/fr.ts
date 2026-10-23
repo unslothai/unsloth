@@ -1291,6 +1291,10 @@ export const fr = {
           label: "Joindre photos et fichiers",
           description: "Ajouter une pièce jointe à la zone de saisie",
         },
+        openComposerMenu: {
+          label: "Ouvrir le menu +",
+          description: "Ouvrir le menu + de la zone de saisie (outils et pièces jointes)",
+        },
         sendMessage: {
           label: "Envoyer le message",
           description: "Envoyer le contenu de la zone de saisie",

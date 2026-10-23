@@ -102,3 +102,16 @@ test("the recorder clears a slot on a bare Backspace or Delete", () => {
   // Leaving the box any other way ends recording, so no stale listener keeps swallowing keys.
   assert.match(tab, /onBlur=\{stopRecording\}/);
 });
+
+test("both composers open their + menu on the chord, never from behind a dialog", () => {
+  for (const path of ["components/assistant-ui/thread.tsx", "features/chat/shared-composer.tsx"]) {
+    const src = readSrc(path);
+    const at = src.indexOf('"openComposerMenu",');
+    assert.notEqual(at, -1, `${path} does not register openComposerMenu`);
+    assert.match(
+      src.slice(at, at + 400),
+      /if \(plusOpen\) return setPlusMenuOpen\(false\);\s*if \(!isSurfaceInForeground\(COMPOSER_INPUT_SELECTOR\)\) return;\s*setPlusMenuOpen\(true\);/,
+    );
+    assert.match(src, /<DropdownMenu open=\{plusOpen\} onOpenChange=\{setPlusMenuOpen\}>/);
+  }
+});

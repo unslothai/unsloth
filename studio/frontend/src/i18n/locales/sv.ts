@@ -1404,6 +1404,10 @@ export const sv = {
           label: "Bifoga foton och filer",
           description: "Lägg till en bilaga i skrivfältet",
         },
+        openComposerMenu: {
+          label: "Öppna +-menyn",
+          description: "Öppna meddelandefältets +-meny med verktyg och bilagor",
+        },
         sendMessage: {
           label: "Skicka meddelande",
           description: "Skicka det som finns i skrivfältet",

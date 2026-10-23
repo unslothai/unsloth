@@ -51,6 +51,7 @@ export type ShortcutId =
   | "approveToolRequest"
   | "declineToolRequest"
   | "attachFiles"
+  | "openComposerMenu"
   | "cycleReasoningEffort"
   | "decreaseReasoningEffort"
   | "increaseReasoningEffort"
@@ -219,6 +220,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("declineToolRequest", "Escape", { allowBareKey: true }),
 
   def("attachFiles", null),
+  // No browser or OS claims ⇧⌘. / Ctrl+Shift+., and ⌘. beside it already stops generation.
+  def("openComposerMenu", "Mod+Shift+Period"),
   def("cycleReasoningEffort", null),
   def("decreaseReasoningEffort", null),
   def("increaseReasoningEffort", null),
@@ -283,6 +286,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     "increaseReasoningEffort",
     "startDictation",
     "attachFiles",
+    "openComposerMenu",
     "openModelPicker",
     "openProjectPicker",
     "approveToolRequest",

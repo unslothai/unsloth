@@ -1288,6 +1288,10 @@ export const ja = {
           label: "写真とファイルを添付",
           description: "入力欄に添付ファイルを追加します",
         },
+        openComposerMenu: {
+          label: "+ メニューを開く",
+          description: "入力欄のツールと添付ファイルの + メニューを開く",
+        },
         sendMessage: {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",

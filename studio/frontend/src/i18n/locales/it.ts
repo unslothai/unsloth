@@ -1192,6 +1192,10 @@ export const it = {
           label: "Allega foto e file",
           description: "Aggiungi un allegato all’editor",
         },
+        openComposerMenu: {
+          label: "Apri menu +",
+          description: "Apri il menu + dell'editor con strumenti e allegati",
+        },
         sendMessage: {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",

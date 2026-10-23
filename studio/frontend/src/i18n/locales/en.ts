@@ -1344,6 +1344,10 @@ export const en = {
           label: "Attach photos and files",
           description: "Add an attachment to the composer",
         },
+        openComposerMenu: {
+          label: "Open + menu",
+          description: "Open the composer's + menu of tools and attachments",
+        },
         sendMessage: {
           label: "Send message",
           description: "Send what is in the composer",

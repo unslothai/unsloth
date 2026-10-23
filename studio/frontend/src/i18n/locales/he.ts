@@ -1376,6 +1376,10 @@ export const he = {
           label: "צרף תמונות וקבצים",
           description: "הוסף קובץ מצורף לתיבת ההודעה",
         },
+        openComposerMenu: {
+          label: "פתיחת תפריט +",
+          description: "פתיחת תפריט + של תיבת הכתיבה עם כלים וקבצים מצורפים",
+        },
         sendMessage: {
           label: "שלח הודעה",
           description: "שלח את תוכן תיבת ההודעה",

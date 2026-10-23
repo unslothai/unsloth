@@ -316,6 +316,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.approveToolRequest.label",
     "settings.keyboardShortcuts.actions.declineToolRequest.label",
     "settings.keyboardShortcuts.actions.attachFiles.label",
+    "settings.keyboardShortcuts.actions.openComposerMenu.label",
     "settings.keyboardShortcuts.actions.cycleReasoningEffort.label",
     "settings.keyboardShortcuts.actions.decreaseReasoningEffort.label",
     "settings.keyboardShortcuts.actions.increaseReasoningEffort.label",

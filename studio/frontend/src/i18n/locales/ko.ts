@@ -1286,6 +1286,10 @@ export const ko = {
           label: "사진 및 파일 첨부",
           description: "입력창에 첨부 파일을 추가합니다",
         },
+        openComposerMenu: {
+          label: "+ 메뉴 열기",
+          description: "입력창의 도구 및 첨부 파일 + 메뉴 열기",
+        },
         sendMessage: {
           label: "메시지 보내기",
           description: "입력창의 내용을 보냅니다",

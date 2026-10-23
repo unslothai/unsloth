@@ -1289,6 +1289,10 @@ export const ptBR = {
           label: "Anexar fotos e arquivos",
           description: "Adicionar um anexo ao compositor",
         },
+        openComposerMenu: {
+          label: "Abrir menu +",
+          description: "Abrir o menu + da caixa de mensagem com ferramentas e anexos",
+        },
         sendMessage: {
           label: "Enviar mensagem",
           description: "Enviar o que está no compositor",

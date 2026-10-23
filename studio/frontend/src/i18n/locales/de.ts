@@ -1291,6 +1291,10 @@ export const de = {
           label: "Fotos und Dateien anhängen",
           description: "Einen Anhang zum Eingabefeld hinzufügen",
         },
+        openComposerMenu: {
+          label: "+-Menü öffnen",
+          description: "Das +-Menü des Eingabefelds mit Werkzeugen und Anhängen öffnen",
+        },
         sendMessage: {
           label: "Nachricht senden",
           description: "Den Inhalt des Eingabefelds senden",

@@ -1286,6 +1286,10 @@ export const ar = {
           label: "إرفاق صور وملفات",
           description: "إضافة مرفق إلى مربع الكتابة",
         },
+        openComposerMenu: {
+          label: "فتح قائمة +",
+          description: "فتح قائمة + للأدوات والمرفقات في محرر الرسائل",
+        },
         sendMessage: {
           label: "إرسال الرسالة",
           description: "إرسال ما في مربع الكتابة",

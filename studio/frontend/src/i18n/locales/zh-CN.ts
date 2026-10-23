@@ -1284,6 +1284,10 @@ export const zhCN = {
           label: "添加照片和文件",
           description: "为输入框添加附件",
         },
+        openComposerMenu: {
+          label: "打开 + 菜单",
+          description: "打开输入框的工具和附件 + 菜单",
+        },
         sendMessage: {
           label: "发送消息",
           description: "发送输入框中的内容",

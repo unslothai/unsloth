@@ -1290,6 +1290,10 @@ export const hi = {
           label: "फ़ोटो और फ़ाइलें संलग्न करें",
           description: "लिखने के बॉक्स में अनुलग्नक जोड़ें",
         },
+        openComposerMenu: {
+          label: "+ मेनू खोलें",
+          description: "कंपोज़र का टूल और अटैचमेंट वाला + मेनू खोलें",
+        },
         sendMessage: {
           label: "संदेश भेजें",
           description: "लिखने के बॉक्स की सामग्री भेजें",

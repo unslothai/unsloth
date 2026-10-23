@@ -1290,6 +1290,10 @@ export const es = {
           label: "Adjuntar fotos y archivos",
           description: "Añadir un adjunto al redactor",
         },
+        openComposerMenu: {
+          label: "Abrir menú +",
+          description: "Abrir el menú + del redactor con herramientas y adjuntos",
+        },
         sendMessage: {
           label: "Enviar mensaje",
           description: "Enviar lo que hay en el redactor",

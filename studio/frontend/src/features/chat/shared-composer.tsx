@@ -2557,6 +2557,22 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  // Controlled so the chord can open it, gated like attachFiles above.
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // Open, the menu itself hides the composer from the gate, so closing skips it.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
   useShortcut("stopGeneration", stop, {
     enabled: chatActive && busy,
     claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
@@ -2936,11 +2952,7 @@ export function SharedComposer({
             />
             {/* Same + menu as single-chat (ComposerToolsMenu), wired to the compare composer's own file/audio
                 inputs and tools. */}
-            <DropdownMenu
-              onOpenChange={(open) => {
-                if (open) void refreshRecentPrompts();
-              }}
-            >
+            <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
               <DropdownMenuTrigger asChild={true}>
                 <button
                   type="button"
