@@ -28,7 +28,14 @@ class _Decoder(torch.nn.Module):
         self.embed_tokens = torch.nn.Embedding(50, 8)
         self.layers = torch.nn.ModuleList([torch.nn.Linear(8, 8)])
 
-    def forward(self, input_ids = None, attention_mask = None, position_ids = None, output_hidden_states = False, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        position_ids = None,
+        output_hidden_states = False,
+        **kwargs,
+    ):
         if cp.get_cp_manager() is not None:
             # Per-shard masks differ across peers (only the last holds padding): the hook must drop it.
             assert attention_mask is None
@@ -52,7 +59,9 @@ def _manager(rank, size = 2):
     manager = object.__new__(cp.ContextParallelManager)
     manager.size = size
     manager.backend = "ulysses"
-    manager.mesh = types.SimpleNamespace(get_local_rank = lambda: rank, get_group = lambda: dist.group.WORLD)
+    manager.mesh = types.SimpleNamespace(
+        get_local_rank = lambda: rank, get_group = lambda: dist.group.WORLD
+    )
     return manager
 
 
@@ -66,7 +75,9 @@ def _worker(rank, world, init_file, queue):
         weight = torch.randn(2, 7, 8)
 
         reference = _Decoder()
-        full = reference(input_ids = ids, attention_mask = mask, position_ids = torch.arange(7).expand(2, 7))
+        full = reference(
+            input_ids = ids, attention_mask = mask, position_ids = torch.arange(7).expand(2, 7)
+        )
         (full.last_hidden_state * weight).sum().backward()
 
         model = _Decoder()
@@ -81,7 +92,9 @@ def _worker(rank, world, init_file, queue):
         assert out.hidden_states[0].shape == (2, 7, 8)
         # Trimmed from the padded gather as fresh tensors: compiled consumers must not guard on a view base.
         assert out.last_hidden_state._base is None and out.hidden_states[0]._base is None
-        torch.testing.assert_close(out.last_hidden_state, full.last_hidden_state, rtol = 1e-5, atol = 1e-6)
+        torch.testing.assert_close(
+            out.last_hidden_state, full.last_hidden_state, rtol = 1e-5, atol = 1e-6
+        )
         # DDP's average over the CP group, as the trainer gets it.
         for p in model.parameters():
             dist.all_reduce(p.grad)
@@ -103,7 +116,9 @@ def _worker(rank, world, init_file, queue):
         with torch.inference_mode():
             scored = {"ids": torch.full((2,), rank)}
         got = cp._broadcast_from_group_root(scored, manager, torch.device("cpu"))
-        assert got["ids"].is_inference() and torch.equal(got["ids"], torch.zeros(2, dtype = torch.long))
+        assert got["ids"].is_inference() and torch.equal(
+            got["ids"], torch.zeros(2, dtype = torch.long)
+        )
         got = cp._broadcast_from_group_root({"ids": torch.ones(1)}, manager, torch.device("cpu"))
         assert not got["ids"].is_inference()
 
@@ -113,7 +128,6 @@ def _worker(rank, world, init_file, queue):
         queue.put((rank, "ok"))
     except BaseException as error:  # pragma: no cover - reported to the parent
         import traceback
-
         queue.put((rank, traceback.format_exc()))
     finally:
         dist.destroy_process_group()
@@ -276,7 +290,9 @@ def test_rl_trainers_without_cp_are_untouched(monkeypatch):
     monkeypatch.setattr(cp, "_install_accelerator_state", lambda *a: None)
     log = []
     Trainer = _fake_trainer_class(log)
-    originals = {name: Trainer.__dict__[name] for name in ("training_step", "compute_loss", "_generate")}
+    originals = {
+        name: Trainer.__dict__[name] for name in ("training_step", "compute_loss", "_generate")
+    }
     cp.patch_rl_trainer(Trainer, "grpo_trainer")
     trainer = Trainer(_args(context_parallel_size = 1))
     assert trainer._context_parallel_manager is None
@@ -296,7 +312,9 @@ def _rope(x, pos):
     inv = 1.0 / (10000 ** (torch.arange(0, _D, 2, dtype = torch.float64) / _D))
     ang = (pos[..., None].double() * inv)[:, None].to(x.dtype)
     x1, x2 = x[..., ::2], x[..., 1::2]
-    return torch.stack([x1 * ang.cos() - x2 * ang.sin(), x1 * ang.sin() + x2 * ang.cos()], -1).flatten(-2)
+    return torch.stack(
+        [x1 * ang.cos() - x2 * ang.sin(), x1 * ang.sin() + x2 * ang.cos()], -1
+    ).flatten(-2)
 
 
 def _causal_attention(*, config, context, Q, K, V):
@@ -365,7 +383,13 @@ class _LlamaLike(torch.nn.Module):
                 p.normal_(0, 0.4)
         self.to(dtype)
 
-    def _decode(self, input_ids = None, attention_mask = None, position_ids = None, **kwargs):
+    def _decode(
+        self,
+        input_ids = None,
+        attention_mask = None,
+        position_ids = None,
+        **kwargs,
+    ):
         if position_ids is None:
             position_ids = torch.arange(input_ids.shape[1]).expand_as(input_ids)
         x = self.model.embed_tokens(input_ids)
@@ -375,7 +399,9 @@ class _LlamaLike(torch.nn.Module):
 
     def token_logps(self, ids, mask):
         h = self.model(input_ids = ids, attention_mask = mask).last_hidden_state
-        return torch.log_softmax(self.lm_head(h)[:, :-1], -1).gather(-1, ids[:, 1:, None]).squeeze(-1)
+        return (
+            torch.log_softmax(self.lm_head(h)[:, :-1], -1).gather(-1, ids[:, 1:, None]).squeeze(-1)
+        )
 
 
 def _right_pad(rows):
@@ -386,7 +412,13 @@ def _right_pad(rows):
     return ids, mask
 
 
-def _dpo_sigmoid(policy, ref, batch, world, beta = 0.1):
+def _dpo_sigmoid(
+    policy,
+    ref,
+    batch,
+    world,
+    beta = 0.1,
+):
     # trl DPOTrainer._compute_loss: completion sums, rows [chosen, rejected], -logsigmoid(beta * delta).mean()
     ids, mask, completion = batch
     logps = (policy.token_logps(ids, mask) * completion).sum(1)
@@ -396,10 +428,19 @@ def _dpo_sigmoid(policy, ref, batch, world, beta = 0.1):
     return -torch.nn.functional.logsigmoid(beta * ((c - rc) - (r - rr))).mean()
 
 
-def _grpo_dapo(policy, ref, batch, world, beta = 0.04, eps = 0.2):
+def _grpo_dapo(
+    policy,
+    ref,
+    batch,
+    world,
+    beta = 0.04,
+    eps = 0.2,
+):
     # trl GRPOTrainer (loss_type "dapo", num_iterations 1): token sum over gather(mask.sum()).sum() / num_processes
     ids, mask, completion, rewards = batch
-    adv = ((rewards - rewards.mean()) / (rewards.std() + 1e-4)).to(policy.lm_head.weight.dtype)[:, None]
+    adv = ((rewards - rewards.mean()) / (rewards.std() + 1e-4)).to(policy.lm_head.weight.dtype)[
+        :, None
+    ]
     completion = completion.to(adv.dtype)
     counts = [completion.sum().float()]
     if world > 1:  # accelerator.gather over every process: CP peers each count the full rows
@@ -422,8 +463,13 @@ def _objective_worker(rank, world, init_file, queue):
         g = torch.Generator().manual_seed(3)
         rand = lambda n: torch.randint(1, _V, (n,), generator = g).tolist()
         prompts = [rand(7), rand(12)]
-        chosen, rejected = [p + rand(n) for p, n in zip(prompts, (9, 5))], [p + rand(n) for p, n in zip(prompts, (4, 14))]
-        ids, mask = _right_pad(chosen + rejected)  # 26 tokens: odd row lengths, the pad tail crosses the shard
+        chosen, rejected = (
+            [p + rand(n) for p, n in zip(prompts, (9, 5))],
+            [p + rand(n) for p, n in zip(prompts, (4, 14))],
+        )
+        ids, mask = _right_pad(
+            chosen + rejected
+        )  # 26 tokens: odd row lengths, the pad tail crosses the shard
         completion = mask.clone()
         for i, n in enumerate([7, 12, 7, 12]):
             completion[i, :n] = 0
@@ -461,7 +507,6 @@ def _objective_worker(rank, world, init_file, queue):
         queue.put((rank, "ok"))
     except BaseException:  # pragma: no cover - reported to the parent
         import traceback
-
         queue.put((rank, traceback.format_exc()))
     finally:
         dist.destroy_process_group()
@@ -474,7 +519,9 @@ def test_dpo_and_grpo_objectives_match_without_cp_in_fp64_and_fp32():
     queue = ctx.Queue()
     with tempfile.TemporaryDirectory() as tmp:
         init_file = os.path.join(tmp, "init")
-        procs = [ctx.Process(target = _objective_worker, args = (r, 2, init_file, queue)) for r in range(2)]
+        procs = [
+            ctx.Process(target = _objective_worker, args = (r, 2, init_file, queue)) for r in range(2)
+        ]
         for p in procs:
             p.start()
         results = dict(queue.get(timeout = 180) for _ in procs)
@@ -484,12 +531,19 @@ def test_dpo_and_grpo_objectives_match_without_cp_in_fp64_and_fp32():
 
 
 # Review follow-ups: evaluation entry checks, pre-CP trainers, split batches, the GRPO DAPO token count.
-def _cp_fake_trainer(monkeypatch, kind, log, installs = None):
+def _cp_fake_trainer(
+    monkeypatch,
+    kind,
+    log,
+    installs = None,
+):
     manager = types.SimpleNamespace(size = 2, backend = "ulysses")
     monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
     monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
     monkeypatch.setattr(
-        cp, "_install_accelerator_state", lambda trainer: (installs if installs is not None else []).append(trainer)
+        cp,
+        "_install_accelerator_state",
+        lambda trainer: (installs if installs is not None else []).append(trainer),
     )
     monkeypatch.setattr(cp, "ContextParallelManager", lambda size, backend: manager)
     monkeypatch.setattr(cp, "attach_rl_hooks", lambda m, model: None)
@@ -558,7 +612,9 @@ def test_grpo_refuses_split_batches():
     # split_batches hands each data parallel slice per_device_train_batch_size / D rows, so a slice holds part
     # of a generation group and TRL's gather would group peer copies together.
     trainer = types.SimpleNamespace(
-        args = _args(), _generate = None, eval_dataset = None,
+        args = _args(),
+        _generate = None,
+        eval_dataset = None,
         accelerator = types.SimpleNamespace(split_batches = True),
     )
     with pytest.raises(NotImplementedError, match = "split_batches"):
@@ -572,7 +628,9 @@ def _dapo_count_worker(rank, world, init_file, queue):
     try:
         manager = _manager(rank, world)
         # Forked and discarded: patch the module directly (no monkeypatch fixture in the child).
-        cp._check_cp_runtime = cp._check_cp_trainer = cp._install_accelerator_state = lambda *a: None
+        cp._check_cp_runtime = cp._check_cp_trainer = cp._install_accelerator_state = (
+            lambda *a: None
+        )
         cp.ContextParallelManager = lambda size, backend: manager
         cp.attach_rl_hooks = lambda m, model: None
 
@@ -590,9 +648,35 @@ def _dapo_count_worker(rank, world, init_file, queue):
             # TRL 0.24 / 0.25: prompt_ids, completion_ids, total_completion_tokens, logprobs, extra
             5: (lambda: (["p"], completion_ids, gather(lengths).sum(), None, {}), 2, 8 * world),
             # TRL 0.27 - 1.0: prompt_ids, completion_ids, tool_mask, completions, count, logprobs, extra
-            7: (lambda: (["p"], completion_ids, tool_mask, ["c"], gather(tool_lengths).sum(), None, {}), 4, 4 * world),
+            7: (
+                lambda: (
+                    ["p"],
+                    completion_ids,
+                    tool_mask,
+                    ["c"],
+                    gather(tool_lengths).sum(),
+                    None,
+                    {},
+                ),
+                4,
+                4 * world,
+            ),
             # TRL 1.7 - 1.11: the 7 above plus images, tool_images
-            9: (lambda: (["p"], completion_ids, None, ["c"], gather(lengths).sum(), None, {}, None, None), 4, 8 * world),
+            9: (
+                lambda: (
+                    ["p"],
+                    completion_ids,
+                    None,
+                    ["c"],
+                    gather(lengths).sum(),
+                    None,
+                    {},
+                    None,
+                    None,
+                ),
+                4,
+                8 * world,
+            ),
             # TRL >= 1.9 counts after _generate returns: nothing to fix
             8: (lambda: (["p"], completion_ids, None, ["c"], None, {}, None, None), None, None),
         }
@@ -611,7 +695,6 @@ def _dapo_count_worker(rank, world, init_file, queue):
         queue.put((rank, "ok"))
     except BaseException:  # pragma: no cover - reported to the parent
         import traceback
-
         queue.put((rank, traceback.format_exc()))
     finally:
         dist.destroy_process_group()
@@ -624,7 +707,9 @@ def test_grpo_dapo_token_count_follows_the_adopted_completions():
     queue = ctx.Queue()
     with tempfile.TemporaryDirectory() as tmp:
         init_file = os.path.join(tmp, "init")
-        procs = [ctx.Process(target = _dapo_count_worker, args = (r, 2, init_file, queue)) for r in range(2)]
+        procs = [
+            ctx.Process(target = _dapo_count_worker, args = (r, 2, init_file, queue)) for r in range(2)
+        ]
         for p in procs:
             p.start()
         results = dict(queue.get(timeout = 120) for _ in procs)

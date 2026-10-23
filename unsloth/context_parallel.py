@@ -654,7 +654,12 @@ def _check_cp_runtime(self, size: int, backend: str) -> None:
         )
 
 
-def _check_cp_model(model, size: int, backend: str, allow_hybrids: bool = True) -> None:
+def _check_cp_model(
+    model,
+    size: int,
+    backend: str,
+    allow_hybrids: bool = True,
+) -> None:
     model_config = getattr(model, "config", None)
     unsupported = _unsupported_attention(model_config, backend)
     if unsupported is not None:
@@ -666,8 +671,7 @@ def _check_cp_model(model, size: int, backend: str, allow_hybrids: bool = True) 
         text_config = getattr(model_config, "text_config", None) or model_config
         ulysses_head_plan(
             text_config.num_attention_heads,
-            getattr(text_config, "num_key_value_heads", None)
-            or text_config.num_attention_heads,
+            getattr(text_config, "num_key_value_heads", None) or text_config.num_attention_heads,
             size,
         )
     if _stateful_mixers(model) and not allow_hybrids:
@@ -687,7 +691,13 @@ def _check_cp_model(model, size: int, backend: str, allow_hybrids: bool = True) 
         )
 
 
-def _check_cp_trainer(self, size: int, backend: str, models, allow_fsdp2: bool = False) -> bool:
+def _check_cp_trainer(
+    self,
+    size: int,
+    backend: str,
+    models,
+    allow_fsdp2: bool = False,
+) -> bool:
     """Shared trainer checks; returns whether the trainer runs under FSDP2."""
     import accelerate
     from packaging.version import Version
@@ -713,9 +723,7 @@ def _check_cp_trainer(self, size: int, backend: str, models, allow_fsdp2: bool =
     if fsdp2:
         _check_fsdp2_parallelism_config(accelerator)
     if getattr(accelerator, "dispatch_batches", None):
-        raise NotImplementedError(
-            "Unsloth: context parallelism does not support dispatch_batches."
-        )
+        raise NotImplementedError("Unsloth: context parallelism does not support dispatch_batches.")
     _refuse_iterable_datasets(
         getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None)
     )
@@ -989,7 +997,6 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         install_methods()
 
 
-
 # DPO / GRPO: the loss reads per-token logps of whole sequences (sums over completions, group masks),
 # so only the decoder is sharded; its last hidden states are gathered back to full length before lm_head.
 class _GatherSequence(torch.autograd.Function):
@@ -1073,8 +1080,7 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
     if layers is not None:
         # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
         output["hidden_states"] = tuple(
-            hidden if layer is last else _full(layer)
-            for layer in layers
+            hidden if layer is last else _full(layer) for layer in layers
         )
     return output
 
@@ -1118,7 +1124,11 @@ def _manager_scope(manager) -> Iterator[None]:
         _activate(previous)
 
 
-def _map_leaves(obj, fn, leaf = torch.Tensor):
+def _map_leaves(
+    obj,
+    fn,
+    leaf = torch.Tensor,
+):
     if isinstance(obj, leaf):
         return fn(obj)
     if isinstance(obj, (list, tuple)):
@@ -1169,7 +1179,9 @@ def _check_same_prompts(prompts, manager) -> None:
 
 
 def _grpo_eval_groups_fit(args) -> bool:
-    generations = getattr(args, "num_generations_eval", None) or getattr(args, "num_generations", None) or 1
+    generations = (
+        getattr(args, "num_generations_eval", None) or getattr(args, "num_generations", None) or 1
+    )
     return args.per_device_eval_batch_size % generations == 0
 
 
@@ -1232,7 +1244,9 @@ def _check_rl_config(self, kind: str) -> None:
     if getattr(getattr(self, "accelerator", None), "split_batches", False):
         # Each data parallel slice would get per_device_train_batch_size / D rows, part of a generation
         # group, and TRL's reward gather would then group peer copies together.
-        raise NotImplementedError("Unsloth: GRPO context parallelism does not support split_batches.")
+        raise NotImplementedError(
+            "Unsloth: GRPO context parallelism does not support split_batches."
+        )
     num_generations = getattr(args, "num_generations", None) or 1
     steps = getattr(args, "steps_per_generation", None) or args.gradient_accumulation_steps
     local = args.per_device_train_batch_size * steps

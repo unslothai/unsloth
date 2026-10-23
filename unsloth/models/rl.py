@@ -3431,7 +3431,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n        self.context_parallel_backend = context_parallel_backend"
             "\n        self.context_parallel_rotate_method = context_parallel_rotate_method"
         )
-    elif trainer_file in ("dpo_trainer", "grpo_trainer") and "context_parallel_size" not in call_args:
+    elif (
+        trainer_file in ("dpo_trainer", "grpo_trainer") and "context_parallel_size" not in call_args
+    ):
         max_seq_length_pre += """
     context_parallel_size : Optional[int] = field(
         default = 1,
@@ -4032,7 +4034,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if trainer_file in ("dpo_trainer", "grpo_trainer"):
         try:
             from ..context_parallel import patch_rl_trainer
-
             patch_rl_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"), trainer_file)
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
