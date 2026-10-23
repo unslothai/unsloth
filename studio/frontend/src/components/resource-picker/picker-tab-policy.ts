@@ -75,7 +75,9 @@ export function resolvePickerTab({
       : online
         ? PICKER_TAB.hub
         : PICKER_TAB.device;
-  return lockedInferredTab ?? inferredTab;
+  return hasExplicitTabPreference
+    ? selectedTab
+    : (lockedInferredTab ?? inferredTab);
 }
 
 export function resolveInferredPickerTabLock(
