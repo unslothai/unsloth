@@ -37,6 +37,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
+  BotIcon,
   Copy01Icon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
@@ -1113,6 +1114,8 @@ export function UsageExamples({
             }}
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
+            {/* The Agents tab's own sidebar icon. */}
+            <HugeiconsIcon icon={BotIcon} className="size-3.5" />
             {t("settings.apiKeys.openAgentsTab")}
             <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
           </button>
@@ -1143,7 +1146,11 @@ export function UsageExamples({
                     </span>
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start">
+                {/* Seven 36px rows, as on the Agents tab; the rest scroll. */}
+                <SelectContent
+                  align="start"
+                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                >
                   {availableAgents.map((id) => {
                     const details = detailsFor(id);
                     return (
@@ -1163,29 +1170,26 @@ export function UsageExamples({
                 </SelectContent>
               </Select>
             </div>
-            <div className="relative min-w-0 @[34rem]:col-span-2">
-              <code
-                className="flex min-h-9 min-w-0 items-center whitespace-pre-wrap break-all rounded-lg border border-border bg-background/70 py-2 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
-                data-reload-snapshot-sensitive={apiKey ? "" : undefined}
-              >
-                {agentCommand}
-              </code>
-              <button
-                type="button"
-                onClick={handleCopyAgent}
-                className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label={t("settings.apiKeys.copySnippet")}
-              >
-                <HugeiconsIcon
-                  icon={copiedAgent ? Tick02Icon : Copy01Icon}
-                  className={cn(
-                    "size-3.5",
-                    copiedAgent && "text-control-accent",
-                  )}
-                />
-              </button>
-            </div>
           </div>
+        </div>
+        <div className="relative min-w-0">
+          <code
+            className="block min-w-0 whitespace-pre-wrap break-all rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+            data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+          >
+            {agentCommand}
+          </code>
+          <button
+            type="button"
+            onClick={handleCopyAgent}
+            className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label={t("settings.apiKeys.copySnippet")}
+          >
+            <HugeiconsIcon
+              icon={copiedAgent ? Tick02Icon : Copy01Icon}
+              className={cn("size-3.5", copiedAgent && "text-control-accent")}
+            />
+          </button>
         </div>
         {agent === "vscode" && (
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
