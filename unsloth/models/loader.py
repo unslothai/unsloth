@@ -833,6 +833,18 @@ def _resolve_audio_auto_model(
     return None
 
 
+def _resolve_non_vlm_auto_model(model_config, **hub_kwargs):
+    """CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
+    (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names."""
+    causal_maps = resolve_model_class(AutoModelForCausalLM, model_config, **hub_kwargs) is not None
+    return (
+        _resolve_audio_auto_model(model_config, include_bare = not causal_maps, **hub_kwargs)
+        # moonshine-streaming's repo config names no architectures; only its speech seq2seq class builds it.
+        or (None if causal_maps else _resolve_speech_seq2seq_auto_model(model_config, **hub_kwargs))
+        or AutoModelForCausalLM
+    )
+
+
 def _get_user_task_config_attrs(user_config):
     if user_config is None:
         return {}
@@ -3221,20 +3233,7 @@ class FastModel(FastBaseModel):
                             or auto_model
                         )
             else:
-                auto_model = AutoModelForCausalLM
-                # CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
-                # (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names.
-                auto_model = (
-                    _resolve_audio_auto_model(
-                        model_config,
-                        include_bare = resolve_model_class(
-                            auto_model, model_config, **_probe_hub_kwargs
-                        )
-                        is None,
-                        **_probe_hub_kwargs,
-                    )
-                    or auto_model
-                )
+                auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
