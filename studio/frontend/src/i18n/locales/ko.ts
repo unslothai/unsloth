@@ -3119,8 +3119,6 @@ export const ko = {
       codingAgentsHint:
         "이 서버에 연결된 코딩 에이전트를 실행합니다. 로드된 모델을 사용하며, 로컬 서버에서는 API 키를 자동으로 발급하고 원격 서버에서는 명령에 API 키를 포함합니다.",
       openAgentsTab: "에이전트에서 열기",
-      exampleExpand: "더 보기",
-      exampleCollapse: "간단히 보기",
       codingAgentsSwap: "claude를 codex, openclaw, opencode 또는 hermes로 바꾸세요.",
       relativeNever: "없음",
       relativeJustNow: "방금",
