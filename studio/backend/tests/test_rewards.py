@@ -455,3 +455,26 @@ def test_rules_that_score_the_whole_reply_refuse_an_extraction_step():
     }
     with pytest.raises(rewards.RewardError, match = "length rules take no extract"):
         rewards.validate_rule(rule)
+
+
+def test_fullmatch_regex_keeps_boundary_whitespace_a_pattern_requires():
+    from core.training.rewards import score_rule, validate_rule
+
+    rule = validate_rule(
+        {
+            "type": "regex",
+            "pattern": "<answer>\\n[0-9]+\\n</answer>\\n",
+            "mode": "fullmatch",
+            "score": {"match": 1.0, "miss": 0.0},
+        }
+    )
+    assert score_rule(rule, "<answer>\n4\n</answer>\n") == 1.0
+    loose = validate_rule(
+        {
+            "type": "regex",
+            "pattern": "[0-9]+",
+            "mode": "fullmatch",
+            "score": {"match": 1.0, "miss": 0.0},
+        }
+    )
+    assert score_rule(loose, "  4\n") == 1.0  # stray padding still tolerated

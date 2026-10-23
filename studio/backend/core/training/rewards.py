@@ -567,9 +567,13 @@ def score_rule(
                     pattern = rule["pattern"],
                     mode = rule["mode"],
                 )
-        checked = text.strip() if rule["mode"] == "fullmatch" else text
+        checked = text
         if rule["mode"] == "fullmatch":
-            hit = _match(rule["pattern"], checked, fullmatch = True, explanation = explanation)
+            # Stripped as a fallback only: a pattern may require boundary whitespace itself.
+            hit = _match(rule["pattern"], text, fullmatch = True, explanation = explanation)
+            if not hit and text != text.strip():
+                checked = text.strip()
+                hit = _match(rule["pattern"], checked, fullmatch = True, explanation = explanation)
         else:
             hit = _match(rule["pattern"], checked, explanation = explanation)
         return finish(
