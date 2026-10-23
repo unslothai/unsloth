@@ -235,6 +235,13 @@ def compare(
     _require(table, key + [metric] + extra, "Compare")
     if baseline is not None:
         _require(baseline, key + [metric] + extra, "Compare baseline")
+        units = [
+            {c["id"]: c.get("unit") for c in t["columns"]}.get(metric) for t in (table, baseline)
+        ]
+        if all(units) and units[0] != units[1]:
+            raise FlowNodeError(
+                f"{metric!r} is in {units[0]} here but {units[1]} in the baseline; convert one before comparing"
+            )
         differ = _settings_mismatch(table, baseline)
         if differ and not allow_mismatch:
             raise FlowNodeError(
@@ -261,6 +268,11 @@ def compare(
         match = [r for r in table["rows"] if [str(r.get(k)) for k in key] == wanted]
         if not match:
             raise FlowNodeError(f"No row has {', '.join(key)} = {baseline_key!r}")
+        if len(match) > 1:
+            raise FlowNodeError(
+                f"{len(match)} rows have {', '.join(key)} = {baseline_key!r}; "
+                "add key columns until the baseline row is unique"
+            )
         anchor = match[0]
 
         def base_of(row: dict) -> Optional[dict]:
@@ -350,7 +362,13 @@ def chart(
         for row in table["rows"]:
             if group and row.get(group) != gval:
                 continue
-            points.setdefault(row.get(x), row)
+            if row.get(x) in points:
+                where = f" in series {name!r}" if group else ""
+                raise FlowNodeError(
+                    f"More than one row has {x} = {row.get(x)!r}{where}; "
+                    "average repeats with Aggregate first, or add a series column"
+                )
+            points[row.get(x)] = row
         values = [_number(points[v].get(column)) if v in points else None for v in xs]
         entry: dict[str, Any] = {"name": name, "y": values}
         if error:

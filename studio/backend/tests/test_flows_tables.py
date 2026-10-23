@@ -248,3 +248,36 @@ async def test_a_big_tables_preview_fits_the_inline_budget():
     out = await T.finish_table(ctx, wide)
     assert out["row_count"] == 300 and out["ref"]
     assert len(json.dumps(out).encode()) <= T.INLINE_MAX_BYTES
+
+
+def _t(rows, units = None):
+    t = T.make_table(rows)
+    for c in t["columns"]:
+        if units and c["id"] in units:
+            c["unit"] = units[c["id"]]
+    return t
+
+
+def test_compare_refuses_a_baseline_in_other_units():
+    a = _t([{"model": "x", "lat": 120}], {"lat": "ms"})
+    b = _t([{"model": "x", "lat": 0.1}], {"lat": "s"})
+    with pytest.raises(FlowNodeError, match = "ms here but s"):
+        T.compare(a, b, ["model"], "lat")
+
+
+def test_compare_refuses_an_ambiguous_baseline_row():
+    t = _t(
+        [
+            {"quant": "q4", "ctx": 1, "tps": 10},
+            {"quant": "q4", "ctx": 2, "tps": 8},
+            {"quant": "q8", "ctx": 1, "tps": 9},
+        ]
+    )
+    with pytest.raises(FlowNodeError, match = "2 rows have"):
+        T.compare(t, None, ["quant"], "tps", baseline_key = "q4")
+
+
+def test_chart_refuses_repeated_x_instead_of_dropping_trials():
+    t = _t([{"ctx": 1, "tps": 10}, {"ctx": 1, "tps": 12}, {"ctx": 2, "tps": 8}])
+    with pytest.raises(FlowNodeError, match = "Aggregate"):
+        T.chart(t, "ctx", ["tps"], kind = "line", group = None, error = None)

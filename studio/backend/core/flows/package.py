@@ -303,7 +303,7 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
                     # A large table, heatmap or tensor travels as plain JSON data, never code.
                     try:
                         json.loads(blob)
-                    except ValueError:
+                    except (ValueError, RecursionError):
                         raise PackageError(f"{info.filename} is not valid JSON") from None
                     mime = "application/json"
                 if mime is None or asset_store.MIME_EXT.get(mime) != ext:

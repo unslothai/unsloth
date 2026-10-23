@@ -180,3 +180,13 @@ test("lookalike JSON with the wrong element shapes keeps the JSON view", () => {
     "chart",
   );
 });
+
+test("line charts over numbers use a numeric x axis; bars and text stay categorical", () => {
+  assert.equal(
+    kinds.numericChartX({ type: "line", x: [1024, 2048, 32768] }),
+    true,
+  );
+  assert.equal(kinds.numericChartX({ type: "bar", x: [1, 2, 3] }), false);
+  assert.equal(kinds.numericChartX({ type: "line", x: ["q4", "q8"] }), false);
+  assert.equal(kinds.numericChartX({ type: "line", x: [] }), false);
+});

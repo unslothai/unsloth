@@ -29,6 +29,7 @@ import {
   columnLabel,
   formatCell,
   heatColor,
+  numericChartX,
   numericStats,
   sortRows,
   tableRows,
@@ -171,17 +172,20 @@ export function ChartViewer({
   value,
 }: { value: StructuredValue }): ReactElement | null {
   const chart = value as ChartValue;
+  const numericX = numericChartX(chart);
   const data = useMemo(
     () =>
       chart.x.map((x, i) => {
-        const point: Record<string, unknown> = { x: formatCell(x) };
+        const point: Record<string, unknown> = {
+          x: numericX ? x : formatCell(x),
+        };
         chart.series.forEach((s, j) => {
           point[`s${j}`] = s.y[i];
           if (s.error) point[`e${j}`] = s.error[i];
         });
         return point;
       }),
-    [chart],
+    [chart, numericX],
   );
   const yLabel = chart.y_label
     ? `${chart.y_label}${chart.unit ? ` (${chart.unit})` : ""}`
@@ -191,6 +195,13 @@ export function ChartViewer({
     <XAxis
       key="x"
       dataKey="x"
+      {...(numericX
+        ? {
+            type: "number" as const,
+            domain: ["dataMin", "dataMax"],
+            tickFormatter: (v: unknown) => formatCell(v),
+          }
+        : {})}
       tick={{ fill: "#a1a1aa", fontSize: 11 }}
       label={
         chart.x_label

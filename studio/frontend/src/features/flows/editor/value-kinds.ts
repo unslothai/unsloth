@@ -287,3 +287,12 @@ export function heatColor(
   const b = Math.round(60 + 60 * (1 - t));
   return `rgb(${r},${g},${b})`;
 }
+
+/** A line over numbers (context sizes, steps) is spaced by value, not drawn as evenly spaced labels. */
+export function numericChartX(chart: Pick<ChartValue, "type" | "x">): boolean {
+  return (
+    chart.type === "line" &&
+    chart.x.length > 0 &&
+    chart.x.every((x) => typeof x === "number" && Number.isFinite(x))
+  );
+}
