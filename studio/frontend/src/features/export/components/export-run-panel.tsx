@@ -490,7 +490,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       )}
 
       {/* Summary */}
-      <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
+      <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
         <div className="flex justify-between">
           <span>Base Model</span>
           <span className="font-medium text-foreground">

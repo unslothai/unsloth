@@ -28,7 +28,7 @@ import { screenshotPage } from "./capture";
 import { type AnnotateEvent, type AnnotateRect, MAX_MARKS } from "./frame-message";
 import { startNativeAnnotate } from "./native-annotate";
 import { focusPanel, nativeViewBounds } from "./native-view";
-import { type FrameCommand, frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
+import { type FrameCommand, frameRect, frameScale, onFrameAnnotate, sendFrameCommand } from "./page-frame";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { useBrowserStore } from "./store";
 
@@ -963,7 +963,7 @@ function AnnotateBar({
       data-annotate-chrome=""
       data-native-inset={besidePage ? "" : undefined}
       className={cn(
-        "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl pr-1.5 pl-2.5 text-ui-15",
+        "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-full pr-1.5 pl-2.5 text-ui-15",
         SURFACE,
       )}
       style={{
@@ -988,7 +988,7 @@ function AnnotateBar({
       <button
         type="button"
         onClick={onExit}
-        className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
+        className="h-9 cursor-pointer whitespace-nowrap rounded-full px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
       >
         {t("browser.annotate.cancel")}
       </button>
@@ -997,7 +997,7 @@ function AnnotateBar({
           type="button"
           onClick={onSend}
           disabled={sendDisabled}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-xl bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          className="h-9 cursor-pointer whitespace-nowrap rounded-full bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
         >
           {t("browser.annotate.send")}
         </button>
@@ -1032,7 +1032,7 @@ export function WebAnnotateLayer({
   url,
   page,
   native = false,
-}: { tabId: string; title: string; url: string; page: HTMLElement | null; native?: boolean }) {
+}: { tabId: string; title: string; url?: string; page: HTMLElement | null; native?: boolean }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -1101,7 +1101,7 @@ export function WebAnnotateLayer({
     setDraft("");
     const files = await annotationScreenshot(page);
     const sent = await sendAnnotations(
-      { file: title || url, url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      { file: title || url || "", url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
       files,
     ).finally(() => setSending(false));
     if (sent) exit();
@@ -1228,7 +1228,7 @@ export function WebAnnotateLayer({
   // Native views report CSS pixels; scale by their zoom.
   const bounds = native ? nativeViewBounds(tabId) : null;
   const frame = bounds ? { left: bounds.x, top: bounds.y } : (frameRect(tabId) ?? origin);
-  const scale = bounds ? zoom : 1;
+  const scale = bounds ? zoom : frameScale(tabId);
   const rect = pending ? rects.get(pending.id) : null;
   const pendingBox: Box | null = rect
     ? {

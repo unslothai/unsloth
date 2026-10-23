@@ -137,7 +137,7 @@ function Row({
   return (
     <div
       className={cn(
-        "group/library-row relative flex items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/library-row relative flex items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
         selected && "bg-muted dark:bg-muted/60",
       )}
@@ -156,7 +156,7 @@ function Row({
         type="button"
         aria-pressed={selecting ? selected : undefined}
         onClick={(event) => (selecting ? onToggle(event.shiftKey) : onOpen())}
-        className="flex min-w-0 flex-1 items-center gap-4 rounded-lg py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-w-0 flex-1 items-center gap-4 rounded-md py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {tile}
         <span className="flex min-w-0 items-center gap-2 text-ui-14 text-foreground">{name}</span>
@@ -261,7 +261,7 @@ export function LibraryList({
             onToggle={(range) => onToggle(`folder:${folder.id}`, range)}
             onOpen={() => actions.openFolder(folder.id)}
             tile={
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60">
                 <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-5" />
               </div>
             }

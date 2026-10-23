@@ -927,7 +927,7 @@ function ResolvedBadge({
   const badge = (
     <span
       className={cn(
-        "shrink-0 rounded-sm px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
+        "shrink-0 rounded-full px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
         info.tone === "warn"
           ? "bg-destructive/15 text-destructive"
           : "bg-muted text-muted-foreground",
@@ -1185,7 +1185,7 @@ function MaskCanvas({
   };
 
   return (
-    <div className="relative overflow-hidden rounded-[10px] border border-border bg-muted/30">
+    <div className="relative overflow-hidden rounded-lg border border-border bg-muted/30">
       <img
         src={image}
         alt="Inpaint source"
@@ -1509,7 +1509,7 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-ui-11">
+    <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
         Loaded build
         <InfoHint>
@@ -6469,7 +6469,7 @@ export function ImagesPage({
                           className={cn(
                             // No border in either mode: the fill alone marks the state, and a ring would not survive
                             // mouse focus anyway (index.css blanks it).
-                            "rounded-lg px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            "rounded-full px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
                               ? "bg-wash-15 text-foreground hover:bg-wash-20 dark:bg-wash-25 dark:hover:bg-wash-30"
                               : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
@@ -6815,7 +6815,7 @@ export function ImagesPage({
               />
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
                 <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
@@ -6823,7 +6823,7 @@ export function ImagesPage({
               </div>
             )}
             {!external && !loraCapable && offersCompiledLoraReload(status) && (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>Speed compiled this model after a few images, so LoRAs are off. Reload it to add LoRAs.</span>
                 {(canReapply || residentReloadTarget(status) !== null) && (
                   <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
@@ -7312,7 +7312,7 @@ export function ImagesPage({
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   <Button
                     size="icon-sm"
                     variant="ghost"
@@ -7388,7 +7388,7 @@ export function ImagesPage({
                     className="size-full object-contain"
                   />
                 )}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   {srcErrors[selected.id] ? (
                     <>
                       <span role="alert" className="sr-only">Full-resolution download failed.</span>
@@ -7500,7 +7500,7 @@ export function ImagesPage({
                   <button
                     type="button"
                     onClick={() => setSelectedId(image.id)}
-                    className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                    className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {(thumbById[image.id] ?? srcById[image.id]) ? (
                       <img
@@ -7516,7 +7516,7 @@ export function ImagesPage({
                     )}
                     {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
                     {image.id === selected?.id && (
-                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+                      <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                     )}
                   </button>
                   {/* Pin marker and Unpin button, bottom-left so it clears the menu. */}

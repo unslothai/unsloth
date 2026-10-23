@@ -21,7 +21,7 @@ const highlightedCode = USAGE.slice(
 );
 
 test("command boxes wrap long commands instead of scrolling under the copy button", () => {
-  const pre = commandBlock.match(/<pre className="([^"]+)"/)?.[1] ?? "";
+  const pre = commandBlock.match(/<pre\s[^>]*?className="([^"]+)"/)?.[1] ?? "";
   const code = commandBlock.match(/<code className="([^"]+)"/)?.[1] ?? "";
   assert.doesNotMatch(pre, /overflow-x-auto/);
   assert.match(pre, /\bpr-11\b/);
@@ -42,6 +42,12 @@ test("long API examples are capped and scroll inside a keyboard-reachable region
     highlightedCode,
     /aria-label=\{label\}[\s\S]*data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
   );
+  // wrapped lines broke mid-token and ran back to the line-number gutter
+  const cls =
+    highlightedCode.match(/<section[\s\S]*?className="([^"]+)"/)?.[1] ?? "";
+  assert.match(cls, /\[&_pre\]:!whitespace-pre(?!-)/);
+  assert.doesNotMatch(cls, /break-words|break-all|whitespace-pre-wrap/);
+  assert.match(cls, /\[&_\[data-streamdown=code-block\]\]:!min-w-max\b/);
   for (const caller of [USAGE, AUDIO]) {
     assert.match(
       caller,

@@ -78,7 +78,7 @@ function ScriptPreview({ code, onRead }: { code: string; onRead: () => void }) {
     <pre
       ref={check}
       onScroll={(event) => check(event.currentTarget)}
-      className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1 font-mono text-ui-11 text-foreground"
+      className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted px-2 py-1 font-mono text-ui-11 text-foreground"
     >
       {code}
     </pre>

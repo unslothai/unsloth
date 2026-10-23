@@ -179,7 +179,7 @@ export function ImageDropzone({
     return (
       <div
         data-reload-snapshot-sensitive
-        className={cn("relative overflow-hidden rounded-[10px] border border-border", className)}
+        className={cn("relative overflow-hidden rounded-lg border border-border", className)}
       >
         {/* Checkerboard behind the preview, so a transparent upload shows its alpha. */}
         <img
