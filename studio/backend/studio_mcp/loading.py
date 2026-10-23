@@ -1077,8 +1077,7 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
             if replacements:
                 # Only a newer load never shown ready may be the one in flight; else it is this job's.
                 if (
-                    in_flight
-                    and any(g not in _MEDIA_READY.get(a, ()) for a, g in replacements)
+                    in_flight and any(g not in _MEDIA_READY.get(a, ()) for a, g in replacements)
                 ) or any(
                     _resident_matches(status, *_MEDIA_REGISTERED[a][g]) for a, g in replacements
                 ):
