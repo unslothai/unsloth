@@ -7,12 +7,14 @@ import ts from "@typescript/typescript6";
 import {
   componentFieldsOwnerAfterLoad,
   componentFilesForModel,
+  forgetStaleImageComponents,
   readImageComponents,
   readImageModel,
   recalledComponentFiles,
   rememberImageComponents,
   rememberImageModel,
   sameComponentFiles,
+  seedImageComponents,
 } from "../src/features/images/image-model-recall.ts";
 import { splitComponentFileList } from "../src/features/images/component-files.ts";
 import { reapplyTarget } from "../src/features/images/lib/engine-choice.ts";
@@ -277,7 +279,6 @@ test("a recalled model's files come from the per-model map, the last-model slot 
   // The recalled load pins the map's files, so its success does not erase the entry the native load left.
   assert.match(pinnedFiles, /const recalled = recalledComponentFiles\(rememberedModel\);/);
   assert.match(pinnedFiles, /text_encoder_file: recalled\.textEncoderFiles,\s*vae_file: recalled\.vaeFile,/);
-  assert.match(source, /useState<ImageComponentFiles>\(\(\) =>\s*rememberedModel \? recalledComponentFiles\(rememberedModel\) : \{\},/);
 });
 
 test("a finished load owns the fields only while they show its files", () => {
@@ -299,4 +300,50 @@ test("a Load anyway retry keeps the requested files, which a native load strips 
   const retry = source.slice(start, source.indexOf("lastLoadAttempt.current = {", start));
   // The retry re-runs the same pick: nativeLoadAdvanced strips the same fields again, and fieldFiles stays intact.
   assert.match(retry, /retryLoadRef\.current\?\.\(repoId, opts, \{ \.\.\.picked, allow_oversized_load: true \}\)/);
+});
+
+test("an upgrade seeds the map from the last-model slot, so picking that model keeps its paths", () => {
+  store.clear();
+  // An older build left the paths in the slot only.
+  rememberImageModel({ ...zImage, ...zFiles });
+  const remembered = readImageModel()!;
+  const initial = seedImageComponents(remembered);
+  assert.deepEqual(initial, zFiles);
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  // Untouched fields (they show the seeded files) re-picked on the same model keep them; another model clears them.
+  assert.deepEqual(componentFilesForModel(zFiles, initial, zImage), { files: zFiles, replaced: true });
+  assert.deepEqual(componentFilesForModel(zFiles, initial, flux), { files: {}, replaced: true });
+  // An existing entry wins over the slot and is not rewritten.
+  rememberImageComponents(zImage, { vaeFile: "newer.safetensors" });
+  assert.deepEqual(seedImageComponents(remembered), { vaeFile: "newer.safetensors" });
+  assert.deepEqual(readImageComponents(zImage), { vaeFile: "newer.safetensors" });
+  // A slot with no paths seeds nothing.
+  store.clear();
+  assert.deepEqual(seedImageComponents({ ...flux }), {});
+  assert.equal(store.get("unsloth:images:component-files"), undefined);
+
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /useState<ImageComponentFiles>\(\(\) =>\s*rememberedModel \? seedImageComponents\(rememberedModel\) : \{\},/);
+});
+
+test("a resident build with other components than the map's forgets the entry; a matching one keeps it", () => {
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  rememberImageComponents(flux, { vaeFile: "../vae/flux_ae.safetensors" });
+  // A native build never takes supplied files, so its empty component_files say nothing about the entry.
+  forgetStaleImageComponents(zImage, { engine: "sd_cpp", component_files: null });
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  // Another client reloaded Z-Image without the overrides: its saved paths are stale.
+  forgetStaleImageComponents(zImage, { engine: "diffusers", component_files: {} });
+  assert.equal(readImageComponents(zImage), null);
+  // The resident build uses exactly the saved files (status names basenames): the entry stays.
+  forgetStaleImageComponents(flux, { component_files: { vae: "flux_ae.safetensors" } });
+  assert.deepEqual(readImageComponents(flux), { vaeFile: "../vae/flux_ae.safetensors" });
+  // Different components: forgotten.
+  forgetStaleImageComponents(flux, { component_files: { vae: "other.safetensors" } });
+  assert.equal(readImageComponents(flux), null);
+
+  const source = readSrc("features/images/images-page.tsx");
+  const recall = source.slice(source.indexOf("const handleGenerateWithRecall = useCallback"));
+  assert.ok(recall.slice(0, recall.indexOf("if (!rememberedModel || !prompt.trim())")).includes("forgetStaleImageComponents(model, status);"));
 });

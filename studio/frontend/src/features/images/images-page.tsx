@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, recalledComponentFiles, rememberImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, recalledComponentFiles, rememberImageComponents, seedImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -1894,7 +1894,7 @@ export function ImagesPage({
   // The fields start on the remembered model's files, and componentFieldsOwner holds what was filled in or loaded
   // last: fields that still match it are not the user's edit, so a pick may replace them.
   const [initialComponents] = useState<ImageComponentFiles>(() =>
-    rememberedModel ? recalledComponentFiles(rememberedModel) : {},
+    rememberedModel ? seedImageComponents(rememberedModel) : {},
   );
   const componentFieldsOwner = useRef(initialComponents);
   const [textEncoderFiles, setTextEncoderFiles] = useState((initialComponents.textEncoderFiles ?? []).join("\n"));
@@ -5750,6 +5750,8 @@ export function ImagesPage({
               : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
           status,
         );
+        // The resident build is the record now: saved paths it does not use would come back on the next recall.
+        forgetStaleImageComponents(model, status);
         rememberImageModel(model);
         setRememberedModel(model);
       }

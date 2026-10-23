@@ -167,6 +167,28 @@ export function recalledComponentFiles(model: RememberedImageModel): ImageCompon
   return readImageComponents(model) ?? cleanComponentFiles(model);
 }
 
+/** The remembered model's files on page open, copying the last-model slot's into the map when it has no entry (an
+ *  older build kept them only there), so a pick of that model with the fields untouched keeps them. */
+export function seedImageComponents(model: RememberedImageModel): ImageComponentFiles {
+  const saved = readImageComponents(model);
+  if (saved) return saved;
+  const slot = cleanComponentFiles(model);
+  if (slot.textEncoderFiles || slot.vaeFile) rememberImageComponents(model, slot);
+  return slot;
+}
+
+/** Forget a model's saved files when its resident build (status ``component_files``, basenames) uses others, e.g. a
+ *  reload by another client without them, so a later recall or pick does not bring back what no longer engages. A
+ *  native (sd_cpp) build never takes supplied files, so there the entry records the request and stays. */
+export function forgetStaleImageComponents(
+  model: ImageModelKey,
+  status: { engine?: string | null; component_files?: Record<string, string> | null },
+): void {
+  if (status.engine === "sd_cpp") return;
+  const saved = readImageComponents(model);
+  if (saved && !componentFilesMatch(saved, status.component_files)) rememberImageComponents(model, {});
+}
+
 /** Who owns the fields after a load finished: that load, only while they show its files. A load that never touched
  *  them (an adapter deploy, a recalled generation) leaves them with the model that filled them. */
 export function componentFieldsOwnerAfterLoad(
