@@ -190,12 +190,64 @@ def _scale_mul(x, s, dtype):
     # fp16 out= makes TensorIterator compute in fp32 per element without fp32 temporaries. Dynamo
     # refuses a strided out=; under compile Inductor fuses the fp32 expression instead (same bits).
     # Other dtypes keep their dtype-native expression.
+    if _scale_dequant_one_pass_ok(x, s, dtype):
+        return _scale_dequant_one_pass(x, s, dtype)
     if dtype != torch.float16:
         return x.to(dtype) * s.to(dtype)
     if torch.compiler.is_compiling():
         return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
     x16 = x.to(dtype)
     return torch.mul(x16, s.to(torch.float32), out = torch.empty_like(x16))
+
+
+# At or below 4M elements the launch dominates on A100 and newer, and torch's two passes are no slower.
+_SCALE_DEQUANT_MIN_NUMEL = 1 << 22
+
+
+def _scale_dequant_one_pass_ok(x, s, dtype):
+    # Eager NVIDIA e4m3fn only; compiled regions already fuse the torch expression.
+    return (
+        x.numel() > _SCALE_DEQUANT_MIN_NUMEL
+        and x.is_cuda
+        and torch.version.hip is None
+        and x.dtype == torch.float8_e4m3fn
+        and dtype in (torch.float16, torch.bfloat16, torch.float32)
+        and x.dim() == 2
+        and s.device == x.device
+        and s.dtype in (torch.float32, torch.bfloat16, torch.float16)
+        and not (torch.is_grad_enabled() and (x.requires_grad or s.requires_grad))
+        # The kernel indexes dense rows, so a transposed view must be a dense transpose.
+        and (x.is_contiguous() or (_is_transposed_view(x) and x.t().is_contiguous()))
+        and not torch.compiler.is_compiling()
+    )
+
+
+def _scale_dequant_one_pass(x, s, dtype):
+    transposed = _is_transposed_view(x)
+    if transposed:
+        x = x.t()
+    m, n = x.shape
+    out = torch.empty((m, n), dtype = dtype, device = x.device)
+    if out.numel() == 0:
+        return out.t() if transposed else out
+    xb = x.view(torch.uint8)
+    BLOCK_M, BLOCK_N, num_warps = _SCALE_DEQUANT_TILE
+    with _fp8_triton_device_context(x):
+        _e4m3fn_scale_dequant_kernel[(triton.cdiv(m, BLOCK_M), triton.cdiv(n, BLOCK_N))](
+            xb,
+            s,
+            out,
+            m,
+            n,
+            0 if s.numel() == 1 else s.stride(0),
+            BLOCK_M = BLOCK_M,
+            BLOCK_N = BLOCK_N,
+            SCALE_ON_COLS = transposed,
+            ROUND_SCALE = dtype != torch.float16,
+            LONG_INDEXING = long_indexing(xb, out, block = BLOCK_M * n),
+            num_warps = num_warps,
+        )
+    return out.t() if transposed else out
 
 
 def weight_dequant(
@@ -1252,6 +1304,46 @@ def _e4m3fn_bytes_dequant_kernel(
 
 # (rows, cols, num_warps) per program, from a tile sweep on T4 and A100.
 _BYTES_DEQUANT_TILE = (8, 512, 4)
+
+
+@triton.jit
+def _e4m3fn_scale_dequant_kernel(
+    x_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    stride_s,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    SCALE_ON_COLS: tl.constexpr,
+    ROUND_SCALE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+):
+    # Scale per tensor (stride_s 0), row or column. ROUND_SCALE mirrors x.to(dtype) * s.to(dtype) (fp16 keeps
+    # the fp32 scale); e4m3 times a bf16 scale is exact in fp32, so one rounding gives torch's bits.
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    if LONG_INDEXING:
+        pid_m = pid_m.to(tl.int64)
+        pid_n = pid_n.to(tl.int64)
+    r = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    c = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = (r[:, None] < M) & (c[None, :] < N)
+    offs = r[:, None] * N + c[None, :]
+    x = _e4m3fn_byte_to_float(tl.load(x_ptr + offs, mask = mask, other = 0).to(tl.int32))
+    if SCALE_ON_COLS:
+        s = tl.load(s_ptr + c * stride_s, mask = c < N, other = 0.0)
+    else:
+        s = tl.load(s_ptr + r * stride_s, mask = r < M, other = 0.0)
+    if ROUND_SCALE:
+        s = s.to(y_ptr.dtype.element_ty)
+    s = s.to(tl.float32)
+    y = x * (s[None, :] if SCALE_ON_COLS else s[:, None])
+    tl.store(y_ptr + offs, y.to(y_ptr.dtype.element_ty), mask = mask)
+
+
+_SCALE_DEQUANT_TILE = (16, 256, 4)
 
 
 @_opaque_under_compile(

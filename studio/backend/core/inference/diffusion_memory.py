@@ -3127,6 +3127,8 @@ def stream_window_pad_mib(pipe: Any) -> Optional[int]:
     for name, module in (getattr(pipe, "components", {}) or {}).items():
         if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
             continue
+        if module is None:
+            continue  # an empty slot (Wan2.2-TI2V-5B and Wan2.1 register transformer_2 = None)
         state = _streaming_state(module)
         if state is None:
             return None
@@ -3158,6 +3160,8 @@ def _streamed_group_window_mib(pipe: Any) -> int:
         largest = 0
         for name, module in (getattr(pipe, "components", {}) or {}).items():
             if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            if module is None:
                 continue
             for group in _offload_groups(module):
                 if getattr(group, "_unsloth_resident", False):
