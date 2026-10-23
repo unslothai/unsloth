@@ -12,8 +12,20 @@ _TOKEN_COLUMNS = (
     "completion_mask",
     "assistant_masks",
 )
-# Per-token targets TRL applies to the labels: a length other than input_ids' fails mid-training.
-_LOSS_COLUMNS = ("labels", "completion_mask", "assistant_masks")
+# Per-token masks TRL applies to the labels when a row has none of its own: a missing value or a
+# length other than input_ids' fails mid-training.
+_MASK_COLUMNS = ("completion_mask", "assistant_masks")
+
+
+def _checked_masks(columns) -> tuple:
+    # User labels are the whole objective: the masks are then unused and not checked.
+    return () if "labels" in columns else tuple(c for c in _MASK_COLUMNS if c in columns)
+
+
+def _mask_error(name):
+    return ValueError(
+        f"Pre-tokenized dataset: '{name}' must have the same length as 'input_ids' in every row."
+    )
 _SAMPLE_ROWS = 20
 
 
@@ -58,13 +70,17 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> bool:
 
     ids = table.column("input_ids")
     lengths = pc.list_value_length(ids)
-    for name in _LOSS_COLUMNS:
-        if name not in table.column_names:
-            continue
-        if not pc.all(pc.equal(lengths, pc.list_value_length(table.column(name)))).as_py():
+    if "labels" in table.column_names:
+        labels = table.column("labels")
+        if not pc.all(pc.equal(lengths, pc.list_value_length(labels))).as_py():
             raise ValueError(
-                f"Pre-tokenized dataset: '{name}' must have the same length as 'input_ids' in every row."
+                "Pre-tokenized dataset: 'labels' must have the same length as 'input_ids' in every row."
             )
+    for name in _checked_masks(table.column_names):
+        same = pc.equal(lengths, pc.list_value_length(table.column(name)))
+        # A row without the mask compares as null: that row fails too.
+        if pc.all(same, skip_nulls = False).as_py() is not True:
+            raise _mask_error(name)
     if vocab_size:
         flat = pc.list_flatten(ids)
         bounds = pc.min_max(flat).as_py() if len(flat) else {"min": 0, "max": 0}
@@ -97,7 +113,14 @@ def prepare_pretokenized_dataset(
 
     if table is None:
 
+        masks = _checked_masks(columns)
+
         def _truncate(batch):
+            # Streamed rows never reach _check_arrow_table: check the masks before slicing.
+            for name in masks:
+                for ids, mask in zip(batch["input_ids"], batch[name]):
+                    if mask is None or ids is None or len(mask) != len(ids):
+                        raise _mask_error(name)
             return {
                 c: [v[:max_seq_length] if v is not None else v for v in batch[c]] for c in columns
             }

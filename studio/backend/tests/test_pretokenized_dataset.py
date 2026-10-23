@@ -159,6 +159,29 @@ def test_prepare_rejects_loss_masks_of_another_length(mask):
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
+def test_prepare_rejects_a_row_without_its_loss_mask():
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3], [4, 5]], "completion_mask": [[0, 1, 1], None]})
+    with pytest.raises(ValueError, match = "'completion_mask' must have the same length"):
+        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+
+
+def test_prepare_ignores_unused_masks_next_to_user_labels():
+    # With labels the masks are not used, so a stale mask column keeps training as before.
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3]], "labels": [[-100, 2, 3]], "completion_mask": [[0, 1]]}
+    )
+    assert prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100) is ds
+
+
+def test_prepare_checks_streamed_loss_masks():
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4, 5, 6]], "completion_mask": [[0, 1]]}
+    ).to_iterable_dataset()
+    out = prepare_pretokenized_dataset(ds, max_seq_length = 4, vocab_size = 100)
+    with pytest.raises(ValueError, match = "'completion_mask' must have the same length"):
+        list(out)
+
+
 def test_only_user_labels_turn_off_response_masking():
     assert has_custom_labels(_pretokenized(with_labels = True))
     assert not has_custom_labels(_pretokenized(with_labels = False))
