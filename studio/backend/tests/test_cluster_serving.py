@@ -459,6 +459,24 @@ def test_an_environment_projector_is_charged_to_this_machine(monkeypatch, tmp_pa
     assert ss.status()["topology"] == "layer_split"
 
 
+def test_an_environment_chat_template_is_not_charged_as_device_memory(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    template, mmproj = tmp_path / "chat.jinja", tmp_path / "mmproj.gguf"
+    template.write_bytes(b"x")
+    mmproj.write_bytes(b"x")
+    sizes = {str(template): 10 * GIB, str(mmproj): 10 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_CHAT_TEMPLATE_FILE", str(template))
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+    # The projector named beside it is still charged.
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+
+
 def test_a_cancelled_load_stops_preparing(monkeypatch):
     _cluster_env(monkeypatch)
     event = asyncio.Event()

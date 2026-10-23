@@ -2038,8 +2038,13 @@ class ClusterServing:
                     self._uncertain_extra = float(remote) * _MMPROJ_VRAM_SAFETY
                 self._has_projector = self._has_projector or remote > 0
         named_files = ss.launch_files_from(extras)
+        # A chat template is read on the host, never loaded onto a device.
         env_files = ss.env_launch_files(
-            {k: v for k, v in os.environ.items() if k not in _DRAFTER_ENV + _HF_DRAFT_ENV}
+            {
+                k: v
+                for k, v in os.environ.items()
+                if k not in _DRAFTER_ENV + _HF_DRAFT_ENV + ("LLAMA_ARG_CHAT_TEMPLATE_FILE",)
+            }
         )
         replaced = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
         replaced = {os.path.abspath(replaced)} if replaced and not env_projector else set()
