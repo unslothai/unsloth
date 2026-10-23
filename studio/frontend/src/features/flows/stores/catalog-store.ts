@@ -27,6 +27,12 @@ export function getSpec(type: string): NodeSpec | undefined {
   return useCatalogStore.getState().specs[type];
 }
 
+/** True when this Studio does not know the block, or the block comes from a newer revision of it. */
+export function needsNewerStudio(node: { type: string; v?: number }): boolean {
+  const spec = getSpec(node.type);
+  return !spec || (node.v ?? 1) > spec.v;
+}
+
 export function portColor(type: string): string {
   return useCatalogStore.getState().catalog?.port_colors[type] ?? "#cbd5e1";
 }

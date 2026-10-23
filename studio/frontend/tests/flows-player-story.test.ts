@@ -312,3 +312,33 @@ test("a save whose scene no longer exists is refused", () => {
   assert.equal(R.saveFits(picnic, stale), false);
   assert.equal(R.reduce(picnic, s, { type: "load", state: stale }), s);
 });
+
+test("lines written after the reader moved on do not replace the scene under them", () => {
+  const m: Manifest = {
+    title: "W",
+    start: "a",
+    vars: {},
+    characters: [],
+    mode: "live",
+    entry_points: { next_scene: "next" },
+    scenes: [
+      {
+        id: "a",
+        lines: [{ text: "One." }, { text: "Two." }, { text: "Three." }],
+        generate_lines: true,
+        choices: [],
+      },
+    ],
+  };
+  let s = R.initialState(m);
+  s = R.reduce(m, s, { type: "advance" });
+  assert.equal(R.currentLine(m, s)?.text, "Two.");
+  const after = R.reduce(m, s, {
+    type: "setLines",
+    sceneId: "a",
+    lines: [{ text: "Written." }],
+    rev: s.rev,
+  });
+  assert.equal(after, s);
+  assert.equal(R.currentLine(m, after)?.text, "Two.");
+});

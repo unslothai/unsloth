@@ -69,3 +69,45 @@ test("a pasted copy joins the frame it lands in, and only that one", () => {
   assert.equal(nodes[inside.nodes[0].id].group, "g1");
   assert.equal(nodes[outside.nodes[0].id].group, null);
 });
+
+test("resizing a frame re-parents the nodes it takes in or leaves out", () => {
+  const d = doc([
+    { ...node("fe", "logic.for_each"), group: "g1" },
+    { ...node("in", "text.template", [100, 100]), group: "g1" },
+    node("out", "text.template", [900, 100]),
+  ]);
+  d.groups = [{ id: "g1", label: "Loop", rect: [0, 0, 600, 300] }];
+  useDocStore.getState().load(d);
+  const g = useDocStore.getState().graph.groups.g1;
+  useDocStore.getState().resizeGroup({ ...g, rect: [0, 0, 1300, 300] });
+  assert.equal(useDocStore.getState().graph.nodes.out.group, "g1");
+  useDocStore.getState().resizeGroup({ ...g, rect: [0, 0, 380, 80] });
+  const nodes = useDocStore.getState().graph.nodes;
+  assert.equal(nodes.fe.group, "g1");
+  assert.equal(nodes.in.group ?? null, null);
+  assert.equal(nodes.out.group ?? null, null);
+});
+
+test("a block from a newer revision opens the flow read-only", async () => {
+  const { needsNewerStudio, useCatalogStore } = await import(
+    "../src/features/flows/stores/catalog-store.ts"
+  );
+  useCatalogStore.setState({
+    specs: { "text.template": { type: "text.template", v: 1 } as never },
+  });
+  assert.equal(needsNewerStudio({ type: "text.template", v: 1 }), false);
+  assert.equal(needsNewerStudio({ type: "text.template" }), false);
+  assert.equal(needsNewerStudio({ type: "text.template", v: 2 }), true);
+  assert.equal(needsNewerStudio({ type: "made.up" }), true);
+});
+
+test("a run snapshot's progress object becomes a fraction", async () => {
+  const { progressFraction } = await import(
+    "../src/features/flows/stores/runtime-store.ts"
+  );
+  assert.equal(progressFraction({ fraction: 0.25, phase: "x" }), 0.25);
+  assert.equal(progressFraction({ step: 3, total: 4 }), 0.75);
+  assert.equal(progressFraction({ phase: "loading" }), null);
+  assert.equal(progressFraction(null), null);
+  assert.equal(progressFraction(0.5), 0.5);
+});

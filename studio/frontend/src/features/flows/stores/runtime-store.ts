@@ -105,7 +105,7 @@ export function reduceEvents(
           status?: NodeStatus;
           outputs?: Record<string, unknown> | null;
           error?: string | null;
-          progress?: number | null;
+          progress?: Record<string, unknown> | number | null;
         }
       >;
       const rebuilt: Record<string, NodeRuntime> = {};
@@ -116,7 +116,7 @@ export function reduceEvents(
           status: snap.status ?? prev.status,
           outputs: snap.outputs ?? prev.outputs,
           error: snap.error ?? null,
-          progress: snap.progress ?? null,
+          progress: progressFraction(snap.progress),
           cached: snap.status === "cached",
         };
       }
@@ -166,14 +166,7 @@ export function reduceEvents(
         node.phase = String(data.message);
     } else if (event.type === "node.progress") {
       const node = entry(id);
-      if (typeof data.fraction === "number") node.progress = data.fraction;
-      else if (
-        typeof data.step === "number" &&
-        typeof data.total === "number" &&
-        data.total > 0
-      ) {
-        node.progress = data.step / data.total;
-      }
+      node.progress = progressFraction(data) ?? node.progress;
       if (typeof data.phase === "string") node.phase = data.phase;
       if (typeof data.preview === "string") node.preview = data.preview;
     } else if (event.type === "node.output") {
@@ -203,6 +196,17 @@ export function reduceEvents(
     nodes,
     logs: logs ? (logs as RunLogLine[]).slice(-LOG_LIMIT) : state.logs,
   };
+}
+
+/** A node's progress as 0..1: `fraction`, else `step / total` (events and run snapshots carry the same object). */
+export function progressFraction(data: unknown): number | null {
+  if (typeof data === "number") return data;
+  if (!data || typeof data !== "object") return null;
+  const p = data as { fraction?: unknown; step?: unknown; total?: unknown };
+  if (typeof p.fraction === "number") return p.fraction;
+  if (typeof p.step === "number" && typeof p.total === "number" && p.total > 0)
+    return p.step / p.total;
+  return null;
 }
 
 export const useRuntimeStore = create<RuntimeState>((set, get) => ({

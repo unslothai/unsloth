@@ -972,7 +972,7 @@ NODE_SPECS: list[dict] = [
         "A menu of choices; each choice handle leads to a Scene.",
         params = [
             P("prompt", "text", "What do you do?", "Prompt"),
-            P("choices", "string_list", ["Go left", "Go right"], "Choices"),
+            P("choices", "string_list", ["Go left", "Go right"], "Choices (up to 4)"),
             P("conditions", "json", {}, "Conditions (choice index -> expression)"),
             P("effects", "json", {}, "Effects (choice index -> {var: expression})"),
         ],

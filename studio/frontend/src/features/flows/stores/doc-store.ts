@@ -78,6 +78,8 @@ export interface DocState {
   connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
   insertFragment: (fragment: GraphFragment) => void;
   upsertGroup: (group: FlowGroup) => void;
+  /** Set a frame's rectangle and re-parent the nodes it now covers or no longer covers. */
+  resizeGroup: (group: FlowGroup) => void;
   groupNodes: (group: FlowGroup, nodeIds: string[]) => void;
   upsertNote: (note: FlowNote, coalesceKey?: string) => void;
   undo: () => void;
@@ -468,6 +470,23 @@ export const useDocStore = create<DocState>((set, get) => {
             : [...s.graph.groupOrder, group.id],
         }),
       ),
+
+    resizeGroup: (group) =>
+      commit((s) => {
+        const groups = { ...s.graph.groups, [group.id]: group };
+        const graph = { ...s.graph, groups };
+        const nodes = { ...s.graph.nodes };
+        // The compiler reads `group`, not geometry, so nodes the new rectangle takes in or leaves out change membership.
+        for (const id of s.graph.nodeOrder) {
+          const node = nodes[id];
+          const before = node.group ?? null;
+          const after = frameAt(graph, node.pos);
+          if (before === after) continue;
+          if (before !== group.id && after !== group.id) continue;
+          nodes[id] = { ...node, group: after };
+        }
+        return withGraph(s, { groups, nodes });
+      }),
 
     groupNodes: (group, nodeIds) =>
       commit((s) => {

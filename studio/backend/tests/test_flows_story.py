@@ -339,3 +339,21 @@ def test_infinite_mode_keeps_open_exits():
     ].pop()  # without a Next Scene node the open exits cannot be written: fall back to live
     m2, warnings = compile_story_report(doc)
     assert m2["mode"] == "live" and m2["scenes"][0]["choices"] == [] and warnings
+
+
+def test_choices_beyond_four_exits_are_reported():
+    doc = {
+        "id": "f",
+        "name": "d",
+        "baked": {},
+        "nodes": [
+            N("start", "story.start", 0, title = "D", mode = "infinite"),
+            N("s", "story.scene", 1, lines = "Narrator: Dark."),
+            N("c", "story.choice", 2, choices = ["A", "B", "C", "D", "Fifth"]),
+            N("next", "story.next_scene", 3),
+        ],
+        "edges": [F("start", "next", "s"), F("s", "next", "c")],
+    }
+    m, warnings = compile_story_report(doc)
+    assert len(m["scenes"][0]["choices"]) == 4
+    assert any("'Fifth'" in w for w in warnings)

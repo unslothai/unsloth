@@ -8,7 +8,7 @@ import { useReactFlow } from "@xyflow/react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
-import { getSpec } from "../stores/catalog-store";
+import { needsNewerStudio } from "../stores/catalog-store";
 import { documentSignature, useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
@@ -126,8 +126,8 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
       .then(([, record]) => {
         if (!alive) return;
         useDocStore.getState().load(record.doc);
-        // A flow from a newer Studio is never saved back, so its unknown blocks survive until an update.
-        const readOnly = record.doc.nodes.some((node) => !getSpec(node.type));
+        // A flow from a newer Studio is never saved back, so its unknown or newer blocks survive until an update.
+        const readOnly = record.doc.nodes.some(needsNewerStudio);
         if (!readOnly) {
           beginSaveSession(
             record.id,

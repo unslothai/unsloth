@@ -349,7 +349,8 @@ export function WorldPlayer({
       );
       toast(e instanceof Error ? e.message : String(e));
     } finally {
-      setThinking(false);
+      // A reply from before a load must not unlock the newer request still in flight.
+      if (generation === loads.current) setThinking(false);
     }
   };
 

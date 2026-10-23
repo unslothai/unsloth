@@ -301,7 +301,11 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
             )
         elif t == "story.choice":
             choices = []
-            for i, text in enumerate((p.get("choices") or [])[:4]):
+            authored = p.get("choices") or []
+            if len(authored) > 4:
+                dropped = ", ".join(repr(str(t)) for t in authored[4:])
+                warnings.append(f"{nid} has only four exits; choices {dropped} were dropped")
+            for i, text in enumerate(authored[:4]):
                 goto = target(nid, f"choice_{i + 1}")
                 if goto is None and infinite:
                     # Infinite mode: an open exit asks the Next Scene entry point to write what follows.

@@ -395,6 +395,9 @@ export function reduce(
       if (a.rev !== s.rev) return s;
       const scene = sceneOf(m, s, a.sceneId);
       if (!scene || a.lines.length === 0) return s;
+      // Mid-scene the reader's line index belongs to the current list; the next visit writes fresh lines.
+      if (s.sceneId === a.sceneId && s.status === "reading" && s.line > 0)
+        return s;
       const replaced: StoryScene = {
         ...scene,
         lines: a.lines,

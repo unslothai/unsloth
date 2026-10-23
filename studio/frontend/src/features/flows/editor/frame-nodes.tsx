@@ -10,6 +10,7 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
   const groupId = (data as { groupId: string }).groupId;
   const group = useDocStore((s) => s.graph.groups[groupId]);
   const upsertGroup = useDocStore((s) => s.upsertGroup);
+  const resizeGroup = useDocStore((s) => s.resizeGroup);
   const [editing, setEditing] = useState(false);
   if (!group) return null;
   const color = group.color ?? "#8b5cf6";
@@ -25,7 +26,7 @@ function GroupFrameImpl({ data, selected }: NodeProps<RfNode>) {
         lineClassName="!border-white/30"
         handleClassName="!h-2.5 !w-2.5 !rounded-sm !border-white/60 !bg-zinc-800"
         onResizeEnd={(_, p) =>
-          upsertGroup({
+          resizeGroup({
             ...group,
             rect: [p.x, p.y, Math.round(p.width), Math.round(p.height)],
           })
