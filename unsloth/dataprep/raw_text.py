@@ -250,12 +250,18 @@ class RawTextDataLoader:
                         lines.append(text)
                 return "\n\n".join(lines)
             elif file_format == "csv_text_column":
-                reader = csv.DictReader(f)
-                texts = []
-                for row in reader:
-                    text = self._extract_text_from_csv_row(row)
-                    if text:
-                        texts.append(text)
+                # csv rejects any cell over 128 KB by default, and a whole document in a text column is bigger.
+                # 2**31 - 1 is the largest limit a C long takes on Windows.
+                previous_limit = csv.field_size_limit(2**31 - 1)
+                try:
+                    reader = csv.DictReader(f)
+                    texts = []
+                    for row in reader:
+                        text = self._extract_text_from_csv_row(row)
+                        if text:
+                            texts.append(text)
+                finally:
+                    csv.field_size_limit(previous_limit)
                 return "\n\n".join(texts)
         return ""
 
