@@ -12,10 +12,8 @@ group uploads on the compute stream): queued earlier they hold that upload back 
 
 Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
 freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
-An unpinned host copy is staged through a temporary pinned buffer that lives until its copy runs, and the copy runs
-only after the compute it is queued behind. On a card slower than the host thread (a T4 streaming Z-Image), the
-thread queues a whole forward ahead and those buffers grew to the full denoiser in pinned host RAM (rounded up to
-powers of two), so staged bytes are capped at ``window`` with a host wait on the oldest staged copy.
+Unpinned host copies stage through temporary pinned buffers alive until the copy runs; on a card slower than the host
+(T4 Z-Image) these grew to the whole denoiser in pinned RAM, so staged bytes are capped at ``window`` (host waits).
 Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
 """
 
@@ -326,7 +324,6 @@ class GroupPrefetcher:
         self.ready: dict = {}
         self.inflight_bytes = 0
         self.peak_inflight_bytes = 0
-        # (copy event, bytes) of copies staged from unpinned host memory, oldest first
         self.staged: deque = deque()
         self.staged_bytes = 0
         self.peak_staged_bytes = 0
@@ -451,14 +448,13 @@ class GroupPrefetcher:
         return True
 
     def _staging(self) -> deque:
-        # instance state made lazily too: a prefetcher built without __init__ (tests) still stages
+        # lazy: prefetchers built without __init__ (tests) still stage
         if "staged" not in self.__dict__:
             self.staged, self.staged_bytes = deque(), 0
         return self.staged
 
     def _bound_staging(self, nbytes: int) -> None:
-        """Before staging ``nbytes`` more: forget landed copies, then wait for the oldest until it fits ``window``.
-        Every copy waited on is already queued behind queued work, so the wait always ends."""
+        """Drop landed copies (no wait), then wait on the oldest until ``nbytes`` fits; each is queued, so waits end."""
         staged = self._staging()
         while staged and staged[0][0].query():
             self.staged_bytes -= staged.popleft()[1]

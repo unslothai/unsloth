@@ -136,8 +136,7 @@ def test_one_group_larger_than_the_window_still_progresses():
 
 
 class _FrozenGpu:
-    """A card that never finishes queued work on its own: an event completes only when the host waits on it. Tracks
-    the pinned staging buffers whose copy has not run (what the host allocator must keep alive)."""
+    """Card whose events complete only when the host waits; tracks pinned staging buffers whose copy has not run."""
 
     def __init__(self):
         self.outstanding = 0
@@ -231,8 +230,7 @@ def _frozen_gpu_prefetcher(
 
 
 def test_unpinned_staging_stays_in_the_window_on_a_slow_card(monkeypatch):
-    """Host thread a whole forward ahead of the card (a T4 streaming Z-Image from unpinned host RAM): every queued copy
-    holds its pinned staging buffer until it runs. Unbounded, that was the whole denoiser in pinned host RAM."""
+    """Host a whole forward ahead of the card: unbounded, staging held the whole denoiser in pinned RAM."""
     pf, groups, gpu = _frozen_gpu_prefetcher(monkeypatch, pinned = False)
     group_bytes = 300
     assert pf.window == 2 * group_bytes
@@ -240,7 +238,6 @@ def test_unpinned_staging_stays_in_the_window_on_a_slow_card(monkeypatch):
         pf._issue(g)
     assert gpu.peak <= pf.window, (gpu.peak, pf.window)
     assert gpu.waits > 0
-    # every group was still queued, in order, with its tensors pointed at the copies
     assert pf.stats["copies"] == len(groups)
     assert all(p.data is not None for g in groups for p in g.parameters)
 
@@ -250,7 +247,7 @@ def test_landed_copies_free_staging_without_a_wait(monkeypatch):
     for g in groups:
         pf._issue(g)
         for event, _n in list(pf.staged):
-            event.done = True  # a card that keeps up: its copies land before the next issue
+            event.done = True
     assert gpu.waits == 0
 
 
