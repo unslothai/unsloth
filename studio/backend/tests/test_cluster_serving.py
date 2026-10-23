@@ -3431,6 +3431,36 @@ def test_a_small_share_worker_that_restarted_forces_a_relaunch(monkeypatch):
     assert out.force_reload is True
 
 
+def test_a_worker_holding_under_512_mib_that_restarted_forces_a_relaunch(monkeypatch):
+    listing = LISTING.replace("24576 MiB, 23000 MiB free", "24576 MiB, 2366 MiB free")
+    _cluster_env(monkeypatch, listing = listing, model_bytes = 200 * GIB)
+    restarted = set()
+
+    def fake_list(binary, endpoints, *a, **kw):
+        devices = cs.parse_device_list(listing, endpoints)
+        st = cs._STATE
+        if st is not None and getattr(st._backend, "is_loaded", False):
+            for d in devices:
+                if d.remote and d.endpoint not in restarted | st._started:
+                    d.free_bytes = max(0, d.free_bytes - int(st._resident.get(d.key, 0)))
+        return [d for d in devices if not d.remote or d.endpoint in endpoints], ""
+
+    monkeypatch.setattr(cs, "list_devices", fake_list)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    small = cs.state()._resident[("10.0.0.4:50052", "0")]
+    assert 0 < small < 512 * MIB
+    out = run(ss.before_load(_request(), 4))
+    assert not getattr(out, "force_reload", False)
+    restarted.add("10.0.0.4:50052")
+    out = run(ss.before_load(_request(), 4))
+    assert out.force_reload is True
+
+
 @pytest.mark.parametrize("unified", [False, True])
 def test_keep_in_gpu_memory_keeps_a_unified_coordinator_local(monkeypatch, unified):
     seen = _cluster_env(monkeypatch)

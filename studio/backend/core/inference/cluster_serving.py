@@ -792,6 +792,8 @@ class ClusterPlan:
     layer_bytes: float = 0.0
     host_bytes: float = 0.0
     pipeline_groups: int = 0
+    # Each remote device's free memory with none of this split on it, to tell a restarted worker.
+    clean_free: Dict[Tuple[str, str], int] = field(default_factory = dict)
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         held = max(0.0, float(self.need_bytes or 0) - self.kv_bytes - self.host_bytes)
@@ -1716,8 +1718,23 @@ class ClusterServing:
         if self._cancelled():
             self.topology, self.reason = "single", "the load was cancelled"
             return request
-        if self._backend is not None and getattr(self._backend, "is_loaded", False):
-            served = self._pre_load[2] if self._pre_load else None
+        served = self._pre_load[2] if self._pre_load else None
+        serving = self._backend is not None and getattr(self._backend, "is_loaded", False)
+        split = (
+            served if serving and served is not None and served.topology == "layer_split" else None
+        )
+        holding = {d.key for d in split.devices} if split is not None else set()
+        clean_free: Dict[Tuple[str, str], int] = {}
+        for d in devices:
+            if not d.remote:
+                continue
+            if d.key in holding and d.endpoint not in self._started:
+                # The layers stayed, so the free memory measured before they loaded still holds.
+                if d.key in split.clean_free:
+                    clean_free[d.key] = split.clean_free[d.key]
+            elif d.endpoint not in busy:
+                clean_free[d.key] = int(d.free_bytes)
+        if serving:
             placed = (
                 {
                     d.key: w * max(0.0, float(served.need_bytes or 0) - served.host_bytes)
@@ -1730,9 +1747,14 @@ class ClusterServing:
                 if d.endpoint in busy:
                     continue
                 held = max(self._resident.get(d.key, 0.0), placed.get(d.key, 0.0))
-                if d.remote and held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2:
+                was = split.clean_free.get(d.key) if split is not None else None
+                if d.remote and (
+                    (held > 512 * 2**20 and d.free_bytes > d.total_bytes - held / 2)
+                    or (held > 0 and was is not None and d.free_bytes > was - held / 2)
+                ):
                     # The worker restarted and lost the served layers, so equal arguments must relaunch.
                     self._started.add(d.endpoint)
+                    clean_free[d.key] = int(d.free_bytes)
             for d in devices:
                 if d.endpoint in self._started or d.endpoint in busy:
                     continue
@@ -1883,6 +1905,7 @@ class ClusterServing:
         plan.host_bytes = (0.0 if unified else self._host_embd + self._host_input - off_device) + (
             skipped if plan.topology == "layer_split" else 0.0
         )
+        plan.clean_free = clean_free
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
