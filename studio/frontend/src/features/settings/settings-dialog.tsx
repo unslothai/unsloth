@@ -254,7 +254,6 @@ const TABS: TabDef[] = [
     id: "browser",
     labelKey: "browser.settingsTitle",
     icon: InternetIcon,
-    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
