@@ -142,7 +142,7 @@ export function ChatModelNotice({
         sideOffset={6}
         collisionPadding={12}
         aria-label="Last used model"
-        className="menu-soft-surface w-64 gap-1 rounded-[14px] p-1"
+        className="menu-soft-surface w-64 gap-1 rounded-lg p-1"
       >
         <div className="space-y-1 px-3 py-2">
           <p className="text-ui-12 text-muted-foreground">Last used model</p>
@@ -153,7 +153,7 @@ export function ChatModelNotice({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 justify-start gap-2.5 rounded-[10px] px-3 text-ui-13 font-normal"
+            className="h-8 justify-start gap-2.5 rounded-md px-3 text-ui-13 font-normal"
             onClick={() => onSwitch(switchTarget)}
           >
             <HugeiconsIcon

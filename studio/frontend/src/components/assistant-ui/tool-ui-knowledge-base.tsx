@@ -209,7 +209,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
               </>
             ) : resultText ? (
               <ScrollPane
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {resultText}
@@ -220,7 +220,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {query.length > QUERY_INLINE_MAX ? (
               <ScrollPane
                 data-slot="knowledge-base-query"
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {query}

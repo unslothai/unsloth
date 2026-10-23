@@ -963,7 +963,7 @@ function AnnotateBar({
       data-annotate-chrome=""
       data-native-inset={besidePage ? "" : undefined}
       className={cn(
-        "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl pr-1.5 pl-2.5 text-ui-15",
+        "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-full pr-1.5 pl-2.5 text-ui-15",
         SURFACE,
       )}
       style={{
@@ -988,7 +988,7 @@ function AnnotateBar({
       <button
         type="button"
         onClick={onExit}
-        className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
+        className="h-9 cursor-pointer whitespace-nowrap rounded-full px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
       >
         {t("browser.annotate.cancel")}
       </button>
@@ -997,7 +997,7 @@ function AnnotateBar({
           type="button"
           onClick={onSend}
           disabled={sendDisabled}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-xl bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+          className="h-9 cursor-pointer whitespace-nowrap rounded-full bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
         >
           {t("browser.annotate.send")}
         </button>
