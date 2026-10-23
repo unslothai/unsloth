@@ -290,6 +290,30 @@ def test_no_drm_class_is_no_cards(tmp_path):
     assert hw._linux_amd_pci_topology(str(tmp_path / "missing")) == ()
 
 
+def test_an_invalidation_during_a_hip_id_map_read_is_not_overwritten(rocm_cli, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(amd, "_hip_id_map_cache", None)
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_read():
+        entered.set()
+        release.wait(10)
+        return {0: 0}
+
+    monkeypatch.setattr(amd, "_read_hip_id_by_gpu_index", slow_read)
+    reader = threading.Thread(target = amd.get_hip_id_by_gpu_index)
+    reader.start()
+    assert entered.wait(10)
+    clearer = threading.Thread(target = amd.invalidate_hip_id_map)
+    clearer.start()
+    clearer.join(0.3)  # an unlocked clear would finish here, before the read lands
+    release.set()
+    reader.join(10)
+    clearer.join(10)
+    assert amd._hip_id_map_cache is None
+
+
 def test_live_vram_reads_still_run_every_time(rocm_cli):
     hw._linux_amd_gfx_candidates()
     amd.get_hip_id_by_gpu_index()

@@ -1678,7 +1678,7 @@ def _detect_hardware_locked() -> DeviceType:
     _gfx_candidates_cache = None  # a forced detection asks the ROCm CLIs again
     try:
         from . import amd as _amd
-        _amd._hip_id_map_cache = None  # and re-reads the HIP id map
+        _amd.invalidate_hip_id_map()  # and re-reads the HIP id map
     except Exception:
         pass
     CHAT_ONLY_REASON = None

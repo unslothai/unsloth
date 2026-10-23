@@ -410,6 +410,14 @@ def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
     return None if cached[1] is None else dict(cached[1])
 
 
+def invalidate_hip_id_map() -> None:
+    """Drop the HIP id map (forced hardware detection). Under the map's lock: a read in flight holds it while
+    amd-smi runs, so it finishes first and this clear wins, rather than the old answer landing after it."""
+    global _hip_id_map_cache
+    with _hip_id_map_lock:
+        _hip_id_map_cache = None
+
+
 def _static_generation() -> Optional[int]:
     """gpu_query's static generation, bumped by hardware re-detection (a swapped or re-seated card)."""
     try:
