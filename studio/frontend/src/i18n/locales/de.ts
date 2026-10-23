@@ -57,6 +57,8 @@ export const de = {
     },
     agentSettings: {
       title: "Browsernutzung",
+      docs: "Dokumentation",
+      docsLabel: "Dokumentation zur Browsernutzung öffnen",
       enable: "Modelle den Browser nutzen lassen",
       enableDescription: "Modelle öffnen Seiten in einem eigenen Browser-Tab, lesen sie und klicken und tippen für dich. Auch im +-Menü des Eingabefelds.",
       history: "Browserverlauf",

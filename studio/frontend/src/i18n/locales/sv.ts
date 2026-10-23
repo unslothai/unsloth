@@ -55,6 +55,8 @@ export const sv = {
     },
     agentSettings: {
       title: "Webbläsaranvändning",
+      docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen om webbläsaranvändning",
       enable: "Låt modeller använda webbläsaren",
       enableDescription: "Modeller öppnar sidor i en egen webbläsarflik, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
       history: "Webbhistorik",

@@ -57,6 +57,8 @@ export const fr = {
     },
     agentSettings: {
       title: "Utilisation du navigateur",
+      docs: "Documentation",
+      docsLabel: "Ouvrir la documentation sur l’utilisation du navigateur",
       enable: "Autoriser les modèles à utiliser le navigateur",
       enableDescription: "Les modèles ouvrent des pages dans leur propre onglet du navigateur, les lisent, et cliquent et saisissent pour vous. Aussi dans le menu + de la zone de saisie.",
       history: "Historique de navigation",

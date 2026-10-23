@@ -57,6 +57,8 @@ export const es = {
     },
     agentSettings: {
       title: "Uso del navegador",
+      docs: "Documentación",
+      docsLabel: "Abrir la documentación del uso del navegador",
       enable: "Permitir que los modelos usen el navegador",
       enableDescription: "Los modelos abren páginas en su propia pestaña del navegador, las leen y hacen clic y escriben por ti. También en el menú + del compositor.",
       history: "Historial de navegación",

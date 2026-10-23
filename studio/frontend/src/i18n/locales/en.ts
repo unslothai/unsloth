@@ -54,6 +54,8 @@ export const en = {
     },
     agentSettings: {
       title: "Browser use",
+      docs: "Docs",
+      docsLabel: "Open the browser use docs",
       enable: "Let models use the browser",
       enableDescription: "Models open pages in their own browser tab, read them, and click and type for you. Also in the composer's + menu.",
       history: "Browsing history",

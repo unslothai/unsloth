@@ -57,6 +57,8 @@ export const ko = {
     },
     agentSettings: {
       title: "브라우저 사용",
+      docs: "문서",
+      docsLabel: "브라우저 사용 문서 열기",
       enable: "모델이 브라우저를 사용하도록 허용",
       enableDescription: "모델이 전용 브라우저 탭에서 페이지를 열어 읽고, 대신 클릭하고 입력합니다. 입력창의 + 메뉴에서도 켤 수 있습니다.",
       history: "방문 기록",

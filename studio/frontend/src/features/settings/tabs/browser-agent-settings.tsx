@@ -15,13 +15,15 @@ import {
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
-import { Add01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, ArrowUpRight01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
 type Column = keyof SiteRule;
+
+const BROWSER_USE_DOCS_URL = "https://unsloth.ai/docs/basics/browser-use";
 
 function RuleSelect({
   column,
@@ -201,7 +203,22 @@ export function BrowserAgentSettings() {
   const { setEnabled, setHistoryAccess, setScriptAccess, setShowCursor } = useBrowserAgentStore.getState();
   return (
     <>
-      <SettingsSection title={t("browser.agentSettings.title")}>
+      <SettingsSection
+        title={t("browser.agentSettings.title")}
+        action={
+          // title, not aria-label, so the accessible name stays the visible text (as the Sandbox tab's).
+          <a
+            href={BROWSER_USE_DOCS_URL}
+            target="_blank"
+            rel="noreferrer"
+            title={t("browser.agentSettings.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("browser.agentSettings.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        }
+      >
         <SettingsRow
           icon={<HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={1.75} className="me-1.5 size-7" />}
           label={t("browser.agentSettings.enable")}

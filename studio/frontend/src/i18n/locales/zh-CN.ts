@@ -57,6 +57,8 @@ export const zhCN = {
     },
     agentSettings: {
       title: "浏览器操作",
+      docs: "文档",
+      docsLabel: "打开浏览器操作文档",
       enable: "允许模型使用浏览器",
       enableDescription: "模型会在专属浏览器标签页中打开并阅读网页，并替你点击和输入。也可在输入框的 + 菜单中开关。",
       history: "浏览记录",

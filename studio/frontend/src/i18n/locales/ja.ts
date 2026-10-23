@@ -58,6 +58,8 @@ export const ja = {
     },
     agentSettings: {
       title: "ブラウザ操作",
+      docs: "ドキュメント",
+      docsLabel: "ブラウザ操作のドキュメントを開く",
       enable: "モデルにブラウザを使わせる",
       enableDescription: "モデルが専用のブラウザタブでページを開いて読み、代わりにクリックや入力を行います。入力欄の + メニューからも切り替えられます。",
       history: "閲覧履歴",
