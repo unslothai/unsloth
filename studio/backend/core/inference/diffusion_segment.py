@@ -815,8 +815,7 @@ def _resident_cuda_ordinal() -> Optional[int]:
 
 
 def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) MiB of CUDA card ``ordinal``; free is less the user's VRAM Budget reserve (raw at the default), so
-    the segmenter neither lands on nor stays resident in that reserve."""
+    """(free, total) MiB of CUDA card ``ordinal``; free is less the user's VRAM Budget reserve (raw at the default), so the segmenter neither lands on nor stays resident in that reserve."""
     try:
         import torch
 

@@ -100,7 +100,6 @@ def maybe_kick(
         from .diffusion_memory import user_budget_reserve_bytes
 
         free, total = torch.cuda.mem_get_info(job["device"])
-        # the prebuild child allocates on the card too: the user's VRAM Budget reserve is not its room
         if free - user_budget_reserve_bytes(job["device"], total) < _MIN_FREE_BYTES:
             return False
         return _spawn(job, logger)

@@ -49,7 +49,6 @@ def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool
         idle = torch.cuda.memory_reserved(param.device) - torch.cuda.memory_allocated(param.device)
         from .diffusion_memory import _user_budget_reserve_mib
 
-        # the user's VRAM Budget keeps its share of the card free (0 at the default)
         reserve = _user_budget_reserve_mib(int(total) >> 20) << 20
     except Exception:  # noqa: BLE001 -- no CUDA / no denoiser: keep the stock offload
         return False

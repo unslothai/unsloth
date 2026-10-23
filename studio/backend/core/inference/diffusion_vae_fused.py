@@ -1486,8 +1486,7 @@ _TILE_PEAK_FACTOR = 24
 
 
 def _tile_batch_cap(vae: Any, z: Any) -> int:
-    """Tiles per decoder call: env override, else what half the free VRAM (less the user's VRAM Budget reserve, raw
-    at the default) holds, at most 4."""
+    """Tiles per decoder call."""
     raw = os.environ.get(TILE_BATCH_ENV, "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw)

@@ -115,7 +115,6 @@ def test_unreadable_setting_keeps_the_planner_budget(monkeypatch):
     assert dm._safe_device_budget_mib(card) == default
 
 
-# Placement paths outside the one-card planner charge the same reserve.
 
 
 def test_encoder_only_secondary_card_honours_the_budget(fraction, monkeypatch):
@@ -220,7 +219,6 @@ def test_calibrated_tier_does_not_promote_past_a_lowered_budget(fraction):
     budget = p.estimates["safe_device_budget_mib"]
     assert budget == total - 1_229 - int(total * 0.50)
     transformer = 17_897 - 10_247
-    # whole-module offload uploads the transformer beside the max-canvas activation: it must fit the budget
     if p.offload_policy == OFFLOAD_MODEL:
         assert transformer + act.max_canvas_mib + p.estimates["base_overhead_mib"] <= budget
 
@@ -277,7 +275,6 @@ def test_cfg_replica_picks_the_card_the_budget_leaves_room_on(fraction, monkeypa
 
 
 def test_measured_residency_promotion_keeps_the_budget_free(fraction, monkeypatch):
-    # the logged Qwen-Image-2.1 int8 auto load on a 12 GiB card, refined from its loaded weights
     for env in (dm.MEASURED_ACTIVATION_ENV, dm.PARTIAL_RESIDENT_ENV, dm.RESIDENT_DIT_ENV):
         monkeypatch.delenv(env, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_STREAMED_RESIDENCY", raising = False)
@@ -311,7 +308,6 @@ def test_measured_residency_promotion_keeps_the_budget_free(fraction, monkeypatc
     capped = refined()
     reserve = int(12 * GiB * 0.50)
     resident = capped.resident_transformer_mib or 0
-    # whatever stays resident, the user's share of the card stays free beside it
     assert resident + 645 + capped.estimates["measured_runtime_headroom_mib"] + reserve <= 11_598
     assert resident < (default.resident_transformer_mib or 0)
 
@@ -365,13 +361,10 @@ def test_video_h3_capacity_probe_charges_the_same_reserve_as_placement(fraction,
     monkeypatch.setattr(hardware, "trusted_mem_get_info", lambda *a, **k: (total, total))
     assert vid._h3_device_capacity_bytes("cuda") == total
     fraction["value"] = 0.50
-    # an idle card: what the plan sees before the download equals what placement sees after it
     assert vid._h3_device_capacity_bytes("cuda") == vid._h3_free_device_bytes("cuda") == total // 2
 
 
 def _share_of_card_reserve(monkeypatch):
-    # The discrete reserve is a flat 2 GiB, so the safe and fast budgets coincide on a discrete card. A share-of-card
-    # reserve (10%, 2-4 GiB) puts room between them and between the planner's reserve and the user's.
     monkeypatch.setattr(
         dm,
         "discrete_reserve_mib",
@@ -391,7 +384,6 @@ def test_companion_card_rank_uses_the_fast_limit_in_fast_mode(fraction, monkeypa
     }
     selection = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))
     fraction["value"] = 0.96
-    # auto ranks by the safe budget (cuda:2 slightly ahead); fast admits by the fast budget, where cuda:1 holds more
     fast = {
         o: dm._fast_device_budget_mib(
             DeviceMemory("cuda", "cuda", "discrete_vram", probes[o].free_mib, probes[o].total_mib)
@@ -409,7 +401,6 @@ def test_video_h3_residency_budget_keeps_the_reserve_deficit(fraction, monkeypat
     import core.inference.video_minimax_h3_residency as res
     from utils import hardware
 
-    # 2 GiB free of 24 GiB, 1 GiB allocator cache, 8 GiB of resident groups; the phase itself needs nothing here
     monkeypatch.setattr(
         hardware, "trusted_mem_get_info", lambda *a, **k: (2 * GiB << 20, 24 * GiB << 20)
     )
@@ -431,7 +422,6 @@ def test_video_h3_residency_budget_keeps_the_reserve_deficit(fraction, monkeypat
     )  # the plain free reading still never goes negative
 
 
-# Request-time guards and residency checks read live free memory: each charges the same reserve (raw at the default).
 
 
 def test_video_request_available_reading_charges_the_reserve(fraction, monkeypatch):
@@ -446,14 +436,12 @@ def test_video_request_available_reading_charges_the_reserve(fraction, monkeypat
     assert vid._request_available_bytes(dev, cuda) == 42 * GiB << 20
     fraction["value"] = 0.80  # keeps 16 GiB of the 80 GiB card free
     assert vid._request_available_bytes(dev, cuda) == (42 * GiB - int(80 * GiB * (1 - 0.80))) << 20
-    # Metal / CPU never charge it
     assert vid._user_reserve_bytes(types.SimpleNamespace(type = "mps"), 80 * GiB << 20) == 0
     assert vid._user_reserve_bytes("cpu", 80 * GiB << 20) == 0
 
 
 def test_every_video_request_guard_reads_through_the_reserve():
-    """No request guard (H3 tiers with or without residency, the multi-GPU split, the conventional offload floor) sums
-    raw free + allocator cache on its own any more: they all read ``_request_available_bytes``."""
+    """No request guard (H3 tiers with or without residency, the multi-GPU split, the conventional offload floor) sums raw free + allocator cache on its own any more."""
     import ast
     import inspect
 
@@ -515,7 +503,6 @@ def test_h3_native_card_free_charges_the_reserve(fraction, monkeypatch):
     gib = 1024**3
     assert vid._h3_card_memory_bytes("cuda", 0) == (20 * gib, 24 * gib)
     fraction["value"] = 0.50
-    # the sd.cpp resident pick, its --max-vram probe and the server-pressure check all read this
     assert vid._h3_card_memory_bytes("cuda", 0) == (8 * gib, 24 * gib)
     assert vid._h3_card_free_bytes("cuda", 0) == 8 * gib
 
@@ -634,8 +621,6 @@ def test_primary_card_rank_uses_free_less_the_reserve(fraction, monkeypatch):
 
 
 def test_primary_card_rank_uses_the_reserve_the_planner_enforces(fraction, monkeypatch):
-    # Just below the default the user reserve is small and the planner's own reserve still binds: rank by
-    # the safe budget the planner admits with, not free less the user reserve alone.
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_device as dd
 
@@ -649,7 +634,6 @@ def test_primary_card_rank_uses_the_reserve_the_planner_enforces(fraction, monke
     assert dd.rank_cuda_ordinals([0, 1]) == [1, 0]
 
 
-# -- #14816 r9: a loaded pipeline keeps the budget it was planned with ------------------------------------------------
 
 
 @pytest.fixture
@@ -658,8 +642,7 @@ def no_pins(monkeypatch):
 
 
 def test_generation_guards_keep_the_load_time_budget(fraction, no_pins):
-    """Editing the Budget while a pipeline stays loaded must not move its generation-time reserve: the setting
-    applies on the next load."""
+    """Editing the Budget while a pipeline stays loaded must not move its generation-time reserve."""
 
     @dm.vram_budget_scope("image", load = True)
     def load():
@@ -678,9 +661,7 @@ def test_generation_guards_keep_the_load_time_budget(fraction, no_pins):
     load()
     fraction["value"] = 0.75
     assert generate() == (5 * GiB, pytest.approx(0.50))
-    # A thread outside any scope (a worker the generation spawned) reads the committed snapshot too.
     assert dm._user_budget_reserve_mib(10 * GiB) == 5 * GiB
-    # The next load reads the live value, and its commit replaces the snapshot.
     load_again = dm.vram_budget_scope("image", load = True)(
         lambda: (dm._user_budget_reserve_mib(10 * GiB), dm.commit_load_budget_fraction("image"))[0]
     )
@@ -701,7 +682,6 @@ def test_each_backend_reads_its_own_snapshot(fraction, no_pins):
     image = dm.vram_budget_scope("image")(lambda: dm._user_budget_reserve_mib(10 * GiB))
     video = dm.vram_budget_scope("video")(lambda: dm._user_budget_reserve_mib(10 * GiB))
     assert (image(), video()) == (5 * GiB, 2560)
-    # Unscoped: the tighter of the two resident plans.
     assert dm._user_budget_reserve_mib(10 * GiB) == 5 * GiB
 
 
@@ -711,8 +691,7 @@ def test_default_budget_reserve_stays_zero_with_a_pipeline_loaded(fraction, no_p
 
 
 def _scopes(fn, seen = None):
-    """Every ``vram_budget_scope`` wrapper in ``fn``'s decorator chain, followed through ``__wrapped__`` and through
-    closures (not every decorator here uses functools.wraps)."""
+    """Every ``vram_budget_scope`` wrapper in ``fn``'s decorator chain, followed through ``__wrapped__`` and through closures (not every decorator here uses functools.wraps)."""
     seen = set() if seen is None else seen
     if not callable(fn) or id(fn) in seen or not hasattr(fn, "__code__"):
         return []

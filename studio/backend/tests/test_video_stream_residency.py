@@ -99,7 +99,6 @@ def test_video_request_path_fits_the_residency_before_the_vram_check():
         n.lineno
         for n in ast.walk(tree)
         if isinstance(n, ast.Call)
-        # the guard's own reading, or the reserve-charging helper that wraps it
         and getattr(n.func, "id", None) in ("trusted_mem_get_info", "_request_available_bytes")
     ]
     assert any(line > fit.lineno for line in free_reads)
@@ -297,7 +296,6 @@ def test_vram_budget_caps_the_resident_prefix(monkeypatch):
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
     _fit(pipe, monkeypatch, 1024)
     assert _placed(net) == ["cuda"] * 6
-    # half of any card is more than the 1 GiB room: every group streams again
     monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
     _fit(pipe, monkeypatch, 1024)
     assert _placed(net) == ["cpu"] * 6

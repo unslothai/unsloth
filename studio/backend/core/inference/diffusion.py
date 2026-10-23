@@ -2444,7 +2444,6 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
         free = card.free_mib
         if free is None:
             continue
-        # the user's VRAM Budget keeps its share of this card free too (0 at the default), as the split planned it
         free = int(free) - _device_user_budget_reserve_mib(card, card.total_mib or free)
         checked += 1
         need = int(working * scale) + reserve

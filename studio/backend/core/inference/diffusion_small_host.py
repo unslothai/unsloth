@@ -660,9 +660,7 @@ def _group_tensors(group: Any) -> list:
 
 
 def _prefetch_budget_bytes(device: Any) -> int:
-    """Bytes of encoder groups the prefetcher may hold on ``device`` ahead of compute: an eighth of free VRAM less the
-    user's VRAM Budget reserve (raw at the default), clamped to [128, 384] MiB. 0 (no prefetch) when a lowered budget
-    leaves less than the 128 MiB floor: the worker always copies one group, so the floor would spend the reserve."""
+    """Bytes of encoder groups the prefetcher may hold on ``device`` ahead of compute."""
     try:
         import torch
 
@@ -679,8 +677,7 @@ def _prefetch_budget_bytes(device: Any) -> int:
 
 
 def _prefetch_budget_lowered(device: Any) -> bool:
-    """True when the user's VRAM Budget keeps a reserve on ``device``: the prefetcher then copies ahead only groups
-    that fit its window, never one whole oversized group. False at the default and on any read failure."""
+    """True when the user's VRAM Budget keeps a reserve on ``device``."""
     try:
         import torch
 
@@ -829,7 +826,6 @@ class _EncoderPrefetcher:
                 need = self._group_bytes(group) if self.strict and group is not None else 0
                 with self.cond:
                     if need > self.budget:
-                        # Under a lowered Budget a group larger than the window would spend the reserve.
                         self.skipped[gid] = self.skipped.get(gid, 0) + 1
                         self.cond.notify_all()
                         continue

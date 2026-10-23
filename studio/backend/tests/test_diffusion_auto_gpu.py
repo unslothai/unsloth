@@ -251,8 +251,6 @@ def test_route_pins_its_automatic_decision_for_the_backend(monkeypatch):
 
 
 def test_automatic_primary_pick_ranks_by_the_budgeted_room(monkeypatch):
-    # A 192 GiB card with 60 GiB free beats an idle 24 GiB card on raw free, but at a 50% budget the planner
-    # leaves it nothing while the small card keeps about 11 GiB.
     from utils import vram_budget_settings
 
     fraction = {"value": vram_budget_settings.VRAM_FRACTION_DEFAULT}
@@ -261,15 +259,11 @@ def test_automatic_primary_pick_ranks_by_the_budgeted_room(monkeypatch):
     assert dd.resolve_auto_cuda_ordinal() == 1
     fraction["value"] = 0.5
     assert dd.resolve_auto_cuda_ordinal() == 0
-    # Identical idle cards still tie to card 0 (None) under a lowered budget.
     _host(monkeypatch, [0, 1], [_dev(0, 80.0, 0.6), _dev(1, 80.0, 0.5)])
     assert dd.resolve_auto_cuda_ordinal() is None
 
 
 def test_route_ranks_the_next_load_under_its_own_budget(monkeypatch):
-    # A pipeline committed at the default 97%, then the Budget lowered to 50%: the route's ranking for the NEXT
-    # load must charge 50% (the small card), not the resident pipeline's snapshot (the big card), and the load's
-    # planner must then read the same fraction the ranking used.
     from core.inference import diffusion_memory as dm
     from routes import inference as routes
     from utils import vram_budget_settings
@@ -284,7 +278,6 @@ def test_route_ranks_the_next_load_under_its_own_budget(monkeypatch):
     monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: True)
     dm.vram_budget_scope("image", load = True)(lambda: dm.commit_load_budget_fraction("image"))()
     fraction["value"] = 0.5
-    # The resident pipeline's generation-time guards still read its own snapshot.
     assert dm.vram_budget_scope("image")(dm._vram_budget_fraction)() == pytest.approx(0.97)
 
     seen = {}
@@ -306,9 +299,7 @@ def test_route_ranks_the_next_load_under_its_own_budget(monkeypatch):
 
     assert asyncio.run(request()) == 0
     assert seen == {"load": pytest.approx(0.5)}
-    # Outside that request the committed snapshot still governs unscoped readers.
     assert dm._vram_budget_fraction() == pytest.approx(0.97)
-    # begin_load's worker thread starts with an empty context; carry_load_budget hands it the load's value.
     import threading
 
     fraction["value"] = 0.5

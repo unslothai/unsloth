@@ -991,7 +991,6 @@ def _tile_batch_size(z: Any) -> int:
     try:
         from .diffusion_memory import user_budget_reserve_bytes
         free, total = torch.cuda.mem_get_info(z.device)
-        # the user's VRAM Budget reserve is not batch room (0 at the default)
         free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
     except Exception:  # noqa: BLE001
         return 1

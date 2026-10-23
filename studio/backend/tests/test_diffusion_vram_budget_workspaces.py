@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every runtime workspace Studio sizes from a live free-VRAM reading keeps the user's VRAM Budget reserve free: VAE
-tiles, tile batches, untiled video decodes, the H3 sd.cpp ``--max-vram`` launch, prefetch windows and probes. At the
-default budget every reading is the raw one. Hermetic: no GPU."""
+"""Every runtime workspace Studio sizes from a live free-VRAM reading keeps the user's VRAM Budget reserve free."""
 
 from __future__ import annotations
 
@@ -54,7 +52,6 @@ def test_reserve_helper_is_zero_at_the_default_and_off_cuda(fraction):
     assert user_budget_reserve_bytes("cuda", None) == 0
 
 
-# -- image VAE tiles (diffusion_vae_tiling) -----------------------------------------------------------------------
 
 
 def test_image_vae_tile_budget_reads_free_less_the_reserve(fraction, card, monkeypatch):
@@ -79,7 +76,6 @@ def test_image_vae_tile_budget_reads_free_less_the_reserve(fraction, card, monke
     per_latent = vt.decode_mib_per_latent(vt._geometry(vae)[0], False, type(vae).__name__) * scale
     assert budget == max(0, int(vt.FREE_FRACTION * mib / per_latent))
     assert budget < default_budget
-    # a card already inside the reserve grows nothing past the floor
     card["free"] = 10 * GIB
     assert vt.decode_tile_budget(vae, z) == 0
 
@@ -99,7 +95,6 @@ def test_image_vae_floor_shortfall_charges_the_reserve(fraction, card, monkeypat
     assert vt.floor_shortfall(vae, z)
 
 
-# -- fused VAE tile batches (diffusion_vae_fused) -----------------------------------------------------------------
 
 
 def test_fused_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkeypatch):
@@ -128,7 +123,6 @@ def test_fused_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkey
     assert F._tile_batch_cap(vae, z) == F._TILE_BATCH_MAX
 
 
-# -- MiniMax-H3 VAE tile batches (video_minimax_h3_vae) -----------------------------------------------------------
 
 
 def test_h3_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkeypatch):
@@ -144,7 +138,6 @@ def test_h3_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkeypat
     assert H._tile_batch_size(z) < default
 
 
-# -- untiled video decodes and LTX tile planning (video_vae_untiled) ----------------------------------------------
 
 
 def test_video_vae_free_bytes_less_the_reserve(fraction, card):
@@ -171,7 +164,6 @@ def test_untiled_video_decode_stays_tiled_when_only_raw_free_fits(fraction, card
     assert U._free_bytes(torch.device("cuda", 0)) < gate
 
 
-# -- H3 sd.cpp --max-vram (video._h3_budgeted_launch_flags) -------------------------------------------------------
 
 _COMMITTED = ["--offload-to-cpu", "--diffusion-fa", "--max-vram", "-1", "--stream-layers"]
 
@@ -190,24 +182,18 @@ def test_h3_tiny_budgeted_room_is_refused_not_handed_to_sd_cpp_raw_reading():
     for free in (0, 1 * GIB, {"cuda0": 2 * GIB}):
         with pytest.raises(H3NativeMemoryRefusal, match = "VRAM Budget"):
             V._h3_budgeted_launch_flags(_Rt(free, 12 * GIB), _COMMITTED)
-    # the same reading with no reserve keeps the placeholder (the pre-existing default behaviour)
     assert V._h3_budgeted_launch_flags(_Rt(0, 0), _COMMITTED) == _COMMITTED
 
 
 def test_h3_small_or_unread_budgeted_room_spares_the_reserve_in_sd_cpp():
     import core.inference.video as V
 
-    # 2 GiB left inside the budget: sd.cpp's raw reading less (1 GiB + the 12 GiB reserve) is that 2 GiB less 1 GiB
     out = V._h3_budgeted_launch_flags(_Rt(2 * GIB, 12 * GIB), _COMMITTED)
     assert out[3] == "-13.00" and out[:3] == _COMMITTED[:3] and out[4:] == _COMMITTED[4:]
-    # unread free (multi-card unpinned / smi failure): the spare still applies, also with a larger retry cap absent
     assert V._h3_budgeted_launch_flags(_Rt(None, 12 * GIB), _COMMITTED)[3] == "-13.00"
-    # rounded up, never under the reserve
     assert V._h3_budgeted_launch_flags(_Rt(None, int(2.501 * GIB)), _COMMITTED)[3] == "-3.51"
-    # an unread reserve keeps sd.cpp's own reading, an explicit retry cap still applies on an unread card
     assert V._h3_budgeted_launch_flags(_Rt(None, None), _COMMITTED) == _COMMITTED
     assert V._h3_budgeted_launch_flags(_Rt(None, 12 * GIB), _COMMITTED, cap = 4.5)[3] == "4.50"
-    # a readable roomy card keeps the explicit budget (already less the reserve in the probe)
     assert V._h3_budgeted_launch_flags(_Rt(10 * GIB, 12 * GIB), _COMMITTED)[3] == "8.00"
 
 
@@ -232,7 +218,6 @@ def test_h3_kill_switch_still_refuses_no_room_inside_the_budget(monkeypatch):
     for free in (0, 1 * GIB, {"cuda0": 512 * 1024**2}):
         with pytest.raises(H3NativeMemoryRefusal, match = "VRAM Budget"):
             V._h3_budgeted_launch_flags(_Rt(free, 12 * GIB), _COMMITTED)
-    # a small but workable reading and an unread card still get the spare; the default budget is unchanged
     assert V._h3_budgeted_launch_flags(_Rt(2 * GIB, 12 * GIB), _COMMITTED)[3] == "-13.00"
     assert V._h3_budgeted_launch_flags(_Rt(None, 12 * GIB), _COMMITTED)[3] == "-13.00"
     assert V._h3_budgeted_launch_flags(_Rt(0, 0), _COMMITTED) == _COMMITTED
@@ -254,13 +239,10 @@ def test_h3_card_reserve_probe(fraction, monkeypatch):
     monkeypatch.setattr(
         hardware, "get_visible_gpu_utilization", lambda **k: calls.append(1) or {"devices": devices}
     )
-    # the default reads nothing and spares nothing
     assert V._h3_card_reserve_bytes("cuda", 0) == 0 and not calls
     fraction["value"] = 0.50
     assert V._h3_card_reserve_bytes("cuda", 0) == 12 * GIB
     assert V._h3_card_reserve_bytes("cuda", 1) == 40 * GIB
-    # unpinned on a multi-card box: one scalar spare hits every card, so the smallest card's reserve (the largest
-    # would exceed the small card's whole free reading, which sd.cpp resolves to no cap at all)
     assert V._h3_card_reserve_bytes("cuda", None, single_card_only = True) == 12 * GIB
     assert V._h3_card_reserve_bytes("cpu", 0) == 0
     monkeypatch.setattr(hardware, "get_visible_gpu_utilization", lambda **k: {"devices": []})
@@ -289,9 +271,7 @@ def _two_card_h3_runtime(monkeypatch, devices):
 
 @pytest.mark.parametrize("explicit", [True, False])
 def test_unpinned_multi_card_h3_launch_keeps_every_cards_reserve(fraction, monkeypatch, explicit):
-    """An unpinned H3 load on a 24 GiB card (22 free) beside a 64 GiB one: at a 50% Budget the largest card's 32 GiB
-    reserve as a scalar spare (-33.00) exceeds the small card's whole free reading, which sd.cpp resolves to 0 = no
-    cap there. The launch must stay within the small card's 10 GiB budget-adjusted free whichever card sd.cpp picks."""
+    """An unpinned H3 load on a 24 GiB card (22 free) beside a 64 GiB one."""
     import core.inference.video as V
     from core.inference import diffusion_memory as D
     from core.inference import sd_cpp_args
@@ -304,7 +284,6 @@ def test_unpinned_multi_card_h3_launch_keeps_every_cards_reserve(fraction, monke
     ]
     runtime = _two_card_h3_runtime(monkeypatch, devices)
     flags = ["--offload-to-cpu", "--max-vram", "-1", "--stream-layers"]
-    # the default is unchanged: no scalar budget steers sd.cpp's own pick
     assert V._h3_budgeted_launch_flags(runtime, flags) == flags
     assert runtime.vram_free_probe() is None
     fraction["value"] = 0.50
@@ -312,11 +291,9 @@ def test_unpinned_multi_card_h3_launch_keeps_every_cards_reserve(fraction, monke
     launch = V._h3_budgeted_launch_flags(runtime, flags)
     value = float(launch[launch.index("--max-vram") + 1])
     for raw_free, budgeted_free in ((22 * GIB, 10 * GIB), (62 * GIB, 30 * GIB)):
-        # what sd.cpp resolves on each card: a positive cap as is, a negative one as free less the spare (<= 0: none)
         resolved = value * GIB if value >= 0 else raw_free + value * GIB
         assert value > 0, launch  # never a scalar negative spare on an unpinned multi-card load
         assert 0 < resolved <= budgeted_free, (launch, raw_free)
-    # a card already inside its reserve is refused, never handed sd.cpp's raw reading
     devices[0]["vram_used_gb"] = 11.5
     from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
 
@@ -328,18 +305,14 @@ def test_unpinned_multi_card_h3_launch_keeps_every_cards_reserve(fraction, monke
 @pytest.mark.parametrize(
     "small_used, want",
     [
-        # 50%: 24 GiB card with 14 free (2 inside the budget) + 64 GiB with 62 free (30 inside). The old scalar
-        # -13.00 spare left the 64 GiB card 49 GiB where 30 is allowed; the cap is 2 - 1 = 1.00 on every card.
         (10.0, "1.00"),
-        # 24 GiB card with 13.5 free: 1.5 inside the budget -> 0.50, still positive and within both cards
         (10.5, "0.50"),
     ],
 )
 def test_unpinned_mixed_size_h3_small_reading_is_a_positive_cap(
     fraction, monkeypatch, explicit, small_used, want
 ):
-    """Fallback review #14816 P2 (video.py:2769): the smallest card's reserve as a scalar negative spare under-budgets
-    every larger card. Unpinned multi-card under a lowered Budget emits a positive cap that fits the tightest card."""
+    """A scalar negative spare from the smallest card's reserve must not under-budget the larger card."""
     import core.inference.video as V
     from core.inference import diffusion_memory as D
     from core.inference import sd_cpp_args
@@ -362,8 +335,7 @@ def test_unpinned_mixed_size_h3_small_reading_is_a_positive_cap(
 
 @pytest.mark.parametrize("explicit", [True, False])
 def test_unpinned_multi_card_h3_refuses_unread_or_no_room(fraction, monkeypatch, explicit):
-    """Unpinned multi-card under a lowered Budget: an unread card or a smallest reading at or below sd.cpp's 1 GiB
-    spare is refused (also under the kill switch), never a scalar spare."""
+    """Unpinned multi-card under a lowered Budget."""
     import core.inference.video as V
     from core.inference import diffusion_memory as D
     from core.inference import sd_cpp_args
@@ -387,16 +359,13 @@ def test_unpinned_multi_card_h3_refuses_unread_or_no_room(fraction, monkeypatch,
     devices[0]["vram_used_gb"] = None  # unread usage on one card
     with pytest.raises(H3NativeMemoryRefusal, match = "VRAM Budget"):
         V._h3_budgeted_launch_flags(runtime, flags)
-    # the default budget is unchanged: sd.cpp's own reading, nothing refused
     fraction["value"] = vram_budget_settings.VRAM_FRACTION_DEFAULT
     assert V._h3_budgeted_launch_flags(runtime, flags) == flags
 
 
 @pytest.mark.parametrize("explicit", [True, False])
 def test_h3_single_card_refusal_checks_the_rounded_spare(fraction, monkeypatch, explicit):
-    """Fallback review #14816 P2 (video.py:1956): at 89.9% of a 24 GiB card the 2482 MiB reserve rounds UP to a
-    -3.43 spare (3512.32 MiB). 1 GiB + 1 MiB inside the budget (3507 MiB raw) passed the old > 1 GiB check, but sd.cpp
-    resolves raw free <= spare to 0 = no cap. The refusal must check the rounded spare that is emitted."""
+    """The reserve rounds UP to the emitted spare, and the refusal checks that spare."""
     import contextlib
     import functools
 
@@ -427,13 +396,11 @@ def test_h3_single_card_refusal_checks_the_rounded_spare(fraction, monkeypatch, 
 
     with pytest.raises(H3NativeMemoryRefusal, match = "VRAM Budget"):
         launch_at(reserve + GIB + MIB)
-    # with room above the rounded spare the spare is emitted and resolves to a positive cap on sd.cpp's raw reading
     raw = reserve + GIB + 64 * MIB
     out = launch_at(raw)
     assert out[2] == "-3.43" and raw + float(out[2]) * GIB > 0
 
 
-# -- the rest of the sweep --------------------------------------------------------------------------------------------
 
 
 def test_encoder_prefetch_window_reads_free_less_the_reserve(fraction, card):
@@ -457,7 +424,6 @@ def test_encoder_prefetch_is_off_when_the_budget_leaves_under_the_floor(fraction
         assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == 0
     card["free"] = 2 * GIB  # under the reserve: still nothing
     assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == 0
-    # Default budget: the floor still applies to a nearly full card, as before.
     fraction["value"] = vram_budget_settings.VRAM_FRACTION_DEFAULT
     card["free"] = 64 * 1024**2
     assert S._prefetch_budget_bytes(torch.device("cuda", 0)) == S._PREFETCH_MIN_BYTES

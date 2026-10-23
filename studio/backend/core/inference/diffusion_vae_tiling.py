@@ -253,8 +253,7 @@ def _free_mib(
     z: Any,
     cached: bool = True,
 ) -> Optional[tuple[float, float]]:
-    """(free MiB after the fp32 output accumulator, decoder bytes per param / 2); None off CUDA. Free is less the
-    user's VRAM Budget reserve (raw at the default): a tile grown from raw free would decode into that reserve."""
+    """(free MiB after the fp32 output accumulator, decoder bytes per param / 2); None off CUDA."""
     import torch
 
     from .diffusion_memory import user_budget_reserve_bytes

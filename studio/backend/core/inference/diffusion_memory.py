@@ -1595,18 +1595,11 @@ def _budget_reserve_kind(memory: DeviceMemory) -> str:
     return _ROCM_APU_POOL if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
-# The VRAM Budget fraction each committed image / video pipeline was planned with, keyed by owner ("image", "video").
-# The setting applies on the next load, so a pipeline's generation-time guards keep the fraction its placement used
-# until that pipeline reloads or unloads (the companion of the measured reserve a load stores on its pipe).
 _LOAD_BUDGET_FRACTIONS: dict[str, float] = {}
 _LOAD_BUDGET_LOCK = threading.Lock()
-# ("load", owner, fraction) inside a load: the live value snapshotted when it began, so its planner reads one value.
-# ("generate", owner, None) inside a generation: the owner's committed snapshot.
 _BUDGET_SCOPE: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
     "unsloth_vram_budget_scope", default = None
 )
-# The live value snapshotted once for an upcoming load, before the route ranks GPUs for it, so the ranking, the
-# download plan, begin_load and its worker all charge one fraction rather than the previous pipeline's snapshot.
 _UPCOMING_LOAD_FRACTION: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
     "unsloth_vram_budget_upcoming_load", default = None
 )
@@ -1618,10 +1611,7 @@ def _live_vram_budget_fraction() -> float:
 
 
 def _vram_budget_fraction() -> float:
-    """The fraction the reserve readers charge. A load reads the value it began with; a generation reads its
-    pipeline's load-time snapshot; a request preparing a load (GPU ranking, download plan) the value it snapshotted
-    for that load; any other thread the tighter committed snapshot, else the live setting. Raises like the setting
-    read."""
+    """The fraction the reserve readers charge."""
     scope = _BUDGET_SCOPE.get()
     with _LOAD_BUDGET_LOCK:
         if scope is not None and scope[0] == "load" and scope[2] is not None:
@@ -1637,8 +1627,7 @@ def _vram_budget_fraction() -> float:
 
 
 def vram_budget_scope(owner: str, *, load: bool = False) -> Callable:
-    """Decorator: run a backend's load (``load=True``, snapshots the live setting) or generation under ``owner``'s
-    VRAM Budget scope. Nested loads keep the outer snapshot."""
+    """Decorator: run a backend load (snapshots the live Budget) or generation under ``owner``'s budget scope."""
 
     def wrap(fn: Callable) -> Callable:
         @functools.wraps(fn)
@@ -1668,9 +1657,7 @@ def vram_budget_scope(owner: str, *, load: bool = False) -> Callable:
 
 
 def snapshot_upcoming_load_budget() -> Optional[float]:
-    """Snapshot the live VRAM Budget for the load this request is preparing, before it ranks GPUs, so the ranking,
-    the plan and the load itself agree. Once per request context: a later call keeps the first value. Never raises
-    (None, and the readers fall back as before, when the setting cannot be read)."""
+    """Snapshot the live VRAM Budget for the load this request is preparing, before it ranks GPUs, so the ranking, the plan and the load itself agree."""
     fraction = _UPCOMING_LOAD_FRACTION.get()
     if fraction is not None:
         return fraction
@@ -1684,8 +1671,7 @@ def snapshot_upcoming_load_budget() -> Optional[float]:
 
 @contextlib.contextmanager
 def upcoming_load_budget() -> Iterator[Optional[float]]:
-    """``snapshot_upcoming_load_budget`` for a block only (a ranking helper that runs outside a request's own
-    context): keeps a snapshot the caller already took, else takes one and drops it on exit."""
+    """``snapshot_upcoming_load_budget`` for a block only (a ranking helper that runs outside a request's own context)."""
     if _UPCOMING_LOAD_FRACTION.get() is not None:
         yield _UPCOMING_LOAD_FRACTION.get()
         return
@@ -1701,8 +1687,7 @@ def upcoming_load_budget() -> Iterator[Optional[float]]:
 
 
 def carry_load_budget(fn: Callable) -> Callable:
-    """Wrap a load's worker-thread target so it inherits the fraction the calling load began with. A plain
-    ``threading.Thread`` starts with an empty context, which would snapshot the live setting a second time."""
+    """Wrap a load's worker-thread target so it inherits the fraction the calling load began with."""
     scope = _BUDGET_SCOPE.get()
     fraction = (
         scope[2] if scope is not None and scope[0] == "load" else _UPCOMING_LOAD_FRACTION.get()
@@ -1741,10 +1726,7 @@ def release_load_budget_fraction(owner: str) -> None:
 
 
 def _user_budget_reserve_mib(base: Optional[int]) -> int:
-    """What the user's VRAM Budget setting keeps free of ``base``. 0 at or above the default, where the reserves above
-    are already tuned (3% of a 192 GiB card would exceed the discrete cap), so an untouched setting changes nothing.
-    The placement paths outside this module (multi-GPU encoder cards, CFG-parallel replicas, video residency) charge
-    the same reserve, so one setting caps every card Studio places weights on."""
+    """What the user's VRAM Budget setting keeps free of ``base``."""
     if not base or int(base) <= 0:
         return 0
     try:
@@ -1758,8 +1740,7 @@ def _user_budget_reserve_mib(base: Optional[int]) -> int:
 
 
 def user_budget_reserve_share() -> float:
-    """The share of each card the user's VRAM Budget keeps free: ``1 - fraction`` below the default, else 0.0 (as
-    :func:`_user_budget_reserve_mib`). For a child process that reads its own card's total."""
+    """The share of each card the user's VRAM Budget keeps free."""
     try:
         from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT
         fraction = _vram_budget_fraction()
@@ -1769,10 +1750,7 @@ def user_budget_reserve_share() -> float:
 
 
 def user_budget_reserve_bytes(device: Any, total_bytes: Optional[int]) -> int:
-    """What the user's VRAM Budget keeps free on ``device`` (``total_bytes`` total), in bytes: 0 at the default, on
-    Metal / CPU and for an unread total. Every runtime workspace sized from a live free reading (VAE tiles, tile
-    batches, untiled decodes, prefetch windows, probes) subtracts it, so Studio's own allocations stay inside the
-    budget the planner admitted the load with. Never raises."""
+    """What the user's VRAM Budget keeps free on ``device`` (``total_bytes`` total), in bytes."""
     kind = str(getattr(device, "type", device) or "").split(":")[0]
     if kind in ("cpu", "mps") or not total_bytes:
         return 0
@@ -1783,8 +1761,7 @@ def user_budget_reserve_bytes(device: Any, total_bytes: Optional[int]) -> int:
 
 
 def _device_user_budget_reserve_mib(memory: DeviceMemory, base: Optional[int]) -> int:
-    """:func:`_user_budget_reserve_mib` for ``memory``, 0 where the LLM path ignores the setting too: Apple Metal sizes
-    from its own unified fraction (the slider is hidden on macOS) and a CPU-only host has no GPU for it to act on."""
+    """:func:`_user_budget_reserve_mib` for ``memory``, 0 where the LLM path ignores the setting too."""
     backend = str(getattr(memory, "backend", "") or "").split(":")[0]
     if (
         backend in ("mps", "cpu")
@@ -2761,7 +2738,6 @@ def plan_diffusion_memory(
             companion_dense_mib = companion_dense_mib,
             text_encoder_dense_mib = text_encoder_dense_mib,
             base_overhead_mib = base_overhead_mib,
-            # the phase-room checks see the free memory the user's VRAM Budget leaves (raw free at the default)
             free_mib = (
                 None
                 if device_memory.free_mib is None
@@ -6736,8 +6712,6 @@ def image_activation_verdict(
     if int(needed) + overhead <= int(budget):
         return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
     if not conditioned and needed <= planned:
-        # A size the load budgeted for is never refused. Under a lowered VRAM Budget the budget can sit below even
-        # the default request, so tile the decode when that brings it back under the cap.
         if (
             tiled is not None
             and int(tiled) + overhead <= int(budget)

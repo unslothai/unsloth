@@ -1857,7 +1857,6 @@ def _h3_budgeted_launch_flags(
     if not max_vram_is_placeholder(max_vram_value(out)):
         return out
     if not explicit_vram_budget_enabled():
-        # No positive budget, but a card (nearly) inside a lowered Budget's reserve is still refused.
         return _h3_spare_user_reserve(runtime, out, read_free = True)
     probe = getattr(runtime, "vram_free_probe", None)
     try:
@@ -1886,7 +1885,6 @@ def _h3_budgeted_launch_flags(
             out = with_max_vram_budget(out, cap)
         else:
             # "-1" is sd.cpp's RAW free reading: under a lowered VRAM Budget it must spare the reserve too, and a
-            # card already (nearly) inside that reserve is refused, not handed to sd.cpp's raw reading.
             out = _h3_spare_user_reserve(runtime, out, free = free if known_small else None)
         logger.info(
             "video.h3_native_vram_budget: free VRAM unreadable or too small (%s); %s",
@@ -1905,10 +1903,7 @@ def _h3_budgeted_launch_flags(
 
 
 class _H3UnpinnedMultiCardReserve(int):
-    """The smallest card's VRAM Budget reserve on an unpinned multi-card H3 load (``_h3_card_reserve_bytes`` with
-    ``single_card_only``). Tags the reading so :func:`_h3_spare_user_reserve` never emits a scalar negative spare
-    there: sd.cpp resolves that spare against whichever card it renders on, so the smallest card's reserve would
-    under-budget every larger card."""
+    """The smallest card's VRAM Budget reserve on an unpinned multi-card H3 load (``_h3_card_reserve_bytes`` with ``single_card_only``)."""
 
 
 def _h3_spare_user_reserve(
@@ -1918,20 +1913,7 @@ def _h3_spare_user_reserve(
     free: Any = None,
     read_free: bool = False,
 ) -> list[str]:
-    """``flags`` with the ``--max-vram -1`` placeholder kept within a lowered VRAM Budget (unchanged at the default,
-    off CUDA, or when the reserve is unread).
-
-    Single card: ``-(1 + reserve GiB)``, so sd.cpp's own free-VRAM reading spares the user's reserve on top of its
-    1 GiB. ``free`` is a known-small budget-adjusted reading; the launch is refused when sd.cpp's raw reading
-    (``free`` + reserve) would not exceed the ROUNDED spare actually emitted, since sd.cpp resolves that to 0 = no cap.
-
-    Unpinned multi-card (the reserve probe returns :class:`_H3UnpinnedMultiCardReserve`): never a negative spare.
-    A POSITIVE cap of the smallest budget-adjusted free reading across the visible cards less sd.cpp's 1 GiB spare,
-    rounded down: it fits the tightest card, so it fits every card sd.cpp may pick. An unread card or a smallest
-    reading leaving no cap is refused.
-
-    ``read_free`` reads ``runtime.vram_free_probe`` for those checks, only under a reserve (the explicit-budget kill
-    switch, which otherwise never probes)."""
+    """``flags`` with the ``--max-vram -1`` placeholder kept within a lowered VRAM Budget (unchanged at the default, off CUDA, or when the reserve is unread)."""
     from .sd_cpp_args import (
         GRAPH_CUT_VRAM_FLAGS,
         graph_cut_budget_gib,
@@ -1959,7 +1941,6 @@ def _h3_spare_user_reserve(
         except Exception:  # noqa: BLE001 -- an unreadable card keeps the single-card spare
             free = None
         if not multi_card:
-            # Only a known-small reading feeds the single-card refusal, as on the explicit-budget path.
             if isinstance(free, dict):
                 small = next(
                     (v is not None for v in free.values() if graph_cut_budget_gib(v) is None), False
@@ -2007,7 +1988,6 @@ def _h3_spare_user_reserve(
         known = [int(v) for v in free.values() if v is not None]
         raise _refuse(min(known) if known else None)
     if free is not None and int(free) + int(reserve) <= spare_bytes:
-        # sd.cpp's raw reading (budget-adjusted free + reserve) at or below the emitted spare resolves to 0 = no cap.
         raise _refuse(int(free))
     out = list(flags)
     index = out.index("--max-vram") + 1
@@ -2648,15 +2628,13 @@ def _h3_planned_denoiser_bytes(
 
 
 def _user_reserve_bytes(device: Any, total_bytes: Optional[int]) -> int:
-    """What the user's VRAM Budget keeps free on ``device`` (total ``total_bytes``), in bytes: 0 at the default and on
-    Metal / CPU, where the setting does not apply (as ``_device_user_budget_reserve_mib``)."""
+    """What the user's VRAM Budget keeps free on ``device`` (total ``total_bytes``), in bytes."""
     from .diffusion_memory import user_budget_reserve_bytes
     return user_budget_reserve_bytes(device, total_bytes)
 
 
 def _planned_free_less_user_reserve_mib(memory: Any) -> Optional[int]:
-    """The load-time placement guard's free MiB: the plan's settled reading less the user's VRAM Budget reserve (the
-    reading itself at the default, on Metal and CPU). None when unread."""
+    """The load-time placement guard's free MiB."""
     free = getattr(memory, "free_mib", None)
     if free is None:
         return None
@@ -2668,9 +2646,7 @@ def _planned_free_less_user_reserve_mib(memory: Any) -> Optional[int]:
 
 
 def _request_available_bytes(device_obj: Any, module: Any) -> int:
-    """A request guard's available VRAM on ``device_obj``: trusted free (#8403) plus this process's allocator cache,
-    less the user's VRAM Budget reserve (raw at the default). Signed: a card already inside the reserve reads below 0.
-    Exceptions propagate, as the guards' own readings did."""
+    """A request guard's available VRAM on ``device_obj``."""
     from utils.hardware import trusted_mem_get_info
 
     free_bytes, total_bytes = trusted_mem_get_info(device_obj, module = module)
@@ -2685,8 +2661,7 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
 
 
 def _h3_signed_free_device_bytes(device: str) -> Optional[int]:
-    """:func:`_h3_free_device_bytes` before the clamp at 0: negative = how far the card already sits inside the
-    user's VRAM Budget reserve, which residency sizing must charge against its cache and resident credits."""
+    """:func:`_h3_free_device_bytes` before the clamp at 0."""
     if device != "cuda":
         return None
     try:
@@ -2695,7 +2670,6 @@ def _h3_signed_free_device_bytes(device: str) -> Optional[int]:
         from .diffusion_memory import _user_budget_reserve_mib
 
         # Windows ROCm over-reports free (#8403); pinning the denoiser on that reading is how a card that is already
-        # full still looks roomy. The user's VRAM Budget keeps its share of the card free (0 at the default).
         free, total = trusted_mem_get_info()
         return int(free) - (_user_budget_reserve_mib(int(total) >> 20) << 20)
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
@@ -2752,11 +2726,7 @@ def _h3_card_free_bytes(
     single_card_only: bool = False,
     allow_context: bool = True,
 ) -> Optional[int]:
-    """Free VRAM of the H3 render card, or None. ``single_card_only`` (unpinned): sd.cpp picks the card itself and
-    applies one scalar ``--max-vram`` to every card, so on a multi-card box this is None at the default Budget (no
-    scalar budget steers its pick) and, under a lowered Budget, the SMALLEST budget-adjusted reading across the
-    visible cards: a cap that keeps every card's reserve whichever one sd.cpp renders on (None if any is unread).
-    ``allow_context``: see ``_h3_card_memory_bytes``."""
+    """Free VRAM of the H3 render card, or None."""
     if single_card_only and _h3_visible_card_count(device) != 1:
         readings = _h3_unpinned_multi_card_readings(device)
         if not readings or any(free is None for free, _total in readings):
@@ -2768,8 +2738,7 @@ def _h3_card_free_bytes(
 def _h3_unpinned_multi_card_readings(
     device: Optional[str],
 ) -> Optional[list[tuple[Optional[int], int]]]:
-    """(budget-adjusted free, total) bytes of every visible card for an unpinned multi-card H3 render under a lowered
-    VRAM Budget, or None at the default / off CUDA / unread. Free is None for a card whose usage is unread."""
+    """(budget-adjusted free, total) bytes of every visible card for an unpinned multi-card H3 render under a lowered VRAM Budget, or None at the default / off CUDA / unread."""
     if device != "cuda":
         return None
     from .diffusion_memory import user_budget_reserve_share
@@ -2809,11 +2778,7 @@ def _h3_card_reserve_bytes(
     *,
     single_card_only: bool = False,
 ) -> Optional[int]:
-    """Bytes the user's VRAM Budget keeps free on the H3 render card: 0 at the default (no reading) and off CUDA, None
-    unread. ``single_card_only`` (unpinned) on a multi-card box: the SMALLEST card's reserve, tagged as
-    :class:`_H3UnpinnedMultiCardReserve`. sd.cpp picks the card itself and resolves one scalar ``--max-vram`` on every
-    card, so no scalar negative spare can keep every card's reserve; the tag makes the launch a positive cap from the
-    smallest budget-adjusted free reading instead (:func:`_h3_spare_user_reserve`)."""
+    """Bytes the user's VRAM Budget keeps free on the H3 render card."""
     if device != "cuda":
         return 0
     from .diffusion_memory import user_budget_reserve_share
@@ -2920,8 +2885,7 @@ def _h3_residency_budget_bytes(
     fragmentation: bool = True,
     top_gb: float = 0.0,
 ) -> int:
-    """Device bytes the resident set may occupy for this request: free + allocator cache + resident - budget reserve,
-    minus the request's largest phase. Negative = not even fully streamed fits. Unreadable is 0 (all streamed)."""
+    """Device bytes the resident set may occupy for this request."""
     try:
         import torch
 
@@ -3420,7 +3384,6 @@ def _stage_denoiser_for_quant(
         )
         budget = (
             int(free_bytes)
-            # the user's VRAM Budget reserve stays free while the DiT is staged too (0 at the default)
             - _user_reserve_bytes(device, total_bytes)
             - DEFAULT_BASE_OVERHEAD_MIB * 1024 * 1024
             - _STAGE_LINEAR_WORKSPACE * largest_linear
@@ -12065,7 +12028,6 @@ class VideoBackend:
                     if device_module is not None and hasattr(device_module, "mem_get_info"):
                         # Windows ROCm's free half is an over-report and this is a hard refusal, so cap it against the
                         # allocator (#8403).
-                        # The user's VRAM Budget reserve is charged here for every tier, residency or not.
                         available_vram_gb = (
                             _request_available_bytes(device_obj, device_module) / 1_000_000_000
                         )
@@ -12145,7 +12107,6 @@ class VideoBackend:
                 ):
 
                     def _available_mib(ordinal: int) -> int:
-                        # less the user's VRAM Budget reserve on each card (raw at the default)
                         available = _request_available_bytes(
                             torch.device("cuda", ordinal), torch.cuda
                         )
@@ -12256,8 +12217,6 @@ class VideoBackend:
                             frames = frames,
                             device = device_obj,
                         )
-                    # less the user's VRAM Budget reserve (raw at the default): a fully streamed denoiser leaves
-                    # nothing for the residency fit to give back, so this is where the reserve holds
                     available_bytes = _request_available_bytes(device_obj, torch.cuda)
                     shortfall = video_offload_shortfall_message(
                         family = fam.name,

@@ -319,9 +319,6 @@ def best_secondary(
         _user_budget_reserve_mib,
     )
 
-    # Raw free at the default budget (the order is unchanged there). Under a lowered one, the budget the secondary
-    # limit is cut from for ``mode`` (fast: the fast budget, else the safe one), i.e. the larger of the card's planner
-    # reserve and the user's: a big, partly used card can hold less than a small idle one.
     budgeted = _user_budget_reserve_mib(1 << 20) > 0
     limit_of = _fast_device_budget_mib if mode == "fast" else _safe_device_budget_mib
 
@@ -2983,8 +2980,6 @@ class CfgParallelRouter:
             and all(a is b for a, b in zip(declined[1], held))
         ):
             raise _KVMirrorDeclined("prefix cache does not fit on the replica card")
-        # Admission's margin (1 GiB, or the user's VRAM Budget reserve when larger): decline before copying rather than
-        # OOM mid-copy and lose the replica.
         need = sum(t.numel() * t.element_size() for t in held)
         free, total = self._secondary_free_total_mib()
         if free is not None and need + (_replica_reserve_mib(free, total) << 20) > free * (1 << 20):
@@ -3146,7 +3141,6 @@ def install_cfg_parallel(
             ) // (1 << 20)
 
             def usable(o: int) -> int:
-                # rank by what the replica may use: a big card with a large VRAM Budget reserve can hold less
                 free_o = probes[o].free_mib
                 if free_o is None:
                     return -1

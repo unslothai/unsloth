@@ -523,7 +523,6 @@ def fit_for_request(
             if wider > room:
                 room = wider
                 _COUNTS["measured_fits"] += 1
-        # the user's VRAM Budget keeps its share of the card free here too (0 at the default)
         room = max(0, room - _user_budget_reserve_mib(int(total) >> 20))
         if not blocks_enabled():
             top = _top_group_mib(module)

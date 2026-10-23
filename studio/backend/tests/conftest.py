@@ -119,7 +119,6 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _forget_load_budget_snapshots():
-    # A fake image / video load commits its VRAM Budget snapshot process-wide; the next test starts unloaded.
     def _forget():
         for name, module in list(sys.modules.items()):
             if name.endswith("core.inference.diffusion_memory"):

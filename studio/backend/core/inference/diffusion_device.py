@@ -346,9 +346,7 @@ def resolve_selected_cuda_ordinal(
 
 
 def _ranking_room_mib(free_mib: int, total_mib: Optional[int]) -> int:
-    """What a card offers a primary pick: raw free MiB at the default VRAM Budget (the order is unchanged there),
-    else the safe budget the planner admits the load with (free less the larger of the card's planner reserve and the
-    user's), so a big, partly used card can rank below a small idle one."""
+    """What a card offers a primary pick."""
     from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
 
     if _user_budget_reserve_mib(1 << 20) <= 0:
@@ -358,9 +356,7 @@ def _ranking_room_mib(free_mib: int, total_mib: Optional[int]) -> int:
 
 
 def rank_cuda_ordinals(ordinals: list[int]) -> list[int]:
-    """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last). Under a
-    lowered VRAM Budget, by the planner's safe budget on each card (:func:`_ranking_room_mib`); the raw order at the
-    default."""
+    """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last)."""
 
     def _free_vram(ordinal: int) -> int:
         try:
@@ -484,7 +480,6 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
             continue
         free_bytes = max(float(total) - float(used), 0.0) * 1024**3
         if budgeted:
-            # Under a lowered VRAM Budget, the room the planner will admit the load with on that card.
             try:
                 free_bytes = float(
                     _ranking_room_mib(int(free_bytes) >> 20, int(float(total) * 1024)) << 20

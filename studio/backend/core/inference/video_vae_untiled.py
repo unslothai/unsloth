@@ -73,8 +73,7 @@ def _decoder_itemsize(vae: Any) -> int:
 
 
 def _free_bytes(device: Any) -> Optional[int]:
-    """Device free memory plus torch's unused cache, less the user's VRAM Budget reserve (raw at the default): the
-    untiled-decode gate and LTX tile planning both size from it, so neither may decode into that reserve."""
+    """Device free memory plus torch's unused cache, less the user's VRAM Budget reserve (raw at the default)."""
     try:
         import torch
 
