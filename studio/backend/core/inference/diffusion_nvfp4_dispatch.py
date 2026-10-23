@@ -142,7 +142,9 @@ def _run_verify(device: Any) -> tuple:
                 ],
                 tactic = tactic,
             )
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             if not torch.equal(want, got):
                 return False, "the cached GEMM is not bit-identical to mm_fp4"
     except Exception as exc:  # noqa: BLE001 - a raise is a failed verify

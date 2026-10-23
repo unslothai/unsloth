@@ -452,7 +452,9 @@ def _rotq_probe(index: int, cfg: tuple) -> bool:
                 rq, rs = rotquant_reference(x, 256, kind)
                 if not (torch.equal(q, rq) and torch.equal(s, rs)):
                     return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001
         return False

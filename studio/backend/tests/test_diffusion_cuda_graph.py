@@ -135,8 +135,13 @@ def _build_stub_torch():
         return _FakeGraph()
 
     @contextlib.contextmanager
-    def _graph(graph, pool = None):
+    def _graph(
+        graph,
+        pool = None,
+        capture_error_mode = "global",
+    ):
         records["graphs"].append((graph, pool))
+        records["capture_mode"] = capture_error_mode
         yield
 
     @contextlib.contextmanager

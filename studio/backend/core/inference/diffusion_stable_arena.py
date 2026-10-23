@@ -258,7 +258,9 @@ class VmmArena:
             return
         lib = _driver()
         with torch.cuda.device(self.device_index):
-            torch.cuda.synchronize(self.device_index)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(self.device_index)
             self._base = None
             _check(lib.cuMemUnmap(self.va, self.size), "cuMemUnmap")
             _check(lib.cuMemRelease(self._handle), "cuMemRelease")

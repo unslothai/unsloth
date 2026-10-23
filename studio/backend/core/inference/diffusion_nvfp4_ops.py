@@ -410,7 +410,9 @@ def _preflight_probe(dev: Any) -> bool:
             out = out,
             backend = DEFAULT_MM_BACKEND,
         )
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return bool(torch.isfinite(y).all().item())
 
 

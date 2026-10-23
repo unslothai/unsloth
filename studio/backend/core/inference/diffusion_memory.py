@@ -1133,7 +1133,9 @@ def settled_snapshot_device_memory(
         return snapshot_device_memory(target)
     try:
         import torch
-        torch.cuda.synchronize()
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture()
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
         pass
@@ -3767,7 +3769,8 @@ def _keep_groups_resident(
         if kept:
             _bump_placement_epoch()
         if kept and onload.type == "cuda":
-            torch.cuda.synchronize(onload)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(onload)
         if logger is not None and kept:
             logger.info(
                 "diffusion.memory: %s keeps %d MiB resident (%d of %d offload groups); the rest streams",
@@ -3922,7 +3925,8 @@ def release_resident_groups(
                 state["streamed"] = _streamed_group_count(_offload_groups(module))
         device = getattr(released[0], "_unsloth_resident_device", None)
         if device is not None and torch.device(device).type == "cuda":
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(device)
         if logger is not None:
             logger.info(
                 "diffusion.memory: streaming %d MiB of resident groups for %s",
@@ -4121,7 +4125,8 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
         else:
             t.data = t.data.to(onload)
     if onload.type == "cuda":
-        torch.cuda.synchronize(onload)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+        synchronize_outside_capture(onload)
 
 
 def _unwind_group_offload(

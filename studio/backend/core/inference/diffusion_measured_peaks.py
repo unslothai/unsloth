@@ -482,7 +482,9 @@ class PeakProbe:
             if dev.index is None:
                 dev = torch.device("cuda", torch.cuda.current_device())
             self.window = open_window(dev)
-            torch.cuda.synchronize(dev)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(dev)
             torch.cuda.reset_peak_memory_stats(dev)
             self.base = int(torch.cuda.memory_allocated(dev))
             self.device = dev
@@ -494,7 +496,9 @@ class PeakProbe:
             return None
         try:
             import torch
-            torch.cuda.synchronize(self.device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(self.device)
             peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
         except Exception:  # noqa: BLE001
             peak = None
