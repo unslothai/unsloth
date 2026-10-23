@@ -2716,6 +2716,9 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self._unsloth_short_sin_cpu = (emb.sin() * self.scaling_factor).to(dtype = dtype)
         # The long cache only exists once something asks for more than original_max_position_embeddings.
         self._init_rope_cache_state(dtype)
+        # _rope_rebuild_for_grad tracks the long cache; the short cache keeps its own mark so a long
+        # rebuild cannot clear a short cache still holding inference tensors.
+        self._short_rope_rebuild_for_grad = [False] * DEVICE_COUNT
 
         self.short_cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
@@ -2752,8 +2755,10 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     def _ensure_rope_cache(self, device_index):
         if device_index is None:
             device_index = get_current_device()
-        rebuild_for_grad = self._needs_grad_rebuild(device_index)
-        if self.multi_gpu_short_cos_cached[device_index] is None or rebuild_for_grad:
+        short_rebuild_for_grad = (
+            self._short_rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
+        )
+        if self.multi_gpu_short_cos_cached[device_index] is None or short_rebuild_for_grad:
             device = torch.device(device_index)
             with self._rope_build_mode():
                 self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
@@ -2762,10 +2767,11 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
                 self.multi_gpu_short_sin_cached[device_index] = self._unsloth_short_sin_cpu.to(
                     device = device, non_blocking = True
                 )
-            self._mark_rope_build(device_index)
-        if self._rope_cache_version > 0 and (
-            rebuild_for_grad
-            or self._rope_cache_stale(self.multi_gpu_long_cos_cached[device_index], device_index)
+            self._short_rope_rebuild_for_grad[device_index] = (
+                torch.compiler.is_compiling() and not torch.is_grad_enabled()
+            )
+        if self._rope_cache_version > 0 and self._rope_cache_stale(
+            self.multi_gpu_long_cos_cached[device_index], device_index
         ):
             self._build_rope_cache(device_index)
         return device_index

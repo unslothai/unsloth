@@ -592,3 +592,21 @@ def test_compiled_inference_build_then_training_under_dynamo(kind):
         torch.testing.assert_close(V.grad, cos.expand_as(V))
     assert sum(counters["graph_break"].values()) == 0
     torch._dynamo.reset()
+
+
+def test_longrope_long_rebuild_keeps_short_marked_for_training(monkeypatch):
+    # Compiled inference builds only the short cache (inference tensors); an eager inference request
+    # then grows the long one. Rebuilding long must not clear the short cache's grad-rebuild mark.
+    rope = _longrope(128, 8)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    with torch.inference_mode():
+        monkeypatch.setattr(rope, "_rope_build_mode", torch.inference_mode)
+        rope.get_cached(4, 1)
+        assert rope.multi_gpu_short_cos_cached[1].is_inference()
+    monkeypatch.undo()
+    with torch.inference_mode():
+        rope.extend_rope_embedding(_x(1), 100)
+    assert not rope.multi_gpu_long_cos_cached[1].is_inference()
+    cos, sin = rope.get_cached(4, 1)
+    _assert_trainable(cos, sin)
+    _assert_trainable(rope.multi_gpu_long_cos_cached[1], rope.multi_gpu_long_sin_cached[1])
