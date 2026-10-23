@@ -251,9 +251,13 @@ def test_rocm_routes(monkeypatch, arch, triton_version, expected, old):
     ragged = "bytes" if arch.startswith("gfx11") else "torch"
     assert route((11, 5), weight = _weight(130, 200, "cuda"), **hip) == ragged
     assert route((11, 5), block = (64, 128), **hip) == ragged
-    assert route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float32, **hip) == ragged
+    assert (
+        route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float32, **hip) == ragged
+    )
     # fp16 output keeps the old route (the torch loop rounds fp16 differently on gfx1151).
-    assert route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip) == "torch"
+    assert (
+        route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip) == "torch"
+    )
     # Only e4m3fn is decoded: e5m2 / e4m3fnuz keep the native triton kernel.
     assert route((11, 5), weight = w.float().to(torch.float8_e5m2), **hip) == "triton_fp8"
     if hasattr(torch, "float8_e4m3fnuz"):
@@ -288,7 +292,16 @@ def test_rocm_unknown_arch_keeps_its_route(monkeypatch):
     fp8._rocm_bytes_dequant_arch.cache_clear()
     # Triton 3.5+ needs no arch for fp8e4nv, so the native kernel stays; ragged keeps the torch loop.
     assert route((11, 5), hip = "6.4.0", arch = None, triton_version = "3.6.0") == "triton_fp8"
-    assert route((11, 5), hip = "6.4.0", arch = None, triton_version = "3.6.0", weight = _weight(130, 200, "cuda")) == "torch"
+    assert (
+        route(
+            (11, 5),
+            hip = "6.4.0",
+            arch = None,
+            triton_version = "3.6.0",
+            weight = _weight(130, 200, "cuda"),
+        )
+        == "torch"
+    )
 
 
 HIP = CUDA and torch.version.hip is not None

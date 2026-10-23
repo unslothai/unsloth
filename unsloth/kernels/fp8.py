@@ -766,7 +766,9 @@ def _rocm_bytes_dequant_arch(device):
 def _hip_bytes_dequant(device, out_dtype):
     # fp16 output is left out: on gfx1151 the byte decoder and the fp8e4nv kernel both round fp16
     # differently from the torch loop there, so the torch loop's fp16 result is kept.
-    return _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
+    return (
+        _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
+    )
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
