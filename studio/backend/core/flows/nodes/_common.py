@@ -882,12 +882,19 @@ def _fit_mask(mask: bytes, size: tuple[int, int]) -> tuple[bytes, Optional[tuple
     return out.getvalue(), (original if original != size else None)
 
 
-async def _mask_data_url(ctx: Any, mask: dict, init_image: dict) -> str:
+def upright_size(data: bytes) -> tuple[int, int]:
+    """The image's size as Studio's image routes see it: turned per its EXIF orientation, like phone photos."""
     from PIL import Image
 
+    from core.inference.image_orientation import exif_upright
+
+    return exif_upright(Image.open(io.BytesIO(data))).size
+
+
+async def _mask_data_url(ctx: Any, mask: dict, init_image: dict) -> str:
     mask_bytes, _ = await media_bytes(ctx, mask)
     init_bytes, _ = await media_bytes(ctx, init_image)
-    size = await asyncio.to_thread(lambda: Image.open(io.BytesIO(init_bytes)).size)
+    size = await asyncio.to_thread(upright_size, init_bytes)
     fitted, original = await asyncio.to_thread(_fit_mask, mask_bytes, size)
     if original is not None:
         ctx.log(
@@ -898,14 +905,57 @@ async def _mask_data_url(ctx: Any, mask: dict, init_image: dict) -> str:
     return f"data:image/png;base64,{base64.b64encode(fitted).decode()}"
 
 
+SEGMENTER = "/api/inference/images/segment"
+
+
+async def ensure_segmenter(ctx: Any) -> None:
+    """Download Studio's text-to-mask segmenter on first use, as a model step downloads its model."""
+    found = await ctx.call("GET", f"{SEGMENTER}/status")
+    if not isinstance(found, dict) or found.get("downloaded") is not False:
+        return
+    if found.get("supported") is False:
+        raise FlowNodeError(
+            found.get("reason") or "Mask from text is not available on this install"
+        )
+    ctx.log("Downloading the mask segmenter (first use only)")
+    await ctx.call("POST", f"{SEGMENTER}/download", json = {})
+
+    def parse(payload: Any) -> tuple[str, Optional[dict], Optional[str]]:
+        payload = payload if isinstance(payload, dict) else {}
+        download = payload.get("download") or {}
+        if payload.get("downloaded") and not download.get("downloading"):
+            return "completed", None, None
+        if download.get("error"):
+            return "failed", None, f"Downloading the mask segmenter failed: {download['error']}"
+        if download.get("cancelled") or not download.get("downloading"):
+            return "cancelled", None, "The mask segmenter download stopped"
+        done, total = download.get("bytes_done"), download.get("bytes_total")
+        progress = (
+            {"phase": "Downloading the mask segmenter", "step": int(done), "total": int(total)}
+            if isinstance(done, (int, float)) and isinstance(total, (int, float)) and total
+            else None
+        )
+        return "running", progress, None
+
+    async def cancel() -> None:
+        await ctx.call("POST", f"{SEGMENTER}/cancel", json = {})
+
+    await poll_job(
+        ctx,
+        status = lambda: ctx.call("GET", f"{SEGMENTER}/status"),
+        parse = parse,
+        cancel = cancel,
+        interval = 2.0,
+    )
+
+
 async def segment(ctx: Any, image: dict, subject: str) -> bytes:
     """A grayscale mask PNG (white = the subject) at the image's size, from Studio's SAM 3 segmenter."""
-    from PIL import Image
-
     data, mime = await media_bytes(ctx, image)
+    await ensure_segmenter(ctx)
     answer = await ctx.call(
         "POST",
-        "/api/inference/images/segment",
+        SEGMENTER,
         json = {
             "image": f"data:{mime};base64,{base64.b64encode(data).decode()}",
             "prompt": subject or "subject",
@@ -914,7 +964,7 @@ async def segment(ctx: Any, image: dict, subject: str) -> bytes:
     mask_value = answer.get("mask") if isinstance(answer, dict) else None
     if not isinstance(mask_value, str):
         raise FlowNodeError("The segmenter returned no mask")
-    size = await asyncio.to_thread(lambda: Image.open(io.BytesIO(data)).size)
+    size = await asyncio.to_thread(upright_size, data)
     fitted, _ = await asyncio.to_thread(_fit_mask, _decode_data_url(mask_value), size)
     return fitted
 

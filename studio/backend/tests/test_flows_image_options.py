@@ -341,3 +341,80 @@ def test_video_rejects_references_with_a_last_frame_before_calling_the_route():
     with pytest.raises(FlowNodeError, match = "keyframes"):
         asyncio.run(video_nodes.generate(ctx))
     assert calls == []
+
+
+def _phone_jpeg(size = (60, 40)) -> bytes:
+    # Stored landscape, EXIF orientation 6: shown (and processed by Studio's routes) as portrait.
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    out = io.BytesIO()
+    Image.new("RGB", size, (10, 120, 200)).save(out, "JPEG", exif = exif.tobytes())
+    return out.getvalue()
+
+
+def test_masks_and_canvas_follow_the_exif_upright_image():
+    photo = _phone_jpeg()
+    assert _common.upright_size(photo) == (40, 60)
+    ctx = FakeCtx(files = {"src": photo}, segment_mask = _png((40, 60), 255, "L"))
+    mask = Image.open(io.BytesIO(asyncio.run(_common.segment(ctx, _media("src"), "the face"))))
+    assert mask.size == (40, 60)
+    image_png, _ = image_nodes.pad_canvas(photo, 10, 0, 0, 0, 0)
+    assert Image.open(io.BytesIO(image_png)).size == (50, 60)
+
+
+def test_find_mask_downloads_the_segmenter_on_first_use(monkeypatch):
+    monkeypatch.setattr(_common.asyncio, "sleep", _no_sleep)
+    state = {"downloaded": False, "downloading": False}
+    calls = []
+
+    class SegCtx(FakeCtx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+        ):
+            calls.append((method, path))
+            if path.endswith("/segment/status"):
+                body = {"supported": True, "downloaded": state["downloaded"]}
+                if state["downloading"]:
+                    # The second poll sees the finished download.
+                    state.update(downloaded = True, downloading = False)
+                    body["download"] = {"downloading": True, "bytes_done": 5, "bytes_total": 10}
+                return body
+            if path.endswith("/segment/download"):
+                state["downloading"] = True
+                return {}
+            if path == "/api/inference/images/segment" and not state["downloaded"]:
+                raise FlowNodeError("The segmenter is not downloaded")
+            return await super().call(method, path, json)
+
+    ctx = SegCtx(files = {"src": _png((40, 30))}, segment_mask = _png((40, 30), 255, "L"))
+    asyncio.run(_common.segment(ctx, _media("src"), "the face"))
+    assert ("POST", "/api/inference/images/segment/download") in calls
+    assert calls[-1] == ("POST", "/api/inference/images/segment")
+
+
+def test_find_mask_explains_an_install_without_sam3():
+    class NoSam(FakeCtx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+        ):
+            if path.endswith("/segment/status"):
+                return {
+                    "supported": False,
+                    "downloaded": False,
+                    "reason": "Mask from text needs transformers 5",
+                }
+            return await super().call(method, path, json)
+
+    ctx = NoSam(files = {"src": _png((40, 30))}, segment_mask = _png((40, 30), 255, "L"))
+    with pytest.raises(FlowNodeError, match = "needs transformers 5"):
+        asyncio.run(_common.segment(ctx, _media("src"), "the face"))
+
+
+async def _no_sleep(*_a, **_k):
+    return None

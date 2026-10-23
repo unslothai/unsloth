@@ -286,9 +286,12 @@ async def pad(ctx: NodeContext) -> dict:
 def _open(data: bytes) -> Any:
     from PIL import Image
 
+    from core.inference.image_orientation import exif_upright
+
     im = Image.open(io.BytesIO(data))
     im.load()
-    return im.convert("RGBA")
+    # Upright like Studio's image routes and the browser show it, so a phone photo is not turned sideways.
+    return exif_upright(im).convert("RGBA")
 
 
 def fit(im: Any, width: int, height: int, mode: str) -> Any:
