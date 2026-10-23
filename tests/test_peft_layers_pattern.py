@@ -73,3 +73,35 @@ def test_layers_pattern_reaches_lora_config(monkeypatch):
 def test_layers_pattern_keeps_the_aux_stack_out(monkeypatch):
     config = _lora_config(monkeypatch, layers_to_transform = [1], layers_pattern = "layers")
     assert _lora_modules(config) == ["model.layers.1.self_attn.q_proj"]
+
+
+def test_scalar_layer_zero_with_layers_pattern(monkeypatch):
+    # PEFT < 0.21 rejects a falsy layers_to_transform next to layers_pattern, so 0 must not reach it as an int.
+    config = _lora_config(monkeypatch, layers_to_transform = 0, layers_pattern = "layers")
+    assert config.layers_to_transform == [0]
+    assert config.layers_pattern == "layers"
+    assert _lora_modules(config) == ["model.layers.0.self_attn.q_proj"]
+
+
+def test_scalar_layer_zero_with_layers_pattern_fast_base_model(monkeypatch):
+    import unsloth.models.vision as vision_module
+    from unsloth.models.vision import FastBaseModel
+
+    def capture(model, lora_config, *args, **kw):
+        raise _Captured(lora_config)
+
+    monkeypatch.setattr(vision_module, "_get_peft_model", capture)
+    monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    with pytest.raises(_Captured) as info:
+        FastBaseModel.get_peft_model(
+            _tiny_llama_with_aux_stack(),
+            r = 4,
+            target_modules = ["q_proj"],
+            use_gradient_checkpointing = False,
+            layers_to_transform = 0,
+            layers_pattern = "layers",
+        )
+    config = info.value.args[0]
+    assert config.layers_to_transform == [0]
+    assert _lora_modules(config) == ["model.layers.0.self_attn.q_proj"]

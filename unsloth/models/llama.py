@@ -4384,6 +4384,9 @@ class FastLlamaModel:
         prefetch_depth = prefetch_depth_arg(kwargs)
         # A pre-wrapped model returns early below, before patch_peft_model; reject before PEFT injects layers.
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
+        # PEFT < 0.21 treats a scalar layer 0 as missing when layers_pattern is set; it accepts [0].
+        if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
+            layers_to_transform = [layers_to_transform]
         # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
