@@ -719,7 +719,12 @@ def _two_adapter_model(torch, active):
     object.__setattr__(model, "peft_config", {"default": None, "task": None})
     object.__setattr__(model, "active_adapter", active)
 
-    def peft_save(save_directory, safe_serialization = True, selected_adapters = None, **kwargs):
+    def peft_save(
+        save_directory,
+        safe_serialization = True,
+        selected_adapters = None,
+        **kwargs,
+    ):
         # PEFT saves every adapter only when `selected_adapters` is None; [] saves none.
         for name in ("default", "task") if selected_adapters is None else selected_adapters:
             folder = Path(save_directory) / ("" if name == "default" else name)

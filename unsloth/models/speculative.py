@@ -242,7 +242,12 @@ def _is_transformers_native_peft(model):
     return not isinstance(model, PeftModel)
 
 
-def _fresh_adapter_dirs(model, save_directory, started, selected = None):
+def _fresh_adapter_dirs(
+    model,
+    save_directory,
+    started,
+    selected = None,
+):
     """Adapter folders this save wrote, relative to `save_directory` ("" is the folder itself),
     as (adapter name, folder) pairs.
 
