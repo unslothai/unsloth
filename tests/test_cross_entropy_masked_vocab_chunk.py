@@ -58,7 +58,7 @@ _INTERPRETER_SCRIPT = textwrap.dedent(
 
     source, out = sys.argv[1], sys.argv[2]
     names = {"_chunked_cross_entropy_forward", "_cross_entropy_backward"}
-    tree = ast.parse(open(source).read(), filename = source)
+    tree = ast.parse(open(source, encoding = "utf-8").read(), filename = source)
     body = [
         node for node in tree.body
         if (isinstance(node, ast.FunctionDef) and node.name in names)
@@ -123,7 +123,7 @@ def test_masked_vocab_chunk_matches_fp64_interpreter(tmp_path, block, warps):
     logits, labels = _inputs()
     data, out, script = tmp_path / "in.pt", tmp_path / "out.pt", tmp_path / "run.py"
     torch.save({"logits": logits, "labels": labels, "block": block, "warps": warps}, data)
-    script.write_text(_INTERPRETER_SCRIPT)
+    script.write_text(_INTERPRETER_SCRIPT, encoding = "utf-8")
     env = dict(os.environ, TRITON_INTERPRET = "1", CUDA_VISIBLE_DEVICES = "")
     result = subprocess.run(
         [sys.executable, str(script), str(SOURCE), str(out), str(data)],
@@ -156,7 +156,7 @@ def test_masked_vocab_chunk_matches_fp64_cuda(monkeypatch, config):
 
 def test_chunked_forward_guards_an_all_masked_chunk():
     """Source pin: the chunk max is reset before the subtraction in the chunked forward."""
-    tree = ast.parse(SOURCE.read_text())
+    tree = ast.parse(SOURCE.read_text(encoding = "utf-8"))
     fn = next(
         n
         for n in tree.body
