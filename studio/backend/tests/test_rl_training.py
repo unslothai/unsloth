@@ -928,6 +928,16 @@ def test_null_message_fields_from_arrow_are_dropped():
     assert msgs[0] == {"role": "user", "content": "hi"}
 
 
+def test_arrow_padding_from_mixed_message_rows_keeps_speaker_and_text():
+    from core.training.rl import _as_messages
+
+    padded = [{"role": "user", "content": "OpenAI question", "from": None, "value": None}]
+    assert _as_messages(padded, "user") == [{"role": "user", "content": "OpenAI question"}]
+    assert _as_messages({"role": None, "content": "4"}, "assistant") == [
+        {"role": "assistant", "content": "4"}
+    ]
+
+
 def test_the_mapped_prompts_system_message_survives_full_conversation_branches():
     system = {"role": "system", "content": "Always answer in French."}
     user = {"role": "user", "content": "Say hello."}
