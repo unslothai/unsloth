@@ -2888,11 +2888,16 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_pages_send_the_installed_safaris_user_agent() {
-        let plist =
-            std::fs::read_to_string("/Applications/Safari.app/Contents/Info.plist").unwrap();
-        let key = plist.find("<key>CFBundleShortVersionString</key>").unwrap();
-        let version = plist[key..].split("<string>").nth(1).unwrap();
-        let version = &version[..version.find("</string>").unwrap()];
+        // plutil reads binary and XML plists alike.
+        let out = std::process::Command::new("/usr/bin/plutil")
+            .args(["-extract", "CFBundleShortVersionString", "raw", "-o", "-"])
+            .arg("/Applications/Safari.app/Contents/Info.plist")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let version = String::from_utf8(out.stdout).unwrap();
+        let version = version.trim();
+        assert!(!version.is_empty());
         assert_eq!(
             page_user_agent().unwrap(),
             format!(
