@@ -15,6 +15,20 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* A clickable button's fill: a grey wash in light, a white wash in dark. No border. */
+@utility btn-fill {
+	background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	&:hover {
+		background-color: rgb(0 0 0 / calc(0.09 * var(--contrast-wash-gain, 1)));
+	}
+	&:where(.dark *) {
+		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	&:where(.dark *):hover {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+	}
+}
+
 @layer components {
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
@@ -3093,6 +3107,14 @@ html[data-chat-font] .aui-root {
 	}
 	.unsloth-model-selector-menu[data-slot] {
 		border-radius: 1.25rem !important;
+	}
+	/* Its outline buttons keep their border. */
+	html:not(.dark) .unsloth-model-selector-menu .btn-fill {
+		border-color: var(--border);
+		background-color: var(--background);
+	}
+	html:not(.dark) .unsloth-model-selector-menu .btn-fill:hover {
+		background-color: color-mix(in oklab, var(--accent) 50%, transparent);
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
