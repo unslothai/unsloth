@@ -311,6 +311,7 @@ def _launch_seg_mm(
         BLOCK_N = BLOCK_N,
         BLOCK_K = BLOCK_K,
         num_warps = 4,
+        enable_fp_fusion = True,
     )
 
 
@@ -350,6 +351,7 @@ def _launch_seg_wgrad(
         BLOCK_I = BLOCK_I,
         BLOCK_J = BLOCK_J,
         num_warps = 4,
+        enable_fp_fusion = True,
     )
 
 
