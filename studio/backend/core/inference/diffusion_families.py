@@ -263,8 +263,11 @@ class DiffusionFamily:
 
 
 # Fresh servers rendered 2-4 variants of one seed here (FLUX.1, Z-Image, Qwen-Image; the edit siblings share their DiT):
-# near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200: FLUX.1 measured deterministic.
+# near-tied norm-reduction configs, benchmarked per process, sum in different orders.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
+# FLUX.1 races on B200 too (schnell int8, cold inductor cache): 15 fresh processes denoised one seed into 3 latents; with
+# the filter 12/12 matched bitwise. Kontext runs the same DiT.
+_FLUX1_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 # Qwen-Image races on B200 too (torch 2.14): fresh processes rendered one seed 26 dB apart; with the filter 6/6 matched bitwise.
 _QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 
@@ -405,7 +408,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         uses_negative_prompt = False,
@@ -472,6 +475,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "Flux2KleinPipeline",
         # B200: a per-process XBLOCK pick for the q/k RMSNorm reduction changed the latent and stuck to the compile home.
         filter_reduction_configs_archs = ((10, 0),),
+        # Same VAE as FLUX.2-dev: cudnn.benchmark's per-process conv pick decoded one latent into 6 images over 9 fresh
+        # B200 processes; with it off every process matched.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
@@ -699,7 +705,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.1-kontext",
         comfy_shift_node = "flux",
         profile = FamilyProfile(preview_factors = "flux1"),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
+        # FLUX.1 VAE, as flux.1: with cudnn.benchmark one 768 px latent decoded 4 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = flux_mu_shift(
             1.15
         ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
@@ -739,6 +747,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "qwen_image",
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # Qwen-Image VAE, as qwen-image: cudnn.benchmark split one latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         comfy_flow_shift_variants = (
             ("qwen-image-edit-2511", 3.1),
@@ -813,6 +823,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
         ),
         filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # RGBA Qwen-Image VAE: cudnn.benchmark split one 768 px latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
         comfy_flow_shift = 1.0,
         layer_count = 2,

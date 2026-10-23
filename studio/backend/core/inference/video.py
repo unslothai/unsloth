@@ -4995,10 +4995,11 @@ class VideoBackend:
                 return
             logger.error("video.load_failed: %s", exc)
             if self._state is not None:
-                from .gpu_arbiter import VIDEO, restore_owner_account
+                from .gpu_arbiter import VIDEO, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(VIDEO)
+                restore_media_need(VIDEO)
                 restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             # NVFP4 caches pin the denoiser, but a failed replacement keeps the old model, whose graph still uses them.
