@@ -986,7 +986,7 @@ def detect_vlm_dataset_structure(dataset):
                 return False
             return os.path.exists(sample_value)
         if private_sources_allowed():
-            # The owner opted out of the guard: still probe, so a broken column loses to a working one.
+            # Still probe, so a broken column loses to a working one.
             try:
                 with open_opted_in_url(sample_value, method = "HEAD", timeout = 3) as response:
                     return response.status < 400

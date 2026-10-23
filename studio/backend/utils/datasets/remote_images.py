@@ -35,15 +35,13 @@ _DATASETS_OWN_SCHEMES = {
 }
 
 
-# The same opt-in unsloth_zoo's media fetch honours: images on a LAN host, a share or a non-Hub
-# archive the owner trusts load the way datasets loads them.
+# Same opt-in as unsloth_zoo's media fetch: trusted LAN hosts, shares and archives load as datasets loads them.
 ALLOW_PRIVATE_ENV = "UNSLOTH_ALLOW_PRIVATE_URL_FETCH"
 _OPT_IN_HINT = f"Set {ALLOW_PRIVATE_ENV}=1 to load images from private hosts or shares you trust."
 
 
 def private_sources_allowed():
-    """Single-user installs only: with managed accounts, a row one of them supplies must not reach
-    the owner's LAN. Fails closed if the account store cannot be read."""
+    """Single-user installs only, so a managed account's row cannot reach the owner's LAN; fails closed."""
     if os.environ.get(ALLOW_PRIVATE_ENV) != "1":
         return False
     try:
@@ -62,8 +60,7 @@ _WINDOWS = os.name == "nt"
 
 
 def is_network_share(path):
-    """UNC and network ``file:`` paths: Windows would open an SMB connection to the host. Elsewhere
-    ``//x`` is an ordinary path, and ``\\\\wsl$`` is the user's own WSL distro."""
+    """Windows UNC / network ``file:`` paths (SMB); ``\\\\wsl$`` and non-Windows ``//x`` are local."""
     if not _WINDOWS:
         return False
     p = path.replace("\\", "/")
@@ -83,8 +80,7 @@ def is_network_share(path):
 
 
 def guard_url(url):
-    """Percent-encode what a browser would (a raw space) in the path and query, so the guard sees a
-    valid URL; the host is left alone so an internationalized name still goes through IDNA."""
+    """Percent-encode the path, query and fragment as a browser would; the host is left for IDNA."""
     from urllib.parse import quote, urlsplit, urlunsplit
 
     try:
