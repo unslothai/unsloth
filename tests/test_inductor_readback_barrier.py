@@ -122,6 +122,7 @@ def test_no_barrier_for_other_buffers_or_cpu(patched):
 
 
 def test_idempotent_and_keys_the_compile_cache(patched):
+    pytest.importorskip("torch._inductor.custom_graph_pass")
     fake, fixes, inductor_config = patched
     first = fake.load
     fixes.fix_inductor_reduction_readback_race()
