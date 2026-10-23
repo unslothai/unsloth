@@ -508,9 +508,11 @@ def note_branch(
         for key, job in list(_noted_branches.items()):
             if job[3] is not None and job[3]():
                 del _noted_branches[key]
+        key = (account.account_id, thread_id)
+        _noted_branches.pop(key, None)
         while len(_noted_branches) >= _NOTED_MAX:
             del _noted_branches[next(iter(_noted_branches))]
-        _noted_branches[(account.account_id, thread_id)] = (
+        _noted_branches[key] = (
             account,
             thread_id,
             list(messages),

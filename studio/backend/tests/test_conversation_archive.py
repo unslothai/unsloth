@@ -1885,6 +1885,10 @@ def test_noted_snapshots_of_stopped_requests_do_not_pile_up(monkeypatch):
     for index in range(20):
         conversation_archive.note_branch(f"many-{index}", message)
     assert len(conversation_archive._noted_branches) <= conversation_archive._NOTED_MAX
+    # Re-noting a queued thread replaces its snapshot without evicting an unrelated chat.
+    queued = list(conversation_archive._noted_branches)
+    conversation_archive.note_branch(queued[-1][1], message)
+    assert set(conversation_archive._noted_branches) == set(queued)
 
 
 def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
