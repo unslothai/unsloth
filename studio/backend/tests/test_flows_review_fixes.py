@@ -710,3 +710,65 @@ def test_cached_media_the_user_deleted_is_not_served(monkeypatch):
     assert not _common.gallery_media_present(gone)
     # Embedded flow assets and plain values are not gallery entries.
     assert _common.gallery_media_present({"image": {"kind": "image", "ref": "sha256:abc"}, "n": 3})
+
+
+class _UpscaleCtx:
+    def __init__(self, png: bytes, error: str):
+        self.inputs = {"image": {"kind": "image", "ref": "a" * 64}}
+        self.params = {"factor": "2"}
+        self.seed, self.error, self.png, self.logs, self.saved = 1, error, png, [], []
+
+    async def generate_image(self, **kwargs):
+        raise FlowNodeError(self.error)
+
+    async def media_bytes(self, value):
+        return self.png, "image/png"
+
+    def log(
+        self,
+        message,
+        level = "info",
+    ):
+        self.logs.append((level, message))
+
+    async def save_asset(
+        self,
+        data,
+        mime,
+        kind = None,
+    ):
+        self.saved.append(data)
+        return {"kind": "image", "ref": "b" * 64}
+
+
+def _png_bytes(w, h):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), "red").save(buf, format = "PNG")
+    return buf.getvalue()
+
+
+def test_upscale_resizes_when_the_loaded_model_cannot_upscale():
+    import io
+
+    from PIL import Image
+
+    from core.flows.nodes.image import upscale
+
+    ctx = _UpscaleCtx(
+        _png_bytes(64, 40), "upscale is not supported for the 'flux.2-klein' model family."
+    )
+    out = asyncio.run(upscale(ctx))
+    assert out["image"]["kind"] == "image"
+    assert Image.open(io.BytesIO(ctx.saved[0])).size == (128, 80)
+    assert ctx.logs and ctx.logs[0][0] == "warning"
+
+
+def test_upscale_still_raises_other_errors():
+    from core.flows.nodes.image import upscale
+    ctx = _UpscaleCtx(_png_bytes(8, 8), "No image model is loaded")
+    with pytest.raises(FlowNodeError):
+        asyncio.run(upscale(ctx))

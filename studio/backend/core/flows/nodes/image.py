@@ -98,16 +98,42 @@ async def remove_bg(ctx: NodeContext) -> dict:
     return {"image": cutout, "mask": mask}
 
 
+MAX_UPSCALE_SIDE = 8192
+
+
 @handler("image.upscale")
 async def upscale(ctx: NodeContext) -> dict:
     source = ctx.inputs["image"]
-    images = await ctx.generate_image(
-        model = None,
-        prompt = source.get("prompt") or "high quality, sharp details",
-        seed = ctx.seed,
-        init_image = source,
-        upscale = float(ctx.params.get("factor") or 2),
-    )
+    factor = float(ctx.params.get("factor") or 2)
+    try:
+        images = await ctx.generate_image(
+            model = None,
+            prompt = source.get("prompt") or "high quality, sharp details",
+            seed = ctx.seed,
+            init_image = source,
+            upscale = factor,
+        )
+    except FlowNodeError as exc:
+        # Some families (FLUX.2-klein among them) cannot upscale; a plain resize still gives the size asked for.
+        if "not supported" not in str(exc):
+            raise
+        ctx.log(f"{exc} Resized with Lanczos instead.", level = "warning")
+        data, _ = await ctx.media_bytes(source)
+
+        def bigger() -> bytes:
+            from PIL import Image
+
+            im = _open(data)
+            scale = min(factor, MAX_UPSCALE_SIDE / max(im.size))
+            return _png(
+                im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
+            )
+
+        return {
+            "image": await ctx.save_asset(
+                await asyncio.to_thread(bigger), "image/png", kind = "image"
+            )
+        }
     return {"image": images[0]}
 
 
