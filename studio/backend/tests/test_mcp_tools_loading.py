@@ -942,7 +942,14 @@ def test_a_cancelled_media_unload_still_unloads_the_load_it_stopped(monkeypatch,
     registered, seen_at_unload = [], []
 
     async def scenario():
-        async def route_json(method, path, caller = None, json_body = None, params = None, **_kw):
+        async def route_json(
+            method,
+            path,
+            caller = None,
+            json_body = None,
+            params = None,
+            **_kw,
+        ):
             if path == "/api/inference/video/load":
                 await asyncio.to_thread(time.sleep, 0.3)
                 registered.append(True)
@@ -999,7 +1006,13 @@ def test_a_late_media_unload_leaves_a_newer_load_alone(monkeypatch, fast_polls):
     assert seen_at_unload == [False]
 
 
-def _late_unload_scenario(monkeypatch, *, post_s, unload_s = 0.0, plans = None):
+def _late_unload_scenario(
+    monkeypatch,
+    *,
+    post_s,
+    unload_s = 0.0,
+    plans = None,
+):
     """A fake video backend for the late-unload races: each load POST takes the next of ``post_s``
     seconds and registers LTX; ``plans`` stand in for each load's download plan, in order."""
     from studio_mcp import placement as place
@@ -1007,7 +1020,14 @@ def _late_unload_scenario(monkeypatch, *, post_s, unload_s = 0.0, plans = None):
     state = {"registered": 0, "unloads": [], "loading": 0}
     delays, plans = list(post_s), list(plans or [])
 
-    async def route_json(method, path, caller = None, json_body = None, params = None, **_kw):
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        json_body = None,
+        params = None,
+        **_kw,
+    ):
         if path == "/api/inference/video/load":
             state["loading"] += 1
             await asyncio.to_thread(time.sleep, delays.pop(0))
@@ -1067,12 +1087,12 @@ def test_a_late_media_unload_leaves_a_replacement_that_finished_first_alone(
         await loading.unload_media(caller, "video")
         retry = await loading.load_media(
             caller,
-                None,
-                kind = "video",
-                model = LTX,
-                variant = None,
-                hf_token = None,
-                deadline = time.monotonic() + 5,
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
         )
         assert retry.loaded is True
         assert not loading.LOADS.running(caller.account_id)
