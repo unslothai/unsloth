@@ -2651,6 +2651,7 @@ class InferenceOrchestrator:
     # Dictation models run in the STT sidecars (whisper-server, llama-server, and the Transformers spawn child), not
     # the chat worker. Their lifecycle goes through here all the same, so one object knows everything that is resident
     # and Voice settings and Model Hub cannot report different things about one model.
+    @holds_inference
     def load_stt_model(
         self,
         model: Optional[str],

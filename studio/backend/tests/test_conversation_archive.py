@@ -1772,6 +1772,7 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     from core.inference.video import VideoBackend
     from core.training.diffusion_training_service import DiffusionTrainingService
     from core.training.training import TrainingBackend
+    from core.inference import stt_registry
     from routes import inference as inference_routes
 
     for fn in (
@@ -1792,6 +1793,8 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
         MlxDiffusionBackend.begin_load,
         VideoBackend.begin_load,
         inference_routes._transcribe_audio_result,
+        InferenceOrchestrator.load_stt_model,
+        stt_registry.load,
         TrainingBackend.start_training,
         DiffusionTrainingService.start,
     ):
@@ -1877,6 +1880,18 @@ def test_an_interrupted_gap_requeues_what_it_did_not_finish(conn, monkeypatch):
         # Nothing left for the stream's end to restart, so teardown has no worker to wait out.
         conversation_archive._noted_branches.clear()
     assert queued == ["requeue-a", "requeue-b"]
+
+
+def test_a_direct_llama_call_holds_the_gap_closed(conn):
+    """Caption / OCR during ingestion and TTS post to llama-server directly, outside the chat paths."""
+    from routes import inference as inference_routes
+
+    with inference_routes._direct_llama_request():
+        assert conversation_archive._inference_depth == 1
+        assert conversation_archive._prewarm_stop.is_set()
+    assert conversation_archive._inference_depth == 0
+    with inference_routes._direct_llama_request(counted = False):
+        assert conversation_archive._inference_depth == 0
 
 
 def test_cached_vectors_do_not_keep_their_batch_alive(conn):

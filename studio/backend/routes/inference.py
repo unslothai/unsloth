@@ -8309,11 +8309,17 @@ def _direct_llama_request(counted: bool = True):
     if not counted:
         yield
         return
+    from core.rag.conversation_archive import hold_inference
+
+    # Inference too (caption / OCR, TTS): background archive embedding stays paused. Non-blocking, since the TTS
+    # route enters this on the event loop.
+    release = hold_inference()
     _direct_llama_request_started()
     try:
         yield
     finally:
         _direct_llama_request_finished()
+        release()
 
 
 def _direct_llama_is_busy() -> bool:
