@@ -142,6 +142,10 @@ class NodeContext(Protocol):
         """(bytes, mime) of any MediaValue: gallery item, embedded asset or flow asset."""
         ...
 
+    async def run_flow(self, flow_id: str, values: dict) -> dict:
+        """Run another saved flow of this account inside this run; returns its Flow Outputs by name."""
+        ...
+
     async def media_data_url(self, media: dict) -> str: ...
 
     async def save_asset(

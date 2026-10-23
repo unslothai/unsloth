@@ -533,6 +533,28 @@ NODE_SPECS: list[dict] = [
         icon = "grid",
     ),
     spec(
+        "flow.call",
+        "Run Flow",
+        "logic",
+        "Run another of your saved flows as one step. `values` fills its inputs by Flow Input name or block "
+        "label; `outputs` holds its Flow Outputs by name. Nests at most 3 flows deep.",
+        inputs = [inp("values", "json", "Values", optional = True)],
+        outputs = [out("outputs", "json")],
+        params = [
+            P(
+                "flow_id",
+                "text",
+                "",
+                "Flow",
+                options_from = "/api/flows",
+                options_path = "flows[].id",
+            ),
+            P("values", "json", {}, "Values"),
+        ],
+        cacheable = False,
+        icon = "flow",
+    ),
+    spec(
         "image.generate",
         "Generate Image",
         "image",

@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -58,6 +59,8 @@ class RunBody(BaseModel):
     bake: bool = False
     # Recompute nodes the flow ships pre-generated (a story's "New story" re-roll).
     ignore_baked: bool = False
+    # Outputs the editor pinned from a node's history: those nodes are not run, their pinned outputs feed downstream.
+    pinned: dict[str, dict[str, Any]] = Field(default_factory = dict, max_length = 2000)
     doc: Optional[dict[str, Any]] = None
 
 
@@ -544,6 +547,18 @@ def _latest_outputs(flow_id: str) -> dict[str, dict]:
                 if state.status in ("done", "cached") and state.outputs is not None:
                     found[nid] = {"status": state.status, "outputs": state.outputs}
     return found
+
+
+@router.get("/{flow_id}/nodes/{node_id}/history")
+def node_history(
+    flow_id: str,
+    node_id: str,
+    limit: int = Query(10, ge = 1, le = 10),
+) -> dict:
+    _flow_or_404(flow_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise HTTPException(status_code = 400, detail = "Invalid node id")
+    return {"entries": flows_db.node_output_history(flow_id, node_id, limit)}
 
 
 @router.get("/{flow_id}/latest-outputs")

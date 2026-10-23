@@ -28,7 +28,7 @@ from typing import Any, Awaitable, Callable, Optional
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
-from core.flows.compiler import FOR_EACH, Plan, compile_flow
+from core.flows.compiler import FOR_EACH, CompileError, Plan, compile_flow
 from core.flows.registry import FlowCancelled, FlowNodeError, load_handlers
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
@@ -40,6 +40,8 @@ CPU_CONCURRENCY = 4
 PROGRESS_MIN_INTERVAL_S = 0.2
 CANCEL_GRACE_S = 10.0
 LEASE_RETRY_S = 2.0
+# Run Flow nests at most this many flows below the one the user started.
+MAX_CALL_DEPTH = 3
 MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
 
@@ -417,6 +419,9 @@ class NodeContextImpl:
         from core.flows.nodes import _common
         return await _common.speak(self, **kwargs)
 
+    async def run_flow(self, flow_id: str, values: dict) -> dict:
+        return await self._engine.run_child(self._rs, self, flow_id, values)
+
     async def media_bytes(self, media: dict) -> tuple[bytes, str]:
         from core.flows.nodes import _common
         return await _common.media_bytes(self, media)
@@ -684,6 +689,73 @@ class FlowEngine:
         finally:
             await asyncio.to_thread(self.revoke_key, key_id)
 
+    async def run_child(
+        self, parent: RunState, ctx: "NodeContextImpl", flow_id: str, values: dict
+    ) -> dict:
+        """Run another saved flow of the same account inside ``parent`` (Run Flow); returns its Flow Outputs.
+
+        The child shares the parent's run key, cancel signal and GPU lock, so Stop and the one-GPU-step-at-a-time
+        rule cover it; it is not stored as a run of its own."""
+        chain = list(parent.options.get("call_chain") or [parent.flow_id])
+        if flow_id in chain:
+            raise FlowNodeError("Run Flow would call a flow that is already running in this chain")
+        if len(chain) > MAX_CALL_DEPTH:
+            raise FlowNodeError(f"Run Flow nests at most {MAX_CALL_DEPTH} flows deep")
+        record = await asyncio.to_thread(flows_db.get_flow, flow_id)
+        if record is None:
+            raise FlowNodeError(
+                "The flow this step runs is not in your Flows; it may have been deleted, or this flow was "
+                "shared without it"
+            )
+        from core.flows.nodes.inputs import apply_input_values
+
+        doc, params = apply_input_values(record["doc"], values)
+        try:
+            plan = compile_flow(doc)
+        except CompileError as exc:
+            raise FlowNodeError(f"The flow this step runs has a problem: {exc}") from None
+        child = RunState(
+            id = "call-" + uuid.uuid4().hex,
+            flow_id = flow_id,
+            account = parent.account,
+            doc = doc,
+            plan = plan,
+            options = {"params": params, "call_chain": chain + [flow_id]},
+            persist = False,
+            app = parent.app,
+            cancel_event = parent.cancel_event,
+        )
+        child.hf_token = parent.hf_token
+        child.caller = parent.caller
+        child.key_id = parent.key_id
+        ctx.on_cancel(lambda: self._fire_cancel_hooks(child))
+        top = [
+            n
+            for n in plan.order
+            if plan.owner.get(n) is None and not plan.specs[n].get("entrypoint")
+        ]
+        name = str(doc.get("name") or "the flow")
+        scope = asyncio.ensure_future(self._run_scope(child, top, Env()))
+        try:
+            while not scope.done():
+                await asyncio.wait({scope}, timeout = 1.0)
+                ctx.progress(
+                    step = min(len(child.executed), len(top)), total = len(top), phase = f"Running {name}"
+                )
+            await scope
+        finally:
+            if not scope.done():
+                scope.cancel()
+        ctx.check_cancelled()
+        failed = sorted(child.ever_failed)
+        if failed:
+            state = child.nodes.get(failed[0])
+            title = plan.specs[failed[0]]["title"]
+            raise FlowNodeError(
+                f"{name}: {title} failed: {state.error if state else 'unknown error'}"
+            )
+        return dict(child.outputs)
+
     async def _run(self, rs: RunState) -> None:
         try:
             token, key_id = await asyncio.to_thread(self.mint_key, rs.account)
@@ -914,6 +986,11 @@ class FlowEngine:
             and not rs.options.get("ignore_baked")
         ):
             self._finish(rs, nid, env, dict(baked), "cached", iteration, message = "Baked")
+            return
+        pinned = (rs.options.get("pinned") or {}).get(nid)
+        if isinstance(pinned, dict) and iteration is None and not forced:
+            # The editor pinned an earlier output of this node: downstream gets it as if it were cached.
+            self._finish(rs, nid, env, dict(pinned), "cached", iteration, message = "Pinned")
             return
 
         if spec["type"] == FOR_EACH:
@@ -1299,7 +1376,7 @@ def _local_fingerprint(path: str) -> Optional[list]:
 
 
 def _stored_options(options: dict) -> dict:
-    stored = {k: v for k, v in options.items() if k != "doc"}
+    stored = {k: v for k, v in options.items() if k not in ("doc", "pinned")}
     return json.loads(json.dumps(stored, default = str))
 
 

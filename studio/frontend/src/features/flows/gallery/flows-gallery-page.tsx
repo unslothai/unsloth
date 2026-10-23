@@ -37,6 +37,7 @@ import {
   FileImportIcon,
   FlowConnectionIcon,
   GameController01Icon,
+  GridViewIcon,
   PlusSignIcon,
 } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
@@ -88,11 +89,13 @@ function FlowCard({
   onOpen,
   action,
   onDelete,
+  onApp,
 }: {
   flow: FlowSummary;
   onOpen: () => void;
   action?: string;
   onDelete?: () => void;
+  onApp?: () => void;
 }) {
   const kind = KIND_STYLE[flow.kind] ?? KIND_STYLE.pipeline;
   return (
@@ -154,6 +157,18 @@ function FlowCard({
         <span className="pointer-events-none absolute top-2 right-2 rounded-md bg-background/90 px-2 py-1 text-xs font-medium opacity-0 shadow transition-opacity group-hover:opacity-100">
           {action}
         </span>
+      )}
+      {onApp && (
+        <button
+          type="button"
+          aria-label={`Open ${flow.name} as an app`}
+          title="Open as app"
+          onClick={onApp}
+          className="absolute top-2 right-10 rounded-md bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+          data-testid="flows-card-app"
+        >
+          <HugeiconsIcon icon={GridViewIcon} size={14} />
+        </button>
       )}
       {onDelete && (
         <button
@@ -444,6 +459,15 @@ export function FlowsGalleryPage(): ReactElement {
                 key={flow.id}
                 flow={flow}
                 onOpen={() => open(flow.id)}
+                onApp={
+                  flow.kind === "pipeline"
+                    ? () =>
+                        void navigate({
+                          to: "/flows/$flowId/app",
+                          params: { flowId: flow.id },
+                        })
+                    : undefined
+                }
                 onDelete={() => {
                   if (!window.confirm(`Delete “${flow.name}”?`)) return;
                   deleteFlow(flow.id)

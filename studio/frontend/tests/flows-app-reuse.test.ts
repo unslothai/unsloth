@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { doc, node } from "./flows-editor-fixtures.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { appFields, applyAppValues, appOutputs, foldAppEvents } = await import(
+  "../src/features/flows/app/app-form.ts"
+);
+const { historyPreview, pinsForRun, sameOutputs, usePinsStore } = await import(
+  "../src/features/flows/stores/pins-store.ts"
+);
+
+type Doc = ReturnType<typeof doc>;
+
+function sample(): Doc {
+  const d = doc([
+    { ...node("out", "output.preview", [0, 400]) },
+    {
+      ...node("topic", "input.param", [0, 0]),
+      params: { name: "topic", type: "text", default: "otters" },
+    },
+    { ...node("pic", "input.image", [0, 200]), label: "Photo" },
+    { ...node("n", "input.number", [300, 100]), params: { value: 3 } },
+    {
+      ...node("sel", "input.select", [0, 100]),
+      params: { options: ["a", "b"], value: "b" },
+    },
+    { ...node("inner", "input.text", [0, 300]), group: "g1" },
+    { ...node("off", "input.text", [0, 350]), disabled: true },
+  ]);
+  return d;
+}
+
+test("an app form lists the flow's inputs in canvas order", () => {
+  const fields = appFields(sample() as never);
+  assert.deepEqual(
+    fields.map((f) => [f.key, f.target, f.kind]),
+    [
+      ["topic", "param", "textarea"],
+      ["sel", "node", "select"],
+      ["n", "node", "number"],
+      ["pic", "node", "image"],
+    ],
+  );
+  assert.equal(fields[0].initial, "otters");
+  assert.equal(fields[3].label, "Photo");
+  assert.deepEqual(fields[1].options, ["a", "b"]);
+});
+
+test("form values fill input blocks and Flow Inputs without touching the flow", () => {
+  const d = sample();
+  const fields = appFields(d as never);
+  const media = { kind: "image", ref: "image:1" };
+  const { doc: filled, params } = applyAppValues(d as never, fields, {
+    topic: "cats",
+    pic: media,
+    n: 7,
+  });
+  assert.deepEqual(params, { topic: "cats" });
+  const byId = Object.fromEntries(filled.nodes.map((n) => [n.id, n]));
+  assert.deepEqual(byId.pic.params.asset, media);
+  assert.equal(byId.n.params.value, 7);
+  assert.equal(byId.sel.params.value, "b");
+  assert.equal(
+    d.nodes.find((n) => n.id === "n")?.params.value,
+    3,
+    "the loaded flow is unchanged",
+  );
+  assert.deepEqual(
+    appOutputs(d as never).map((n) => n.id),
+    ["out"],
+  );
+});
+
+test("run events fold into progress, results and errors", () => {
+  const ev = (type: string, node_id: string | null, data: object) => ({
+    seq: 1,
+    run_id: "r",
+    type,
+    node_id,
+    ts: 0,
+    data,
+  });
+  let s = {
+    status: "idle",
+    done: 0,
+    total: 0,
+    results: {},
+    errors: [] as string[],
+  };
+  s = foldAppEvents(
+    s,
+    [
+      ev("run.started", null, { order: ["a", "b", "out"] }),
+      ev("node.status", "a", { status: "done" }),
+      ev("node.status", "b", { status: "failed", error: "boom" }),
+      ev("node.output", "out", { outputs: { value: "hi" } }),
+      ev("node.output", "a", { outputs: { value: "ignored" } }),
+      ev("run.failed", null, { error: "1 step(s) failed" }),
+    ] as never,
+    new Set(["out"]),
+  );
+  assert.equal(s.status, "failed");
+  assert.equal(s.total, 3);
+  assert.equal(s.done, 2);
+  assert.deepEqual(s.results, { out: "hi" });
+  assert.deepEqual(s.errors, ["boom", "1 step(s) failed"]);
+});
+
+test("history cells preview media first, and pins only go with nodes still in the flow", () => {
+  const media = { kind: "image", ref: "image:9" };
+  assert.deepEqual(historyPreview({ images: [media], text: "x" }), { media });
+  assert.deepEqual(historyPreview({ text: "hello" }), { text: "hello" });
+  assert.ok(sameOutputs({ a: 1 }, { a: 1 }));
+  usePinsStore.getState().load("flow-x");
+  usePinsStore.getState().setPin("a", { text: "kept" });
+  usePinsStore.getState().setPin("gone", { text: "old" });
+  assert.deepEqual(pinsForRun(["a", "b"]), { a: { text: "kept" } });
+  usePinsStore.getState().setPin("a", null);
+  assert.deepEqual(pinsForRun(["a"]), {});
+});

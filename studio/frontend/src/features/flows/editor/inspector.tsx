@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback } from "react";
+import { memo, useCallback, useState } from "react";
 import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
@@ -16,44 +16,11 @@ import {
   PlayIcon,
 } from "./icon-data";
 import { nodeIcon } from "./icons";
-import { MediaThumb, isMediaValue } from "./media";
+import { NodeHistory } from "./node-history";
+import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
 
-function OutputValue({ value }: { value: unknown }) {
-  if (value === null || value === undefined)
-    return <span className="text-zinc-600">-</span>;
-  if (isMediaValue(value)) {
-    return (
-      <MediaThumb media={value} className="w-full rounded-md object-contain" />
-    );
-  }
-  if (Array.isArray(value) && value.length > 0 && value.every(isMediaValue)) {
-    return (
-      <div className="grid grid-cols-2 gap-1.5">
-        {value.slice(0, 24).map((item, i) => (
-          <MediaThumb
-            key={`${(item as { ref: string }).ref}-${i}`}
-            media={item}
-            className="w-full rounded object-cover"
-          />
-        ))}
-      </div>
-    );
-  }
-  if (typeof value === "string") {
-    return (
-      <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-zinc-200">
-        {value}
-      </p>
-    );
-  }
-  return (
-    <pre className="max-h-72 overflow-auto rounded-md bg-black/40 p-2 font-mono text-[11px] leading-snug text-zinc-300">
-      {JSON.stringify(value, null, 2).slice(0, 20_000)}
-    </pre>
-  );
-}
 
 function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
   const runtime = useRuntimeStore((s) => s.nodes[nodeId]) ?? IDLE_RUNTIME;
@@ -87,6 +54,7 @@ function InspectorImpl() {
   const nodeId = useUiStore((s) => s.inspectorNodeId);
   const node = useDocStore((s) => (nodeId ? s.graph.nodes[nodeId] : undefined));
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
+  const [viewed, setViewed] = useState<Record<string, unknown> | null>(null);
   const color =
     useCatalogStore((s) =>
       spec ? s.categories[spec.category]?.color : undefined,
@@ -257,6 +225,24 @@ function InspectorImpl() {
           ))}
         </section>
         <NodeOutputs nodeId={node.id} spec={spec} />
+        {viewed && (
+          <section className="flex flex-col gap-2 border-white/10 border-t px-4 py-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+              Earlier output
+            </h3>
+            {spec.outputs.map((port) =>
+              port.id in viewed ? (
+                <div key={port.id} className="flex flex-col gap-1">
+                  <span className="text-[11px] text-zinc-500">
+                    {port.label}
+                  </span>
+                  <OutputValue value={viewed[port.id]} />
+                </div>
+              ) : null,
+            )}
+          </section>
+        )}
+        <NodeHistory nodeId={node.id} onView={setViewed} />
       </div>
     </aside>
   );

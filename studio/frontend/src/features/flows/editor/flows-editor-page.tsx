@@ -10,6 +10,7 @@ import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
 import { needsNewerStudio } from "../stores/catalog-store";
 import { documentSignature, useDocStore } from "../stores/doc-store";
+import { usePinsStore } from "../stores/pins-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { FlowCanvas } from "./canvas";
@@ -84,6 +85,12 @@ function EditorBody({
               void navigate({ to: "/flows/$flowId/play", params: { flowId } });
           })
         }
+        onApp={() =>
+          void flushSave().then((saved) => {
+            if (saved)
+              void navigate({ to: "/flows/$flowId/app", params: { flowId } });
+          })
+        }
       />
       {readOnly && (
         <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] text-amber-200">
@@ -126,6 +133,7 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
       .then(([, record]) => {
         if (!alive) return;
         useDocStore.getState().load(record.doc);
+        usePinsStore.getState().load(record.id);
         // A flow from a newer Studio is never saved back, so its unknown or newer blocks survive until an update.
         const readOnly = record.doc.nodes.some(needsNewerStudio);
         if (!readOnly) {

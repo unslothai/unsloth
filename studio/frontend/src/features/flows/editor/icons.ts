@@ -100,6 +100,7 @@ const ICONS: Record<string, IconData> = {
   globe: Globe02Icon,
   map: MapsIcon,
   gamepad: GameController01Icon,
+  flow: FlowConnectionIcon,
 };
 
 export function nodeIcon(name: string | null | undefined): IconData {

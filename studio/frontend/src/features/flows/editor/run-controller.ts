@@ -10,6 +10,7 @@ import {
   startRun,
 } from "../api";
 import { documentFromState, useDocStore } from "../stores/doc-store";
+import { pinsForRun } from "../stores/pins-store";
 import { createEventBatcher, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 
@@ -72,6 +73,7 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
       target_nodes: options.targetNodes,
       force_nodes: options.forceNodes,
       bake: options.bake,
+      pinned: pinsForRun(docState.graph.nodeOrder),
     });
     useRuntimeStore.getState().startRun(run_id);
     useUiStore.getState().setDrawer(true, "run");
