@@ -196,12 +196,16 @@ def _safetensors_top_level_keys(path: str) -> frozenset[str]:
 def checkpoint_prediction_overrides(path: Optional[str]) -> dict[str, Any]:
     """Scheduler overrides a single-file checkpoint asks for through its ``v_pred`` / ``ztsnr`` marker
     tensors (ComfyUI's detection, comfy/supported_models.py SDXL.model_type). Empty when unmarked."""
-    if not path or not str(path).endswith(".safetensors"):
+    if not path or not str(path).lower().endswith(".safetensors"):
         return {}
     try:
         keys = _safetensors_top_level_keys(str(path))
     except Exception:  # noqa: BLE001 - an unreadable header keeps the shipped scheduler
         return {}
+    return _marker_overrides(keys)
+
+
+def _marker_overrides(keys: Any) -> dict[str, Any]:
     if "v_pred" not in keys:
         return {}
     overrides: dict[str, Any] = {"prediction_type": "v_prediction"}
@@ -211,13 +215,99 @@ def checkpoint_prediction_overrides(path: Optional[str]) -> dict[str, Any]:
     return overrides
 
 
-def apply_checkpoint_prediction_type(
-    pipe: Any,
-    path: Optional[str],
-    logger: Any = None,
+def _root_single_marks(
+    root: Optional[str],
+    repo_id: Optional[str] = None,
+    hf_token: Any = None,
+    allow_network: bool = False,
+) -> list[dict[str, Any]]:
+    """Marker overrides of each root ``.safetensors`` of a pipeline: off disk when the folder holds them,
+    else off the Hub headers of ``repo_id``. A staged Hub pipeline snapshot keeps only
+    ``model_index.json`` at its root (the packaged single file is never downloaded), so the folder
+    alone would miss the markers. Header range reads only; empty on anything unreadable."""
+    from pathlib import Path
+
+    try:
+        folder = Path(str(root)) if root else None
+        singles = (
+            sorted(
+                p for p in folder.iterdir() if p.suffix.lower() == ".safetensors" and p.is_file()
+            )
+            if folder is not None and folder.is_dir()
+            else []
+        )
+    except OSError:
+        singles = []
+    if singles:
+        return [checkpoint_prediction_overrides(str(p)) for p in singles]
+    rid = (repo_id or "").strip()
+    if not allow_network or rid.count("/") != 1:
+        return []
+    try:
+        if Path(rid).expanduser().exists():
+            return []
+        from huggingface_hub import HfApi
+
+        from .diffusion_families import pinned_revision_kwargs
+
+        from hub.utils.hf_tokens import normalize_token
+
+        # One normalisation for every Hub call here: False (anonymous) never becomes None (ambient).
+        hf_token = normalize_token(hf_token)
+        api = HfApi()
+        rev = pinned_revision_kwargs(rid)
+        names = sorted(
+            f
+            for f in api.list_repo_files(rid, token = hf_token, **rev)
+            if "/" not in f and f.lower().endswith(".safetensors")
+        )
+        return [
+            _marker_overrides(
+                {
+                    k
+                    for k in api.parse_safetensors_file_metadata(
+                        rid, name, token = hf_token, **rev
+                    ).tensors
+                    if "." not in k
+                }
+            )
+            for name in names
+        ]
+    except Exception:  # noqa: BLE001 - offline / gated / odd: the shipped scheduler config stands
+        return []
+
+
+def pipeline_prediction_overrides(
+    config: Any,
+    root: Optional[str],
+    repo_id: Optional[str] = None,
+    hf_token: Any = None,
+    allow_network: bool = False,
+) -> dict[str, Any]:
+    """Scheduler overrides a diffusers SDXL pipeline directory asks for. Empty when it asks for none.
+
+    Two sources. The repo's packaged root single file: NoobAI-XL V-Pred 1.0 ships an epsilon
+    ``scheduler_config.json`` beside a root ``.safetensors`` carrying ``v_pred`` / ``ztsnr``, which is
+    the file ComfyUI loads and samples as v-prediction with zero terminal SNR. Only when every root
+    single file agrees, so a repo shipping an eps and a v-pred variant side by side keeps its config.
+    And a config that declares v-prediction with ``rescale_betas_zero_snr`` but leading spacing,
+    which never samples the terminal timestep that zero-SNR training exists for (the marker path
+    sets ``trailing`` for the same reason)."""
+    overrides: dict[str, Any] = {}
+    marks = _root_single_marks(root, repo_id, hf_token, allow_network)
+    if marks and marks[0] and all(m == marks[0] for m in marks):
+        overrides.update(marks[0])
+    config = config or {}
+    prediction = overrides.get("prediction_type", config.get("prediction_type"))
+    zsnr = overrides.get("rescale_betas_zero_snr", config.get("rescale_betas_zero_snr"))
+    if prediction == "v_prediction" and zsnr and config.get("timestep_spacing") != "trailing":
+        overrides["timestep_spacing"] = "trailing"
+    return overrides
+
+
+def _apply_scheduler_overrides(
+    pipe: Any, overrides: dict[str, Any], logger: Any, source: str
 ) -> bool:
-    """Rebuild ``pipe.scheduler`` for a v-prediction checkpoint. True when it changed; idempotent."""
-    overrides = checkpoint_prediction_overrides(path)
     scheduler = getattr(pipe, "scheduler", None)
     config = getattr(scheduler, "config", None)
     if not overrides or config is None:
@@ -228,5 +318,36 @@ def apply_checkpoint_prediction_type(
         return False
     pipe.scheduler = type(scheduler).from_config(config, **overrides)
     if logger is not None:
-        logger.info("scheduler set from checkpoint markers: %s", overrides)
+        logger.info("scheduler set from %s: %s", source, overrides)
     return True
+
+
+def apply_checkpoint_prediction_type(
+    pipe: Any,
+    path: Optional[str],
+    logger: Any = None,
+) -> bool:
+    """Rebuild ``pipe.scheduler`` for a v-prediction checkpoint. True when it changed; idempotent."""
+    return _apply_scheduler_overrides(
+        pipe, checkpoint_prediction_overrides(path), logger, "checkpoint markers"
+    )
+
+
+def apply_pipeline_prediction_type(
+    pipe: Any,
+    root: Optional[str],
+    logger: Any = None,
+    *,
+    repo_id: Optional[str] = None,
+    hf_token: Any = None,
+    allow_network: bool = False,
+) -> bool:
+    """``apply_checkpoint_prediction_type`` for a diffusers pipeline directory
+    (``pipeline_prediction_overrides``). True when it changed; idempotent."""
+    config = getattr(getattr(pipe, "scheduler", None), "config", None)
+    return _apply_scheduler_overrides(
+        pipe,
+        pipeline_prediction_overrides(config, root, repo_id, hf_token, allow_network),
+        logger,
+        "pipeline v-prediction",
+    )

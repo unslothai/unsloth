@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from anyio import CapacityLimiter, to_process
+from anyio import CapacityLimiter, to_process, to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
@@ -78,7 +78,17 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 DEFAULT_CONFIG = "default"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
-UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
+# Each type needs a core.rag parser or MuPDF; a frontend parity test reads this literal.
+UNSTRUCTURED_ALLOWED_EXTS = {
+    ".pdf", ".docx", ".txt", ".md", ".markdown", ".html", ".htm", ".xhtml", ".xht",
+    ".doc", ".docm", ".dotx", ".dotm", ".odt", ".ott", ".rtf",
+    ".epub", ".mobi", ".fb2",
+    ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".ods", ".ots",
+    ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppt", ".pps", ".odp", ".otp",
+    ".eml", ".msg", ".mht", ".mhtml",
+}  # fmt: skip
+# MuPDF is not thread-safe, so these run in the PDF worker pool.
+_MUPDF_EBOOK_EXTS = {".mobi", ".fb2"}
 SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
 UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -1082,7 +1092,7 @@ def _read_preview_rows_from_multi_files(
     preview_size: int,
     chunk_size: int | None,
     chunk_overlap: int | None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], int]:
     chunking = _chunking()
     if chunking is None:
         raise HTTPException(
@@ -1090,6 +1100,17 @@ def _read_preview_rows_from_multi_files(
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
 
+    return chunking.build_multi_file_preview(
+        file_entries = _multi_file_entries(block_id, file_ids, file_names),
+        preview_size = preview_size,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
+    )
+
+
+def _multi_file_entries(
+    block_id: str, file_ids: list[str], file_names: list[str]
+) -> list[tuple[Path, str]]:
     _validate_safe_id(block_id, "block_id")
     block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
     file_entries: list[tuple[Path, str]] = []
@@ -1098,13 +1119,7 @@ def _read_preview_rows_from_multi_files(
         if not extracted.exists():
             raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
         file_entries.append((extracted, fname))
-
-    return chunking.build_multi_file_preview_rows(
-        file_entries = file_entries,
-        preview_size = preview_size,
-        chunk_size = chunk_size,
-        chunk_overlap = chunk_overlap,
-    )
+    return file_entries
 
 
 def _require_own_seed_source(dataset_name: str) -> None:
@@ -1254,7 +1269,10 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     elif ext == ".pdf":
         from core.rag import config, pdf_ocr
         raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)
-    elif ext == ".docx":
+    elif ext in _MUPDF_EBOOK_EXTS:
+        from core.rag import parsers
+        raw = parsers.mupdf_document_text(str(file_path))
+    elif ext in UNSTRUCTURED_ALLOWED_EXTS:
         from core.rag import parsers
         raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     else:
@@ -1267,11 +1285,26 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
 
 
 _pdf_extraction_limiter = CapacityLimiter(2)
+_document_extraction_limiter = CapacityLimiter(2)
 
 
 async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
+    if ext in _MUPDF_EBOOK_EXTS:
+        from core.rag import parsers
+
+        raw = await to_process.run_sync(
+            parsers.mupdf_document_text,
+            str(file_path),
+            cancellable = True,
+            limiter = _pdf_extraction_limiter,
+        )
+        chunking = _chunking()
+        return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
     if ext != ".pdf":
-        return _extract_text_from_file(file_path, ext)
+        # A large spreadsheet must not stall the event loop, nor several fill the shared thread pool.
+        return await to_thread.run_sync(
+            _extract_text_from_file, file_path, ext, limiter = _document_extraction_limiter
+        )
     from core.rag import config, pdf_ocr
 
     # MuPDF is not thread-safe; each worker owns its document and OCR state.
@@ -1388,7 +1421,15 @@ async def upload_unstructured_file(
         original_filename = file.filename or "upload"
         # Before the read: a rejected 500 MB upload must not be pulled into memory first.
         _require_unstructured_ext(original_filename)
-        content = await file.read()
+        limit = max(0, min(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES, budget))
+        content = await file.read(limit + 1)
+        if len(content) > limit:
+            # Only limit + 1 bytes were read: report the real size the full read used to.
+            declared = getattr(file, "size", None)
+            _require_within_budget(
+                declared if isinstance(declared, int) and declared > limit else len(content),
+                budget,
+            )
     else:
         raise HTTPException(400, "No file was provided.")
 
@@ -1422,7 +1463,11 @@ async def upload_unstructured_file(
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
         missing = getattr(e, "name", None)
-        expected_missing = {".pdf": "pymupdf4llm", ".docx": "docx"}.get(ext)
+        expected_missing = {
+            ".pdf": "pymupdf4llm",
+            **dict.fromkeys((".docx", ".docm", ".dotx", ".dotm"), "docx"),
+            **dict.fromkeys(_MUPDF_EBOOK_EXTS, "pymupdf"),
+        }.get(ext)
         if isinstance(e, ModuleNotFoundError) and missing == expected_missing:
             # Name what to install: python-docx imports as docx, and PyPI's "docx" is another package.
             package = {"docx": "python-docx"}.get(missing, missing)
@@ -1568,7 +1613,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         _validate_safe_id(payload.block_id, "block_id")
         for fid in payload.file_ids:
             _validate_safe_id(fid, "file_id")
-        preview_rows = _read_preview_rows_from_multi_files(
+        preview_rows, total_rows = _read_preview_rows_from_multi_files(
             block_id = payload.block_id,
             file_ids = payload.file_ids,
             file_names = payload.file_names,
@@ -1587,6 +1632,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             resolved_paths = resolved_paths,
             columns = columns,
             preview_rows = _serialize_preview_rows(preview_rows),
+            total_rows = total_rows,
         )
 
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"

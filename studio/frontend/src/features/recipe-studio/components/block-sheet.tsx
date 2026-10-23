@@ -586,8 +586,8 @@ export function BlockSheet({
                         Recommended first step
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Best when you want to turn PDFs, DOCX files, or text
-                        files into source rows.
+                        Best when you want to turn PDFs, ebooks, Office files,
+                        or text files into source rows.
                       </p>
                     </div>
                     <BlockSheetButton
