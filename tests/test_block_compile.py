@@ -1415,7 +1415,8 @@ def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
     cc = CompileCounter()
     real_compile = torch.compile
     monkeypatch.setattr(
-        torch, "compile",
+        torch,
+        "compile",
         lambda fn, **kw: real_compile(fn, backend = cc, fullgraph = False, dynamic = None),
     )
     var = output_capturing._active_collector
@@ -1426,7 +1427,9 @@ def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
             self.proj = torch.nn.Linear(8, 8)
             self.router = torch.nn.Linear(8, 4)
 
-            def hook(module, args, output):  # transformers' capture hook for a non hidden_states key
+            def hook(
+                module, args, output
+            ):  # transformers' capture hook for a non hidden_states key
                 collected = var.get()
                 if collected is None or "router_logits" not in collected.keys():
                     return
@@ -1434,7 +1437,11 @@ def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
 
             self.router.register_forward_hook(hook)
 
-        def forward(self, hidden_states, attention_mask = None):
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
             return self.proj(hidden_states) + self.router(hidden_states).sum(-1, keepdim = True)
 
     M._wrap(RouterDecoderLayer, {})
