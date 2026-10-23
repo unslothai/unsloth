@@ -348,6 +348,9 @@ class TestSetupPs1:
         for flag in ("$CmakeArgs += '-DGGML_RPC=ON'", "$CmakeArgs += '-DGGML_RPC_RDMA=OFF'"):
             assert text.count(flag) == 1
             assert native < text.index(flag) < cuda
+        # The reuse backfill reconfigures an old build on its own; the build configures it once.
+        start = text.index("function Backfill-LlamaRpcServer")
+        text = text[:start] + text[text.index("\n}\n", start) :]
         assert text.count("GGML_RPC_RDMA") == 1
         assert text.count("$CmakeArgs += '-DGGML_CUDA=ON'") == 1
         assert text.count("$CmakeArgs += '-DGGML_CUDA=OFF'") == 2
@@ -619,3 +622,25 @@ def test_the_reuse_branch_actually_calls_the_backfill() -> None:
     start = text.index("already holds a build; reusing it")
     window = text[start : start + 400]
     assert "_backfill_local_rpc_server" in window, window
+
+
+def test_the_generic_source_build_reuse_also_backfills() -> None:
+    """A failed prebuilt that falls back to a healthy source tree skips the build section too."""
+    text = _sh()
+    start = text.index('"existing source build found; skipping rebuild"')
+    end = text.index("_NEED_LLAMA_SOURCE_BUILD=false", start)
+    assert '_backfill_local_rpc_server "$LLAMA_CPP_DIR"' in text[start:end]
+
+
+def test_the_windows_already_built_branch_backfills() -> None:
+    text = _ps1()
+    assert "function Backfill-LlamaRpcServer" in text
+    start = text.index('step "llama.cpp" "already built"')
+    end = text.index("} elseif", start)
+    assert "Backfill-LlamaRpcServer" in text[start:end]
+    body = text[text.index("function Backfill-LlamaRpcServer") :]
+    body = body[: body.index("\n}\n")]
+    # Same contract as the bash backfill: keep an existing tool, reconfigure only without RPC.
+    assert "Get-LlamaRpcServerTarget" in body
+    assert "-DGGML_RPC=ON" in body and "-DGGML_RPC_RDMA=OFF" in body
+    assert "GGML_RPC:BOOL=ON" in body
