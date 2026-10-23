@@ -35,6 +35,7 @@ TABS = [
     "api-keys",
     "remote-lan",
     "agents",
+    "mcp",
     "keyboard-shortcuts",
     "browser",
     "debugging",

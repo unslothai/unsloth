@@ -6800,6 +6800,8 @@ async def _select_request_tools(
             apply_terminal_profile_for_request, tools, getattr(payload, "sandbox_level", None)
         )
     if mcp_allowed:
+        from core.inference.media_chat_tools import remember_server_loop
+        remember_server_loop(asyncio.get_running_loop())
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
     # which know this field.
@@ -11614,6 +11616,17 @@ async def _auto_switch_npu_model(
             _note_switch_waiter(key, -1)
 
 
+def _refuse_chat_tools_switch() -> None:
+    from studio_mcp.caller import CHAT_TOOLS_SWITCH_REFUSED, chat_tools_call
+    if chat_tools_call():
+        raise HTTPException(
+            status_code = 403,
+            detail = openai_error_body(
+                CHAT_TOOLS_SWITCH_REFUSED, status = 403, code = "model_switch_refused", param = "model"
+            ),
+        )
+
+
 def _switch_loads_beside(target_speaks: Callable[[], bool]) -> bool:
     """Under Keep multiple models loaded, a speech model loads beside a text one (or the reverse); the same kind replaces."""
     from utils.multi_model_settings import get_multi_model_enabled
@@ -11868,6 +11881,7 @@ async def _maybe_auto_switch_model(
             rejection_prefix = rejection_prefix,
             request_check = npu_request_check,
         )
+        _refuse_chat_tools_switch()
         await _auto_switch_npu_model(
             named_model, fastapi_request, current_subject, claim_resident = claim_resident
         )
@@ -11908,6 +11922,7 @@ async def _maybe_auto_switch_model(
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
+                _refuse_chat_tools_switch()
                 await _maybe_auto_download_model(
                     requested_model,
                     fastapi_request,
@@ -12269,6 +12284,7 @@ async def _maybe_auto_switch_model(
                         param = "model",
                     ),
                 ) from None
+        _refuse_chat_tools_switch()
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
@@ -25578,8 +25594,12 @@ async def _dispatch_audio_run(
             raise HTTPException(
                 status_code = 409, detail = "Another audio run is using this cancel_id."
             )
+    from core.inference.generation_ticket import bind_generation_cancel
+
     token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
     cancel = threading.Event()
+    # A chat tools call that is stopped stops this run too.
+    bind_generation_cancel(cancel)
     event_token = _AUDIO_RUN_CANCEL.set(cancel)
     created: list[str] = []
     created_token = _AUDIO_RUN_CREATED.set(created)

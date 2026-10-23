@@ -425,6 +425,28 @@ def test_a_video_refusal_carries_a_plain_detail(catalog, enabled, loads):
     assert isinstance(excinfo.value.detail, str)
 
 
+def test_a_chat_tools_call_never_switches_the_media_model(flux, enabled, loads):
+    from studio_mcp.caller import Caller, bind_caller, reset_caller
+
+    caller = Caller(
+        token = "k",
+        account_id = "owner",
+        direct_local = False,
+        public_base = "",
+        studio_app = None,
+        call_scoped = True,
+    )
+    token = bind_caller(caller)
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            _switch("black-forest-labs/FLUX.1-dev")
+    finally:
+        reset_caller(token)
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail["error"]["code"] == "model_switch_refused"
+    assert loads == []
+
+
 @pytest.mark.parametrize("resident", ["repo id", "path"])
 def test_a_resident_model_is_not_reloaded(flux, enabled, backend, loads, resident):
     backend.repo_id = "black-forest-labs/FLUX.1-dev" if resident == "repo id" else str(flux)

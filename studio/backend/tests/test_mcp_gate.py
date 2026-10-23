@@ -538,3 +538,68 @@ def test_oauth_discovery_is_a_404_not_the_app_shell(tmp_path, path):
     root = client.get("/")
     assert root.status_code == 200
     assert "<title>studio</title>" in root.text
+
+
+def _rpc(http, body, headers):
+    response = http.post("/mcp/", json = body, headers = {**MCP_HEADERS, **headers})
+    assert response.status_code == 200, response.text
+    data = [line[5:].strip() for line in response.text.splitlines() if line.startswith("data:")]
+    return json.loads(data[-1])["result"]
+
+
+def _settings_and_mcp():
+    """The settings router beside the real /mcp, gate and middleware included."""
+    from routes import settings
+
+    mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
+    app = FastAPI(lifespan = mcp_app.lifespan)
+    app.include_router(settings.router, prefix = "/api/settings")
+    app.mount("/mcp", StudioMcpGate(mcp_app))
+    for name, value in {
+        "server_port": 8888,
+        "cloudflare_url": None,
+        "bind_host": "127.0.0.1",
+        "secure": False,
+        "remote_access_is_colab": False,
+        "lan_access_is_colab": False,
+        "lan_access_secure_launch": False,
+    }.items():
+        setattr(app.state, name, value)
+    return app
+
+
+def test_a_turned_off_tool_leaves_the_listing_live_and_its_call_is_refused(live_key):
+    from mcp_server import tool_names
+
+    key = bearer(live_key)
+    owner = bearer(create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME))
+    # Valid arguments: the SDK checks arguments against a tool it listed before the middleware runs.
+    cancel = {
+        **LISTING,
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "cancel", "arguments": {"kind": "chat", "id": "x"}},
+    }
+    with TestClient(_settings_and_mcp(), **LOCAL) as http:
+
+        def listed():
+            return [tool["name"] for tool in _rpc(http, LISTING, key)["tools"]]
+
+        def put(names):
+            response = http.put(
+                "/api/settings/mcp-access", json = {"disabled_tools": names}, headers = owner
+            )
+            assert response.status_code == 200, response.text
+
+        assert listed() == list(tool_names())
+        put(["cancel"])
+        assert listed() == [name for name in tool_names() if name != "cancel"]
+        refused = _rpc(http, cancel, key)
+        assert refused["isError"] is True
+        assert refused["content"][0]["text"] == (
+            "[tool_disabled] cancel is turned off in Unsloth Studio. "
+            "The owner can turn it on in Settings > MCP."
+        )
+        put([])
+        assert listed() == list(tool_names())
+        assert "tool_disabled" not in json.dumps(_rpc(http, cancel, key))

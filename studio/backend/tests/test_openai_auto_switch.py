@@ -292,6 +292,32 @@ def test_already_loaded_does_not_reload(monkeypatch):
     assert rec.calls == []
 
 
+def test_a_chat_tools_call_never_switches_the_loaded_model(monkeypatch):
+    from studio_mcp.caller import Caller, bind_caller, reset_caller
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    caller = Caller(
+        token = "k",
+        account_id = "owner",
+        direct_local = False,
+        public_base = "",
+        studio_app = None,
+        call_scoped = True,
+    )
+    token = bind_caller(caller)
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            _run_hook("unsloth/B-GGUF:Q4_K_M")
+    finally:
+        reset_caller(token)
+    assert excinfo.value.status_code == 403 and rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+
+
 def test_known_unloaded_model_switches_once(monkeypatch):
     backend, rec = _wired(
         monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")

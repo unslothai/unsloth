@@ -379,3 +379,22 @@ def test_a_stalled_eta_read_leaves_the_eta_unknown(monkeypatch):
     monkeypatch.setattr(video_queue, "READ_S", 0.05)
     item = video_queue._enqueue(make_caller(account_id = "a"), {"prompt": "x"}, None)
     assert asyncio.run(video_queue._position_eta(item)) == (1, None)
+
+
+def test_a_call_scoped_caller_is_told_to_retry_instead_of_queued():
+    # The chat bridge's key is revoked when its call returns, so a clip queued for later would fail with 401.
+    fake = OneVideoStudio()
+    agent = make_caller(studio_app = fake.app)
+    chat = make_caller(studio_app = fake.app, call_scoped = True)
+
+    async def run():
+        first = await video_queue.post_or_queue(agent, {"prompt": "A"})
+        with pytest.raises(ToolError) as refused:
+            await video_queue.post_or_queue(chat, {"prompt": "B"})
+        return first, str(refused.value)
+
+    first, refused = asyncio.run(run())
+    assert first["id"] == "video-1"
+    assert refused.startswith("[gpu_busy]") and "Try again once it finishes" in refused, refused
+    assert not video_queue._waiting.get("owner") and not video_queue._pumps
+    assert fake.prompts() == ["A", "B"]

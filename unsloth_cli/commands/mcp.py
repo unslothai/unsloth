@@ -541,7 +541,7 @@ def mcp_verdict(facts: McpFacts) -> Tuple[bool, List[str], List[str]]:
         "error": f"Unsloth Studio failed while checking the key: {facts.key_detail}",
     }
     mcp_hints = {
-        "off": "Turn on Settings → API → Allow agent connections, or start Unsloth Studio "
+        "off": "Turn on Settings → MCP → Allow agent connections, or start Unsloth Studio "
         "with UNSLOTH_STUDIO_ENABLE_MCP=1.",
         "absent": "This Unsloth Studio has no MCP server. Update it: unsloth studio update",
         "refused": f"The MCP server refused the key: {facts.mcp_detail}",

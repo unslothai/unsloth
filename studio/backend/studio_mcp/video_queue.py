@@ -20,7 +20,7 @@ import httpx
 from fastmcp.exceptions import ToolError
 
 from studio_mcp.caller import Caller
-from studio_mcp.errors import raise_for_route
+from studio_mcp.errors import raise_for_route, tool_error
 from studio_mcp.forward import forward, parse_json
 from studio_mcp.outputs import JobStatus, VideoJobRef
 from studio_mcp.tools import as_dict, number, opt_text, try_json
@@ -272,6 +272,12 @@ async def _admit(caller: Caller, body: dict, hints: Optional[dict]) -> Union[dic
             if video_id:
                 _running[caller.account_id] = (video_id, time.monotonic())
             return job
+    if caller.call_scoped:
+        # A queued clip is posted later with this caller's token, which is revoked when this call returns.
+        raise tool_error(
+            "Unsloth Studio is making another video, so this one was not started. Try again once it finishes.",
+            tag = "gpu_busy",
+        )
     item = _enqueue(caller, body, hints)
     _ensure_pump(caller.account_id)
     position, eta = await _position_eta(item)
