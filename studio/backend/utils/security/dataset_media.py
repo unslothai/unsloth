@@ -7,9 +7,12 @@ A ``datasets`` Image / Audio / Video / Pdf / Nifti cell holding a ``path`` and n
 feature's decoder in whichever process reads the row: a local path is read from disk, and a Hub URL is fetched
 with ``token_per_repo_id[repo]``, which falls back to the process's own Hub credentials for any repo the dataset
 was not loaded from. Any dataset can carry such cells, so for a managed account a local path must be one the
-account may read (its own roots, a Hub snapshot it can see or its training dataset's, an archive ``datasets``
-extracted), a Hub URL is fetched with the token the caller supplied for its repo or anonymously, and any other
-URL is refused. The owner is unchanged.
+account may read (its own roots, a Hub snapshot it can see or its training dataset's, or a member of an archive
+``datasets`` extracted from one of those), a Hub URL (``hf://datasets/...`` or the configured endpoint's
+``/datasets/.../resolve/...``, matched whole) is fetched with the token the caller supplied for its repo or
+anonymously, and any other URL is refused. The extraction cache is shared by every account and named by a hash of
+the archive's path, so each extraction records its source archive and a member is readable only when that archive
+is. The owner is unchanged.
 
 pyarrow's IPC reader trusts the lengths and offsets an ``.arrow`` file declares, so the ``arrow`` builder validates
 each table in full before ``datasets`` converts its rows: a malformed file raises ``ArrowInvalid`` (a ValueError)
@@ -33,10 +36,16 @@ _DECODERS = {
     "datasets.features.nifti": "Nifti",
 }
 _ARROW = "datasets.packaged_modules.arrow.arrow"
+_EXTRACT = "datasets.utils.extract"
+_SOURCE_SUFFIX = ".unsloth-source"
+# Protocols ``datasets`` chains in front of an outer location ("zip://member::<outer>").
+_ARCHIVE_HOPS = frozenset({"zip", "tar", "gzip", "bz2", "xz", "zstd", "lz4"})
 _MARK = "_unsloth_dataset_media_guard"
 _SNAPSHOT_REPO = re.compile(r"[\\/]datasets--([^\\/]+?)--([^\\/]+)[\\/]")
 # Hub dataset repos the process was started to train on (a worker serves one account's job).
 _dataset_repos: set[str] = set()
+# Extraction directory (real path) -> the archive ``datasets`` extracted into it, in this process.
+_extracted_sources: dict[str, str] = {}
 
 
 class MediaPathRefused(PermissionError, ValueError):
@@ -77,13 +86,29 @@ def _training_snapshot(path: str) -> bool:
     )
 
 
-def _extracted_archive(path: str) -> bool:
+def _extracted_source(path: str):
+    """The archive an extracted file came from, or None when it is not under the extraction cache."""
     from datasets import config
-    root = os.path.realpath(str(config.EXTRACTED_DATASETS_PATH))
-    return os.path.realpath(path).startswith(root.rstrip(os.sep) + os.sep)
+    from datasets.utils.extract import ExtractManager
+
+    root = os.path.realpath(str(config.EXTRACTED_DATASETS_PATH)).rstrip(os.sep) + os.sep
+    real = os.path.realpath(path)
+    if not real.startswith(root):
+        return None
+    top = root + real[len(root) :].split(os.sep, 1)[0]
+    source = _extracted_sources.get(top)
+    if source is None:
+        try:
+            with open(top + _SOURCE_SUFFIX, encoding = "utf-8") as f:
+                source = f.read()
+        except OSError:
+            return ""
+    # The directory is named by a hash of the archive's path, so a recorded source can not name another one.
+    expected = ExtractManager(cache_dir = None)._get_output_path(source)
+    return source if os.path.realpath(expected) == top else ""
 
 
-def _require_readable(path: str) -> None:
+def _require_readable(path: str, depth: int = 0) -> None:
     from fastapi import HTTPException
 
     from core.training.account_jobs import visible_cached_path
@@ -91,15 +116,79 @@ def _require_readable(path: str) -> None:
     path = os.path.abspath(os.path.expanduser(path))
     try:
         visible_cached_path(path, "dataset")
+        return
     except HTTPException:
-        if not (_training_snapshot(path) or _extracted_archive(path)):
-            _refuse(path)
+        pass
+    if _training_snapshot(path):
+        return
+    source = _extracted_source(path)
+    if not source or depth >= 4:
+        _refuse(path)
+    try:
+        _require_readable(source, depth + 1)
+    except MediaPathRefused:
+        _refuse(path)
+
+
+def _record_extraction(extract):
+    @functools.wraps(extract)
+    def recorded(self, input_path, *args, **kwargs):
+        output_path = extract(self, input_path, *args, **kwargs)
+        if output_path != input_path:
+            source, top = os.path.abspath(str(input_path)), os.path.realpath(str(output_path))
+            _extracted_sources[top] = source
+            try:
+                with open(top + _SOURCE_SUFFIX, "x", encoding = "utf-8") as f:
+                    f.write(source)
+            except OSError:  # already recorded, or a read-only cache: this process still knows it
+                pass
+        return output_path
+
+    return recorded
 
 
 def require_readable_media(path) -> None:
     """Refuse a local media path the managed account may not read; a no-op for the owner."""
     if not _is_owner():
         _require_readable(str(path))
+
+
+def _anchored(pattern: str):
+    """``pattern``'s ``{field}`` placeholders as groups and the rest literal, matched against a whole string."""
+    parts = re.split(r"{([^:}]+)(?::[^}]+)?}", pattern)
+    regex = "".join(
+        f"(?P<{part}>.+)" if index % 2 else re.escape(part) for index, part in enumerate(parts)
+    )
+    return re.compile(regex)
+
+
+def _hub_fields(source: str):
+    """The repo fields of a Hub dataset file URL, or None for anything that is not one.
+
+    ``datasets.utils.py_utils.string_to_dict`` searches anywhere in the string, so a URL of another host that
+    merely contains a Hub path matches it; the scheme and authority are pinned here by matching the whole URL.
+    """
+    from datasets import config
+    from datasets.utils.py_utils import string_to_dict
+
+    endpoint = str(config.HF_ENDPOINT).rstrip("/")
+    if source.startswith(endpoint + "/"):
+        pattern = config.HUB_DATASETS_URL
+    elif source.startswith("hf://"):
+        pattern = config.HUB_DATASETS_HFFS_URL
+    else:
+        return None
+    match = _anchored(pattern).fullmatch(source)
+    if match is None:
+        return None
+    # The decoders key the token on string_to_dict's answer: it must name the same repo.
+    try:
+        theirs = string_to_dict(source, pattern)
+    except ValueError:
+        theirs = None
+    if not theirs or theirs.get("repo_id") != match.group("repo_id"):
+        return None
+    return match.groupdict()
 
 
 def _permitted_tokens(value, token_per_repo_id):
@@ -112,25 +201,16 @@ def _permitted_tokens(value, token_per_repo_id):
         return token_per_repo_id
     if raw is not None or not isinstance(path, str) or not path:
         return token_per_repo_id
-    from datasets import config
     from datasets.utils.file_utils import is_local_path
-    from datasets.utils.py_utils import string_to_dict
 
-    # A chained URL ("zip://inner::<outer>") reads the outer location.
-    source = path.split("::")[-1]
+    # A chained URL ("zip://inner::<outer>") reads the outer location through archive hops only.
+    *hops, source = path.split("::")
+    if any(hop.split("://", 1)[0] not in _ARCHIVE_HOPS or "://" not in hop for hop in hops):
+        _refuse(path)
     if is_local_path(source):
         _require_readable(source)
         return token_per_repo_id
-    # The decoders' own lookup: whatever key they will read is the one given a token here.
-    pattern = (
-        config.HUB_DATASETS_URL
-        if source.startswith(config.HF_ENDPOINT)
-        else config.HUB_DATASETS_HFFS_URL
-    )
-    try:
-        fields = string_to_dict(source, pattern)
-    except ValueError:
-        fields = None
+    fields = _hub_fields(source)
     if fields is None:
         # Not a Hub file the decoder can key a token on: it would dial it with the server's credentials.
         _refuse(path)
@@ -181,6 +261,11 @@ def _patch_attribute(owner, attribute, wrapper) -> None:
 
 
 def _patch(module) -> None:
+    if module.__name__ == _EXTRACT:
+        owner = getattr(module, "ExtractManager", None)
+        if owner is not None:
+            _patch_attribute(owner, "extract", _record_extraction)
+        return
     if module.__name__ == _ARROW:
         owner = getattr(module, "Arrow", None)
         if owner is not None:
@@ -210,7 +295,7 @@ class _Finder(importlib.abc.MetaPathFinder):
         path,
         target = None,
     ):
-        if name not in _DECODERS and name != _ARROW:
+        if name not in _DECODERS and name not in (_ARROW, _EXTRACT):
             return None
         sys.meta_path.remove(self)
         try:
@@ -224,7 +309,7 @@ class _Finder(importlib.abc.MetaPathFinder):
 
 
 def install() -> None:
-    for name in (*_DECODERS, _ARROW):
+    for name in (*_DECODERS, _ARROW, _EXTRACT):
         if name in sys.modules:
             _patch(sys.modules[name])
     if not any(isinstance(finder, _Finder) for finder in sys.meta_path):
