@@ -154,6 +154,7 @@ async def fire(
     node_id: str,
     payload: dict,
     at_ms: Optional[int] = None,
+    kind: Optional[str] = None,
 ) -> Optional[str]:
     """Start a triggered run as the owner; returns its id, or None when it was skipped (logged)."""
     from core.flows.engine import get_engine
@@ -163,7 +164,10 @@ async def fire(
         return None
     # The saved document is the truth: a trigger switched off or removed there never fires, even if the index lags.
     if not any(
-        w["node_id"] == node_id and w["config"].get("enabled") for w in wanted(record["doc"])
+        w["node_id"] == node_id
+        and w["config"].get("enabled")
+        and (kind is None or w["kind"] == kind)
+        for w in wanted(record["doc"])
     ):
         logger.info("flows: trigger %s/%s skipped: it is off in the saved flow", flow_id, node_id)
         return None
@@ -214,7 +218,12 @@ class Scheduler:
                     continue
                 payload = {"fired_at": now.isoformat(timespec = "seconds")}
                 run_id = await fire(
-                    app, row["flow_id"], row["node_id"], payload, int(now.timestamp() * 1000)
+                    app,
+                    row["flow_id"],
+                    row["node_id"],
+                    payload,
+                    int(now.timestamp() * 1000),
+                    kind = "schedule",
                 )
             except Exception:
                 logger.warning(

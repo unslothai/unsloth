@@ -889,6 +889,8 @@ def approve_capabilities(flow_id: str, body: ApproveBody) -> dict:
         and (body.triggers or capabilities.is_approved(before, "trigger", "trigger")),
     }
     flows_db.set_capabilities(flow_id, approved)
+    # A trigger added by an API-key save was left out of the index; the owner's approval puts it in.
+    triggers.sync(flow_id, record["doc"])
     return _capability_report(record)
 
 
@@ -948,7 +950,8 @@ async def call_webhook(request: Request, token: str) -> dict:
         "received_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     run_id = await arun_as(
-        OWNER, triggers.fire(request.app, row["flow_id"], row["node_id"], received)
+        OWNER,
+        triggers.fire(request.app, row["flow_id"], row["node_id"], received, kind = "webhook"),
     )
     if run_id is None:
         raise HTTPException(

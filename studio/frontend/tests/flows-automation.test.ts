@@ -63,3 +63,13 @@ test("the webhook URL uses the backend origin and never shows the last block's s
   assert.match(source, /webhookUrl\(getApiBase\(\) \|\| window\.location\.origin/);
   assert.match(source, /setTrigger\(null\);\s*\}, \[flowId, nodeId\]\)/);
 });
+
+test("the approval banner never shows or approves another flow's report", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(
+    new URL("../src/features/flows/editor/capability-banner.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /current\.current === flowId && setReport\(found\)/);
+  assert.match(source, /setReport\(null\);\s*\}, \[flowId\]\)/);
+});

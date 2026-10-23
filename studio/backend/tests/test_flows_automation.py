@@ -582,3 +582,31 @@ def test_python_saved_without_code_needs_the_default_codes_approval(client):
 def test_python_nan_results_are_refused():
     with pytest.raises(FlowNodeError, match = "NaN"):
         automation.parse_python_output(automation.PY_RESULT_MARKER + "NaN\n")
+
+
+def test_owner_approval_indexes_a_trigger_an_api_key_added(client):
+    _python_flow(client, "keyed")
+    d = client.get("/api/flows/keyed").json()["doc"]
+    d["nodes"].append(node("w", "trigger.webhook", enabled = True))
+    client.put("/api/flows/keyed", json = {"doc": d}, headers = {"x-test-account": "owner_api"})
+    assert client.get("/api/flows/keyed/triggers").json()["triggers"] == []
+    _approve(client, "keyed")
+    assert [t["kind"] for t in client.get("/api/flows/keyed/triggers").json()["triggers"]] == [
+        "webhook"
+    ]
+
+
+def test_a_trigger_fires_only_as_the_kind_the_saved_flow_has(client, monkeypatch):
+    path = _webhook_flow(client)
+    _approve(client, "hook1")
+    d = client.get("/api/flows/hook1").json()["doc"]
+    d["nodes"][0]["type"] = "trigger.schedule"
+    monkeypatch.setattr(triggers, "sync", lambda *a: (_ for _ in ()).throw(RuntimeError("db")))
+    client.put("/api/flows/hook1", json = {"doc": d})
+    assert client.post(path, json = {}).status_code == 409
+
+
+def test_http_json_with_nan_is_not_parsed():
+    assert automation._no_constant  # the HTTP block parses with the same strict constants
+    import inspect
+    assert "parse_constant = _no_constant" in inspect.getsource(automation.http_request)

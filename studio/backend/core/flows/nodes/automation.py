@@ -166,7 +166,7 @@ async def http_request(ctx: NodeContext) -> dict:
     parsed: Any = None
     if "json" in content_type.lower() or text.lstrip().startswith(("{", "[")):
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(text, parse_constant = _no_constant)
         except ValueError:
             parsed = None
     return {"data": parsed, "text": text, "status": status}

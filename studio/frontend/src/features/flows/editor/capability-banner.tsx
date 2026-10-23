@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type CapabilityReport,
@@ -17,10 +17,18 @@ export function CapabilityBanner({ flowId }: { flowId: string }) {
   const [busy, setBusy] = useState(false);
   const saveState = useUiStore((s) => s.saveState);
 
+  // Only the answer for the flow on screen counts: a late one for the last flow must not be approved here.
+  const current = useRef(flowId);
+  current.current = flowId;
   const refresh = useCallback(() => {
     getCapabilities(flowId)
-      .then(setReport)
-      .catch(() => setReport(null));
+      .then((found) => current.current === flowId && setReport(found))
+      .catch(() => current.current === flowId && setReport(null));
+  }, [flowId]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on identity change only
+  useEffect(() => {
+    setReport(null);
   }, [flowId]);
 
   // Edits change what is needed (new code, a new host), so read it again after every save.
