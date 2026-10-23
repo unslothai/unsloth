@@ -1033,6 +1033,27 @@ def test_a_reply_marked_failed_does_not_claim_the_model(monkeypatch):
     assert claims == [1]
 
 
+def test_a_run_skips_a_speech_primary_for_the_text_model_kept_alongside(monkeypatch):
+    from core.inference import model_slots
+
+    def slot(name, audio):
+        return SimpleNamespace(
+            llama = SimpleNamespace(is_loaded = True, model_identifier = name, _is_audio = audio),
+            orchestrator = SimpleNamespace(active_model_name = None),
+        )
+
+    monkeypatch.setattr(
+        model_slots, "visible", lambda: [slot("tts/voice", True), slot("text/model", False)]
+    )
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "speech/primary")
+    speech = SimpleNamespace(is_loaded = True, _is_audio = True)
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: speech)
+    assert scheduler_module._sole_kept_model() == "text/model"
+
+    speech._is_audio = False
+    assert scheduler_module._sole_kept_model() is None
+
+
 def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
     monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)

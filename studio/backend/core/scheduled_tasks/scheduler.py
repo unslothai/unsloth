@@ -151,7 +151,18 @@ def _chat_model_loaded() -> bool:
     return _loaded_slot_ident() is not None
 
 
+def _speech_only(llama: Any, orchestrator: Any) -> bool:
+    """A loaded model that answers with audio, which a text-only run cannot use (as the producer decides it)."""
+    if getattr(llama, "is_loaded", False):
+        return bool(getattr(llama, "_is_audio", False))
+    active = getattr(orchestrator, "active_model_name", None)
+    info = (getattr(orchestrator, "models", None) or {}).get(active) or {}
+    return bool(info.get("is_audio")) and info.get("audio_type") != "whisper"
+
+
 def _slot_model(slot: Any) -> Optional[str]:
+    if _speech_only(slot.llama, slot.orchestrator):
+        return None
     if getattr(slot.llama, "is_loaded", False) and getattr(slot.llama, "model_identifier", None):
         return str(slot.llama.model_identifier)
     name = getattr(slot.orchestrator, "active_model_name", None)
@@ -159,14 +170,18 @@ def _slot_model(slot: Any) -> Optional[str]:
 
 
 def _sole_kept_model() -> Optional[str]:
-    """With no primary this account may use, its one model kept alongside: named, a run routes to it without a load."""
+    """With no primary this account may use for text, its one model kept alongside: named, a run routes to it without a load."""
     from core.inference import model_slots
     from hub.services.models import account_access
-    from routes.inference import _loaded_slot_ident
+    from routes.inference import _loaded_slot_ident, _peek_inference_backend, get_llama_cpp_backend
 
     primary = _loaded_slot_ident()
-    if primary is not None and not (
-        account_access.managed_account() and account_access.resident_hidden("chat", primary)
+    if (
+        primary is not None
+        and not (
+            account_access.managed_account() and account_access.resident_hidden("chat", primary)
+        )
+        and not _speech_only(get_llama_cpp_backend(), _peek_inference_backend())
     ):
         return None
     names = [name for name in map(_slot_model, model_slots.visible()) if name]
