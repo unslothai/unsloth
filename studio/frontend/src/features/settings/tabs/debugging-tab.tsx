@@ -211,7 +211,6 @@ export function DebuggingTab() {
   const inFlightRef = useRef<number | null>(null);
   const paneRef = useRef<HTMLPreElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
-  // null keeps the default height; a drag stores the user's.
   const [paneHeight, setPaneHeight] = useState<number | null>(
     readStoredPaneHeight,
   );
@@ -477,7 +476,7 @@ export function DebuggingTab() {
         window.localStorage.setItem(PANE_HEIGHT_STORAGE_KEY, String(height));
       }
     } catch {
-      // storage unavailable: the height still applies for this visit
+      // storage unavailable: the height still applies this visit
     }
   }, []);
 
@@ -800,8 +799,7 @@ export function DebuggingTab() {
         ) : null}
 
         <div className="relative">
-          {/* The frame draws the border and the pane scrolls inside it, so the scrollbar sits
-              clear of the rounded corners instead of riding on them. */}
+          {/* Border on the frame, scrolling inside it: keeps the scrollbar off the rounded corners. */}
           <div
             ref={frameRef}
             style={paneHeight === null ? undefined : { height: paneHeight }}
