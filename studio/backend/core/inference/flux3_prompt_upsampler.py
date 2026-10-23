@@ -54,8 +54,7 @@ UPSAMPLER_MODEL_FILES = {
 # divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
-# The cached quants used when the default is not downloaded, best first: an install that fetched an earlier default
-# keeps Enhance without the new download. A fresh install still downloads UPSAMPLER_MODEL_FILE.
+# Cached earlier defaults, best first, used when UPSAMPLER_MODEL_FILE is absent (fresh installs still download it).
 UPSAMPLER_CACHED_FALLBACK_QUANTS = ("Q8_0", "Q4_K_M")
 UPSAMPLER_MODEL_FILE_PREFERENCE = (UPSAMPLER_MODEL_FILE,) + tuple(
     UPSAMPLER_MODEL_FILES[quant] for quant in UPSAMPLER_CACHED_FALLBACK_QUANTS
@@ -732,8 +731,7 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
 
 def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both. The default quant first, then the cached
-    fallbacks in UPSAMPLER_MODEL_FILE_PREFERENCE order."""
+    with no projector at its revision when no revision holds both. Files tried in UPSAMPLER_MODEL_FILE_PREFERENCE order."""
     revisions = _candidate_revisions(hub_cache)
     model_only = None
     for filename in UPSAMPLER_MODEL_FILE_PREFERENCE:
@@ -837,7 +835,6 @@ def status() -> dict:
     """The prompt-upsampler status route body."""
     model = model_path()
     mmproj = mmproj_path()
-    # The file in use (an override, or a cached fallback quant), else the default the download fetches.
     model_name = Path(model).name if model else UPSAMPLER_MODEL_FILE
     size = None
     if model:
