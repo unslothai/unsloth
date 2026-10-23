@@ -109,7 +109,7 @@ function SegmenterDownloadNotice({
   return (
     <div
       data-testid="mask-segmenter-download"
-      className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
+      className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
     >
       {download.downloading ? (
         <>

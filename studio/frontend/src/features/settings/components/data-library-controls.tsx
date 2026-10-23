@@ -97,9 +97,9 @@ export function LibraryToolbar({
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <Button
-            variant="outline"
+            variant="picker"
             disabled={disabled}
-            className="h-10 gap-2 rounded-xl"
+            className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
           >
             {projects
@@ -157,9 +157,9 @@ export function LibraryToolbar({
         <Popover open={projectOpen} onOpenChange={setProjectOpen}>
           <PopoverTrigger asChild={true}>
             <Button
-              variant="outline"
+              variant="picker"
               disabled={disabled}
-              className="h-10 max-w-full gap-2 rounded-xl"
+              className="h-10 max-w-full gap-2 rounded-full"
               aria-label={t("settings.data.library.filterProject")}
             >
               <HugeiconsIcon icon={Folder01Icon} className="size-4 shrink-0" />
@@ -287,7 +287,7 @@ export function ChatLibraryGroups<T extends LibraryItem>({
               )}
             </span>
           </div>
-          <div className="divide-y divide-border/50 rounded-2xl border border-border/60 px-3 sm:px-4">
+          <div className="divide-y divide-border/50 rounded-xl border border-border/60 px-3 sm:px-4">
             {group.items.map((item) => (
               <div key={item.id}>{children(item)}</div>
             ))}

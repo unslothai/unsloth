@@ -55,6 +55,7 @@ from .diffusion_attention import (
     attention_status_reason,
     install_hunyuan_attention_trim,
     sdpa_math_only,
+    _dit_head_dims,
     begin_attention_run,
     report_attention_run,
     select_attention_backend,
@@ -103,8 +104,8 @@ from .diffusion_device import (
     apply_diffusion_device_ordinal,
     diffusion_device_scope,
     force_float32_rope,
-    install_decoder_sync,
     install_rocm_vae_bf16_decode,
+    install_vae_sync,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
     auto_cuda_ordinal_for_load,
@@ -297,8 +298,15 @@ from .video_minimax_h3_te import (
 )
 from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
-from .video_stream_encode import claim_stream, offer_stream, open_stream_encode
+from .video_stream_encode import (
+    claim_stream,
+    offer_stream,
+    open_h3_stream_encode,
+    open_stream_encode,
+)
 from utils.hardware import clear_gpu_cache
+
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 
 # Shared with the image backend so both pin every loader call to the same live cache root
 from core.inference.diffusion import hub_cache_dir
@@ -2695,18 +2703,32 @@ def _h3_signed_free_device_bytes(device: str) -> Optional[int]:
 
 
 def _h3_card_memory_bytes(
-    device: Optional[str], ordinal: Optional[int]
+    device: Optional[str],
+    ordinal: Optional[int],
+    *,
+    allow_context: bool = True,
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
-    ordinal 0. Free is less the user's VRAM Budget reserve (raw at the default), so the sd.cpp resident-vs-offload
-    pick, its ``--max-vram`` probe and the server-pressure check all keep that share free."""
+    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / amd-smi / sysfs
+    first (no CUDA context); torch only when none answers and ``allow_context``, as the residency and pressure reads
+    always did. The pre-spawn budget passes False: it never pays for a context. Free is less the user's VRAM Budget
+    reserve (raw at the default), so the sd.cpp resident-vs-offload pick, its ``--max-vram`` probe and the
+    server-pressure check all keep that share free."""
     if device != "cuda":
         return None, None
+    found = _h3_read_card_memory_bytes(ordinal, no_context = True)
+    if found == (None, None) and allow_context:
+        found = _h3_read_card_memory_bytes(ordinal, no_context = False)
+    return found
+
+
+def _h3_read_card_memory_bytes(
+    ordinal: Optional[int], *, no_context: bool
+) -> tuple[Optional[int], Optional[int]]:
     try:
         from utils.hardware import get_visible_gpu_utilization, gpu_query
 
         with gpu_query.fresh_reads():
-            devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
+            devices = get_visible_gpu_utilization(no_context = no_context).get("devices", [])
         want = 0 if ordinal is None else int(ordinal)
         for entry in devices:
             if entry.get("visible_ordinal") != want:
@@ -2728,17 +2750,19 @@ def _h3_card_free_bytes(
     ordinal: Optional[int],
     *,
     single_card_only: bool = False,
+    allow_context: bool = True,
 ) -> Optional[int]:
     """Free VRAM of the H3 render card, or None. ``single_card_only`` (unpinned): sd.cpp picks the card itself and
     applies one scalar ``--max-vram`` to every card, so on a multi-card box this is None at the default Budget (no
     scalar budget steers its pick) and, under a lowered Budget, the SMALLEST budget-adjusted reading across the
-    visible cards: a cap that keeps every card's reserve whichever one sd.cpp renders on (None if any is unread)."""
+    visible cards: a cap that keeps every card's reserve whichever one sd.cpp renders on (None if any is unread).
+    ``allow_context``: see ``_h3_card_memory_bytes``."""
     if single_card_only and _h3_visible_card_count(device) != 1:
         readings = _h3_unpinned_multi_card_readings(device)
         if not readings or any(free is None for free, _total in readings):
             return None
         return min(free for free, _total in readings)
-    return _h3_card_memory_bytes(device, ordinal)[0]
+    return _h3_card_memory_bytes(device, ordinal, allow_context = allow_context)[0]
 
 
 def _h3_unpinned_multi_card_readings(
@@ -4131,7 +4155,9 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         if (
             _is_out_of_memory(exc)
             and request_shape.get("attention_backend") is None
-            and sdpa_math_only(_probe_target(request_shape))
+            and sdpa_math_only(
+                _probe_target(request_shape), request_shape.get("attention_head_dims")
+            )
         ):
             logger.error("video.generate_failed_request: %s", SDPA_MATH_ONLY_MESSAGE)
     except Exception:  # noqa: BLE001 - diagnostics never mask the real failure
@@ -4164,7 +4190,9 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
             if (
                 request_shape is not None
                 and request_shape.get("attention_backend") is None
-                and sdpa_math_only(_probe_target(request_shape))
+                and sdpa_math_only(
+                    _probe_target(request_shape), request_shape.get("attention_head_dims")
+                )
             ):
                 return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
             return (
@@ -4629,6 +4657,7 @@ class VideoBackend:
 
     # ── background load + progress ───────────────────────────────────────────
 
+    @pauses_background_embedding
     @vram_budget_scope("video", load = True)
     def begin_load(
         self,
@@ -5257,10 +5286,11 @@ class VideoBackend:
                 return
             logger.error("video.load_failed: %s", exc)
             if self._state is not None:
-                from .gpu_arbiter import VIDEO, restore_owner_account
+                from .gpu_arbiter import VIDEO, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(VIDEO)
+                restore_media_need(VIDEO)
                 restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             # NVFP4 caches pin the denoiser, but a failed replacement keeps the old model, whose graph still uses them.
@@ -5888,6 +5918,7 @@ class VideoBackend:
                     native_device,
                     native_ordinal if native_device_name else None,
                     single_card_only = not native_device_name,
+                    allow_context = False,
                 )
                 if native_device != "cpu"
                 else None
@@ -9844,7 +9875,7 @@ class VideoBackend:
                 if install_untiled_decode(pipe, fam.name, logger = logger):
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
-            install_decoder_sync(pipe, target, logger = logger)
+            install_vae_sync(pipe, target, logger = logger)
             if _video_denoiser_hooked(pipe):
                 # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split
                 # fell back to a hooked placement: compiled through them, each block splits at the hook's
@@ -11860,6 +11891,7 @@ class VideoBackend:
                     video_id = (video or {}).get("id"),
                 )
 
+    @holds_inference
     @vram_budget_scope("video")
     def generate(
         self,
@@ -12179,7 +12211,9 @@ class VideoBackend:
                         dtype = getattr(state, "dtype", None),
                         attention_backend = getattr(state, "attention_backend", None),
                         speed_mode = getattr(state, "speed_mode", None),
-                        speed_optims = tuple(getattr(state, "speed_optims", ()) or ()),
+                        speed_optims = video_stream_residency.live_speed_optims(
+                            state.pipe, getattr(state, "speed_optims", ())
+                        ),
                         transformer_cache = request_cache_mode,
                         vae_tiling = getattr(state, "vae_tiling", None),
                         memory_mode = getattr(state, "memory_mode", None),
@@ -12274,6 +12308,7 @@ class VideoBackend:
                     "dtype": state.dtype,
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
+                    "attention_head_dims": sorted(_dit_head_dims(state.pipe)),
                 }
                 self._last_request_shape = request_shape
 
@@ -12648,6 +12683,11 @@ class VideoBackend:
                     and not fam.has_audio
                     and ltx25_render_call is None,
                     logger = logger,
+                ) or open_h3_stream_encode(
+                    pipe,
+                    out_fps,
+                    engage = fam.modular_workflow and ltx25_render_call is None,
+                    logger = logger,
                 )
                 previewer = LatentPreviewer.create(
                     family = fam.name,
@@ -12708,8 +12748,8 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
-                # Encoded during the decode when its frames are exactly these (_encode_mp4 claims it).
-                with offer_stream(stream_session if audio_track is None else None):
+                # Encoded during the decode when its frames (and soundtrack) are exactly these (_encode_mp4 claims it).
+                with offer_stream(stream_session):
                     if audio_sample_rate is None:
                         mp4_bytes = self._encode_mp4(
                             video_frames, out_fps, audio_track, pipe if fam.has_audio else None
@@ -13459,6 +13499,11 @@ class VideoBackend:
         what the gallery persists."""
         if audio is None:
             streamed = claim_stream(video_frames, fps)
+            if streamed is not None:
+                return streamed
+        elif pipe is not None and audio_sample_rate:
+            # MiniMax-H3: encoded during the decode with this soundtrack's stream declared up front
+            streamed = claim_stream(video_frames, fps, audio, int(audio_sample_rate))
             if streamed is not None:
                 return streamed
         from diffusers.utils.export_utils import encode_video

@@ -369,8 +369,20 @@ def test_video_h3_capacity_probe_charges_the_same_reserve_as_placement(fraction,
     assert vid._h3_device_capacity_bytes("cuda") == vid._h3_free_device_bytes("cuda") == total // 2
 
 
-def test_companion_card_rank_uses_the_fast_limit_in_fast_mode(fraction):
+def _share_of_card_reserve(monkeypatch):
+    # The discrete reserve is a flat 2 GiB, so the safe and fast budgets coincide on a discrete card. A share-of-card
+    # reserve (10%, 2-4 GiB) puts room between them and between the planner's reserve and the user's.
+    monkeypatch.setattr(
+        dm,
+        "discrete_reserve_mib",
+        lambda total_mib = None: max(2048, min(int((total_mib or 0) * 0.10), 4096)),
+    )
+
+
+def test_companion_card_rank_uses_the_fast_limit_in_fast_mode(fraction, monkeypatch):
     import core.inference.diffusion_multigpu as mg
+
+    _share_of_card_reserve(monkeypatch)
 
     probes = {
         0: mg.DeviceProbe(ordinal = 0, name = "a", total_mib = 24 * GiB, free_mib = 23 * GiB),
@@ -627,6 +639,7 @@ def test_primary_card_rank_uses_the_reserve_the_planner_enforces(fraction, monke
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_device as dd
 
+    _share_of_card_reserve(monkeypatch)
     cards = {0: (12 * GiB << 20, 40 * GiB << 20), 1: (11 * GiB << 20, 16 * GiB << 20)}
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda o: cards[o])
     assert dd.rank_cuda_ordinals([0, 1]) == [0, 1]

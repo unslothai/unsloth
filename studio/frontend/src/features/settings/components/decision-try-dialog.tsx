@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -32,7 +33,6 @@ import { cn } from "@/lib/utils";
 import {
   Add01Icon,
   AlertCircleIcon,
-  ArrowDown01Icon,
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
@@ -660,7 +660,7 @@ function ErrorResult({
   return (
     <div
       role="alert"
-      className="flex gap-3 rounded-xl border border-red-500/25 bg-red-500/5 px-4 py-3.5"
+      className="flex gap-3 rounded-lg border border-red-500/25 bg-red-500/5 px-4 py-3.5"
     >
       <HugeiconsIcon
         icon={AlertCircleIcon}
@@ -1195,7 +1195,7 @@ export function DecisionTryDialog({
                     />
                     {t("decisions.examples")}
                     <HugeiconsIcon
-                      icon={ArrowDown01Icon}
+                      icon={ChevronDownStandardIcon}
                       strokeWidth={1.75}
                       className="size-3.5"
                     />
@@ -1219,13 +1219,14 @@ export function DecisionTryDialog({
                 </DropdownMenuContent>
               </DropdownMenu>
               <Button
+                variant="dark"
                 type="button"
                 onClick={() => void run()}
                 aria-busy={running}
                 className="gap-2 pl-3.5 pr-2"
               >
                 {running ? (
-                  <Spinner className="size-4 text-primary-foreground" />
+                  <Spinner className="size-4 text-background" />
                 ) : (
                   <HugeiconsIcon
                     icon={PlayIcon}
@@ -1234,7 +1235,7 @@ export function DecisionTryDialog({
                   />
                 )}
                 {t("decisions.run")}
-                <kbd className="rounded-full bg-primary-foreground/20 px-1.5 py-0.5 font-mono text-ui-10 text-primary-foreground/90">
+                <kbd className="rounded-full bg-background/20 px-1.5 py-0.5 font-mono text-ui-10 text-background/90">
                   {SHORTCUT}
                 </kbd>
               </Button>

@@ -722,7 +722,7 @@ test("a section drag draws itself, so the sidebar re-renders only on the drop", 
   assert.match(drag, /escaped = true;\n\s*putDown\(\);/);
   const css = await readSrcAsync("index.css");
   assert.match(css, /\[data-sidebar-section\]\[data-section-dragging\] \{\n\s*opacity: 0\.4;/);
-  assert.match(css, /\.sidebar-section-drop-line \{[\s\S]*?border-top: 1\.5px solid var\(--primary\);/);
+  assert.match(css, /\.sidebar-section-drop-line \{[\s\S]*?border-top: 1\.5px solid var\(--foreground\);/);
 });
 
 test("a carried section lands against the nearest gap, and only a real move draws a line", async () => {

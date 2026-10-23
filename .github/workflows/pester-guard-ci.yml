@@ -14,6 +14,9 @@ name: Pester guard
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'tests/studio/test_pester_bootstrap_hardening.py'
       - '.github/workflows/pester-guard-ci.yml'
@@ -28,6 +31,7 @@ permissions:
 
 jobs:
   guard:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Pester bootstrap guard
     runs-on: windows-latest
     timeout-minutes: 10
