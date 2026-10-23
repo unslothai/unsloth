@@ -18,7 +18,9 @@ import os
 import sys
 import shutil
 import logging
+import tempfile
 import subprocess
+from pathlib import Path
 
 from ._msvc_env import _have_crt_headers
 
@@ -64,6 +66,70 @@ def _level_zero_sdk_found() -> bool:
     dirs = [os.path.join(root, "include")] if root else []
     dirs += os.environ.get("INCLUDE", "").split(os.pathsep)
     return any(d and os.path.isfile(os.path.join(d, "level_zero", "ze_api.h")) for d in dirs)
+
+
+# The official Windows SDK (MIT): headers + ze_loader.lib only, 317 KB. Pinned by hash, fetched once.
+_L0_VERSION = "1.34.0"
+_L0_URL = (
+    "https://github.com/oneapi-src/level-zero/releases/download/"
+    f"v{_L0_VERSION}/level-zero-win-sdk-{_L0_VERSION}.zip"
+)
+_L0_SHA256 = "3050280cc94b7a5db7fb173391fcced9b7284ae196bcaf05a566d2911baa7733"
+
+
+def _sdk_complete(root: Path) -> bool:
+    return (root / "include" / "level_zero" / "ze_api.h").is_file() and (
+        root / "lib" / "ze_loader.lib"
+    ).is_file()
+
+
+def _fetch_level_zero_sdk(dest: Path) -> None:
+    import hashlib  # noqa: PLC0415
+    import io  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    with urllib.request.urlopen(_L0_URL, timeout = 30) as response:
+        blob = response.read()
+    if hashlib.sha256(blob).hexdigest() != _L0_SHA256:
+        raise ValueError("Level Zero SDK archive does not match its pinned hash")
+    dest.parent.mkdir(parents = True, exist_ok = True)
+    staging = Path(tempfile.mkdtemp(prefix = dest.name + ".", dir = dest.parent))
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            for member in archive.infolist():
+                # The archive names members with backslashes; zipfile only maps those on Windows.
+                parts = member.filename.replace("\\", "/").split("/")
+                if member.is_dir() or not parts[-1]:
+                    continue
+                if any(p in ("", ".", "..") or ":" in p for p in parts):
+                    raise ValueError(f"unexpected member {member.filename!r}")
+                target = staging.joinpath(*parts)
+                target.parent.mkdir(parents = True, exist_ok = True)
+                target.write_bytes(archive.read(member))
+        # Another worker may have won the race; its copy is the same pinned archive.
+        try:
+            os.replace(staging, dest)
+        except OSError:
+            if not _sdk_complete(dest):
+                raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors = True)
+
+
+def _provide_level_zero_sdk() -> str | None:
+    """Studio's cached copy of the SDK, fetched on first need. None when it cannot be had (offline)."""
+    try:
+        from utils.paths.storage_roots import cache_root  # noqa: PLC0415
+
+        dest = cache_root() / f"level-zero-sdk-{_L0_VERSION}"
+        if not _sdk_complete(dest):
+            _fetch_level_zero_sdk(dest)
+        return str(dest) if _sdk_complete(dest) else None
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not provide the Level Zero SDK", exc_info = True)
+        return None
 
 
 def _vcvars_path() -> str | None:
@@ -165,9 +231,16 @@ def _prepare(log: logging.Logger) -> None:
         )
         return
     os.environ["CXX"] = _triton_cl_spelling(cl)
-    if not _level_zero_sdk_found():
-        log.warning(
-            "Intel XPU Triton on Windows also needs the Level Zero SDK, which the GPU driver does not "
-            "include: unzip level-zero-win-sdk-*.zip from https://github.com/oneapi-src/level-zero/releases "
-            "and set LEVEL_ZERO_V1_SDK_PATH to that folder, then restart Unsloth."
-        )
+    if _level_zero_sdk_found():
+        return
+    sdk = _provide_level_zero_sdk()
+    if sdk is not None:
+        os.environ["LEVEL_ZERO_V1_SDK_PATH"] = sdk
+        return
+    log.warning(
+        "Intel XPU Triton on Windows also needs the Level Zero SDK, which the GPU driver does not "
+        "include, and it could not be downloaded: unzip level-zero-win-sdk-%s.zip from "
+        "https://github.com/oneapi-src/level-zero/releases and set LEVEL_ZERO_V1_SDK_PATH to that "
+        "folder, then restart Unsloth.",
+        _L0_VERSION,
+    )

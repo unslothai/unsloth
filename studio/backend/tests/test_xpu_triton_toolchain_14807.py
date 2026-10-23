@@ -90,12 +90,85 @@ def test_a_missing_level_zero_sdk_is_named(xpu_windows, monkeypatch, caplog, tmp
         monkeypatch.setenv(where, str(tmp_path))
     monkeypatch.setattr(toolchain.shutil, "which", _which({"cl": CL}))
     monkeypatch.setattr(toolchain, "_msvc_environment_loaded", lambda: True)
+    monkeypatch.setattr(toolchain, "_provide_level_zero_sdk", lambda: None)
 
     with caplog.at_level(logging.WARNING):
         toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
 
     assert os.environ["CXX"] == toolchain._triton_cl_spelling(CL)
     assert ("LEVEL_ZERO_V1_SDK_PATH" in caplog.text) is (where is None)
+
+
+def test_a_missing_level_zero_sdk_is_provided(xpu_windows, monkeypatch, caplog):
+    for var in ("LEVEL_ZERO_V1_SDK_PATH", "ZE_PATH", "INCLUDE"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(toolchain.shutil, "which", _which({"cl": CL}))
+    monkeypatch.setattr(toolchain, "_msvc_environment_loaded", lambda: True)
+    monkeypatch.setattr(toolchain, "_provide_level_zero_sdk", lambda: r"C:\studio\cache\l0")
+
+    with caplog.at_level(logging.WARNING):
+        toolchain.prepare_xpu_triton_compiler(logging.getLogger("t"))
+
+    assert os.environ["LEVEL_ZERO_V1_SDK_PATH"] == r"C:\studio\cache\l0"
+    assert "Level Zero" not in caplog.text
+
+
+def _sdk_zip(names):
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name in names:
+            z.writestr(name, "x")
+    return buf.getvalue()
+
+
+def _serve(
+    monkeypatch,
+    blob,
+    pin = True,
+):
+    import hashlib
+    import contextlib
+    import urllib.request
+
+    if pin:
+        monkeypatch.setattr(toolchain, "_L0_SHA256", hashlib.sha256(blob).hexdigest())
+
+    @contextlib.contextmanager
+    def urlopen(url, timeout):
+        yield types.SimpleNamespace(read = lambda: blob)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+
+def test_the_sdk_archive_is_unpacked_from_its_backslash_names(tmp_path, monkeypatch):
+    # The real archive's layout: Windows separators inside the zip.
+    _serve(monkeypatch, _sdk_zip([r"include\level_zero\ze_api.h", r"lib\ze_loader.lib"]))
+    dest = tmp_path / "level-zero-sdk"
+
+    toolchain._fetch_level_zero_sdk(dest)
+
+    assert toolchain._sdk_complete(dest)
+    assert [p.name for p in tmp_path.iterdir()] == ["level-zero-sdk"]
+
+
+@pytest.mark.parametrize(
+    "names, pin",
+    [
+        ([r"include\level_zero\ze_api.h", r"lib\ze_loader.lib"], False),
+        ([r"..\evil.dll", r"lib\ze_loader.lib"], True),
+    ],
+)
+def test_a_bad_sdk_archive_leaves_nothing_behind(tmp_path, monkeypatch, names, pin):
+    _serve(monkeypatch, _sdk_zip(names), pin = pin)
+    dest = tmp_path / "level-zero-sdk"
+
+    with pytest.raises(ValueError):
+        toolchain._fetch_level_zero_sdk(dest)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_icpx_on_path_is_left_to_triton(xpu_windows, monkeypatch):
