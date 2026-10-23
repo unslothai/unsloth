@@ -731,8 +731,7 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
 
 
 def _cached_pair(
-    hub_cache: Optional[Path] = None,
-    model_files: tuple = (UPSAMPLER_MODEL_FILE,),
+    hub_cache: Optional[Path] = None, model_files: tuple = (UPSAMPLER_MODEL_FILE,)
 ) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
     with no projector at its revision when no revision holds both. ``model_files`` in preference order: the first
