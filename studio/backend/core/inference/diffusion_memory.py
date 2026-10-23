@@ -1275,8 +1275,24 @@ def _user_budget_reserve_mib(base: Optional[int]) -> int:
     return int(base * (1.0 - fraction))
 
 
+def _device_user_budget_reserve_mib(memory: DeviceMemory, base: Optional[int]) -> int:
+    """:func:`_user_budget_reserve_mib` for ``memory``, 0 where the LLM path ignores the setting too: Apple Metal sizes
+    from its own unified fraction (the slider is hidden on macOS) and a CPU-only host has no GPU for it to act on."""
+    backend = str(getattr(memory, "backend", "") or "").split(":")[0]
+    if (
+        backend in ("mps", "cpu")
+        or memory.memory_kind == "system_memory"
+        or getattr(memory, "metal_working_set_mib", None) is not None
+    ):
+        return 0
+    return _user_budget_reserve_mib(base)
+
+
 def _planner_reserve_mib(memory: DeviceMemory, base: int) -> int:
-    return max(_reserve_mib(_budget_reserve_kind(memory), base), _user_budget_reserve_mib(base))
+    return max(
+        _reserve_mib(_budget_reserve_kind(memory), base),
+        _device_user_budget_reserve_mib(memory, base),
+    )
 
 
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -1295,7 +1311,9 @@ def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
         return None
     base = memory.total_mib or memory.free_mib
     reserve = max(
-        2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2, _user_budget_reserve_mib(base)
+        2048,
+        _reserve_mib(_budget_reserve_kind(memory), base) // 2,
+        _device_user_budget_reserve_mib(memory, base),
     )
     return max(0, int(memory.free_mib) - reserve)
 
@@ -2236,7 +2254,15 @@ def plan_diffusion_memory(
             companion_dense_mib = companion_dense_mib,
             text_encoder_dense_mib = text_encoder_dense_mib,
             base_overhead_mib = base_overhead_mib,
-            free_mib = device_memory.free_mib,
+            # the phase-room checks see the free memory the user's VRAM Budget leaves (raw free at the default)
+            free_mib = (
+                None
+                if device_memory.free_mib is None
+                else int(device_memory.free_mib)
+                - _device_user_budget_reserve_mib(
+                    device_memory, device_memory.total_mib or device_memory.free_mib
+                )
+            ),
             policy = policy,
             stream_transformer = stream_transformer,
         )
@@ -5840,7 +5866,23 @@ def image_activation_verdict(
     # false refusal at or below the default resolution, because the `needed <= planned` arm already exempts every
     # request the load itself budgeted for.
     numbers = dict(needed_mib = int(needed), tiled_needed_mib = tiled, budget_mib = int(budget))
-    if int(needed) + overhead <= int(budget) or (not conditioned and needed <= planned):
+    if int(needed) + overhead <= int(budget):
+        return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
+    if not conditioned and needed <= planned:
+        # A size the load budgeted for is never refused. Under a lowered VRAM Budget the budget can sit below even
+        # the default request, so tile the decode when that brings it back under the cap.
+        if (
+            tiled is not None
+            and int(tiled) + overhead <= int(budget)
+            and _device_user_budget_reserve_mib(
+                device_memory, device_memory.total_mib or device_memory.free_mib
+            )
+            > _reserve_mib(
+                _budget_reserve_kind(device_memory),
+                device_memory.total_mib or device_memory.free_mib,
+            )
+        ):
+            return ImageActivationVerdict(ACTIVATION_TILE, **numbers)
         return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
     if tiled is not None and (
         int(tiled) + overhead <= int(budget) or (not conditioned and tiled <= planned)

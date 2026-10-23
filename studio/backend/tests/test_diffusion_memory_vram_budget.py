@@ -171,3 +171,106 @@ def test_video_h3_free_reading_keeps_the_budget_free(fraction, monkeypatch):
     assert vid._h3_free_device_bytes("cuda") == 22 * GiB << 20
     fraction["value"] = 0.50
     assert vid._h3_free_device_bytes("cuda") == 10 * GiB << 20
+
+
+def test_default_request_tiles_under_a_lowered_budget_but_is_never_refused(fraction):
+    card = _card(22 * GiB, 24 * GiB)
+
+    def verdict(tile_side):
+        return dm.image_activation_verdict(
+            device_memory = card, width = None, height = None, vae_tile_side = tile_side
+        ).action
+
+    assert verdict(512) == dm.ACTIVATION_RUN  # default budget: untouched
+    fraction["value"] = 0.40  # 7,783 MiB budget: under the 8,192 MiB default estimate + overhead
+    assert verdict(512) == dm.ACTIVATION_TILE
+    assert (
+        verdict(None) == dm.ACTIVATION_RUN
+    )  # nothing to tile: the load budgeted this size, so still not refused
+
+
+def test_calibrated_tier_does_not_promote_past_a_lowered_budget(fraction):
+    from core.inference.diffusion_memory import OFFLOAD_MODEL, CalibratedImageActivation
+
+    act = CalibratedImageActivation(
+        text_encoder_mib = 1_498,
+        denoise_mib = 794,
+        decode_mib = 9_172,
+        tiled_decode_mib = 590,
+        max_canvas_mib = 2_960,
+    )
+    total = 25 * GiB
+    card = DeviceMemory("cuda", "cuda", "discrete_vram", total - 1_229, total)
+
+    def plan():
+        return plan_diffusion_memory(
+            target = types.SimpleNamespace(
+                device = "cuda", backend = "cuda", supports_model_cpu_offload = True
+            ),
+            device_memory = card,
+            runtime_headroom_mib = 8192,
+            calibrated_activation = act,
+            model_dense_mib = 17_897,
+            companion_dense_mib = 10_247,
+            text_encoder_dense_mib = 8_959,
+        )
+
+    fraction["value"] = 0.50
+    p = plan()
+    budget = p.estimates["safe_device_budget_mib"]
+    assert budget == total - 1_229 - int(total * 0.50)
+    transformer = 17_897 - 10_247
+    # whole-module offload uploads the transformer beside the max-canvas activation: it must fit the budget
+    if p.offload_policy == OFFLOAD_MODEL:
+        assert transformer + act.max_canvas_mib + p.estimates["base_overhead_mib"] <= budget
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [
+        DeviceMemory("mps", "mps", "unified_memory", 20 * GiB, 32 * GiB),
+        DeviceMemory(
+            "mps", "mps", "unified_memory", 20 * GiB, 32 * GiB, metal_working_set_mib = 28 * GiB
+        ),
+        DeviceMemory("cpu", "cpu", "system_memory", 10 * GiB, 16 * GiB),
+    ],
+)
+def test_metal_and_cpu_ignore_the_budget_like_the_llm_path(fraction, memory):
+    safe, fast, capacity = (
+        dm._safe_device_budget_mib(memory),
+        dm._fast_device_budget_mib(memory),
+        total_capacity_budget_mib(memory),
+    )
+    fraction["value"] = 0.30
+    assert dm._safe_device_budget_mib(memory) == safe
+    assert dm._fast_device_budget_mib(memory) == fast
+    assert total_capacity_budget_mib(memory) == capacity
+
+
+def test_cfg_replica_picks_the_card_the_budget_leaves_room_on(fraction, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_multigpu as mg
+
+    class Pipe:
+        transformer = torch.nn.Linear(51_200, 51_200, bias = False, device = "meta")  # 10 GiB fp32
+
+    probes = {
+        0: mg.DeviceProbe(ordinal = 0, name = "card", total_mib = 24 * GiB, free_mib = 23 * GiB),
+        1: mg.DeviceProbe(ordinal = 1, name = "card", total_mib = 192 * GiB, free_mib = 60 * GiB),
+        2: mg.DeviceProbe(ordinal = 2, name = "card", total_mib = 24 * GiB, free_mib = 23 * GiB),
+    }
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **kw: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals}
+    )
+    fraction["value"] = (
+        0.50  # cuda:1 must keep 96 GiB free (none usable), cuda:2 keeps 12 GiB (11 GiB usable)
+    )
+    pipe = Pipe()
+    try:
+        with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+            assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+        assert str(mg._CFG_ROUTERS[pipe].secondary) == "cuda:2"
+    finally:
+        mg.uninstall_cfg_parallel(pipe)

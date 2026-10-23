@@ -2871,7 +2871,15 @@ def install_cfg_parallel(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            best = max(candidates, key = lambda o: probes[o].free_mib or -1)
+
+            def usable(o: int) -> int:
+                # rank by what the replica may use: a big card with a large VRAM Budget reserve can hold less
+                free_o = probes[o].free_mib
+                if free_o is None:
+                    return -1
+                return int(free_o) - _replica_reserve_mib(free_o, probes[o].total_mib)
+
+            best = max(candidates, key = usable)
             free = probes[best].free_mib
             if (
                 free is not None
