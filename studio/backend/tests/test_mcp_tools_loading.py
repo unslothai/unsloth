@@ -1509,9 +1509,119 @@ def test_the_media_registry_keeps_no_hub_token(monkeypatch, fast_polls):
         assert result.loaded is True
 
     asyncio.run(scenario())
-    generation = loading._MEDIA_GENERATIONS["video"]
-    assert loading._MEDIA_REGISTERED["video"][generation][0] == LTX
+    key = ("owner", "video")
+    generation = loading._MEDIA_GENERATIONS[key]
+    assert loading._MEDIA_REGISTERED[key][generation][0] == LTX
     assert secret not in repr(loading._MEDIA_REGISTERED)
+
+
+def _registered_generations():
+    return {g for slot in loading._MEDIA_REGISTERED.values() for g in slot}
+
+
+def test_another_accounts_refused_unload_keeps_this_accounts_registration(
+    monkeypatch, fast_polls
+):
+    # Managed multi-user install: another account sees the resident slot, but the unload route
+    # refuses it for that account. The owner's registration must survive.
+    _late_unload_scenario(monkeypatch, post_s = (0.05,))
+    fake = loading.route_json
+
+    async def route_json(method, path, caller = None, **kw):
+        if path == "/api/inference/video/unload" and caller.account_id == "other":
+            raise ToolError("This model was loaded by another account")
+        return await fake(method, path, caller = caller, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        owner = make_caller(account_id = "owner")
+        result = await loading.load_media(
+            owner,
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        assert result.loaded is True
+        generation = max(_registered_generations())
+        with pytest.raises(ToolError):
+            await loading.unload_media(make_caller(account_id = "other"), "video")
+        return generation
+
+    generation = asyncio.run(scenario())
+    assert generation in _registered_generations()
+
+
+def test_a_ready_media_load_retires_the_registrations_it_superseded(monkeypatch, fast_polls):
+    # Each load replaces the slot; once a newer one is shown ready, older ones are dropped.
+    _late_unload_scenario(monkeypatch, post_s = (0.01, 0.01, 0.01))
+
+    async def scenario():
+        caller = make_caller(account_id = "prune")
+        for _ in range(3):
+            result = await loading.load_media(
+                caller,
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+            )
+            assert result.loaded is True
+
+    asyncio.run(scenario())
+    latest = max(_registered_generations())
+    slot = next(m for m in loading._MEDIA_REGISTERED.values() if latest in m)
+    ready = next(r for r in loading._MEDIA_READY.values() if latest in r)
+    assert list(slot) == [latest] and ready == {latest}
+
+
+def test_a_newer_load_waits_for_a_late_unload_already_sent(monkeypatch, fast_polls):
+    # The late unload passed its last check and is executing when a newer load starts: that
+    # load's POST must go out only after the unload answered, so the unload cannot cancel it.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.4, 0.05), unload_s = 0.3)
+    fake = loading.route_json
+    state.update(unloading = False, overlaps = [])
+
+    async def route_json(method, path, caller = None, **kw):
+        if path == "/api/inference/video/load":
+            state["overlaps"].append(state["unloading"])
+        if path == "/api/inference/video/unload":
+            state["unloading"] = True
+            try:
+                return await fake(method, path, caller = caller, **kw)
+            finally:
+                state["unloading"] = False
+        return await fake(method, path, caller = caller, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        # Wait for the late unload (the second unload) to be executing.
+        while not (state["unloading"] and len(state["unloads"]) == 2):
+            await asyncio.sleep(0.005)
+        retry = await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        assert retry.loaded is True
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["overlaps"] == [False, False]
 
 
 def test_a_late_media_unload_leaves_another_variant_of_the_repo_alone(monkeypatch, fast_polls):
