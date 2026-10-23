@@ -166,7 +166,7 @@ function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web"
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   if (tab && tab.chat !== store.chat) {
-    // A chat not on screen: its page navigating on its own (a timer, a script) is not beside the shown chat.
+    // Off-screen chat: a self-navigation keeps the page's own flag, not the shown chat's incognito.
     const own = entry.temporary === true;
     temporaryPages.set(tabId, fresh ? own : (temporaryPages.get(tabId) ?? own));
     return;

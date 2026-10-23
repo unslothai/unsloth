@@ -753,7 +753,6 @@ test("a temporary chat's hidden page stays temporary when it navigates while ano
     runtime.setIncognito(false);
     await frame();
     assert.ok(useBrowserStore.getState().tabs.some((tab) => tab.id === tabId));
-    // The hidden page follows a timer, a meta refresh or a script.
     load("https://private.example/next", true);
     load("https://private.example/next", false);
     assert.deepEqual(visits, [
