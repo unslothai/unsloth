@@ -175,6 +175,7 @@ from .safetensors_pread import pread_available
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
+    ACTIVATION_RUN,
     ACTIVATION_TILE,
     DeviceMemory,
     ImageActivationShortfallError,
@@ -2530,6 +2531,68 @@ def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+RELEASE_BEFORE_TILING_ENV = "UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING"
+
+
+def _untiled_after_release(
+    pipe: Any, verdict: Any, guard_target: Any, guard_kwargs: dict, logger: Any
+) -> tuple[Any, Optional[Callable[[], None]]]:
+    """A tile verdict while offload groups are still resident: stream them again and re-check before tiling. Tiling
+    changes the decoded pixels; streaming the groups again only costs transfer time, which is the order the decode's
+    OOM recovery takes too (``diffusion_vae_oom``: free the card first, tile last). Returns ``(verdict, restore)``:
+    the passing re-check and the restore that pins the groups back after the render, or the original verdict and None
+    (nothing resident, the re-check still says tile, or it failed). ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0``
+    tiles as before."""
+    if (
+        verdict is None
+        or verdict.action != ACTIVATION_TILE
+        or verdict.overridden
+        or os.environ.get(RELEASE_BEFORE_TILING_ENV, "").strip().lower()
+        in ("0", "false", "no", "off")
+    ):
+        return verdict, None
+    resident = resident_group_mib(pipe)
+    if resident <= 0:
+        return verdict, None
+    restore = release_resident_groups(
+        pipe,
+        resident,
+        logger,
+        reason = "an untiled VAE decode",
+        device = getattr(guard_target, "torch_device", None),
+    )
+    if restore is None:
+        return verdict, None
+    try:
+        again = raise_on_image_activation_shortfall(
+            **{**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
+        )
+    except Exception:  # noqa: BLE001 - a refusal or a broken probe: keep the tiled plan
+        again = None
+    if again is None or again.action != ACTIVATION_RUN:
+        restore()
+        return verdict, None
+    return again, restore
+
+
+def _chain_restores(
+    first: Optional[Callable[[], None]], then: Optional[Callable[[], None]]
+) -> Optional[Callable[[], None]]:
+    """One restore running ``first`` (the later release) and then ``then``; None when both are None."""
+    if first is None:
+        return then
+    if then is None:
+        return first
+
+    def restore() -> None:
+        try:
+            first()
+        finally:
+            then()
+
+    return restore
 
 
 def _tile_for_verdict(
@@ -13251,6 +13314,11 @@ class DiffusionBackend:
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
                     _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
+                    # stream resident groups again before tiling: tiling changes pixels, streaming only costs time
+                    verdict, restore_untiled = _untiled_after_release(
+                        state.pipe, verdict, guard_target, guard_kwargs, logger
+                    )
+                    restore_resident = _chain_restores(restore_untiled, restore_resident)
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
                     )
