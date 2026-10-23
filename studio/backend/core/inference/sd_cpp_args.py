@@ -140,6 +140,61 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
+# The fork runs a quantized matmul with at least this many activation rows as a BF16 dequantize + cuBLAS GEMM instead
+# of int8 MMQ (ggml-patches/0001). Studio turns it on only for Q8_0 diffusion GGUFs: there MMQ's 8-bit activations are
+# the larger error, and the BF16 route renders closer to the unquantized model (Z-Image Turbo Q8_0 vs its BF16 weights,
+# B200: LPIPS 0.0148 -> 0.0052). For k-quant and 4-bit GGUFs the weight error dominates and neither route is reliably
+# closer, so they keep MMQ. The env knob covers every quantized type, hence the per-file check. Ada, consumer Ampere and
+# Orin keep MMQ (int8 runs at twice their BF16-with-FP32-accumulate rate); sm120 gains only at large sizes.
+QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
+_UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
+
+
+def quant_cublas_min_batch(cuda_cc: tuple[int, int]) -> Optional[int]:
+    """Rows from which ``cuda_cc`` takes the BF16 cuBLAS route, or None to keep MMQ."""
+    major, minor = int(cuda_cc[0]), int(cuda_cc[1])
+    if (major, minor) == (8, 0) or major in (9, 10):
+        return 1024
+    if major == 12:
+        return 4096
+    return None
+
+
+def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]:
+    """Names of the quantized tensor types in the GGUF at ``path`` (F32 / F16 / BF16 excluded), or None when it is
+    not a readable GGUF. Reads only the tensor table (the file is memory-mapped, no tensor data is touched)."""
+    if not path or not str(path).lower().endswith(".gguf"):
+        return None
+    try:
+        from gguf import GGUFReader
+
+        reader = GGUFReader(str(path), "r")
+        return frozenset(t.tensor_type.name for t in reader.tensors) - _UNQUANTIZED_GGUF_TYPES
+    except Exception:  # noqa: BLE001 -- unknown keeps the build's default (MMQ)
+        return None
+
+
+def quant_cublas_env(
+    cuda_ccs: Sequence[tuple[int, int]],
+    environ: Optional[dict] = None,
+    weight_types: Optional[frozenset[str]] = None,
+) -> dict[str, str]:
+    """Child env for every card sd.cpp may pick (``cuda_ccs``) rendering a diffusion GGUF whose quantized tensors are
+    ``weight_types``: set only when the cards all agree and every quantized tensor is Q8_0; a user value always wins."""
+    import os
+
+    environ = os.environ if environ is None else environ
+    if QUANT_CUBLAS_ENV in environ or not cuda_ccs:
+        return {}
+    if not weight_types or not weight_types <= QUANT_CUBLAS_WEIGHT_TYPES:
+        return {}
+    rows = {quant_cublas_min_batch(cc) for cc in cuda_ccs}
+    if len(rows) != 1 or None in rows:
+        return {}
+    return {QUANT_CUBLAS_ENV: str(rows.pop())}
+
+
 # Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"

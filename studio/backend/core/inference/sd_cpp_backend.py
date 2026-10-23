@@ -730,6 +730,28 @@ def torch_cuda_compute_capability(
     return result[0] if result else None
 
 
+def _torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
+    """Compute capability of ``ordinal``, or of every visible card when None (sd.cpp may pick any); [] when unknown."""
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return []
+        cards = [int(ordinal)] if ordinal is not None else list(range(torch.cuda.device_count()))
+        return [tuple(int(v) for v in torch.cuda.get_device_capability(i)) for i in cards]
+    except Exception:  # noqa: BLE001 -- unknown keeps the build's default
+        return []
+
+
+def _sd_cpp_quant_cublas_env(ordinal: Optional[int], diffusion_model: Optional[str]) -> dict[str, str]:
+    """``GGML_CUDA_QUANT_CUBLAS_MIN_BATCH`` for a CUDA sd.cpp spawn of ``diffusion_model`` on ``ordinal`` (see
+    ``quant_cublas_env``: Q8_0 GGUFs only)."""
+    weight_types = sd_cpp_args_mod.gguf_quantized_weight_types(diffusion_model)
+    if not weight_types or not weight_types <= sd_cpp_args_mod.QUANT_CUBLAS_WEIGHT_TYPES:
+        return {}
+    return sd_cpp_args_mod.quant_cublas_env(_torch_cuda_capabilities(ordinal), weight_types = weight_types)
+
+
 def _torch_cuda_compute_capability(ordinal: Optional[int]) -> Optional[tuple[int, int]]:
     try:
         import torch
@@ -3573,6 +3595,8 @@ class SdCppDiffusionBackend:
 
             device, offload = _placement(*_running())
             spawn_env = off_torch.child_env() if off_torch is not None else None
+            if device == "cuda" and off_torch is None:
+                spawn_env = {**(spawn_env or {}), **_sd_cpp_quant_cublas_env(gpu_ordinal, paths.get("diffusion_model"))} or None
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are

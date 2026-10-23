@@ -2832,3 +2832,49 @@ def test_the_native_progress_total_is_sized_where_the_assets_are_fetched(monkeyp
     b._set_expected_bytes(assets, None)
     assert asked == ["unsloth/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
     assert b._loading.expected_bytes == 2_000
+
+
+@pytest.mark.parametrize(
+    "device,ccs,expected",
+    [
+        ("cuda", [(10, 0)], {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}),
+        ("cuda", [(8, 9)], None),
+        ("cuda", [], None),
+        ("cpu", [(10, 0)], None),
+    ],
+)
+def test_cuda_sd_server_gets_the_bf16_cublas_route_by_compute_capability(monkeypatch, device, ccs, expected):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: list(ccs))
+    monkeypatch.setattr(bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"}))
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = device)
+    assert servers and servers[-1].env == expected
+    assert dict(b._state.child_env) == (expected or {})
+
+
+@pytest.mark.parametrize("weight_types", [frozenset({"Q4_K", "Q5_K"}), frozenset({"Q8_0", "Q4_K"}), None])
+def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    seen: list = []
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: seen.append(path) or weight_types
+    )
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert seen == ["/m/z.gguf"]  # the diffusion model, not the encoder or VAE
+    assert servers[-1].env is None
+    assert dict(b._state.child_env) == {}
+
+
+def test_a_user_quant_cublas_value_reaches_sd_server_unchanged(monkeypatch):
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    monkeypatch.setattr(bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"}))
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert servers[-1].env is None
