@@ -402,9 +402,10 @@ export const BUDGET = {
   // transfer over the Benchmarks page at fa44a8594c, one machine and build, Node 24, chunk count unchanged at 95),
   // all of it its strings in the eager en locale. Its runtime driver mounts through React.lazy, which kept another
   // 8.4 KB raw / 3.0 KB transfer out. Raised by the strings.
-  // Re-applied on top of main at merge: +6058 B raw / +1585 B transfer.
-  transferBytes: 2_087_575,
-  rawBytes: 6_931_188,
+  // Re-applied on top of main at merge: +6058 B raw / +1585 B transfer, then set to the CI build at 89616add54
+  // (6,771.0 KB raw / 2,039.2 KB transfer) plus about 300 B raw / 100 B transfer.
+  transferBytes: 2_088_250,
+  rawBytes: 6_933_800,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
