@@ -75,26 +75,43 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const isColumn = (c: unknown) => isObject(c) && typeof c.id === "string";
+const isRow = (r: unknown) => isObject(r) || Array.isArray(r);
+const isSeries = (s: unknown) =>
+  isObject(s) &&
+  Array.isArray(s.y) &&
+  (s.error === undefined || Array.isArray(s.error));
+const isMatrix = (m: unknown) => Array.isArray(m) && m.every(Array.isArray);
+
 /** The structured kind of `value`, or null when it is anything else (those keep their existing rendering). */
 export function structuredKind(value: unknown): StructuredKind | null {
   if (!isObject(value)) return null;
+  // Element shapes are checked too: a lookalike JSON value falls back to the JSON view instead of breaking a viewer.
   switch (value.kind) {
     case "table":
-      return Array.isArray(value.columns) && Array.isArray(value.rows)
+      return Array.isArray(value.columns) &&
+        value.columns.every(isColumn) &&
+        Array.isArray(value.rows) &&
+        value.rows.every(isRow)
         ? "table"
         : null;
     case "chart":
-      return Array.isArray(value.x) && Array.isArray(value.series)
+      return Array.isArray(value.x) &&
+        Array.isArray(value.series) &&
+        value.series.every(isSeries)
         ? "chart"
         : null;
     case "heatmap":
       return Array.isArray(value.rows) &&
         Array.isArray(value.cols) &&
-        (Array.isArray(value.values) || typeof value.ref === "string")
+        (isMatrix(value.values) || typeof value.ref === "string")
         ? "heatmap"
         : null;
     case "tensor":
-      return Array.isArray(value.shape) ? "tensor" : null;
+      return Array.isArray(value.shape) &&
+        (value.data === undefined || Array.isArray(value.data))
+        ? "tensor"
+        : null;
     default:
       return null;
   }

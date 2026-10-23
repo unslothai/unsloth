@@ -78,6 +78,16 @@ def _is_media(value: Any) -> bool:
     )
 
 
+def _is_data_asset(value: Any) -> bool:
+    """A large table, heatmap or tensor whose full data is a JSON flow asset."""
+    return (
+        isinstance(value, dict)
+        and value.get("kind") in ("table", "heatmap", "tensor")
+        and isinstance(value.get("ref"), str)
+        and asset_store.parse_ref(value["ref"]) is not None
+    )
+
+
 async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes, str]]) -> Any:
     if isinstance(value, list):
         return [await _embed(v, read_media, files) for v in value]
@@ -100,6 +110,12 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
         embedded["url"] = asset_store.url_for(digest)
         embedded["mime"] = mime
         return embedded
+    if _is_data_asset(value):
+        digest = asset_store.parse_ref(value["ref"])
+        got = asset_store.read(digest)
+        if got is not None:
+            files[digest] = got
+        return value
     return {k: await _embed(v, read_media, files) for k, v in value.items()}
 
 
@@ -247,7 +263,7 @@ def _media_refs(value: Any) -> set[str]:
     while stack:
         item = stack.pop()
         if isinstance(item, dict):
-            if _is_media(item):
+            if _is_media(item) or _is_data_asset(item):
                 digest = asset_store.parse_ref(item["ref"])
                 if digest:
                     found.add(digest)
@@ -283,6 +299,13 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
                 if hashlib.sha256(blob).hexdigest() != digest:
                     raise PackageError(f"{info.filename} does not match its checksum")
                 mime = asset_store.sniff_mime(blob)
+                if mime is None and ext == "json":
+                    # A large table, heatmap or tensor travels as plain JSON data, never code.
+                    try:
+                        json.loads(blob)
+                    except ValueError:
+                        raise PackageError(f"{info.filename} is not valid JSON") from None
+                    mime = "application/json"
                 if mime is None or asset_store.MIME_EXT.get(mime) != ext:
                     raise PackageError(f"{info.filename} is not the media type its name says")
                 files[digest] = (blob, mime)

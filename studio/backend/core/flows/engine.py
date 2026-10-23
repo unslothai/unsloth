@@ -1170,6 +1170,20 @@ class FlowEngine:
                 "mime": mime,
             }
             return embedded
+        if value.get("kind") in ("table", "heatmap", "tensor") and isinstance(
+            value.get("ref"), str
+        ):
+            # A large structured value's full data is a JSON flow asset: the baked package carries it too.
+            digest = asset_store.parse_ref(value["ref"])
+            got = asset_store.read(digest) if digest else None
+            if got is not None:
+                refs[digest] = {
+                    "id": f"sha256:{digest}",
+                    "mime": got[1],
+                    "bytes": len(got[0]),
+                    "name": None,
+                }
+            return value
         return {k: await self._embed(rs, v, refs) for k, v in value.items()}
 
     def _trim_finished(self) -> None:

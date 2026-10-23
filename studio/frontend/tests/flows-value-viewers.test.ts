@@ -164,3 +164,19 @@ test("summaries count truncated tables by row_count, and 2-D tensors view as hea
     count: 5,
   });
 });
+
+test("lookalike JSON with the wrong element shapes keeps the JSON view", () => {
+  assert.equal(structuredKind({ kind: "chart", x: [1], series: [{}] }), null);
+  assert.equal(
+    structuredKind({ kind: "table", columns: ["a"], rows: [1] }),
+    null,
+  );
+  assert.equal(
+    structuredKind({ kind: "heatmap", rows: [], cols: [], values: [1, 2] }),
+    null,
+  );
+  assert.equal(
+    structuredKind({ kind: "chart", x: [1], series: [{ name: "a", y: [1] }] }),
+    "chart",
+  );
+});

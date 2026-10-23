@@ -21,6 +21,7 @@ from core.flows.registry import FlowNodeError, NodeContext, handler
 INLINE_MAX_BYTES = 256 * 1024
 INLINE_ROWS = 200
 MAX_ROWS = 100_000
+MAX_SERIES = 50
 STATS = ("mean", "median", "stddev", "min", "max", "sum", "count")
 
 
@@ -112,7 +113,14 @@ async def finish_table(ctx: Any, table: dict) -> dict:
     if len(data) <= INLINE_MAX_BYTES:
         return table
     media = await ctx.save_asset(data, "application/json", kind = "json")
-    return {**table, "rows": rows[:INLINE_ROWS], "row_count": len(rows), "ref": media["ref"]}
+    preview = rows[:INLINE_ROWS]
+    # Wide cells can make even a short preview big; keep halving it until the inline value fits.
+    while (
+        preview
+        and len(json.dumps({**table, "rows": preview}, default = str).encode()) > INLINE_MAX_BYTES
+    ):
+        preview = preview[: len(preview) // 2]
+    return {**table, "rows": preview, "row_count": len(rows), "ref": media["ref"]}
 
 
 def _column_ids(table: dict) -> list[str]:
@@ -143,6 +151,15 @@ def _stat(values: list[float], stat: str) -> Optional[float]:
     return math.fsum(values)
 
 
+def _fresh(name: str, taken: set[str]) -> str:
+    """``name``, or ``name_2``... when a source column already uses it, so a generated column never replaces one."""
+    out, i = name, 2
+    while out in taken:
+        out, i = f"{name}_{i}", i + 1
+    taken.add(out)
+    return out
+
+
 def _strings(value: Any) -> list[str]:
     if isinstance(value, str):
         return [s.strip() for s in value.split(",") if s.strip()]
@@ -159,8 +176,9 @@ def concat(tables: list[dict]) -> dict:
                 seen.add(col["id"])
                 columns.append(col)
         rows.extend(table["rows"])
-    metas = [t.get("meta") for t in tables if t.get("meta")]
-    meta = metas[0] if metas and all(m == metas[0] for m in metas) else None
+    # Settings carry over only when every table has the same ones; an unknown one must not pass as a match.
+    metas = [t.get("meta") or None for t in tables]
+    meta = metas[0] if all(m == metas[0] for m in metas) else None
     return make_table(rows, columns, meta)
 
 
@@ -176,20 +194,21 @@ def aggregate(table: dict, group_by: list[str], metrics: list[str], stat: str) -
     for row in table["rows"]:
         groups.setdefault(tuple(row.get(g) for g in group_by), []).append(row)
     by_id = {c["id"]: c for c in table["columns"]}
+    count_id = _fresh("n", set(group_by) | set(metrics))
     rows = []
     for key, members in groups.items():
         out = dict(zip(group_by, key))
         for m in metrics:
             values = [v for v in (_number(r.get(m)) for r in members) if v is not None]
             out[m] = _stat(values, stat)
-        out["n"] = len(members)
+        out[count_id] = len(members)
         rows.append(out)
     columns = [by_id[g] for g in group_by]
     columns += [
         {**by_id[m], "type": "number", "label": f"{by_id[m].get('label', m)} ({stat})"}
         for m in metrics
     ]
-    columns.append({"id": "n", "label": "rows", "type": "number"})
+    columns.append({"id": count_id, "label": "rows", "type": "number"})
     return make_table(rows, columns, table.get("meta"))
 
 
@@ -212,16 +231,25 @@ def compare(
     """Delta and ratio of ``metric`` against a baseline table (joined on ``key``) or a baseline row in ``table``."""
     if not key:
         raise FlowNodeError("Compare needs at least one key column")
-    _require(table, key + [metric], "Compare")
+    extra = [stderr] if stderr else []
+    _require(table, key + [metric] + extra, "Compare")
     if baseline is not None:
-        _require(baseline, key + [metric], "Compare baseline")
+        _require(baseline, key + [metric] + extra, "Compare baseline")
         differ = _settings_mismatch(table, baseline)
         if differ and not allow_mismatch:
             raise FlowNodeError(
                 "The two tables were measured with different settings "
                 f"({', '.join(differ)}); turn on 'Allow different settings' to compare anyway"
             )
-        base_rows = {tuple(r.get(k) for k in key): r for r in baseline["rows"]}
+        base_rows: dict[tuple, dict] = {}
+        for r in baseline["rows"]:
+            k = tuple(r.get(c) for c in key)
+            if k in base_rows:
+                raise FlowNodeError(
+                    f"The baseline has more than one row for {', '.join(key)} = {k!r}; "
+                    "add key columns until each row is unique"
+                )
+            base_rows[k] = r
 
         def base_of(row: dict) -> Optional[dict]:
             return base_rows.get(tuple(row.get(k) for k in key))
@@ -238,6 +266,8 @@ def compare(
         def base_of(row: dict) -> Optional[dict]:
             return anchor
 
+    taken = set(key) | {metric}
+    ids = {n: _fresh(n, taken) for n in ("baseline", "delta", "ratio", "significant")}
     rows = []
     significant_known = False
     for row in table["rows"]:
@@ -247,15 +277,15 @@ def compare(
         delta = value - ref if value is not None and ref is not None else None
         ratio = value / ref if value is not None and ref not in (None, 0.0) else None
         out = {k: row.get(k) for k in key}
-        out.update({metric: value, "baseline": ref, "delta": delta, "ratio": ratio})
+        out.update({metric: value, ids["baseline"]: ref, ids["delta"]: delta, ids["ratio"]: ratio})
         if stderr:
             se_a = _number(row.get(stderr))
             se_b = _number(base.get(stderr)) if base else None
             if delta is not None and se_a is not None and se_b is not None:
                 significant_known = True
-                out["significant"] = abs(delta) > 2 * math.sqrt(se_a**2 + se_b**2)
+                out[ids["significant"]] = abs(delta) > 2 * math.sqrt(se_a**2 + se_b**2)
             else:
-                out["significant"] = None
+                out[ids["significant"]] = None
         rows.append(out)
     by_id = {c["id"]: c for c in table["columns"]}
     unit = by_id[metric].get("unit")
@@ -263,25 +293,25 @@ def compare(
     columns += [
         {**by_id[metric], "type": "number"},
         {
-            "id": "baseline",
+            "id": ids["baseline"],
             "label": "baseline",
             "type": "number",
             **({"unit": unit} if unit else {}),
         },
         {
-            "id": "delta",
+            "id": ids["delta"],
             "label": "delta",
             "type": "number",
             "role": "delta",
             **({"unit": unit} if unit else {}),
         },
-        {"id": "ratio", "label": "ratio", "type": "number"},
+        {"id": ids["ratio"], "label": "ratio", "type": "number"},
     ]
     if stderr and significant_known:
-        columns.append({"id": "significant", "label": "significant", "type": "bool"})
+        columns.append({"id": ids["significant"], "label": "significant", "type": "bool"})
     elif stderr:
         for r in rows:
-            r.pop("significant", None)
+            r.pop(ids["significant"], None)
     return make_table(rows, columns, table.get("meta"))
 
 
@@ -310,6 +340,10 @@ def chart(
         if group
         else [(by_id[m].get("label", m), None) for m in y]
     )
+    if len(names) > MAX_SERIES:
+        raise FlowNodeError(
+            f"{group!r} has {len(names)} distinct values; a chart shows at most {MAX_SERIES} series"
+        )
     for i, (name, gval) in enumerate(names):
         column = y[0] if group else y[i]
         points: dict[Any, dict] = {}
@@ -322,7 +356,9 @@ def chart(
         if error:
             entry["error"] = [_number(points[v].get(error)) if v in points else None for v in xs]
         series.append(entry)
-    unit = by_id[y[0]].get("unit")
+    # One axis unit only when every plotted column shares it; mixed units are not labelled as one.
+    units = {by_id[m].get("unit") for m in y}
+    unit = units.pop() if len(units) == 1 else None
     return {
         "kind": "chart",
         "type": kind,

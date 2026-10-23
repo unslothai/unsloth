@@ -195,3 +195,56 @@ async def test_compare_handler_reports_mean_delta():
     )
     out = await load_handlers()["table.compare"](ctx)
     assert out["delta"] == pytest.approx((0 - 10 - 30 - 40) / 4)
+
+
+def test_concat_drops_settings_when_any_table_has_none():
+    a = T.make_table([{"x": 1}], meta = {"settings": {"t": 0}})
+    b = T.make_table([{"x": 2}])
+    assert "meta" not in T.concat([a, b])
+
+
+def test_aggregate_count_column_never_replaces_a_column_named_n():
+    t = T.make_table([{"q": "a", "n": 5.0}, {"q": "a", "n": 7.0}])
+    out = T.aggregate(t, ["q"], ["n"], "mean")
+    ids = [c["id"] for c in out["columns"]]
+    assert ids == ["q", "n", "n_2"] and out["rows"][0]["n"] == 6.0 and out["rows"][0]["n_2"] == 2
+
+
+def test_compare_generated_columns_never_replace_selected_ones():
+    t = T.make_table([{"baseline": "a", "delta": 2.0}, {"baseline": "b", "delta": 4.0}])
+    out = T.compare(t, None, ["baseline"], "delta", baseline_key = "a")
+    ids = [c["id"] for c in out["columns"]]
+    assert len(ids) == len(set(ids))
+    row = out["rows"][1]
+    assert row["baseline"] == "b" and row["delta"] == 4.0 and row["delta_2"] == 2.0
+
+
+def test_compare_refuses_a_missing_stderr_column_and_duplicate_baseline_keys():
+    with pytest.raises(FlowNodeError, match = "sd"):
+        T.compare(bench_table(), bench_table(), ["quant", "ctx"], "tps", stderr = "sd")
+    with pytest.raises(FlowNodeError, match = "more than one row"):
+        T.compare(bench_table(), bench_table(), ["quant"], "tps")
+
+
+def test_chart_refuses_too_many_series_and_mixed_units():
+    many = T.make_table([{"x": 1, "g": i, "y": 1.0} for i in range(T.MAX_SERIES + 1)])
+    with pytest.raises(FlowNodeError, match = "series"):
+        T.chart(many, "x", ["y"], kind = "line", group = "g", error = None)
+    mixed = T.make_table(
+        [{"x": 1, "a": 1.0, "b": 2.0}],
+        [
+            {"id": "x"},
+            {"id": "a", "type": "number", "unit": "tok/s"},
+            {"id": "b", "type": "number", "unit": "ms"},
+        ],
+    )
+    assert "unit" not in T.chart(mixed, "x", ["a", "b"], kind = "bar", group = None, error = None)
+
+
+@run_async
+async def test_a_big_tables_preview_fits_the_inline_budget():
+    wide = T.make_table([{"t": "x" * 4000} for _ in range(300)])
+    ctx = Ctx()
+    out = await T.finish_table(ctx, wide)
+    assert out["row_count"] == 300 and out["ref"]
+    assert len(json.dumps(out).encode()) <= T.INLINE_MAX_BYTES

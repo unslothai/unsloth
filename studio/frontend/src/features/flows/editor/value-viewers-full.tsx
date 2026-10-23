@@ -56,6 +56,18 @@ async function copyText(text: string, what: string): Promise<void> {
   }
 }
 
+/** Every row: a table with only a preview inline is read from its asset first. */
+async function fullTable(table: TableValue): Promise<TableValue | null> {
+  if (!table.ref || (table.row_count ?? 0) <= table.rows.length) return table;
+  try {
+    const full = await loadRef<TableValue>(table.ref);
+    return { ...table, rows: full.rows ?? table.rows };
+  } catch {
+    toast.error("Could not load the whole table");
+    return null;
+  }
+}
+
 function deltaClass(value: unknown): string {
   if (typeof value !== "number" || value === 0) return "";
   return value > 0 ? "text-emerald-300" : "text-red-300";
@@ -82,14 +94,22 @@ export function TableViewer({
         <button
           type="button"
           className="rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-zinc-200"
-          onClick={() => void copyText(tableToCsv(table), "CSV")}
+          onClick={() =>
+            void fullTable(table).then((t) =>
+              t ? copyText(tableToCsv(t), "CSV") : undefined,
+            )
+          }
         >
           Copy CSV
         </button>
         <button
           type="button"
           className="rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-zinc-200"
-          onClick={() => void copyText(tableToMarkdown(table), "Markdown")}
+          onClick={() =>
+            void fullTable(table).then((t) =>
+              t ? copyText(tableToMarkdown(t), "Markdown") : undefined,
+            )
+          }
         >
           Copy Markdown
         </button>
@@ -250,24 +270,35 @@ export function ChartViewer({
   );
 }
 
-/** Values stored as an asset (`ref`) are fetched once; inline ones are used directly. */
-function useMatrix(value: HeatmapValue): (number | null)[][] | null {
-  const [loaded, setLoaded] = useState<(number | null)[][] | null>(null);
+/** The whole value stored as a JSON asset at `ref`. */
+async function loadRef<T>(ref: string, signal?: AbortSignal): Promise<T> {
+  const path = mediaPath({ ref } as MediaValue);
+  if (!path) throw new Error("Unreadable reference");
+  const blob = await fetchMediaBlob(path, signal);
+  return JSON.parse(await blob.text()) as T;
+}
+
+/** A value's asset (`ref`), fetched once per reference; cleared at once when the reference changes. */
+function useRefValue<T>(ref: string | undefined): T | null {
+  const [loaded, setLoaded] = useState<{ ref: string; value: T } | null>(null);
   useEffect(() => {
-    if (value.values || !value.ref) return;
-    const path = mediaPath({ ref: value.ref } as MediaValue);
-    if (!path) return;
+    if (!ref) return;
     const abort = new AbortController();
-    fetchMediaBlob(path, abort.signal)
-      .then((blob) => blob.text())
-      .then((text) => {
-        const parsed = JSON.parse(text) as { values?: (number | null)[][] };
-        setLoaded(Array.isArray(parsed.values) ? parsed.values : null);
-      })
+    loadRef<T>(ref, abort.signal)
+      .then((value) => setLoaded({ ref, value }))
       .catch(() => undefined);
     return () => abort.abort();
-  }, [value]);
-  return value.values ?? loaded;
+  }, [ref]);
+  // A result for an earlier reference is never shown under the current one.
+  return loaded && loaded.ref === ref ? loaded.value : null;
+}
+
+function useMatrix(value: HeatmapValue): (number | null)[][] | null {
+  const loaded = useRefValue<{ values?: (number | null)[][] }>(
+    value.values ? undefined : value.ref,
+  );
+  if (value.values) return value.values;
+  return Array.isArray(loaded?.values) ? loaded.values : null;
 }
 
 function HeatmapCanvas({ value }: { value: HeatmapValue }) {
@@ -341,7 +372,17 @@ export function HeatmapViewer({
 export function TensorViewer({
   value,
 }: { value: StructuredValue }): ReactElement | null {
-  const tensor = value as TensorValue;
+  const given = value as TensorValue;
+  const loaded = useRefValue<{ data?: unknown[] }>(
+    given.data ? undefined : given.ref,
+  );
+  const tensor = useMemo(
+    () =>
+      given.data || !Array.isArray(loaded?.data)
+        ? given
+        : { ...given, data: loaded.data },
+    [given, loaded],
+  );
   const heatmap = useMemo(() => tensorAsHeatmap(tensor), [tensor]);
   const stats = useMemo(() => numericStats(tensor.data), [tensor]);
   return (
