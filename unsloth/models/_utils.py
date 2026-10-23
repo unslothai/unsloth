@@ -5726,6 +5726,22 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
 
+    _original_call_model_init = getattr(Trainer, "call_model_init", None)
+    if _original_call_model_init is not None and not getattr(
+        _original_call_model_init, "_unsloth_marks_ddp_ignores", False
+    ):
+
+        @functools.wraps(_original_call_model_init)
+        def _unsloth_call_model_init(self, *args, **kwargs):
+            # model_init rebuilds the model when training starts: the new instance needs the same
+            # DDP exclusions as the one __init__ marked.
+            model = _original_call_model_init(self, *args, **kwargs)
+            _tensor_subclass_weights_for_ddp(self, model)
+            return model
+
+        _unsloth_call_model_init._unsloth_marks_ddp_ignores = True
+        Trainer.call_model_init = _unsloth_call_model_init
+
     # Idempotent: already installed at import unless Trainer was reloaded since.
     _patch_trainer_train_gc_scope(Trainer)
 
@@ -10004,13 +10020,14 @@ def _block_swap_for_trainer_backend(trainer):
     return []
 
 
-def _tensor_subclass_weights_for_ddp(trainer):
+def _tensor_subclass_weights_for_ddp(trainer, model = None):
     """DDP (torchrun without FSDP / DeepSpeed): keep frozen tensor subclass weights (load_in_fp8's torchao
     Float8Tensor) out of DDP's start-up broadcast, which flattens each parameter and fails on them; every
     rank loads them identically. Trainable ones are refused on every rank alike. Returns the names added."""
     from .loader_utils import is_distributed, _frozen_tensor_subclass_names_for_ddp
 
-    model = getattr(trainer, "model", None)
+    if model is None:
+        model = getattr(trainer, "model", None)
     if model is None or not is_distributed():
         return []
     if (

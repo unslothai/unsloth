@@ -157,6 +157,8 @@ def _ddp_case(lu, ut, rank, via):
             lu._exclude_rope_inv_freq_from_ddp(model)  # from_pretrained / get_peft_model
         elif via in ("trainer", "trainable"):
             ut["_tensor_subclass_weights_for_ddp"](types.SimpleNamespace(model = model))
+        elif via == "model_init":  # Trainer.call_model_init marks the rebuilt model it returns
+            ut["_tensor_subclass_weights_for_ddp"](types.SimpleNamespace(model = None), model)
         ddp = DDP(model)
     except Exception as exc:
         return {"wrap": f"{type(exc).__name__}: {str(exc)[:300]}"}
@@ -253,7 +255,7 @@ def test_fsdp2_keeps_float8tensor_replicated_and_matches_one_process(shard_froze
         assert r["grad_diff"] < 1e-5, (rank, r)
 
 
-@pytest.mark.parametrize("via", ["load", "trainer"])
+@pytest.mark.parametrize("via", ["load", "trainer", "model_init"])
 def test_ddp_skips_float8tensor_broadcast_and_matches_one_process(via):
     for rank, r in _run("ddp", via).items():
         assert r["wrap"] == "ok", (rank, r)
