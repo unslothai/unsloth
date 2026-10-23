@@ -301,6 +301,10 @@ test("the Detailer's own CFG sends the main negative prompt it inherits", () => 
   assert.equal(detailerEngagesNegative(true, true, DETAILER_DEFAULTS, 1), false);
   assert.equal(detailerEngagesNegative(true, true, { ...cfg, guidance: 1 }, 1), false);
   assert.equal(detailerEngagesNegative(true, true, { ...cfg, negativePrompt: "blurry" }, 1), false);
+  // A separate negative template that reads the image's own ([PROMPT], an empty [SEP] part) still needs it sent.
+  assert.equal(detailerEngagesNegative(true, true, { ...cfg, negativePrompt: "[PROMPT], bad teeth" }, 1), true);
+  assert.equal(detailerEngagesNegative(true, true, { ...cfg, negativePrompt: " [SEP] bad teeth" }, 1), true);
+  assert.equal(detailerEngagesNegative(true, true, { ...cfg, negativePrompt: "bad teeth [SEP] [SKIP]" }, 1), false);
   // The page's gate reads it, after the Detailer state it depends on.
   const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
   const gate = page.indexOf("const negativeEngaged =");

@@ -171,8 +171,15 @@ export function detailerRequestField(
   return { detailer: out };
 }
 
+/** Whether a Detailer [SEP] template reads the image's own text: empty, an empty part, or a [PROMPT]. */
+export function detailerTemplateInherits(template: string | undefined): boolean {
+  if (!template) return true;
+  return template.split(/\s*\[SEP\]\s*/).some((part) => !part.trim() || part.includes("[PROMPT]"));
+}
+
 /** The Detailer's own CFG turns guidance on for its inpaints while it inherits the image's negative prompt (no
- *  separate one), so the request must carry the main negative prompt even when the base CFG leaves it unused. */
+ *  separate one, or a template reading it), so the request must carry the main negative prompt even when the
+ *  base CFG leaves it unused. */
 export function detailerEngagesNegative(
   enabled: boolean,
   available: boolean,
@@ -180,7 +187,7 @@ export function detailerEngagesNegative(
   minGuidance: number | null,
 ): boolean {
   const req = detailerRequestField(enabled, available, options).detailer;
-  if (!req || req.negative_prompt || req.guidance === undefined) return false;
+  if (!req || !detailerTemplateInherits(req.negative_prompt) || req.guidance === undefined) return false;
   return minGuidance === null || req.guidance > minGuidance;
 }
 

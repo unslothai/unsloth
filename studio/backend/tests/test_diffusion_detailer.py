@@ -1212,3 +1212,70 @@ def test_route_passes_sd_controls_submitted_negative_and_account(monkeypatch):
     # Variation seeds are text to image only.
     assert controls.variation_seed is None and not controls.variation_strength
     assert captured["negative_prompt"] == "blurry" and captured["account"] == "acct-1"
+
+
+# ── fallback review: zero-step schedule, inherited negative in a template ──────────────────────────────────────────
+def test_a_low_denoise_still_schedules_one_inpaint_timestep(monkeypatch):
+    _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
+    calls = []
+
+    def _generate(**kwargs):
+        calls.append(kwargs)
+        # SDXL inpaint keeps int(steps * strength) timesteps and refuses zero.
+        if int(kwargs["steps"] * kwargs["strength"]) < 1:
+            raise ValueError("num_inference_steps < 1")
+        return {"images": [_crop_back(kwargs)]}
+
+    result = {"images": [_scene()], "seeds": [1]}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(denoise = 0.25),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 3,  # SDXL Turbo's default
+        guidance = 0.0,
+        generate_kwargs = {},
+    )
+    assert not result["detailer"][0].get("error")
+    assert calls[0]["steps"] == 4
+    assert det.schedulable_steps(1, 0.5) == 2
+    assert det.schedulable_steps(9, 0.5) == 9
+    assert det.schedulable_steps(3, 1.0) == 3
+
+
+@pytest.mark.parametrize(
+    "template, expected_seen, expected_saved",
+    [
+        ("[PROMPT], bad teeth", ["blurry, bad teeth"], "blurry, bad teeth"),
+        (" [SEP] bad teeth", ["blurry"], "blurry [SEP] bad teeth"),
+        ("bad teeth", ["bad teeth"], "bad teeth"),
+    ],
+)
+def test_a_template_inheriting_the_negative_saves_it_resolved(
+    monkeypatch, template, expected_seen, expected_saved
+):
+    _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
+    seen = []
+
+    def _generate(**kwargs):
+        seen.append(kwargs["negative_prompt"])
+        return {"images": [_crop_back(kwargs)], "negative_prompt": kwargs["negative_prompt"]}
+
+    result = {"images": [_scene()], "seeds": [1], "negative_prompt": None}
+    settings = det.DetailerSettings(guidance = 5.0, negative_prompt = template)
+    det.detail_result(
+        _generate,
+        result,
+        settings,
+        prompt_for = lambda i: "p",
+        negative_prompt = "blurry",
+        steps = 4,
+        guidance = 0.0,
+        generate_kwargs = {},
+    )
+    assert seen == expected_seen
+    saved = result["detailer"][0]["negative_prompt"]
+    assert saved == expected_saved
+    # Restored with no main negative (the base recorded none), the saved template expands the same.
+    assert det.detection_prompt(saved, "", 0) == expected_seen[0]

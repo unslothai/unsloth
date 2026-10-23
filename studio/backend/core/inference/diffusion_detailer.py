@@ -343,6 +343,33 @@ def detection_prompt(template: Optional[str], main: str, index: int) -> Optional
     return part.replace("[PROMPT]", main)
 
 
+def inherits_main(template: Optional[str]) -> bool:
+    """Whether a [SEP] template uses the image's own text anywhere: an empty part or a [PROMPT]."""
+    if not template:
+        return True
+    return any(not part.strip() or "[PROMPT]" in part for part in _SEP.split(template))
+
+
+def resolve_inherited(template: str, main: str) -> str:
+    """``template`` with every inherited part written out against ``main``, so it reads the same without it."""
+    return " [SEP] ".join(
+        main if not part.strip() else part.strip().replace("[PROMPT]", main)
+        for part in _SEP.split(template)
+    )
+
+
+def schedulable_steps(steps: int, denoise: float) -> int:
+    """The smallest step count >= ``steps`` that leaves at least one timestep at ``denoise``: SDXL-style inpaint
+    pipelines keep ``int(steps * strength)`` and refuse zero (3 steps at 0.25 would fail every face)."""
+    n = max(1, int(steps))
+    denoise = float(denoise)
+    if denoise <= 0.0 or denoise >= 1.0:
+        return n
+    while int(n * denoise) < 1:
+        n += 1
+    return n
+
+
 # ── the pass ────────────────────────────────────────────────────────────────────────────────────────────────────────
 InpaintFn = Callable[[Any, Any, int, str, Optional[str]], Any]
 
@@ -732,7 +759,9 @@ def _detail_images(
         return
     totals = info.get("found") or []
     tiny = info.get("undersized") or []
-    step_count = settings.steps if settings.steps is not None else steps
+    step_count = schedulable_steps(
+        settings.steps if settings.steps is not None else steps, settings.denoise
+    )
     cfg = settings.guidance if settings.guidance is not None else guidance
     cancelled = stop_event.is_set()
     for index, image in enumerate(images):
@@ -761,14 +790,15 @@ def _detail_images(
             if not same_build(result, out):
                 # Same repo, other build (GGUF file, quantization, baked adapters): not the render's weights.
                 raise ValueError("the model changed")
-            if (
-                not settings.negative_prompt
-                and det_negative
-                and out.get("negative_prompt")
-                and not result.get("negative_prompt")
-            ):
+            if det_negative and out.get("negative_prompt") and not result.get("negative_prompt"):
                 # The image's negative prompt engaged only at the Detailer's CFG: the recipe keeps it.
-                inherited["negative_prompt"] = det_negative
+                if not settings.negative_prompt:
+                    inherited["negative_prompt"] = det_negative
+                elif negative_prompt and inherits_main(settings.negative_prompt):
+                    # A template reading it ([PROMPT], an empty [SEP] part): saved resolved, self-contained.
+                    inherited["negative_prompt"] = resolve_inherited(
+                        settings.negative_prompt, negative_prompt
+                    )
             return out["images"][0]
 
         try:
