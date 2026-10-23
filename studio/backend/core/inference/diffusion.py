@@ -2600,14 +2600,21 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
-def _calibrated_activation(fam: Any, target: Any) -> Any:
-    """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
+def _calibrated_activation(
+    fam: Any,
+    target: Any,
+    *,
+    unpriced_references_ok: bool = False,
+) -> Any:
+    """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
+    ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
     # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
     if (
-        getattr(fam, "reference", False)
+        not unpriced_references_ok
+        and getattr(fam, "reference", False)
         and not tuple(getattr(fam, "reference_resolutions", ()) or ())
         and not is_flux3_family(fam)
     ):
@@ -9880,8 +9887,11 @@ class DiffusionBackend:
                             "unknown"  # adapters baked in at load: a build the key cannot name
                         )
                     try:
-                        # the phase-table seed holds only where it was measured
-                        pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                        # the phase-table seed holds only where it was measured; unpriced references size flat
+                        pipe._unsloth_phase_seeds = (
+                            _calibrated_activation(fam, target, unpriced_references_ok = True)
+                            is not None
+                        )
                         # the dense default / max tier seeds hold on the measured target only
                         pipe._unsloth_dense_tier_seeds = _measured_target(target)
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
@@ -13038,7 +13048,7 @@ class DiffusionBackend:
                         kwargs["strength"] = strength
                     if _hires_pass is not None and _hires_pass.latent_from is not None:
                         # Latent upscaler: the SDXL img2img pipe takes 4-channel latents as the image.
-                        kwargs["image"] = diffusion_hires.encode_upscaled_latents(
+                        kwargs["image"] = diffusion_hires.upscale_latents(
                             pipe, _hires_pass.latent_from, init_pil.size
                         )
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
@@ -13340,6 +13350,17 @@ class DiffusionBackend:
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                # Hires fix latent upscaler (ComfyUI LatentUpscale): the base pass hands the refine pass its latents,
+                # so it skips the VAE decode and the image post-processing that only the discarded pixels needed.
+                latent_output = bool(
+                    _hires_pass is not None and _hires_pass.latent_output and not _hires_pass.refine
+                )
+                if latent_output:
+                    if "output_type" not in call_params or layer_count or soft_overlay is not None:
+                        raise ValueError(
+                            "The latent upscaler needs a pipeline that returns latents."
+                        )
+                    kwargs["output_type"] = "latent"
                 kwargs.update(sd_controls_mod.guidance_rescale_kwargs(sd_controls, call_params))
                 weighting_used = [False]
 
@@ -13559,6 +13580,10 @@ class DiffusionBackend:
                             for (_, s), layers_out in zip(chunk, out):
                                 images.extend(layers_out)
                                 per_image_seeds.extend(s for _ in layers_out)
+                        elif latent_output:
+                            # One (1, C, h, w) per image; a copy, so no later forward can reuse its storage.
+                            images.extend(out[i : i + 1].clone() for i in range(out.shape[0]))
+                            per_image_seeds.extend(s for _, s in chunk)
                         else:
                             if soft_overlay is not None:
                                 out = [overlay_with_mask(o, *soft_overlay) for o in out]
@@ -13586,7 +13611,8 @@ class DiffusionBackend:
                 cuda_graph.seal_lengths(state.cuda_graphs)
                 _record_peak_probe(
                     state,
-                    peak_probe,
+                    # A pass that skipped its VAE decode misses that phase's peak: it must not size a plain render.
+                    None if latent_output else peak_probe,
                     width = guard_width,
                     height = guard_height,
                     batch_size = max(chunk_shapes or [1]),

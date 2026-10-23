@@ -67,6 +67,32 @@ def _multimodal_auto_classes():
     return classes
 
 
+def _audio_lm_class(
+    auto_model,
+    config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The full audio model a causal / seq2seq LM auto class builds for `config`, else None.
+    AudioFlamingo3 and MusicFlamingo register only there, yet need the processor like any audio model."""
+    import transformers
+
+    lm_classes = (
+        getattr(transformers, "AutoModelForCausalLM", None),
+        getattr(transformers, "AutoModelForSeq2SeqLM", None),
+    )
+    if auto_model is None or auto_model not in lm_classes:
+        return None
+    if _config_get(config, "audio_config", None) is None:
+        return None
+    model_class = resolve_model_class(
+        auto_model, config, trust_remote_code = trust_remote_code, **hub_kwargs
+    )
+    if model_class is None or getattr(model_class, "config_class", None) is not type(config):
+        return None
+    return model_class
+
+
 def _is_text_seq2seq_config(config):
     """T5 / BART / Marian: Seq2SeqLM-mapped, no multimodal class or sub-config (Voxtral, T5Gemma2 are Seq2SeqLM too)."""
     import transformers
@@ -2713,6 +2739,9 @@ def _architecture_skip_modules(model_types):
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
+    # Moonshine's LM head is proj_out (untied on moonshine-streaming): kept 16-bit like lm_head, which the fused CE loss reads as a plain weight.
+    if any(mt in ("moonshine", "moonshine_streaming") for mt in model_types):
+        skip.append("proj_out")
     if any(mt.startswith("gemma3n") for mt in model_types):
         skip.extend(("correction_coefs", "prediction_coefs"))
         for name in ("altup_projections", "altup_unembed_projections"):
@@ -3369,6 +3398,18 @@ class FastBaseModel:
         needs_processor = is_vlm or auto_model in _multimodal_auto_classes()
         # FastModel routes Whisper here without auto_model (#2726); audio features need the processor.
         needs_processor = needs_processor or auto_model is AutoModelForSpeechSeq2Seq
+        needs_processor = needs_processor or (
+            not text_only
+            and _audio_lm_class(
+                auto_model,
+                auto_config,
+                trust_remote_code = trust_remote_code,
+                token = token,
+                revision = _revision,
+                local_files_only = local_files_only,
+            )
+            is not None
+        )
         # Speech / CTC / audio-classification models (Moonshine, Parakeet, wav2vec2, AST) read audio
         # features too; Seq2SeqLM keeps its tokenizer (SeamlessM4T's text-to-text route).
         needs_processor = needs_processor or (

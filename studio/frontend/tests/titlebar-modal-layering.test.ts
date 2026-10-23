@@ -99,7 +99,7 @@ test("the pinned sidebar edge is drawn with borders, not a box over the chat", (
     /right-0[^"]*h-\[calc\(100dvh|h-\[calc\(100dvh[^"]*right-0/,
     "a full-height box from the sidebar edge to the window edge covered the chat, so the compositor could not hit-test a wheel and every desktop scroll waited on the main thread",
   );
-  assert.match(decoration, /pinned && "rounded-tl-\[12px\] border-l"/);
+  assert.match(decoration, /pinned && "rounded-tl-md border-l"/);
   assert.match(
     decoration,
     /className="absolute top-\[12px\] h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] w-0 border-l border-sidebar-edge dark:border-transparent"\s*style=\{\{ left: cornerLeft \}\}/,

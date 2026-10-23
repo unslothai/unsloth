@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,17 +69,17 @@ import {
   Download01Icon,
   Edit03Icon,
   Folder02Icon,
-  FolderAddIcon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  PlusSignIcon,
   Search01Icon,
   Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
+import { ArrowDownIcon, MoreHorizontalIcon } from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -690,7 +691,8 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button data-tour="projects-new" onClick={() => setCreating(true)}>
+          <Button variant="dark" data-tour="projects-new" onClick={() => setCreating(true)}>
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             New project
           </Button>
         </div>
@@ -709,12 +711,12 @@ export function ProjectsPage() {
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="flex items-center gap-3 rounded-xl px-5 py-4"
+              className="flex items-center gap-3 rounded-md px-5 py-4"
             >
-              <Skeleton className="mr-1 size-9 shrink-0 rounded-[10px]" />
-              <Skeleton className="h-4 w-40 rounded-[8px]" />
+              <Skeleton className="mr-1 size-9 shrink-0 rounded-md" />
+              <Skeleton className="h-4 w-40 rounded-full" />
               <span className="flex-1" />
-              <Skeleton className="h-4 w-16 rounded-[8px]" />
+              <Skeleton className="h-4 w-16 rounded-full" />
               <span className="w-8 shrink-0" />
             </div>
           ))}
@@ -737,7 +739,7 @@ export function ProjectsPage() {
                 className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
                 onClick={() => setCreating(true)}
               >
-                <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
                 Create your first project
               </Button>
             </>
@@ -787,7 +789,7 @@ export function ProjectsPage() {
             <div key={`wrap-${project.id}`}>
             <div
               key={project.id}
-              className="group/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+              className="group/project-row relative flex items-center gap-3 rounded-md px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
             >
               {/* The disclosure belongs to the name, so it sits beside it rather than out by
                   the Updated column, where it read as another row action. */}
@@ -797,9 +799,9 @@ export function ProjectsPage() {
                 <button
                   type="button"
                   onClick={() => openProject(project.id)}
-                  className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex min-w-0 cursor-pointer items-center gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
-                  <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
+                  <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                     <HugeiconsIcon
                       icon={Folder02Icon}
                       strokeWidth={1.75}
@@ -824,7 +826,7 @@ export function ProjectsPage() {
                     chatsOpen ? "opacity-100" : "opacity-0",
                   )}
                 >
-                  <ChevronDownIcon
+                  <HugeiconsIcon icon={ChevronDownStandardIcon}
                     strokeWidth={1.75}
                     className={cn(
                       "size-4 transition-transform",
@@ -892,7 +894,7 @@ export function ProjectsPage() {
                     sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-[14px] border-0"
+                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-xl border-0"
                   >
                     <ProjectMenuItems
                       project={project}
@@ -908,7 +910,7 @@ export function ProjectsPage() {
             {chatsOpen && (
               <div className="mb-2 flex flex-col gap-0.5 pl-[calc(76px*var(--ui-space-scale,1))]">
                 {chats === undefined || chats === "loading" ? (
-                  <Skeleton className="h-6 w-48 rounded-[8px]" />
+                  <Skeleton className="h-6 w-48 rounded-full" />
                 ) : chats === "error" ? (
                   <button
                     type="button"
@@ -930,14 +932,14 @@ export function ProjectsPage() {
                       return (
                       <div
                         key={chat.id}
-                        className="group/chat-row flex items-center gap-3 rounded-xl py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
+                        className="group/chat-row flex items-center gap-3 rounded-full py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
                       >
                         {/* A real button holding only text. Giving the whole row the button role
                             made its pin and menu presentational children. */}
                         <button
                           type="button"
                           onClick={() => openChat(chat, project.id)}
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
                           <HugeiconsIcon
                             icon={MessageCircleIcon}
@@ -999,7 +1001,7 @@ export function ProjectsPage() {
                               sideOffset={0}
                               onClick={(e) => e.stopPropagation()}
                               onKeyDown={(e) => e.stopPropagation()}
-                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-[14px] border-0"
+                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 font-heading rounded-xl border-0"
                             >
                               <DropdownMenuItem
                                 onSelect={() => {

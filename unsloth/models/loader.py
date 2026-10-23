@@ -774,6 +774,27 @@ def _resolve_speech_seq2seq_auto_model(
     return None
 
 
+def _resolve_audio_lm_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
+    """The causal or seq2seq LM auto class that builds this audio config's full model
+    (AudioFlamingo3 registers only as a seq2seq LM on transformers 5.17), else None."""
+    import transformers
+
+    for name in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM"):
+        auto_class = getattr(transformers, name, None)
+        try:
+            if _audio_lm_class(
+                auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+            ):
+                return auto_class
+        except Exception:
+            continue
+    return None
+
+
 _AUDIO_HEAD_AUTO_CLASS_NAMES = (
     "AutoModelForCTC",
     "AutoModelForTDT",
@@ -810,6 +831,18 @@ def _resolve_audio_auto_model(
         if model_class is not None and getattr(model_class, "__name__", None) == architectures[0]:
             return auto_class
     return None
+
+
+def _resolve_non_vlm_auto_model(model_config, **hub_kwargs):
+    """CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
+    (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names."""
+    causal_maps = resolve_model_class(AutoModelForCausalLM, model_config, **hub_kwargs) is not None
+    return (
+        _resolve_audio_auto_model(model_config, include_bare = not causal_maps, **hub_kwargs)
+        # moonshine-streaming's repo config names no architectures; only its speech seq2seq class builds it.
+        or (None if causal_maps else _resolve_speech_seq2seq_auto_model(model_config, **hub_kwargs))
+        or AutoModelForCausalLM
+    )
 
 
 def _get_user_task_config_attrs(user_config):
@@ -2064,7 +2097,7 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseModel, _is_text_seq2seq_config
+from .vision import FastBaseModel, _is_text_seq2seq_config, _audio_lm_class
 from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from .diffusion_profiles import resolve_diffusion_profile
 from transformers import (
@@ -3195,24 +3228,12 @@ class FastModel(FastBaseModel):
                         auto_model = (
                             _resolve_omni_auto_model(model_config, **_probe_hub_kwargs)
                             or _resolve_speech_seq2seq_auto_model(model_config, **_probe_hub_kwargs)
+                            or _resolve_audio_lm_auto_model(model_config, **_probe_hub_kwargs)
                             or _resolve_audio_auto_model(model_config, **_probe_hub_kwargs)
                             or auto_model
                         )
             else:
-                auto_model = AutoModelForCausalLM
-                # CTC / audio classification / bare audio encoders load their own head. A causal-LM mapping
-                # (WhisperConfig -> WhisperForCausalLM) yields only to an audio head the checkpoint names.
-                auto_model = (
-                    _resolve_audio_auto_model(
-                        model_config,
-                        include_bare = resolve_model_class(
-                            auto_model, model_config, **_probe_hub_kwargs
-                        )
-                        is None,
-                        **_probe_hub_kwargs,
-                    )
-                    or auto_model
-                )
+                auto_model = _resolve_non_vlm_auto_model(model_config, **_probe_hub_kwargs)
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit

@@ -152,7 +152,7 @@ function CardFrame({
           select && selecting ? (event) => select.toggle(selectKey, event.shiftKey) : onOpen
         }
         className={cn(
-          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-2xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
           className,
           selected && SELECTED_TINT,
@@ -393,13 +393,13 @@ export function FolderGrid({
 export function ItemTile({ item }: { item: LibraryItem }) {
   if (hasThumbnail(item)) {
     return (
-      <div className="size-9 shrink-0 overflow-hidden rounded-[10px] border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
+      <div className="size-9 shrink-0 overflow-hidden rounded-md border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
         <ImageThumb item={item} />
       </div>
     );
   }
   return (
-    <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
+    <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60">
       <KindIcon item={item} className="size-5" />
     </div>
   );

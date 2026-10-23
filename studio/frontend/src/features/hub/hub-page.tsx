@@ -117,6 +117,7 @@ import {
 } from "./lib/model-run-selection";
 import { inventoryRowFormat } from "./catalog/inventory-sort";
 import { matchesInventoryCapabilities } from "./lib/model-type-filter";
+import { ownerOf, repoOf } from "./lib/format";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
@@ -128,7 +129,10 @@ import {
   type DatasetModality,
   matchesDatasetFilters,
 } from "./lib/dataset-filters";
-import type { HubCapabilityFilter } from "./lib/model-capabilities";
+import {
+  detectCapabilities,
+  type HubCapabilityFilter,
+} from "./lib/model-capabilities";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
@@ -168,8 +172,37 @@ const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 const MIN_ICONLESS_MODEL_LIKES = 30;
 
 // Image and video models skip Recommended's likes rules: new diffusion uploads rarely clear them.
+function isDiffusionResult(result: HfModelResult): boolean {
+  return detectCapabilities(result.tags, result.pipelineTag, result.id).some(
+    (c) => c.key === "diffusion",
+  );
+}
+
 function isDiffusionRow(row: DiscoverRow): boolean {
   return row.capabilities.some((c) => c.key === "diffusion");
+}
+
+// Recommended curates browsing to logo'd models plus well-liked iconless ones, and to well-liked
+// checkpoints; a typed search and every other format show all matches.
+function matchesDiscoverFormat(
+  result: HfModelResult,
+  format: ModelFormatFilter,
+  browsing: boolean,
+  diffusion: boolean,
+  quantFormats: readonly string[],
+): boolean {
+  if (format !== "recommended") {
+    return matchesFormat(detectResultFormat(result), format);
+  }
+  if (diffusion) return matchesRecommendedDiffusion(result, quantFormats);
+  return (
+    (!browsing ||
+      ((resolveOwnerProviderLogo(ownerOf(result.id), repoOf(result.id)) !==
+        null ||
+        (result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
+        hasRecommendedCheckpointLikes(result))) &&
+    matchesRecommended(result, quantFormats)
+  );
 }
 
 function withoutGgufTag(
@@ -950,6 +983,22 @@ export function ModelsPage() {
     };
   }, [liveListChannel, widenRecommendedChannel]);
 
+  // checkpointQuantFormats is a superset of diffusionQuantFormats, so this never skips a row the list shows.
+  const searchBrowsing = debouncedQuery.trim() === "";
+  // Keyed by contents: a system poll hands out a new array, which would restart the search.
+  const quantFormatsKey = checkpointQuantFormats.join(",");
+  const keepSearchResult = useMemo(() => {
+    const quantFormats = quantFormatsKey ? quantFormatsKey.split(",") : [];
+    return (result: HfModelResult) =>
+      matchesDiscoverFormat(
+        result,
+        effectiveDiscoverFormat,
+        searchBrowsing,
+        isDiffusionResult(result),
+        quantFormats,
+      );
+  }, [effectiveDiscoverFormat, searchBrowsing, quantFormatsKey]);
+
   const {
     results,
     datasetResults,
@@ -972,6 +1021,7 @@ export function ModelsPage() {
     channel: listChannel,
     ownerScope,
     filters: searchFilters,
+    keepResult: keepSearchResult,
     task:
       // Asked of the Hub only when Audio is the one filter: with others it would drop their models.
       capabilityFilters.length === 1 && capabilityFilters[0] === "audio"
@@ -1108,25 +1158,13 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Recommended curates browsing to logo'd models plus well-liked iconless ones, and to
-        // well-liked checkpoints; a typed search and every other format show all matches.
-        (effectiveDiscoverFormat !== "recommended" ||
-          hasQuery ||
-          isDiffusionRow(row) ||
-          resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
-          (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
-        (effectiveDiscoverFormat !== "recommended" ||
-          hasQuery ||
-          isDiffusionRow(row) ||
-          hasRecommendedCheckpointLikes(row.result)) &&
-        (effectiveDiscoverFormat === "recommended"
-          ? isDiffusionRow(row)
-            ? matchesRecommendedDiffusion(row.result, diffusionQuantFormats)
-            : matchesRecommended(row.result, checkpointQuantFormats)
-          : matchesFormat(
-              detectResultFormat(row.result),
-              effectiveDiscoverFormat,
-            )) &&
+        matchesDiscoverFormat(
+          row.result,
+          effectiveDiscoverFormat,
+          !hasQuery,
+          isDiffusionRow(row),
+          isDiffusionRow(row) ? diffusionQuantFormats : checkpointQuantFormats,
+        ) &&
         (deferredCapabilityFilters.length === 0 ||
           deferredCapabilityFilters.some(
             (key) =>

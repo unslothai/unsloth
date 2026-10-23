@@ -51,6 +51,7 @@ export type ShortcutId =
   | "approveToolRequest"
   | "declineToolRequest"
   | "attachFiles"
+  | "openComposerMenu"
   | "cycleReasoningEffort"
   | "decreaseReasoningEffort"
   | "increaseReasoningEffort"
@@ -61,7 +62,6 @@ export type ShortcutId =
   | "queueMessage"
   | "steerMessage"
   | "stopGeneration"
-  | "toggleFastMode"
   | "copyChatAsMarkdown"
   | "copySessionId"
   | "forkChat"
@@ -220,6 +220,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("declineToolRequest", "Escape", { allowBareKey: true }),
 
   def("attachFiles", null),
+  // No browser or OS claims ⇧⌘. / Ctrl+Shift+., and ⌘. beside it already stops generation.
+  def("openComposerMenu", "Mod+Shift+Period"),
   def("cycleReasoningEffort", null),
   def("decreaseReasoningEffort", null),
   def("increaseReasoningEffort", null),
@@ -239,7 +241,6 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("steerMessage", null),
   // ⌘. is the macOS cancel chord. Safari's Stop loading shares it, but only while a page loads.
   def("stopGeneration", "Mod+Period"),
-  def("toggleFastMode", null),
 
   def("copyChatAsMarkdown", null),
   // ⌥⌘C is Firefox's element picker and Safari's console, so C moves the same way U did above.
@@ -255,6 +256,80 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("searchChats", "Mod+KeyK"),
   def("renameChat", "Mod+Alt+KeyR"),
   def("openKeyboardShortcuts", "Mod+Slash"),
+];
+
+export type ShortcutGroupId = "composer" | "chat" | "navigation" | "app";
+
+export interface ShortcutGroup {
+  id: ShortcutGroupId;
+  labelKey: TranslationKey;
+  ids: ShortcutId[];
+}
+
+function group(id: ShortcutGroupId, ids: ShortcutId[]): ShortcutGroup {
+  return {
+    id,
+    labelKey: `settings.keyboardShortcuts.groups.${id}` as TranslationKey,
+    ids,
+  };
+}
+
+/** Sections of the shortcuts tab. Display only: SHORTCUT_DEFS order still owns contested chords. */
+export const SHORTCUT_GROUPS: ShortcutGroup[] = [
+  group("composer", [
+    "sendMessage",
+    "queueMessage",
+    "steerMessage",
+    "stopGeneration",
+    "cycleReasoningEffort",
+    "decreaseReasoningEffort",
+    "increaseReasoningEffort",
+    "startDictation",
+    "attachFiles",
+    "openComposerMenu",
+    "openModelPicker",
+    "openProjectPicker",
+    "approveToolRequest",
+    "declineToolRequest",
+  ]),
+  group("chat", [
+    "archiveChat",
+    "deleteSelectedChats",
+    "renameChat",
+    "togglePinChat",
+    "markChatUnread",
+    "clearAllUnreads",
+    "forkChat",
+    "copyChatAsMarkdown",
+    "copySessionId",
+    "findInPage",
+    "selectAllChats",
+    "clearChatSelection",
+  ]),
+  group("navigation", [
+    "nextChat",
+    "previousChat",
+    "nextRecentlyViewedChat",
+    "previousRecentlyViewedChat",
+    "nextChatNeedingAttention",
+    ...RECENT_SLOT_DEFS.map((d) => d.id),
+    ...WORKSPACE_IDS,
+  ]),
+  group("app", [
+    "newChat",
+    "newTemporaryChat",
+    "newStandaloneChat",
+    "searchChats",
+    "openCommandPalette",
+    "toggleSidebar",
+    "openKeyboardShortcuts",
+    "openSettings",
+    "newBrowserTab",
+    "toggleBrowserFullView",
+    "toggleApiMonitor",
+    "openMcpServers",
+    "logOut",
+  ]),
 ];
 
 export const SHORTCUT_DEF_BY_ID: Record<ShortcutId, ShortcutDef> =
@@ -722,7 +797,7 @@ export function formatCode(code: string, mac = isMacPlatform()): string {
     Equal: "=",
     Backquote: "`",
     Space: "Space",
-    Enter: "Enter",
+    Enter: mac ? "↩" : "Enter",
     Escape: "Esc",
     Backspace: mac ? "⌫" : "Backspace",
     Delete: "Del",
