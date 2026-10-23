@@ -3,14 +3,10 @@
 
 """fp32 VAE runs that leave a 16-bit VAE's stored weights in place.
 
-SDXL-class VAEs set ``force_upcast``: diffusers' decode and img2img ``prepare_latents`` (and Studio's own encode
-helpers) run ``vae.to(torch.float32)`` and later ``vae.to(float16)``. Each cast replaces every parameter's storage, so
-under whole-module CPU offload the kept host weights are lost: the VAE is never pinned (the cast lands before its first
-onload), every onload is a per-tensor pageable copy of fp32 weights (twice the bytes), and every offload copies the
-weights back. Here the upcast first onloads the VAE through its kept offload hook (pinned chunks, load dtype), casts on
-the device, and the cast back puts the original tensor objects back instead of allocating new ones, so the offload
-re-points them at the pinned host copy. Values are identical: an fp16 / bf16 -> fp32 cast is exact, and the fp32 math
-is the same as the stock upcast. ComfyUI likewise never rewrites a VAE's stored weights for a higher compute dtype.
+diffusers' ``force_upcast`` round trip (``vae.to(fp32)`` then back) replaces every parameter's storage, so under
+CPU offload the pinned host weights are lost and each onload becomes a pageable fp32 copy. Here the upcast onloads
+through the kept offload hook, casts on device, and the cast back restores the original tensor objects. Values are
+identical (16-bit -> fp32 is exact).
 """
 
 from __future__ import annotations
@@ -31,8 +27,7 @@ def _first_param(module: Any) -> Any:
 
 
 def _onload_through_kept_hook(owner: Any) -> None:
-    """Onload a whole-module offloaded ``owner`` the way its next forward would (pinned chunks, load dtype), so the
-    upcast happens on the device instead of converting the host weights."""
+    """Onload via the kept hook (pinned chunks) so the upcast happens on device, not on the host weights."""
     hook = getattr(owner, "_hf_hook", None)
     if not getattr(hook, _KEEP_ATTR, False) or not callable(getattr(hook, "pre_forward", None)):
         return
@@ -63,8 +58,7 @@ def upcast_keeping_storage(
     parts: Optional[list] = None,
     dtype: Any = None,
 ) -> list:
-    """Cast ``parts`` (default ``[owner]``) to ``dtype`` (fp32), remembering the tensors they held; returns the token
-    for ``restore_storage``."""
+    """Cast ``parts`` (default ``[owner]``) to fp32; returns the token for ``restore_storage``."""
     import torch
 
     dtype = torch.float32 if dtype is None else dtype
@@ -86,8 +80,7 @@ def upcast_keeping_storage(
 
 
 def restore_storage(token: list) -> None:
-    """Put back the tensors ``upcast_keeping_storage`` replaced. A tensor that has since moved (another device, a
-    reload) is cast back to its load dtype instead, which is what the stock cast does."""
+    """Put back the original tensors; one that has since moved or been replaced is cast back to its load dtype."""
     for kind, ref, orig, cast_ptr in token:
         try:
             if kind == "p":
@@ -112,7 +105,7 @@ def restore_storage(token: list) -> None:
 
 @contextlib.contextmanager
 def fp32_keeping_storage(owner: Any, parts: Optional[list] = None):
-    """Run ``parts`` of ``owner`` in fp32 for the block, then restore the original tensors (see module docstring)."""
+    """Run ``parts`` of ``owner`` in fp32 for the block, then restore the original tensors."""
     token = upcast_keeping_storage(owner, parts)
     try:
         yield
@@ -127,9 +120,7 @@ def _is_16bit(dtype: Any) -> bool:
 
 @contextlib.contextmanager
 def pipeline_upcasts_keep_storage(pipe: Any):
-    """For one pipeline call: diffusers' ``vae.to(torch.float32)`` / ``vae.to(load dtype)`` round trip (SDXL decode,
-    img2img ``prepare_latents``) goes through ``upcast_keeping_storage`` / ``restore_storage``. Anything else ``to``
-    is asked (a device move, another dtype) runs unchanged."""
+    """Route diffusers' fp32 / load-dtype round trip through ``upcast_keeping_storage``; other ``to`` calls run as is."""
     vae = getattr(pipe, "vae", None)
     first = _first_param(vae) if vae is not None else None
     config = getattr(vae, "config", None)
