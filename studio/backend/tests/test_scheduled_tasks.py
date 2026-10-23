@@ -585,6 +585,26 @@ def test_a_run_chat_is_marked_as_the_tasks_and_keeps_the_mark(monkeypatch):
     assert studio_db.get_chat_thread(thread_id)["scheduledTaskId"] == task["id"]
 
 
+def test_a_saved_chat_names_the_checkpoint_chat_can_select(monkeypatch):
+    task, run = claim_manual_run()
+    answer = Answer(
+        content = "Hi.",
+        reasoning = "",
+        model = "Qwen3-0.6B-Q4_K_M",
+        checkpoint = "unsloth/Qwen3-0.6B-GGUF",
+        gguf_variant = "Q4_K_M",
+    )
+    run_scheduler(task, run, answer = answer, monkeypatch = monkeypatch)
+    thread_id = db.get_task(task["id"])["lastRun"]["threadId"]
+    thread = studio_db.get_chat_thread(thread_id)
+    assert (thread["modelId"], thread["modelGgufVariant"]) == ("unsloth/Qwen3-0.6B-GGUF", "Q4_K_M")
+    details = studio_db.list_chat_messages(thread_id)[1]["metadata"]["responseDetails"]
+    assert (details["modelId"], details["modelLabel"]) == (
+        "unsloth/Qwen3-0.6B-GGUF",
+        "Qwen3-0.6B-Q4_K_M",
+    )
+
+
 def test_an_answer_without_reasoning_carries_no_reasoning_time(monkeypatch):
     task, run = claim_manual_run()
     answer = Answer(content = "Dawn light on the sill.", reasoning = "", model = "gemma-3")
@@ -951,13 +971,19 @@ def test_a_run_settles_its_request_where_the_slot_was_routed(monkeypatch):
         lambda scope, answered: seen.append((model_slots.routed_slot.get(), answered)),
     )
 
+    slot = SimpleNamespace(
+        llama = SimpleNamespace(is_loaded = True, model_identifier = "kept/model", hf_variant = "Q4_K_M"),
+        orchestrator = SimpleNamespace(active_model_name = None),
+    )
+
     class Routed(FakeProducer):
         async def __call__(self, *args, **kwargs):
-            model_slots.routed_slot.set("kept-slot")
+            model_slots.routed_slot.set(slot)
             return await super().__call__(*args, **kwargs)
 
-    generate(monkeypatch, Routed(completion("Done.")))
-    assert seen == [("kept-slot", True)]
+    answer = generate(monkeypatch, Routed(completion("Done.")))
+    assert seen == [(slot, True)]
+    assert (answer.checkpoint, answer.gguf_variant) == ("kept/model", "Q4_K_M")
 
 
 def test_a_named_kept_model_keeps_its_own_refusal(monkeypatch):

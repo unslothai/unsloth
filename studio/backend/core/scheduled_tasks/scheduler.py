@@ -60,6 +60,9 @@ class Answer:
     content: str
     reasoning: str
     model: Optional[str]
+    # What Chat selects to continue the conversation; `model` is the reply's display name.
+    checkpoint: Optional[str] = None
+    gguf_variant: Optional[str] = None
 
 
 @dataclass
@@ -214,6 +217,8 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             }
         )
 
+        serving: dict = {}
+
         async def produce() -> Any:
             # Settled in this task: slot routing lives in its context, which the caller never sees.
             reply = None
@@ -224,6 +229,7 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
                     task["ownerSubject"],
                     cancel_on_disconnect = False,
                 )
+                serving.update(_serving_checkpoint())
                 return reply
             finally:
                 end_in_process_request(
@@ -278,7 +284,18 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
         content = content,
         reasoning = message.get("reasoning_content") or "",
         model = data.get("model") or None,
+        checkpoint = serving.get("checkpoint"),
+        gguf_variant = serving.get("gguf_variant"),
     )
+
+
+def _serving_checkpoint() -> dict:
+    """The model that answered, as Chat names it: read in the producer's task, where its slot was routed."""
+    from routes.inference import _loaded_slot_ident, get_llama_cpp_backend
+
+    llama = get_llama_cpp_backend()
+    variant = getattr(llama, "hf_variant", None) if getattr(llama, "is_loaded", False) else None
+    return {"checkpoint": _loaded_slot_ident(), "gguf_variant": variant or None}
 
 
 def _project_or_none(project_id: Optional[str]) -> Optional[str]:
@@ -294,12 +311,14 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
     # After the prompt even within one millisecond, which the message order relies on.
     answered_at = max(finished_at, started_at + 1)
     model = answer.model or ""
+    checkpoint = answer.checkpoint or model
     studio_db.upsert_chat_thread(
         {
             "id": thread_id,
             "title": task["title"],
             "modelType": "base",
-            "modelId": model,
+            "modelId": checkpoint,
+            "modelGgufVariant": answer.gguf_variant,
             "createdAt": started_at,
             "updatedAt": answered_at,
             "scheduledTaskId": task["id"],
@@ -312,7 +331,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
     metadata: dict = {
         "scheduledTask": source,
         "responseDetails": {
-            "modelId": model,
+            "modelId": checkpoint,
             "modelLabel": model,
             "responseModelId": model,
             "providerName": "Local model",
