@@ -5,7 +5,12 @@ import asyncio
 
 import pytest
 
-from mcp_server import INSTRUCTIONS, create_studio_mcp
+from fastmcp.exceptions import ToolError
+
+import storage.studio_db as studio_db
+from mcp_server import INSTRUCTIONS, TOOL_MODULES, create_studio_mcp, tool_catalog, tool_names
+from utils import mcp_access
+from utils.mcp_access import MCP_DISABLED_TOOLS_SETTING_KEY, set_mcp_settings
 
 READ_ONLY = {
     "embed",
@@ -142,3 +147,51 @@ def test_instructions_point_agents_at_the_workflow():
     assert len(INSTRUCTIONS) <= 1900
     for absent in ("wait_s", "alongside", "signed"):
         assert absent not in INSTRUCTIONS, absent
+
+
+@pytest.fixture
+def fresh_access():
+    mcp_access._reset_cache()
+    yield
+    mcp_access._reset_cache()
+
+
+def test_the_catalog_is_the_registered_tools_in_order(fresh_access):
+    registered = [
+        tool.name for tool in asyncio.run(create_studio_mcp().list_tools(run_middleware = False))
+    ]
+    assert [entry["name"] for entry in tool_catalog()] == registered
+    assert list(tool_names()) == registered
+    assert len(registered) == 23
+    areas = {module.__name__.rsplit(".", 1)[-1] for module in TOOL_MODULES}
+    assert {entry["area"] for entry in tool_catalog()} == areas
+    assert tool_catalog()[0] == {"name": "studio_status", "area": "status"}
+    assert tool_catalog()[-1] == {"name": "cancel", "area": "cancel"}
+
+
+def test_by_default_the_middleware_lists_every_tool(fresh_access):
+    mcp = create_studio_mcp()
+    wrapped = asyncio.run(mcp.list_tools())
+    bare = asyncio.run(mcp.list_tools(run_middleware = False))
+    assert [tool.name for tool in wrapped] == [tool.name for tool in bare]
+
+
+def test_a_turned_off_tool_is_hidden_and_refused_in_process(fresh_access):
+    set_mcp_settings(disabled_tools = ["cancel", "chat"])
+    mcp = create_studio_mcp()
+    listed = [tool.name for tool in asyncio.run(mcp.list_tools())]
+    assert listed == [name for name in tool_names() if name not in {"cancel", "chat"}]
+    with pytest.raises(
+        ToolError, match = r"^\[tool_disabled\] chat is turned off in Unsloth Studio\."
+    ):
+        asyncio.run(mcp.call_tool("chat", {"prompt": "hi"}))
+
+
+@pytest.mark.parametrize("stored", ["x", {}, None, 3])
+def test_an_unreadable_tool_list_turns_every_tool_off(fresh_access, stored):
+    studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: stored})
+    mcp_access._reset_cache()
+    mcp = create_studio_mcp()
+    assert asyncio.run(mcp.list_tools()) == []
+    with pytest.raises(ToolError, match = r"^\[tool_disabled\] studio_status "):
+        asyncio.run(mcp.call_tool("studio_status", {}))

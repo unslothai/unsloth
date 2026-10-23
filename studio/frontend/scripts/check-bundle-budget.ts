@@ -409,8 +409,14 @@ export const BUDGET = {
   // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
   // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
   // that plus about 300 B raw / 100 B transfer, as for #14568.
-  transferBytes: 2_087_890,
-  rawBytes: 6_930_250,
+  // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
+  // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
+  // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
+  // eager providers-api chunk, not new code. Raised by that.
+  // Merged with main at d95472002 the build measures 6,932,091 B raw / 2,088,486 B transfer (Node 24).
+  // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
+  transferBytes: 2_088_686,
+  rawBytes: 6_932_591,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
