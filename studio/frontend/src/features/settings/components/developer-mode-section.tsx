@@ -179,7 +179,7 @@ export function DeveloperModeSection() {
                 setConfirmOpen(false);
                 void save(true);
               }}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {t("settings.general.developerMode.confirmAction")}
             </Button>

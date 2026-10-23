@@ -171,7 +171,7 @@ export function EngineInstall({
           {management && isOwner && engine.installed && (
             <Button
               size="sm"
-              variant="ghost"
+              variant="destructive"
               disabled={busy || engine.in_use}
               onClick={() => void action("remove")}
             >
@@ -220,6 +220,7 @@ export function EngineInstall({
           <p>{t("managedEngines.background")}</p>
           <div className={cn("flex gap-2", centered && "justify-center pt-3")}>
             <Button
+              variant="dark"
               size={centered ? "default" : "sm"}
               disabled={busy}
               onClick={() => void action("install")}

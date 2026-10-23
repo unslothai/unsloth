@@ -57,7 +57,7 @@ export function ReapCard({
                   key={s}
                   type="button"
                   size="sm"
-                  variant={sparsity === s ? "default" : "outline"}
+                  variant={sparsity === s ? "dark" : "outline"}
                   onClick={() => set({ sparsity: s })}
                   disabled={disabled || !reapSparsityAllowed(moe, s)}
                   title={
@@ -83,7 +83,7 @@ export function ReapCard({
                   key={o.value}
                   type="button"
                   size="sm"
-                  variant={settings.samples === o.value ? "default" : "outline"}
+                  variant={settings.samples === o.value ? "dark" : "outline"}
                   onClick={() => set({ samples: o.value })}
                   title={o.hint}
                   disabled={disabled}

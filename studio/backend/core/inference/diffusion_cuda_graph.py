@@ -10,6 +10,7 @@ Not a hook: hooks move ``nn.Module._call_impl`` off its fast path and offload ow
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import gc
 import inspect
@@ -126,25 +127,26 @@ def _disabled_reason() -> str:
     return f"disabled by {CUDA_GRAPH_DISABLE_ENV}"
 
 
-# ``torch.cuda.graph`` begins its capture in CUDA's default global mode, which prohibits the
-# "potentially unsafe" calls -- cudaEventQuery among them -- from EVERY thread for as long as it
-# records. The denoise progress poller queries a CUDA event ten times a second and the denoiser
-# captures its graphs during the first steps of a render, so the two really do overlap.
-#
-# A flag read before the query would be a TOCTOU: the reader can see "no capture", the capture can
-# begin, and the query then lands inside it and invalidates it. So the lock has to span the CUDA
-# call itself, not just the depth. Capture raises the depth UNDER the lock before it enters
-# ``torch.cuda.graph``, and a querier holds the same lock ACROSS its query, which leaves only two
-# orderings and both are safe: either the querier holds the lock and capture entry waits the few
-# microseconds a query takes, or capture got there first and the querier sees a non-zero depth and
-# skips. The depth is not a flag because nothing says two pipelines cannot be capturing at once,
-# and neither holds the lock while it records, so captures do not serialise against each other.
+# ``thread_local`` capture mode: global mode lets any thread's unsafe call break the recording. A device sync or a
+# second capture still breaks it, so captures are mutually exclusive and syncs use ``synchronize_outside_capture``.
+# ``hold_off_capture`` holds the lock ACROSS the call (a flag read first is a TOCTOU); depth is raised under the lock
+# and is a count because one thread's captures can nest.
 _CAPTURE_LOCK = threading.Lock()
 _CAPTURE_DEPTH = 0
 # CFG-parallel replica work is counted from queueing until its inputs drop; a capture waits for the count to drain.
 _CAPTURE_IDLE = threading.Condition(_CAPTURE_LOCK)
 _OUTSIDE_JOBS = 0
-_OUTSIDE_LOCAL = threading.local()
+
+
+class _ThreadGateState(threading.local):
+    """Per-thread gate counters; class defaults keep hot-path reads cheap."""
+
+    depth = 0
+    recording = 0
+    lock_held = 0
+
+
+_OUTSIDE_LOCAL = _ThreadGateState()
 # A count that never drains (dead worker) must not hang captures: after this long the capture is refused and the step
 # runs eager. Symmetrically, replica work that waits this long on a recording is refused and its branch runs on the source.
 OUTSIDE_WAIT_S = 120.0
@@ -181,7 +183,7 @@ def capture_refused_now() -> bool:
 
 
 def _wait_outside_drained(own: int) -> None:
-    """Under ``_CAPTURE_IDLE``: wait for other threads' held work to drain (a global capture forbids its CUDA calls), else raise ``CaptureRefused``."""
+    """Under ``_CAPTURE_IDLE``: wait for other threads' held work to drain, else raise ``CaptureRefused``."""
     drained = _other_holds(own, _OUTSIDE_PARKED[0]) <= 0
     if not drained and not _OUTSIDE_STUCK[0]:
         if own:
@@ -217,18 +219,146 @@ def _capturing():
     The depth MUST be raised before ``torch.cuda.graph`` is entered, which is what makes the
     ordering above hold; keep this the outermost of the two context managers. Raises
     ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
+
+    Every capture (whole step, planned or offloaded re-record, per block, per segment) enters here, so this is also
+    where a retired graph pool is handed back before anything records (``_settle_retired_pools``).
     """
     global _CAPTURE_DEPTH
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
+    mine = getattr(_OUTSIDE_LOCAL, "recording", 0)
+    seen = _retired_pools_seen()
     with _CAPTURE_IDLE:
-        _wait_outside_drained(own)
-        _CAPTURE_DEPTH += 1
+        for _ in range(_ENTRY_SETTLE_TRIES):
+            _wait_recordings_ended(mine)
+            if seen is not None:
+                _settle_retired_pools(seen)
+            _wait_outside_drained(own)
+            if _CAPTURE_DEPTH - mine > 0:
+                continue  # a capture entered while this one waited (the lock was released): wait it out again
+            # Retirement takes _RETIRE_LOCK, so one is either counted before this check (flush again, still under
+            # the capture lock) or lands once the depth is up (due for the next capture): never in between.
+            with _RETIRE_LOCK:
+                if _RETIRED_POOLS[1] >= _RETIRED_POOLS[0]:
+                    _CAPTURE_DEPTH += 1
+                    break
+                seen = _RETIRED_POOLS[0]
+        else:
+            raise CaptureRefused(
+                "graph pools kept retiring (or captures kept entering) while this capture entered; capture deferred"
+            )
+    _OUTSIDE_LOCAL.recording = mine + 1
     try:
         yield
     finally:
+        _OUTSIDE_LOCAL.recording = mine
         with _CAPTURE_IDLE:
             _CAPTURE_DEPTH -= 1
             _CAPTURE_IDLE.notify_all()
+        if _DEFERRED_RELEASES and not mine:
+            drain_deferred_releases()
+
+
+def _wait_recordings_ended(mine: int) -> None:
+    """Under ``_CAPTURE_IDLE``: wait for other threads' recordings, else raise ``CaptureRefused``."""
+    if _CAPTURE_DEPTH - mine <= 0:
+        return
+    if not _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH - mine <= 0, timeout = RETIRED_FLUSH_WAIT_S):
+        raise CaptureRefused(
+            f"another thread's CUDA graph capture still recording after {RETIRED_FLUSH_WAIT_S:g}s; capture deferred"
+        )
+
+
+def recording_here() -> bool:
+    """Whether THIS thread is inside ``_capturing``."""
+    return getattr(_OUTSIDE_LOCAL, "recording", 0) > 0
+
+
+def _sync_device(torch: Any, device: Any) -> None:
+    if device is None:
+        torch.cuda.synchronize()
+    else:
+        torch.cuda.synchronize(device)
+
+
+def synchronize_outside_capture(device: Any = None, *, refuse: bool = False) -> None:
+    """Device sync that waits out another thread's recording and holds captures off while it runs.
+
+    After ``RETIRED_FLUSH_WAIT_S`` it raises ``CaptureRefused`` if ``refuse`` (nothing recorded yet), else syncs anyway.
+    Under ``hold_off_capture`` or this thread's own recording it syncs at once, so it never self-deadlocks.
+    Not for finalizers: one can run while its thread holds the (non-reentrant) capture lock."""
+    torch = _torch()
+    if _OUTSIDE_LOCAL.recording or _OUTSIDE_LOCAL.lock_held:
+        _sync_device(torch, device)
+        return
+    global _OUTSIDE_JOBS
+    with _CAPTURE_IDLE:
+        # Check and count atomically, so no capture slips in between.
+        ended = _CAPTURE_DEPTH == 0 or _CAPTURE_IDLE.wait_for(
+            lambda: _CAPTURE_DEPTH == 0, timeout = RETIRED_FLUSH_WAIT_S
+        )
+        if not ended and refuse:
+            raise CaptureRefused(
+                f"another thread's CUDA graph capture still recording after {RETIRED_FLUSH_WAIT_S:g}s; capture deferred"
+            )
+        _OUTSIDE_JOBS += 1
+    try:
+        _sync_device(torch, device)
+    finally:
+        capture_release()
+    drain_deferred_releases()
+
+
+# Releases a finalizer could not run at once (the capture lock was taken, possibly by its own thread, or a capture was
+# recording). A deque: append / popleft run no Python code, so a finalizer firing mid-call cannot re-enter them.
+_DEFERRED_RELEASES: "collections.deque" = collections.deque()
+
+
+def run_if_capture_idle(fn: Any) -> bool:
+    """Run ``fn()`` now under the capture lock with no capture recording, else return False without waiting.
+
+    Never blocks on the capture gate, so it is safe from a weakref finalizer: one can run on a thread already holding
+    the (non-reentrant) lock, e.g. inside a ``Condition.wait_for`` setup. ``fn`` may sync and free device memory: no
+    capture can enter while it runs."""
+    if _OUTSIDE_LOCAL.recording:
+        return False
+    if _OUTSIDE_LOCAL.lock_held:
+        # Under this thread's own hold_off_capture: the lock is held here, so the depth cannot change under fn.
+        if _CAPTURE_DEPTH != 0:
+            return False
+        fn()
+        return True
+    if not _CAPTURE_LOCK.acquire(blocking = False):
+        return False
+    try:
+        if _CAPTURE_DEPTH != 0:
+            return False
+        fn()
+        return True
+    finally:
+        _CAPTURE_LOCK.release()
+
+
+def release_when_capture_idle(fn: Any) -> None:
+    """For finalizers: run ``fn`` as ``run_if_capture_idle`` does, else queue it for the next gated point (an explicit
+    ``synchronize_outside_capture`` or a capture's exit). Never blocks."""
+    if not run_if_capture_idle(fn):
+        _DEFERRED_RELEASES.append(fn)
+
+
+def drain_deferred_releases() -> None:
+    """Run the queued finalizer releases the gate allows now; the rest stay queued. Never blocks."""
+    for _ in range(len(_DEFERRED_RELEASES)):
+        try:
+            fn = _DEFERRED_RELEASES.popleft()
+        except IndexError:
+            return
+        try:
+            done = run_if_capture_idle(fn)
+        except Exception:  # noqa: BLE001 - a failed release is dropped, as the finalizer would have
+            continue
+        if not done:
+            _DEFERRED_RELEASES.append(fn)
+            return
 
 
 def capture_hold() -> None:
@@ -287,10 +417,158 @@ def hold_off_capture():
     if not _CAPTURE_LOCK.acquire(blocking = False):
         yield False
         return
+    held = getattr(_OUTSIDE_LOCAL, "lock_held", 0)
+    _OUTSIDE_LOCAL.lock_held = (
+        held + 1
+    )  # synchronize_outside_capture must not re-take the lock under it
     try:
         yield _CAPTURE_DEPTH == 0
     finally:
+        _OUTSIDE_LOCAL.lock_held = held
         _CAPTURE_LOCK.release()
+
+
+# A retired pool's segments stay cached until empty_cache, which cannot run while a capture records, so a capture
+# beside them can OOM. Rule: no capture records until every pool retired before its entry was flushed. Counted, not
+# flagged, so a retirement landing mid-flush stays due.
+_RETIRE_LOCK = threading.Lock()
+_RETIRED_POOLS = [0, 0]  # [retirements counted, retirements flushed]
+_POOL_FLUSHES = [0]  # retired-pool flushes performed (diagnostics, tests)
+# A deferred release owes a cuBLAS workspace clear; the next entry flush does it.
+_CUBLAS_CLEAR_DUE = [False]
+# Wait (not eager fallback) for another thread's recording to end: eager CUDA work mid-capture can invalidate it.
+RETIRED_FLUSH_WAIT_S = OUTSIDE_WAIT_S
+# Entry flush attempts before the capture is refused.
+_ENTRY_SETTLE_TRIES = 8
+
+
+def note_pool_retired() -> None:
+    """Count a retired graph pool. Call once the graphs that held it are dropped, never before."""
+    with _RETIRE_LOCK:
+        _RETIRED_POOLS[0] += 1
+
+
+def retired_pool_due() -> bool:
+    with _RETIRE_LOCK:
+        return _RETIRED_POOLS[0] != _RETIRED_POOLS[1]
+
+
+def _retired_pools_seen() -> Optional[int]:
+    """The retirement count a flush starting now covers, None when nothing is due. Read BEFORE ``gc.collect``, so
+    every graph counted is already unreferenced (or in a cycle that collect frees) when the flush runs."""
+    with _RETIRE_LOCK:
+        seen = _RETIRED_POOLS[0]
+        if seen == _RETIRED_POOLS[1]:
+            return None
+    gc.collect()  # outside _CAPTURE_LOCK: a finalizer may take it
+    return seen
+
+
+def _flush_retired_locked(seen: int) -> bool:
+    """Under ``_CAPTURE_LOCK`` with no capture recording: synchronize, clear the cuBLAS workspaces a deferred release
+    owed, flush, acknowledge up to ``seen``."""
+    with _RETIRE_LOCK:
+        clear_cublas, _CUBLAS_CLEAR_DUE[0] = _CUBLAS_CLEAR_DUE[0], False
+    try:
+        torch = _torch()
+        cuda = getattr(torch, "cuda", None)
+        if cuda is not None and cuda.is_available():
+            sync = getattr(cuda, "synchronize", None)
+            if callable(sync):
+                sync()
+            if clear_cublas:
+                clear = getattr(getattr(torch, "_C", None), "_cuda_clearCublasWorkspaces", None)
+                if callable(clear):
+                    clear()
+            empty = getattr(cuda, "empty_cache", None)
+            if callable(empty):
+                empty()
+    except Exception:  # noqa: BLE001 - not flushed: stays due, the cuBLAS clear with it
+        if clear_cublas:
+            with _RETIRE_LOCK:
+                _CUBLAS_CLEAR_DUE[0] = True
+        return False
+    with _RETIRE_LOCK:
+        _RETIRED_POOLS[1] = max(_RETIRED_POOLS[1], seen)
+    _POOL_FLUSHES[0] += 1
+    return True
+
+
+def _settle_retired_pools(seen: int) -> None:
+    """Under ``_CAPTURE_IDLE``, from ``_capturing``: flush the pools retired up to ``seen`` before this capture records.
+    Waits (lock released) for another thread's recording to end, since that one prohibits the flush; raises
+    ``CaptureRefused`` (depth untouched, nothing recorded) when it does not end in time or the flush failed."""
+    with _RETIRE_LOCK:
+        if _RETIRED_POOLS[1] >= seen:
+            return  # another capture flushed them already: no wait on its recording
+    if not _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = RETIRED_FLUSH_WAIT_S):
+        raise CaptureRefused(
+            "a retired graph pool could not be flushed (another capture is recording); capture deferred"
+        )
+    with _RETIRE_LOCK:
+        if _RETIRED_POOLS[1] >= seen:
+            return  # another capture flushed them while this one waited
+    if not _flush_retired_locked(seen):
+        raise CaptureRefused("a retired graph pool could not be flushed; capture deferred")
+
+
+def flush_retired_pools() -> bool:
+    """Best effort, outside any capture: hand retired pools back now rather than at the next capture's entry. False
+    (still due) while another thread records."""
+    seen = _retired_pools_seen()
+    if seen is None:
+        return True
+    with hold_off_capture() as safe:
+        if not safe:
+            return False
+        return _flush_retired_locked(seen)
+
+
+def flush_now_locked(clear_cublas: bool = False) -> bool:
+    """For a caller already holding ``hold_off_capture()`` (True): flush now, and acknowledge every retirement counted
+    before it, so the next capture's entry does not flush again."""
+    with _RETIRE_LOCK:
+        seen = _RETIRED_POOLS[0]
+        if clear_cublas:
+            _CUBLAS_CLEAR_DUE[0] = True
+    gc.collect()
+    return _flush_retired_locked(seen)
+
+
+def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
+    """The one way graph memory goes back outside a capture's entry: ``empty_cache`` (and the cuBLAS workspaces) now,
+    under the capture lock with no capture recording, acknowledging the retirements counted before it; or, while
+    another thread records (either call is prohibited inside its recording and can invalidate it), counted as a
+    retired pool with the cuBLAS clear owed, so the next capture's entry flush does both."""
+    # Owed first, in one step with the cuBLAS debt: a capture entering from here on sees it due, whether or not this
+    # flush gets the lock; a successful flush below acknowledges it.
+    with _RETIRE_LOCK:
+        _RETIRED_POOLS[0] += 1
+        seen = _RETIRED_POOLS[0]
+        if clear_cublas:
+            _CUBLAS_CLEAR_DUE[0] = True
+    gc.collect()  # outside _CAPTURE_LOCK: a finalizer may take it
+    with hold_off_capture() as safe:
+        if safe and _flush_retired_locked(seen):
+            return True
+    return False
+
+
+def _note_dropped_pools(tokens: list) -> None:
+    """Graph entries just left a step cache: count a retirement when one of their pools no live graph records into
+    (a pool still shared with a live graph keeps its freed blocks for that pool's next capture)."""
+    try:
+        if not tokens:
+            return
+        live = [
+            getattr(entry, "pool_token", None)
+            for wrapper in tuple(_LIVE_WRAPPERS)
+            for entry in tuple(wrapper.cache.values())
+        ]
+        if any(token is None or token not in live for token in tokens):
+            note_pool_retired()
+    except Exception:  # noqa: BLE001 - unsure: count it, the cost is one flush
+        note_pool_retired()
 
 
 # Raised while a whole step warms up or records: per-block graphs then run their compute, not nested replays.
@@ -320,20 +598,49 @@ def capture_in_progress() -> bool:
         return _CAPTURE_DEPTH > 0
 
 
+CAPTURE_MODE = "thread_local"
+
+
+def _graph_with_flush(
+    graph: Any,
+    pool: Any = None,
+    stream: Any = None,
+):
+    return _torch().cuda.graph(graph, pool = pool, stream = stream, capture_error_mode = CAPTURE_MODE)
+
+
+_CAPTURE_STREAMS: dict = {}
+
+
+def _capture_stream(index: int) -> Any:
+    """One capture stream per card: torch's default capture stream lives on the first card that captured, so a
+    capture for another card recorded none of its kernels. Pool blocks are reused only from the recording stream."""
+    torch = _torch()
+    stream = _CAPTURE_STREAMS.get(index)
+    if stream is None:
+        default = getattr(torch.cuda.graph, "default_capture_stream", None)
+        if default is not None and getattr(default, "device", None) == torch.device("cuda", index):
+            stream = default
+        else:
+            stream = torch.cuda.Stream(device = index)
+        stream = _CAPTURE_STREAMS.setdefault(index, stream)
+    return stream
+
+
 @contextlib.contextmanager
-def _graph_without_flush(graph: Any, pool: Any = None):
+def _graph_without_flush(
+    graph: Any,
+    pool: Any = None,
+    stream: Any = None,
+):
     """``torch.cuda.graph`` minus its ``empty_cache`` / host ``emptyCache``: same capture stream discipline, same
-    global capture mode, same pool."""
+    capture mode (``CAPTURE_MODE``), same pool."""
     torch = _torch()
     torch.cuda.synchronize()
-    # torch.cuda.graph's own capture stream: pool blocks are reused only from the stream that recorded them.
-    stream = getattr(torch.cuda.graph, "default_capture_stream", None)
-    if stream is None or getattr(stream, "device", None) != torch.device(
-        "cuda", torch.cuda.current_device()
-    ):
-        stream = torch.cuda.Stream()
+    if stream is None:
+        stream = _capture_stream(torch.cuda.current_device())
     with torch.cuda.stream(stream):
-        graph.capture_begin(pool = pool, capture_error_mode = "global")
+        graph.capture_begin(pool = pool, capture_error_mode = CAPTURE_MODE)
         try:
             yield
         finally:
@@ -545,6 +852,8 @@ def retire_failed_capture(
         (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
     if pool is not None and _POOL_BOX[0] == pool:
         _POOL_BOX[0] = None
+    if not begun_elsewhere:
+        note_pool_retired()  # whatever the failed recording took stays cached until the next capture's entry flush
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
@@ -985,23 +1294,15 @@ class GraphedForward:
 
     def _release(self) -> None:
         """Return the dropped graphs' pool segments to the device; ``gc.collect`` alone leaves them in the private pool."""
-        try:
-            gc.collect()
-            torch = _torch()
-            cuda = getattr(torch, "cuda", None)
-            if getattr(self, "placement", None) is not None:
-                # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
-                clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
-                if callable(clear):
-                    clear()
-            if cuda is not None and hasattr(cuda, "empty_cache"):
-                cuda.empty_cache()
-        except Exception:  # noqa: BLE001 - best effort
-            pass
+        # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
+        release_cached_outside_capture(clear_cublas = getattr(self, "placement", None) is not None)
 
     def reset(self) -> "GraphedForward":
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
+        dropped = bool(self.cache)
         self.cache.clear()
+        if dropped:
+            note_pool_retired()  # counted where it drops; the _release below flushes and acknowledges it
         self._recorded.clear()
         # Nothing recorded is left to replay: every scope's first render starts over (captures counted afresh).
         self._sealed_scopes.clear()
@@ -1023,11 +1324,20 @@ class GraphedForward:
             "traceback": traceback.format_exc()[-6000:],
         }
         self.poisoned = True
+        if (
+            getattr(self, "fallback", None) is None
+            and getattr(self, "fallback_handle", None) is None
+        ):
+            # A pending or armed per-block fallback still keys its graphs on the resident groups' addresses: the
+            # stable re-pin stays until it is known to be gone (``_engage_fallback`` / ``free``).
+            _retire_stable_placement(self.placement)
         # ``__call__`` short-circuits to eager on ``poisoned`` before it reads the cache, so every
         # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
         # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
         # capture's own frames are gone, so both go back in one pass.
+        dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
         self.cache.clear()
+        _note_dropped_pools(dropped)
         _drop_pool_if_unused()
         return self
 
@@ -1044,6 +1354,7 @@ class GraphedForward:
         self.uninstall()
         if self.placement is not None:
             self.placement.release_slots()
+        _retire_stable_placement(getattr(self, "placement", None))
         self.enabled = False
         _LIVE_WRAPPERS.discard(self)
         return self
@@ -1122,6 +1433,13 @@ class GraphedForward:
                         if other != key:
                             self.cache.pop(other, None)
                             self._dropped.add(other)
+                    if (
+                        getattr(self, "fallback", None) is None
+                        and getattr(self, "fallback_handle", None) is None
+                    ):
+                        _retire_stable_placement(
+                            placement
+                        )  # no per-block graphs either: nothing records again
                 self._slower = reason
                 self._dropped.add(key)
                 if self.logger is not None:
@@ -1130,11 +1448,15 @@ class GraphedForward:
                         type(self.module).__name__,
                         reason,
                     )
-                if self.cache.pop(key, None) is not None:
+                dropped_entry = self.cache.pop(key, None)
+                if dropped_entry is not None:
                     try:
                         _torch().cuda.current_stream().synchronize()  # no replay still running on what is freed
                     except Exception:  # noqa: BLE001
                         pass
+                    gone = getattr(dropped_entry, "pool_token", None)
+                    del dropped_entry  # counted once the graph is gone, never before
+                    _note_dropped_pools([gone])
                     _drop_pool_if_unused()
                 if not self.cache:
                     self.capture_error = {"type": "Refused", "msg": reason}
@@ -1224,6 +1546,10 @@ class GraphedForward:
         args, kwargs = _rebuild(spec, live)
         return self._eager(args, kwargs)
 
+    def _placement_declined(self) -> bool:
+        # A declined placement refuses every later recording for the load (a merely dropped key does not).
+        return getattr(getattr(self, "placement", None), "_declined", None) is not None
+
     def _engage_fallback(self) -> None:
         """Arm the per-block graphs once this whole-step graph dropped a key or failed: the calls it now leaves eager
         run through them. Between forwards' blocks (the step has not started), so the slot ring can change."""
@@ -1233,6 +1559,8 @@ class GraphedForward:
         except Exception as exc:  # noqa: BLE001
             _warn(self.logger, "per-block fallback", exc)
             self.fallback_handle = None
+        if self.fallback_handle is None and (self.poisoned or self._placement_declined()):
+            _retire_stable_placement(self.placement)  # nothing left that records over the placement
         if self.fallback_handle is not None and self.logger is not None:
             self.logger.info(
                 "diffusion.cuda_graph: %s records per block for the steps its whole-step graph leaves eager",
@@ -1268,7 +1596,9 @@ class GraphedForward:
                     self.stats["invalidations"] += 1
                     # Not reset(): its empty_cache on every model-offload onload makes the next onload pay the
                     # cudaMallocs again. The dropped pool's blocks stay with the allocator.
+                    dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
                     self.cache.clear()
+                    _note_dropped_pools(dropped)  # the next capture flushes it before it records
                     _drop_pool_if_unused()  # the next capture must not record into a pool no graph holds
                 self._warmed.clear()
                 self.valid_token = token
@@ -1388,8 +1718,9 @@ class GraphedForward:
                 return call(*warm_args, **warm_kwargs)
             if len(self.cache) >= self.max_graphs and self.plan is not None:
                 # A planned call keys on the prompt length, so evict the least recently replayed graph.
-                self.cache.pop(next(iter(self.cache)))
+                gone = getattr(self.cache.pop(next(iter(self.cache))), "pool_token", None)
                 self.stats["evictions"] += 1
+                _note_dropped_pools([gone])
                 # The last graph on the shared pool takes the pool with it; never hand its id to the next capture.
                 _drop_pool_if_unused()
             if len(self.cache) >= self.max_graphs:
@@ -1430,6 +1761,8 @@ class GraphedForward:
                 if self.placement is not None:
                     self.placement.recover()  # the eager retry must not wait on the dead capture's copies
                     self.placement.release_slots()  # nothing will replay into the ring for this load
+                    if self.placement.mode == "model":
+                        _retire_stable_range(self.module)
                 self.poison(exc)
                 self.stats["fallbacks"] += 1
                 if self.logger is not None:
@@ -1630,16 +1963,27 @@ class GraphedForward:
                     for _ in range(min(self.warmup, 1) if again else self.warmup):
                         record(*static_args, **static_kwargs)
                 torch.cuda.current_stream().wait_stream(side)
-            torch.cuda.synchronize()
+            try:
+                synchronize_outside_capture(
+                    refuse = True
+                )  # a device sync: never inside another thread's recording
+            except CaptureRefused:
+                if skip_stats is not None:
+                    skip.stats = skip_stats
+                raise
 
             graph = torch.cuda.CUDAGraph()
             # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
             pool = _POOL_BOX[0]
             if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
                 pool = torch.cuda.graph_pool_handle()
-            recorder = _graph_without_flush if recapture else torch.cuda.graph
+            recorder = _graph_without_flush if recapture else _graph_with_flush
+            card = next((t.device.index for t in live if t.device.index is not None), None)
+            if card is None:
+                card = torch.cuda.current_device()
             try:
-                with _capturing(), recorder(graph, pool = pool):
+                # _capturing hands back any retired pool first, so the no-flush re-record never records beside one.
+                with _capturing(), recorder(graph, pool = pool, stream = _capture_stream(card)):
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
                 # A refusal is raised before the recording begins: the graph and the pool were never touched.
@@ -1728,7 +2072,8 @@ class OffloadPlacement:
     replaces the module's hooked forward, so ONE graph records the whole step: the copy-stream copies of every
     streamed group from its pinned host tensor into the graph pool, the compute stream waiting on each copy's event,
     and the resident groups read in place. The pool holds the in-flight window at fixed addresses, so it plays the
-    prefetch ring. Recorded again when a residency change, a release / restore or a host-copy swap moves an address.
+    prefetch ring. Recorded again when a residency change or a host-copy swap moves an address. A prompt encode's
+    release / restore does not: once armed, the re-pin lands in each group's stable range (diffusion_stable_arena).
 
     ``model``: whole-module CPU offload (accelerate). By default only over the stable device range
     (``diffusion_stable_arena``: every onload lands at the same addresses, so render 1's recording replays on every
@@ -1955,6 +2300,14 @@ class OffloadPlacement:
         if getattr(self, "_declined", None) is not None:
             return self._declined
         if self.mode == "model":
+            failed = _stable_range_failure(getattr(self, "module", None))
+            if failed is not None:
+                # Stock onloads land at new addresses each render. Retire, not detach: placed weights still sit in the range.
+                _retire_stable_range(self.module)
+                self._declined = (
+                    f"the stable device range failed ({failed}); " + MODEL_OFFLOAD_REASON
+                )
+                return self._declined
             # Judged once per placement, when the weights land (the fingerprint is rebuilt every call).
             if self._checked != self._fp:
                 self._checked = self._fp
@@ -2073,6 +2426,41 @@ def _detach_stable_range(module: Any) -> None:
         pass
 
 
+def _retire_stable_placement(placement: Any) -> None:
+    """No graph of this placement can replay again (a poisoned or freed handle): stop paying for stable addresses. A
+    re-arm attaches afresh."""
+    if placement is None:
+        return
+    if placement.mode == "model":
+        _detach_stable_range(placement.module)
+        return
+    try:
+        from .diffusion_stable_arena import drop_stable_repin
+        drop_stable_repin(placement.module)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _stable_range_failure(module: Any) -> Optional[str]:
+    """Why ``module``'s stable range stopped placing its onloads, else None."""
+    try:
+        from .diffusion_stable_arena import arena_of
+        arena = arena_of(module)
+        return None if arena is None else arena.failed
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _retire_stable_range(module: Any) -> None:
+    try:
+        from .diffusion_stable_arena import arena_of
+        arena = arena_of(module)
+        if arena is not None:
+            arena.retire()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _stable_range(module: Any) -> bool:
     try:
         from .diffusion_stable_arena import arena_of
@@ -2178,6 +2566,10 @@ def arm_after_placement(
                 )
                 stable = placement.mode == "model" and _stable_range(module)
                 modes.append("model_stable" if stable else placement.mode)
+                if placement.mode == "group":
+                    # Encode re-pins now land at the addresses this step records (diffusion_stable_arena.GroupRange).
+                    from .diffusion_stable_arena import want_stable_repin
+                    want_stable_repin(module)
         except Exception as exc:  # noqa: BLE001
             if placement is not None and placement.mode == "model":
                 _detach_stable_range(module)
@@ -2476,6 +2868,11 @@ def stats(handles: Any) -> dict:
                 arena = arena_of(placement.module)
                 if arena is not None:
                     out["stable_range"] = arena.describe()
+            if placement is not None and placement.mode == "group":
+                from .diffusion_stable_arena import repin_stats
+                repin = repin_stats(placement.module)
+                if repin is not None:
+                    out["stable_repin"] = repin
             if handle.poisoned:
                 out["poisoned"] = True
             error = handle.capture_error

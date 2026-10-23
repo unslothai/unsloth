@@ -3010,6 +3010,54 @@ def update_openai_auto_switch_override(
     return ModelOverridesResponse(overrides = get_model_overrides(), removed_keys = removed_keys)
 
 
+class ModelSamplingDefaultsPayload(BaseModel):
+    """One model's saved sampling defaults. A null or missing field follows the model's recommendation;
+    all of them null forgets the model."""
+
+    model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    sampling: Optional[dict[str, Optional[float]]] = None
+
+
+class ModelSamplingDefaultsResponse(BaseModel):
+    defaults: dict[str, dict]
+    # What a request naming the given model gets, resolved here so the browser need not mirror the key rules.
+    resolved: Optional[dict] = None
+
+
+@_account_settings_router.get(
+    "/model-sampling-defaults", response_model = ModelSamplingDefaultsResponse
+)
+def get_model_sampling_defaults_route(
+    model_id: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+) -> ModelSamplingDefaultsResponse:
+    from utils.model_sampling_defaults import get_model_sampling_defaults, saved_sampling_defaults
+    return ModelSamplingDefaultsResponse(
+        defaults = get_model_sampling_defaults(),
+        resolved = saved_sampling_defaults(model_id) if model_id else None,
+    )
+
+
+@_account_settings_router.put(
+    "/model-sampling-defaults", response_model = ModelSamplingDefaultsResponse
+)
+def update_model_sampling_defaults_route(
+    payload: ModelSamplingDefaultsPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelSamplingDefaultsResponse:
+    from utils.model_sampling_defaults import (
+        get_model_sampling_defaults,
+        saved_sampling_defaults,
+        set_model_sampling_defaults,
+    )
+    try:
+        set_model_sampling_defaults(payload.model_id, payload.sampling)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return ModelSamplingDefaultsResponse(
+        defaults = get_model_sampling_defaults(),
+        resolved = saved_sampling_defaults(payload.model_id),
+    )
+
+
 class EmbeddingModelPayload(BaseModel):
     embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
     # The repo /resolve named, stored so the loader opens what was downloaded.
