@@ -71,6 +71,7 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import { DeveloperModeSection } from "../components/developer-mode-section";
@@ -523,7 +524,7 @@ export function GeneralTab() {
         </p>
       </header>
 
-      {/* Desktop-only, and self-gating: outside the desktop app both render
+      {/* Desktop-only, and self-gating: outside the desktop app these render
           nothing and the section keeps just the version rows. */}
       <StudioVersionSection>
         {isTauri ? (
@@ -532,6 +533,7 @@ export function GeneralTab() {
             <DesktopUpdateNote />
           </div>
         ) : null}
+        <DesktopInstallTypeControl />
       </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>

@@ -62,6 +62,79 @@ function formatSize(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
 }
 
+const TRANSCRIBE_MODEL_ID =
+  /whisper|transcri|parakeet|voxtral-mini|(?:^|[\W_])(?:asr|stt)(?:[\W_]|$)/i;
+// OpenAI's catalog in Studio keeps only chat models.
+const OPENAI_TRANSCRIBE_MODELS = [
+  "whisper-1",
+  "gpt-4o-transcribe",
+  "gpt-4o-mini-transcribe",
+];
+
+// Azure and other OpenAI-typed endpoints name models by deployment (as speak-connection-models.ts).
+function isOpenAIApi(connection: { providerType: string; baseUrl?: string }): boolean {
+  if (connection.providerType !== "openai") return false;
+  if (!connection.baseUrl) return true;
+  try {
+    return new URL(connection.baseUrl).hostname.toLowerCase() === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
+
+export function connectionTranscribeModels(
+  connection: {
+    providerType: string;
+    baseUrl?: string;
+    models: readonly string[];
+    availableModels?: readonly string[];
+    sharedByOwner?: boolean;
+  },
+  dictationModel?: string,
+): string[] {
+  const ids = [
+    ...(isOpenAIApi(connection) ? OPENAI_TRANSCRIBE_MODELS : []),
+    ...connection.models,
+    ...(connection.availableModels ?? []),
+  ].filter((id) => TRANSCRIBE_MODEL_ID.test(id) && !/tts/i.test(id));
+  if (dictationModel) ids.push(dictationModel);
+  // An owner-shared connection refuses any model outside the list the owner allowed (403).
+  const allowed = connection.sharedByOwner ? new Set(connection.models) : null;
+  return [...new Set(ids)].filter((id) => !allowed || allowed.has(id));
+}
+
+const OPENAI_UNTIMED_MODELS = new Set([
+  "gpt-4o-transcribe",
+  "gpt-4o-mini-transcribe",
+]);
+
+export function connectionTranscribeSwitches(
+  prefs: { timestamps: boolean },
+  model: string,
+): TranscribeSwitches {
+  const untimed = OPENAI_UNTIMED_MODELS.has(model);
+  return {
+    timestamps: untimed
+      ? {
+          checked: false,
+          disabled: true,
+          hint: "This model returns text only. Use whisper-1 for timestamps.",
+        }
+      : {
+          checked: prefs.timestamps,
+          disabled: false,
+          hint: "Asks the connection for the time of each line. Not every model returns them.",
+        },
+    speakers: {
+      checked: false,
+      disabled: true,
+      hint: "A connection returns no speaker labels.",
+    },
+    notice: null,
+    request: { timestamps: !untimed && prefs.timestamps, speakers: false },
+  };
+}
+
 export function transcribeSwitches(
   caps: SttCapabilities | null,
   prefs: { timestamps: boolean; speakers: boolean },

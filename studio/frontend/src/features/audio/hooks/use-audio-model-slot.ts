@@ -76,6 +76,7 @@ import {
   sttSidecarKeyFor,
   usesNativeAudioRuntime,
 } from "../catalog";
+import { useAudioTranscribeStore } from "../stores/audio-transcribe-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
 import {
   type AudioWorkflowId,
@@ -951,6 +952,7 @@ export function useAudioModelSlot({
           sttGgufVariants.current.delete(id.toLowerCase());
         }
         deferredSttLoad.current = null;
+        useAudioTranscribeStore.setState({ connectionModel: null });
         selectedSttRepoRef.current = id;
         setSelectedSttRepo(id);
         void ensureSttLoaded(id, sidecarKey, engine);

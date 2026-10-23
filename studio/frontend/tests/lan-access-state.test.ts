@@ -20,6 +20,7 @@ import {
   lanApiUrls,
   normalizeLanAccessStatus,
   sameLanAccessAddresses,
+  staleLanUrls,
   validLanAccessPort,
 } from "../src/features/settings/api/lan-access-state.ts";
 
@@ -617,4 +618,23 @@ test("bind failures distinguish automatic from an occupied custom port", () => {
 test("no error means no message, and an unknown one still says something", () => {
   assert.equal(lanAccessErrorMessage(null), null);
   assert.ok(lanAccessErrorMessage("something_new")?.length);
+});
+
+test("a settings listener flags addresses no longer on this machine", () => {
+  const s = normalizeLanAccessStatus(
+    apiStatus({
+      state: "online",
+      urls: [LAN, SECOND, "http://[fd00::5]:8888"],
+      // biome-ignore lint/style/useNamingConvention: API schema
+      managed_by: "settings",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      available_addresses: [
+        { address: "10.0.0.7", public: false },
+        { address: "fd00::5", public: false },
+      ],
+    }),
+  );
+  assert.deepEqual(staleLanUrls(s), [LAN]);
+  assert.deepEqual(staleLanUrls({ ...s, managedBy: "launch" }), []);
+  assert.deepEqual(staleLanUrls({ ...s, availableAddresses: [] }), []);
 });
