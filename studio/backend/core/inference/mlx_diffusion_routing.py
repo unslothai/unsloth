@@ -31,7 +31,8 @@ COEXIST_ENV = "UNSLOTH_DIFFUSION_MLX_COEXIST"
 _FALLBACK_DRAIN_S = 120.0
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
-_UNSET_TOKENS = frozenset({"", "auto", "none", "default"})
+# Only these delegate the precision choice. none/off pin the released weights, which MLX cannot honour.
+_UNSET_TOKENS = frozenset({"", "auto", "default"})
 
 
 @dataclass(frozen = True)
@@ -694,7 +695,10 @@ class RoutedMlxEngine:
         # An in-flight fallback finishes tearing down before this returns: the caller reads it as memory freed.
         ours = self._drain_fallback()
         if ours:
-            self._diffusers().unload()
+            if expected_account is None:
+                self._diffusers().unload()
+            else:
+                self._diffusers().unload(expected_account = expected_account)
         with self._lock:
             self._diffusers_ours = False
             self._mlx_dropped = False

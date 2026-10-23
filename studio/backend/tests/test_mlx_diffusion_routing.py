@@ -509,6 +509,29 @@ def test_unload_frees_both_engines(rig):
     assert ("diffusers", "load") not in rig.log
 
 
+@pytest.mark.parametrize("field", ["transformer_quant", "text_encoder_quant"])
+@pytest.mark.parametrize("value", ["none", "off", "NONE"])
+def test_a_pinned_original_precision_keeps_the_load_on_diffusers(field, value):
+    # none/off pin the released GGUF / bf16 weights; MLX picks its own quant plan, so it cannot honour them.
+    blocker = routing.load_blocker(**{field: value})
+    assert blocker and value in blocker
+
+
+def test_unload_forwards_the_account_scope_to_the_fallback(rig):
+    rig.fit["coexist"] = True
+    _img2img(rig.engine)
+    seen = []
+    real = rig.diffusers.unload
+
+    def _scoped_unload(*, expected_account = None):
+        seen.append(expected_account)
+        return real(expected_account = expected_account)
+
+    rig.diffusers.unload = _scoped_unload
+    rig.engine.unload(expected_account = "owner")
+    assert seen == ["owner"]
+
+
 def test_a_plain_diffusers_load_is_never_unloaded_as_a_fallback(rig):
     # The diffusers singleton is shared: one that the routed engine did not load is not its to free.
     rig.diffusers.begin_load("someone/else")
@@ -543,7 +566,7 @@ def test_generate_signature_is_the_union_of_both_engines(rig):
 
 def test_load_blocker_matrix():
     assert routing.load_blocker() is None
-    assert routing.load_blocker(transformer_quant = "auto", text_encoder_quant = "none") is None
+    assert routing.load_blocker(transformer_quant = "auto", text_encoder_quant = "default") is None
     assert "LoRA" in routing.load_blocker(loras = [("a", 1.0)])
     assert "VAE" in routing.load_blocker(component_files = {"vae_file": "v"})
     assert "int8" in routing.load_blocker(transformer_quant = "int8")

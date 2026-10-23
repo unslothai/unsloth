@@ -257,8 +257,15 @@ def test_native_lora_pick_on_a_mac_is_never_an_mlx_refusal(monkeypatch, value):
 
 
 def test_delegating_precisions_do_not_block_mlx():
-    for quant in (None, "", "auto", "AUTO", "none"):
+    for quant in (None, "", "auto", "AUTO"):
         assert r.mlx_load_blocker(transformer_quant = quant, text_encoder_quant = quant) is None
+
+
+def test_pinned_original_precisions_block_mlx():
+    # none/off pin the released weights; MLX would substitute its own quant plan.
+    for quant in ("none", "off"):
+        assert r.mlx_load_blocker(transformer_quant = quant) is not None
+        assert r.mlx_load_blocker(text_encoder_quant = quant) is not None
 
 
 @pytest.mark.parametrize("value", ["0", "off", "false", "no", "garbage"])
