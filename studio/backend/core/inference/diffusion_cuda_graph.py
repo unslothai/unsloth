@@ -2431,8 +2431,7 @@ def arm_after_placement(
                 stable = placement.mode == "model" and _stable_range(module)
                 modes.append("model_stable" if stable else placement.mode)
                 if placement.mode == "group":
-                    # A prompt encode streams resident groups and pins them again: from now on that re-pin lands
-                    # at the addresses this step records (diffusion_stable_arena.GroupRange).
+                    # Encode re-pins now land at the addresses this step records (diffusion_stable_arena.GroupRange).
                     from .diffusion_stable_arena import want_stable_repin
                     want_stable_repin(module)
         except Exception as exc:  # noqa: BLE001

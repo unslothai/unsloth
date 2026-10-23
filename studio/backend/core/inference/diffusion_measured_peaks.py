@@ -496,11 +496,8 @@ class PeakProbe:
         try:
             import torch
             torch.cuda.synchronize(self.device)
-            # Weights a block-offload re-pin placed in a stable range (diffusion_stable_arena) sit outside the
-            # allocator: on the render that first moves resident groups there, the allocator drops by their size.
-            # Counting the range at both ends keeps that render's peak on the stock scale (an encode-phase peak is
-            # then read high by the mapped bytes, never low). The range's own high-water mark, not what is still
-            # mapped at the end: a model-offload denoiser range is unmapped again before the decode finishes.
+            # Stable-range bytes sit outside the allocator: count their high-water mark (not what is still mapped:
+            # a model-offload range is unmapped before decode ends) so the peak stays on the stock scale.
             peak = (
                 int(torch.cuda.max_memory_allocated(self.device))
                 + _range_peak_bytes(self.device)

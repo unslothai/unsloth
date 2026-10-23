@@ -528,9 +528,7 @@ class ModuleArena:
 
         entries = _entries(module)
         if self.layout is not None and self._stale(entries):
-            # A weight changed on the host since the layout was fixed (a new adapter, a dtype or shape change): the
-            # old range would be mapped in full while those weights move the stock way beside it, at new addresses
-            # every onload. Lay it out again (the range is unmapped between onloads).
+            # Host weights changed (adapter, dtype, shape): re-lay out, else the stale range stays mapped beside them.
             if self.arena is not None:
                 self.arena.close()
             self.arena = None
@@ -691,12 +689,8 @@ def arena_of(module: Any) -> Optional[ModuleArena]:
 # ---------------------------------------------------------------------------------------------------------------------
 # Block offload: stable addresses for the resident groups a prompt encode streams and pins again.
 #
-# A partial or whole-resident block-offloaded denoiser (diffusion_memory._keep_groups_resident) gives back part of its
-# resident groups while a text encoder runs (diffusion_memory.install_encode_release) and pins them again before step 0.
-# The stock re-pin copies each weight into a new caching-allocator block, so the whole-step graph (recorded over the
-# resident groups' addresses) records again on every render that encodes a new prompt. Here such a group's device copy
-# lives in its own reserved range from the first re-pin on: a release unmaps the physical memory (the encoder gets the
-# VRAM back) and the next re-pin maps new memory at the same addresses, so the recorded step keeps replaying.
+# The stock re-pin after an encode release lands at new allocator addresses, re-recording the step graph every new
+# prompt. A reserved range per group unmaps on release and remaps at the same addresses, so the step keeps replaying.
 # Opt out with UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0.
 
 REPIN_ENV = "UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE"
@@ -829,9 +823,7 @@ def _range_for(owner: Any, group: Any, sources: list, device: Any) -> Optional[G
         if rng.layout == layout or rng.arena.mapped:
             # unchanged, or still holding weights (a release that could not move them all out): reused as is
             return rng
-        # The group's host tensors changed since the range was laid out (a LoRA load or unload, a dtype or shape
-        # change): the stale range would be mapped in full while those weights move the stock way beside it, at new
-        # addresses every re-pin. Lay it out again (it is unmapped while the group streams).
+        # Host tensors changed (LoRA, dtype, shape): re-lay out, else the stale range stays mapped beside them.
         rng.arena.close()
         group.__dict__.pop(_REPIN_ATTR, None)
         if held is not None and rng in held:
@@ -914,8 +906,7 @@ def pin_group_in_range(
                 undo.append((t, rebuilt, True))
             placed.add(id(t))
     except BaseException:
-        # Nothing may stay in the range: the caller then unmaps it and moves the whole group the stock way, instead
-        # of leaving the range mapped beside the stock copies.
+        # Leave the range empty so the caller unmaps it and moves the whole group the stock way.
         for t, prev, wrapped in reversed(undo):
             if wrapped:
                 swap_wrapper(t, prev)
