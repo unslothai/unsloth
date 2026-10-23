@@ -28,6 +28,7 @@ MIME_EXT = {
     "audio/ogg": "ogg",
     "audio/flac": "flac",
     "audio/mp4": "m4a",
+    "audio/webm": "weba",
     "video/mp4": "mp4",
     "video/webm": "webm",
     "application/json": "json",
@@ -39,7 +40,7 @@ MIME_EXT = {
 }
 EXT_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "gif": "image/gif",
             "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg", "flac": "audio/flac",
-            "m4a": "audio/mp4", "mp4": "video/mp4", "webm": "video/webm", "json": "application/json",
+            "m4a": "audio/mp4", "weba": "audio/webm", "mp4": "video/mp4", "webm": "video/webm", "json": "application/json",
             "pdf": "application/pdf",
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "txt": "text/plain", "md": "text/markdown", "html": "text/html"}  # fmt: skip
@@ -92,7 +93,12 @@ def sniff_mime(data: bytes) -> Optional[str]:
             else "video/mp4"
         )
     if head[:4] == b"\x1aE\xdf\xa3":
-        return "video/webm"
+        # A browser voice recording is WebM with only an Opus / Vorbis track. Read the codecs from the header only,
+        # before the first Cluster (1F 43 B6 75), so frame bytes can never look like a codec id.
+        cluster = data.find(b"\x1fC\xb6u", 0, 1 << 20)
+        tracks = data[: cluster if cluster > 0 else 65536]
+        audio_only = (b"A_OPUS" in tracks or b"A_VORBIS" in tracks) and b"V_" not in tracks
+        return "audio/webm" if audio_only else "video/webm"
     if head.startswith(b"%PDF-"):
         return "application/pdf"
     if head[:4] == b"PK\x03\x04" and b"word/document.xml" in data:

@@ -399,3 +399,53 @@ def test_mp4_handler_scan_stops_early_on_a_crafted_file():
     started = _time.perf_counter()
     asset_store.sniff_mime(crafted)
     assert _time.perf_counter() - started < 0.5
+
+
+def _webm(video):
+    import io
+    from fractions import Fraction
+
+    av = pytest.importorskip("av")
+    import numpy as np
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format = "webm") as out:
+        vs = None
+        if video:
+            vs = out.add_stream("libvpx", rate = 4)
+            vs.width = vs.height = 32
+            vs.pix_fmt = "yuv420p"
+        a = out.add_stream("libopus", rate = 48000)
+        a.layout = "mono"
+        if vs is not None:
+            for i in range(3):
+                f = av.VideoFrame.from_ndarray(np.zeros((32, 32, 3), np.uint8), format = "rgb24")
+                f.pts, f.time_base = i, Fraction(1, 4)
+                for p in vs.encode(f):
+                    out.mux(p)
+            for p in vs.encode(None):
+                out.mux(p)
+        for k in range(200):
+            fr = av.AudioFrame.from_ndarray(
+                (np.random.rand(1, 960) - 0.5).astype(np.float32), format = "flt", layout = "mono"
+            )
+            fr.sample_rate, fr.pts, fr.time_base = 48000, k * 960, Fraction(1, 48000)
+            for p in a.encode(fr):
+                out.mux(p)
+        for p in a.encode(None):
+            out.mux(p)
+    return buf.getvalue()
+
+
+def test_an_audio_only_webm_recording_is_audio(client):
+    try:
+        audio, clip = _webm(False), _webm(True)
+    except Exception as exc:  # noqa: BLE001 - a PyAV without libopus / libvpx
+        pytest.skip(f"cannot encode WebM here: {exc}")
+    media = client.post("/api/flows/assets?name=memo.webm", content = audio).json()["media"]
+    assert media["kind"] == "audio" and media["mime"] == "audio/webm"
+    assert client.get(media["url"]).content == audio
+    assert (
+        client.post("/api/flows/assets?name=c.webm", content = clip).json()["media"]["kind"]
+        == "video"
+    )

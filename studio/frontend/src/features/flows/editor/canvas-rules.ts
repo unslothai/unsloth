@@ -33,8 +33,27 @@ const MEDIA_EXT: Record<string, "image" | "audio" | "video"> = {
   webm: "video",
 };
 
+// PDF and Word files go to a Document block; plain text, Markdown and HTML stay Text blocks.
+const DOCUMENT_MIMES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const DOCUMENT_EXT = new Set(["pdf", "docx"]);
+
+/** The input block for an uploaded asset's kind (the server sniffs the bytes; the browser's MIME can be wrong). */
+export function inputForAssetKind(kind: string): FileTarget["type"] | null {
+  if (kind === "image" || kind === "audio" || kind === "video")
+    return `input.${kind}`;
+  return kind === "document" ? "input.file" : null;
+}
+
 export interface FileTarget {
-  type: "input.image" | "input.audio" | "input.video" | "input.text";
+  type:
+    | "input.image"
+    | "input.audio"
+    | "input.video"
+    | "input.file"
+    | "input.text";
   via: "asset" | "text";
 }
 
@@ -47,6 +66,8 @@ export function inputForFile(name: string, mime: string): FileTarget | null {
       ? kind
       : MEDIA_EXT[ext];
   if (media) return { type: `input.${media}`, via: "asset" };
+  if (DOCUMENT_MIMES.has(mime) || DOCUMENT_EXT.has(ext))
+    return { type: "input.file", via: "asset" };
   if (kind === "text" || mime === "application/json" || TEXT_EXT.test(name))
     return { type: "input.text", via: "text" };
   return null;

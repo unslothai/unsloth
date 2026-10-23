@@ -6,7 +6,11 @@ import { uploadAsset } from "../api";
 import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowNode } from "../types";
-import { MAX_TEXT_BYTES, inputForFile } from "./canvas-rules";
+import {
+  MAX_TEXT_BYTES,
+  inputForAssetKind,
+  inputForFile,
+} from "./canvas-rules";
 import { createNode } from "./node-factory";
 
 /** Turn files into input blocks at `at` (flow coordinates), stacked downwards. Returns the new node ids. */
@@ -24,14 +28,20 @@ export async function addFileNodes(
       skipped += 1;
       continue;
     }
-    const node: FlowNode | null = createNode(target.type, [
+    const position: [number, number] = [
       Math.round(at.x - 130),
       Math.round(at.y - 20 + i * 140),
-    ]);
+    ];
+    let node: FlowNode | null = createNode(target.type, position);
     if (!node) continue;
     try {
       if (target.via === "asset") {
-        node.params = { ...node.params, asset: await uploadAsset(file) };
+        const asset = await uploadAsset(file);
+        // The server reads the bytes: an audio-only WebM or MP4 the browser called video gets the block it fits.
+        const fits = inputForAssetKind(asset.kind);
+        if (fits && fits !== target.type) node = createNode(fits, position);
+        if (!node) continue;
+        node.params = { ...node.params, asset };
       } else {
         if (file.size > MAX_TEXT_BYTES) {
           toast.error(`${file.name} is too large for a Text block`);

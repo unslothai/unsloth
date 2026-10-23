@@ -8,7 +8,7 @@ import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { dragHasFiles, inputForFile } = await import(
+const { dragHasFiles, inputForAssetKind, inputForFile } = await import(
   "../src/features/flows/editor/canvas-rules.ts"
 );
 const { outputDownload, quickModelParam, toolbarNodeId } = await import(
@@ -104,4 +104,17 @@ test("generated gallery media downloads through its authenticated /api/ route", 
     body,
     /return `\/api\/inference\/\$\{gallery\}\/gallery\/\$\{encodeURIComponent\(id\)\}\/file`;/,
   );
+});
+
+
+test("PDF and Word drops become Document blocks, and the uploaded kind picks the block", () => {
+  assert.equal(inputForFile("report.pdf", "application/pdf")?.type, "input.file");
+  assert.equal(inputForFile("notes.docx", "")?.type, "input.file");
+  assert.equal(inputForFile("notes.md", "")?.type, "input.text");
+  // A recording the browser called video/webm that the server read as audio gets an Audio block.
+  assert.equal(inputForAssetKind("audio"), "input.audio");
+  assert.equal(inputForAssetKind("document"), "input.file");
+  assert.equal(inputForAssetKind("file"), null);
+  const src = readSrc("features/flows/editor/file-drop.ts");
+  assert.match(src, /const fits = inputForAssetKind\(asset\.kind\);\s*if \(fits && fits !== target\.type\) node = createNode\(fits, position\);/);
 });
