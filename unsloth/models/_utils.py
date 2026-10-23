@@ -7642,7 +7642,6 @@ def _is_accelerate_forward(module: torch.nn.Module, forward) -> bool:
 
 def _is_class_forward(module: torch.nn.Module, forward) -> bool:
     import types
-
     return (
         isinstance(forward, types.MethodType)
         and forward.__self__ is module
@@ -7653,18 +7652,27 @@ def _is_class_forward(module: torch.nn.Module, forward) -> bool:
 def _is_require_grads_hook(hook) -> bool:
     """transformers' enable_input_require_grads hook (make_inputs_require_grads, handles kept on the model) or
     PEFT's fallback (make_inputs_require_grad, no handle kept). Both are re-registered after the QAT swap."""
-    return getattr(hook, "__name__", None) in ("make_inputs_require_grads", "make_inputs_require_grad")
+    return getattr(hook, "__name__", None) in (
+        "make_inputs_require_grads",
+        "make_inputs_require_grad",
+    )
 
 
 def _unowned_require_grads_hooks(originals: Dict[str, torch.nn.Module]):
     """PEFT's make_inputs_require_grad hooks per embedding: nobody holds their handle, so they can be re-registered."""
     return {
-        fqn: [h for h in module._forward_hooks.values() if getattr(h, "__name__", None) == "make_inputs_require_grad"]
+        fqn: [
+            h
+            for h in module._forward_hooks.values()
+            if getattr(h, "__name__", None) == "make_inputs_require_grad"
+        ]
         for fqn, module in originals.items()
     }
 
 
-def _reregister_unowned_require_grads_hooks(model: torch.nn.Module, originals, hooks_by_fqn) -> None:
+def _reregister_unowned_require_grads_hooks(
+    model: torch.nn.Module, originals, hooks_by_fqn
+) -> None:
     for fqn, hooks in hooks_by_fqn.items():
         if not hooks:
             continue
@@ -7714,7 +7722,9 @@ def _flat_accelerate_hooks(hook):
 def _offload_hook(module: torch.nn.Module):
     """The offloading AlignDevicesHook on module, also inside a SequentialHook, else None."""
     hooks = [
-        h for h in _flat_accelerate_hooks(getattr(module, "_hf_hook", None)) if getattr(h, "offload", False)
+        h
+        for h in _flat_accelerate_hooks(getattr(module, "_hf_hook", None))
+        if getattr(h, "offload", False)
     ]
     return hooks[0] if hooks else None
 
@@ -7770,7 +7780,12 @@ def _exclude_unsupported_qat_embeddings(model: torch.nn.Module, torchao_config) 
     if not excluded:
         return
     torchao_config.base_config_and_filter_fns = [
-        (c, f if f is None or isinstance(f, _SkipExcludedEmbeddings) else _SkipExcludedEmbeddings(f))
+        (
+            c,
+            f
+            if f is None or isinstance(f, _SkipExcludedEmbeddings)
+            else _SkipExcludedEmbeddings(f),
+        )
         for c, f in configs
     ]
     warnings.warn(
@@ -7836,7 +7851,9 @@ def _offload_hook_problem(module: torch.nn.Module):
     return None
 
 
-def _check_offloaded_embeddings(originals: Dict[str, torch.nn.Module], base_config_and_filter_fns) -> None:
+def _check_offloaded_embeddings(
+    originals: Dict[str, torch.nn.Module], base_config_and_filter_fns
+) -> None:
     """Refuse, before QAT replaces anything, an offloaded embedding selected for QAT whose real weight could not
     follow it. A filter of None selects Linears only, so it never selects an embedding."""
     filters = [f for _, f in base_config_and_filter_fns if f is not None]
@@ -7870,7 +7887,6 @@ def _move_dispatch_hook(dst: torch.nn.Module, src: torch.nn.Module) -> None:
         original_devices = dict(getattr(offload_hook, "original_devices", {}) or {})
     try:
         from accelerate.hooks import add_hook_to_module
-
         add_hook_to_module(dst, hook)
         if offload_hook is not None and original_devices:
             offload_hook.original_devices = original_devices
@@ -7961,7 +7977,9 @@ def _restore_fake_quantized_embedding_subclasses(
         if type(module) is not FakeQuantizedEmbedding:
             continue
         if type(original) is torch.nn.Embedding:
-            _move_dispatch_hook(module, original)  # torchao's own class already fake quantizes the lookup
+            _move_dispatch_hook(
+                module, original
+            )  # torchao's own class already fake quantizes the lookup
             continue
         module.__class__ = _fake_quantized_embedding_class(type(original))
         _copy_embedding_subclass_state(module, original)
@@ -10689,11 +10707,19 @@ def widen_target_regex_to_expert_submodules(
         # Requested expert siblings (Mixtral's router gate), as PEFT suffix matching would.
         for name, module in model.named_modules():
             parent, _, leaf = name.rpartition(".")
-            if leaf in requested and any(re.fullmatch(p, parent) for p in native) and (
-                isinstance(module, torch.nn.Linear)
-                or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+            if (
+                leaf in requested
+                and any(re.fullmatch(p, parent) for p in native)
+                and (
+                    isinstance(module, torch.nn.Linear)
+                    or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+                )
             ):
-                siblings.add(r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")))
+                siblings.add(
+                    r"\.".join(
+                        r"\d+" if part.isdigit() else re.escape(part) for part in name.split(".")
+                    )
+                )
     if not parents:
         return target_modules, detect_targets, []
     # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
