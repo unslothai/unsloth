@@ -4481,7 +4481,11 @@ _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 
 def _is_tensor_subclass_weight(t):
     """A wrapper tensor subclass weight such as torchao's Float8Tensor (load_in_fp8). DDP's start-up
-    broadcast flattens every parameter (reshape to [-1]), which Float8Tensor does not implement."""
+    broadcast flattens every parameter (reshape to [-1]), which Float8Tensor does not implement.
+    torchao.float8's training weights (WeightWithDynamicFloat8CastTensor) implement it and DDP trains
+    them, so they are not counted, as in fsdp2_native's _float8_params."""
+    if type(t).__module__.startswith("torchao.float8"):
+        return False
     if any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
         return True
     try:

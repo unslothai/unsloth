@@ -272,3 +272,26 @@ def test_trainable_float8tensor_is_refused():
     native = _load_native()
     with pytest.raises(NotImplementedError, match = "trainable float8"):
         native._float8_params(_fp8_llama(trainable_fp8 = True))
+
+
+def test_float8_training_weights_stay_with_ddp():
+    # torchao.float8's training weight implements the flatten DDP's broadcast needs, and plain DDP
+    # trains it: neither left out of DDP nor refused, as fsdp2_native leaves it to fully_shard.
+    fsdp_utils = pytest.importorskip("torchao.float8.fsdp_utils")
+    from torchao.float8.float8_training_tensor import LinearMMConfig
+
+    lu, _ = _ddp_helpers()
+    lin = torch.nn.Linear(8, 8, bias = False)
+    lin.weight = torch.nn.Parameter(
+        fsdp_utils.WeightWithDynamicFloat8CastTensor(
+            lin.weight.detach().clone(), LinearMMConfig(), torch.float8_e4m3fn
+        )
+    )
+    assert lu._is_tensor_subclass_weight(lin.weight) is False
+    assert lu._frozen_tensor_subclass_names_for_ddp(lin, refuse_trainable = True) == []
+    from torchao.quantization import Float8Tensor, PerRow
+
+    frozen = torch.nn.Parameter(
+        Float8Tensor.from_hp(torch.randn(8, 8), granularity = PerRow()), requires_grad = False
+    )
+    assert lu._is_tensor_subclass_weight(frozen) is True
