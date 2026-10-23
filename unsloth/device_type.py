@@ -241,11 +241,13 @@ def _xpu_launch_indices():
     to the visible count), else None. Unsloth is imported before a rank selects its XPU, so the
     current device then reads XPU 0 on every rank; judging the ranks' devices together keeps every
     rank on one dtype and is never narrower than the all-visible rule."""
+
     def _env_int(name):
         try:
             return int(os.environ.get(name, ""))
         except ValueError:
             return None
+
     local_world = _env_int("LOCAL_WORLD_SIZE")
     world = _env_int("WORLD_SIZE")
     if (local_world or 1) <= 1 and (world or 1) <= 1:
