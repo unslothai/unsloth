@@ -36,7 +36,9 @@ def _host(
     if caps is None:
         caps = {d["index"]: (8, 6) for d in devices}
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(caps))
+    monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: set())
     monkeypatch.setattr(hw, "IS_ROCM", rocm)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: list(visible))
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: order_matches)
     monkeypatch.setattr(hw, "_integrated_cuda_rows", lambda ids: ({}, "index"))
@@ -57,10 +59,15 @@ def test_auto_maps_physical_ids_through_the_mask(monkeypatch):
     assert dd.resolve_auto_cuda_ordinal() == 1
 
 
-def test_auto_ties_keep_the_lowest_ordinal(monkeypatch):
-    # An idle uniform host stays on card 0, MiB-level noise included.
+def test_auto_ties_keep_the_current_device(monkeypatch):
+    # An idle uniform host stays on card 0, MiB-level noise included, and as None (no explicit pin).
     _host(monkeypatch, [0, 1, 2], [_dev(0, 80.0, 0.6), _dev(1, 80.0, 0.5), _dev(2, 80.0, 0.6)])
-    assert dd.resolve_auto_cuda_ordinal() == 0
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+def test_auto_ties_among_other_cards_keep_the_lowest_ordinal(monkeypatch):
+    _host(monkeypatch, [0, 1, 2], [_dev(0, 80.0, 70.0), _dev(1, 80.0, 0.5), _dev(2, 80.0, 0.6)])
+    assert dd.resolve_auto_cuda_ordinal() == 1
 
 
 @pytest.mark.parametrize(
@@ -87,10 +94,13 @@ def test_auto_never_raises(monkeypatch):
     assert dd.resolve_auto_cuda_ordinal() is None
 
 
-def test_auto_keeps_the_current_device_when_cuda_order_is_not_smi_order(monkeypatch):
-    # CUDA_DEVICE_ORDER=FASTEST_FIRST: nvidia-smi rows are not torch ordinals, so no ranking.
+@pytest.mark.parametrize("identical, expected", [(True, None), (False, 0), (None, 0)])
+def test_auto_does_not_rank_when_cuda_order_is_not_smi_order(monkeypatch, identical, expected):
+    # CUDA_DEVICE_ORDER=FASTEST_FIRST: nvidia-smi rows are not torch ordinals, so no ranking. Identical
+    # cards keep None; otherwise card 0 stays explicit so a pooled thread cannot preflight elsewhere.
     _host(monkeypatch, [0, 1], [_dev(0, 8.0, 1.0), _dev(1, 24.0, 0.5)], order_matches = False)
-    assert dd.resolve_auto_cuda_ordinal() is None
+    monkeypatch.setattr(hw, "_cuda_cards_identical", lambda gpu_ids = None: identical)
+    assert dd.resolve_auto_cuda_ordinal() is expected
 
 
 def test_auto_never_falls_back_to_torch_telemetry(monkeypatch):
@@ -107,6 +117,9 @@ def _route(monkeypatch, device = "cuda"):
         dd, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = device)
     )
     monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: 1)
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: True)
+    # The event-loop gate reads live detection state; defer to the stubbed worker gate.
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: None)
     monkeypatch.setattr(dd, "resolve_selected_cuda_ordinal", lambda ids, **_k: min(ids))
     return routes._selected_gpu_ordinal
 
@@ -187,7 +200,7 @@ def test_direct_backend_loads_rank_automatic_too(rel):
         for node in ast.walk(ast.parse(src))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert "resolve_auto_cuda_ordinal" in calls
+    assert "auto_cuda_ordinal_for_load" in calls
 
 
 def test_auto_skips_a_freer_card_older_than_the_current_one(monkeypatch):
@@ -195,6 +208,7 @@ def test_auto_skips_a_freer_card_older_than_the_current_one(monkeypatch):
     _host(
         monkeypatch, [0, 1], [_dev(0, 24.0, 20.0), _dev(1, 8.0, 0.0)], caps = {0: (8, 6), 1: (6, 1)}
     )
+    # Mixed cards keep card 0 explicit.
     assert dd.resolve_auto_cuda_ordinal() == 0
 
 
@@ -225,6 +239,8 @@ def test_route_pins_its_automatic_decision_for_the_backend(monkeypatch):
     )
     answers = iter([None, 1])
     monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: next(answers))
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: True)
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: None)
     real = dd.__dict__["_PLANNED_ORDINAL"]
 
     async def load():

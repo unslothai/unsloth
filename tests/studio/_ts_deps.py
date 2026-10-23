@@ -21,6 +21,10 @@ _IDENT_RE = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*)")
 _IMPORT_RE = re.compile(
     r"^import\s+(?P<clause>[^;]*?)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
+_TYPE_REEXPORT_RE = re.compile(
+    r"^export\s+type\s+\{(?P<names>[^}]*)\}\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
+)
+_TYPE_REEXPORT_NAME_RE = re.compile(r"([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?")
 _REEXPORT_RE = re.compile(
     r"^export\s+(?P<clause>\{[^}]*\}|\*)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
@@ -32,6 +36,29 @@ _FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*"
     r"(?:async\s+function\b|function\b|(?:async\s*)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)"
 )
+_FUNCTION_KEYWORD_INIT_RE = re.compile(r"=\s*(?:async\s+)?function\b")
+
+
+def _invokes_its_function(text: str) -> bool:
+    """`const v = function () {...}(...)` calls the function on load; `{...} as Fn` and `{...};` do not."""
+    blanked = _blank_noise(text)
+    found = _FUNCTION_KEYWORD_INIT_RE.search(blanked)
+    if found is None:
+        return False
+    start = blanked.find("{", found.end())
+    if start == -1:
+        return False
+    depth = 0
+    for i in range(start, len(blanked)):
+        if blanked[i] in "{([":
+            depth += 1
+        elif blanked[i] in "})]":
+            depth -= 1
+            if depth == 0:
+                return blanked[i + 1 :].lstrip().startswith(("(", ")("))
+    return False
+
+
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -250,6 +277,23 @@ class _Module:
             )
         self.imports = self._parse(_IMPORT_RE)
         self.reexports = self._parse(_REEXPORT_RE)
+        # Type-only re-exports (`export type { A }`, `export { type A }`) name erased types; never lifted.
+        self.type_reexports = {
+            (alias or name): (match.group("spec"), name)
+            for match in _TYPE_REEXPORT_RE.finditer(self.uncommented)
+            for name, alias in _TYPE_REEXPORT_NAME_RE.findall(match.group("names"))
+        }
+        for match in _REEXPORT_RE.finditer(self.uncommented):
+            braces = re.search(r"\{([^}]*)\}", match.group("clause"), re.DOTALL)
+            for entry in braces.group(1).split(",") if braces else ():
+                inline = re.fullmatch(
+                    r"\s*type\s+([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*", entry
+                )
+                if inline:
+                    self.type_reexports[inline.group(2) or inline.group(1)] = (
+                        match.group("spec"),
+                        inline.group(1),
+                    )
 
     def _parse(self, pattern: re.Pattern[str]) -> dict[str, tuple[str, str]]:
         """``local name -> (module specifier, exported name)`` for one statement kind."""
@@ -414,6 +458,29 @@ def resolve_dependencies(
     order: list[str] = []
     seen: set[tuple[Path, str]] = set()
 
+    def type_only(
+        name: str,
+        origin: Path,
+        hops: int = 0,
+    ) -> bool:
+        """``name`` as seen from ``origin`` is a type or interface, which Node erases."""
+        home = module(origin)
+        if name in home.declarations:
+            return all(kind in {"type", "interface"} for kind, _ in home.declarations[name])
+        target = home.imports.get(name) or home.reexports.get(name) or home.type_reexports.get(name)
+        if target is None or hops > 8:
+            return False
+        path = _resolve_module(target[0], origin, root)
+        if path is None and target[0].startswith((".", _ALIAS)):
+            # Lifting never follows into a component file, but a type declared there is still erased.
+            base = (
+                root / target[0][len(_ALIAS) :]
+                if target[0].startswith(_ALIAS)
+                else origin.parent / target[0]
+            )
+            path = next((c for c in (Path(f"{base}.tsx"), base / "index.tsx") if c.is_file()), None)
+        return path is not None and type_only(target[1], path, hops + 1)
+
     def pull(name: str, origin: Path) -> None:
         """Emit ``name`` as resolved from ``origin``, dependencies first."""
         if name in defined or (origin, name) in seen:
@@ -446,11 +513,11 @@ def resolve_dependencies(
                 reference in home.declarations
                 or reference in home.imports
                 or reference in home.reexports
-            ):
+            ) and not type_only(reference, origin):
                 wanted.add(reference)
             pull(reference, origin)
         kind = home.kind(name) or "const"
-        if _FUNCTION_DECL_RE.match(text.lstrip()):
+        if _FUNCTION_DECL_RE.match(text.lstrip()) and not _invokes_its_function(text):
             kind = "function"
         pulled[name] = (
             kind,
@@ -472,10 +539,22 @@ def resolve_dependencies(
     # one from here is a TDZ error rather than a resolution.
     eager = {"const", "let", "var", "class"}
     while True:
+        # Any reference to a half-resolved lazy helper dooms an eager declaration: whether it is called on load is
+        # not decided, and a load-time crash costs more than a dropped declaration.
+        partial: set[str] = set()
+        while True:
+            grown = {
+                name
+                for name, (kind, _, wanted) in pulled.items()
+                if kind not in eager and not wanted <= set(pulled) - partial
+            }
+            if grown == partial:
+                break
+            partial = grown
         doomed = {
             name
             for name, (kind, _, wanted) in pulled.items()
-            if kind in eager and not wanted <= set(pulled)
+            if kind in eager and not wanted <= set(pulled) - partial
         }
         if not doomed:
             break

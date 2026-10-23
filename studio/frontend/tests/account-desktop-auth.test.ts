@@ -34,6 +34,7 @@ function fixture(t: { after(fn: () => void): void }, tauri = true) {
   let invokeCalls = 0;
   let refreshCalls = 0;
   let refreshSucceeds = false;
+  let refreshOutcome: "ok" | "rejected" | "unavailable" | null = null;
   let statusCalls = 0;
   let status: {
     initialized: boolean;
@@ -56,6 +57,13 @@ function fixture(t: { after(fn: () => void): void }, tauri = true) {
       access = "refreshed-access";
       refresh = "refreshed-refresh";
       return true;
+    },
+    refreshSessionOutcome: async () => {
+      if (refreshOutcome) {
+        refreshCalls++;
+        return refreshOutcome;
+      }
+      return (await session.refreshSession()) ? "ok" : "rejected";
     },
   };
   const apiBase = { isTauri: tauri, apiUrl: (path: string) => path };
@@ -112,6 +120,9 @@ function fixture(t: { after(fn: () => void): void }, tauri = true) {
     setResponse: (value: unknown) => { response = value; },
     setStatus: (value: typeof status) => { status = value; },
     setRefreshSucceeds: (value: boolean) => { refreshSucceeds = value; },
+    setRefreshOutcome: (value: "ok" | "rejected" | "unavailable" | null) => {
+      refreshOutcome = value;
+    },
     get access() { return access; },
     get refresh() { return refresh; },
     get invokeCalls() { return invokeCalls; },
@@ -160,6 +171,30 @@ test("forced multi-account startup opens login and releases the startup screen w
   await f.guards.requireGuest();
   await assert.rejects(f.guards.requireAuth(), { to: "/login" });
   await assert.rejects(f.guards.requirePasswordChangeFlow(), { to: "/login" });
+});
+
+test("a managed session survives forced startup while its refresh gets no answer", async (t) => {
+  const f = fixture(t);
+  f.session.storeAuthTokens("alice-access", "alice-refresh");
+  f.setResponse(multi);
+  f.setRefreshOutcome("unavailable");
+  assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
+  assert.equal(f.access, "alice-access");
+  assert.equal(f.refresh, "alice-refresh");
+  assert.deepEqual(f.navigations, []);
+  assert.equal(f.auth.getTauriAuthFailure(), null);
+  await f.guards.requireAuth();
+});
+
+test("a managed session whose refresh is rejected at startup still opens login", async (t) => {
+  const f = fixture(t);
+  f.session.storeAuthTokens("alice-access", "alice-refresh");
+  f.setResponse(multi);
+  f.setRefreshOutcome("rejected");
+  assert.equal(await f.auth.tauriAutoAuth({ force: true }), true);
+  assert.equal(f.access, null);
+  assert.equal(f.refresh, null);
+  assert.deepEqual(f.navigations, [{ to: "/login", replace: true }]);
 });
 
 test("ordinary multi-account API recovery never reports an authenticated session", async (t) => {

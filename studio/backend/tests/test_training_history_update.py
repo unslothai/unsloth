@@ -91,7 +91,6 @@ def test_update_run_whitespace_clears_display_name(monkeypatch: pytest.MonkeyPat
 
 
 def test_get_run_detail_includes_preview_fields(monkeypatch: pytest.MonkeyPatch):
-    # Regression: detail/update must pass the sharing flag into _preview_fields, else a 500 TypeError.
     monkeypatch.setattr(training_history, "get_run", lambda run_id: dict(BASE_RUN))
     monkeypatch.setattr(training_history, "get_run_metrics", lambda run_id: {})
     monkeypatch.setattr(training_history, "can_resume_run", lambda run: False)
@@ -102,7 +101,6 @@ def test_get_run_detail_includes_preview_fields(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert detail.run.id == "run-1"
-    # Not a previewable dir, so no signed ref - but the field is built without error.
     assert detail.run.preview_sig is None
 
 

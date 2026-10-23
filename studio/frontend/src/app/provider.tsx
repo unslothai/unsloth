@@ -15,9 +15,14 @@ import {
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { TitleTooltipLayer } from "@/components/ui/title-tooltip";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
-import { fetchDeviceType } from "@/config/env";
+import {
+  fetchDeviceType,
+  forgetMeasuredVerdict,
+  usePlatformStore,
+} from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
@@ -52,6 +57,7 @@ import { useDocumentFlag } from "@/lib/document-flag";
 import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
+  COMPOSER_CLEARANCE_VAR,
   cornerInsetScope,
   getToastOffsets,
   insetPastChatSettings,
@@ -122,6 +128,7 @@ const STACK_SHADOW_GUTTER_LEFT = 28;
 const STACK_CARD_INSET_RIGHT = 16;
 // Rail stays flush with the corner; only its padding grows past the open Run settings panel.
 const STACK_CARD_INSET_RIGHT_PAST_PANEL = `calc(${STACK_CARD_INSET_RIGHT}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`;
+const STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER = `calc(${STACK_SHADOW_GUTTER_BOTTOM}px + var(${COMPOSER_CLEARANCE_VAR}, 0px))`;
 
 function BlockingScreenFlag() {
   useDocumentFlag("data-blocking-screen-open", true);
@@ -554,7 +561,7 @@ function TauriUpdateLayer({
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
       style={{
         paddingTop: STACK_SHADOW_GUTTER_TOP,
-        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER,
         paddingLeft: STACK_SHADOW_GUTTER_LEFT,
         paddingRight: STACK_CARD_INSET_RIGHT_PAST_PANEL,
         zIndex: Z_LAYER.OVERLAY_STACK,
@@ -715,13 +722,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // Through a ref, not a dependency: startRepair is rebuilt on every render.
   const startRepairRef = useRef(startRepair);
   startRepairRef.current = startRepair;
+  const [upgradingToFull, setUpgradingToFull] = useState(false);
   const repairController = useMemo(
     () => ({
-      repairInstall: () => startRepairRef.current({ forceInstaller: true }),
+      repairInstall: () => {
+        setUpgradingToFull(usePlatformStore.getState().chatOnlyReason === "no_torch");
+        return startRepairRef.current({ forceInstaller: true });
+      },
       isExternalServer,
     }),
     [isExternalServer],
   );
+  if (upgradingToFull && status === "running") setUpgradingToFull(false);
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);
   const hasEnteredAppModeRef = useRef(false);
@@ -888,8 +900,20 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     };
   }, [status, desktopAuthRetry]);
 
+  // Set once a backend that already answered goes away: the next one measures its hardware again.
+  const servedRef = useRef(false);
+  const verdictStaleRef = useRef(false);
+  useEffect(() => {
+    if (status === "running") servedRef.current = true;
+    else if (servedRef.current) verdictStaleRef.current = true;
+  }, [status]);
+
   useEffect(() => {
     if (!isTauri || status !== "running" || !desktopAuthReady) return;
+    if (verdictStaleRef.current) {
+      verdictStaleRef.current = false;
+      forgetMeasuredVerdict();
+    }
     void fetchDeviceType({ force: true }).catch(() => undefined);
   }, [status, desktopAuthReady]);
 
@@ -932,7 +956,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
             paddingTop: STACK_SHADOW_GUTTER_TOP,
-            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER,
             paddingLeft: STACK_SHADOW_GUTTER_LEFT,
             paddingRight: STACK_CARD_INSET_RIGHT_PAST_PANEL,
             zIndex: Z_LAYER.OVERLAY_STACK,
@@ -1003,6 +1027,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             progressDetail={startupProgressDetail}
             startupMessage={startupMessage}
             elevationPackages={elevationPackages}
+            upgradingToFull={upgradingToFull}
             onInstall={startInstall}
             onRetry={retry}
             onRetryInstall={retryInstall}
@@ -1179,6 +1204,7 @@ export function AppProvider({ children }: AppProviderProps) {
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
+        <TitleTooltipLayer />
         <AppearanceCustomizationEffect />
         <LowDeviceScaleEffect />
         <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />

@@ -54,6 +54,8 @@ import pytest
 
 # A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+# A fake CPU host must not take the Vulkan route through this machine's real GPUs.
+os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
 
 
 @pytest.fixture(autouse = True)
@@ -166,6 +168,9 @@ def _install_device_type_stub(name: str) -> None:
     stub.hip_visible_archs = lambda: []
     stub.cuda_visible_capabilities = lambda *a, **k: []
     stub.cuda_gate_capabilities = lambda: []
+    stub.cuda_order_mismatch_names = lambda: []
+    stub.xpu_supports_native_bf16 = lambda: True
+    stub.zoo_shares_xpu_bf16 = lambda: False
     sys.modules[name] = stub
 
 
@@ -197,3 +202,14 @@ def _apply_upstream_import_fixes_for_tests() -> None:
 
 
 _apply_upstream_import_fixes_for_tests()
+
+
+@pytest.fixture(scope = "session")
+def _kernel_lock_dir(tmp_path_factory):
+    return str(tmp_path_factory.mktemp("kernel-locks"))
+
+
+@pytest.fixture(autouse = True)
+def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
+    # Tests never take (or create) the environment's real kernel install locks.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)

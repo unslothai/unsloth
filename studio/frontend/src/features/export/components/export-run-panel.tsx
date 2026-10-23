@@ -122,6 +122,8 @@ export interface ExportRunPanelProps {
   onClose: () => void;
   /** Decision model: output goes to the run folder's gguf/ only; this note replaces the destination picker. */
   decisionNote?: string;
+  /** REAP expert pruning on this export, e.g. "25% of experts removed (96 of 128 kept)"; hidden when null. */
+  reapLabel?: string | null;
 }
 
 export function ExportRunPanel(props: ExportRunPanelProps) {
@@ -139,6 +141,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     saveDirectoryOverridden,
     onSaveDirectoryChange,
     decisionNote,
+    reapLabel,
     hfUsername,
     onHfUsernameChange,
     modelName,
@@ -218,6 +221,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const summaryFormats = (summary?.mergedFormats ?? []).map(
     (v) => findMergedFormat(v)?.label ?? v,
   );
+  const summaryReap = summary ? (summary.reapLabel ?? null) : (reapLabel ?? null);
   const showProgress = isExporting || isTerminal;
   const hubRepoMissing =
     destination === "hub" &&
@@ -486,7 +490,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       )}
 
       {/* Summary */}
-      <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
+      <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
         <div className="flex justify-between">
           <span>Base Model</span>
           <span className="font-medium text-foreground">
@@ -518,6 +522,14 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <span>Quantizations</span>
             <span className="font-medium text-foreground">
               {summaryQuants.join(", ")}
+            </span>
+          </div>
+        )}
+        {summaryReap && (
+          <div className="flex justify-between gap-3">
+            <span>Expert pruning</span>
+            <span className="font-medium text-foreground text-right">
+              REAP, {summaryReap}
             </span>
           </div>
         )}

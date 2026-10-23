@@ -115,9 +115,7 @@ test("appending past the cap still keeps the tail", () => {
   assert.ok(!state.lines.includes("first"));
 });
 
-// A request that opens and never answers is the failure the viewer has to
-// survive: the auth client hands `init` to fetch and adds no timeout, so every
-// awaited request needs the backstop, not just the tail read.
+// authFetch adds no timeout, so every awaited request needs the backstop.
 function neverAnswers(signal: AbortSignal): Promise<never> {
   return new Promise((_resolve, reject) => {
     const fail = () => {
@@ -125,7 +123,6 @@ function neverAnswers(signal: AbortSignal): Promise<never> {
       error.name = "AbortError";
       reject(error);
     };
-    // fetch rejects straight away when handed an already aborted signal.
     if (signal.aborted) fail();
     else signal.addEventListener("abort", fail);
   });
@@ -141,10 +138,6 @@ test("a request that never answers is cut off by the backstop", async () => {
 });
 
 test("a backstop rejection is not mistaken for a caller cancellation", async () => {
-  // The timer aborts the SAME controller an unmount uses, so both arrived as an
-  // AbortError and the poll loop swallowed them alike. A hung tunnel then left
-  // the pane stale with no notice at all, which is the failure this viewer is
-  // supposed to make visible.
   await assert.rejects(
     () => withRequestTimeout(neverAnswers, 20),
     (error: Error) => isRequestTimeout(error) && !isAbort(error),
@@ -165,9 +158,6 @@ test("a request that answers in time is untouched by the backstop", async () => 
 });
 
 test("the source rescan cannot freeze the poll loop behind it", async () => {
-  // The loop awaits the rescan BEFORE the tail read, so an unanswered /sources
-  // used to hang the whole tick: no poll, no reschedule, a pane that stops
-  // updating while still looking live.
   let polls = 0;
   let ticks = 0;
   const rescan = async () => {
@@ -202,7 +192,6 @@ test("the caller's signal still cancels, and the timer does not outlive a win", 
     (error: Error) => error.name === "AbortError",
   );
 
-  // An already aborted caller signal must not let the request start unguarded.
   const alreadyGone = new AbortController();
   alreadyGone.abort();
   await assert.rejects(
@@ -210,7 +199,6 @@ test("the caller's signal still cancels, and the timer does not outlive a win", 
     (error: Error) => error.name === "AbortError",
   );
 
-  // A request that wins leaves nothing behind that could abort a later one.
   let seen: AbortSignal | null = null;
   const value = await withRequestTimeout(async (signal) => {
     seen = signal;
@@ -222,7 +210,6 @@ test("the caller's signal still cancels, and the timer does not outlive a win", 
 });
 
 test("a response for the source the user just left is dropped", () => {
-  // A manual refresh of A, answered after the picker moved to B.
   assert.equal(
     isPageStale({
       requestSelection: 1,
@@ -232,7 +219,6 @@ test("a response for the source the user just left is dropped", () => {
     }),
     true,
   );
-  // A -> B -> A: the id matches again, but the cursor and buffer were reset.
   assert.equal(
     isPageStale({
       requestSelection: 1,
@@ -242,7 +228,6 @@ test("a response for the source the user just left is dropped", () => {
     }),
     true,
   );
-  // The ordinary poll, and the unset source the server answers with its default.
   assert.equal(
     isPageStale({
       requestSelection: 2,
@@ -261,7 +246,6 @@ test("a response for the source the user just left is dropped", () => {
     }),
     false,
   );
-  // A server that answered with a different file than the one asked for.
   assert.equal(
     isPageStale({
       requestSelection: 2,
@@ -276,12 +260,10 @@ test("a response for the source the user just left is dropped", () => {
 test("the skipped-lines warning outlives the poll that raised it", () => {
   const dropped = nextDroppedState(false, { droppedBytes: 4096, reset: false });
   assert.equal(dropped, true);
-  // The next quiet poll: the gap is still in the buffer, so the warning stays.
   assert.equal(
     nextDroppedState(dropped, { droppedBytes: 0, reset: false }),
     true,
   );
-  // A reset replaces everything on screen with a fresh tail.
   assert.equal(
     nextDroppedState(dropped, { droppedBytes: 0, reset: true }),
     false,
@@ -293,10 +275,7 @@ test("the skipped-lines warning outlives the poll that raised it", () => {
 });
 
 test("the deadline fires even when the work ignores the abort", async () => {
-  // authFetch awaits refreshSession() on a 401 and hands it no signal, so
-  // aborting settled nothing: the promise stayed pending, the caller's
-  // in-flight guard stayed pinned and the pane froze. Racing the deadline is
-  // what makes the backstop a backstop.
+  // authFetch awaits refreshSession() without a signal, so only racing the deadline unblocks it.
   const deaf = () => new Promise<never>(() => {});
   const started = Date.now();
   await assert.rejects(

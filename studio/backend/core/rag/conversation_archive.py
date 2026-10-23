@@ -408,6 +408,7 @@ def archive_turns(
     conn = None
     try:
         count = embeddings.token_counter(model)
+        chunk_limit = None
         conn = rag_db.get_connection()
         # What the query side will ask for. Only a prediction until the encode reports what it actually used, so the
         # authoritative check happens under the write lock.
@@ -441,9 +442,11 @@ def archive_turns(
                 )
                 _widen_span(conn, scope, digest, span)
                 continue
+            if chunk_limit is None:
+                chunk_limit = embeddings.chunk_tokens(model)
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
-                max_tokens = config.CHUNK_TOKENS,
+                max_tokens = chunk_limit,
                 overlap = config.CHUNK_OVERLAP,
                 count = count,
             )
@@ -1128,6 +1131,30 @@ def _flushes_local_pair(part: dict) -> bool:
     return part.get("result") is not None
 
 
+def _with_attachments(message: dict):
+    """Content plus attachments, as `collectTextParts` (chat-adapter.ts) sends it; else the turn takes `_fallback_ordinal`."""
+    content = message.get("content")
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list) or str(message.get("role") or "") == "assistant":
+        return content
+    attached = [
+        part
+        for attachment in attachments
+        if isinstance(attachment, dict)
+        and attachment.get("mcpToolOnly") is not True
+        and isinstance(attachment.get("content"), list)
+        for part in attachment["content"]
+        if isinstance(part, dict) and part.get("type") in ("text", "image")
+    ]
+    if not attached:
+        return content
+    if isinstance(content, list):
+        return [*content, *attached]
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}, *attached]
+    return attached
+
+
 def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict]:
     """Persisted chat rows in the shape the inference layer sends them.
 
@@ -1155,7 +1182,7 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     """
     wire: list[dict] = []
     for message in messages:
-        content = message.get("content")
+        content = _with_attachments(message)
         parts = content if isinstance(content, list) else None
         # Reasoning is not content: the serializer never puts it in `content`, but `_probe_text` renders any part with
         # a `text` field, so forwarding the stored list put a model's thinking inline and the turn matched no
@@ -1264,6 +1291,23 @@ def _as_wire(messages: list[dict], sanitise_assistant: bool = True) -> list[dict
     return wire
 
 
+# `withSandboxAttachmentPaths` (sandbox-attachments.ts) path notes, as `checkpoint._ATTACHMENT` matches them.
+_SANDBOX_NOTE = re.compile(
+    r"^\[[^\n]*(?: is saved at \.unsloth_attachments/[0-9a-f]{12}/[^\n]* in the python tool's working directory"
+    r"|: its text is below, so answer from it\. For calculations, the python tool has the file at "
+    r"path = \"\.unsloth_attachments/[0-9a-f]{12}/)[^\n]*\]$",
+    re.MULTILINE,
+)
+
+
+def _seat_text(message: dict) -> str:
+    """The seat-matching probe minus python path notes, which only the request carries."""
+    text = _probe_text(message)
+    if str(message.get("role") or "") == "user":
+        text = _SANDBOX_NOTE.sub("", text)
+    return _normalise_cased(text)
+
+
 def _fallback_ordinal(conn, scope: str, positions: Optional[list[list[str]]]) -> int:
     """Where a turn that matched no seat goes: past the archive AND past the transcript.
 
@@ -1309,11 +1353,7 @@ def _transcript_positions(thread_id: str, branch = None) -> Optional[list[str]]:
     # Grouped with the evictor's own grouper, so a position is a TURN's index, which is what the ordinal is compared
     # against.
     wire = _as_wire(_active_chain(messages, branch))
-    return [
-        [_normalise_cased(_probe_text(message)) for message in group]
-        for group in group_turns(wire)
-        if group
-    ]
+    return [[_seat_text(message) for message in group] for group in group_turns(wire) if group]
 
 
 def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> list[int]:
@@ -1335,7 +1375,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     """
     if not positions or not group:
         return []
-    texts = [_normalise_cased(_probe_text(message)) for message in group]
+    texts = [_seat_text(message) for message in group]
     if not texts or not texts[0]:
         return []
     calls = [bool(message.get("tool_calls")) for message in group]
@@ -1348,20 +1388,57 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
         # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
         # the one insertion `_probe_text` makes.
-        if is_call:
-            if not live:
-                return False
-            if live in stored:
-                return True
-            words = live.split(" ")
-            for cut in range(1, len(words)):
-                head = " ".join(words[:cut])
-                tail = " ".join(words[cut:])
-                at = stored.find(head)
-                if at >= 0 and stored.find(tail, at + len(head)) >= 0:
-                    return True
+        # Space offsets keep split(" ") semantics. Head presence only falls and tail presence only rises as the cut
+        # moves right, so both bounds are binary-searched; the ordered match is not monotone, so every cut between
+        # them is still checked against the earliest head and the latest tail.
+        if not is_call:
+            return stored == live
+
+        if not live:
             return False
-        return stored == live
+
+        if live in stored:
+            return True
+
+        # Splitting removes one space; the remaining characters must fit without overlap.
+        if len(stored) < len(live) - 1:
+            return False
+
+        cuts = [index for index, char in enumerate(live) if char == " "]
+        if not cuts:
+            return False
+
+        # Find the exclusive upper bound of splits whose head occurs in stored.
+        left, right = 0, len(cuts)
+        while left < right:
+            mid = (left + right) // 2
+            if live[: cuts[mid]] in stored:
+                left = mid + 1
+            else:
+                right = mid
+
+        prefix_stop = left
+        if prefix_stop == 0:
+            return False
+
+        # Within that range, find the first split whose tail occurs in stored.
+        left, right = 0, prefix_stop
+        while left < right:
+            mid = (left + right) // 2
+            if live[cuts[mid] + 1 :] in stored:
+                right = mid
+            else:
+                left = mid + 1
+
+        for index in range(left, prefix_stop):
+            cut = cuts[index]
+            head_at = stored.find(live[:cut])
+            tail_at = stored.rfind(live[cut + 1 :])
+
+            if tail_at >= head_at + cut:
+                return True
+
+        return False
 
     return [
         index
@@ -1435,9 +1512,7 @@ def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
     except Exception:
         return None
     positions = [
-        [_normalise_cased(_probe_text(message)) for message in group]
-        for group in group_turns(_as_wire(live))
-        if group
+        [_seat_text(message) for message in group] for group in group_turns(_as_wire(live)) if group
     ]
     return positions or None
 
@@ -2580,10 +2655,16 @@ def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = N
     return len(removed)
 
 
-def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[str, str], bool]:
+def copy_thread_documents(
+    source_thread_id: str,
+    thread_id: str,
+    *,
+    created_before: Optional[str] = None,
+) -> tuple[dict[str, str], bool]:
     """Copy a thread's finished uploads into another thread. Returns the source-to-copy document id
     map and whether an upload still being ingested was left behind. Failed uploads are not copied
-    and not reported: the documents bar never shows them.
+    and not reported: the documents bar never shows them. ``created_before`` (ISO-8601 UTC) leaves
+    out uploads made after a fork point.
 
     Files are copied before the transaction so rag.db's write lock is never held across file I/O.
     """
@@ -2594,8 +2675,9 @@ def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[s
     conn = rag_db.get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM documents WHERE scope=? ORDER BY created_at",
-            (store.thread_scope(source_thread_id),),
+            "SELECT * FROM documents WHERE scope=? AND (? IS NULL OR created_at<?) "
+            "ORDER BY created_at",
+            (store.thread_scope(source_thread_id), created_before, created_before),
         ).fetchall()
         documents = [dict(row) for row in rows if row["status"] == "completed"]
         for document in documents:

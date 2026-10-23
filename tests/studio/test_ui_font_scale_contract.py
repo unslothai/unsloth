@@ -26,6 +26,18 @@ FONTSIZE_STYLE_ALLOWLIST = {
     "features/benchmarks/components/bench-chart.tsx",
 }
 
+# Sizes a container query's em breakpoint, not text (--ui-space-scale derives
+# from --ui-font-scale); children reset to the 1rem they would inherit.
+CSS_FONTSIZE_LAYOUT_RULES = {
+    (".browser-panel", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
+    (".browser-panel > *", "font-size: 1rem;"),
+}
+
+
+def _css_selector_before(text, pos):
+    head = re.sub(r"/\*.*?\*/", "", text[:pos].rsplit("{", 1)[0], flags = re.S)
+    return re.split(r"[{};]", head)[-1].strip()
+
 
 def _frontend_sources():
     for path in sorted(SRC.rglob("*")):
@@ -164,6 +176,9 @@ def test_css_font_sizes_reference_the_scale():
                 continue
             if "1px" in decl:
                 continue  # library layout tricks (KaTeX-style), not text
+            selector = _css_selector_before(text, m.start())
+            if (selector, decl.strip()) in CSS_FONTSIZE_LAYOUT_RULES:
+                continue
             offenders.append(f"{_rel(path)}: {decl.strip()[:80]}")
     assert offenders == [], (
         "CSS typography must multiply by var(--ui-font-scale, 1) or be "

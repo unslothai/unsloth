@@ -50,7 +50,13 @@ _IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit", "upscale")
 
 def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
-    lines = [str(meta.get("prompt", ""))]
+    from core.inference.diffusion_hires import infotext_fields as hires_infotext, infotext_meta
+
+    # A Hires fix image is written the way A1111 writes one: Size is the base pass, Hires upscale the factor.
+    meta = infotext_meta(meta)
+    # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The
+    # typed prompt stays in the Unsloth chunk.
+    lines = [str(meta.get("enhanced_prompt") or meta.get("prompt", ""))]
     negative = meta.get("negative_prompt")
     if negative:
         lines.append(f"Negative prompt: {negative}")
@@ -71,8 +77,32 @@ def _params_text(meta: dict[str, Any]) -> str:
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )
+    # webui infotext names (processing.create_infotext).
+    if meta.get("variation_strength"):
+        fields += (
+            f", Variation seed: {meta.get('variation_seed')}, "
+            f"Variation seed strength: {meta['variation_strength']}"
+        )
+    if meta.get("clip_skip"):
+        fields += f", Clip skip: {meta['clip_skip']}"
+    if meta.get("cfg_rescale"):
+        fields += f", CFG rescale: {meta['cfg_rescale']}"
+    # webui opts.emphasis infotext: a prompt run with weighting off replays literally there too.
+    if meta.get("prompt_weighting") is False:
+        fields += ", Emphasis: None"
     if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
         fields += f", Denoising strength: {meta['strength']}"
+    # A1111 inpaint keys (modules/processing.py), only when this inpaint applied them.
+    if meta.get("mask_blur"):
+        fields += f", Mask blur: {meta['mask_blur']}"
+    if meta.get("inpaint_only_masked"):
+        fields += ", Inpaint area: Only masked"
+        if meta.get("inpaint_padding") is not None:
+            fields += f", Masked area padding: {meta['inpaint_padding']}"
+    fields += hires_infotext(meta)
+    # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
+    if meta.get("shift") is not None:
+        fields += f", Shift: {meta['shift']}"
     if meta.get("generator"):
         fields += f", Version: {meta['generator']}"
     lines.append(fields)

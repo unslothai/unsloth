@@ -64,7 +64,7 @@ def runtime_unavailable_reason() -> str | None:
     try:
         from importlib.util import find_spec
         if find_spec("torch") is None:
-            return "The Decision API needs PyTorch, which this Studio install does not include."
+            return "The Decision API needs PyTorch, which this Unsloth install does not include."
     except Exception:
         pass
     return None

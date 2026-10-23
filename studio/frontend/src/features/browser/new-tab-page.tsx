@@ -30,7 +30,7 @@ const UNSLOTH_SITES: Site[] = [
   { title: "Unsloth", url: "https://unsloth.ai", icon: "/sticker.png" },
   {
     title: "Unsloth Docs",
-    url: "https://docs.unsloth.ai",
+    url: "https://unsloth.ai/docs",
     icon: "/sticker.png",
   },
 ];
@@ -46,6 +46,26 @@ const OTHER_SITES: Site[] = [
 
 const KNOWN_SITES = [...UNSLOTH_SITES, ...OTHER_SITES];
 
+// The proxied view keeps the docs; the unsloth.ai home page stays blocked.
+const PROXIED_SITES: Site[] = [
+  { title: "Unsloth Docs", url: "https://unsloth.ai/docs", icon: "/sticker.png" },
+  ...OTHER_SITES,
+];
+
+/** One suggestion per host, except the docs, which share unsloth.ai with the home page. */
+function siteKey(url: string): string {
+  const host = hostOf(url);
+  if (host === "docs.unsloth.ai") return "unsloth.ai/docs";
+  if (host !== "unsloth.ai") return host;
+  try {
+    return /^\/docs(?:\/|$)/.test(new URL(url).pathname)
+      ? "unsloth.ai/docs"
+      : host;
+  } catch {
+    return host;
+  }
+}
+
 const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
 
@@ -57,12 +77,12 @@ function suggestedSites(
 ): Site[] {
   const byHost = new Map<string, { site: Site; visits: number }>();
   for (const item of history) {
-    const host = hostOf(item.url);
+    const host = siteKey(item.url);
     const seen = byHost.get(host);
     if (seen) seen.visits += 1;
     else {
       const icon = KNOWN_SITES.find(
-        (site) => hostOf(site.url) === host,
+        (site) => siteKey(site.url) === host,
       )?.icon;
       byHost.set(host, {
         site: { title: item.title || host, url: item.url, icon },
@@ -74,12 +94,12 @@ function suggestedSites(
     .filter((site) => site.visits > 1)
     .sort((a, b) => b.visits - a.visits)
     .map((site) => site.site);
-  const hosts = new Set(sites.map((site) => hostOf(site.url)));
+  const hosts = new Set(sites.map((site) => siteKey(site.url)));
   for (const site of defaults)
-    if (!hosts.has(hostOf(site.url))) sites.push(site);
-  const off = new Set(hidden);
+    if (!hosts.has(siteKey(site.url))) sites.push(site);
+  const off = new Set(hidden.map((key) => siteKey(`https://${key}`)));
   return sites
-    .filter((site) => !off.has(hostOf(site.url)))
+    .filter((site) => !off.has(siteKey(site.url)))
     .slice(0, SUGGESTED_COUNT);
 }
 
@@ -93,7 +113,7 @@ function SiteIcon({ site }: { site: Site }) {
     <SiteFavicon
       url={site.url}
       icon={site.icon}
-      className="size-9 rounded-lg"
+      className="size-9 rounded-md"
       fallbackClassName="size-9 text-foreground"
     />
   );
@@ -103,7 +123,7 @@ function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
   const t = useT();
   const { navigate } = useBrowserStore.getState();
   const remove = () =>
-    useBrowserPrefsStore.getState().hideSuggestion(hostOf(site.url));
+    useBrowserPrefsStore.getState().hideSuggestion(siteKey(site.url));
   return (
     <LinkContextMenu
       url={site.url}
@@ -165,7 +185,7 @@ function ToolButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <HugeiconsIcon
         icon={icon}
@@ -210,10 +230,10 @@ export function NewTabPage({ tabId }: { tabId: string }) {
   const hidden = useBrowserPrefsStore((state) => state.hiddenSuggestions);
   const showSuggested = useBrowserPrefsStore((state) => state.showSuggestedSites);
   const showRecents = useBrowserPrefsStore((state) => state.showRecentPages);
-  // Cloudflare blocks Unsloth's sites in the proxied view, so only native views suggest them.
+  // Cloudflare blocks the Unsloth home page in the proxied view, so only native views suggest it.
   const native = useNativeBrowser((state) => state.enabled);
   const sites = useMemo(
-    () => suggestedSites(history, hidden, native ? KNOWN_SITES : OTHER_SITES),
+    () => suggestedSites(history, hidden, native ? KNOWN_SITES : PROXIED_SITES),
     [history, hidden, native],
   );
   const recents = useMemo(() => recentPages(history), [history]);
@@ -321,10 +341,10 @@ export function NewTabPage({ tabId }: { tabId: string }) {
                     title={item.url}
                     onClick={() => navigate(tabId, { url: item.url })}
                     className={cn(
-                      "flex min-w-0 cursor-pointer items-center gap-4 rounded-2xl px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
+                      "flex min-w-0 cursor-pointer items-center gap-4 rounded-md px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
                     )}
                   >
-                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
                       <SiteFavicon
                         url={item.url}
                         className="size-5 rounded-[4px]"

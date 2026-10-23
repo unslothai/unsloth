@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import functools
+import operator
 import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
@@ -87,7 +88,7 @@ if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
 
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and only its
 # fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there; below sm_100
-# cutlass handles fp32 natively. Read once from device 0.
+# cutlass handles fp32 natively. Device 0 only: _xformers_rejects_fp32 reads Q's card.
 _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
@@ -129,6 +130,18 @@ def _visible_capabilities():
 # Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
 # device-0 verdict is wrong for layers a device_map places on another card.
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
+# Read at import so a traced call only indexes a tuple.
+_XFORMERS_FP32_UNSUPPORTED_BY_INDEX = tuple(c[0] >= 10 for c in _visible_capabilities())
+
+
+def _xformers_rejects_fp32(device) -> bool:
+    """sm_100+ CUDA only: CPU tensors on a B200 host must not inherit device 0's answer."""
+    if getattr(device, "type", None) != "cuda":
+        return False
+    index = getattr(device, "index", None)
+    if index is not None and index < len(_XFORMERS_FP32_UNSUPPORTED_BY_INDEX):
+        return _XFORMERS_FP32_UNSUPPORTED_BY_INDEX[index]
+    return _XFORMERS_FP32_UNSUPPORTED
 
 
 # Lazy so import never opens a CUDA context on another rank's card (torchrun sees every GPU).
@@ -233,7 +246,10 @@ def _torch_varlen_takes(
 
 
 # Above this mean segment length cuDNN's per-segment SDPA beats torch's varlen flash kernel (B200 sweep).
+# Only sm_100-family: on H100 the same cuDNN choice is 2.2x to 2.6x slower than varlen at mean lengths
+# 1024 to 2048, so there varlen always wins.
 _VARLEN_CUDNN_MAX_MEAN_LEN = 1024
+_VARLEN_CUDNN_ARCH_MAJORS = frozenset({10})
 
 
 @functools.lru_cache(maxsize = 64)
@@ -262,8 +278,179 @@ def _sdpa_backend_state(device, dtype, head_dim, n_heads, n_kv_heads, is_causal,
     return backends[0], choice
 
 
-if hasattr(torch.compiler, "assume_constant_result"):
-    _sdpa_backend_state = torch.compiler.assume_constant_result(_sdpa_backend_state)
+def _constant_probe(fn):
+    """torch.compiler.assume_constant_result for a shape probe. Dynamo can only hand it Python
+    constants, and dynamic=True makes head counts / head_dim SymInts, so those are specialised
+    (operator.index guards them) first: they are fixed per model, batch and length stay dynamic.
+    Plain ints pass through unchanged, so eager and static-shape answers are the same."""
+    if not hasattr(torch.compiler, "assume_constant_result"):
+        return fn
+    # Marks fn itself, so no functools.wraps: copying its __dict__ would mark the wrapper too.
+    constant = torch.compiler.assume_constant_result(fn)
+
+    def probe(*args, **kwargs):
+        concrete = []
+        for arg in args:
+            # Dynamo reports a SymInt as an int; index() on a plain int is the identity.
+            if isinstance(arg, (int, torch.SymInt)) and not isinstance(arg, bool):
+                arg = operator.index(arg)
+            concrete.append(arg)
+        return constant(*concrete, **kwargs)
+
+    probe.__name__, probe.__qualname__, probe.__doc__ = fn.__name__, fn.__qualname__, fn.__doc__
+    probe.__wrapped__ = fn
+    return probe
+
+
+_sdpa_backend_state = _constant_probe(_sdpa_backend_state)
+
+
+@functools.lru_cache(maxsize = 128)
+def _sdpa_gqa_choices(
+    device,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    is_causal,
+    has_mask,
+    needs_grad,
+    dropout_p,
+    backends,
+    single_query = False,
+    single_key = False,
+):
+    """(SDPBackend with enable_gqa, SDPBackend with K/V expanded) for these shapes, -1 if unknown.
+    The probe tensors carry the real call's requires_grad, dropout and single-query (decode) shape:
+    backends differ on all three (cuDNN rejects single-query dropout, for one)."""
+    # Lengths of 1 change eligibility (cuDNN rejects a K/V length of 1); longer ones do not.
+    q_len = 1 if single_query else 128
+    kv_len = 1 if single_key else 128
+    try:
+        q = torch.empty(1, n_heads, q_len, head_dim, device = device, dtype = dtype)
+        k = torch.empty(1, n_kv_heads, kv_len, head_dim, device = device, dtype = dtype)
+        k_full = torch.empty(1, n_heads, kv_len, head_dim, device = device, dtype = dtype)
+        if needs_grad:
+            q, k, k_full = (t.requires_grad_() for t in (q, k, k_full))
+        mask = (
+            torch.ones(1, 1, q_len, kv_len, device = device, dtype = torch.bool) if has_mask else None
+        )
+    except Exception:
+        return -1, -1
+    causal = is_causal and not has_mask
+
+    def probe(key, **kwargs):
+        # Each on its own: torch raises when no enabled backend fits, and a GQA call nothing
+        # takes must still learn whether the expanded call would run.
+        try:
+            with torch.set_grad_enabled(needs_grad):
+                return int(
+                    torch._fused_sdp_choice(
+                        q, key, key, attn_mask = mask, dropout_p = dropout_p, is_causal = causal, **kwargs
+                    )
+                )
+        except Exception:
+            return None
+
+    gqa = probe(k, enable_gqa = True)
+    mha = probe(k_full)
+    if gqa is None:
+        # Nothing takes GQA here: expand when the expanded call has a backend, else unknown.
+        return (_SDPA_NO_BACKEND, mha) if mha is not None else (-1, -1)
+    return gqa, -1 if mha is None else mha
+
+
+# _sdpa_gqa_choices' answer when no enabled SDPA backend accepts the GQA call at all.
+_SDPA_NO_BACKEND = -2
+
+
+def _sdpa_gqa_state(
+    device,
+    dtype,
+    head_dim,
+    n_heads,
+    n_kv_heads,
+    is_causal,
+    has_mask,
+    needs_grad = False,
+    dropout_p = 0.0,
+    single_query = False,
+    single_key = False,
+) -> bool:
+    """False when enable_gqa would leave SDPA only its math kernel while expanded K/V would not.
+    Flash and cuDNN take GQA, the memory-efficient kernel does not (before torch 2.14), so fp32,
+    pre-sm80 GPUs and masked calls flash cannot run would otherwise fall to math: several times
+    slower and a (T, T) score matrix per head. Asked of torch, so ROCm's backend set is covered too."""
+    cuda = torch.backends.cuda
+    backends = (
+        cuda.flash_sdp_enabled(),
+        cuda.cudnn_sdp_enabled(),
+        cuda.mem_efficient_sdp_enabled(),
+        cuda.math_sdp_enabled(),
+        tuple(getattr(torch._C, "_get_sdp_priority_order", tuple)()),
+        # Strict deterministic mode makes cuDNN SDPA ineligible.
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
+    )
+    gqa, mha = _sdpa_gqa_choices(
+        device,
+        dtype,
+        head_dim,
+        n_heads,
+        n_kv_heads,
+        is_causal,
+        has_mask,
+        needs_grad,
+        dropout_p,
+        backends,
+        single_query,
+        single_key,
+    )
+    from torch.nn.attention import SDPBackend
+
+    math = int(SDPBackend.MATH)
+    if gqa == _SDPA_NO_BACKEND:
+        return False
+    return not (gqa == math and mha not in (math, -1))
+
+
+_sdpa_gqa_state = _constant_probe(_sdpa_gqa_state)
+
+
+def _sdpa_takes_gqa(
+    Q: Tensor,
+    K: Tensor,
+    is_causal: bool,
+    has_mask: bool,
+    V: Optional[Tensor] = None,
+    dropout_p = 0.0,
+) -> bool:
+    """Whether to pass enable_gqa (True) or expand K/V (False) for this SDPA call."""
+    if not SDPA_HAS_GQA:
+        return False
+    if not Q.is_cuda:
+        return True
+    needs_grad = torch.is_grad_enabled() and any(
+        t is not None and t.requires_grad for t in (Q, K, V)
+    )
+    # Branch, not bool(): assume_constant_result cannot take a dynamic SymBool.
+    single_query = True if Q.shape[-2] == 1 else False
+    single_key = True if K.shape[-2] == 1 else False
+    is_causal = True if is_causal else False
+    has_mask = True if has_mask else False
+    return _sdpa_gqa_state(
+        str(Q.device),
+        Q.dtype,
+        Q.shape[-1],
+        Q.shape[1],
+        K.shape[1],
+        bool(is_causal),
+        bool(has_mask),
+        bool(needs_grad),
+        float(dropout_p or 0.0),
+        single_query,
+        single_key,
+    )
 
 
 def _torch_varlen_beats_segments(
@@ -295,6 +482,8 @@ def _torch_varlen_beats_segments(
     if choice == int(SDPBackend.FLASH_ATTENTION):
         return True
     if choice == int(SDPBackend.CUDNN_ATTENTION):
+        if torch.cuda.get_device_capability(Q.device)[0] not in _VARLEN_CUDNN_ARCH_MAJORS:
+            return True
         return sum(lengths) / len(lengths) <= _VARLEN_CUDNN_MAX_MEAN_LEN
     return False
 
@@ -365,10 +554,19 @@ def _sdpa_packed_segments(
     None when the lengths do not tile the row."""
     if sum(length for length in lengths if length > 0) != Q.shape[-2]:
         return None
-    gqa = n_groups != 1 and _sdpa_flash_takes_gqa(Q)
-    if n_groups != 1 and not gqa:
-        K = K.repeat_interleave(n_groups, dim = 1)
-        V = V.repeat_interleave(n_groups, dim = 1)
+    expanded = None
+
+    def kv(gqa):
+        nonlocal expanded
+        if n_groups == 1 or gqa:
+            return K, V
+        if expanded is None:
+            expanded = (
+                K.repeat_interleave(n_groups, dim = 1),
+                V.repeat_interleave(n_groups, dim = 1),
+            )
+        return expanded
+
     outs, start, i = [], 0, 0
     lengths = [length for length in lengths if length > 0]
     while i < len(lengths):
@@ -393,9 +591,15 @@ def _sdpa_packed_segments(
                 is_causal = is_causal,
             )
         kwargs["is_causal"] = is_causal and not windowed
+        Q_run = split(Q)
+        # Probe the run's own tensors: a one-token run has different eligibility than the row.
+        gqa = n_groups != 1 and _sdpa_takes_gqa(
+            Q_run, split(K), kwargs["is_causal"], windowed, split(V), kwargs.get("dropout_p", 0.0)
+        )
         if gqa:
             kwargs["enable_gqa"] = True
-        out = scaled_dot_product_attention(split(Q), split(K), split(V), **kwargs)
+        K_run, V_run = kv(gqa)
+        out = scaled_dot_product_attention(Q_run, split(K_run), split(V_run), **kwargs)
         outs.append(out.transpose(1, 2).flatten(0, 1))
         start, i = end, j
     return torch.cat(outs, dim = 0).unsqueeze(0)
@@ -534,7 +738,23 @@ def _ring_attention_active() -> bool:
     return manager is not None and manager.backend == "ring"
 
 
-def select_attention_backend(use_varlen: bool = False) -> str:
+def _native_beats_xformers(capabilities, varlen_loaded: bool) -> bool:
+    """Without FlashAttention, torch's own kernels match or beat xformers 0.0.35 (which itself calls
+    torch's flash / memory-efficient ops) once torch has a varlen kernel (2.12+) on sm_80+ CUDA:
+    packed / padding-free 1.00x to 1.06x on A100, L4, RTX PRO 6000 and H100. Below sm_80 there is no
+    torch varlen, and xformers' block-diagonal kernel stays 8% to 21% faster (T4); a mixed host keeps
+    xformers for its older card."""
+    if not varlen_loaded or not capabilities or torch.version.hip is not None:
+        return False
+    return all(capability[0] >= 8 for capability in capabilities)
+
+
+_NATIVE_BEATS_XFORMERS = _native_beats_xformers(
+    _visible_capabilities(), _TORCH_VARLEN_ATTN is not None
+)
+
+
+def select_attention_backend(use_varlen: bool = False, dropout_p: float = 0.0) -> str:
     """Return attention backend based on availability / priority order."""
 
     if _ring_attention_active():
@@ -549,9 +769,34 @@ def select_attention_backend(use_varlen: bool = False) -> str:
             return FLASH_VARLEN
         else:
             return FLASH_DENSE
-    if HAS_XFORMERS:
+    # Only the packed route prefers torch's kernels (varlen / per-segment SDPA). Dense calls keep
+    # xformers: it alone consumes a caller's block-diagonal causal_mask, and expanding a GQA KV cache
+    # for SDPA on fp32 decode costs memory. With UNSLOTH_SDPA_PACKED_SEGMENTS off, packed SDPA would
+    # build a dense (T, T) mask, so xformers stays there too. Torch varlen takes no dropout, so a
+    # packed call with dropout would become one SDPA launch per run: xformers keeps those as well.
+    if HAS_XFORMERS and not (
+        use_varlen and not dropout_p and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS
+    ):
         return XFORMERS
     return SDPA
+
+
+def _packed_fp32_prefers_xformers(config, context, Q: Tensor, K: Tensor, V: Tensor) -> bool:
+    """Torch varlen takes fp16 / bf16 only, so packed fp32 would run SDPA per segment (#14158)."""
+    if not (HAS_XFORMERS and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS):
+        return False
+    if context.seq_info is None or context.attention_mask is not None or not Q.is_cuda:
+        return False
+    if torch.float32 not in (Q.dtype, K.dtype, V.dtype):
+        return False
+    if (config.sdpa_kwargs or {}).get("dropout_p") or _ring_attention_active():
+        return False
+    # xformers' flash backward is non-deterministic, and sm_100+ (downcast to it) lacks head_dim > 256.
+    if torch.are_deterministic_algorithms_enabled():
+        return False
+    if Q.shape[-1] > 256 and _xformers_rejects_fp32(Q.device):
+        return False
+    return True
 
 
 def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
@@ -650,7 +895,9 @@ def _run_attention(
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
-    xformers_fp32_unsupported = _XFORMERS_FP32_UNSUPPORTED
+    xformers_fp32_unsupported = _xformers_rejects_fp32(Q.device)
+    if backend == SDPA and _packed_fp32_prefers_xformers(config, context, Q, K, V):
+        backend = XFORMERS
     if _DEVICE_BACKENDS is not None and backend != SDPA:
         device_backend = _backend_for_device(backend, Q.device, Q.dtype)
         if device_backend != backend and _configured_softcap(config):
@@ -660,9 +907,6 @@ def _run_attention(
                 "Ampere or newer GPUs, e.g. with CUDA_VISIBLE_DEVICES."
             )
         backend = device_backend
-        index = Q.device.index
-        if Q.device.type == "cuda" and index is not None and index < len(_DEVICE_BACKENDS):
-            xformers_fp32_unsupported = _DEVICE_BACKENDS[index][2]
 
     # Flash/xFormers do not support arbitrary attn masks, so with a padding mask present (left-padded
     # generation) fall back to SDPA.
@@ -719,6 +963,24 @@ def _run_attention(
                 )
                 backend = SDPA
 
+    # Traced xformers bias objects break the graph per layer: plain causal calls take SDPA.
+    xformers_rerouted = False
+    if (
+        backend == XFORMERS
+        and torch.compiler.is_compiling()
+        and context.seq_info is None
+        and context.attention_mask is None
+        and context.is_causal
+        and context.q_len == context.kv_seq_len
+        and (
+            context.causal_mask is None
+            or type(context.causal_mask).__name__ == "LowerTriangularMask"
+        )
+        and not config.xformers_kwargs
+        and _configured_softcap(config) is None
+    ):
+        backend = SDPA
+        xformers_rerouted = True
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
@@ -752,7 +1014,7 @@ def _run_attention(
     cp_out_dtype = Q.dtype if ring else None
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
-        or (backend == XFORMERS and xformers_fp32_unsupported)
+        or ((backend == XFORMERS or xformers_rerouted) and xformers_fp32_unsupported)
         or ring
     ) and torch.float32 in (
         Q.dtype,
@@ -979,7 +1241,9 @@ def _run_attention(
                 )
 
             is_causal_local = (
-                context.is_causal and local_mask is None and q_len_local == k_len_local
+                True
+                if context.is_causal and local_mask is None and q_len_local == k_len_local
+                else False
             )
 
         kwargs = dict(sdpa_kwargs)
@@ -1003,6 +1267,16 @@ def _run_attention(
         ):
             # Batched masked inference has shown row-coupled drift with SDPA GQA, so fall back to explicit KV
             # expansion for deterministic row-wise behavior.
+            use_sdpa_gqa = False
+
+        if use_sdpa_gqa and not _sdpa_takes_gqa(
+            Q,
+            K,
+            kwargs.get("is_causal", False),
+            kwargs.get("attn_mask") is not None,
+            V,
+            kwargs.get("dropout_p", 0.0),
+        ):
             use_sdpa_gqa = False
 
         if use_sdpa_gqa:

@@ -7,6 +7,7 @@ import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
+from .remote_images import fetch_untrusted_image_bytes, is_network_share
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -19,6 +20,18 @@ def _quiet_bar_kwargs() -> dict:
         return quiet_bar_kwargs()
     except Exception:  # noqa: BLE001 - a bar is never worth failing a conversion for
         return {}
+
+
+def _own_image_path(path, account):
+    """A local image a managed account names must be one it may read (a no-op for the owner). ``account`` is
+    captured when the conversion starts: URL datasets convert in a thread pool, which does not carry it."""
+    from utils.account_context import run_as
+    from utils.security.dataset_media import require_readable_media
+
+    if isinstance(path, str) and is_network_share(path):
+        raise OSError(f"Refusing an image path on a network share: {path}")
+    run_as(account, require_readable_media, path)
+    return path
 
 
 def _normalize_role_alias(role) -> str:
@@ -241,7 +254,7 @@ def convert_chatml_to_alpaca(
         for convo, column_system in zip(chatml_data, column_systems):
             turns = []
             for msg in convo or []:
-                role = roles.get(msg.get("role") or msg.get("from"))
+                role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
                 content = _content_text(msg.get("content") or msg.get("value"))
                 if role is None or not content:
                     continue
@@ -382,6 +395,13 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
+def _fetch_row_image(url):
+    from io import BytesIO
+
+    from PIL import Image
+    return Image.open(BytesIO(fetch_untrusted_image_bytes(url))).convert("RGB")
+
+
 def convert_to_vlm_format(
     dataset,
     instruction = None,
@@ -395,7 +415,10 @@ def convert_to_vlm_format(
     Returns a LIST of dicts with a 'messages' field, not a HuggingFace Dataset, to preserve PIL Images. For URL-based datasets, runs a 200-sample parallel probe first to estimate speed and failure rate via progress_callback, an optional callable(status_message=str).
     """
     from PIL import Image
+    from utils.account_context import current_account
     from .vlm_processing import generate_smart_vlm_instruction
+
+    account = current_account()
 
     def _notify(msg):
         """Send a status update to the training overlay if callback set."""
@@ -431,10 +454,7 @@ def convert_to_vlm_format(
 
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    image_data = Image.open(BytesIO(f.read())).convert("RGB")
+                image_data = _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
@@ -448,7 +468,7 @@ def convert_to_vlm_format(
                 )
                 image_data = Image.open(local_path).convert("RGB")
             else:
-                image_data = Image.open(image_data).convert("RGB")
+                image_data = Image.open(_own_image_path(image_data, account)).convert("RGB")
         elif image_data is None:
             raise ValueError("Row has no image")
 
@@ -495,6 +515,7 @@ def convert_to_vlm_format(
     if (
         not has_urls
         and isinstance(first_image, str)
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -738,7 +759,9 @@ def convert_sharegpt_with_images_to_vlm_format(
     """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
     from PIL import Image
     from tqdm import tqdm
+    from utils.account_context import current_account
 
+    account = current_account()
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     _ROLE_MAP = {
         "human": "user",
@@ -760,6 +783,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     if (
         isinstance(first_image, str)
         and not first_image.startswith(("http://", "https://"))
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -799,10 +823,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             return image_data
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    return Image.open(BytesIO(f.read())).convert("RGB")
+                return _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache
@@ -815,13 +836,13 @@ def convert_sharegpt_with_images_to_vlm_format(
                 )
                 return Image.open(local_path).convert("RGB")
             else:
-                return Image.open(image_data).convert("RGB")
+                return Image.open(_own_image_path(image_data, account)).convert("RGB")
         if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
             if image_data.get("bytes"):
                 from io import BytesIO
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
             if image_data.get("path"):
-                return Image.open(image_data["path"]).convert("RGB")
+                return Image.open(_own_image_path(image_data["path"], account)).convert("RGB")
         raise ValueError(f"Cannot resolve image: {type(image_data)}")
 
     def _convert_single_sample(sample):
@@ -891,6 +912,9 @@ def convert_sharegpt_with_images_to_vlm_format(
 def convert_llava_to_vlm_format(dataset):
     """Convert Llava format to standard VLM format: Llava carries messages whose content blocks name an image by {'type': 'image', 'index': 0} plus a parallel images list, while the standard form inlines the PIL object as {'type': 'image', 'image': PIL_Image}."""
     from PIL import Image
+    from utils.account_context import current_account
+
+    account = current_account()
 
     is_iterable = is_streaming_dataset(dataset)
     if is_iterable:
@@ -949,7 +973,7 @@ def convert_llava_to_vlm_format(dataset):
 
                     pil_image = images[img_idx]
                     if isinstance(pil_image, str):
-                        pil_image = Image.open(pil_image).convert("RGB")
+                        pil_image = Image.open(_own_image_path(pil_image, account)).convert("RGB")
                     elif not isinstance(pil_image, Image.Image):
                         raise ValueError(
                             f"Unsupported Llava image value at index {img_idx}: "

@@ -32,7 +32,7 @@ from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_met
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 
 
