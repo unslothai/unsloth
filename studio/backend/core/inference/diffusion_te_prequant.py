@@ -291,8 +291,7 @@ TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 # FLUX.3's Qwen3-VL-4B file is 5,247,076,320 bytes against 8,875,719,344 dense (0.591), rounded up the same way.
 # Wan's UMT5 keeps its 256k-row embedding dense: its int8 file is 6,735,404,944 bytes against 11,361,851,208 dense,
 # 0.593, rounded up the same way.
-# HunyuanImage-2.1 loads Qwen-Image's Qwen2.5-VL file (8,974,915,168 bytes) but its table prices that encoder at
-# 15.5 GB (16.3 GB less the 0.8 GB dense ByT5), 0.579, rounded up.
+# HunyuanImage-2.1 loads Qwen-Image's 8,974,915,168-byte file against a 15.5 GB table price (0.579), rounded up.
 _TE_INT8_CONVROT_BUDGET_SCALES = {
     "hunyuanimage-2.1": 0.60,
     "lumina-2": 0.62,

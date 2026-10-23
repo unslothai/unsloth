@@ -141,8 +141,7 @@ def test_every_auto_int8_family_is_listed():
 
 @pytest.mark.parametrize("name", sorted(_AUTO_INT8_FILE_BYTES))
 def test_the_auto_int8_budget_covers_the_file_and_dense_siblings(name, cuda_env):
-    # The planner prices the encoders as the family table's bf16 term times this scale; it must cover the int8 file
-    # it loads plus the encoders that stay dense, or an oversized load is let through.
+    # table bf16 term * scale must cover the int8 file plus dense siblings, or an oversized load slips through.
     from core.inference.diffusion_auto_policy import family_bf16_components_gb
 
     fam = _fam(name)
