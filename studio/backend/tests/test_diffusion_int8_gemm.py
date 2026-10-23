@@ -1275,3 +1275,26 @@ def test_swiglu_mlp_without_the_prologue_still_shares_the_gate_value_quant(h16_r
         assert cq.rotquant_call_count() == before + 3
         assert torch.equal(out, ref)
     g8.uninstall(torch.nn.Sequential(ff))
+
+
+def test_hooked_linear_is_not_shared():
+    """A forward hook or pre-hook (module-level or global) on a swapped Linear must see its call, so the shared QKV /
+    SwiGLU paths, which run the GEMM without calling the module, decline it and the per-module call runs instead."""
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._REC] = ("v2", 64, True, lin.weight, False)
+    lin.__dict__[g8._MARK] = True
+    assert g8._swapped_rec(lin) is not None
+    noop = lambda *a, **k: None  # noqa: E731
+    for register in (
+        lin.register_forward_hook,
+        lin.register_forward_pre_hook,
+        lambda f: lin.register_forward_hook(f, with_kwargs = True),
+        torch.nn.modules.module.register_module_forward_hook,
+        torch.nn.modules.module.register_module_forward_pre_hook,
+    ):
+        handle = register(noop)
+        try:
+            assert g8._swapped_rec(lin) is None
+        finally:
+            handle.remove()
+        assert g8._swapped_rec(lin) is not None

@@ -643,10 +643,18 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     """The record of a Linear this module swapped, holding its install-time weight and no offload hook, else None: a
     diffusers / accelerate hook on the Linear itself (leaf-level streaming) has to see the call, and a replaced weight
     takes the stock path. Plain dict lookups only (no bound-method identity test, which dynamo does not fold the same
-    way on every torch)."""
+    way on every torch). A forward hook or pre-hook (the module's own or a global one) also declines: the shared paths
+    run the GEMM without calling the module, so the hook would never see the call."""
+    import torch
+
     d = module.__dict__
     rec = d.get(_REC)
     if rec is None or _MARK not in d or "_diffusers_hook" in d or "_hf_hook" in d:
+        return None
+    if d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
+        return None
+    nn_module = torch.nn.modules.module
+    if nn_module._global_forward_hooks or nn_module._global_forward_pre_hooks:
         return None
     if module.weight is not rec[3]:
         return None

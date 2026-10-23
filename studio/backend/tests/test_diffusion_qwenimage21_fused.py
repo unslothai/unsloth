@@ -274,3 +274,34 @@ def test_int8_gemm_path_rotates_each_shared_input_once(monkeypatch):
     cos = torch.nn.functional.cosine_similarity(out.float().flatten(), ref.float().flatten(), dim = 0)
     assert cos > 0.9999
     g8.uninstall(blk)
+
+
+def test_shared_qkv_reported_and_gated_on_the_transformer_cards(monkeypatch):
+    """The shared-QKV helper installs when a card holding the transformer (every visible card while it is off the
+    GPU) is one the int8 GEMM swap covers, whatever the current card is, and its count is reported even though the
+    fused-QKV module path declines on such a card."""
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    calls = []
+    swap_cards = {
+        1
+    }  # cuda:1 holds the transformer and is swap-covered; the current card cuda:0 is not
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        mod,
+        "arch_ok",
+        lambda device = None: (0 if device is None else torch.device(device).index) not in swap_cards,
+    )
+    monkeypatch.setattr(mod, "install_shared_qkv", lambda t, logger = None: calls.append(t) or 2)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 2, "out": 0}
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: (1,))
+    monkeypatch.setattr(mod, "install_modules", lambda r, logger = None: {"fused_qkv": 0, "out": 0})
+    assert mod.install(model) == {"fused_qkv": 2, "out": 0}
+    assert calls == [model, model]
+    swap_cards.clear()  # every card on the stock path: the helper is not installed
+    assert mod.install(model) == {"fused_qkv": 0, "out": 0}
+    assert calls == [model, model]

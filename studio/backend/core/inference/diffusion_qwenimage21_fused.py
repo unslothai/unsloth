@@ -221,6 +221,18 @@ def install_shared_qkv(transformer: Any, logger: Any = None) -> int:
     return n
 
 
+def _swap_card_present(transformer: Any) -> bool:
+    """A card the transformer sits on (each card of a layer split; every visible card while its weights are off the
+    GPU) where the int8 GEMM swap covers rotated Linears, so the shared-QKV helper can engage. Not the current card:
+    on a mixed host it need not hold the transformer."""
+    import torch
+
+    from .diffusion_int8_fused import resident_cuda_cards
+
+    cards = resident_cuda_cards(transformer) or range(torch.cuda.device_count())
+    return any(not arch_ok(torch.device("cuda", index)) for index in cards)
+
+
 def install(
     transformer: Any,
     logger: Any = None,
@@ -235,18 +247,21 @@ def install(
         return result
     try:
         import torch
-        if torch.cuda.is_available() and not arch_ok():
-            install_shared_qkv(transformer, logger)
+        if torch.cuda.is_available() and _swap_card_present(transformer):
+            result["fused_qkv"] = install_shared_qkv(transformer, logger)
     except Exception:  # noqa: BLE001 - the stock helper stays
         pass
+    shared = result["fused_qkv"]
     if offload_active:
         return result
     from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
     if resident_cuda_cards(transformer):
-        return install_modules(transformer, logger)
+        out = install_modules(transformer, logger)
+        out["fused_qkv"] = max(out["fused_qkv"], shared)
+        return out
     run_on_first_call(transformer, "q21_convrot_fused", lambda t: install_modules(t, logger))
-    return {"fused_qkv": None, "out": None}
+    return {"fused_qkv": shared or None, "out": None}
 
 
 def install_modules(root: Any, logger: Any = None) -> dict:
