@@ -37,17 +37,23 @@ import {
   ChevronLeftStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Cancel01Icon,
+  Download01Icon,
   MoreHorizontalIcon,
   PlusSignIcon,
   Refresh01Icon,
   Scroll01Icon,
   Search01Icon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ChangeEvent,
   type ReactElement,
   type ReactNode,
   useEffect,
@@ -59,12 +65,15 @@ import {
 import {
   createSkill,
   deleteSkill,
+  exportSkill,
   getSkillManifest,
+  importSkills,
   isValidSkillName,
   listSkills,
   setAllSkillsEnabled,
   setSkillEnabled,
   type SkillDraft,
+  type SkillImportResult,
   type SkillManifest,
   type SkillRecord,
   updateSkill,
@@ -91,6 +100,37 @@ function isEditable(skill: SkillRecord): boolean {
   return skill.valid && skill.source === "agents" && !skill.linked;
 }
 
+function ImportResultList({ imported, failed }: SkillImportResult): ReactElement {
+  return (
+    <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto rounded-md border border-border/60 px-2.5 py-2">
+      {/* Failures first, so the scroll cap never hides the rows that need attention. */}
+      {failed.map((failure) => (
+        <li key={`failed:${failure.name}`} className="min-w-0">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              strokeWidth={2}
+              className="size-3.5 shrink-0 text-destructive"
+            />
+            <span className="truncate">{failure.name}</span>
+          </div>
+          <p className="pl-5 text-xs break-words text-muted-foreground">{failure.error}</p>
+        </li>
+      ))}
+      {imported.map((skill) => (
+        <li key={keyOf(skill)} className="flex min-w-0 items-center gap-1.5">
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-500"
+          />
+          <span className="truncate">{skill.name}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ChatSkillsDialog({
   open,
   onOpenChange,
@@ -112,6 +152,9 @@ export function ChatSkillsDialog({
   const manifestGeneration = useRef(0);
   const [pending, setPending] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [changing, setChanging] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<SkillRecord | null>(null);
   const [confirmingDiscard, setConfirmingDiscard] = useState<(() => void) | null>(null);
@@ -212,7 +255,7 @@ export function ChatSkillsDialog({
   const newStarted =
     newDraft.name !== "" || newDraft.description !== "" || newDraft.instructions !== "";
   const dirty = view.kind === "new" ? newStarted : draft !== null;
-  const busy = pending !== null || creating;
+  const busy = pending !== null || creating || importing || exporting;
 
   const trimmedName = newDraft.name.trim();
   const nameInvalid = trimmedName.length > 0 && !isValidSkillName(trimmedName);
@@ -345,6 +388,57 @@ export function ChatSkillsDialog({
     }
   }
 
+  async function importFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    // Lets the same file fire change again.
+    event.target.value = "";
+    if (!file || importing) return;
+    setImporting(true);
+    try {
+      const { imported, failed } = await importSkills(file);
+      const count = imported.length;
+      if (failed.length === 0) {
+        toast.success(t(count === 1 ? "skills.importedOne" : "skills.importedMany", { count }), {
+          description: <ImportResultList imported={imported} failed={failed} />,
+        });
+        if (count === 1) {
+          // Never pull the user out of a skill they opened during the upload.
+          setView((current) =>
+            current.kind === "library" ? { kind: "skill", key: keyOf(imported[0]) } : current,
+          );
+          readManifest(imported[0]);
+        }
+      } else if (count === 0 && failed.length === 1) {
+        toast.error(t("skills.importError"), { description: failed[0].error });
+      } else {
+        const notify = count > 0 ? toast.warning : toast.error;
+        notify(t("skills.importPartial", { added: count, total: count + failed.length }), {
+          description: <ImportResultList imported={imported} failed={failed} />,
+        });
+      }
+    } catch (cause) {
+      toast.error(t("skills.importError"), { description: describe(cause) });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function exportSelected() {
+    if (!selected || exporting) return;
+    const name = selected.name;
+    setExporting(true);
+    try {
+      const blob = await exportSkill(name);
+      await downloadFile(blob, `${name}.zip`, "application/zip");
+    } catch (cause) {
+      if (!isDownloadCancelled(cause)) {
+        toast.error(t("skills.exportError"), { description: describe(cause) });
+      }
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function remove(skill: SkillRecord) {
     if (pending !== null) return;
     setPending(skill.name);
@@ -382,8 +476,9 @@ export function ChatSkillsDialog({
               <DialogDescription>{t("skills.description")}</DialogDescription>
             </DialogHeader>
 
-            <div className="flex items-center gap-2">
-              <div className="relative min-w-0 flex-1">
+            {/* Phones: search takes its own row, the actions wrap under it. */}
+            <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:justify-end">
+              <div className="relative min-w-0 flex-1 max-sm:basis-full">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
@@ -450,6 +545,25 @@ export function ChatSkillsDialog({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip,application/zip"
+                className="hidden"
+                onChange={(event) => void importFile(event)}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={importing}
+                aria-label={t("skills.import")}
+                title={t("skills.import")}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {importing ? <Spinner /> : <HugeiconsIcon icon={Upload01Icon} strokeWidth={2} />}
+                <span className="max-sm:hidden">{t("skills.import")}</span>
+              </Button>
               <Button variant="secondary" type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
@@ -641,6 +755,17 @@ export function ChatSkillsDialog({
                 </label>
               ) : null}
               <div className="ml-auto flex items-center gap-2">
+                {readable ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void exportSelected()}
+                  >
+                    {exporting ? <Spinner /> : <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />}
+                    {t("common.export")}
+                  </Button>
+                ) : null}
                 {view.kind === "new" ? (
                   <>
                     <Button type="button" variant="ghost" disabled={creating} onClick={goLibrary}>

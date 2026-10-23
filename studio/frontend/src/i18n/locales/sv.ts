@@ -4440,6 +4440,7 @@ export const sv = {
     disable: "Inaktivera {name}",
     updateError: "Det gick inte att uppdatera färdigheten",
     newSkill: "Ny färdighet",
+    import: "Importera",
     delete: "Ta bort {name}",
     createDescription:
       "Sparas som SKILL.md i en ny mapp under ~/.agents/skills och aktiveras så snart den finns.",
@@ -4464,9 +4465,14 @@ export const sv = {
     created: "{name} skapades",
     saved: "{name} sparades",
     deleted: "{name} togs bort",
+    importedOne: "{count} färdighet lades till",
+    importedMany: "{count} färdigheter lades till",
+    importPartial: "{added} av {total} färdigheter lades till",
     saveError: "Det gick inte att spara färdigheten",
     openError: "Det gick inte att öppna färdigheten",
     deleteError: "Det gick inte att ta bort färdigheten",
+    importError: "Det gick inte att importera färdigheten",
+    exportError: "Det gick inte att exportera färdigheten",
     deleteTitle: "Ta bort färdighet",
     deleteDescription:
       'Ta bort "{name}" och allt i dess mapp under ~/.agents/skills? Detta kan inte ångras.',

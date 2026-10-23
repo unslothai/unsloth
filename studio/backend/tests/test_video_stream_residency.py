@@ -285,3 +285,159 @@ def test_measured_peak_widens_the_next_request(monkeypatch):
     monkeypatch.delenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV)
     vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 2)
     assert _placed(net) == ["cuda"] + ["cpu"] * 5
+
+
+def _graph_handle(declined = None, **state):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_cuda_graph as cg
+
+    module = torch.nn.Linear(2, 2)
+    module.forward = module.forward  # a group offload forward in the instance slot
+    placement = cg.OffloadPlacement(module, "group")
+    if declined is not None:
+        placement.decline(declined)  # what the streamed speed check does for the whole load
+    handle = cg.GraphedForward(module, placement = placement)
+    for name, value in state.items():
+        setattr(handle, name, value)
+    return handle
+
+
+_DROP = "replay measured within 1% of the eager step on this device (102.1 vs 102.7 ms)"
+
+
+def test_a_dropped_graph_keys_the_request_on_the_eager_step():
+    optims = ("compile", "cuda_graph")
+    # the speed check dropped the only graph for the load: steps run eager from here on
+    dropped = _graph_handle(
+        declined = _DROP, _slower = _DROP, capture_error = {"type": "Refused", "msg": _DROP}
+    )
+    pipe = types.SimpleNamespace(_unsloth_cuda_graphs = (dropped,))
+    assert vr.live_speed_optims(pipe, optims) == ("compile",)
+    key = vr.calibration_key("wan2.2-ti2v-5b", speed_optims = vr.live_speed_optims(pipe, optims))
+    assert vr._keyed_graphs_live(pipe, key)
+    poisoned = _graph_handle(poisoned = True)
+    assert vr.live_speed_optims(
+        types.SimpleNamespace(_unsloth_cuda_graphs = (poisoned,)), optims
+    ) == ("compile",)
+    # not armed yet, or no cuda_graph to strip: the load's record stands
+    assert vr.live_speed_optims(types.SimpleNamespace(), optims) == optims
+    assert vr.live_speed_optims(pipe, ("compile",)) == ("compile",)
+
+
+@pytest.mark.parametrize("attr", ["fallback", "fallback_handle"])
+def test_a_dropped_step_graph_with_per_block_graphs_keeps_the_graph_key(attr):
+    # the drop arms (or engaged) the per-block fallback, whose graphs run the next requests
+    dropped = _graph_handle(
+        declined = _DROP,
+        _slower = _DROP,
+        capture_error = {"type": "Refused", "msg": _DROP},
+        **{attr: object()},
+    )
+    pipe = types.SimpleNamespace(_unsloth_cuda_graphs = (dropped,))
+    assert vr.live_speed_optims(pipe, ("compile", "cuda_graph")) == ("compile", "cuda_graph")
+
+
+def test_a_request_specific_eager_call_keeps_the_graph_key():
+    import core.inference.diffusion_cuda_graph as cg
+
+    # every call so far refused one argument: still armed, a later request can capture and replay
+    refused = _graph_handle()
+    refused.stats.update(eager_calls = 16, refused_object = 16)
+    assert cg.never_engaged((refused,)) is not None
+    pipe = types.SimpleNamespace(_unsloth_cuda_graphs = (refused,))
+    assert vr.live_speed_optims(pipe, ("compile", "cuda_graph")) == ("compile", "cuda_graph")
+    # a placement refusal (Refused, but no speed verdict) is per call too
+    placed = _graph_handle(capture_error = {"type": "Refused", "msg": "a placement refusal"})
+    pipe = types.SimpleNamespace(_unsloth_cuda_graphs = (placed,))
+    assert vr.live_speed_optims(pipe, ("compile", "cuda_graph")) == ("compile", "cuda_graph")
+
+
+def test_a_capture_racing_the_zero_count_keeps_the_request_dirty(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_measured_peaks as mp
+
+    gen = [3]
+
+    def count(dev):
+        gen[0] += 1  # another pipeline captures on the card right after the count was read
+        return 0
+
+    monkeypatch.setattr(vr, "_live_graphs", count)
+    monkeypatch.setattr(vr, "_capture_generation", lambda dev: gen[0])
+    monkeypatch.setattr(mp, "open_window", lambda dev: object())
+    monkeypatch.setattr(mp, "close_window", lambda dev, token: True)
+    module = types.SimpleNamespace(_unsloth_video_graphs = 0, _unsloth_video_graph_gen = 3)
+    vr._open_window(module, torch.device("cuda", 0))
+    assert not module._unsloth_video_graphs_clean
+    assert module._unsloth_video_graph_gen == 3
+
+
+def test_video_request_key_names_the_live_speed_optims():
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
+    key = src[src.index("calibration = video_stream_residency.calibration_key(") :]
+    key = key[: key.index("video_stream_residency.arm_request(")]
+    assert "speed_optims = video_stream_residency.live_speed_optims(" in key
+    assert 'speed_optims = tuple(getattr(state, "speed_optims"' not in key
+
+
+def test_a_request_after_a_dropped_graph_is_recorded_under_its_key(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_measured_peaks as mp
+
+    monkeypatch.setattr(vr, "_PEAKS", {})
+    live, gen = [0], [0]
+    monkeypatch.setattr(vr, "_live_graphs", lambda dev: live[0])
+    monkeypatch.setattr(vr, "_capture_generation", lambda dev: gen[0])
+    monkeypatch.setattr(vr, "_store_key", lambda key: None)
+    monkeypatch.setattr(mp, "open_window", lambda dev: object())
+    monkeypatch.setattr(mp, "close_window", lambda dev, token: True)
+    monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: 0)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda *a: 3000 << 20)
+    key = vr.calibration_key("wan2.2-ti2v-5b", speed_optims = ("compile",))
+    module = types.SimpleNamespace(_unsloth_video_calibration_key = key)
+    pipe = types.SimpleNamespace(transformer = module)
+    dev = torch.device("cuda", 0)
+    vr._open_window(module, dev)
+    assert module._unsloth_video_graphs_clean
+    live[0], gen[0] = 0, 1  # it captured one graph, which the speed check then dropped (pool freed)
+    vr._open_window(module, dev)
+    assert module._unsloth_video_graphs_clean
+    module._unsloth_video_pending = (100, 1000 << 20, dev)
+    assert vr.record_request_peak(pipe) == 2000
+    assert vr.measured_extra_mib(key, 100) == 2000
+    # a graph alive from an unrecorded capture keeps the next request dirty
+    live[0], gen[0] = 1, 2
+    vr._open_window(module, dev)
+    assert not module._unsloth_video_graphs_clean
+
+
+def test_every_capture_is_counted_live_before_its_generation_moves():
+    root = Path(__file__).resolve().parents[1] / "core" / "inference"
+    block = (root / "diffusion_block_graph.py").read_text(encoding = "utf-8")
+    note = "note_capture(self._unsloth_capture_device)"
+    for at in [i for i in range(len(block)) if block.startswith(note, i)]:
+        body = block[block.rindex("\n    def ", 0, at) : at]
+        assert "self.cache[full] = entry" in body
+        assert "self._unsloth_capture_device = capture_device()" in body
+        if "_LIVE_BLOCKS.add(self)" in block[at : block.index("\n    def ", at)]:
+            raise AssertionError("a block joins the live set only after its generation moved")
+    step = (root / "diffusion_cuda_graph.py").read_text(encoding = "utf-8")
+    at = step.index("            note_capture(self._unsloth_capture_device)")
+    assert step.rindex("self.cache[key] = entry", 0, at) < at
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "no memory for the speed probe's input copies",
+        "replay measured slower than the eager step on this device (110.0 vs 100.0 ms)",
+    ],
+)
+def test_a_per_key_drop_keeps_the_graph_key(reason):
+    # a probe OOM, or an unpaid replay on a resident placement, drops one key only: another shape can still capture
+    per_key = _graph_handle(_slower = reason, capture_error = {"type": "Refused", "msg": reason})
+    assert per_key.placement._declined is None  # the placement still records
+    pipe = types.SimpleNamespace(_unsloth_cuda_graphs = (per_key,))
+    assert vr.live_speed_optims(pipe, ("compile", "cuda_graph")) == ("compile", "cuda_graph")

@@ -132,6 +132,30 @@ def decode_mib_per_latent(
     return DECODE_MIB_PER_LATENT * (int(ratio) / DECODE_MIB_RATIO) ** 2
 
 
+# bf16 untiled encode peak MiB per latent of the encoded frame, (unfused, fused): B200, real weights, 512 to 1536 px
+# (linear in area: Qwen-Image-2.1 0.565 / 0.283, Qwen-Image 0.165 / 0.121), rounded up.
+ENCODE_MIB_PER_LATENT_BY_CLASS = {
+    "AutoencoderKLQwenImage": (0.17, 0.13),
+    "AutoencoderKLQwenImage21": (0.6, 0.3),
+}
+
+
+def encode_mib_per_latent(
+    ratio: int,
+    fused: bool = False,
+    cls: Optional[str] = None,
+) -> Optional[float]:
+    """bf16 untiled encode peak MiB per latent: measured, else the decode figure (an upper bound), else None."""
+    known = (
+        ENCODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")
+        or DECODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")
+        or DECODE_MIB_PER_LATENT_BY_RATIO.get(int(ratio))
+    )
+    if known is None:
+        return None
+    return known[1] if fused else known[0]
+
+
 def _geometry(vae: Any) -> tuple[int, int, int]:
     """(ratio, floor tile, floor overlap), cached on the VAE at install."""
     cached = getattr(vae, "__dict__", {}).get("_unsloth_wide_geometry")
@@ -277,21 +301,29 @@ def _fused(vae: Any) -> bool:
     )
 
 
-def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
-    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
-    raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
-    if raw.isdigit() and int(raw) > 0:
-        return int(raw) ** 2
+def decode_platform_cap(vae: Any, z: Any) -> Optional[int]:
+    """The decode tile area (latents) a platform pins regardless of free memory, else None."""
     # CUDA-calibrated coefficients under-predict Qwen-Image-2.1 decode on ROCm (40x40, 64x32 and 96x56 OOM at
     # 17/19 GiB limits): start at the tested 32x32 floor rather than retrying an oversized tile on every image.
     import torch
 
     if (
-        z.device.type == "cuda"
+        getattr(getattr(z, "device", None), "type", None) == "cuda"
         and is_rocm_torch(torch)
         and type(vae).__name__ == "AutoencoderKLQwenImage21"
     ):
         return TILE_LATENTS**2
+    return None
+
+
+def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
+    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
+    raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw) ** 2
+    cap = decode_platform_cap(vae, z)
+    if cap is not None:
+        return cap
     try:
         _, tile, _ = _geometry(vae)
         # Stock tile == floor: grow only into device-free memory; decoding out of the allocator cache stalled on
