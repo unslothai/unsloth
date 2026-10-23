@@ -259,7 +259,11 @@ def test_epochs_win_when_max_steps_is_zero_and_fractions_are_reported():
 
 def test_streaming_and_full_fine_tunes_carry_over():
     doc, _ = notebook_import.read_notebook(
-        _plain("dataset = load_dataset('a/b', split = 'train', streaming = True)", peft = False),
+        _plain(
+            "dataset = load_dataset('a/b', split = 'train', streaming = True)",
+            "args = SFTConfig(max_steps = 30)",
+            peft = False,
+        ),
         "x.ipynb",
     )
     tune = _tune(doc)
@@ -412,3 +416,44 @@ def test_vision_streaming_qat_and_text_deepseek_import_runnable_or_refused():
         "Qwen3_(4B)_Instruct-QAT.ipynb",
     )
     assert qat is None and any("qat_scheme" in line for line in report["unsupported"])
+
+
+@pytest.mark.parametrize(
+    "extra, why",
+    [
+        (
+            "trainer = train_on_responses_only(trainer)\nargs = SFTConfig(max_steps = 30)",
+            "responses-only",
+        ),
+        ("args = SFTConfig(num_train_epochs = 1)", "by epochs"),
+    ],
+)
+def test_streaming_is_dropped_where_the_training_route_refuses_it(extra, why):
+    # The route rejects streaming with train_on_completions or without max_steps, so the flow could not start.
+    doc, report = notebook_import.read_notebook(
+        _plain("dataset = load_dataset('a/b', split = 'train', streaming = True)", extra),
+        "x.ipynb",
+    )
+    assert "dataset_streaming" not in _tune(doc)
+    assert any("Streaming" in line and why in line for line in report["approximated"])
+
+
+@pytest.mark.parametrize(
+    "trainer", ["CPOTrainer", "GKDTrainer", "RewardTrainer", "RLOOTrainer", "OnlineDPOTrainer"]
+)
+def test_other_trl_objectives_are_reported_not_imported_as_sft(trainer):
+    doc, report = notebook_import.read_notebook(
+        _plain(
+            "dataset = load_dataset('a/b', split = 'train')", f"trainer = {trainer}(model = model)"
+        ),
+        "x.ipynb",
+    )
+    assert doc is None and any(trainer in line for line in report["unsupported"])
+    for ok in ("SFTTrainer", "Trainer", "UnslothTrainer"):
+        doc, _ = notebook_import.read_notebook(
+            _plain(
+                "dataset = load_dataset('a/b', split = 'train')", f"trainer = {ok}(model = model)"
+            ),
+            "x.ipynb",
+        )
+        assert doc is not None, ok

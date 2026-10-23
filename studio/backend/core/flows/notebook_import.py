@@ -44,6 +44,15 @@ _UNSUPPORTED = {
     "KTOTrainer": "KTO preference training",
     "PPOTrainer": "PPO reinforcement learning",
 }
+# Trainers whose objective is the Fine-tune block's supervised loss. Any other *Trainer (CPO, GKD, RLOO,
+# reward modelling, ...) is a different experiment, so the notebook is reported instead of imported as SFT.
+_SFT_TRAINERS = {
+    "SFTTrainer",
+    "Trainer",
+    "UnslothTrainer",
+    "SentenceTransformerTrainer",
+    "Seq2SeqTrainer",
+}
 _ARGS = {
     "max_steps": "max_steps",
     "learning_rate": "learning_rate",
@@ -153,6 +162,8 @@ class _Reader(ast.NodeVisitor):
         owner = _name(node.func.value) if isinstance(node.func, ast.Attribute) else None
         if fn in _UNSUPPORTED:
             self.unsupported.add(_UNSUPPORTED[fn])
+        elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:
+            self.unsupported.add(f"{fn} training")
         elif fn == "from_pretrained" and owner in _LOADERS and "model" not in self.found:
             model = self.kw(node, "model_name", 0)
             if isinstance(model, str):
@@ -298,6 +309,15 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         report["approximated"].append(
             f"Streaming: Studio's {found['task']} training loads the whole dataset instead"
         )
+    elif tune.get("dataset_streaming") and (
+        tune.get("train_on_completions") or not tune.get("max_steps")
+    ):
+        # The training route refuses streaming with responses-only loss or without a step count.
+        tune.pop("dataset_streaming")
+        why = (
+            "responses-only training" if tune.get("train_on_completions") else "training by epochs"
+        )
+        report["approximated"].append(f"Streaming: Studio loads the whole dataset for {why}")
     tune["base_model"] = found["model"]
     if found["task"] != "text":
         tune["task"] = found["task"]
