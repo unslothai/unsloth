@@ -393,10 +393,7 @@ export const BUDGET = {
   // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
-  // Browser use step names in the agent bar (#14681): the step strings and docs link label in the eager en locale,
-  // the executor's step bookkeeping and the tool card's fence strip: +980 B raw / +399 B transfer (6,921,859 ->
-  // 6,922,839 B raw, 2,084,722 -> 2,085,121 B transfer against 4188371aa0, Node 26, 97 chunks, one machine and
-  // build). Raised by that.
+  // Browser use step names (#14681): +980 B raw / +399 B transfer against 4188371aa0, 97 chunks.
   transferBytes: 2_085_417,
   rawBytes: 6_923_523,
 };

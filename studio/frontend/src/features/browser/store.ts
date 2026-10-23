@@ -283,7 +283,7 @@ async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
     try {
       [x, y] = await Promise.all([a.slice(start, end).arrayBuffer(), b.slice(start, end).arrayBuffer()]);
     } catch {
-      // A File whose backing file changed on disk can't be read any more: not the same, so it is replaced.
+      // A File changed on disk can't be read: treat as different, so it is replaced.
       return false;
     }
     if (!sameBuffer(x, y)) return false;

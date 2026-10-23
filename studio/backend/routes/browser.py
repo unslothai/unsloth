@@ -1676,7 +1676,7 @@ def _live_tags(page: str) -> Callable[["re.Match[str]"], bool]:
 
     def live(match: "re.Match[str]") -> bool:
         nonlocal scanned
-        # Scanned on first use: most pages have no <base> and no refresh or CSP meta to check.
+        # Lazy: most pages have no <base> or refresh/CSP meta.
         if not scanned:
             spans.extend(_inert_spans(page, tags = False))
             starts.extend(begin for begin, _ in spans)
@@ -1702,7 +1702,6 @@ def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dic
             break
     refresh = None
 
-    # One pass over the original page for both tags, so the inert spans are scanned once.
     def strip(match: "re.Match[str]") -> str:
         nonlocal refresh
         tag = match.group(0)

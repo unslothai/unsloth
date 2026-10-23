@@ -1142,7 +1142,7 @@ export function installPageAgent(): PageAgent {
         return { ok: true, note: "Submitted the form." };
       }
       if (tag === "button" || tag === "a" || BUTTON_INPUTS.has(inputType)) (target as HTMLElement).click();
-      // In a multi-line field Enter is a line break, as a synthetic key doesn't insert one.
+      // A synthetic Enter inserts no line break.
       else if (tag === "textarea") {
         const area = target as HTMLTextAreaElement;
         if (area.readOnly || area.matches(":disabled")) return { ok: false, error: "that key does nothing in this field; click or type instead." };
