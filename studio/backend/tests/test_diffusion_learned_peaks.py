@@ -2042,8 +2042,10 @@ def test_attention_scaling_unknown_render_is_not_recorded(store, monkeypatch):
     )
     monkeypatch.setattr(diffusion, "_conditioning_cache_hits", lambda pipe: 0)
     answers = {"math": False, "fused": False}
-    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target: answers["math"])
-    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", lambda target: answers["fused"])
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target, *_: answers["math"])
+    monkeypatch.setattr(
+        diffusion, "sdpa_subquadratic_confirmed", lambda target, *_: answers["fused"]
+    )
     target = types.SimpleNamespace(device = "cuda:0")
     assert not diffusion._attention_scaling_known(target, "native")  # the probe answered nothing
     assert not diffusion._attention_scaling_known(None, None)

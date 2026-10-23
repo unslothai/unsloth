@@ -875,6 +875,23 @@ def dit_train_host(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _fresh_archive_vector_cache():
+    """The archive's pre-embedded vector cache is process-wide; one test's vectors must not answer another's."""
+    archive = sys.modules.get("core.rag.conversation_archive")
+    if archive is not None:
+        archive._vector_cache.clear()
+        archive._noted_branches.clear()
+    yield
+    archive = sys.modules.get("core.rag.conversation_archive")
+    if archive is not None:
+        archive._prewarm_stop.set()
+        if archive._prewarm_worker is not None:
+            archive._prewarm_worker.join()
+        archive._vector_cache.clear()
+        archive._noted_branches.clear()
+
+
+@pytest.fixture(autouse = True)
 def _reset_optional_module_memo():
     """_load_optional caches failures too, so one test's fake module would answer the next question."""
     import utils.hf_xet_fallback as _shim
