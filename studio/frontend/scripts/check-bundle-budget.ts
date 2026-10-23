@@ -393,10 +393,10 @@ export const BUDGET = {
   // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
-  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): +3,506 B raw /
-  // +1,039 B transfer against e1b3124110 (Node 22, 97 chunks). Raised by that.
-  transferBytes: 2_086_057,
-  rawBytes: 6_926_049,
+  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): +3,813 B raw /
+  // +1,187 B transfer against 2eb94bcf47 (Node 22, 98 chunks). Raised by that.
+  transferBytes: 2_086_205,
+  rawBytes: 6_926_356,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
