@@ -7150,7 +7150,15 @@ def claude(
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
     # Only a bare or resumed interactive launch is refused: its prompt is the stock one and the TUI would hide a warning. Other forwarded args (-p, --tools, a --no-launch recipe a driver extends) can shrink the prompt, so they only warn.
-    refuse_small_context = launch and _only_resumes(ctx.args, _CLAUDE_RESUME_ARGS)
+    # CLAUDE_CODE_SIMPLE is the env form of --bare: a minimal prompt that may fit, so it only warns too.
+    simple = os.environ.get("CLAUDE_CODE_SIMPLE", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    refuse_small_context = launch and not simple and _only_resumes(ctx.args, _CLAUDE_RESUME_ARGS)
     context_check = None
     if max_seq_length > 0 and not as_subagent:
         # Before the load, which would evict the resident model only for this to refuse.

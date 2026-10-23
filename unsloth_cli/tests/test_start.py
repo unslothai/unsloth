@@ -7958,6 +7958,18 @@ def test_agent_context_warning_never_echoes_a_scripted_prompt(fake_studio, launc
     assert "SECRET_PROMPT" not in result.output
 
 
+@pytest.mark.parametrize(
+    "simple, refused", [("1", False), ("true", False), ("0", True), ("", True)]
+)
+def test_claude_simple_mode_only_warns(fake_studio, launched, monkeypatch, simple, refused):
+    monkeypatch.setenv("CLAUDE_CODE_SIMPLE", simple)
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, ["claude"])
+    assert result.exit_code == (1 if refused else 0), result.output
+    assert "too few for Claude Code" in result.output
+    assert bool(launched) is not refused
+
+
 def test_opencode_context_retry_keeps_max_tokens(fake_studio, launched):
     target = "unsloth/other-GGUF"
     args = ["opencode", "--model", target, "--max-tokens", "1000", "--max-seq-length", "8192"]
