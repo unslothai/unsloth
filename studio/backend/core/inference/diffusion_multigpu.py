@@ -1614,6 +1614,10 @@ def build_replica(module: Any, device: Any) -> Any:
     )
     if stray:
         raise RuntimeError(f"replica weights stayed on {', '.join(stray)}, not {device}")
+    # The ROCm flash gate is thread-local state its root hooks set; the copy runs on its own worker thread.
+    from .diffusion_attention import track_rocm_flash_replica
+
+    track_rocm_flash_replica(module, replica, device)
     return replica
 
 
