@@ -733,3 +733,29 @@ def test_a_change_to_any_file_in_a_model_folder_changes_its_fingerprint(tmp_path
     before = _local_fingerprint(str(tmp_path))
     (tmp_path / "shard-0299.bin").write_bytes(b"xy")
     assert _local_fingerprint(str(tmp_path)) != before
+
+
+def test_loads_with_other_load_settings_are_never_followed(monkeypatch):
+    from types import SimpleNamespace
+
+    seen = []
+
+    async def fake_start_load(caller, ctx, **kwargs):
+        seen.append(kwargs)
+
+    monkeypatch.setattr(loading, "start_load", fake_start_load)
+    for extra in ({"cache_type_kv": "q8_0"}, {"cache_type_kv": "q4_0"}, None):
+        asyncio.run(
+            loading.load_llm(
+                SimpleNamespace(hf_token = None),
+                None,
+                model = "unsloth/Qwen3-0.6B-GGUF",
+                variant = None,
+                max_seq_length = 0,
+                load_in_4bit = True,
+                hf_token = None,
+                extra_body = extra,
+            )
+        )
+    assert len({repr(k["options"]) for k in seen}) == 3
+    assert [k["attach"] for k in seen] == [False, False, True]
