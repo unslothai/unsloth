@@ -333,3 +333,50 @@ def test_tensors_left_out_of_the_layout_are_not_uploaded_with_the_chunk(fake_pin
     for name, _, view in kept:
         assert params[name].data_ptr() != view.data_ptr()
         assert torch.equal(params[name].detach(), expect[name])
+
+
+def _layout_chunk_ptrs(module):
+    layout = module.__dict__[dm._KEEP_ATTR].get("pin_layout") or []
+    return {buf.data_ptr() for buf, _ in layout}
+
+
+@pytest.mark.parametrize("fast_upload", ["1", "0"])
+@pytest.mark.parametrize("cast_on", ["host", "device"])
+def test_a_dtype_change_releases_the_obsolete_pinned_chunks(
+    fake_pin, monkeypatch, fast_upload, cast_on
+):
+    # The SDXL fp32 VAE decode casts an offloaded component and back: its kept weights are new host tensors, so the
+    # chunks pinned for the old ones must not stay referenced by the layout (fast upload on or off).
+    monkeypatch.setenv(dm.OFFLOAD_FAST_UPLOAD_ENV, fast_upload)
+    pipe = _pipe("cpu", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    module = _onload(pipe)
+    old = _layout_chunk_ptrs(module)
+    assert old
+    if cast_on == "device":
+        module.half()  # cast while onloaded: the offload brings back new host tensors
+        module._hf_hook.init_hook(module)
+    else:
+        module._hf_hook.init_hook(module)
+        module.half()  # cast while offloaded: the next onload finds new host tensors
+        _onload(pipe)
+    assert not old & _layout_chunk_ptrs(module)
+    state = module.__dict__[dm._KEEP_ATTR]
+    live = {v.untyped_storage().data_ptr() for v in state["host"].values()}
+    assert not old & live
+
+
+def test_a_replaced_weight_drops_out_of_the_layout_and_the_rest_stays(fake_pin):
+    pipe = _pipe("cpu", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    module = _onload(pipe)
+    module._hf_hook.init_hook(module)
+    before = module.__dict__[dm._KEEP_ATTR]["pin_layout"]
+    names = {name for _, entries in before for name, _, _ in entries}
+    module[0].weight = torch.nn.Parameter(torch.zeros(16, 16))
+    _onload(pipe)
+    after = module.__dict__[dm._KEEP_ATTR]["pin_layout"]
+    left = {name for _, entries in after for name, _, _ in entries}
+    assert left == names - {"0.weight"}
