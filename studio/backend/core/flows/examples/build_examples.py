@@ -37,6 +37,14 @@ REQ = {
         **IMAGE,
     },
     "video": {"ref": "director", "kind": "video", "note": "5B text+image to video.", **VIDEO},
+    "embedding": {
+        "ref": "embedder",
+        "kind": "embedding",
+        "note": "Studio's local embedding model for knowledge bases (Settings can change it); runs offline once "
+        "downloaded.",
+        "repo": "unsloth/bge-small-en-v1.5",
+        "variant": None,
+    },
     "tts": {
         "ref": "voice",
         "kind": "tts",
@@ -1396,241 +1404,205 @@ def sticker_pack() -> B:
     return b
 
 
-def chat_with_documents() -> B:
+def summarise_pdf() -> B:
     b = B(
-        "chat-with-documents",
-        "Chat With My Documents",
+        "summarise-pdf",
+        "Summarise a Document",
         "pipeline",
-        "A chat assistant that answers from one of your knowledge bases, fully offline with a local model. Open it "
-        "in the player to chat; pick the knowledge base in the Agent block.",
-        tags = ["chat", "agent", "knowledge base"],
-        seed = 41,
+        "Load a PDF, Word or text file, cut it into chunks, summarise each chunk, then write one summary of the "
+        "whole document.",
+        tags = ["documents", "llm", "for each"],
+        seed = 12,
     ).need("chat")
-    b.n("in", "chat.input", 0, 1, welcome = "Ask me anything about your documents.")
-    b.n("memory", "chat.memory", 1, 1.6, turns = 6)
-    b.e("in.history", "memory.history")
+    b.n("doc", "input.file", 0, 1, label = "Your document")
+    b.n("read", "doc.load", 1, 1)
+    b.e("doc.file", "read.file")
+    b.n("chunks", "text.split", 2, 1, mode = "chunks", unit = "words", chunk_size = 700, overlap = 50)
+    b.e("read.text", "chunks.text")
+    b.n("each", "logic.for_each", 3, 1, group = "s_loop", max_items = 32)
     b.n(
-        "agent",
-        "llm.agent",
-        2,
-        1,
-        model = CHAT,
-        system = "Answer from the knowledge base and say which document you used. If it does not have the answer, "
-        "say so.",
-        web_search = False,
-    )
-    b.e("in.message", "agent.prompt")
-    b.e("memory.history", "agent.history")
-    b.n("out", "chat.output", 3, 1)
-    b.e("agent.text", "out.reply")
-    b.note(
-        "tip",
-        "Pick a knowledge base in the Agent block, then press Play to chat.",
-        0,
-        2.4,
-        1.8,
-        0.6,
-    )
-    return b
-
-
-def support_bot() -> B:
-    b = B(
-        "support-bot",
-        "Support Bot",
-        "pipeline",
-        "Sorts each message (question, bug report or other), then answers in the matching style. Open it in the "
-        "player to chat.",
-        tags = ["chat", "classify"],
-        seed = 42,
-    ).need("chat")
-    b.n("in", "chat.input", 0, 1, welcome = "Hi! What can I help you with today?")
-    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["question", "bug report", "other"])
-    b.e("in.message", "kind.text")
-    b.n("memory", "chat.memory", 1, 1.6, turns = 4)
-    b.e("in.history", "memory.history")
-    b.n(
-        "reply",
+        "part",
         "llm.generate",
-        2,
+        4,
         1,
+        group = "s_loop",
+        label = "Summarise a part",
         model = CHAT,
-        temperature = 0.5,
-        system = "You are a friendly support agent for a software product. The context gives the message's "
-        "category (question, bug report or other) and the conversation so far. For a bug report, thank them and "
-        "ask for steps to reproduce. Keep it short.",
-        prompt = "New message: {{prompt}}",
+        temperature = 0.2,
+        max_tokens = 300,
+        prompt = "Summarise this part of a document in 3 short bullet points:\n\n{{prompt}}",
     )
-    b.e("kind.label", "reply.context")
-    b.e("memory.text", "reply.context")
-    b.e("in.message", "reply.prompt")
-    b.n("out", "chat.output", 3, 1)
-    b.e("reply.text", "out.reply")
-    return b
-
-
-def research_agent() -> B:
-    b = B(
-        "research-agent",
-        "Research Agent",
-        "pipeline",
-        "Give it a question: a local model searches the web, reads what it finds and writes a short report with "
-        "its sources.",
-        tags = ["agent", "web search"],
-        seed = 43,
-    ).need("chat")
-    b.n("question", "input.text", 0, 1, value = "What changed in the latest stable Python release?")
+    b.group("s_loop", "For each chunk", (3, 0.4, 2.2, 1.6), "#0d9488")
+    b.e("chunks.items", "each.items")
+    b.e("each.item", "part.prompt")
+    b.e("part.text", "each.collect")
+    b.n("joined", "list.join", 5.4, 1)
+    b.e("each.results", "joined.items")
     b.n(
-        "agent",
-        "llm.agent",
+        "summary",
+        "llm.generate",
+        6.4,
         1,
-        1,
-        label = "Researcher",
+        label = "Whole summary",
         model = CHAT,
-        system = "Research the question with web search. Write a short report in plain sentences, then a Sources "
-        "list with the URL of every page you used. Never invent a source.",
-        web_search = True,
-        max_tool_calls = 6,
         temperature = 0.3,
+        max_tokens = 700,
+        prompt = "These are notes on each part of one document, in order:\n{{context}}\n\nWrite a clear summary "
+        "of the whole document in one paragraph, then list the 5 key points.",
     )
-    b.e("question.text", "agent.prompt")
-    b.n("report", "output.result", 2, 1, name = "report")
-    b.e("agent.text", "report.value")
-    b.note(
-        "tip",
-        "Web search is the only tool the Agent gets here; the model itself runs on your machine.",
-        0,
-        2,
-        1.8,
-        0.6,
-    )
+    b.e("joined.text", "summary.context")
+    b.n("show", "output.preview", 7.4, 1)
+    b.e("summary.text", "show.value")
+    b.note("tip", "Upload a document in the first block, then Run.", 0, 2.2, 1.6, 0.6)
     return b
 
 
-def invoice_extractor() -> B:
+def ask_documents() -> B:
     b = B(
-        "invoice-extractor",
-        "Invoice Extractor",
+        "ask-documents",
+        "Ask Your Documents",
         "pipeline",
-        "Pulls the vendor, date, total and line items out of a pasted invoice or receipt as clean JSON.",
-        tags = ["extract", "json"],
-        seed = 44,
-    ).need("chat")
+        "Add a document to a knowledge base (the same ones chat searches), then answer a question from the passages "
+        "that match it, with the sources cited.",
+        tags = ["documents", "knowledge base", "rag", "llm"],
+        seed = 13,
+    ).need("chat", "embedding")
+    b.n("doc", "input.file", 0, 0.5, label = "Your document")
+    b.n("add", "kb.add", 1, 0.5, knowledge_base = "Flows")
+    b.e("doc.file", "add.file")
+    b.n("question", "input.text", 0, 1.6, value = "What are the main points of this document?")
+    b.n("search", "kb.search", 2, 1.2, knowledge_base = "Flows", top_k = 6)
+    b.e("question.text", "search.query")
+    b.e("add.knowledge_base", "search.after")
     b.n(
-        "invoice",
-        "input.text",
-        0,
-        1,
-        value = "ACME Tools Ltd\nInvoice #2041, 3 March 2026\n2 x Claw hammer @ 18.50\n1 x Tape measure @ 7.25\n"
-        "Shipping 4.00\nTotal due: 48.25 GBP",
-    )
-    b.n(
-        "extract",
-        "llm.extract",
-        1,
-        1,
+        "answer",
+        "llm.generate",
+        3,
+        1.2,
+        label = "Answer",
         model = CHAT,
-        instructions = "Amounts are numbers without currency signs. Dates are YYYY-MM-DD.",
-        json_schema = {
-            "type": "object",
-            "properties": {
-                "vendor": {"type": "string"},
-                "invoice_number": {"type": "string"},
-                "date": {"type": "string"},
-                "currency": {"type": "string"},
-                "total": {"type": "number"},
-                "line_items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "description": {"type": "string"},
-                            "quantity": {"type": "number"},
-                            "unit_price": {"type": "number"},
-                        },
-                        "required": ["description", "quantity", "unit_price"],
-                    },
-                },
-            },
-            "required": ["vendor", "date", "currency", "total", "line_items"],
-        },
+        temperature = 0.2,
+        max_tokens = 600,
+        prompt = "Answer the question using only these passages, and cite them like [1].\n\n{{context}}\n\n"
+        "Question: {{prompt}}",
     )
-    b.e("invoice.text", "extract.text")
-    b.n("total", "json.get", 2, 0.5, path = "total")
-    b.e("extract.json", "total.json")
-    b.n("show_total", "output.preview", 3, 0.5)
-    b.e("total.value", "show_total.value")
-    b.n("data", "output.result", 2, 1.5, name = "invoice")
-    b.e("extract.json", "data.value")
+    b.e("question.text", "answer.prompt")
+    b.e("search.context", "answer.context")
+    b.n("show", "output.preview", 4, 1.2)
+    b.e("answer.text", "show.value")
     b.note(
         "tip",
-        'For a scan or photo, put an Image block and Describe Image ("Copy every line of this invoice") in front '
-        "of Extract.",
+        "Upload a document, then Run. Parsing, embedding and search all run locally on Studio's own models, "
+        "offline once they are downloaded. Later runs can drop the first two blocks and search what is indexed.",
         0,
-        2,
+        2.5,
         1.8,
         0.7,
     )
     return b
 
 
-def email_triage() -> B:
+def contact_cleanup() -> B:
     b = B(
-        "email-triage",
-        "Email Triage",
+        "contact-cleanup",
+        "Clean Up a Contact List",
         "pipeline",
-        "Sorts an incoming email (refund, bug report or other) and drafts a reply in the right style for each kind.",
-        tags = ["classify", "switch", "email"],
-        seed = 45,
+        "Paste a messy list or spreadsheet: a local model turns it into rows, then the list blocks drop rows "
+        "without an email, remove duplicates, tidy the fields and sort by name.",
+        tags = ["data", "json", "transform"],
+        seed = 13,
     ).need("chat")
     b.n(
-        "email",
+        "pasted",
         "input.text",
         0,
         1,
-        value = "Hi, I was charged twice for my subscription this month. Can I get one of them refunded? Thanks, Sam",
+        label = "Pasted list",
+        value = "name,email,company\nAna Lima,ANA@example.com,Acme\nben ortiz,ben@example.org,\nAna Lima,"
+        "ana@example.com,Acme Inc\nChris Wu,,Globex\nDee Park,dee@example.net,Initech",
     )
-    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["refund", "bug report", "other"])
-    b.e("email.text", "kind.text")
-    b.n("route", "logic.switch", 2, 1, cases = ["refund", "bug report"])
-    b.e("email.text", "route.value")
-    b.e("kind.label", "route.key")
-    replies = (
-        (
-            "refund",
-            "case_1",
-            "Apologise, confirm the refund will be checked within two working days, and ask for "
-            "the order number if it is missing.",
-        ),
-        (
-            "bug",
-            "case_2",
-            "Thank them, ask for the steps to reproduce, their app version and a screenshot.",
-        ),
-        ("other", "default", "Answer helpfully, or say who on the team will follow up."),
+    b.n(
+        "rows",
+        "llm.generate",
+        1,
+        1,
+        label = "Read the rows",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 2048,
+        system = "Copy every person in the text into rows exactly as written. Use an empty string for a missing "
+        "field. Do not fix, merge or drop anything.",
+        prompt = "{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "company": {"type": "string"},
+                        },
+                        "required": ["name", "email", "company"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
     )
-    for row, (name, port, style) in enumerate(replies):
-        b.n(
-            f"reply_{name}",
-            "llm.generate",
-            3,
-            row * 0.9 + 0.1,
-            label = f"Reply: {name}",
-            model = CHAT,
-            temperature = 0.4,
-            max_tokens = 400,
-            system = f"You draft short, friendly support emails. {style} Sign off as the Support Team.",
-            prompt = "Reply to this email:\n\n{{prompt}}",
-        )
-        b.e(f"route.{port}", f"reply_{name}.prompt")
-    b.n("first", "logic.merge", 4, 1)
-    b.e("reply_refund.text", "first.a")
-    b.e("reply_bug.text", "first.b")
-    b.e("reply_other.text", "first.c")
-    b.n("draft", "output.result", 5, 1, name = "draft")
-    b.e("first.value", "draft.value")
-    b.n("label", "output.result", 2, 0.1, name = "category")
-    b.e("kind.label", "label.value")
+    b.e("pasted.text", "rows.prompt")
+    b.n("list", "json.get", 2, 1, path = "rows")
+    b.e("rows.json", "list.json")
+    b.n(
+        "has_email",
+        "list.filter",
+        3,
+        1,
+        label = "Has an email",
+        condition = {"op": "contains", "args": [{"var": "item.email"}, "@"]},
+    )
+    b.e("list.value", "has_email.items")
+    b.n(
+        "tidy",
+        "json.set",
+        4,
+        1,
+        label = "Tidy fields",
+        fields = {
+            "email": {"op": "lower", "args": [{"var": "item.email"}]},
+            "company": {
+                "op": "if",
+                "args": [{"var": "item.company"}, {"var": "item.company"}, "unknown"],
+            },
+        },
+    )
+    b.e("has_email.items", "tidy.value")
+    b.n("unique", "list.dedupe", 5, 1, label = "One per email", key = {"var": "item.email"})
+    b.e("tidy.value", "unique.items")
+    b.n(
+        "sorted",
+        "list.sort",
+        6,
+        1,
+        label = "Sort by name",
+        key = {"op": "lower", "args": [{"var": "item.name"}]},
+    )
+    b.e("unique.items", "sorted.items")
+    b.n("clean", "output.result", 7, 1, name = "contacts")
+    b.e("sorted.items", "clean.value")
+    b.n("dropped", "output.preview", 4, 2)
+    b.e("has_email.dropped", "dropped.value")
+    b.note(
+        "tip",
+        "Only the first block uses a model; the cleanup after it is plain list blocks, so you can change a rule "
+        "and re-run in a blink.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
     return b
 
 
@@ -2289,6 +2261,244 @@ def model_arena() -> B:
     return b
 
 
+def chat_with_documents() -> B:
+    b = B(
+        "chat-with-documents",
+        "Chat With My Documents",
+        "pipeline",
+        "A chat assistant that answers from one of your knowledge bases, fully offline with a local model. Open it "
+        "in the player to chat; pick the knowledge base in the Agent block.",
+        tags = ["chat", "agent", "knowledge base"],
+        seed = 41,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Ask me anything about your documents.")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 6)
+    b.e("in.history", "memory.history")
+    b.n(
+        "agent",
+        "llm.agent",
+        2,
+        1,
+        model = CHAT,
+        system = "Answer from the knowledge base and say which document you used. If it does not have the answer, "
+        "say so.",
+        web_search = False,
+    )
+    b.e("in.message", "agent.prompt")
+    b.e("memory.history", "agent.history")
+    b.n("out", "chat.output", 3, 1)
+    b.e("agent.text", "out.reply")
+    b.note(
+        "tip",
+        "Pick a knowledge base in the Agent block, then press Play to chat.",
+        0,
+        2.4,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def support_bot() -> B:
+    b = B(
+        "support-bot",
+        "Support Bot",
+        "pipeline",
+        "Sorts each message (question, bug report or other), then answers in the matching style. Open it in the "
+        "player to chat.",
+        tags = ["chat", "classify"],
+        seed = 42,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Hi! What can I help you with today?")
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["question", "bug report", "other"])
+    b.e("in.message", "kind.text")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 4)
+    b.e("in.history", "memory.history")
+    b.n(
+        "reply",
+        "llm.generate",
+        2,
+        1,
+        model = CHAT,
+        temperature = 0.5,
+        system = "You are a friendly support agent for a software product. The context gives the message's "
+        "category (question, bug report or other) and the conversation so far. For a bug report, thank them and "
+        "ask for steps to reproduce. Keep it short.",
+        prompt = "New message: {{prompt}}",
+    )
+    b.e("kind.label", "reply.context")
+    b.e("memory.text", "reply.context")
+    b.e("in.message", "reply.prompt")
+    b.n("out", "chat.output", 3, 1)
+    b.e("reply.text", "out.reply")
+    return b
+
+
+def research_agent() -> B:
+    b = B(
+        "research-agent",
+        "Research Agent",
+        "pipeline",
+        "Give it a question: a local model searches the web, reads what it finds and writes a short report with "
+        "its sources.",
+        tags = ["agent", "web search"],
+        seed = 43,
+    ).need("chat")
+    b.n("question", "input.text", 0, 1, value = "What changed in the latest stable Python release?")
+    b.n(
+        "agent",
+        "llm.agent",
+        1,
+        1,
+        label = "Researcher",
+        model = CHAT,
+        system = "Research the question with web search. Write a short report in plain sentences, then a Sources "
+        "list with the URL of every page you used. Never invent a source.",
+        web_search = True,
+        max_tool_calls = 6,
+        temperature = 0.3,
+    )
+    b.e("question.text", "agent.prompt")
+    b.n("report", "output.result", 2, 1, name = "report")
+    b.e("agent.text", "report.value")
+    b.note(
+        "tip",
+        "Web search is the only tool the Agent gets here; the model itself runs on your machine.",
+        0,
+        2,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def invoice_extractor() -> B:
+    b = B(
+        "invoice-extractor",
+        "Invoice Extractor",
+        "pipeline",
+        "Pulls the vendor, date, total and line items out of a pasted invoice or receipt as clean JSON.",
+        tags = ["extract", "json"],
+        seed = 44,
+    ).need("chat")
+    b.n(
+        "invoice",
+        "input.text",
+        0,
+        1,
+        value = "ACME Tools Ltd\nInvoice #2041, 3 March 2026\n2 x Claw hammer @ 18.50\n1 x Tape measure @ 7.25\n"
+        "Shipping 4.00\nTotal due: 48.25 GBP",
+    )
+    b.n(
+        "extract",
+        "llm.extract",
+        1,
+        1,
+        model = CHAT,
+        instructions = "Amounts are numbers without currency signs. Dates are YYYY-MM-DD.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "vendor": {"type": "string"},
+                "invoice_number": {"type": "string"},
+                "date": {"type": "string"},
+                "currency": {"type": "string"},
+                "total": {"type": "number"},
+                "line_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "quantity": {"type": "number"},
+                            "unit_price": {"type": "number"},
+                        },
+                        "required": ["description", "quantity", "unit_price"],
+                    },
+                },
+            },
+            "required": ["vendor", "date", "currency", "total", "line_items"],
+        },
+    )
+    b.e("invoice.text", "extract.text")
+    b.n("total", "json.get", 2, 0.5, path = "total")
+    b.e("extract.json", "total.json")
+    b.n("show_total", "output.preview", 3, 0.5)
+    b.e("total.value", "show_total.value")
+    b.n("data", "output.result", 2, 1.5, name = "invoice")
+    b.e("extract.json", "data.value")
+    b.note(
+        "tip",
+        'For a scan or photo, put an Image block and Describe Image ("Copy every line of this invoice") in front '
+        "of Extract.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def email_triage() -> B:
+    b = B(
+        "email-triage",
+        "Email Triage",
+        "pipeline",
+        "Sorts an incoming email (refund, bug report or other) and drafts a reply in the right style for each kind.",
+        tags = ["classify", "switch", "email"],
+        seed = 45,
+    ).need("chat")
+    b.n(
+        "email",
+        "input.text",
+        0,
+        1,
+        value = "Hi, I was charged twice for my subscription this month. Can I get one of them refunded? Thanks, Sam",
+    )
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["refund", "bug report", "other"])
+    b.e("email.text", "kind.text")
+    b.n("route", "logic.switch", 2, 1, cases = ["refund", "bug report"])
+    b.e("email.text", "route.value")
+    b.e("kind.label", "route.key")
+    replies = (
+        (
+            "refund",
+            "case_1",
+            "Apologise, confirm the refund will be checked within two working days, and ask for "
+            "the order number if it is missing.",
+        ),
+        (
+            "bug",
+            "case_2",
+            "Thank them, ask for the steps to reproduce, their app version and a screenshot.",
+        ),
+        ("other", "default", "Answer helpfully, or say who on the team will follow up."),
+    )
+    for row, (name, port, style) in enumerate(replies):
+        b.n(
+            f"reply_{name}",
+            "llm.generate",
+            3,
+            row * 0.9 + 0.1,
+            label = f"Reply: {name}",
+            model = CHAT,
+            temperature = 0.4,
+            max_tokens = 400,
+            system = f"You draft short, friendly support emails. {style} Sign off as the Support Team.",
+            prompt = "Reply to this email:\n\n{{prompt}}",
+        )
+        b.e(f"route.{port}", f"reply_{name}.prompt")
+    b.n("first", "logic.merge", 4, 1)
+    b.e("reply_refund.text", "first.a")
+    b.e("reply_bug.text", "first.b")
+    b.e("reply_other.text", "first.c")
+    b.n("draft", "output.result", 5, 1, name = "draft")
+    b.e("first.value", "draft.value")
+    b.n("label", "output.result", 2, 0.1, name = "category")
+    b.e("kind.label", "label.value")
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -2300,11 +2510,9 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
-    chat_with_documents,
-    support_bot,
-    research_agent,
-    invoice_extractor,
-    email_triage,
+    summarise_pdf,
+    ask_documents,
+    contact_cleanup,
     photo_restyle,
     animate_photo,
     meeting_notes,
@@ -2317,6 +2525,11 @@ BUILDERS = (
     tts_sft,
     embedding_sft,
     model_arena,
+    chat_with_documents,
+    support_bot,
+    research_agent,
+    invoice_extractor,
+    email_triage,
 )
 
 

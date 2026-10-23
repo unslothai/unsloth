@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Optional
 
@@ -34,7 +35,17 @@ FLOW_PREFIXES = tuple(
 )
 
 
-FLOW_EXACT = ("/api/library",)
+# Load Document, Add to / Search Knowledge Base: the account's own knowledge bases, for Flows only (not MCP).
+FLOW_EXACT = (
+    "/api/library",
+    "/api/rag/knowledge-bases",
+    "/api/rag/extract-text",
+    "/api/rag/search",
+)
+_FLOW_RAG_PATTERNS = (
+    re.compile(r"^/api/rag/knowledge-bases/[^/]+/documents$"),
+    re.compile(r"^/api/rag/jobs/[^/]+$"),
+)
 # Read-only system facts a benchmark records (hardware, llama.cpp build); never written through Flows.
 FLOW_READ_ONLY = ("/api/system", "/api/llama/backend")
 
@@ -45,6 +56,7 @@ def checked_path(url: httpx.URL, method: str = "GET") -> str:
     allowed = (
         path in FLOW_EXACT
         or path.startswith(FLOW_PREFIXES)
+        or any(p.match(path) for p in _FLOW_RAG_PATTERNS)
         or (path in FLOW_READ_ONLY and method.upper() == "GET")
     )
     if not allowed or any(s in (".", "..") for s in segments):
