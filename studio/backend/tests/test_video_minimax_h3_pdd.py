@@ -860,11 +860,19 @@ def test_the_denoiser_never_puts_float64_on_a_device_without_it(monkeypatch):
     from torch.utils._pytree import tree_flatten
 
     class _NoDeviceFp64(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
             out = func(*args, **(kwargs or {}))
             for t in tree_flatten((args, kwargs, out))[0]:
                 if isinstance(t, torch.Tensor) and t.dtype == torch.float64 and t.is_cuda:
-                    raise RuntimeError(f"Required aspect fp64 is not supported on the device ({func})")
+                    raise RuntimeError(
+                        f"Required aspect fp64 is not supported on the device ({func})"
+                    )
             return out
 
     monkeypatch.setattr(

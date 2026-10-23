@@ -134,7 +134,6 @@ def device_has_fp64(device: Any) -> bool:
     kind = getattr(device, "type", None)
     if kind is None:
         import torch
-
         device = torch.device(device)
         kind = device.type
     if kind in ("cpu", "cuda", "meta"):
@@ -146,14 +145,12 @@ def device_has_fp64(device: Any) -> bool:
         if kind == "xpu":
             try:
                 import torch
-
                 index = key[1] if key[1] is not None else torch.xpu.current_device()
                 known = bool(torch.xpu.get_device_properties(index).has_fp64)
             except Exception:  # noqa: BLE001
                 known = False
         _FP64_BY_DEVICE[key] = known
     return known
-
 
 
 def pdd_head_weights(state: Any, heads: int) -> Any:
