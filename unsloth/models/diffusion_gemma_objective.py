@@ -109,7 +109,7 @@ def _forward_with_prefix_cache(model, model_kwargs, text_config, prefix_indices)
     # A replica's cache holds only its own rows and cannot be gathered back (DynamicCache rebuilds from
     # the zipped per-replica layers and fails), and the loss never reads it, so it stays in the replica.
     def drop_cache(module, args, output):
-        if any(isinstance(v, Cache) for v in output.values()):
+        if isinstance(output, dict) and any(isinstance(v, Cache) for v in output.values()):
             output = type(output)(**{k: v for k, v in output.items() if not isinstance(v, Cache)})
         return output
 
