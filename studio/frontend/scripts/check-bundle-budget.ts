@@ -401,10 +401,13 @@ export const BUDGET = {
   // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +146 B transfer (6,925,639 ->
   // 6,926,187 B raw, 2,086,290 -> 2,086,436 B transfer against 0ee5cfc58, Node 24, 98 chunks), where main
   // was already over the line above. Set to the merged build plus about 200 B.
+  // macOS Desktop stray key text guard (#14815), eager in main.tsx: +278 B raw / +114 B transfer
+  // (6,925,639 -> 6,925,917 B raw, 2,086,290 -> 2,086,404 B transfer against 14e0178e0, Node 24, chunk count
+  // unchanged at 98). Raised by +278 B raw / +129 B transfer so main's margin stays where it was.
   // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +288 B transfer (6,924,738 ->
   // 6,925,827 B raw, 2,086,221 -> 2,086,509 B transfer against bf172053ac, Node 26, 99 chunks). Raised by that.
-  transferBytes: 2_086_918,
-  rawBytes: 6_927_479,
+  transferBytes: 2_087_047,
+  rawBytes: 6_927_757,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
