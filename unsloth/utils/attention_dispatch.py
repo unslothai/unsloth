@@ -99,6 +99,16 @@ def scaled_dot_product_attention(*args, **kwargs):
     return F.scaled_dot_product_attention(*args, **kwargs)
 
 
+def _training_sdpa(*args, **kwargs):
+    """SDPA for a training forward (AttentionContext.training, passed in, no global state: these
+    calls run traced). On SM100 SDPA picks cuDNN attention, which builds a plan for every new
+    sequence length (~150 ms each), and training batches change length every step."""
+    if args and args[0].is_cuda and args[0].device.index in _NO_CUDNN_TRAINING:
+        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+            return scaled_dot_product_attention(*args, **kwargs)
+    return scaled_dot_product_attention(*args, **kwargs)
+
+
 def _rerouted_sdpa(*args, **kwargs):
     """SDPA standing in for xformers inside a compiled block, on the kernels xformers would run.
     Without the pin, torch 2.13+ on SM100 takes cuDNN attention, which builds a new plan for every
@@ -145,6 +155,16 @@ def _visible_capabilities():
         return tuple(torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count()))
     except Exception:
         return ()
+
+
+def _no_cudnn_training_devices():
+    """Device indices whose training SDPA calls avoid cuDNN attention (SM100). UNSLOTH_SDPA_TRAIN_CUDNN=1 keeps it."""
+    if os.environ.get("UNSLOTH_SDPA_TRAIN_CUDNN", "0") == "1" or torch.version.hip is not None:
+        return frozenset()
+    return frozenset(i for i, cap in enumerate(_visible_capabilities()) if cap[0] == 10)
+
+
+_NO_CUDNN_TRAINING = _no_cudnn_training_devices()
 
 
 # Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
@@ -569,6 +589,7 @@ def _sdpa_packed_segments(
     is_causal: bool,
     sliding_window: Optional[int],
     sdpa_kwargs: dict,
+    training: bool = False,
 ) -> Optional[Tensor]:
     """Q (1, H, T, D), K / V (1, H_kv, T, D) -> (1, T, H, D), the block-diagonal mask's result;
     None when the lengths do not tile the row."""
@@ -619,7 +640,9 @@ def _sdpa_packed_segments(
         if gqa:
             kwargs["enable_gqa"] = True
         K_run, V_run = kv(gqa)
-        out = scaled_dot_product_attention(Q_run, split(K_run), split(V_run), **kwargs)
+        out = (_training_sdpa if training else scaled_dot_product_attention)(
+            Q_run, split(K_run), split(V_run), **kwargs
+        )
         outs.append(out.transpose(1, 2).flatten(0, 1))
         start, i = end, j
     return torch.cat(outs, dim = 0).unsqueeze(0)
@@ -751,6 +774,8 @@ class AttentionContext:
     # every existing construction and behavior unchanged.
     prefix_seg_info: Optional[Any] = None
     is_causal: bool = True
+    # The attention module's .training: also true for a checkpointed forward run without grad.
+    training: bool = False
 
 
 def _ring_attention_active() -> bool:
@@ -1193,6 +1218,7 @@ def _run_attention(
                 is_causal = context.is_causal,
                 sliding_window = sliding_window,
                 sdpa_kwargs = sdpa_kwargs,
+                training = context.training,
             )
             if out is not None:
                 return out
@@ -1267,6 +1293,7 @@ def _run_attention(
             )
 
         kwargs = dict(sdpa_kwargs)
+        sdpa = _training_sdpa if context.training else scaled_dot_product_attention
         kwargs.setdefault("attn_mask", local_mask)
         kwargs.setdefault("is_causal", is_causal_local)
 
@@ -1301,7 +1328,7 @@ def _run_attention(
 
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
-            out = (_rerouted_sdpa if xformers_rerouted else scaled_dot_product_attention)(
+            out = (_rerouted_sdpa if xformers_rerouted else sdpa)(
                 Q, K, V, **kwargs
             )
             out = out.transpose(1, 2)
@@ -1319,7 +1346,7 @@ def _run_attention(
             K_mod = K_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V_mod = V_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
 
-        out = (_rerouted_sdpa if xformers_rerouted else scaled_dot_product_attention)(
+        out = (_rerouted_sdpa if xformers_rerouted else sdpa)(
             Q.contiguous(),
             K_mod.contiguous(),
             V_mod.contiguous(),
