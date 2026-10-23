@@ -235,7 +235,7 @@ def _probe_cuda_driver(strict: bool = False) -> dict | None:
         if get_uuid is not None:
             raw_uuid = (ctypes.c_ubyte * 16)()
             if get_uuid(ctypes.byref(raw_uuid), device) == 0:
-                device_uuid = str(uuid_lib.UUID(bytes=bytes(raw_uuid)))
+                device_uuid = str(uuid_lib.UUID(bytes = bytes(raw_uuid)))
         devices.append(
             {
                 "index": str(index),

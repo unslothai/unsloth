@@ -5351,7 +5351,6 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     # MIG device ordinals come from CUDA, not the physical-card inventory.
     if get_device() == DeviceType.CUDA and not IS_ROCM:
         from . import mig
-
         rows = mig.visible_devices()
         if rows is not None:
             return {

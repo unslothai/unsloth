@@ -13690,7 +13690,8 @@ class LlamaCppBackend:
             return None
         snapshot = getattr(cls, "_MIG_DEVICE_SNAPSHOT", None)
         if snapshot is not None and snapshot[:2] == (
-            os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")
+            os.environ.get("CUDA_VISIBLE_DEVICES"),
+            os.environ.get("CUDA_DEVICE_ORDER"),
         ):
             return "MIG device UUIDs cannot be verified by the physical-card NVLink matrix"
 
@@ -14098,7 +14099,8 @@ class LlamaCppBackend:
         CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
         snapshot = getattr(LlamaCppBackend, "_MIG_DEVICE_SNAPSHOT", None)
         if snapshot is not None and snapshot[:2] == (
-            os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")
+            os.environ.get("CUDA_VISIBLE_DEVICES"),
+            os.environ.get("CUDA_DEVICE_ORDER"),
         ):
             caps = {}
             for row in snapshot[2]:
@@ -15440,9 +15442,7 @@ class LlamaCppBackend:
         be re-read against the whole host (a card the parent hid, or the whole MIG card)."""
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         snapshot = getattr(LlamaCppBackend, "_MIG_DEVICE_SNAPSHOT", None)
-        if snapshot is not None and snapshot[:2] == (
-            cvd, os.environ.get("CUDA_DEVICE_ORDER")
-        ):
+        if snapshot is not None and snapshot[:2] == (cvd, os.environ.get("CUDA_DEVICE_ORDER")):
             from utils.hardware import mig
             return mig.visibility_for(snapshot[2], gpu_indices)
         if (
@@ -15647,10 +15647,17 @@ class LlamaCppBackend:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
             LlamaCppBackend._MIG_DEVICE_SNAPSHOT = (
                 os.environ.get("CUDA_VISIBLE_DEVICES"),
-                os.environ.get("CUDA_DEVICE_ORDER"), mig_rows,
+                os.environ.get("CUDA_DEVICE_ORDER"),
+                mig_rows,
             )
-            gpus = sorted((int(r["index"]), int(r.get("memory_free_mib") or 0),
-                           int(r.get("memory_total_mib") or 0)) for r in mig_rows)
+            gpus = sorted(
+                (
+                    int(r["index"]),
+                    int(r.get("memory_free_mib") or 0),
+                    int(r.get("memory_total_mib") or 0),
+                )
+                for r in mig_rows
+            )
             return LlamaCppBackend._cuda_sm_gate_keep(binary, gpus) if for_llama_server else gpus
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         unsized_ids: list[int] = []

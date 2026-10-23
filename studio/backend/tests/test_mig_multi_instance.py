@@ -36,7 +36,12 @@ LISTING = f"""GPU 0: NVIDIA A100-SXM4-80GB (UUID: {GPU})
 """
 
 
-def row(uuid, free, total, gi = None):
+def row(
+    uuid,
+    free,
+    total,
+    gi = None,
+):
     r = dict(
         index = "0",
         uuid = uuid,
@@ -58,7 +63,11 @@ ROWS = [
 ]
 
 
-def payload(rows = None, uuids = None, driver = "570.86.15"):
+def payload(
+    rows = None,
+    uuids = None,
+    driver = "570.86.15",
+):
     return dict(
         source = "nvml",
         driver_version = driver,
@@ -71,7 +80,11 @@ def payload(rows = None, uuids = None, driver = "570.86.15"):
 
 
 @contextlib.contextmanager
-def host(mask = None, driver = "570.86.15", rows = None):
+def host(
+    mask = None,
+    driver = "570.86.15",
+    rows = None,
+):
     """One A100 80GB with three GPU instances; CUDA enumerates the mask's instances."""
     probe = dict(
         source = "nvml",
@@ -127,7 +140,12 @@ def host(mask = None, driver = "570.86.15", rows = None):
                 },
             )
         )
-        for key in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", mig._ENV):
+        for key in (
+            "CUDA_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            mig._ENV,
+        ):
             os.environ.pop(key, None)
         if mask is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = mask
@@ -151,7 +169,9 @@ def host(mask = None, driver = "570.86.15", rows = None):
             patch.object(
                 hw,
                 "_smi_visible_utilization",
-                lambda spec: {"devices": [{"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 2.0}]},
+                lambda spec: {
+                    "devices": [{"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 2.0}]
+                },
             )
         )
         for name, value in [
@@ -177,7 +197,6 @@ def host(mask = None, driver = "570.86.15", rows = None):
 @pytest.fixture(autouse = True)
 def _probe_script(monkeypatch):
     import utils.prebuilt.update_flow as update_flow
-
     monkeypatch.setattr(update_flow, "find_installer_script", lambda **k: Path("mock-probe.py"))
 
 
@@ -236,8 +255,10 @@ def test_a_fresh_worker_pins_the_instances_the_parent_sized_without_probing():
         assert hw.get_parent_visible_gpu_ids() == [0, 1, 2]
         inherited = os.environ[mig._ENV]
         # A spawned worker: cold caches, the parent's environment, and no probe may run.
-        with patch.object(mig, "_cache", {}), patch.object(nvidia, "_mig_entry", None), patch.object(
-            subprocess, "run", side_effect = AssertionError("worker probed")
+        with (
+            patch.object(mig, "_cache", {}),
+            patch.object(nvidia, "_mig_entry", None),
+            patch.object(subprocess, "run", side_effect = AssertionError("worker probed")),
         ):
             assert os.environ[mig._ENV] == inherited
             hw.apply_gpu_ids([1, 2], backend = "cuda")
@@ -321,33 +342,43 @@ def test_no_driver_enumeration_means_the_old_rule():
 
 
 def test_other_hosts_never_start_the_probe():
-    with patch.object(mig, "possible", lambda: False), patch.object(
-        mig.subprocess, "run", side_effect = AssertionError
+    with (
+        patch.object(mig, "possible", lambda: False),
+        patch.object(mig.subprocess, "run", side_effect = AssertionError),
     ):
         assert mig.visible_devices() is None
     # An NVIDIA Linux host whose cached listing shows no MIG instance, or could not answer.
     for listed in (set(), None):
-        with patch.object(mig, "possible", lambda: True), patch.dict(os.environ, {}, clear = True), patch.object(
-            nvidia, "get_mig_gpu_indices_or_none", lambda: listed
-        ), patch.object(mig.subprocess, "run", side_effect = AssertionError):
+        with (
+            patch.object(mig, "possible", lambda: True),
+            patch.dict(os.environ, {}, clear = True),
+            patch.object(nvidia, "get_mig_gpu_indices_or_none", lambda: listed),
+            patch.object(mig.subprocess, "run", side_effect = AssertionError),
+        ):
             assert mig.visible_devices() is None
 
 
 def test_a_worker_never_probes_for_its_pin():
-    with patch.dict(os.environ, {}, clear = True), patch.object(
-        nvidia, "get_mig_gpu_indices_or_none", side_effect = AssertionError("listed")
-    ), patch.object(mig.subprocess, "run", side_effect = AssertionError("probed")):
+    with (
+        patch.dict(os.environ, {}, clear = True),
+        patch.object(nvidia, "get_mig_gpu_indices_or_none", side_effect = AssertionError("listed")),
+        patch.object(mig.subprocess, "run", side_effect = AssertionError("probed")),
+    ):
         assert mig.mask_for([0]) is None
 
 
 def test_gguf_memory_skips_the_mig_listing_off_nvidia_linux(monkeypatch):
     monkeypatch.setattr(mig, "possible", lambda: False)
     monkeypatch.setattr(
-        nvidia, "get_mig_gpu_indices_or_none", lambda: (_ for _ in ()).throw(AssertionError("listed"))
+        nvidia,
+        "get_mig_gpu_indices_or_none",
+        lambda: (_ for _ in ()).throw(AssertionError("listed")),
     )
     monkeypatch.setattr(B, "_is_vulkan_backend", staticmethod(lambda *a: False))
     monkeypatch.setattr(B, "_find_llama_server_binary", staticmethod(lambda: "/mock/llama-server"))
-    monkeypatch.setattr(gpu_query, "run_nvidia_smi", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    monkeypatch.setattr(
+        gpu_query, "run_nvidia_smi", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError())
+    )
     monkeypatch.setattr(B, "_get_gpu_memory_amd_smi", staticmethod(lambda *a, **k: []))
     monkeypatch.setattr(B, "_get_gpu_memory_torch", staticmethod(lambda *a, **k: []))
     monkeypatch.setattr(B, "_get_gpu_memory_nvml", staticmethod(lambda *a, **k: []))
@@ -357,13 +388,18 @@ def test_gguf_memory_skips_the_mig_listing_off_nvidia_linux(monkeypatch):
 
 def test_compute_caps_follow_the_instances():
     with host():
-        with patch.object(B, "_installed_llama_cuda_sms", return_value = frozenset([80]), create = True):
+        with patch.object(
+            B, "_installed_llama_cuda_sms", return_value = frozenset([80]), create = True
+        ):
             assert len(B._get_gpu_memory(for_llama_server = True)) == 3
             assert B._cuda_compute_caps() == {0: 80, 1: 80, 2: 80}
 
 
 def test_mig_instances_cannot_use_the_physical_nvlink_matrix():
-    with host(), patch.dict(os.environ, {"UNSLOTH_DISABLE_DC_P2P": "0", "UNSLOTH_FORCE_DC_P2P": "0"}):
+    with (
+        host(),
+        patch.dict(os.environ, {"UNSLOTH_DISABLE_DC_P2P": "0", "UNSLOTH_FORCE_DC_P2P": "0"}),
+    ):
         B._get_gpu_memory()
         assert "MIG" in B._p2p_veto_reason_inner([0, 1, 2], True, True)
 
@@ -377,7 +413,11 @@ def _probe_module():
     return module
 
 
-def _set_int(ptr, value, kind = ctypes.c_int):
+def _set_int(
+    ptr,
+    value,
+    kind = ctypes.c_int,
+):
     ctypes.cast(ptr, ctypes.POINTER(kind))[0] = value
     return 0
 
@@ -474,10 +514,11 @@ def test_nvml_probe_enumerates_cuda_uuids_only_for_r570_mig():
     nvml = NVML()
     memory = module._NvmlMemory(total = 40192 * 1024 * 1024, free = 36000 * 1024 * 1024, used = 0)
     cuda = dict(devices = [dict(uuid = A[4:], index = "0")])
-    with patch.object(module, "_load", return_value = nvml), patch.object(
-        module, "_mig_children", return_value = [(None, A, memory)]
-    ), patch.object(module, "_probe_cuda_driver", return_value = cuda) as reader, patch.object(
-        module.sys, "platform", "linux"
+    with (
+        patch.object(module, "_load", return_value = nvml),
+        patch.object(module, "_mig_children", return_value = [(None, A, memory)]),
+        patch.object(module, "_probe_cuda_driver", return_value = cuda) as reader,
+        patch.object(module.sys, "platform", "linux"),
     ):
         result = module._probe_nvml()
         assert result["cuda_devices"] == cuda["devices"]
@@ -486,9 +527,11 @@ def test_nvml_probe_enumerates_cuda_uuids_only_for_r570_mig():
         nvml.version = b"565.57.01"
         assert module._probe_nvml()["cuda_devices"] is None
         reader.assert_not_called()
-    with patch.object(module, "_load", return_value = nvml), patch.object(
-        module, "_mig_children", return_value = []
-    ), patch.object(module, "_probe_cuda_driver", return_value = cuda) as reader:
+    with (
+        patch.object(module, "_load", return_value = nvml),
+        patch.object(module, "_mig_children", return_value = []),
+        patch.object(module, "_probe_cuda_driver", return_value = cuda) as reader,
+    ):
         nvml.version = b"570.86.15"
         assert module._probe_nvml()["cuda_devices"] is None  # no MIG: no extra enumeration
         reader.assert_not_called()
@@ -497,10 +540,11 @@ def test_nvml_probe_enumerates_cuda_uuids_only_for_r570_mig():
 def test_only_placement_relists_after_a_listing_found_no_instance():
     # The last listing (any age, here from before a hardware re-detect) found no MIG instance.
     stale = (gpu_query._static_gen - 1, 0, 0.0, frozenset())
-    with patch.object(mig, "possible", lambda: True), patch.dict(
-        os.environ, {"UNSLOTH_NVIDIA_LIBRARY_PROBE": "1"}, clear = True
-    ), patch.object(nvidia, "_mig_entry", stale), patch.object(
-        mig.subprocess, "run", side_effect = AssertionError("probed")
+    with (
+        patch.object(mig, "possible", lambda: True),
+        patch.dict(os.environ, {"UNSLOTH_NVIDIA_LIBRARY_PROBE": "1"}, clear = True),
+        patch.object(nvidia, "_mig_entry", stale),
+        patch.object(mig.subprocess, "run", side_effect = AssertionError("probed")),
     ):
         with patch.object(
             nvidia, "get_mig_gpu_indices_or_none", side_effect = AssertionError("listed")
@@ -508,8 +552,6 @@ def test_only_placement_relists_after_a_listing_found_no_instance():
             assert mig.visible_devices() is None
             assert mig.visible_devices(fresh = True) is None
         listed = []
-        with patch.object(
-            nvidia, "get_mig_gpu_indices_or_none", lambda: listed.append(1) or set()
-        ):
+        with patch.object(nvidia, "get_mig_gpu_indices_or_none", lambda: listed.append(1) or set()):
             assert mig.visible_devices(fresh = True, listing = True) is None
         assert listed == [1]
