@@ -1593,6 +1593,8 @@ class GraphedForward:
                 if self.placement is not None:
                     self.placement.recover()  # the eager retry must not wait on the dead capture's copies
                     self.placement.release_slots()  # nothing will replay into the ring for this load
+                    if self.placement.mode == "model":
+                        _retire_stable_range(self.module)
                 self.poison(exc)
                 self.stats["fallbacks"] += 1
                 if self.logger is not None:
@@ -2119,6 +2121,14 @@ class OffloadPlacement:
         if getattr(self, "_declined", None) is not None:
             return self._declined
         if self.mode == "model":
+            failed = _stable_range_failure(getattr(self, "module", None))
+            if failed is not None:
+                # Stock onloads land at new addresses each render. Retire, not detach: placed weights still sit in the range.
+                _retire_stable_range(self.module)
+                self._declined = (
+                    f"the stable device range failed ({failed}); " + MODEL_OFFLOAD_REASON
+                )
+                return self._declined
             # Judged once per placement, when the weights land (the fingerprint is rebuilt every call).
             if self._checked != self._fp:
                 self._checked = self._fp
@@ -2233,6 +2243,26 @@ def _detach_stable_range(module: Any) -> None:
         arena = arena_of(module)
         if arena is not None:
             arena.detach()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _stable_range_failure(module: Any) -> Optional[str]:
+    """Why ``module``'s stable range stopped placing its onloads, else None."""
+    try:
+        from .diffusion_stable_arena import arena_of
+        arena = arena_of(module)
+        return None if arena is None else arena.failed
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _retire_stable_range(module: Any) -> None:
+    try:
+        from .diffusion_stable_arena import arena_of
+        arena = arena_of(module)
+        if arena is not None:
+            arena.retire()
     except Exception:  # noqa: BLE001
         pass
 
