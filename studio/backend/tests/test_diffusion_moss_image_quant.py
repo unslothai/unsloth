@@ -195,7 +195,8 @@ def test_text_encoder_file_and_equivalence():
     # Base reuses the SFT file: the validator accepts the SFT base_model_id on a Base load, and nothing else
     assert tp.te_base_equivalent(SFT, BASE) and tp.te_base_equivalent(BASE, SFT)
     assert not tp.te_base_equivalent(SFT, "Qwen/Qwen3.5-9B")
-    assert 0.684 < tp.te_int8_convrot_budget_scale(fam) < 0.7
+    # 11,488,171,720 bytes against the 15.9 GB table price: 0.723, rounded up
+    assert 0.723 < tp.te_int8_convrot_budget_scale(fam) < 0.74
 
 
 def test_absent_hosted_repos_fall_back_to_runtime_quant_and_the_dense_encoder(offline_empty):

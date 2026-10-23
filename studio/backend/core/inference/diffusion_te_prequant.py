@@ -305,8 +305,8 @@ _TE_INT8_CONVROT_BUDGET_SCALES = {
     "krea-2": 0.60,
     "flux.3-klein": 0.60,
     "flux.3-klein-base": 0.60,
-    # 11,488,171,720 / 16,785,478,992 bytes (0.684), rounded up.
-    "moss-image": 0.69,
+    # MOSS-Image's 11,488,171,720-byte file against its 15.9 GB table price (0.723), rounded up.
+    "moss-image": 0.73,
     **{
         name: 0.62
         for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b")
