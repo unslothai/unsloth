@@ -104,7 +104,7 @@ export function useAudioGallery({
         galleryCache.peaksById.set(clip.id, peaks);
         setPeaksById(new Map(galleryCache.peaksById));
       } catch {
-        // Waveform decoration is optional; playback uses its own ranged request.
+        // Optional decoration.
       }
     })();
     clipPeaksLoads.current.set(clip.id, load);
@@ -128,7 +128,6 @@ export function useAudioGallery({
     const load = (async () => {
       try {
         const url = await fetchGalleryAudioSignedUrl(clip.id);
-        // A delete can finish while the link is being minted.
         if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) return;
         galleryCache.srcById.set(clip.id, url);
         setSrcById(galleryCache.srcById.toRecord());
@@ -150,8 +149,7 @@ export function useAudioGallery({
   const retryClipSrc = useCallback(
     (clip: AudioGalleryClip, failedUrl: string) => {
       if (!galleryCache.srcById.retry(clip.id, failedUrl)) return;
-      // Unmount the failed src first: a remint in the same second returns the same URL,
-      // and an unchanged src prop would leave the errored element untouched.
+      // Unmount first: a same-second remint returns the same URL, which would not reload.
       setSrcById(galleryCache.srcById.toRecord());
       void ensureClipSrc(clip);
     },

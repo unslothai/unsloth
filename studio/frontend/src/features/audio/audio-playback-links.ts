@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The server signs audio links for an hour. Refresh an old selection with time to spare,
-// but never replace the source of the current player merely because time has passed.
+// Under the server's one-hour link lifetime; only a new selection renews, never a playing source.
 const LINK_REFRESH_MS = 50 * 60 * 1000;
 
 export class AudioPlaybackLinks {
