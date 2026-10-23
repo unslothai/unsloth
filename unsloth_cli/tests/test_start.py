@@ -7801,12 +7801,15 @@ def test_claude_compaction_point_matches_claude_code(window, compacts_at):
     assert start._agent_compacts_at("claude", window) == compacts_at
 
 
+@pytest.mark.parametrize("running", [False, True])
 @pytest.mark.parametrize("agent", ["claude", "opencode"])
 def test_agent_context_check_refuses_before_installing_or_loading(
-    fake_studio, launched, monkeypatch, agent
+    fake_studio, launched, monkeypatch, agent, running
 ):
     requirements = []
     monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: requirements.append(args))
+    if not running:
+        monkeypatch.setattr(start, "find_studio_server", lambda: None)
     result = CliRunner().invoke(
         start.start_app, [agent, "--model", "unsloth/other-GGUF", "--max-seq-length", "8192"]
     )
@@ -7814,7 +7817,24 @@ def test_agent_context_check_refuses_before_installing_or_loading(
     assert "unsloth/other-GGUF would load with 8,192 tokens of context, too few" in result.output
     assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
     assert not launched
-    assert not requirements
+    # A running Studio may resolve the name to a Connection, so the check waits for _connect (still before any load).
+    assert bool(requirements) is running
+
+
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+def test_agent_context_check_on_a_connection_never_suggests_a_resize(fake_studio, launched, agent):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", "gemini-2.5-flash", "--max-seq-length", "8192"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "A Connection's context is set by its provider" in result.output
+    assert (
+        "--max-seq-length 65536" not in result.output
+        and "--max-seq-length 32768" not in result.output
+    )
+    assert _loads(fake_studio) == []
+    assert not launched
 
 
 @pytest.mark.parametrize("agent, suggested", [("claude", 65536), ("opencode", 32768)])

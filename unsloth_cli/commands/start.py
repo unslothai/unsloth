@@ -5403,6 +5403,27 @@ def _only_resumes(args: list, resume_args: tuple) -> bool:
     return True
 
 
+def _early_context_check(model: Optional[str], check):
+    """Run check now, or return it for _before_load when a running Studio could resolve model to a Connection."""
+    # A Connection is only known once _connect asks that server, and it never loads; an auto-started one serves no Connections.
+    if model and find_studio_server() is not None:
+        return check
+    check()
+    return None
+
+
+def _before_load(context_check, preload = None):
+    if context_check is None:
+        return preload
+
+    def check(base, key, requested, gguf_variant):
+        context_check()
+        if preload is not None:
+            preload(base, key, requested, gguf_variant)
+
+    return check
+
+
 def _command_line_options(ctx, quote) -> Optional[list]:
     """The options typed on this command line, minus --max-seq-length and --api-key."""
     # Duck-typed: typer may vendor its own click, so isinstance / enum identity against ours fails.
@@ -7126,18 +7147,23 @@ def claude(
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
     # Only a bare or resumed interactive launch is refused: its prompt is the stock one and the TUI would hide a warning. Other forwarded args (-p, --tools, a --no-launch recipe a driver extends) can shrink the prompt, so they only warn.
     refuse_small_context = launch and _only_resumes(ctx.args, _CLAUDE_RESUME_ARGS)
+    context_check = None
     if max_seq_length > 0 and not as_subagent:
         # Before the load, which would evict the resident model only for this to refuse.
-        _check_agent_context(
-            "claude",
-            "Claude Code",
-            {"id": model or "The loaded model", "context_length": max_seq_length},
-            _CLAUDE_PROMPT_TOKENS,
-            loaded = False,
-            model = model,
-            gguf_variant = gguf_variant,
-            ctx = ctx,
-            refuse = refuse_small_context,
+        context_check = _early_context_check(
+            model,
+            functools.partial(
+                _check_agent_context,
+                "claude",
+                "Claude Code",
+                {"id": model or "The loaded model", "context_length": max_seq_length},
+                _CLAUDE_PROMPT_TOKENS,
+                loaded = False,
+                model = model,
+                gguf_variant = gguf_variant,
+                ctx = ctx,
+                refuse = refuse_small_context,
+            ),
         )
     _require_agent_for_launch("claude", install_hint, launch)
     server_options = ServerOptions(
@@ -7162,7 +7188,9 @@ def claude(
         ),
         serve = serve,
         launch = launch,
-        preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
+        preload_check = _before_load(
+            context_check, functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT)
+        ),
         server_options = server_options,
         connections = True,
     )
@@ -7548,18 +7576,23 @@ def opencode(
     install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
     opencode_prompt_tokens = _OPENCODE_V2_PROMPT_TOKENS if opencode_v2 else _OPENCODE_PROMPT_TOKENS
     refuse_small_context = launch and _only_resumes(ctx.args, _OPENCODE_RESUME_ARGS)
+    context_check = None
     if max_seq_length > 0 and not as_subagent and not app:
-        _check_agent_context(
-            "opencode",
-            "OpenCode",
-            {"id": model or "The loaded model", "context_length": max_seq_length},
-            opencode_prompt_tokens,
-            max_tokens,
-            loaded = False,
-            model = model,
-            gguf_variant = gguf_variant,
-            ctx = ctx,
-            refuse = refuse_small_context,
+        context_check = _early_context_check(
+            model,
+            functools.partial(
+                _check_agent_context,
+                "opencode",
+                "OpenCode",
+                {"id": model or "The loaded model", "context_length": max_seq_length},
+                opencode_prompt_tokens,
+                max_tokens,
+                loaded = False,
+                model = model,
+                gguf_variant = gguf_variant,
+                ctx = ctx,
+                refuse = refuse_small_context,
+            ),
         )
     _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
@@ -7584,6 +7617,7 @@ def opencode(
         ),
         serve = serve,
         launch = launch,
+        preload_check = _before_load(context_check),
         server_options = server_options,
         connections = True,
     )
