@@ -126,14 +126,10 @@ def _disabled_reason() -> str:
     return f"disabled by {CUDA_GRAPH_DISABLE_ENV}"
 
 
-# Captures record in ``thread_local`` mode: the default global mode lets ANY thread's unsafe call (event sync, host
-# read, first cuBLAS use) invalidate the recording. A device-wide sync or a second capture's entry still breaks it in
-# any mode, so captures are mutually exclusive and Studio syncs go through ``synchronize_outside_capture``.
-#
-# Calls gated with ``hold_off_capture`` take the lock ACROSS the call: a flag read first would be a TOCTOU (the reader
-# sees "no capture", a capture begins, the call lands inside it). Capture raises the depth UNDER the lock, so either
-# the caller holds it and capture entry waits the few microseconds the call takes, or the caller sees a non-zero
-# depth and skips. The depth is a count because one thread's captures can nest.
+# ``thread_local`` capture mode: global mode lets any thread's unsafe call break the recording. A device sync or a
+# second capture still breaks it, so captures are mutually exclusive and syncs use ``synchronize_outside_capture``.
+# ``hold_off_capture`` holds the lock ACROSS the call (a flag read first is a TOCTOU); depth is raised under the lock
+# and is a count because one thread's captures can nest.
 _CAPTURE_LOCK = threading.Lock()
 _CAPTURE_DEPTH = 0
 # CFG-parallel replica work is counted from queueing until its inputs drop; a capture waits for the count to drain.
