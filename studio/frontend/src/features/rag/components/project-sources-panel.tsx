@@ -10,12 +10,11 @@ import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import {
   announceProjectSourcesUpdated,
   invalidateProjectSources,
   listProjectDocuments,
-  subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
 import { isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
@@ -49,7 +48,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     documents,
     loading,
     uploading,
-    refresh,
     upload,
     remove,
     retry,
@@ -139,21 +137,10 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     },
     [projectId, remove],
   );
+  // No refresh here: useRagDocuments refetches on this announce, and a second one doubles each sync tick.
   const handleLinkedSourcesChanged = useCallback(() => {
     announceProjectSourcesUpdated(projectId);
-    void refresh({ quiet: true });
-  }, [projectId, refresh]);
-
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
-  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
-  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
-  useEffect(
-    () =>
-      subscribeProjectSourcesUpdated(projectId, () => {
-        void refresh({ quiet: true });
-      }),
-    [projectId, refresh],
-  );
+  }, [projectId]);
 
   const empty = documents.length === 0;
 

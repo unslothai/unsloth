@@ -402,7 +402,7 @@ class ScanFolderInfo(BaseModel):
     recursive: bool = Field(False, description = "Sub-folders are scanned too")
     status: str = Field(
         default = "ok",
-        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+        description = "Last scan result: ok, permission_denied, missing, unreadable, partial, or slow",
     )
 
 

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Empty ``role="tool"`` content must be accepted on the OpenAI-compat surface.
-
-Agentic clients send ``content: ""`` when a command produced no output;
-OpenAI and llama-server both accept it. Unsloth used to 400, which standard
-clients treat as non-retryable and kill the session. The validator must
-normalize empty/missing tool content to ``""`` instead of raising.
-"""
+"""Empty role=tool content must be accepted, since clients send it when a command prints nothing."""
 
 from __future__ import annotations
 

@@ -179,6 +179,23 @@ def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tup
                 "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?",
                 (normalized,),
             ).fetchone()
+            if (
+                existing is None
+                and platform.system() == "Darwin"
+                and macos_volume_ignores_case(normalized)
+            ):
+                # realpath keeps the typed case, so ~/Models and ~/models would be two rows scanning one folder.
+                folded = normalized.casefold()
+                existing = next(
+                    (
+                        row
+                        for row in conn.execute(
+                            "SELECT id, path, created_at, recursive FROM scan_folders"
+                        )
+                        if str(row["path"]).casefold() == folded
+                    ),
+                    None,
+                )
         if existing is not None:
             # None keeps the stored flag, so a re-add from export registration never resets it.
             if recursive is None or bool(existing["recursive"]) == recursive:
@@ -188,7 +205,7 @@ def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tup
                 (int(recursive), existing["id"]),
             )
             conn.commit()
-            return {**dict(existing), "recursive": int(recursive)}, True
+            return {**dict(existing), "recursive": recursive}, True
         inserted = False
         try:
             conn.execute(

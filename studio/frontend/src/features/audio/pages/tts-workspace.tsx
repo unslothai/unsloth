@@ -216,7 +216,7 @@ export function TtsRailFields({
                 ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
                 : "Type the sentence to speak…"
             }
-            className="min-h-28"
+            className="min-h-28 rounded-lg"
           />
         </Field>
       )}
