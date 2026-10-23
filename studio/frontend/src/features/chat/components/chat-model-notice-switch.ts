@@ -106,8 +106,7 @@ export function chatModelLoadedTarget(
 
 export type ChatModelAutoSwitch = { threadId?: string; settled: boolean };
 
-/** Settles once the open chat is on its model, so a later pick inside it is never undone. Leaving
- *  the chat or the chat route starts a new open. */
+/** Settles once the open chat is on its model, so a later pick inside it is never undone. */
 export function stepChatModelAutoSwitch(
   previous: ChatModelAutoSwitch,
   input: {
@@ -233,8 +232,7 @@ export function createChatModelHistoryReader(
       updateSeen = true;
       emit(chatModelSwitchTargetFromThread(thread));
     },
-    // A change this reader was not handed (another tab's): report no model until a fresh read
-    // lands, and let no opening read still in flight answer for it.
+    // Another tab's change: no model until a fresh read lands, and no in-flight opening read answers.
     invalidate(): void {
       if (disposed) {
         return;

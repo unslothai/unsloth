@@ -63,8 +63,7 @@ export function useChatCreatedModel(
         reader.applyUpdate(updatedThread);
         return;
       }
-      // Another tab's change is re-raised as a plain Event with no thread. This tab's own
-      // thread-less events (streamed chunks) are CustomEvents and move no model.
+      // Another tab's change arrives as a plain Event; this tab's thread-less ones (chunks) are CustomEvents.
       if (event instanceof CustomEvent) return;
       reader.invalidate();
       const generation = ++readGeneration;
@@ -106,8 +105,7 @@ type ChatModelNoticeProps = {
   ) => void;
 };
 
-/** Puts a chat back on its last used model: at once when that model is still loaded (adopted,
- *  never reloaded), else only as an offer, since a local load would evict the resident model. */
+/** Adopts a chat's last used model when it is still loaded, else only offers it: a local load evicts. */
 export function ChatModelNotice({
   active,
   threadId,

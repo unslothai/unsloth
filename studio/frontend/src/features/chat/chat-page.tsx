@@ -3843,8 +3843,7 @@ export function ChatPage({
     onAttachVideo: handleNativeVideoDrop,
   });
 
-  // Counts the user's own picks, staged and no-op ones included: an automatic switch dispatched
-  // before one of them must not land after it.
+  // Every user pick, staged and no-op included: an automatic switch dispatched earlier must not land after it.
   const userPickCountRef = useRef(0);
   const handleCheckpointChange = useCallback(
     (
