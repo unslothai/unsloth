@@ -258,7 +258,6 @@ def test_managed_snapshot_files_of_its_training_dataset_still_decode(tmp_path, m
 )
 def test_managed_url_merely_containing_a_hub_path_is_never_fetched(hub_fetches, path):
     from datasets import config
-
     with pytest.raises(PermissionError):
         _decode({"bytes": None, "path": path.format(endpoint = config.HF_ENDPOINT)}, {})
     assert hub_fetches == []
@@ -294,14 +293,15 @@ def _zip(path, color):
 
 def _extract(archive, account):
     from datasets.utils.extract import ExtractManager
-
     return run_as(account, ExtractManager().extract, str(archive))
 
 
 def test_managed_member_of_its_own_extracted_archive_still_decodes(extracted_root):
     from utils.security import dataset_media
 
-    archive = run_as(ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7)))
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
     member = {"bytes": None, "path": str(extracted_root / _extract(archive, ALICE) / "member.png")}
     assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
     # A later process reads the record left beside the extraction.
