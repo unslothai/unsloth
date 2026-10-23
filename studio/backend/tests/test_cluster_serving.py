@@ -3477,6 +3477,29 @@ def test_the_last_projector_given_is_the_one_sized(monkeypatch, tmp_path):
     assert seen and str(seen[0]) == str(last)
 
 
+def test_a_managed_host_listed_by_name_and_address_is_refused(monkeypatch):
+    import socket
+
+    def fake_getaddrinfo(host, *a, **kw):
+        if host == "gpu2.local":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.9", 0))]
+        raise socket.gaierror("unknown host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    for value in (
+        "gpu2.local,10.0.0.9:50060",
+        "localhost,127.0.0.1:50060",
+        "localhost,127.0.1.1:50060",
+    ):
+        monkeypatch.setenv(cs.ENV_NODES, value)
+        with pytest.raises(cs.ClusterConfigError, match = "listed only once"):
+            cs.load_nodes()
+    # A name that does not resolve is compared as written.
+    monkeypatch.setenv(cs.ENV_NODES, "gpu2.local,gpu3.local,10.0.0.8")
+    assert [n.host for n in cs.load_nodes()] == ["gpu2.local", "gpu3.local", "10.0.0.8"]
+
+
 def test_a_managed_node_named_by_host_name_binds_its_ipv4_address(monkeypatch):
     # ggml-rpc-server -H goes through inet_addr: "gpu2.local" is "Invalid host address".
     import socket

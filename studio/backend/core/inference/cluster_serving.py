@@ -931,12 +931,60 @@ def load_nodes() -> List[Node]:
     return _one_managed_worker_per_host(nodes)
 
 
+_HOST_IDENTITY_TIMEOUT_S = 1.0
+_HOST_IDENTITY_TTL_S = 60.0
+_HOST_IDENTITIES: Dict[str, Tuple[float, str]] = {}
+
+
+def _host_identity(host: str) -> str:
+    """One name per machine: a host name and its IPv4 address, or two loopback aliases, are the same host."""
+    import concurrent.futures
+    import ipaddress
+    import socket
+    import time
+
+    literal = host.strip().lower().strip("[]")
+    cached = _HOST_IDENTITIES.get(literal)
+    if cached is not None and time.monotonic() - cached[0] < _HOST_IDENTITY_TTL_S:
+        return cached[1]
+    try:
+        address = ipaddress.ip_address(literal)
+    except ValueError:
+        if literal == "localhost" or literal.endswith(".localhost"):
+            return "loopback"
+        # getaddrinfo has no timeout of its own, so a slow resolver only costs the literal name.
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers = 1)
+        try:
+            infos = pool.submit(
+                socket.getaddrinfo, literal, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+            ).result(timeout = _HOST_IDENTITY_TIMEOUT_S)
+            found = sorted(
+                {ipaddress.ip_address(str(i[4][0]).split("%", 1)[0]) for i in infos},
+                key = lambda a: (a.version, int(a)),
+            )
+            address = found[0] if found else None
+        except Exception:
+            address = None
+        finally:
+            pool.shutdown(wait = False)
+    if address is None:
+        identity = literal
+    elif address.is_loopback:
+        identity = "loopback"
+    else:
+        identity = str(address)
+    _HOST_IDENTITIES[literal] = (time.monotonic(), identity)
+    return identity
+
+
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     # A managed rpc-server exposes every accelerator on its host: a second one double counts.
-    hosts = [n.host for n in nodes]
-    for host in {n.host for n in nodes if n.managed}:
-        if hosts.count(host) > 1:
-            raise ClusterConfigError(f"{host} is managed, so it can be listed only once")
+    if len(nodes) < 2 or not any(n.managed for n in nodes):
+        return nodes
+    hosts = [_host_identity(n.host) for n in nodes]
+    for node, host in zip(nodes, hosts):
+        if node.managed and hosts.count(host) > 1:
+            raise ClusterConfigError(f"{node.host} is managed, so it can be listed only once")
     return nodes
 
 
@@ -2507,3 +2555,4 @@ def reset_for_tests() -> None:
     global _STATE
     _STATE = None
     _MANAGED_BLOCKS.clear()
+    _HOST_IDENTITIES.clear()
