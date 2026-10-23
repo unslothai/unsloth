@@ -3,11 +3,9 @@
 
 """Encode a Wan or MiniMax-H3 clip while its VAE is still decoding.
 
-A decoder hook converts each chunk to uint8 with the pipeline's exact ops, copies it to pinned memory on a side
-stream and feeds a libx264 thread. The streamed mp4 is used only when its frames equal the final frames bit for bit;
-otherwise the clip is encoded as before. H3 carries audio: its stream is declared up front exactly as ``encode_x264``
-declares it, the frames the decode finishes last are encoded from the final clip and the soundtrack is muxed at the
-end. ``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
+The streamed mp4 is used only when its frames equal the final frames bit for bit, else the clip is encoded as
+before. H3 declares its audio stream up front as ``encode_x264`` does and muxes the soundtrack at the end.
+``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
 """
 
 from __future__ import annotations
@@ -124,8 +122,7 @@ class StreamEncode:
             self.invalidate(f"chunk failed: {type(exc).__name__}")
 
     def _push_uint8(self, x: Any) -> None:
-        """(F, C, H, W) frames in [0, 1] -> uint8 (F, H, W, C) with the export's exact ops, copied to pinned memory
-        on a side stream and queued for the encoder thread."""
+        """(F, C, H, W) in [0, 1] -> uint8 (F, H, W, C) with the export's exact ops."""
         torch = self._torch
         x = (x.to(torch.float32) * 255).round_().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
         device = x.device
@@ -258,7 +255,6 @@ class StreamEncode:
         finally:
             if container is not None:
                 if self._audio_stream is not None and not self._failed and self.valid:
-                    # take() muxes the soundtrack, then closes
                     self._container = container
                 else:
                     try:
@@ -333,7 +329,6 @@ class StreamEncode:
             if self.valid and self._matches(video_frames):
                 streamed = sum(len(host) for host, _ in self.chunks)
                 if streamed < len(video_frames):
-                    # the tail the decode finished last, straight from the final clip
                     self._queue.put((video_frames[streamed:], None))
                 self._join()
                 if audio is not None and not self._failed and self.valid:
@@ -375,9 +370,7 @@ class StreamEncode:
 
 
 class H3StreamEncode(StreamEncode):
-    """MiniMax-H3: ``vae._decode`` decodes temporal clips and cross-fades each into the next. A passive
-    ``_decode_clip`` hook replays that split and blend with the VAE's own ``_blend`` on the side, so every finished
-    chunk is denormalised and encoded while the next clip decodes; the decode's own output is untouched."""
+    """Passive ``_decode_clip`` hook replaying H3's clip split and ``_blend`` on the side; decode output untouched."""
 
     def __init__(
         self,
@@ -396,8 +389,7 @@ class H3StreamEncode(StreamEncode):
         self._clips = 0
 
     def _pixel_tensors(self, device: Any) -> tuple:
-        """The decode step's float32 mean / std, built once per session: a pageable ``torch.tensor(..., device=)``
-        per clip would block the host until the GPU drained the clip just queued."""
+        """Built once: a pageable ``torch.tensor(..., device=)`` per clip would block the host on the GPU."""
         torch = self._torch
         held = getattr(self, "_pixel_on", None)
         if held is None or held[0] != device:

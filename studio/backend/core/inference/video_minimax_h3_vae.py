@@ -845,8 +845,7 @@ def _swiglu(x: Any) -> Any:
 
 
 def _residual_dtype(hidden_states: Any, blocks: Any) -> Any:
-    """The stock block's residual dtype: ``h + out * scale`` promotes to the anchors' dtype, so diffusers' mixed
-    precision load (bfloat16 GEMMs, float32 ``scale1`` / ``scale2``) carries a float32 stream from block 0 on."""
+    """Stock ``h + out * scale`` promotes to float32 ``scale1`` / ``scale2`` under diffusers' mixed load."""
     import torch
 
     dtype = hidden_states.dtype
@@ -863,7 +862,6 @@ def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm
 
     blocks = decoder.transformer_blocks
     batch, seq, dim = hidden_states.shape
-    # a float32 residual keeps the stock rounding: each add is the stock separate multiply then add in float32
     h = hidden_states.to(_residual_dtype(hidden_states, blocks)).contiguous()
     normed = _add_rmsnorm(h, None, None, blocks[0].norm1, gemm_dtype)
     cos2 = cos.reshape(-1, cos.shape[-1])
@@ -888,13 +886,13 @@ def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm
         if i + 1 < len(blocks):
             normed = _add_rmsnorm(h, out, block.scale2, blocks[i + 1].norm1, gemm_dtype)
         else:
-            # the stock ``h + out * scale2``: a separate rounded product, not addcmul's single fused rounding
+            # not addcmul: stock rounds the product separately
             h.add_(out * block.scale2)
     return h
 
 
 def _weight_dtype(module: Any, default: Any) -> Any:
-    """``module.weight``'s floating dtype; ``default`` for an int8 Linear (weight dropped) or a missing one."""
+    """``default`` for an int8 Linear (weight dropped) or a missing weight."""
     weight = getattr(module, "weight", None)
     dtype = getattr(weight, "dtype", None)
     return dtype if dtype is not None and dtype.is_floating_point else default
@@ -938,7 +936,7 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     cos = cos.to(q_dtype).contiguous()
     sin = sin.to(q_dtype).contiguous()
     hidden_states = _fast_block_stack(self, hidden_states, cos, sin, q_dtype)
-    # stock: a float32-pinned ``norm_out`` feeds a lower-precision ``proj_out`` through an explicit cast
+    # stock casts float32-pinned norm_out to proj_out's dtype
     hidden_states = self.norm_out(hidden_states).to(
         _weight_dtype(self.proj_out, hidden_states.dtype)
     )
