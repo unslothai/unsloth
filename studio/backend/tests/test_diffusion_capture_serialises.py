@@ -81,7 +81,7 @@ def _record_while(other):
     x = torch.randn(8, 64, device = "cuda")
 
     def gated():
-        assert window.wait(30)
+        assert window.wait(300)  # first CUDA use can take minutes on a loaded host
         try:
             return other()
         finally:
@@ -113,12 +113,16 @@ def _expect_graph_kept(step, handle, x, first, again):
 
 @pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
 def test_a_recording_survives_another_threads_decode_tail():
-    """Another thread's decode (first cuBLAS/cuDNN use, host read, event query, pinned alloc) during a recording."""
+    """Another thread's decode (first cuBLAS/cuDNN use, host read, event query, pinned alloc) during a recording.
+
+    Its noise comes from an explicit generator, as every Studio render's does (see the default-generator test below)."""
 
     def decode_tail():
-        w = torch.randn(64, 64, device = "cuda")
+        gen = torch.Generator(device = "cuda").manual_seed(0)
+        w = torch.randn(64, 64, device = "cuda", generator = gen)
         img = torch.nn.functional.conv2d(
-            torch.randn(1, 4, 32, 32, device = "cuda"), torch.randn(3, 4, 3, 3, device = "cuda")
+            torch.randn(1, 4, 32, 32, device = "cuda", generator = gen),
+            torch.randn(3, 4, 3, 3, device = "cuda", generator = gen),
         )
         host = (img.float().clamp(-1, 1) * 127.5 + 127.5).to(torch.uint8).cpu()
         torch.cuda.Event().query()
@@ -128,6 +132,30 @@ def test_a_recording_survives_another_threads_decode_tail():
     step, handle, x, first, again, box = _record_while(decode_tail)
     assert "error" not in box, box["error"]
     _expect_graph_kept(step, handle, x, first, again)
+
+
+def _torch_at_least(major: int, minor: int) -> bool:
+    return tuple(int(p) for p in torch.__version__.split("+")[0].split(".")[:2]) >= (major, minor)
+
+
+@pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
+def test_another_threads_default_generator_draw_during_a_recording():
+    """Up to torch 2.11 a capture flags the device's DEFAULT generator as capturing for every thread, so another
+    thread's ``torch.randn(device = "cuda")`` raises "Offset increment outside graph capture encountered
+    unexpectedly" in THAT thread; the recording itself is kept. torch 2.12 keys the RNG capture state by capture id
+    (pytorch#176752), so the draw just runs. Studio draws its noise from explicit generators for that reason."""
+
+    def default_draw():
+        return torch.randn(64, device = "cuda").sum().item()
+
+    step, handle, x, first, again, box = _record_while(default_draw)
+    if _torch_at_least(2, 12):
+        assert "error" not in box, box["error"]
+    else:
+        assert "Offset increment outside graph capture" in box.get("error", ""), box
+    _expect_graph_kept(step, handle, x, first, again)
+    # The default generator still draws once the recording ended.
+    torch.randn(4, device = "cuda").sum().item()
 
 
 @pytest.mark.skipif(not _CUDA, reason = "needs CUDA")

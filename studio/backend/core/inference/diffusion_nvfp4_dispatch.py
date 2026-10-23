@@ -97,8 +97,10 @@ def _run_verify(device: Any) -> tuple:
     try:
         import flashinfer
         with torch.cuda.device(device):
-            x = torch.randn(256, 512, device = device, dtype = torch.bfloat16) * 0.05
-            w = torch.randn(128, 512, device = device, dtype = torch.bfloat16) * 0.02
+            # An explicit generator: up to torch 2.11 a default-generator draw raises while another thread records.
+            gen = torch.Generator(device = device).manual_seed(0)
+            x = torch.randn(256, 512, device = device, dtype = torch.bfloat16, generator = gen) * 0.05
+            w = torch.randn(128, 512, device = device, dtype = torch.bfloat16, generator = gen) * 0.02
             a_gsf = _global_scale(x)
             w_gsf = _global_scale(w)
             alpha = (1.0 / (a_gsf * w_gsf)).float()
