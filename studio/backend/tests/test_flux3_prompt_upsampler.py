@@ -1874,7 +1874,9 @@ def test_a_cold_start_that_cannot_offload_does_not_wait_for_a_render(cold_render
 
     engine, sidecar, spawned = cold_render
     if why == "cpu":
-        monkeypatch.setattr(pup, "_accelerator_memory_mib", lambda ordinal = None: (None, None, "cpu"))
+        monkeypatch.setattr(
+            pup, "_accelerator_memory_mib", lambda ordinal = None: (None, None, "cpu")
+        )
     elif why == "training":
         monkeypatch.setattr(stt_sidecar, "_training_active", lambda: True)
     elif why == "unowned":

@@ -48,7 +48,6 @@ def _reset(*kernels):
             for v in kernel.cache.values():
                 v.clear()
     from unsloth.kernels import triton_launch
-
     triton_launch._CACHE.clear()
 
 
@@ -61,4 +60,3 @@ def test_rms_layernorm_backward_one_variant_across_token_counts():
         fast_rms_layernorm(norm, X).sum().backward()
     torch.cuda.synchronize()
     assert [_variants(k) for k in kernels] == [1, 1]
-
