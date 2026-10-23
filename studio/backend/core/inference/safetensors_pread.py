@@ -27,8 +27,7 @@ PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 _lock = threading.Lock()
 _depth = 0
 _original: Any = None
-# per open scope, per load thread (a concurrent image and video load never see each other's rules): (dtype name the
-# load converts to, or None for the fp32-only video rule; component dirs it keeps)
+# per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs)
 _local = threading.local()
 
 
@@ -46,8 +45,7 @@ def pread_wanted() -> bool:
 
 
 def _supports_backend(safe_open: Any) -> bool:
-    # safetensors < 0.8 has no backend keyword, and an unknown keyword is a TypeError on every load. Read the innermost
-    # function: a wrapper (unsloth's Windows pread / UMA patches) carries no __text_signature__.
+    # safetensors < 0.8 has no backend keyword (TypeError); wrappers drop __text_signature__, so read the innermost.
     fn = safe_open
     for _ in range(8):
         inner = getattr(fn, "__wrapped__", None)
@@ -91,7 +89,7 @@ def _backend_for(filename: Any) -> Optional[str]:
 
 
 def _core_pread_below(safe_open: Any) -> bool:
-    # unsloth's own Windows pread patch (transformers < 5.17) may sit under this wrapper: a kept shard tells it so
+    # unsloth's Windows pread patch (transformers < 5.17) may sit underneath
     fn = safe_open
     for _ in range(8):
         if fn is None:
@@ -107,7 +105,7 @@ def _with_pread(safe_open: Any) -> Any:
     def pread_safe_open(filename: Any, *args: Any, **kwargs: Any) -> Any:
         # transformers 5.13 - 5.16 pass backend="mmap" explicitly; 5.17 already picks pread on Windows (#48341).
         if not _active_rules():
-            # a load in this thread outside any media scope: the caller's (or unsloth's) default stands
+            # outside any media scope: the caller's default stands
             return safe_open(filename, *args, **kwargs)
         choice = _backend_for(filename)
         if choice == "pread" and kwargs.get("backend") in (None, "mmap"):
@@ -116,7 +114,7 @@ def _with_pread(safe_open: Any) -> Any:
             # transformers >= 5.17 asks for pread on Windows itself; the small-host route needs this shard paged
             kwargs["backend"] = "mmap"
         if choice != "pread" and _core_pread_below(safe_open):
-            # inside a media load this scope decides: shards it leaves on mmap stay there under unsloth's patch too
+            # this scope decides inside a media load, over unsloth's patch too
             kwargs["_unsloth_keep_mmap"] = True
         return safe_open(filename, *args, **kwargs)
 

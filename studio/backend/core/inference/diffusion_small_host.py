@@ -81,7 +81,6 @@ class StoredComponent:
     dtype: str  # dominant stored float dtype ("bfloat16", "float16", "float32", ...)
     # stored MiB of ``_keep_in_fp32_modules`` tensors: they convert to fp32 on the host even on the route
     kept_fp32_mib: int = 0
-    # loading library from model_index.json ("transformers", "diffusers", ...); "" when unknown
     library: str = ""
 
 
