@@ -212,8 +212,8 @@ export function HighlightedCode({
   );
 }
 
-/** An example's code under one header row: its choices, the Platform pills at the end, an
- *  icon copy. No language label (the Language pills say it); starts about eight lines tall
+/** An example's code under one header row of its choices and, at the end, the Platform pills,
+ *  with an icon copy on the first code line. No language label (the Language pills say it); starts about eight lines tall
  *  and drags taller from its grip. */
 export function ExampleCodeBox({
   code,
@@ -272,17 +272,32 @@ export function ExampleCodeBox({
   return (
     <div className="relative min-w-0 overflow-hidden rounded-xl border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
       {/* Square scroller: this overflow-hidden rounds its scrollbars off at the corners. */}
-      <div className="flex min-w-0 items-center gap-2 border-b border-border/60 px-2 py-1.5 dark:border-white/5">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-          {pills}
-          <div className="ml-auto">
-            <PlatformToggle value={os} onChange={onOsChange} />
-          </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1.5">
+        {pills}
+        <div className="ml-auto">
+          <PlatformToggle value={os} onChange={onOsChange} />
         </div>
+      </div>
+      {/* HighlightedCode's max-h-96 is lifted so a drag can grow the box past it. */}
+      <div
+        ref={boxRef}
+        style={
+          height === null
+            ? undefined
+            : ({ "--example-h": `${height}px` } as CSSProperties)
+        }
+        className={cn(
+          "relative [&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 [&_[data-streamdown=code-block-header]]:hidden",
+          height === null
+            ? tall && "[&>section]:h-46"
+            : "[&>section]:h-(--example-h)",
+        )}
+      >
+        {/* On the first code line, clear of the vertical scrollbar. */}
         <button
           type="button"
           onClick={handleCopy}
-          className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="absolute top-2.5 right-3 z-10 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={
             copied
               ? t("settings.apiKeys.copied")
@@ -294,22 +309,6 @@ export function ExampleCodeBox({
             className={cn("size-3.5", copied && "text-control-accent")}
           />
         </button>
-      </div>
-      {/* HighlightedCode's max-h-96 is lifted so a drag can grow the box past it. */}
-      <div
-        ref={boxRef}
-        style={
-          height === null
-            ? undefined
-            : ({ "--example-h": `${height}px` } as CSSProperties)
-        }
-        className={cn(
-          "[&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 [&_[data-streamdown=code-block-header]]:hidden",
-          height === null
-            ? tall && "[&>section]:h-46"
-            : "[&>section]:h-(--example-h)",
-        )}
-      >
         <HighlightedCode
           key={code}
           code={code}

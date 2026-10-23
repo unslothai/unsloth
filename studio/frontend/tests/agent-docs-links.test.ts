@@ -58,10 +58,15 @@ test("every API example section has a platform toggle that follows the user's ma
       name,
     );
   }
-  // one header row: the choices, then Platform pushed to its end, then copy
+  // one header row, no divider: the choices, then Platform pushed to its end
   assert.match(
     parts,
-    /\{pills\}\s*<div className="ml-auto">\s*<PlatformToggle value=\{os\} onChange=\{onOsChange\} \/>\s*<\/div>\s*<\/div>\s*<button/,
+    /<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1\.5">\s*\{pills\}\s*<div className="ml-auto">\s*<PlatformToggle value=\{os\} onChange=\{onOsChange\} \/>\s*<\/div>\s*<\/div>/,
+  );
+  // copy sits in the code area, on its first line
+  assert.match(
+    parts,
+    /<button\s*type="button"\s*onClick=\{handleCopy\}\s*className="absolute top-2\.5 right-3 [^"]*"[\s\S]*?<\/button>\s*<HighlightedCode/,
   );
   // Language and Platform keep the old usage-example pills; what the example does is a toggle
   assert.match(parts, /variant = "pills"/);
@@ -117,7 +122,7 @@ test("the example code box starts short, drags taller, and its copy button is ic
   // the cap is lifted so a drag can grow it; a height is set, from the drag once there is one
   assert.match(
     src,
-    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
+    /"relative \[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
   );
   // our own handle: CSS resize draws a native grabber the rounded corner clips into an arc
   assert.doesNotMatch(src, /resize-y|webkit-resizer/);
