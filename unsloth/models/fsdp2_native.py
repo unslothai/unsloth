@@ -1577,8 +1577,11 @@ def native_clip_grad_norm_(
             if len(live) == len(idx):
                 values = torch.stack(norms).to(device)
             else:
+                # A norm is real: complex64 gradients give float32 norms, so the empty identity
+                # takes that dtype too and every rank gathers the same dtype.
+                norm_dtype = dtype.to_real() if dtype.is_complex else dtype
                 values = torch.full(
-                    (len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = dtype
+                    (len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype
                 )
                 if live:
                     values[torch.tensor(live, device = device)] = torch.stack(norms).to(device)

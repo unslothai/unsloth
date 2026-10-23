@@ -35,6 +35,8 @@ CASES = {
     "bfloat16": (torch.bfloat16, 2**-6),
     "float16": (torch.float16, 2**-8),
     "mixed": (None, 1e-5),
+    # complex64 norms are float32: the rank with the empty shard must gather float32 too
+    "complex64": (torch.complex64, 1e-5),
 }
 SHAPES = ((3, 4), (1, 5), (6, 2), (4,))  # (3, 4) uneven over 2 ranks, (1, 5) empty on rank 1
 
@@ -45,6 +47,8 @@ def _grads(dtype, scale):
     for i, shape in enumerate(SHAPES):
         d = dtype or (torch.bfloat16 if i % 2 else torch.float32)
         t = torch.randn(*shape, generator = g) * scale
+        if d.is_complex:
+            t = torch.complex(t, torch.randn(*shape, generator = g) * scale)
         if i == 2:
             t[0] = 0.0  # a zero row: p = 0 counts tensors, -inf sees a zero
         out.append(t.to(d))
@@ -81,7 +85,7 @@ def _case(native, rank):
                 for q, r in zip(params, ref):
                     gq = q.grad.full_tensor() if isinstance(q.grad, DTensor) else q.grad
                     scale_r = max(r.grad.abs().max().item(), 1e-30)
-                    diff = max(diff, ((gq.float() - r.grad.float()).abs().max() / scale_r).item())
+                    diff = max(diff, ((gq - r.grad).abs().float().max() / scale_r).item())
                 res[f"{name}|{scale}|{norm_type}"] = {
                     "got": float(got),
                     "want": float(want),
