@@ -313,6 +313,11 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
         )
         return
 
+    # Intel's XPU Triton picks its compiler differently from triton-windows and needs cl set up for it (#14807).
+    from ._xpu_triton_toolchain import prepare_xpu_triton_compiler  # noqa: PLC0415
+
+    prepare_xpu_triton_compiler(log)
+
     try:
         reachable = crt_headers_reachable()
     except Exception:  # noqa: BLE001 -- a probe must not take down the worker it exists to protect
