@@ -89,16 +89,15 @@ def test_the_public_wrapper_exposes_the_option() -> None:
 def test_the_seed_is_set_before_the_model_is_built() -> None:
     """`get_peft_model` initialises the adapter matrices when it is called, so a seed after it leaves
     the trained parameters different on every rank and every run."""
-    source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
-    seeds = [i for i, line in enumerate(source.splitlines()) if "manual_seed(TRAIN_SEED)" in line]
-    build = next(
-        i
-        for i, line in enumerate(source.splitlines())
-        if "model, cfg, _ = build_stage_model(" in line
-    )
-    peft = next(i for i, line in enumerate(source.splitlines()) if "get_peft_model(" in line)
-    assert seeds, "the run no longer seeds at all"
-    assert min(seeds) < build < peft, (seeds, build, peft)
+    lines = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8").splitlines()
+    seeds = [i for i, line in enumerate(lines) if "manual_seed(TRAIN_SEED)" in line]
+    builds = [i for i, line in enumerate(lines) if "model, cfg, _ = build_stage_model(" in line]
+    assert seeds and builds, "the run no longer seeds, or no longer builds a stage"
+    for build in builds:
+        assert any(build - 5 <= seed < build for seed in seeds), (seeds, build)
+        assert any(
+            "get_peft_model(" in line or "apply_lora(" in line for line in lines[build:]
+        ), build
 
 
 @_POSIX_ONLY

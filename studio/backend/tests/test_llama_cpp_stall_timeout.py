@@ -24,11 +24,24 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Mirror sibling tests' stubbing so the module imports without fastapi.
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
+# Stand-ins only when the real modules are missing: a bare setdefault would shadow an uninstalled-but-unimported real module.
+try:  # noqa: E402
+    import structlog  # type: ignore
+except ModuleNotFoundError:
+    _structlog_stub = _types.ModuleType("structlog")
+    _structlog_stub.__path__ = []  # type: ignore[attr-defined]
+    _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
+    sys.modules["structlog"] = _structlog_stub
+
+try:  # noqa: E402
+    import loggers  # type: ignore  # real backend package
+except ModuleNotFoundError as _exc:
+    if (_exc.name or "").split(".")[0] != "loggers":
+        raise
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.__path__ = []  # type: ignore[attr-defined]
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules["loggers"] = _loggers_stub
 
 import httpcore  # noqa: E402
 import httpx  # noqa: E402

@@ -2004,6 +2004,19 @@ _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
+def _spark_replica_count(llama_backend) -> int:
+    """Healthy replicas behind a paired-Spark router, else 1: each runs the primary's slots and KV pool."""
+    try:
+        from core.inference import spark_serving
+
+        if spark_serving.route_base_url(llama_backend) is None:
+            return 1
+        router = spark_serving.state().router
+        return max(1, len(router.healthy_backends())) if router is not None else 1
+    except Exception:
+        return 1
+
+
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
     """Serving slots available for one local llama-server backend.
 
@@ -2014,7 +2027,7 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     """
     slots = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None))
     if slots is not None:
-        return slots
+        return slots * _spark_replica_count(llama_backend)
     try:
         slots = getattr(request.app.state, "llama_parallel_slots", None)
     except Exception:
@@ -2040,7 +2053,8 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     which keeps slot-only admission rather than inventing a budget.
     """
     total = _positive_int_or_none(getattr(llama_backend, "_kv_cache_context_total", None))
-    return total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+    total = total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+    return total * _spark_replica_count(llama_backend) if total is not None else None
 
 
 def _openai_llama_admission_can_yield(llama_backend) -> bool:
@@ -16710,6 +16724,15 @@ def _wait_for_native_audio_gpu_free_gb(
         time.sleep(min(interval, remaining))
 
 
+def _spark_topology() -> Optional[str]:
+    """The two-Spark serving topology for the status poll; None off a paired Spark."""
+    try:
+        from core.inference.spark_serving import current_topology
+        return current_topology()
+    except Exception:
+        return None
+
+
 async def _unload_llama_before_standard_load(llama_backend) -> None:
     """Tear down llama-server and wait for asynchronous driver VRAM reclaim."""
     if not llama_backend.is_loaded:
@@ -17269,6 +17292,8 @@ def _resolve_gguf_load_intent(
     if config.gguf_hf_repo:
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
+            requested_identifier = request.model_path,
+            requested_variant = request.gguf_variant,
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
@@ -17300,6 +17325,8 @@ def _resolve_gguf_load_intent(
                 )
         source = GgufLoadIntent(
             model_identifier = public_model_identifier,
+            requested_identifier = request.model_path,
+            requested_variant = request.gguf_variant,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
@@ -17624,6 +17651,47 @@ def _guard_chat_load_against_training(
     raise HTTPException(status_code = 409, detail = detail)
 
 
+def _shadow_stripped_inherited(
+    request,
+    stored_args: list[str],
+    effective_chat_template_override: Optional[str] = None,
+) -> list[str]:
+    """``stored_args`` without the split block and without every flag a field the request set
+    now emits itself (last-wins would otherwise keep the stale value)."""
+    from core.inference.llama_server_args import matches_explicit_ctx_override
+    from core.inference.spark_serving import strip_layer_split_extra_args
+
+    fields_set = getattr(request, "model_fields_set", set())
+    return strip_shadowing_flags(
+        # Our Spark split block: a reload re-plans it rather than relaunching against the old rpc-server.
+        strip_layer_split_extra_args(stored_args),
+        strip_context = "max_seq_length" in fields_set
+        and not matches_explicit_ctx_override(
+            stored_args, getattr(request, "max_seq_length", None)
+        ),
+        strip_cache = "cache_type_kv" in fields_set,
+        strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
+        strip_template = (
+            "chat_template_override" in fields_set or effective_chat_template_override is not None
+        ),
+        strip_split_mode = _should_strip_split_mode(request, stored_args),
+        # Drop an inherited --tensor-split but keep the user's --split-mode choice.
+        strip_tensor_split = _should_strip_tensor_split(request),
+        # auto keeps an inherited -ngl; getattr: a validate request has no offload fields.
+        strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+        strip_reasoning_budget = "reasoning_budget" in fields_set,
+        strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
+        strip_batch = "n_batch" in fields_set,
+        strip_ubatch = "n_ubatch" in fields_set,
+        # A trailing deprecated load-mode alias resets the whole mode, so aliases go too.
+        strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
+        strip_cache_ram = "cache_ram" in fields_set,
+        strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
+        strip_load_mode = "load_mode" in fields_set,
+        strip_load_mode_aliases = "load_mode" in fields_set,
+    )
+
+
 def _resolve_inherited_extra_args(
     request,
     config: ModelConfig,
@@ -17681,46 +17749,12 @@ def _resolve_inherited_extra_args(
         # a first-class template even when the request omits chat_template_override,
         # so strip the inherited --chat-template-file then too -- else the stale arg
         # (appended last) shadows the bundled template while Unsloth reports its caps.
-        fields_set = getattr(request, "model_fields_set", set())
         # A MATCHING inherited -c/--ctx-size is the user's opt-in to exceed the
         # VRAM-fit estimate, so it survives here as it does on auto-switch.
         # Stripping it relaunched an Apply at the fit estimate, silently collapsing
         # the confirmed context while the stored override still said otherwise.
-        from core.inference.llama_server_args import matches_explicit_ctx_override
-
-        stripped = strip_shadowing_flags(
-            stored_args,
-            strip_context = "max_seq_length" in fields_set
-            and not matches_explicit_ctx_override(
-                stored_args, getattr(request, "max_seq_length", None)
-            ),
-            strip_cache = "cache_type_kv" in fields_set,
-            strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
-            strip_template = (
-                "chat_template_override" in fields_set
-                or effective_chat_template_override is not None
-            ),
-            strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # manual + per-GPU ratio emits its own --tensor-split; drop
-            # an inherited one (appended last would override it) while
-            # keeping the user's --split-mode row/none/layer choice.
-            strip_tensor_split = _should_strip_tensor_split(request),
-            # manual emits its own --fit/--gpu-layers, so an inherited offload flag
-            # must not last-wins-override it. auto leaves a user's inherited -ngl
-            # alone. getattr: a validate request reuses this resolver, no offload fields.
-            strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
-            strip_reasoning_budget = "reasoning_budget" in fields_set,
-            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
-            # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
-            strip_batch = "n_batch" in fields_set,
-            strip_ubatch = "n_ubatch" in fields_set,
-            # same rule for the llama-server tuning group. The load mode strips its
-            # deprecated aliases too, because a trailing one resets the whole mode.
-            strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
-            strip_cache_ram = "cache_ram" in fields_set,
-            strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
-            strip_load_mode = "load_mode" in fields_set,
-            strip_load_mode_aliases = "load_mode" in fields_set,
+        stripped = _shadow_stripped_inherited(
+            request, stored_args, effective_chat_template_override
         )
         # Inherited, not sent: a flag denylisted since it was stored loses only
         # itself. The previous behaviour dropped the whole list, so one name added
@@ -18579,6 +18613,34 @@ def _cancel_scoped_load_attempt(
         return attempt, is_running
 
 
+def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
+    """The previous same-model load's pass-through extras, inherited when a request omits the field."""
+    if getattr(request, "llama_extra_args", None) is not None:
+        return None
+    try:
+        llama_backend = get_llama_cpp_backend()
+        stored = getattr(llama_backend, "extra_args", None)
+        source = getattr(llama_backend, "extra_args_requested_source", None)
+    except Exception:
+        return None
+    if not stored:
+        return None
+    if not source or not source[0]:
+        return None
+    requested = str(getattr(request, "model_path", "") or "").strip().lower()
+    stored_id = str(source[0] or "").strip().lower()
+    if not requested or requested != stored_id:
+        return None
+    # The variant is part of the identity: two quants are different files with different sidecars.
+    if (
+        str(getattr(request, "gguf_variant", "") or "").strip().lower()
+        != str(source[1] or "").strip().lower()
+    ):
+        return None
+    # Our own split block, shadow-stripped as the route would, so it is never read as a caller --rpc.
+    return drop_managed_flags(_shadow_stripped_inherited(request, stored))[0]
+
+
 def _hub_access_warnings(token_rejections) -> list[str]:
     """What this request's Hub reads tell the user: a refused token, a refused repo's copy."""
     warnings = [HUB_TOKEN_REJECTED_WARNING] if token_rejections.recovered else []
@@ -18647,6 +18709,45 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        from core.inference import spark_serving
+
+        _spark_slots = _resolve_parallel_slots(request, fastapi_request)
+        if (
+            spark_serving.enabled()
+            and request.engine == "auto"
+            and account_access.managed_account()
+            and not _defers_access_to_native_grant(request)
+        ):
+            # before_load can tear down the current model's split, so refuse first.
+            await asyncio.to_thread(account_access.require_model_access, request.model_path)
+        force_cancel = bool(getattr(request, "force_cancel_active", False))
+
+        async def _confirm_split_teardown() -> None:
+            account_access.require_idle_other_accounts()
+            on_reload_confirmed(cancel = False)
+            if not force_cancel:
+                return
+            # Tearing the split down kills the served model's remote layers: stop and drain its
+            # chats first, or they fail as upstream errors before _load_model_impl's own cancel.
+            if attempt.cancel_event.is_set():
+                raise HTTPException(status_code = 409, detail = "Model load cancelled")
+            on_reload_confirmed(cancel = True)
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+            )
+
+        try:
+            request = await spark_serving.before_load(
+                request,
+                _spark_slots,
+                inherited_extra_args = _spark_inherited_extra_args(request),
+                cancel_event = attempt.cancel_event,
+                confirm_teardown = None if on_reload_confirmed is None else _confirm_split_teardown,
+            )
+        except spark_serving.SparkLoadDoesNotFit as exc:
+            logger.warning("inference.spark_load_does_not_fit: %s", exc)
+            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
         warnings_token = _load_warnings_reach_user.set(True)
         try:
             with collecting_hub_token_rejections() as token_rejections:
@@ -18657,9 +18758,22 @@ async def _run_tracked_load_model_impl(
                     current_request_counted = current_request_counted,
                     on_reload_confirmed = on_reload_confirmed,
                     load_cancel_event = attempt.cancel_event,
+                    spark_planned = True,
                 )
+        except BaseException:
+            await spark_serving.load_failed()
+            raise
         finally:
             _load_warnings_reach_user.reset(warnings_token)
+        if await spark_serving.after_load(
+            get_llama_cpp_backend(), _spark_slots, cancel_event = attempt.cancel_event
+        ):
+            # Cancelled after the replica was healthy: the unload route left it for this load to undo.
+            from core.inference.llama_keepwarm import note_model_unloaded
+
+            await asyncio.to_thread(get_llama_cpp_backend().unload_model)
+            note_model_unloaded()
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
         response = _with_token_rejected_warning(response, token_rejections)
         _remember_hub_access_warning(response, token_rejections)
         return response
@@ -19630,6 +19744,7 @@ async def _load_model_impl(
     on_reload_confirmed = None,
     allow_gpu_owner_eviction: bool = True,
     load_cancel_event: Optional[threading.Event] = None,
+    spark_planned: bool = False,
     cache_environment: Optional[dict[str, str]] = None,
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
@@ -19725,8 +19840,14 @@ async def _load_model_impl(
         extra_llama_args: Optional[list[str]] = (
             None if request.llama_extra_args is None else extra_llama_args
         )
+        if spark_planned and extra_llama_args:
+            # The split block spark_serving appended (its --rpc) is ours, not the caller's path.
+            from core.inference.spark_serving import strip_layer_split_extra_args
+            _caller_args = strip_layer_split_extra_args(extra_llama_args)
+        else:
+            _caller_args = extra_llama_args
         _refuse_managed_custom_projector(
-            extra_llama_args, request.model_path, request._override_alias_id, request.gguf_variant
+            _caller_args, request.model_path, request._override_alias_id, request.gguf_variant
         )
 
         _reasoning_updates = {}
@@ -20227,6 +20348,10 @@ async def _load_model_impl(
         cancel_pending = (
             serving and on_reload_confirmed is not None and bool(request.force_cancel_active)
         )
+        if not spark_planned:
+            # Paired Spark only, after resolution and gates, so a refused load keeps its remote layers.
+            from core.inference import spark_serving
+            await spark_serving.reconcile_internal_load()
 
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
@@ -23714,6 +23839,7 @@ async def _slot_status(current_subject: str):
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                spark_topology = _spark_topology(),
             )
 
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
