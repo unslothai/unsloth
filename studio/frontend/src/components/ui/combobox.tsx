@@ -12,6 +12,7 @@ import { createContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
+import { useDropdownGlow } from "@/components/ui/dropdown-glow";
 import {
   InputGroup,
   InputGroupAddon,
@@ -174,6 +175,7 @@ function ComboboxContent({
         <ComboboxPrimitive.Popup
           ref={snappedRef}
           data-slot="combobox-content"
+          data-dropdown-glow={useDropdownGlow()}
           data-chips={!!anchor}
           onWheel={(event) => {
             onWheel?.(event);

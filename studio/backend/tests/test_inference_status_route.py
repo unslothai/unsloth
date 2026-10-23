@@ -20,9 +20,7 @@ if str(_BACKEND) not in sys.path:
 
 import routes.inference as inference_route  # noqa: E402
 
-# Multiple turns make scheduler progress unambiguous.
 _CONTROL_TURNS = 5
-# Prevent a regression from hanging the suite.
 _GUARD_SECONDS = 10.0
 
 
@@ -102,10 +100,8 @@ def test_status_probe_runs_off_the_event_loop(monkeypatch):
 
         status = asyncio.create_task(inference_route.get_status(current_subject = "test"))
         control = asyncio.create_task(_control())
-        # Wait without blocking the event loop.
         started = await asyncio.to_thread(entered.wait, _GUARD_SECONDS)
         await control
-        # The control task finished while the probe remained blocked.
         probe_in_flight = not status.done()
         release.set()
         response = await asyncio.wait_for(status, timeout = _GUARD_SECONDS)
@@ -137,8 +133,7 @@ def test_overlapping_status_probes_leave_default_executor_for_streaming(monkeypa
 
     async def _run():
         loop = asyncio.get_running_loop()
-        # One worker makes default-executor starvation deterministic.  The status
-        # executor remains separate, so two overlapping polls still leave it free.
+        # One worker makes default-executor starvation deterministic; status executor is separate.
         loop.set_default_executor(ThreadPoolExecutor(max_workers = 1))
         statuses = [
             asyncio.create_task(inference_route.get_status(current_subject = "test"))
@@ -233,6 +228,33 @@ def test_status_reports_the_mlx_video_capability(monkeypatch):
     response = asyncio.run(inference_route.get_status(current_subject = "test"))
 
     assert response.has_video_input is True
+
+
+@pytest.mark.parametrize("via_api_key", [False, True], ids = ["ui_session", "api_key"])
+def test_status_publishes_an_mlx_local_folder_as_the_count_names_it(monkeypatch, via_api_key):
+    """/chat/count_tokens answers with this same id (redacted the same way for an API-key caller);
+    the client drops a count naming any other checkpoint."""
+    from hub.utils.host_paths import redact_host_paths
+
+    active = "/Users/alice/outputs/my-finetune-mlx"
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = active
+    backend.models = {active: {"is_mlx": True}}
+    backend.loading_models = set()
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+
+    response = asyncio.run(
+        inference_route.inference_status(current_subject = "test", via_api_key = via_api_key)
+    )
+
+    # Redaction dumps the response model to a dict.
+    published = (
+        response["model_identifier"] if isinstance(response, dict) else response.model_identifier
+    )
+    expected = redact_host_paths({"model_identifier": active}, via_api_key = via_api_key)
+    assert published == expected["model_identifier"]
+    assert (published == active) is (not via_api_key)
 
 
 def test_status_reports_no_video_capability_for_a_model_without_one(monkeypatch):

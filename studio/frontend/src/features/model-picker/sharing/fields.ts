@@ -47,9 +47,15 @@ export type SharedConfigKey = Exclude<
   | "maxSeqLength"
   | "mlxKvQuant"
   | "mlxInt8Prefill"
+  | "mlxPleOffload"
+  | "mlxExpertOffload"
   | "engine"
   | "enginePrecision"
   | "engineParallelism"
+  | "engineKvCacheDtype"
+  | "engineSeed"
+  | "engineGpuMemoryUtilization"
+  | "loadIn4bit"
   // A named drafter can be a local directory.
   | "specDraftModel"
 >;

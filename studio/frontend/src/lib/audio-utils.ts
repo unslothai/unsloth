@@ -4,11 +4,11 @@
 // Containers the backend can reach wav/mp3 from: wav and mp3 pass through, the
 // rest decode via libsndfile, PyAV's bundled FFmpeg, or finally librosa.
 export const AUDIO_ACCEPT =
-  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp";
+  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp,audio/x-matroska";
 // Browsers report an empty or wrong type for several of these containers, so
 // every surface that takes audio matches the name as well as the MIME.
 export const AUDIO_ACCEPT_EXTENSIONS =
-  ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
+  ".wav,.mp3,.m4a,.m4b,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2,.weba,.mka";
 /** What claims a file as audio: the MIME list plus those extensions. Keep .3gp
  *  out of it. A recording and a clip share that extension, and the composer's
  *  audio adapter is matched before its video one, so claiming the name here

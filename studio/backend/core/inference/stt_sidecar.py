@@ -168,6 +168,17 @@ def _downloaded_file_bytes(
     if blob_key:
         blobs = repo_cache / "blobs"
         candidates.extend((blobs / f"{blob_key}.incomplete", blobs / blob_key))
+        # huggingface_hub >= 1.18 writes a process-unique `<etag>.<8 hex>.incomplete` partial instead.
+        from hub.utils.hf_cache_state import incomplete_blob_hash
+
+        try:
+            candidates.extend(
+                partial
+                for partial in blobs.glob(f"{blob_key}.*.incomplete")
+                if incomplete_blob_hash(partial.name) == blob_key
+            )
+        except OSError:
+            pass
     if revision:
         candidates.append(repo_cache / "snapshots" / revision / filename)
     sizes: list[int] = []
@@ -266,6 +277,41 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
 
 
+# Whisper code -> Qwen3-ASR prompt name (config.support_languages; audio.cpp qwen3_asr/assets.cpp).
+QWEN3_ASR_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+
 def _stt_quiet_window_end(decoded_audio, start: int, window: int) -> Optional[int]:
     """Return a nearby quiet window boundary, or None when speech fills it."""
     import numpy as np
@@ -345,8 +391,18 @@ def resolve_model_repo(model_id: str) -> str:
 
 def can_translate(model: Optional[str]) -> bool:
     """Whether Whisper's translate task works on this id. The turbo checkpoints were fine-tuned for transcription
-    only and answer in the source language when asked to translate."""
-    return "turbo" not in (model or DEFAULT_STT_MODEL).lower()
+    only and answer in the source language when asked to translate, as do mlx-audio checkpoints."""
+    if "turbo" in (model or DEFAULT_STT_MODEL).lower():
+        return False
+    from core.inference.stt_mlx import mlx_stt_available
+
+    if not model or model in STT_MODELS or not mlx_stt_available():
+        return True
+    try:
+        snapshot = _find_complete_cached_snapshot(model)
+    except Exception:  # noqa: BLE001 - an unreadable id is refused later, by the load
+        return True
+    return snapshot is None or _is_whisper_config(_read_json_object(snapshot / "config.json"))
 
 
 def _is_whisper_config(config: object) -> bool:
@@ -489,11 +545,16 @@ def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
     return candidate_resolved
 
 
+def _is_servable_config(config: object) -> bool:
+    from core.inference.stt_mlx import is_mlx_stt_config
+    return _is_whisper_config(config) or is_mlx_stt_config(config)
+
+
 def _snapshot_usable(model_id: str, snapshot: Path) -> bool:
     if not _snapshot_is_complete(snapshot):
         return False
     if model_id not in STT_MODELS:
-        return _is_whisper_config(_read_json_object(snapshot / "config.json"))
+        return _is_servable_config(_read_json_object(snapshot / "config.json"))
     return True
 
 
@@ -1125,16 +1186,20 @@ def _close_engine(engine) -> bool:
         return not _engine_is_alive(engine)
 
 
-def _av_open(av, source):
+# An upload probed as a concat playlist would otherwise decode the files it names.
+NO_PROTOCOLS = {"protocol_whitelist": "none"}
+
+
+def _av_open(av, source, **extra):
     """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", **extra)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
         # format = None is PyAV's own default (probe the container); spelling it keeps this call
         # distinguishable from Path.open for the text-encoding lint.
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, **extra)
 
 
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
@@ -1180,24 +1245,29 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         raw_buffer.write(array)
 
     try:
-        with _av_open(av, io.BytesIO(audio)) as container:
+        with _av_open(av, io.BytesIO(audio), options = NO_PROTOCOLS) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
-            frames = iter(container.decode(audio = 0))
-            while True:
-                try:
-                    frame = next(frames)
-                except StopIteration:
-                    break
-                except InvalidDataError:
-                    continue
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                frame.pts = None
-                fifo.write(frame)
-                if fifo.samples >= 500000:
-                    for resampled in resampler.resample(fifo.read()):
-                        write_frame(resampled)
+            try:
+                for packet in container.demux(audio = 0):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise SttTranscriptionCancelledError("Transcription cancelled.")
+                    try:
+                        frames = packet.decode()
+                    except InvalidDataError:
+                        continue
+                    for frame in frames:
+                        frame.pts = None
+                        fifo.write(frame)
+                        if fifo.samples >= 500000:
+                            for resampled in resampler.resample(fifo.read()):
+                                write_frame(resampled)
+            except (SttAudioTooLongError, SttTranscriptionCancelledError):
+                raise
+            except (FFmpegError, ValueError, RuntimeError) as exc:
+                if not (sample_count or fifo.samples):
+                    raise
+                logger.info("STT decode stopped early: %s", exc)
             if fifo.samples > 0:
                 for resampled in resampler.resample(fifo.read()):
                     write_frame(resampled)
@@ -1435,18 +1505,25 @@ class WhisperSttSidecar:
         holding memory that nothing else knows about: dropping it here is what would let this failed
         load read as nothing resident.
         """
+        from core.inference.stt_mlx import is_mlx_stt_config
         from core.inference.stt_transformers_worker import (
             InProcessWhisperEngine,
             SttWorkerSpawnError,
             WhisperWorker,
         )
 
+        mlx = is_mlx_stt_config(_read_json_object(Path(snapshot_path) / "config.json"))
         worker = WhisperWorker()
         try:
             # start() kills its own child on any failure, including cancellation.
-            worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
+            if mlx:
+                worker.start(
+                    str(snapshot_path), device, _dtype_name(dtype), cancel_event, runtime = "mlx"
+                )
+            else:
+                worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
         except SttWorkerSpawnError as exc:
-            if device != "cpu":
+            if device != "cpu" or mlx:
                 raise
             logger.warning(
                 "No dictation worker process could be started (%s); "
@@ -1495,18 +1572,23 @@ class WhisperSttSidecar:
                 )
         snapshot_path = _find_complete_cached_snapshot(model_id)
         if snapshot_path is None:
-            raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
-            )
+            raise SttModelNotDownloadedError(f"STT model '{model_id}' is not downloaded yet.")
 
         if model_id in STT_MODELS:
             return _CachedSttSnapshot(path = snapshot_path, is_multilingual = True)
 
-        if not _is_whisper_config(_read_json_object(snapshot_path / "config.json")):
+        config = _read_json_object(snapshot_path / "config.json")
+        if not _is_servable_config(config):
             raise SttModelCompatibilityError(
                 f"STT model '{model_id}' is not a compatible Transformers Whisper model."
             )
+        if not _is_whisper_config(config):
+            from core.inference.stt_mlx import ships_custom_code
+            if ships_custom_code(snapshot_path):
+                raise SttModelCompatibilityError(
+                    f"STT model '{model_id}' ships its own code, which dictation does not run."
+                )
+            return _CachedSttSnapshot(path = snapshot_path, is_multilingual = None)
         generation_config = _read_json_object(snapshot_path / "generation_config.json")
         is_multilingual = generation_config.get("is_multilingual")
         if isinstance(is_multilingual, bool):
@@ -1569,8 +1651,7 @@ class WhisperSttSidecar:
                 snapshot_path = cached.path
                 if snapshot_path is None:
                     raise SttModelNotDownloadedError(
-                        f"STT model '{model_id}' is not downloaded. "
-                        "Download it in Settings, then Voice, before loading it."
+                        f"STT model '{model_id}' is not downloaded yet."
                     )
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device(preference)
@@ -1586,8 +1667,7 @@ class WhisperSttSidecar:
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
                     return SttModelNotDownloadedError(
-                        f"STT model '{model_id}' is not downloaded. "
-                        "Download it in Settings, then Voice, before loading it."
+                        f"STT model '{model_id}' is not downloaded yet."
                     )
 
                 retry_on_cpu = False
@@ -1853,10 +1933,10 @@ class WhisperSttSidecar:
         current = self._model_id
         if current is None:
             return False
-        if current == expected:
+        if current.casefold() == expected.casefold():
             return True
         try:
-            return current == resolve_model_id(expected)
+            return current.casefold() == resolve_model_id(expected).casefold()
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
 

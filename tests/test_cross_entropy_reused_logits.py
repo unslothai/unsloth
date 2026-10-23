@@ -94,7 +94,6 @@ def test_cross_entropy_retained_graph(dtype, vocab_size, softcap, scaling, use_a
             atol = 1e-7 if dtype == torch.float32 else 2e-3,
         )
 
-    # A later backward must also leave previously returned gradients intact.
     torch.testing.assert_close(
         gradients[0],
         reference_grad,

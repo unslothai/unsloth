@@ -35,7 +35,8 @@ ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 ZOO_TRL_CEILING_OF_LIFTED_FLOOR = Version("1.13.0")
 
 # First published unsloth_zoo admitting TESTED_CEILING; None defers the gate until it ships.
-ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING = None
+# 2026.10.4 admits trl <=1.15.0, and pyproject.toml's unsloth_zoo floor is already there.
+ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING = Version("2026.10.4")
 
 # Every unsloth_zoo up to 2026.9.7 caps datasets here; pip intersects, so users stay under it.
 ZOO_DATASETS_CEILING_BEFORE_THE_LIFT = SpecifierSet("<4.4.0")
@@ -368,9 +369,9 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
     workflows.mkdir()
     (workflows / "consolidated-tests-ci.yml").write_text(
         "run: |\n"
-        "  pip install 'trl==0.18.2'\n"  # exact pin: a point, not a cap
-        "  pip install 'trl>=0.18.2,<1.0.0'\n"  # the allowlisted half of the split
-        "  pip install 'trl>=0.22,<0.26'\n",  # stale range cap: must be caught
+        "  pip install 'trl==0.18.2'\n"
+        "  pip install 'trl>=0.18.2,<1.0.0'\n"
+        "  pip install 'trl>=0.22,<0.26'\n",
         encoding = "utf-8",
     )
     monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
@@ -600,7 +601,7 @@ def test_the_ceiling_lane_check_can_fail(tmp_path, monkeypatch) -> None:
     test_a_ceiling_lane_pins_the_declared_ceiling()
 
 
-# Must be resolvable: trl 1.x needs datasets>=4.7.0, else pip backtracks to trl 0.29.1.
+# trl 1.x needs datasets>=4.7.0, else pip backtracks to trl 0.29.1.
 TRL_DATASETS_FLOORS = (
     (Version("0.18.2"), Version("3.0.0")),
     (Version("1.0.0"), Version("4.7.0")),

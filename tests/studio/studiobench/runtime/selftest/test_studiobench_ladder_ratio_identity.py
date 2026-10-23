@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One payload, one chars-per-token ratio.
-
-A rung is NAMED in tokens and BUILT in characters, and the ratio is the only thing that makes
-those the same claim. `session.ladder_chars_per_token` measures it afresh on every invocation,
-`--resume` included, and falls back to `PROVISIONAL_CHARS_PER_TOKEN` whenever no real tokeniser
-answers -- tiktoken is not a dependency of this harness, and where it is installed `get_encoding`
-fetches `cl100k_base` over the network on first use, so "no tokeniser answered" is one absent
-package or one unlucky minute.
-
-So a run on a machine with no tokeniser sizes every rung at 4.0 and dies at 100K, and the resume
-finds tiktoken and sizes at 3.336. `_resume_set` skips by `cell_id`, which is
-`r{rung}.{arm}.rep{rep}` and carries no ratio: 1K and 10K stay at 4,000 and 40,000 characters
-while 100K and 1M are built at 333,600 and 3,336,000. Nothing downstream can see the mixture --
-`score_payload` keys by rung, the report prints one ladder, and ONSET RUNG names a token label
-standing over two different amounts of work in the same table.
-"""
+"""One payload, one chars-per-token ratio: a resume under another ratio silently mixes ladders."""
 
 from __future__ import annotations
 
@@ -156,13 +141,7 @@ def test_the_same_ratio_still_resumes(tmp_path):
 
 
 def test_a_float_that_only_differs_in_the_noise_still_resumes(tmp_path):
-    """5.0 against 5.0000001 is one measurement read twice, not two measurements.
-
-    `measure_chars_per_token` rounds to three decimals and `PROVISIONAL_CHARS_PER_TOKEN` is exact,
-    so every ratio that reaches a payload sits on a 0.001 grid and `LADDER_RATIO_TOLERANCE` is half
-    a grid step: nothing a float's own representation can do to a value crosses it, and nothing two
-    real measurements can differ by fails to.
-    """
+    """Ratios lie on a 0.001 grid; LADDER_RATIO_TOLERANCE is half a step, so float noise cannot cross it."""
 
     paths = _payload(
         tmp_path,
@@ -170,17 +149,12 @@ def test_a_float_that_only_differs_in_the_noise_still_resumes(tmp_path):
     )
     assert _problems(paths, 5.0 + 1e-7) == []
     assert _problems(paths, 5.0 - 1e-7) == []
-    # And the smallest difference two recorded ratios can actually have is still refused.
     assert _problems(paths, 5.001) != []
     assert LADDER_RATIO_TOLERANCE < 0.001
 
 
 def test_a_payload_that_never_recorded_the_ratio_still_resumes(tmp_path):
-    """A payload written before the ratio travelled on `meta` declares no ratio.
-
-    The same rule `recorded_identities` applies to every other axis: an axis a row never declared
-    cannot be a difference, so an older output resumes on the axes it did record.
-    """
+    """A payload without a recorded ratio still resumes: an undeclared axis cannot be a difference."""
 
     paths = _payload(tmp_path, [_cell("1K", {})])
     (recorded,) = recorded_identities(paths.payload_jsonl)
@@ -207,18 +181,8 @@ def test_an_unmeasurable_ratio_is_not_a_refusal(tmp_path, measured):
     assert _problems(paths, measured) == []
 
 
-# ── A REFUSAL LEAVES THE PAYLOAD IT REFUSED EXACTLY AS IT FOUND IT ──────────────
-
-
 def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
-    """The refusal arrives after the `Recorder` has opened the file, so it has to undo itself.
-
-    `prepare_payload` and `commit_problems` refuse before the `Recorder` exists. This check cannot:
-    the ratio is not known until `build_cells` has measured the corpus, which is after `run_meta`,
-    after the gates and after an optional `--surfaces` sweep. Without the rollback a refused
-    `--resume --rungs 1K,10K` over a finished 1K payload leaves 10K promised in a file it never
-    touched, and `recorded_ladder` folds every `run_meta` in the file on purpose.
-    """
+    """This refusal comes after the Recorder opens the file, so it must roll back every row it wrote."""
 
     paths = _payload(
         tmp_path,
@@ -227,7 +191,6 @@ def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
     before = paths.payload_jsonl.read_bytes()
     assert recorded_ladder(paths.payload_jsonl) == ["1K", "10K", "100K"]
 
-    # Exactly what `run` writes between opening the payload and asking the ratio question.
     mark = payload_mark(paths.payload_jsonl)
     refused = Recorder(paths.payload_jsonl, "sess-2")
     refused.gate("instrument_unavailable:rss", False, {"error": "psutil is not installed"})
@@ -257,14 +220,11 @@ def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
 
     assert dropped > 0
     assert paths.payload_jsonl.read_bytes() == before
-    # The two ways the leftovers were visible: a rung the payload never owed, and a failed gate charged
-    # to somebody else's evidence.
     assert recorded_ladder(paths.payload_jsonl) == ["1K", "10K", "100K"]
     assert [
         r for r in _rows(paths) if r.get("row_type") == "gate" and r.get("passed") is False
     ] == []
     assert {r.get("session_id") for r in _rows(paths)} == {"sess-1"}
-    # And the payload still resumes at the ratio it was recorded at.
     assert _problems(paths, 3.336) == []
     assert _resume_set(paths) == {"r1K.A0.rep0"}
 

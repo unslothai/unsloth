@@ -27,6 +27,7 @@ import {
   GLASS_SURFACE,
   OVERLAY_CONTROL,
   RAISED_SURFACE,
+  SELECTED_TINT,
 } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
@@ -147,11 +148,14 @@ function CardFrame({
         type="button"
         aria-label={label}
         aria-pressed={select && selecting ? selected : undefined}
-        onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
+        onClick={
+          select && selecting ? (event) => select.toggle(selectKey, event.shiftKey) : onOpen
+        }
         className={cn(
-          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           selected && "ring-2 ring-foreground",
           className,
+          selected && SELECTED_TINT,
         )}
       >
         {children}
@@ -159,12 +163,18 @@ function CardFrame({
       {select && (
         <Checkbox
           checked={selected}
-          onCheckedChange={() => select.toggle(selectKey)}
+          // onClick to read shift.
+          onClick={(event) => {
+            event.preventDefault();
+            select.toggle(selectKey, event.shiftKey);
+          }}
           aria-label={t("library.selectItem", { name: label })}
           className={cn(
             OVERLAY_CONTROL,
             "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             glass && GLASS_CONTROL,
+            // The hover outline is lost on a dimmed selected card, so a checked one draws it darker.
+            glass && "data-checked:ring-neutral-300",
             selected && "opacity-100",
           )}
         />
@@ -230,7 +240,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-ui-12 opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}
@@ -275,10 +285,14 @@ function FolderCard({
 }) {
   const t = useT();
   const actions = useLibraryActions();
+  const select = useContext(CardSelectionContext);
+  const selectKey = `folder:${folder.id}`;
+  // While selecting, the caption selects like the card above it rather than opening the folder.
+  const selecting = select && select.selection.size > 0;
   return (
     <div>
       <CardFrame
-        selectKey={`folder:${folder.id}`}
+        selectKey={selectKey}
         label={folder.name}
         onOpen={() => actions.openFolder(folder.id)}
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
@@ -290,7 +304,9 @@ function FolderCard({
       </CardFrame>
       <button
         type="button"
-        onClick={() => actions.openFolder(folder.id)}
+        onClick={(event) =>
+          selecting ? select.toggle(selectKey, event.shiftKey) : actions.openFolder(folder.id)
+        }
         className="mt-2 block w-full px-1 text-left"
       >
         <p className="truncate font-medium text-ui-14 text-foreground">{folder.name}</p>

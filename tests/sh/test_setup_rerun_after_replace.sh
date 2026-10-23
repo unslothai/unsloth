@@ -58,6 +58,7 @@ make_variant() {
         echo 'step()    { printf "STEP %s: %s\n" "$1" "$2"; }'
         echo 'substep() { printf "SUB %s\n" "$1"; }'
         echo 'C_WARN='
+        echo '_frontend_bg_join() { :; }'
         cat "$WORK/func_blk.sh"
         cat <<EOF
 echo "START $_v pid=\$\$ pwd=\$PWD guard=\${UNSLOTH_SETUP_RERUN:-}"

@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Work absorbed onto a shared runner still runs, and still fails its job when it fails.
-
-Two workflows each held their own runner slot on every commit for a few seconds of
-read-only checking:
-
-    Unsloth load-orchestrator CI :: test    ~33 s, its own slot
-    Lockfile supply-chain audit :: audit     ~6 s, its own slot
-
-Both now run as background lanes inside `Lint CI`, which has no path filter and was
-already going to occupy a runner on every commit. Absorbing narrower-triggered work into
-an unfiltered job can only reduce the slots a commit takes, and running the lanes in the
-background rather than as extra steps means they overlap the ~65 s of lint instead of
-being appended to it.
-
-Backgrounding is what makes this worth guarding. Three things go silently wrong with it,
-and none of them turns a job red on its own:
-
-  * the lane is launched but never collected, so a failure is invisible and the absorbed
-    job has effectively been deleted rather than moved;
-  * the lane never starts, and the collect step reads a missing exit status as success;
-  * the launch blocks on the lane's output instead of returning, so the overlap the whole
-    design buys quietly disappears and the job just gets slower.
-
-The payloads live in `.github/scripts/lane-*.sh` so the standalone workflows and the Lint
-CI lanes cannot drift apart. That single-definition property is asserted here too, since
-the obvious "fix" when a lane breaks is to inline it back into the workflow.
-"""
+"""Lanes absorbed into `Lint CI` must still run, be collected, fail the job, and not block the launch."""
 
 import re
 from pathlib import Path
@@ -41,7 +15,7 @@ SCRIPTS = REPO / ".github" / "scripts"
 
 LINT_CI = WORKFLOWS / "lint-ci.yml"
 
-# lane name -> (shared script, the workflow that keeps a standalone copy of the job)
+# lane name -> (shared script, workflow that keeps a standalone copy of the job)
 ABSORBED = {
     "load-orchestrator": ("lane-load-orchestrator.sh", "studio-load-orchestrator-ci.yml"),
     "lockfile-audit": ("lane-lockfile-audit.sh", "lockfile-audit.yml"),
@@ -109,14 +83,7 @@ def test_a_lane_that_never_finishes_is_a_failure_not_a_pass():
 
 
 def test_the_launch_detaches_from_the_steps_output():
-    """Measured, not theoretical: without this the launch blocks for the lane's duration.
-
-    A background child inherits the step's stdout and stderr pipes, and the step is not
-    considered finished while a writer still holds them. Locally, launching a 4 s lane
-    took 4.0 s before the redirect and 0.0 s after. The lanes would still run and still be
-    collected, so nothing would go red -- the job would just quietly stop overlapping them
-    and get slower, which is the entire benefit gone.
-    """
+    """Background lanes must redirect stdout and stderr, or the launch step blocks until they finish."""
     run = str(_step("Start the absorbed").get("run", ""))
     assert re.search(r"\)\s*<\s*/dev/null\s*>\s*/dev/null\s*2>&1\s*&", run), (
         "the background lanes are not detached from the step's stdout/stderr, so the "
@@ -157,12 +124,7 @@ def test_the_absorbed_workflow_no_longer_takes_a_slot_per_commit(lane):
 
 
 def test_the_nightly_lockfile_audit_survived():
-    """The schedule is a different check from the per-commit one and must not be lost.
-
-    A commit-triggered audit reads the lockfiles against advisories known at commit time.
-    The nightly one re-reads the same lockfiles against advisories published since, which
-    no commit run can do. Removing the per-commit trigger must not take that with it.
-    """
+    """The nightly schedule catches advisories published since commit-time, which no commit run can see."""
     doc = yaml.safe_load((WORKFLOWS / "lockfile-audit.yml").read_text(encoding = "utf-8"))
     on = doc.get(True) if True in doc else doc.get("on")
     assert on.get("schedule"), (

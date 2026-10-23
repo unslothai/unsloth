@@ -7,6 +7,7 @@ pair weights and projectors via ``general.base_model.0.repo_url``."""
 from __future__ import annotations
 
 import os
+import re
 import struct
 import threading
 from pathlib import Path
@@ -66,6 +67,8 @@ _N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 # Cache the embedded speculative-head count separately for discovery, launch, and sizing.
 _NEXTN_CACHE: Dict[_CacheKey, Optional[int]] = {}
+
+_MROPE_SECTIONS_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
@@ -631,6 +634,17 @@ def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
                         if len(bbyte) < 1:
                             break
                         return bbyte[0] != 0
+                    if key == wanted_key and vtype == 9:  # BOOL array: whether any is set
+                        head = f.read(12)
+                        if len(head) < 12:
+                            break
+                        atype, alen = struct.unpack("<IQ", head)
+                        if atype != 7 or alen > 1 << 20:
+                            break
+                        values = f.read(alen)
+                        if len(values) < alen:
+                            break
+                        return any(values)
                     if not _skip_gguf_value(f, vtype):
                         break
                 except (struct.error, UnicodeDecodeError):
@@ -661,6 +675,82 @@ def _read_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
             except StopIteration:
                 break
         _BOOL_CACHE[ckey] = result
+    return result
+
+
+def _parse_gguf_has_mrope_sections(path: str) -> Optional[bool]:
+    arch: Optional[str] = None
+    nonzero: Dict[str, bool] = {}
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20:
+                    return None
+                kbytes = f.read(klen)
+                vt_bytes = f.read(4)
+                if len(kbytes) < klen or len(vt_bytes) < 4:
+                    return None
+                key = kbytes.decode("utf-8", "replace")
+                vtype = struct.unpack("<I", vt_bytes)[0]
+                if vtype == 8 and key == "general.architecture":
+                    slen_bytes = f.read(8)
+                    if len(slen_bytes) < 8:
+                        return None
+                    slen = struct.unpack("<Q", slen_bytes)[0]
+                    if slen > 1 << 22:
+                        return None
+                    arch = f.read(slen).decode("utf-8", "replace")
+                elif vtype == 9 and key.endswith(".rope.dimension_sections"):
+                    ahead = f.read(12)
+                    if len(ahead) < 12:
+                        return None
+                    atype, alen = struct.unpack("<IQ", ahead)
+                    # llama.cpp reads these as int32 (get_key_or_arr, at most 4).
+                    if atype not in (4, 5) or alen > 16:
+                        return None
+                    data = f.read(4 * alen)
+                    if len(data) < 4 * alen:
+                        return None
+                    values = struct.unpack(f"<{alen}{'I' if atype == 4 else 'i'}", data)
+                    nonzero[key] = any(values)
+                elif not _skip_gguf_value(f, vtype):
+                    return None
+    except (OSError, struct.error, UnicodeDecodeError) as e:
+        logger.debug(f"_parse_gguf_has_mrope_sections: cannot read {path}: {e}")
+        return None
+    if arch is None:
+        return None
+    return nonzero.get(f"{arch}.rope.dimension_sections", False)
+
+
+def gguf_has_mrope_sections(path: str) -> Optional[bool]:
+    """Whether the selected architecture declares a nonzero ``rope.dimension_sections``.
+
+    llama.cpp makes a DFlash drafter M-RoPE exactly when this holds (``llama_model_rope_type``), and an M-RoPE target is what pins an image to one position. ``False`` is a readable header without the key (or all zeros); ``None`` is unreadable, so callers can fail open."""
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    with _CACHE_LOCK:
+        if fkey in _MROPE_SECTIONS_CACHE:
+            return _MROPE_SECTIONS_CACHE[fkey]
+    result = _parse_gguf_has_mrope_sections(path)
+    with _CACHE_LOCK:
+        while len(_MROPE_SECTIONS_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _MROPE_SECTIONS_CACHE.pop(next(iter(_MROPE_SECTIONS_CACHE)))
+            except StopIteration:
+                break
+        _MROPE_SECTIONS_CACHE[fkey] = result
     return result
 
 
@@ -1025,13 +1115,28 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
     return _slug_extends_base(weight_slug, projector_slug)
 
 
+# Finetunes inherit the vision tower, so these pair by projector type + width, not branding.
+_FUNCTIONAL_PROJECTOR_TYPES = {
+    "gemma4": "gemma4v",
+    "qwen35": "qwen3vl_merger",
+    "qwen35moe": "qwen3vl_merger",
+}
+
+
 def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
-    """Gemma 4 only: pair by projector type + projection dim, not branding. None = unknown."""
-    if read_gguf_architecture(weight_path) != "gemma4":
+    """Gemma 4 and Qwen3.5 / 3.6: pair by projector type + projection dim, not branding. None = unknown."""
+    arch = read_gguf_architecture(weight_path)
+    expected_type = _FUNCTIONAL_PROJECTOR_TYPES.get(arch or "")
+    if expected_type is None:
         return None, ""
     projector_type = read_mmproj_vision_projector_type(mmproj_path)
-    if projector_type != "gemma4v":
+    if projector_type != expected_type:
         return None, ""
+    if expected_type == "qwen3vl_merger" and _read_gguf_bool(
+        mmproj_path, "clip.vision.is_deepstack_layers"
+    ):
+        # Qwen3-VL shares the type and width, but its deepstack output is wider and llama-server refuses it.
+        return False, "Qwen3-VL deepstack projector"
     embedding_length = read_gguf_embedding_length(weight_path)
     dims = _parse_gguf_arch_uints(mmproj_path, frozenset({"vision.projection_dim"})) or {}
     projection_dim = dims.get("vision.projection_dim")
@@ -1039,10 +1144,30 @@ def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optiona
         return None, ""
     if embedding_length != projection_dim:
         return False, (
-            f"gemma4.embedding_length {embedding_length} != "
+            f"{arch}.embedding_length {embedding_length} != "
             f"clip.vision.projection_dim {projection_dim}"
         )
+    # Sizes share widths (Qwen3.5 2B and 35B-A3B are both 2048) but not vision towers, so a
+    # size conflict withholds the rescue and leaves the verdict to the identity metadata.
+    weight_sizes = _model_size_tokens(weight_path)
+    projector_sizes = _model_size_tokens(mmproj_path)
+    if weight_sizes and projector_sizes and weight_sizes.isdisjoint(projector_sizes):
+        return None, ""
     return True, ""
+
+
+_SIZE_TOKEN_RE = re.compile(r"[ae]?\d+(?:\.\d+)?b", re.IGNORECASE)
+
+
+def _model_size_tokens(path: str) -> frozenset[str]:
+    """Parameter-count tokens (``35b``, ``a3b``, ``e4b``) in the name, basename and filename."""
+    meta = read_gguf_general_metadata(path) or {}
+    text = " ".join(
+        (meta.get("general.name") or "", meta.get("general.basename") or "", Path(path).stem)
+    )
+    return frozenset(
+        token.lower() for token in re.split(r"[\s_\-]+", text) if _SIZE_TOKEN_RE.fullmatch(token)
+    )
 
 
 def pairing_score(

@@ -23,7 +23,15 @@ export type ResourceTypeFilter = "models" | "datasets";
 
 export type HubModelType = "text" | "vision" | "audio" | "embeddings";
 
-export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx" | "npu";
+export type ModelFormatFilter =
+  | "all"
+  | "recommended"
+  | "gguf"
+  | "checkpoint"
+  | "mlx"
+  | "npu"
+  /** On Device only: models fine-tuned or exported in Studio. */
+  | "unsloth";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 

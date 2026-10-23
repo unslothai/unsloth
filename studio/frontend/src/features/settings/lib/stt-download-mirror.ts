@@ -255,7 +255,10 @@ function trackSttDownloadNow(
   startExternalJob({
     key: jobKey(model, resolvedEngine),
     repoId: options.repoId ?? getSttModelRepo(model),
-    variant: sttModelName(model),
+    // A folder row's name already heads the entry; its quant is what tells downloads apart.
+    variant: isAudioCppFolderId(model)
+      ? (trackedVariants.get(key) ?? null)
+      : sttModelName(model),
     expectedBytes: 0,
     cancel: async () => {
       try {

@@ -80,6 +80,7 @@ const phaseLabelKeys = {
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
   finalizing: "studio.progress.phase.finalizing",
+  training_drafter: "studio.progress.phase.trainingDrafter",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",
@@ -692,7 +693,7 @@ function TrainingHeaderActions({
         </Button>
         <AlertDialogContent
           className="w-max max-w-[95vw]"
-          overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
+          overlayClassName="bg-background/40"
         >
           <AlertDialogHeader>
             <AlertDialogTitle>{t("studio.training.stopTitle")}</AlertDialogTitle>

@@ -15,8 +15,9 @@ import type {
   KnowledgeBase,
   LinkedFolder,
   LinkedFolderScope,
-  PreviewTarget,
   RagDocument,
+  ReembedJob,
+  ReembedStatus,
   UploadedDocument,
 } from "../types/rag";
 import { noteRagAvailability, noteRagResponse } from "./rag-availability";
@@ -96,6 +97,23 @@ async function ragUpload(
   noteRagResponse(response.status, json);
   if (!response.ok) throw ragError(response.status, json);
   return json as DocumentUploadResult;
+}
+
+/** Not gated on sqlite-vec, so its status says nothing about RAG availability. */
+export async function extractDocumentText(
+  file: File,
+  beforeRetry?: () => void,
+): Promise<{ text: string; truncated: boolean }> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await authFetch(
+    `${RAG_BASE}/extract-text`,
+    { method: "POST", body: form },
+    { beforeRetry },
+  );
+  const json = await response.json().catch(() => null);
+  if (!response.ok) throw ragError(response.status, json);
+  return json as { text: string; truncated: boolean };
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
@@ -738,6 +756,18 @@ export async function deleteDocument(
   return result;
 }
 
+export function getReembedStatus(): Promise<ReembedStatus> {
+  return ragRequest("/reembed");
+}
+
+export function startReembed(): Promise<{ job: ReembedJob }> {
+  return ragRequest("/reembed", { method: "POST" });
+}
+
+export function cancelReembed(): Promise<{ job: ReembedJob }> {
+  return ragRequest("/reembed/cancel", { method: "POST" });
+}
+
 export function getJob(jobId: string, signal?: AbortSignal): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`, { signal });
 }
@@ -803,16 +833,6 @@ export function streamFolderSyncJobEvents(
     `/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
     signal,
     SSE_STALL_MS,
-  );
-}
-
-export function getPreviewTarget(
-  documentId: string,
-  chunkId?: string,
-): Promise<PreviewTarget> {
-  const qs = chunkId ? `?chunk_id=${encodeURIComponent(chunkId)}` : "";
-  return ragRequest(
-    `/documents/${encodeURIComponent(documentId)}/preview-target${qs}`,
   );
 }
 

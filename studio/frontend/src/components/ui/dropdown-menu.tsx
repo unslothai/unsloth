@@ -9,6 +9,7 @@ import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { snapRowInsets, useSnappedPaddingRef } from "@/lib/snap-padding";
 import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
+import { useDropdownGlow } from "@/components/ui/dropdown-glow";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -52,6 +53,7 @@ function DropdownMenuContent({
       <DropdownMenuPrimitive.Content
         ref={snappedRef}
         data-slot="dropdown-menu-content"
+        data-dropdown-glow={useDropdownGlow()}
         sideOffset={sideOffset}
         collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
@@ -344,6 +346,7 @@ function DropdownMenuSubContent({
       <DropdownMenuPrimitive.SubContent
         ref={composedRef}
         data-slot="dropdown-menu-sub-content"
+        data-dropdown-glow={useDropdownGlow()}
         sideOffset={compactSideOffset}
         alignOffset={resolvedAlignOffset}
         collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}

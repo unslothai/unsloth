@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""UI parity when one arm mounts a window, and the behavioural scoring that replaces it.
-
-The structural digest asks "is the same DOM on screen". An arm whose entire purpose is to put less
-DOM on screen answers no on every action, so the digest would print eighteen red rows that are all
-the same non-finding and would bury anything real underneath them. These tests hold the line in
-both directions: the digest must REFUSE such a pair rather than fail it, and the behavioural
-scoring that stands in its place must still be able to fail.
-"""
+"""Windowed arms mount less DOM by design, so the digest must refuse such pairs, not fail them."""
 
 from __future__ import annotations
 
@@ -57,13 +50,10 @@ def _row(action: str, capture: dict, **expect) -> dict:
     }
 
 
-# ── the digest must refuse, not fail ────────────────────────────────
-
-
 def test_a_windowed_capture_is_detected_from_its_own_numbers():
     assert P.windowed_mount(_capture(6, 18)) is True
     assert P.windowed_mount(_capture(18, 18)) is False
-    # An old payload carries neither number and is treated as the full mount it was.
+    # An old payload carries neither number and is treated as a full mount.
     assert P.windowed_mount({"parity_attempted": True, "digest": "d"}) is False
 
 
@@ -72,7 +62,6 @@ def test_the_digest_refuses_a_windowed_pair_rather_than_reporting_eighteen_diffe
     assert got["verdict"] == P.NOT_APPLICABLE
     assert got["verdict"] != P.DIFFER
     assert "mounts a WINDOW" in got["reason"]
-    # And it localises nothing, because there is nothing here worth localising.
     assert got["moved"] == []
     assert got["style_verdict"] == P.NOT_APPLICABLE
 
@@ -95,15 +84,7 @@ def test_two_full_mounts_are_still_compared_exactly_as_before():
 
 
 def test_unequal_mounted_counts_are_reported_even_without_a_declared_total():
-    """THIS TEST USED TO ASSERT THE OPPOSITE, and it was wrong in the way the whole gate is meant
-    to be proof against: it treated "these rows cannot be lined up" as "there is nothing to say".
-
-    The rows genuinely cannot be compared position by position, and that is a statement about the
-    ROWS. Two arms that each mounted their whole thread and arrived at different lengths have a
-    difference between them whatever the rows can support, and calling the pair inapplicable
-    hides exactly the regression -- a treatment rendering fewer messages -- that a parity check
-    exists to catch.
-    """
+    """Unequal mounted message counts are a DIFFER, not inapplicable, even with no declared total."""
     got = P.compare(_capture(18, 18, "b"), _capture(12, 12, "t"))
     assert got["verdict"] == P.DIFFER
     assert "different numbers of messages" in got["reason"]
@@ -119,13 +100,10 @@ def test_a_refused_pair_is_not_evidence_of_stability_either():
     assert derived["select_text"]["not_comparable"] == 4
 
 
-# ── the behavioural scoring that replaces it ────────────────────────
-
-
 def test_the_scroll_extent_invariant_passes_a_virtualizer_that_sizes_its_spacers():
     base = _row("select_text", _capture(18, 18), selected_chars = 100, visible_chars = 100)
     treat = _row("select_text", _capture(6, 18), selected_chars = 100, visible_chars = 100)
-    treat["census"]["viewport_scroll_height"] = 9_600  # 4% out, within the estimate tolerance
+    treat["census"]["viewport_scroll_height"] = 9_600
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == P.MATCH, got["reason"]
 
@@ -173,15 +151,7 @@ def test_clipboard_truncation_is_reported_as_a_broken_invariant_not_as_noise():
 
 
 def test_the_alarm_goes_quiet_when_the_copy_reads_the_store_and_not_before():
-    """THE FIX, AND THE REASON IT COUNTS AS ONE.
-
-    Same windowed arm, same shrunken selection -- six of eighteen messages mounted, so Ctrl+A can
-    only reach a third of the text. What changed is that the app's copy handler serialises from
-    the message store, so the CLIPBOARD is whole. The alarm has to go quiet for that and for
-    nothing else: an alarm still wired to `selected_chars` would stay lit on a build that had
-    fixed the defect, and an alarm that ignored the selection entirely could not tell this apart
-    from a build that never virtualised at all.
-    """
+    """The alarm goes quiet only when copy reads the message store, not on the selected character count."""
     base = _copy_row(_capture(18, 18), clipboard = 200_000, selected = 200_000, mounted = 18)
     treat = _copy_row(_capture(6, 18), clipboard = 200_000, selected = 66_000, mounted = 6)
     got = B.compare_behaviour(base, treat)
@@ -189,7 +159,6 @@ def test_the_alarm_goes_quiet_when_the_copy_reads_the_store_and_not_before():
     checks = {c["invariant"]: c for c in got["checks"]}
     assert checks["clipboard_carries_the_whole_thread:base"]["ok"] is True
     assert checks["clipboard_carries_the_whole_thread:treatment"]["ok"] is True
-    # And the shrunken selection is still on the record, as evidence rather than as a verdict.
     assert checks["selection_shrank_as_expected"]["ok"] is None
     assert "66000" in checks["selection_shrank_as_expected"]["detail"]
 
@@ -251,9 +220,6 @@ def test_a_reopen_measured_through_a_page_navigation_is_broken():
     assert "reopen_used_the_control:treatment" in got["reason"]
 
 
-# ── a rebuild that never finished is not a held invariant ───────────
-
-
 def _reopen_row(
     mounted,
     *,
@@ -261,13 +227,7 @@ def _reopen_row(
     after = 18,
     ready = True,
 ):
-    """A `thread_reopen` row in the shape scene/actions.py writes one.
-
-    `ready = False` is what a rebuild that timed out produces: `ran` stays TRUE so the outstanding
-    conditions travel with the row, `expect_ok` is false, `reopen_ms` is null, and the two message
-    counts are UNCHANGED -- because both of them are `threadTotal()`, which is the total the store
-    DECLARED and which the first reopened row publishes.
-    """
+    """A timed-out reopen: ran stays true, reopen_ms is null, and both counts equal the declared total."""
     row = _row(
         "thread_reopen",
         _capture(mounted, 18),
@@ -292,12 +252,7 @@ def _reopen_row(
 
 
 def test_a_reopen_that_never_became_ready_is_not_a_passed_invariant():
-    """THE FALSE GREEN. The rebuild timed out at three of eighteen messages mounted, so the action
-    reported `ran = True`, `expect_ok = False`, a null `reopen_ms` and the failed conditions -- and
-    left `messages_before` and `messages_after` equal, because both are the total the store
-    declared rather than a count of a rebuilt thread. Scored as equality that read as a held
-    invariant, the route check passed because the sidebar click had worked, and the pair came out
-    MATCH over a rebuild that never happened."""
+    """An unready reopen must not pass as equal counts; the rebuild never happened."""
     base = _reopen_row(18)
     treat = _reopen_row(3, ready = False)
     got = B.compare_behaviour(base, treat)
@@ -308,15 +263,11 @@ def test_a_reopen_that_never_became_ready_is_not_a_passed_invariant():
     assert checks["reopen_keeps_every_message:treatment"]["required"] is True
     assert "never reached a ready state" in got["reason"], got["reason"]
     assert "end_present" in got["reason"], got["reason"]
-    # The route check still passed, which is exactly what used to carry the pair to a MATCH.
     assert checks["reopen_used_the_control:treatment"]["ok"] is True
 
 
 def test_a_reopen_that_lost_messages_is_still_broken_when_the_gate_also_refused_it():
-    """The other half of the decision, and the reason it is not a blanket refusal. An arm whose
-    store came back with six of eighteen messages FAILS the windowed readiness gate too -- its
-    `aria-setsize` no longer matches the seeded count -- so a rule that voided every unready reopen
-    would have turned the one finding this action exists for into "not comparable"."""
+    """A reopen that lost messages stays BROKEN even when the readiness gate also refused it."""
     base = _reopen_row(18)
     treat = _reopen_row(6, after = 6, ready = False)
     got = B.compare_behaviour(base, treat)
@@ -334,10 +285,7 @@ def test_a_finished_rebuild_with_matching_counts_still_holds():
 
 
 def test_an_old_payload_that_records_no_rebuild_evidence_is_not_a_pass():
-    """A row from a checkout that predates the readiness gate carries neither `reopen_readiness`
-    nor a meaningful `expect_ok`. Back then `messages_after` was read the moment the store published
-    its total, which is the reading the gate was added to refuse, so those rows cannot support this
-    invariant either and must not be counted as having held it."""
+    """Pre-readiness-gate rows carry no rebuild evidence and must not count as a held invariant."""
     base = _reopen_row(18)
     treat = _reopen_row(6)
     for row in (base, treat):
@@ -348,21 +296,7 @@ def test_an_old_payload_that_records_no_rebuild_evidence_is_not_a_pass():
 
 
 def test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict(tmp_path, capsys):
-    """THE CONSEQUENCE, through the command that reports it. This pair was the run's only one, so
-    counting it as a held invariant produced `invariants held: 1` and exit 0 over a rebuild that
-    never finished. It is now the third outcome: nothing was compared, and that is not a pass.
-
-    EXIT 1 RATHER THAN 2, and the difference is which of two true statements is the more specific.
-    The invariant genuinely could not be read -- `invariants held: 0`, one pair NOT COMPARABLE,
-    NOTHING WAS COMPARED, all still asserted below. But the pair also carries a DIRECTIONAL
-    assertion failure: the action ran on both arms and its own `expect_ok` failed on the treatment
-    alone, which is the two builds behaving differently rather than the tool being unable to tell.
-    `report` already resolves this precedence for the structural mode and says so where it does it
-    -- 'a run can find a real regression while deciding nothing, and "it failed" is the more
-    specific answer than "it could not tell"' -- and running `report` over this very payload
-    returns 1. The behavioural mode was reading only its invariants, so the same payload came out
-    of the two modes with two different verdicts. It no longer does.
-    """
+    """Behaviour mode must match `report`: a directional failure outranks 'could not tell', so exit 1."""
     import json
 
     from studiobench.sweep import ui_parity as U
@@ -394,7 +328,6 @@ def test_an_action_with_no_declared_invariant_is_unchecked_and_not_a_pass():
     assert got["verdict"] == P.NOT_APPLICABLE
     assert got["verdict"] != P.MATCH
     assert "UNCHECKED" in got["reason"]
-    # The scroll extent still held, and is still reported. It just does not vote.
     assert {c["invariant"]: c["ok"] for c in got["checks"]}["scroll_extent"] is True
 
 
@@ -431,25 +364,14 @@ def test_every_named_first_to_break_action_has_an_invariant():
         assert action in B.INVARIANTS, f"{action} has no behavioural invariant declared"
 
 
-# The four false greens the first review round found. Every one returned SUCCESS before the fix:
-# four different routes to a UI verdict of 'fine' over a comparison that either found nothing or
-# declined to look.
-
-
-# ── the four false greens the first review round found ──────────────
 def test_two_full_mounts_of_different_lengths_is_a_difference_not_an_excuse():
-    """THE MOST SERIOUS ONE. Neither arm is windowing, so neither is holding anything back on
-    purpose, and the treatment renders fewer messages than the base -- a user-visible loss of
-    conversation. It used to be waved through as NOT_APPLICABLE on the argument that the
-    per-message rows are keyed by position, which is true of the ROWS and says nothing about the
-    finding."""
+    """Two full mounts of different lengths are a real user-visible difference, not NOT_APPLICABLE."""
     base = _capture(mounted = 18, total = 18)
     treat = _capture(mounted = 17, total = 17)
     assert P.windowed_mount(base) is False and P.windowed_mount(treat) is False
     got = P.compare(base, treat)
     assert got["verdict"] == P.DIFFER, got
     assert "NEITHER arm is windowing" in got["reason"]
-    # And the positional noise is withheld, so the one finding that matters is not buried.
     assert got["moved"] == []
 
 
@@ -466,14 +388,10 @@ def test_equal_full_mounts_are_compared_as_before():
 
 
 def test_behavioural_scoring_that_validated_nothing_is_not_a_pass(tmp_path, capsys):
-    """`broken` empty and `matched` zero used to return 0, under the heading "Every declared
-    behavioural invariant held on both arms" -- a sentence that is true of an empty set and reads
-    as a pass. On a windowed arm this is the ONLY UI verdict there is, so a silent no-op there
-    leaves the arm with no verdict at all while appearing to have one."""
+    """Scoring that validated nothing (`matched` zero, `broken` empty) must not read as a pass."""
     from studiobench.sweep import ui_parity as U
 
     shard = tmp_path / "payload.jsonl"
-    # Both arms recorded the action and NEITHER ran it: nothing to compare, nothing broken.
     import json
 
     rows = []
@@ -511,18 +429,7 @@ def _scroll_extent_broken_pair(cell_suffix = "rep0"):
 def test_a_run_whose_every_invariant_BROKE_does_not_also_claim_it_compared_nothing(
     tmp_path, capsys
 ):
-    """THE SELF-CONTRADICTING ARTIFACT. `matched` and `broken` are independent counters, so a
-    payload whose only pair BROKE its invariant satisfies `matched == 0` as well.
-
-    The no-verdict banner was gated on `matched == 0` alone, so this run printed its broken
-    invariant, then printed that not one behavioural invariant was evaluated and that it carried
-    "neither a pass nor a failure" -- and then returned 1. Every clause of that banner is false
-    here, and its instruction ("find out why the actions did not run") points away from the
-    regression listed three lines above it.
-
-    The exit code was right and stays right; asserted below, because a banner fix that quietened
-    the failure would be far worse than the banner.
-    """
+    """An all-broken run must not also print that nothing was compared; the exit code stays 1."""
     from studiobench.sweep import ui_parity as U
 
     shard = _write(tmp_path, "all_broken", _scroll_extent_broken_pair())
@@ -540,14 +447,7 @@ def test_a_run_whose_every_invariant_BROKE_does_not_also_claim_it_compared_nothi
 def test_the_no_verdict_banner_still_fires_when_a_build_DIFFERENCE_is_the_only_failure(
     tmp_path, capsys
 ):
-    """THE OTHER HALF OF THE GATE, pinned so the fix above cannot be widened into a regression.
-
-    `build_differences` collects two shapes -- one-arm execution and a directional assertion
-    failure -- from pairs whose INVARIANTS were unreadable. When one of those is the only reason a
-    run fails, "not one behavioural invariant was evaluated" is literally true, and the banner
-    belongs there alongside exit 1. Gating it on `build_failed` as well as on `broken` would
-    silence a true statement.
-    """
+    """The no-verdict banner must still print when a build difference is the only failure."""
     from studiobench.sweep import ui_parity as U
 
     rows = []
@@ -564,10 +464,7 @@ def test_the_no_verdict_banner_still_fires_when_a_build_DIFFERENCE_is_the_only_f
 
 
 def test_the_observation_cost_is_not_charged_to_the_action_budget():
-    """`over_ms` used to be sampled AFTER the census and the multi-megabyte digest that this
-    change had just moved outside the measured window, so an action that finished inside its
-    budget was flagged `over_budget` for instrument time. The deadline is now read at the moment
-    the window closes."""
+    """The budget deadline is read when the measured window closes, so observation cost is not charged."""
     import inspect
 
     from studiobench.scene import schedule as S
@@ -575,16 +472,12 @@ def test_the_observation_cost_is_not_charged_to_the_action_budget():
     src = inspect.getsource(S.SceneRunner)
     close = src.index("window_closed_at = time.monotonic()")
     over = src.index("over_ms = ((window_closed_at - t0)", close)
-    # The FIRST census taken after the deadline is read -- `_census` is called from more than one
-    # place, so an unanchored search finds a gap window's copy and compares unrelated lines.
+    # `_census` is called from several places, so anchor the search after the deadline.
     census = src.index("census = self._census()", over)
     assert close < over < census, (
         "the deadline is sampled after the observations again, which charges instrument time to "
         "the action's budget"
     )
-
-
-# ── a scan of nothing is not agreement ──────────────────────────────
 
 
 def _styled(elements: int, digest: str = "s") -> dict:
@@ -594,13 +487,7 @@ def _styled(elements: int, digest: str = "s") -> dict:
 
 
 def test_a_style_probe_that_matched_no_elements_does_not_report_a_match():
-    """THE POSITIVE CONTROL. Two probes that matched nothing have equal counts and equal digests
-    -- both the hash of an empty string -- so the strongest verdict the function can return was
-    being issued on the strength of no observation at all.
-
-    Not hypothetical: the probe walks a hand-written selector list written against Unsloth's
-    markup, and a class rename anywhere in it empties the scan silently.
-    """
+    """Empty probes have equal digests, so a style probe matching no elements must be NOT_COMPARABLE."""
     verdict, reason = P.compare_styles(_styled(0), _styled(0))
     assert verdict == P.NOT_COMPARABLE, (verdict, reason)
     assert "matched no elements" in reason
@@ -632,9 +519,6 @@ def test_the_passing_digest_verdict_states_what_it_did_not_look_at():
     assert "sidebar-blind" in src and "layout-blind" in src
 
 
-# ── the clipboard is scored against the thread, in both directions ──
-
-
 def test_a_truncated_clipboard_still_fails():
     """The defect the invariant was written for. The windowed arm copies only what it mounted, so
     the clipboard is the visible fraction of the conversation and the rest is gone."""
@@ -647,15 +531,7 @@ def test_a_truncated_clipboard_still_fails():
 
 
 def test_a_clipboard_that_carries_far_MORE_than_the_thread_also_fails():
-    """THE DEFECT A FIX FOR THE FIRST ONE TURNS INTO. Serialising from the message store is the
-    right repair, and the obvious serialiser is the "save this reply" one, which emits reasoning,
-    tool-call arguments and tool results -- none of which a user can select, because the panes
-    holding them are collapsed and a collapsed Radix Collapsible is not in the DOM at all.
-
-    Measured on a real 100K arm: 420,911 characters against a 194,992-character thread, 2.16x.
-    The truncation was fixed and the content was then wrong in the other direction. A check that
-    only had a lower bound called that a pass.
-    """
+    """A clipboard holding far more than the thread must fail too; a lower bound alone passes it."""
     base = _copy_row(_capture(18, 18), clipboard = 193_937, selected = 194_992, mounted = 18)
     treat = _copy_row(_capture(9, 18), clipboard = 420_911, selected = 118_089, mounted = 9)
     got = B.compare_behaviour(base, treat)
@@ -666,11 +542,7 @@ def test_a_clipboard_that_carries_far_MORE_than_the_thread_also_fails():
 
 
 def test_markdown_source_against_rendered_text_is_not_treated_as_a_difference():
-    """The reason the two arms are NOT compared against each other. The base arm's clipboard is the
-    DOM's rendered text and a store-based copy is markdown source, so fences, emphasis and LaTeX
-    delimiters exist in one and not the other. A narrowed store serialiser measured about 1% over
-    on a scale fixture. Comparing the two clipboards at a 2% tolerance fails a correct fix, and the
-    only way to make it pass is to widen the tolerance until it tests nothing."""
+    """Rendered DOM text and markdown source differ in form, so the two clipboards must not be compared."""
     base = _copy_row(_capture(18, 18), clipboard = 193_937, selected = 194_992, mounted = 18)
     treat = _copy_row(_capture(9, 18), clipboard = 197_800, selected = 118_089, mounted = 9)
     got = B.compare_behaviour(base, treat)
@@ -690,9 +562,6 @@ def test_without_a_fully_mounted_arm_there_is_no_reference_and_no_verdict():
     assert got["verdict"] == P.NOT_COMPARABLE, got
 
 
-# ── visible-region parity needs a measured floor like everything else ──
-
-
 def _visible_shard(
     tmp_path,
     name,
@@ -701,13 +570,7 @@ def _visible_shard(
     rung = "r100K",
     reps = 2,
 ):
-    """A payload shard whose visible-region captures differ on `differ_actions` and match elsewhere.
-
-    TWO REPS BY DEFAULT, and the rung is a parameter. Both are what the floor is keyed and counted
-    by: an entry is derived from repeated readings at one rung, so a shard with a single rep is a
-    shard that cannot produce a floor at all, and one recorded at a different rung produces a floor
-    that does not apply here.
-    """
+    """Two reps by default, because a noise floor entry needs repeated readings at one rung."""
     import json
 
     rows = []
@@ -741,14 +604,7 @@ def _visible_shard(
 def test_an_action_that_differs_against_an_identical_build_is_not_counted_against_the_arm(
     tmp_path, capsys
 ):
-    """THE FLOOR, AND WHY IT IS NOT OPTIONAL.
-
-    Measured on a real 100K run: the base-vs-base null control differed inside the viewport on 13
-    of 64 action pairs, while the virtualization arm it was the control for differed on 5. Scored
-    without the floor the arm ranks WORSE than two copies of the same build, so the verdict is not
-    merely weak, it is backwards. The rows differ at identical character counts, which is a
-    volatile attribute rather than changed content.
-    """
+    """Identical builds differ on volatile attributes, so without a noise floor the arm ranks backwards."""
     from studiobench.sweep import ui_parity as U
 
     null = _visible_shard(tmp_path, "null", differ_actions = {"a", "b"})
@@ -757,10 +613,7 @@ def test_an_action_that_differs_against_an_identical_build_is_not_counted_agains
     unstable = U.visible_unstable_set([null])
     assert unstable == frozenset({("r100K", "a"), ("r100K", "b")}), unstable
 
-    # Unfloored: the arm's one difference is counted and the run fails.
     assert U.visible_report([arm], "unfloored") == 1
-    # Floored by its own null: that action is known to differ against itself at this rung, so it
-    # is reported and not counted.
     assert U.visible_report([arm], "floored", unstable) == 0
     out = capsys.readouterr().out
     assert "differ against an identical build" in out
@@ -777,18 +630,7 @@ def test_a_real_visible_difference_outside_the_floor_still_fails(tmp_path):
 
 
 def test_noise_at_one_rung_does_not_silence_a_regression_at_another(tmp_path, capsys):
-    """THE FLOOR APPLIED WHERE IT WAS NEVER MEASURED.
-
-    A payload holds several rungs -- the windowed readiness gate is written to permit an arm to
-    mount everything at 1K and a window at 100K -- and the noise floor was a set of ACTION NAMES,
-    so one differing null-control pair marked that action unstable everywhere. Here the null's
-    100K `model_change` differs for its own reasons and the arm's 1K `model_change` differs
-    reproducibly. Keyed by name alone the second is filed as noise, the other pairs supply
-    `matched > 0`, and the command exits 0 having silenced the one real finding in the run.
-
-    The 1K rung is a different thread at a different size with the film's slots landing somewhere
-    else entirely; the null measured nothing there and the floor may not speak for it.
-    """
+    """A noise floor from one rung does not apply to another, so it cannot silence a regression there."""
     from studiobench.sweep import ui_parity as U
 
     both = ("model_change", "keystroke")
@@ -808,16 +650,12 @@ def test_noise_at_one_rung_does_not_silence_a_regression_at_another(tmp_path, ca
     assert U.visible_report([big, small], "mixed rungs", unstable) == 1
     out = capsys.readouterr().out
     assert "DIFFERENCES INSIDE THE VIEWPORT" in out
-    # And it is the 1K pair that is counted, with the 100K one still reported as floored noise.
     assert "r1K rep0" in out
     assert "differ against an identical build" in out
 
 
 def test_a_floor_derived_from_a_single_pair_is_not_a_floor(tmp_path):
-    """ONE OCCURRENCE IS NOT EVIDENCE, which is the guard `derive_unstable` already applies to the
-    structural set and this one had none of. A single flake in a null control would otherwise
-    silence that action, at that rung, for every rep of every payload scored against it -- and the
-    visible floor carries no declared mechanism behind it to justify the entry."""
+    """One occurrence is not evidence: a floor derived from a single differing pair is not a floor."""
     from studiobench.sweep import ui_parity as U
 
     thin = _visible_shard(tmp_path, "null_thin", differ_actions = {"a"}, reps = 1)
@@ -835,11 +673,7 @@ def test_an_unfloored_visible_run_says_so(tmp_path, capsys):
 
 
 def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, capsys):
-    """MEASURED. On the 100K run `model_change` is in the derived unstable set because the null
-    control's copy of it differs on a volatile attribute at identical character counts -- AND it is
-    the action on which the virtualization arm's thread went from 12 mounted messages to 0 and
-    never came back. Routing the second finding into the floor because of the first suppresses a
-    lost conversation on the strength of unrelated jitter."""
+    """Noise-floor filtering must not hide an arm that lost the thread; a real loss is not jitter."""
     import json
 
     from studiobench.sweep import ui_parity as U
@@ -877,18 +711,13 @@ def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, ca
         )
         return shard / "payload.jsonl"
 
-    # The null differs on this action for its own reasons, so it lands in the unstable set...
     null = _visible_shard(
         tmp_path, "null_mc", differ_actions = {"model_change"}, actions = ("model_change",)
     )
     unstable = U.visible_unstable_set([null])
     assert ("r100K", "model_change") in unstable
-    # ...and the arm that lost the thread on it is STILL a failure.
     assert U.visible_report([_shard("arm_mc", True)], "severe", unstable) == 1
     assert "one arm lost the thread" in capsys.readouterr().out
-
-
-# ── the residue of a windowed capture is printed, not swallowed ─────
 
 
 def _write(tmp_path, name, rows):
@@ -947,25 +776,14 @@ def _action(
 
 
 def test_a_style_regression_survives_a_structural_refusal(tmp_path, capsys):
-    """THE ONLY THING HERE THAT SEES `display`, `visibility` OR `pointer-events`, dropped.
-
-    The style probe is an INDEPENDENT reading: it is computed styles, not the DOM digest, so a pair
-    refused for landing at two points in one live reply can still carry a real CSS regression on a
-    settled surface. The refusal bucket sat above it and `continue`d, so that verdict was computed,
-    attached to the row and then thrown away -- for exactly the pairs a streamed-parity refusal
-    creates most of.
-
-    The refusal itself is right and stays. What must not happen is losing the other reading with it.
-    """
+    """A structural refusal must not discard the independent computed-style verdict on the same pair."""
     from studiobench.sweep import ui_parity as U
 
     base = _capture(mounted = 4, total = 4)
     treat = _capture(mounted = 4, total = 4)
-    # Structurally unreadable: the stream could not be placed on one arm.
     treat["in_flight_unplaced"] = True
     treat["in_flight"] = []
     base["streaming"] = treat["streaming"] = True
-    # ...while the style probe read both arms cleanly and they disagree.
     treat["styles"] = {"elements": 4, "digest": "RESTYLED", "capped": False}
 
     rows = [_row("select_text", base), _row("select_text", treat)]
@@ -978,14 +796,7 @@ def test_a_style_regression_survives_a_structural_refusal(tmp_path, capsys):
 
 
 def test_a_visible_message_that_could_not_be_digested_is_printed_and_not_counted(tmp_path, capsys):
-    """THE FALSE GREEN. `windowed` put ordinals 1 and 2 on screen during the action and had
-    unmounted 2 again by the time the capture ran, so only ordinal 1 was ever compared. That pair
-    used to return MATCH -- one mounted message is enough to carry it -- and `visible_report`
-    never read `not_digested`, so a rendering difference in ordinal 2 exited 0 under a claim that
-    every visible message was identical on both arms.
-
-    It is now the third outcome, and the residue is on screen where a reader can see which message
-    went uncompared."""
+    """A visible message that could not be digested is printed as uncompared, never counted as a match."""
     from studiobench.sweep import ui_parity as U
 
     rows = []
@@ -998,7 +809,6 @@ def test_a_visible_message_that_could_not_be_digested_is_printed_and_not_counted
     out = capsys.readouterr().out
     assert "VISIBLE BUT NOT DIGESTED" in out, out
     assert "ordinals [2]" in out, out
-    # The fully digested pair still passes, so the refusal is scoped to the pair that earned it.
     assert "visible region matched:     1" in out, out
     assert "visible but NOT DIGESTED:   1" in out, out
     assert code == 0, out
@@ -1019,9 +829,6 @@ def test_a_run_where_nothing_could_be_digested_carries_no_visible_verdict(tmp_pa
     assert "NOTHING WAS COMPARED" in out, out
 
 
-# ── an unmeasured windowed run cannot come out green ────────────────
-
-
 def _failed_parity(why = "the parity probe timed out"):
     return {"parity_attempted": False, "reason": why}
 
@@ -1033,11 +840,7 @@ def _declared_windowed_shard(
     arm = "treatment",
     parity = None,
 ):
-    """A payload that DECLARES a windowed arm the way `__main__.py` records it, and measures nothing.
-
-    Both records are written because both are read: the gate row `windowed_readiness:{arm}` that
-    `--windowed-arm` produces, and `readiness.mode` on the cell row.
-    """
+    """Declares a windowed arm in both the gate row and `readiness.mode`, since both are read."""
     rows = [
         {
             "row_type": "gate",
@@ -1071,14 +874,7 @@ def _declared_windowed_shard(
 
 
 def test_a_declared_windowed_run_that_measured_nothing_is_still_windowed(tmp_path):
-    """THE DETECTION HOLE. `any_windowed` scanned successful captures for
-    `thread_total > mounted_messages`, so a run whose slots were all missed or whose parity probes
-    all failed scanned exactly like a run that mounted its whole thread: no window found, `--mode
-    auto` picks the digest, every pair comes out NOT_EXERCISED or NOT_COMPARABLE and the report
-    exits 0. An entirely unmeasured windowed run produced a green structural result.
-
-    The payload records the declaration independently of the measurement, so it decides when the
-    measurement cannot."""
+    """A declared windowed run that measured nothing stays windowed; the declaration decides then."""
     from studiobench.sweep import ui_parity as U
 
     shard = _declared_windowed_shard(tmp_path, "declared")
@@ -1102,11 +898,7 @@ def test_an_unmeasured_windowed_run_does_not_exit_zero(tmp_path, capsys):
 
 
 def test_a_payload_whose_captures_all_failed_is_not_a_structural_pass(tmp_path, capsys):
-    """The same hole with no declaration to fall back on, at the report that would print the pass.
-    Every pair is NOT COMPARABLE, so `stable_bad` is empty and `matched` is zero -- and the exit
-    guard only refused this when the pairs were NOT APPLICABLE windowed mounts, so a payload whose
-    parity probes all failed returned 0 under "No stable action rendered a different THREAD
-    STRUCTURE"."""
+    """A payload whose captures all failed must not print a structural pass, since no pair was compared."""
     from studiobench.sweep import ui_parity as U
 
     rows = [
@@ -1118,9 +910,6 @@ def test_a_payload_whose_captures_all_failed_is_not_a_structural_pass(tmp_path, 
     assert code == 2, out
     assert "NOTHING WAS COMPARED" in out, out
     assert "No stable action rendered a different THREAD STRUCTURE" not in out, out
-
-
-# ── the mode is decided per action pair, not per payload ────────────
 
 
 def _copy_expect(*, clipboard, selected, mounted):
@@ -1137,13 +926,7 @@ def _copy_expect(*, clipboard, selected, mounted):
 
 
 def _mixed_rung_shard(tmp_path, name):
-    """One payload holding a fully mounted 1K rung and a windowed 100K rung, which is exactly what
-    the windowed readiness gate permits an arm to do, plus a DOM regression at the 1K rung.
-
-    The 100K rung is a CLEAN windowed pair: it holds its behavioural invariants (the clipboard
-    still carries the whole thread) and its visible region matches, so the only thing left that can
-    fail this payload is the digest at the rung where both arms mount everything.
-    """
+    """A fully mounted 1K rung beside a clean windowed 100K rung, so only the 1K digest can fail it."""
     rows = [
         {
             "row_type": "gate",
@@ -1181,10 +964,7 @@ def _mixed_rung_shard(tmp_path, name):
 
 
 def test_two_rungs_of_one_payload_are_two_pairs_and_not_one(tmp_path):
-    """`make_cell_id` writes `r{rung}.{arm}.rep{n}` and the pair key took only the last segment, so
-    `r1K.base.rep0` and `r100K.base.rep0` were the same key: one rung's rows overwrote the other's
-    and half the payload disappeared before anything was compared. The per-pair mode decision needs
-    both rungs to exist before it can score them differently."""
+    """The pair key must include the rung, or `r1K.base.rep0` and `r100K.base.rep0` overwrite each other."""
     from studiobench.sweep import ui_parity as U
 
     shard = _mixed_rung_shard(tmp_path, "mixed_keys")
@@ -1198,13 +978,7 @@ def test_two_rungs_of_one_payload_are_two_pairs_and_not_one(tmp_path):
 def test_the_windowed_large_rung_does_not_suppress_the_digest_on_the_mounted_small_one(
     tmp_path, capsys
 ):
-    """THE FINDING. Deciding the mode per PAYLOAD meant one windowed 100K capture put every pair in
-    that payload on the behavioural and visible-region scales -- including the 1K rung, where both
-    arms mount their whole thread and the structural digest is exactly the right question. An
-    ordinary DOM regression at that rung was then never looked for.
-
-    Here the treatment's 1K digest differs and its 100K rung is a genuine window. The regression has
-    to be found, by name, and the windowed rung has to stay out of the structural section."""
+    """Modes are decided per pair, so a windowed rung cannot hide the digest of a mounted rung."""
     from studiobench.sweep import ui_parity as U
 
     shard = _mixed_rung_shard(tmp_path, "mixed")
@@ -1219,8 +993,6 @@ def test_the_windowed_large_rung_does_not_suppress_the_digest_on_the_mounted_sma
     assert "MODE DECIDED PER ACTION PAIR: 1 of 2" in out, out
     assert "UI PARITY DIFFERENCES ON STABLE ACTIONS" in out, out
     assert "r1K rep0" in out.split("UI PARITY DIFFERENCES ON STABLE ACTIONS")[1], out
-    # (1 fully mounted pair(s) of 2) in the heading: a structural section that silently covered
-    # part of a payload would read as a verdict on all of it.
     assert "1 fully mounted pair(s) of 2" in out, out
     assert code == 1, out
 
@@ -1258,9 +1030,6 @@ def test_an_arm_declared_windowed_is_still_digested_where_it_mounted_everything(
     assert U.any_windowed([shard]) is None
 
 
-# ── the declared arm that never produced a row at all ───────────────
-
-
 def _one_sided_shard(
     tmp_path,
     name,
@@ -1268,13 +1037,7 @@ def _one_sided_shard(
     gate = True,
     cell_row = False,
 ):
-    """A mixed-rung payload whose declared-windowed TREATMENT arm died at the large rung.
-
-    The 1K rung is a clean, fully mounted pair that both arms recorded, so the structural report
-    has something to pass on. At 100K only the base arm ever emitted an action row: `sides` holds
-    one side, and the only thing left that can say the missing arm mounts a window is the run's own
-    declaration -- the `--windowed-arm` gate row, or the cell row's `readiness.mode`.
-    """
+    """One arm recorded at the large rung; the run's own declaration is the only evidence of windowing."""
     rows = []
     if gate:
         rows.append(
@@ -1329,7 +1092,6 @@ def test_a_declared_windowed_arm_with_no_row_is_not_scored_structurally(tmp_path
     }
     assert modes["r100K rep0"][0] == U.WINDOWED, modes
     assert "DECLARED, not measured" in modes["r100K rep0"][1], modes
-    # And the rung that really did mount everything on both arms is still owed its digest.
     assert modes["r1K rep0"][0] == U.STRUCTURAL, modes
 
 
@@ -1365,10 +1127,7 @@ def test_a_missing_windowed_arm_does_not_exit_zero_on_the_strength_of_the_other_
 
 
 def test_a_pair_missing_an_arm_with_no_declaration_anywhere_is_still_structural(tmp_path):
-    """The fallback must not become an override in the other direction: with nothing declaring a
-    window, a pair one arm failed to record is the structural report's problem, and it refuses it
-    there. Otherwise every crashed cell in an ordinary A/B would be routed to a mode that cannot
-    say anything about it either."""
+    """With no declaration anywhere, a pair missing one arm stays structural and is refused there."""
     from studiobench.sweep import ui_parity as U
 
     shard = _one_sided_shard(tmp_path, "one_sided_undeclared", gate = False)
@@ -1380,10 +1139,7 @@ def test_a_pair_missing_an_arm_with_no_declaration_anywhere_is_still_structural(
 
 
 def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_path):
-    """MEASURED on the real 100K film: after `model_change` the treatment arm's captures read 0 of
-    0 messages for the rest of the film. `windowed_mount` answers False for 0 of 0 -- nothing is
-    missing from a thread of nothing -- so that capture would score a declared windowed arm
-    structurally on the strength of a probe that observed no messages."""
+    """A capture that saw no messages cannot show a window, so it falls back on the declaration."""
     from studiobench.sweep import ui_parity as U
 
     lost = {
@@ -1401,15 +1157,7 @@ def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_p
     assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
 
 
-# ── a cell that failed its own completeness gate carries no UI verdict ──
-#
-# `probe_thread_completeness` runs before the film and `record_completeness_gate` writes the
-# verdict against the cell, so a windowed arm that kept its first page and its last one and lost
-# everything between them says so in its own payload, and `report/payload.py::excluded_from_rows`
-# drops that cell from the PERFORMANCE score. `ui_parity.py` read no gate row except the windowed
-# declaration, so the same cell's eighteen action rows were still scored for UI parity, and the
-# visible region is a window on the END of the thread, which such a store still fills, so the
-# pairs matched and `--mode auto` exited 0 over a payload that had already recorded the loss.
+# A cell that failed its completeness gate carries no UI verdict, as for performance scoring.
 
 
 def _completeness_gate(
@@ -1501,14 +1249,7 @@ def _follow_gate(
 
 
 def test_a_cell_that_stopped_following_the_stream_gets_no_behavioural_pass(tmp_path, capsys):
-    """REGRESSION. `follows_the_stream` invalidates a pair for the same reason `thread_complete`
-    does, and this file recognised only the latter.
-
-    A reply that scrolled out of the viewport and was unmounted stops costing anything to render,
-    so the arm was not showing the thing under test -- yet the invariants that do not depend on it
-    still hold. A `select_text` pair matches, `invariants held` grows, and `--mode auto` exits 0
-    over a payload that has already recorded the arm losing the stream.
-    """
+    """A cell that stopped following the stream is invalidated, as `thread_complete` already does."""
     from studiobench.sweep import ui_parity as U
 
     rows = [_follow_gate("r100K.treatment.rep0", False)] + _held_invariant_pair()
@@ -1573,17 +1314,8 @@ def test_only_the_cell_that_failed_is_refused(tmp_path, capsys):
     assert "NOT COMPARABLE:             1" in out, out
 
 
-# ── one glob pools separate runs, and a declaration belongs to the run that made it ──
-
-
 def _legacy_capture(digest):
-    """A capture from a checkout that predates `mounted_messages` / `thread_total`.
-
-    `parity.windowed_mount` reads those two numbers and says of their absence: captures taken
-    before they existed report neither and are treated as full-mount, which is what they were.
-    Such a payload digests perfectly well and carries NO mount measurement, so every one of its
-    pairs falls through to the declaration fallback.
-    """
+    """Captures lacking mount fields have no measurement, so their pairs fall back on the declaration."""
     return {
         "parity_attempted": True,
         "root_kind": "thread",
@@ -1642,13 +1374,7 @@ def _modes_by_shard_action(decided):
 
 
 def test_a_windowed_declaration_does_not_leak_into_another_run_under_one_glob(tmp_path, capsys):
-    """DECLARATIONS ARE PER SHARD. `outputs/sbench_*` pools separate runs, and `cell_id` and arm
-    label repeat identically in every one of them, so a `--windowed-arm treatment` gate row in one
-    run became the fallback for every unmeasured pair in an ordinary run beside it. The ordinary
-    run's pairs were scored on the visible region and on behavioural invariants instead, the
-    structural digest they were owed never ran, and its DOM regression exited 0 because of a flag
-    passed to a DIFFERENT run.
-    """
+    """Declarations are per shard, so a `--windowed-arm` row in one run cannot leak into another."""
     from studiobench.sweep import ui_parity as U
 
     _two_run_glob(tmp_path)
@@ -1683,9 +1409,6 @@ def test_the_declaration_still_decides_the_run_that_made_it(tmp_path):
     assert modes[("unrelated", "settings")] == U.STRUCTURAL, modes
 
 
-# ── a visible floor measured on another film tier is not this payload's floor ──
-
-
 def _tiered_visible_shard(
     tmp_path,
     name,
@@ -1694,12 +1417,7 @@ def _tiered_visible_shard(
     windowed,
     corpus = "",
 ):
-    """A visible-region payload that records the FILM TIER it was shot on, as `run_meta` does.
-
-    `corpus` is the `corpus_hash` of the thread the film drove, written by the same row. Left out
-    by default: a payload recorded before corpus hashes existed declares none, and that is the
-    shape the tier tests below are about.
-    """
+    """Records the film tier in run_meta, and omits the corpus hash by default, like old payloads."""
     import json
 
     rows = [{"row_type": "run_meta", "tier": tier}]
@@ -1730,17 +1448,7 @@ def _tiered_visible_shard(
 
 
 def test_a_visible_floor_from_another_film_tier_is_not_applied(tmp_path, capsys):
-    """THE INCOMPARABLE CONTROL. `tier_of` states the mechanism: on the fast film `copy_markdown`
-    opens 2.7 s after a `send_turn` and lands inside that turn's stream, so it differs against
-    itself; on the standard film it opens 26 s later against a finished reply. `--tier fast` then
-    `--tier standard` is the documented way to work, so a stale fast null control on a standard
-    run's command line is the ordinary mistake, not an exotic one.
-
-    The floor derived from it was keyed by `(rung, action)` with no tier in it, so it silenced the
-    standard payload's real visible difference, and an ALL-WINDOWED payload returns before the
-    structural section that would have warned about the mismatch, so the command exited 0 without
-    a word about the tier.
-    """
+    """A floor from another film tier must not apply: fast-tier `copy_markdown` differs against itself."""
     from studiobench.sweep import ui_parity as U
 
     null = _tiered_visible_shard(tmp_path, "null_fast", "fast", {"copy_markdown"}, windowed = False)
@@ -1773,17 +1481,7 @@ def test_a_visible_floor_from_the_SAME_tier_still_applies(tmp_path, capsys):
 
 
 def test_a_visible_floor_from_another_corpus_is_not_applied(tmp_path, capsys):
-    """THE OTHER AXIS OF THE SAME INCOMPARABLE CONTROL, and the quieter one. Which actions differ
-    against an identical build is a property of the thread the film drove, not only of the film's
-    spacing, so a null control recorded against corpus `c1` describes a thread a `c2` payload
-    never rendered. The ordinary way in is a corpus revision landing while an older null control
-    is still sitting in the directory the workflow globs.
-
-    `cross_side_mismatch` already refuses this, but only in the structural section, and an
-    ALL-WINDOWED payload -- which is every payload under `--mode visible` -- returns before it,
-    so the wrong-corpus floor silenced the payload's real visible difference and the command
-    exited 0 without a word about the corpus.
-    """
+    """A floor from another corpus describes a thread this payload never rendered, so it must not apply."""
     from studiobench.sweep import ui_parity as U
 
     null = _tiered_visible_shard(
@@ -1820,15 +1518,8 @@ def test_a_visible_floor_from_the_SAME_corpus_still_applies(tmp_path, capsys):
     assert code == 0, out
 
 
-# ── a resumed cell is judged on the attempt that survived, gates included ──
-
-
 def _resumed_completeness_shard(tmp_path, name, *, retry_passes):
-    """A payload where attempt 1 of a cell FAILED `thread_complete` and `--resume` re-ran it.
-
-    `make_cell_id` is deterministic, so the retry carries the SAME `cell_id` and is told apart
-    only by `session_id`, exactly as `latest_attempt_rows` documents.
-    """
+    """A failed-then-resumed cell keeps its `cell_id`, told apart only by `session_id`."""
     import json
 
     rows = [{"row_type": "run_meta", "tier": "standard", "session_id": "s1"}]
@@ -1873,12 +1564,7 @@ def _resumed_completeness_shard(tmp_path, name, *, retry_passes):
 
 
 def test_a_successful_resume_clears_the_dead_attempts_completeness_failure(tmp_path):
-    """THE SUPERSEDED GATE MUST NOT OUTLIVE ITS ATTEMPT. `latest_attempt_rows` drops a dead
-    attempt's rows everywhere else, but its ATTEMPT_ROW_TYPES is {cell, action, window} and a gate
-    is none of those, so `incomplete_cells` scanned raw rows and kept the failure from the attempt
-    that died. `collect` then stamped `_incomplete` on the RETRY's action rows and `_refused`
-    withheld a verdict from a cell that had just been re-measured successfully.
-    """
+    """A dead attempt's gate row must not outlive it, or a re-measured retry is wrongly refused."""
     from studiobench.sweep import ui_parity as U
 
     shard = _resumed_completeness_shard(tmp_path, "resumed_ok", retry_passes = True)
@@ -1896,9 +1582,6 @@ def test_a_resume_that_failed_again_is_still_refused(tmp_path):
     assert "still short" in bad["r100K.base.rep0"], bad
 
 
-# ── the coverage floor applies to every mode, not only the structural one ─────
-
-
 def _windowed_only_shard(
     tmp_path,
     name,
@@ -1906,11 +1589,7 @@ def _windowed_only_shard(
     pairs = 1,
     differ = False,
 ):
-    """A payload whose every pair is a WINDOWED mount, so `main` takes the structural early return.
-
-    One clean, matching windowed pair per action. `--mode auto` classifies these on the capture's
-    own `mounted_messages` / `thread_total`, so nothing here has to be declared.
-    """
+    """Every pair is a windowed mount, which `--mode auto` detects from the capture, not a declaration."""
     rows = []
     for i in range(pairs):
         action = f"select_text{i}" if i else "select_text"
@@ -1935,11 +1614,7 @@ def _windowed_shard_visible_only_on_one(
     *,
     pairs = 4,
 ):
-    """Every pair carries a behavioural invariant; only the FIRST carries a visible capture.
-
-    One action at four cells, so all four are pairs behavioural mode declares an invariant for --
-    what varies is whether the visible-region capture is there to be read at all.
-    """
+    """Every pair has a behavioural invariant, but only the first has a visible-region capture to read."""
     rows = []
     for i in range(pairs):
         for side in ("base", "treatment"):
@@ -1957,17 +1632,7 @@ def _windowed_shard_visible_only_on_one(
 
 
 def test_behavioural_coverage_does_not_stand_in_for_visible_coverage(tmp_path, capsys):
-    """THE SUBSTITUTION. The floor unioned the two windowed modes' compared sets.
-
-    They are not two slices of one film. Under `--mode auto` they are two verdicts on the SAME
-    pairs, so the union let one stand in for the other: behavioural mode reaching every pair while
-    the visible capture could be read on only ONE still filled the set, cleared the floor, and
-    exited 0 with essentially the whole appearance surface unmeasured. That is the same false green
-    the floor exists to refuse, arriving through the floor itself.
-
-    Four pairs here, all of them behaviourally checked, one of them visible. A floor of 4 has to
-    fire, and the count has to be the visible one.
-    """
+    """Behavioural coverage must not stand in for visible coverage when the coverage floor is counted."""
     from studiobench.sweep import ui_parity as U
 
     _windowed_shard_visible_only_on_one(tmp_path, "winsub", pairs = 4)
@@ -1979,13 +1644,7 @@ def test_behavioural_coverage_does_not_stand_in_for_visible_coverage(tmp_path, c
 
 
 def test_a_pair_behavioural_mode_declares_no_invariant_for_is_not_a_shortfall(tmp_path, capsys):
-    """THE OTHER DIRECTION, and the reason this is not an intersection.
-
-    A behavioural invariant only exists for the handful of actions that declare one; every other
-    pair is reported UNCHECKED, which is not a pass and equally not a coverage shortfall. Requiring
-    both verdicts on every pair therefore fails a run for pairs behavioural mode never had an
-    opinion about -- measured at 1 of 4 on this very fixture, where visible mode read all four.
-    """
+    """A pair with no behavioural invariant is UNCHECKED, not a shortfall, so it cannot fail the floor."""
     from studiobench.sweep import ui_parity as U
 
     _windowed_only_shard(tmp_path, "winunchecked", pairs = 4)
@@ -1997,15 +1656,7 @@ def test_a_pair_behavioural_mode_declares_no_invariant_for_is_not_a_shortfall(tm
 
 
 def test_the_coverage_floor_applies_to_a_run_with_no_fully_mounted_pair(tmp_path, capsys):
-    """THE HOLE. `--min-compared` was a parameter of `report()` and enforced at one site inside it,
-    and `report()` is reached only from the structural loop BELOW `main`'s early return. A payload
-    whose every pair is a windowed mount returns before that loop, so the floor was never applied
-    to anything: `--min-compared 20` exited 0 having compared one pair.
-
-    That floor is what replaces a slot-budget liveness gate for a job that reads no timings, and
-    two blank pages have identical digests, so it is the guard against the easiest false green
-    there is. The workflow passes `--min-compared 16` on every run.
-    """
+    """`--min-compared` must apply to a run with no fully mounted pair, not only the structural loop."""
     from studiobench.sweep import ui_parity as U
 
     _windowed_only_shard(tmp_path, "winonly", pairs = 1)
@@ -2030,26 +1681,17 @@ def test_the_coverage_floor_passes_a_windowed_run_that_compared_enough(tmp_path,
 
 
 def test_the_behaviour_policy_prints_the_coverage_band_it_actually_enforces(tmp_path, capsys):
-    """The printed policy said the copy must be "complete", which reads as a content comparison.
-
-    It is a LENGTH: each arm's clipboard over the thread's own visible text, inside a band. That
-    band is the whole strength of the claim -- it is what refused truncation at 0.61 and
-    substitution at 2.16 -- so the sentence has to carry the live numbers rather than a pair
-    somebody typed once. The needle here is DERIVED from the constants, so widening the band
-    without touching the wording is caught, and so is a sentence that stopped interpolating.
-    """
+    """The printed policy must state the live clipboard coverage band, derived from the constants."""
     from studiobench.sweep import ui_parity as U
 
     band = P.behaviour_policy(B.MIN_CLIPBOARD_COVERAGE, B.MAX_CLIPBOARD_COVERAGE)
     assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" in band, band
 
-    # A different band has to travel through as well: a hard-coded sentence would pass the
-    # assertion above by coincidence and fail this one.
+    # A different band must travel through, so a hard-coded sentence cannot pass.
     other = P.behaviour_policy(0.5, 2.0)
     assert "0.5-2.0" in other, other
     assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" not in other, other
 
-    # And the report has to be wired to it, not merely able to produce it.
     _mixed_rung_shard(tmp_path, "banner")
     U.main([str(tmp_path / "banner"), "--mode", "behaviour", "--min-compared", "0"])
     out = capsys.readouterr().out
@@ -2057,10 +1699,7 @@ def test_the_behaviour_policy_prints_the_coverage_band_it_actually_enforces(tmp_
 
 
 def test_the_coverage_floor_is_applied_under_forced_visible_and_behaviour_modes(tmp_path, capsys):
-    """The other route to an empty structural plan, and it does not need a windowed payload at all.
-    `--mode visible` and `--mode behaviour` hard-set `structural` to an empty set for EVERY
-    pattern, unconditionally, so under either of them the floor could never be applied to any
-    payload whatsoever."""
+    """`--mode visible` and `--mode behaviour` empty the structural set, so the floor must still apply."""
     from studiobench.sweep import ui_parity as U
 
     _mixed_rung_shard(tmp_path, "forced")
@@ -2072,24 +1711,16 @@ def test_the_coverage_floor_is_applied_under_forced_visible_and_behaviour_modes(
 
 
 def test_the_coverage_floor_sums_the_windowed_and_structural_halves(tmp_path, capsys):
-    """SUMMED, NOT CHECKED SEPARATELY. A combined run splits one film's coverage across three
-    reports, and a floor applied inside each of them separately fails a run that compared plenty:
-    the structural half here compares 1 pair and the windowed half 1, and a floor of 2 is cleared
-    by the run and by neither half alone.
-
-    The `--mode auto` pair is scored TWICE, once on the visible region and once on the invariants,
-    and it still counts once: summing the two reports' counts would double every windowed pair and
-    let a floor of 2 pass on 1."""
+    """The floor sums the windowed and structural halves of a run, and an auto pair still counts once."""
     from studiobench.sweep import ui_parity as U
 
     _mixed_rung_shard(tmp_path, "sums")
     code = U.main([str(tmp_path / "sums"), "--min-compared", "2"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED" not in out, out
-    # 1 is the digest regression the fixture carries at the 1K rung, so the floor did not mask it.
+    # 1 is the fixture's 1K digest regression, so the floor did not mask it.
     assert code == 1, out
-    # And one more than the run can reach refuses it, which proves the count above is 2 rather than the
-    # 3 a sum of the three reports would have produced.
+    # Proves the count is 2, not the 3 a sum of the three reports would give.
     code = U.main([str(tmp_path / "sums"), "--min-compared", "3"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED: 2 of 2" in out, out
@@ -2097,13 +1728,7 @@ def test_the_coverage_floor_sums_the_windowed_and_structural_halves(tmp_path, ca
 
 
 def test_the_coverage_floor_is_checked_per_payload_pattern(tmp_path, capsys):
-    """PER FILM, not per invocation. The three modes are one film's coverage split three ways, so
-    they are unioned; two positional payloads are two films, and pooling those lets each satisfy
-    the other's floor. `ui_parity normal_run windowed_run` is a supported invocation -- the mode
-    decision above already says why per-invocation was too coarse for it -- so a nearly empty or
-    failed film could be carried over the floor by an unrelated one on the same command line.
-
-    Two films of 2 pairs each against a floor of 4: pooled they clear it, and neither one did."""
+    """The coverage floor is per film, not pooled: one film must not carry another over it."""
     from studiobench.sweep import ui_parity as U
 
     _windowed_only_shard(tmp_path, "filmA", pairs = 2)
@@ -2130,24 +1755,14 @@ def test_a_floor_each_film_clears_on_its_own_still_passes(tmp_path, capsys):
     assert code == 0, out
 
 
-# ── a build difference the capture comparison cannot see ─────
-
-
 def test_an_assertion_that_failed_on_one_arm_fails_the_windowed_verdict(tmp_path, capsys):
-    """`stop_generation` returns `ran = True, expect_ok = stopped_ms is not None`, so a head on
-    which Stop no longer ends the stream records a perfectly ordinary row with two viewports that
-    look the same. The visible and behavioural paths built their whole result from a capture
-    comparison plus one boolean -- the conjunction of `ran` -- so that shape left no trace at all,
-    and on a windowed arm those two reports ARE the UI verdict: the digest is not applicable by
-    construction and `stop_generation` has no behavioural invariant of its own, so a passing
-    invariant on some other action carried the run to exit 0."""
+    """An assertion that fails on one arm only is a build difference and must fail the windowed verdict."""
     from studiobench.sweep import ui_parity as U
 
     rows = []
     for side in ("base", "treatment"):
         windowed = side == "treatment"
         mounted = 9 if windowed else 18
-        # A held invariant on another action, which is what used to carry the run to a pass.
         rows.append(
             _action(
                 "select_text",
@@ -2177,10 +1792,7 @@ def test_an_assertion_that_failed_on_one_arm_fails_the_windowed_verdict(tmp_path
 
 
 def test_an_assertion_that_failed_on_BOTH_arms_is_not_a_build_difference(tmp_path, capsys):
-    """THE CONTROL, and it is the reason the signal is an ASYMMETRY rather than a failure count.
-    Both arms failing means the fixture cannot reach the state on either build -- coverage lost,
-    not a difference between the builds -- and refusing on it would red every run whose scene
-    cannot reach `stop_generation` at all."""
+    """Failing on both arms means the fixture cannot reach the state, not that the builds differ."""
     from studiobench.sweep import ui_parity as U
 
     rows = []
@@ -2215,10 +1827,7 @@ def test_an_assertion_that_failed_on_BOTH_arms_is_not_a_build_difference(tmp_pat
 def test_an_action_that_could_not_be_performed_on_one_arm_fails_the_windowed_verdict(
     tmp_path, capsys
 ):
-    """The other shape a capture comparison erases. An action that RUNS on one build and cannot be
-    performed on the other is the one regression class that leaves no digest to differ -- a control
-    that stopped opening records exactly this -- and both windowed reports filed it under NOT
-    EXERCISED, which each of them counts as lost coverage rather than as a finding."""
+    """An action that runs on one arm but cannot be performed on the other is a regression."""
     from studiobench.sweep import ui_parity as U
 
     rows = []
@@ -2253,10 +1862,7 @@ def test_an_action_that_could_not_be_performed_on_one_arm_fails_the_windowed_ver
 
 
 def test_a_slot_the_runner_arrived_too_late_for_is_still_not_a_build_difference(tmp_path, capsys):
-    """THE CONTROL FOR THE ONE ABOVE, and it is the load-bearing half of `one_sided`. A missed slot
-    is a slow machine and cannot move this verdict: the misses are correlated through the runner
-    rather than being independent draws, so corroboration cannot separate them and reding on them
-    would fail the job on machine speed."""
+    """A missed slot is machine speed, not a build difference: misses correlate through the runner."""
     from studiobench.sweep import ui_parity as U
 
     rows = []

@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The no-compiler detector must not fail the job because something else touched TEMP.
-
-Watch-ForCompiler.ps1 lists the temp roots to see what a compile left behind. It did that with
-one `Get-ChildItem -Recurse -Force -ErrorAction SilentlyContinue` per root. A temp root is
-shared with everything else on the machine, so a directory can disappear or stop being openable
-partway through the walk, and the provider raises a Win32Exception. `-ErrorAction
-SilentlyContinue` does not suppress that one: it governs non-terminating errors, and the step
-sets `$ErrorActionPreference = 'Stop'`.
-
-Observed on hosted runners, in the POSITIVE CONTROL, which is the worst place for it:
-
-    Get-ChildItem : The system cannot find the file specified
-    + CategoryInfo : NotSpecified: (:) [Get-ChildItem], Win32Exception
-
-The job went red while the installer under test had done nothing at all. The walk is by hand
-now, one directory at a time, so an unreadable directory costs that directory and nothing else.
-
-Driven rather than read: the whole question is what happens when enumeration throws, and a
-regex over the script cannot answer it.
-"""
+"""The temp scan walks one directory at a time, so an unreadable or vanished dir costs only itself."""
 
 from __future__ import annotations
 
@@ -41,28 +22,12 @@ pytestmark = pytest.mark.skipif(PWSH is None, reason = "needs PowerShell")
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-# PowerShell's error formatter gutters every wrapped continuation line with "   | ".
+# PowerShell's error formatter gutters wrapped continuation lines with "   | ".
 _GUTTER = re.compile(r"^\s*\|\s?")
 
 
 def _says(proc: subprocess.CompletedProcess, phrase: str) -> bool:
-    """Did PowerShell emit this sentence, however it chose to format it?
-
-    A `throw` reaches the caller through PowerShell's error formatter, and on Windows that
-    wraps the message across terminal-width lines, interleaves ANSI colour codes AND prefixes
-    each continuation with a gutter, so the sentence arrives as
-
-        ...so this run cannot
-             | say whether a compiler ran.
-
-    Linux pwsh does not wrap the same way, so a plain substring match passes there and fails on
-    Windows against an error that was in fact raised and in fact said the right thing.
-
-    Three things therefore have to come off, and the gutter is the one that is easy to miss:
-    stripping colour codes alone still leaves a `|` sitting in the middle of the sentence, so a
-    match would keep failing for a new reason. Colour codes, then the gutter, then every run of
-    whitespace collapsed, which makes this a test of the message rather than of console width.
-    """
+    """Matches a phrase in PowerShell output after stripping ANSI colour codes, gutter bars and wrapping."""
     text = _ANSI.sub("", proc.stdout + proc.stderr)
     text = "\n".join(_GUTTER.sub("", line) for line in text.splitlines())
     return " ".join(phrase.split()) in " ".join(text.split())
@@ -79,12 +44,7 @@ def _run_pwsh(body: str) -> subprocess.CompletedProcess:
 
 
 def _scan(root: pathlib.Path, patterns: str = "'*.dll','*.cmdline'") -> dict[str, list[str]]:
-    """Run Get-StudioTempSubtree over `root` under the same preference CI uses.
-
-    Both halves are returned. Which directories went unread is not a diagnostic here: it is
-    what stops a directory read in one snapshot and not the other from being scored as a
-    compile, so it is asserted on directly.
-    """
+    """Runs Get-StudioTempSubtree under CI's preference, returning files and unread directories."""
     proc = _run_pwsh(
         f"$scan = Get-StudioTempSubtree -Root '{root}' -Patterns {patterns}\n"
         'foreach ($f in $scan.Files)  { Write-Output "FILE $f" }\n'
@@ -129,8 +89,7 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
     finally:
         os.chmod(tmp_path / "locked", 0o700)
 
-    # The bites control first: if the tree were readable throughout, this row would pass on a
-    # walk that stopped at the first directory and never proved anything.
+    # Control first: a readable tree would let a walk that stopped early pass.
     assert any(name.endswith("probe.dll") for name in found), found
     assert any(
         name.endswith("after.cmdline") for name in found
@@ -138,53 +97,13 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
     assert not any(name.endswith("hidden.dll") for name in found), found
 
 
-# What Windows covers here, and what it does not.
-#
-# Three rows in this file are POSIX-only and SKIP on Windows: the two chmod-denial walks and the
-# vanished-directory row. Nothing replaces them, so on a Windows runner the denial behaviour of
-# this walk is not exercised at all. An earlier version of this comment claimed an ACL-based
-# Windows control existed "below". It never did.
-#
-# Writing one means icacls-denying a directory to the running account and undoing it in a finally,
-# and it cannot be authored honestly from a Linux host: the failure mode worth catching is a
-# control that silently denies nothing and passes, which is exactly what happened when an ACL
-# denial was first tried as a stand-in for the race (see the note below). So it is recorded as a
-# gap rather than guessed at.
-#
-# What Windows DOES cover is the rest of the file, which is platform-neutral and drives the real
-# PowerShell: the traversal ceiling, the extension filter, the withholding comparison, the
-# coverage check and the path-prefix rules. That is not nothing. The separator bug in
-# Test-StudioPathUnder - DirectorySeparatorChar being '/' under pwsh on Linux, which made every
-# Windows-shaped path compare false - is precisely the class those rows catch, and it is why they
-# are written against Windows-shaped literals rather than tmp_path.
-#
-# There is no control here for "the old shape really would have died", and that is deliberate.
-#
-# The CI failure was a RACE: a directory in the shared temp root disappeared partway through a
-# recursive enumeration and the Windows provider raised a Win32Exception, which -ErrorAction
-# SilentlyContinue does not suppress because it governs non-terminating errors. An ACL denial was
-# tried as a stand-in and is not one: a directory the caller cannot open is an ordinary
-# non-terminating access-denied error, which that parameter DOES suppress, so the control reached
-# its SURVIVED line and would have passed while claiming the opposite. A POSIX chmod is the same
-# story.
-#
-# Reproducing the race means deleting directories under a live walk and hoping the timing lands,
-# which is a flaky test rather than a control. What is pinned instead is the shape: enumeration is
-# per-directory and wrapped, and no recursive listing is left in the file. The evidence for the
-# failure itself is the CI log quoted at the top of this module.
+# Rows needing POSIX denial skip on Windows, where no ACL control reproduces the race.
 
 
 def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path) -> None:
-    """Past the ceiling it raises, rather than handing back a partial listing.
-
-    The caller reads this snapshot as complete, and it is what stands in when the file-system
-    watcher cannot attach, so a silent stop turns a missed artifact into a clean verdict. Driven
-    by lowering the ceiling with a stubbed walk is not possible here, so the tree is built: 12
-    directories against a ceiling of 8, set by dot-sourcing and re-declaring nothing.
-    """
-    # The real ceiling is 200000, far too large to build, so the shape is asserted instead and
-    # the behaviour is driven at a scale that fits: the function is re-defined with the same body
-    # and a smaller limit, taken from the shipped source rather than retyped.
+    """Past the ceiling the scan must raise: a partial listing would read as a complete snapshot."""
+    # The real ceiling (200000) is too large to build, so the function is redefined from the
+    # shipped source with a smaller limit.
     text = SCRIPT.read_text(encoding = "utf-8")
     assert (
         "throw (" in text and "$visited -gt 200000" in text
@@ -248,14 +167,9 @@ def test_the_artifact_filter_still_selects_by_extension(tmp_path: pathlib.Path) 
 
 
 def test_no_recursive_listing_is_left_in_the_script() -> None:
-    """The shape that raised, pinned out of the file it was removed from.
-
-    A future edit that reaches for -Recurse again brings the whole failure back, and it only
-    shows up on a runner whose temp directory happened to change under it.
-    """
+    """Fails if -Recurse returns to the script: the recursive listing threw when TEMP changed under it."""
     text = SCRIPT.read_text(encoding = "utf-8")
-    # Comments first: this file EXPLAINS the shape it removed, and prose naming it is not a
-    # call. Stripping the comment-based help blocks as well, which is where that prose lives.
+    # Strip comments and help blocks first: their prose names the removed shape.
     body, inside_help = [], False
     for line in text.splitlines():
         stripped = line.strip()
@@ -329,13 +243,7 @@ def test_a_directory_that_vanished_is_not_reported_as_unread(tmp_path: pathlib.P
 
 
 def _shipped_left_expression() -> str:
-    """The `$left = @(...)` assignment as it appears in Invoke-WithCompilerWatch.
-
-    Lifted from the shipped source rather than retyped. A copy of the expression in this file
-    would keep passing after the withholding was deleted from the script, which is precisely
-    the regression worth catching: the comparison is the only place the unread directories
-    are allowed to change the answer.
-    """
+    """Lifts the $left assignment from the shipped script, so the test cannot pass against a stale copy."""
     text = SCRIPT.read_text(encoding = "utf-8")
     start = text.index("    $left = @(")
     end = text.index("\n    )\n", start) + len("\n    )\n")
@@ -349,15 +257,7 @@ def _shipped_left_expression() -> str:
 
 
 def test_the_unread_directories_are_withheld_from_the_new_artifact_set() -> None:
-    """The defect this guards: a baseline hole turning pre-existing files into evidence.
-
-    `old.dll` was in the gap directory all along. The baseline sweep could not read that
-    directory, the final sweep could, so a plain "in after, not in before" difference hands it
-    back as new and an installer that compiled nothing is reported as having compiled.
-
-    The expression under test is the one the script actually runs, read out of the file, so
-    deleting or bypassing the withholding fails this rather than leaving a copy passing here.
-    """
+    """Unread directories are withheld from new artifacts, or a baseline hole makes old files look new."""
     proc = _run_pwsh(
         "$before = New-Object 'System.Collections.Generic.HashSet[string]' "
         "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
@@ -376,12 +276,7 @@ def test_the_unread_directories_are_withheld_from_the_new_artifact_set() -> None
 
 
 def test_the_same_comparison_still_reports_a_genuinely_new_file() -> None:
-    """The control for the row above: withholding must not swallow everything.
-
-    A test that only checks something was removed passes just as well against an expression
-    that returns nothing at all, which would hide every real compile instead. With no unread
-    directories, both files are new and both come back.
-    """
+    """Control: with no unread directories the same comparison must still report genuinely new files."""
     proc = _run_pwsh(
         "$before = New-Object 'System.Collections.Generic.HashSet[string]' "
         "([string[]]@(), [StringComparer]::OrdinalIgnoreCase)\n"
@@ -407,9 +302,7 @@ def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
         + "\n"
         r"Write-Output ('case=' + (Test-StudioPathUnder -Path 'C:\T\A\x.dll' -Directory 'c:\t\a'))"
         + "\n"
-        # The directory itself. A temp ROOT can be what failed to enumerate, and the root is
-        # also what the watcher attaches to, so descendants-only makes the coverage check
-        # below declare a watched root uncovered and throw.
+        # The root itself counts: it can fail to enumerate and is what the watcher attaches to.
         r"Write-Output ('self=' + (Test-StudioPathUnder -Path 'C:\t\a' -Directory 'C:\t\a'))" + "\n"
         r"Write-Output ('selfslash=' + (Test-StudioPathUnder -Path 'C:\t\a\' -Directory 'C:\t\a'))"
         + "\n"
@@ -429,13 +322,7 @@ def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
 
 
 def _shipped_coverage_check() -> str:
-    """The uncovered-directory collection and the throw it feeds, from the shipped file.
-
-    These are no longer adjacent: the loop collects and the raise happens at the very end of
-    the measurement, after the evidence is written and after the action's own failure is
-    rethrown. Both halves are lifted so this drives the real pair rather than a copy, and so
-    the test keeps working if more code lands between them.
-    """
+    """Lifts the uncovered-directory loop and its throw from the shipped script, not a copy."""
     body = _measured_action_body()
     loop_start = body.index("    $uncovered = @()")
     loop_end = body.index("    $left = @(", loop_start)
@@ -446,13 +333,7 @@ def _shipped_coverage_check() -> str:
 
 
 def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None:
-    """The case that would reintroduce the failure this change exists to contain.
-
-    A temp ROOT can be the directory that could not be enumerated, and the root is also
-    exactly what Start-StudioTempWatch attaches to. If the coverage check only recognises
-    descendants of a watched root, an unreadable root is declared to have no watcher, the run
-    throws, and the job goes red again for a transient condition in somebody else's TEMP.
-    """
+    """An unreadable root that has a watcher on it still counts as covered, so the run is not voided."""
     proc = _run_pwsh(
         r"$unread = @('C:\t')" + "\n"
         r"$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' ([string[]]@('C:\t'), [StringComparer]::OrdinalIgnoreCase)"
@@ -467,11 +348,7 @@ def test_an_unreadable_root_with_a_watcher_on_it_does_not_void_the_run() -> None
 
 
 def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
-    """The control: the throw has to survive, or the fix above would gut the guard.
-
-    With nothing watching, the listing is the only evidence there is, and withholding part of
-    it would hand back a hole as a clean result.
-    """
+    """Control: an unreadable root with no watcher must still void the run, or the fix would hide a hole."""
     proc = _run_pwsh(
         r"$unread = @('C:\t')" + "\n"
         "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "
@@ -488,17 +365,7 @@ def test_an_unreadable_root_with_no_watcher_still_voids_the_run() -> None:
 
 
 def test_the_error_subscription_exists_and_condemns_its_root() -> None:
-    """A watcher that dropped events must not count as covering its root.
-
-    FileSystemWatcher raises Error on buffer overflow and drops the creations it could not
-    queue. The handle stays in the list looking exactly like a working one, so without this the
-    coverage check treats the root as watched, the unread directories under it are withheld,
-    and an artifact missing from BOTH the live stream and the listing reports as a clean run.
-    That is the only combination that turns a real compile into a pass.
-
-    The wiring is asserted on the shipped source rather than by forcing a real overflow, which
-    needs a Windows host and thousands of creations to land reliably.
-    """
+    """A watcher that overflowed must not count as covering its root, or a missed compile reads clean."""
     text = SCRIPT.read_text(encoding = "utf-8")
     assert "-EventName Error" in text, (
         "no Error subscription on the watcher, so an overflow is not observable at all and the "
@@ -575,8 +442,7 @@ def test_the_walk_classifies_the_error_and_never_probes_with_test_path() -> None
             "function Get-StudioTempArtifacts"
         )
     ]
-    # Comments stripped first, like the -Recurse guard above: this function EXPLAINS why it
-    # does not probe, and the prose naming Test-Path is not a call to it.
+    # Comments stripped first: prose naming Test-Path is not a call.
     code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
     assert "Test-Path" not in code, (
         "the walk probes with Test-Path again. That throws on an ACL-denied directory and "
@@ -590,12 +456,7 @@ def test_the_walk_classifies_the_error_and_never_probes_with_test_path() -> None
 
 
 def test_a_missing_directory_is_still_not_recorded_as_unread(tmp_path: pathlib.Path) -> None:
-    """The control for the row above: fail-safe must not become fail-always.
-
-    Test-StudioPathIsGone returning $false for everything would make every temp deletion a
-    gap, and an unread directory under an unwatched root voids the run. That would fail the
-    job for exactly the race this change exists to tolerate.
-    """
+    """A missing directory must not be recorded as unread, or routine temp deletions void every run."""
     scan = _scan(tmp_path / "never-existed")
     assert scan["files"] == [] and scan["unread"] == [], (
         f"a missing directory was recorded as a gap, which voids runs for ordinary temp "
@@ -630,16 +491,7 @@ def _measured_action_body() -> str:
 
 
 def test_the_action_failure_is_persisted_and_rethrown_before_the_scan_is_rejected() -> None:
-    """An installer that died must not be reported as a scanner problem.
-
-    The void-the-run throw and the action's own failure can both be pending at the end of a
-    measurement. If the void fires first, the caller loses the thing it was actually measuring
-    AND the <name>-error.txt this function promises, because the write and the rethrow both
-    come later in the body.
-
-    Ordering is the whole claim here, so ordering is what is asserted: the offsets are taken
-    from the shipped function rather than from a re-implementation.
-    """
+    """The action's failure is written and rethrown before the coverage void, so the real error survives."""
     body = _measured_action_body()
     write_error = body.index('"$stem-error.txt"')
     rethrow = body.index("if ($failure) { throw $failure }")
@@ -656,11 +508,7 @@ def test_the_action_failure_is_persisted_and_rethrown_before_the_scan_is_rejecte
 
 
 def test_the_coverage_check_no_longer_throws_from_inside_the_loop() -> None:
-    """The collect-then-raise shape, pinned.
-
-    A throw inside the per-directory loop is what put the rejection ahead of the evidence in
-    the first place, and it is an easy thing to reintroduce while editing that loop.
-    """
+    """The coverage check collects in the loop and throws only after evidence is written."""
     body = _measured_action_body()
     loop_start = body.index("foreach ($dir in $unread) {")
     loop_end = body.index("$left = @(", loop_start)
@@ -673,17 +521,7 @@ def test_the_coverage_check_no_longer_throws_from_inside_the_loop() -> None:
 
 
 def test_an_overflowed_watcher_voids_the_measurement_on_its_own() -> None:
-    """A dropped event stream is an incomplete measurement, with or without unread directories.
-
-    This half of the detector exists for artifacts that never reach the listing: CodeDom deletes
-    its intermediate directory once the assembly is loaded, so a compile can be invisible to the
-    before/after diff and present only as live events. An overflow drops those silently, so two
-    clean scans plus a failed watcher is the exact shape of a missed compile - and there is
-    nothing in $uncovered to notice it, because no directory was unreadable.
-
-    Excluding the root from $watchedRoots is therefore not enough on its own. That only changes
-    the answer when $unread happens to hold something beneath the same root.
-    """
+    """An overflowed watcher voids the measurement alone, since a compile can appear only as live events."""
     proc = _run_pwsh(
         "$unread = @()\n"
         "$watchedRoots = New-Object 'System.Collections.Generic.HashSet[string]' "

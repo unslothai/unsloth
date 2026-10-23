@@ -110,7 +110,11 @@ function McpServerCard({
       : [{ key: "", value: "" }];
   const summaryTitle = provider.name.trim() || `Tool server ${index + 1}`;
   const transportLabel =
-    provider.provider_type === "stdio" ? "Local command" : "HTTP";
+    provider.provider_type === "stdio"
+      ? "Local command"
+      : provider.provider_type === "sse"
+        ? "SSE"
+        : "HTTP";
   const toolsLabel = typeof toolsCount === "number" ? `${toolsCount} tools` : null;
   const description =
     provider.provider_type === "stdio"
@@ -183,13 +187,17 @@ function McpServerCard({
             onValueChange={(value) =>
               onUpdateProviderAt(index, {
                 // biome-ignore lint/style/useNamingConvention: ui schema
-                provider_type: value === "stdio" ? "stdio" : "streamable_http",
+                provider_type:
+                  value === "stdio" || value === "sse"
+                    ? value
+                    : "streamable_http",
               })
             }
           >
               <TabsList className="w-full">
                 <TabsTrigger value="stdio">Local command</TabsTrigger>
                 <TabsTrigger value="streamable_http">HTTP endpoint</TabsTrigger>
+                <TabsTrigger value="sse">SSE endpoint</TabsTrigger>
               </TabsList>
           </Tabs>
 

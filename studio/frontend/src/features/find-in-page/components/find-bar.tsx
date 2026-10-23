@@ -200,7 +200,7 @@ export default function FindBar({
       // Only when closing dropped focus on the floor. Anywhere else and the reader moved it.
       const focused = document.activeElement;
       if (focused !== null && focused !== document.body) return;
-      origin.focus();
+      origin.focus({ preventScroll: true });
     };
   }, []);
 

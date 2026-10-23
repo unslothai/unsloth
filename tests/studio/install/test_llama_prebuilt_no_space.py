@@ -113,9 +113,6 @@ def install_harness(monkeypatch: pytest.MonkeyPatch, plans, *, free_bytes: int) 
     return reached
 
 
-# ── the low-disk check is advisory, never fatal ──
-
-
 def test_low_disk_warning_reports_the_starved_volume(tmp_path, monkeypatch):
     monkeypatch.setattr(M.shutil, "disk_usage", fake_disk_usage(1 * GB))
     reason = M._low_disk_warning(tmp_path / "llama.cpp")
@@ -148,9 +145,6 @@ def test_low_disk_does_not_block_an_install_that_fits(tmp_path, monkeypatch, cap
     assert reached == ["app-b10079-linux-x64-cpu.tar.gz"]
     captured = capsys.readouterr()
     assert "low disk space for llama.cpp" in captured.out + captured.err
-
-
-# ── ENOSPC classification ──
 
 
 def test_classifies_direct_and_chained_enospc():
@@ -349,9 +343,6 @@ def test_source_tree_enospc_is_not_masked_by_a_later_mirror_error(tmp_path, monk
 
     assert len(calls) == 1, f"stopped after the first ENOSPC, tried: {calls}"
     assert M._environment_fatal_reason(caught.value)
-
-
-# ── exit codes ──
 
 
 def test_enospc_exits_no_space_without_trying_older_releases(tmp_path, monkeypatch):

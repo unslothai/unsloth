@@ -44,10 +44,8 @@ def test_tokens_grid_is_the_first_image_or_frame():
     g = DP.latent_grid(lat, spec, height = 64, width = 96)
     assert tuple(g.shape) == (4, 6, 64)
     assert torch.equal(g.reshape(24, 64), lat[0])
-    # Two whole frames of tokens (packed video): frame 0 leads.
     video = torch.randn(1, 48, 64)
     assert torch.equal(DP.latent_grid(video, spec, 64, 96).reshape(24, 64), video[0, :24])
-    # A sequence the render size does not tile is refused rather than shown scrambled.
     assert DP.latent_grid(torch.randn(1, 25, 64), spec, 64, 96) is None
     assert DP.latent_grid(torch.randn(1, 24, 63), spec, 64, 96) is None
 
@@ -63,7 +61,7 @@ def test_unpacked_layouts_take_their_own_shape():
 
 
 def test_project_places_each_patch_pixel():
-    # One channel per output value, identity map: the pixel shuffle must land (dy, dx, rgb) where it belongs.
+    # identity map: the pixel shuffle must land (dy, dx, rgb) where it belongs
     patch, out = 2, 12
     weight = torch.eye(out)
     grid = torch.arange(3 * 2 * out, dtype = torch.float32).reshape(3, 2, out)
@@ -79,10 +77,10 @@ def test_x0_estimate_recovers_the_prediction_of_an_euler_step():
     x0, noise = torch.rand(4, 4, 3), torch.randn(4, 4, 3)
     s_prev, s_cur = 0.8, 0.6
     prev = (1 - s_prev) * x0 + s_prev * noise
-    v = noise - x0  # flow matching velocity
+    v = noise - x0
     cur = prev + (s_cur - s_prev) * v
     assert torch.allclose(DP.x0_estimate(prev, cur, (s_prev, s_cur)), x0, atol = 1e-5)
-    # Same from device-style 0-dim tensors, and an affine map commutes with it (the weights sum to 1).
+    # affine maps commute with it because the weights sum to 1
     pair = (torch.tensor(s_prev), torch.tensor(s_cur))
     assert torch.allclose(DP.x0_estimate(prev * 2 + 1, cur * 2 + 1, pair), x0 * 2 + 1, atol = 1e-5)
     assert DP.x0_estimate(None, cur, (s_prev, s_cur)) is cur
@@ -193,19 +191,15 @@ def test_cuda_preview_never_syncs_never_writes_and_publishes(monkeypatch):
     torch.cuda.synchronize()
     torch.cuda.set_sync_debug_mode("error")
     try:
-        # Positive control: the guard does catch a host sync.
         with pytest.raises(RuntimeError):
             lat.float().sum().item()
         for i in range(4):
             sched._step_index = i + 1
             prev.on_step(lat, sched)
-            lat = (
-                lat * 0.9
-            )  # the loop moves on; the preview must have read its own copy in stream order
+            lat = lat * 0.9  # the preview must have read its own copy in stream order
     finally:
         torch.cuda.set_sync_debug_mode(0)
     assert not prev.failed
-    # Step 1 has no previous latent to pair with, so the first snapshot waits for step 2 (no raw noise).
     assert prev.emitted == 3
     assert done.wait(10.0)
     prev.finish()
@@ -219,7 +213,7 @@ def test_cuda_preview_never_syncs_never_writes_and_publishes(monkeypatch):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 @pytest.mark.parametrize("side", [1024, 2048, 4096])
 def test_cuda_preview_slot_fits_the_picture_at_every_size(monkeypatch, side):
-    # At 2048 px a padded slot size once picked a coarser divisor than to_uint8, so every frame was dropped.
+    # at 2048 px a padded slot size picked a coarser divisor than to_uint8, dropping every frame
     monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
     got = []
     done = threading.Event()
@@ -298,20 +292,20 @@ def test_snapshots_are_planned_by_step_and_publishing_keeps_only_the_newest(monk
     )
     assert prev.stride == 2
     lat = torch.randn(1, 256, 64, device = "cuda")
-    # A long kernel queued ahead keeps every snapshot in flight, as a run-ahead host would.
+    # a long queued kernel keeps every snapshot in flight, like a run-ahead host
     torch.cuda._sleep(int(2e8))
-    for _ in range(8):  # host far ahead of the GPU: all 8 steps enqueued at once
+    for _ in range(8):
         prev.on_step(lat, None)
-    assert prev.emitted == 4  # steps 1, 3, 5, 7: none dropped for want of a free slot
+    assert prev.emitted == 4
     torch.cuda.synchronize()
     prev.finish(timeout = 30.0)
-    # Rate limit of an hour: the first finished snapshot publishes, and finish() flushes the newest.
+    # hour-long rate limit: first snapshot publishes, finish() flushes the newest
     assert got and got[-1] == 4
     assert len(got) <= 2
 
 
 def test_smoothing_removes_the_period_two_patch_grid():
-    # A flat picture with a 2x2 checker on top (the packed-patch artefact) comes back flat.
+    # a 2x2 checker (the packed-patch artefact) on a flat picture comes back flat
     h = w = 16
     yy, xx = torch.meshgrid(torch.arange(h), torch.arange(w), indexing = "ij")
     checker = ((yy + xx) % 2).float() * 0.2 - 0.1
@@ -319,6 +313,86 @@ def test_smoothing_removes_the_period_two_patch_grid():
     out = DP.smooth_patch_grid(rgb)
     assert tuple(out.shape) == (h, w, 3)
     assert float((out[1:-1, 1:-1] - 0.5).abs().max()) < 1e-6
-    # A smooth ramp passes through (interior; edges are replicated).
     ramp = torch.linspace(0, 1, w).expand(h, w)[..., None].expand(h, w, 3).contiguous()
     assert torch.allclose(DP.smooth_patch_grid(ramp)[2:-2, 2:-2], ramp[2:-2, 2:-2], atol = 1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_a_half_size_stage_unpacks_with_its_own_grid(monkeypatch):
+    # LTX-2.5's first stage denoises at half size: unpacked with the full-size grid its tokens tile 4 frames into one
+    # scrambled picture, so the render names each stage's size before it runs.
+    monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
+    prev = DP.LatentPreviewer.create(
+        family = "ltx-2.5",
+        requested = None,
+        height = 704,
+        width = 1280,
+        device = "cuda",
+        publish = lambda url, seq: None,
+        min_interval_s = 0.0,
+    )
+    assert prev is not None
+    try:
+        half = torch.randn(1, 16 * 11 * 20, 128, device = "cuda")
+        # Full-size grid: 880 tokens per frame divides the 3520 of 16 half-size frames, so it "fits" but is wrong.
+        assert tuple(DP.latent_grid(half, prev.spec, prev.height, prev.width).shape) == (
+            22,
+            40,
+            128,
+        )
+        prev._prev = object()
+        prev.set_render_size(352, 640)
+        assert (prev.height, prev.width) == (352, 640) and prev._prev is None
+        grid = DP.latent_grid(half, prev.spec, prev.height, prev.width)
+        assert torch.equal(grid.reshape(220, 128), half[0, :220])
+        # Never above the size the slots were sized for; back to full size for stage 2.
+        prev.set_render_size(1408, 2560)
+        assert (prev.height, prev.width) == (352, 640)
+        prev.set_render_size(704, 1280)
+        assert (prev.height, prev.width) == (704, 1280)
+    finally:
+        prev.finish()
+
+
+def test_moss_image_bchw_latents_use_the_flux2_map():
+    # MOSS-Image denoises FLUX.2's 128 packed channels as [B, 128, h, w], not [B, N, 128] tokens.
+    spec = DP.factors_for("moss-image")
+    assert spec is not None and spec.channels == 128 and spec.patch == 2
+    lat = torch.randn(1, 128, 4, 6)
+    grid = DP.latent_grid(lat, spec, height = 64, width = 96)
+    assert grid is not None and torch.equal(grid, lat[0].permute(1, 2, 0))
+    tokens = lat.flatten(2).transpose(1, 2)
+    assert torch.equal(grid, DP.latent_grid(tokens, spec, 64, 96))
+    w = torch.tensor(spec.weight)
+    b = torch.tensor(spec.bias)
+    assert tuple(DP.project(grid, w, b, spec.patch).shape) == (8, 12, 3)
+    assert DP.latent_grid(torch.randn(1, 32, 4, 6), spec, 64, 96) is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_cuda_preview_publishes_moss_image_bchw_latents(monkeypatch):
+    monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
+    got = []
+    done = threading.Event()
+
+    def publish(url, seq):
+        got.append((url, seq))
+        done.set()
+
+    prev = DP.LatentPreviewer.create(
+        family = "moss-image",
+        requested = None,
+        height = 128,
+        width = 128,
+        device = "cuda",
+        publish = publish,
+        min_interval_s = 0.0,
+    )
+    assert prev is not None
+    try:
+        prev.on_step(torch.randn(1, 128, 8, 8, device = "cuda"), None, final = True)
+        assert not prev.failed
+        assert done.wait(10)
+    finally:
+        prev.finish()
+    assert got and got[0][0].startswith("data:image/jpeg;base64,")

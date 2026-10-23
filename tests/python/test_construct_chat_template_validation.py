@@ -1,11 +1,4 @@
-"""Negative-path validation tests for unsloth.chat_templates.construct_chat_template.
-
-Regression coverage for the no-match guards added in the PR #5763 follow-up:
-missing placeholders or unrecoverable two-example structures must raise
-RuntimeError with a clear message (not IndexError/AttributeError) and must
-not silently drop the last char via s[:-1]. A minimal fake tokenizer keeps
-the cases CPU-only (no HF_TOKEN, no gated download).
-"""
+"""Missing placeholders must raise RuntimeError, never silently drop the last char via s[:-1]."""
 
 from types import SimpleNamespace
 
@@ -58,7 +51,7 @@ def test_single_pair_template_raises_clear_error_not_attribute_error():
 def test_error_message_excerpt_is_bounded():
     """Error messages must include a bounded excerpt of the offending
     template, not dump arbitrarily large content into the traceback."""
-    huge = ("garbage " * 5000) + "{INPUT}"  # ~40 KB, missing {OUTPUT}
+    huge = ("garbage " * 5000) + "{INPUT}"
     with pytest.raises(RuntimeError) as exc_info:
         construct_chat_template(
             tokenizer = _FakeTokenizer(),
@@ -78,7 +71,7 @@ class _SuccessFakeTokenizer(_FakeTokenizer):
     added_tokens_decoder: dict = {}
 
     def __call__(self, text):
-        # input_ids[0] must differ from bos_token_id so the BOS-handling branch is skipped.
+        # input_ids[0] != bos_token_id, so the BOS-handling branch is skipped.
         return SimpleNamespace(input_ids = [5])
 
 
@@ -90,10 +83,7 @@ class _SuccessFakeTokenizer(_FakeTokenizer):
     ],
 )
 def test_chat_template_does_not_leak_sentinel_when_section_starts_with_it(chat_template):
-    """When an input/output section begins with the {INPUT}/{OUTPUT} sentinel, the
-    generated Jinja template must not keep the literal sentinel text. The `startswith`
-    branch in the internal `process()` helper used to slice from `find()` (which is 0
-    here) instead of past the sentinel, re-including the literal `{INPUT}`/`{OUTPUT}`."""
+    """A section starting with {INPUT}/{OUTPUT} must not leak the literal sentinel into the template."""
     _, jinja_template, _, _ = construct_chat_template(
         tokenizer = _SuccessFakeTokenizer(),
         chat_template = chat_template,
@@ -130,15 +120,7 @@ def _render(
 
 @pytest.mark.parametrize("default_system_message", [None, "You are helpful."])
 def test_system_message_is_consumed_by_the_system_part(default_system_message):
-    """A caller-supplied system message must be rendered by the system part and
-    skipped by the message loop, whatever `default_system_message` is.
-
-    With `default_system_message = None` the generated template used to bind
-    `loop_messages` only inside the `{% if %}` arm. The `Fix missing
-    loop_messages` step then saw no unconditional binding, rewrote the loop back
-    to `messages`, and the system message reached the loop and tripped
-    `raise_exception`.
-    """
+    """A caller system message must be consumed by the system part, never reaching the message loop."""
     _, jinja_template, _, _ = construct_chat_template(
         tokenizer = _SuccessFakeTokenizer(),
         chat_template = _SYSTEM_CHAT_TEMPLATE,
@@ -154,7 +136,6 @@ def test_system_message_is_consumed_by_the_system_part(default_system_message):
     )
     assert rendered.count("Be terse.") == 1
     assert rendered.count("Hi") == 1
-    # A caller system message overrides the default; the default must not leak in.
     if default_system_message is not None:
         assert default_system_message not in rendered
 
@@ -213,11 +194,7 @@ def test_static_prefix_without_system_renders_in_every_conversation(default_syst
 
 
 def test_auto_appended_eos_prefers_the_tokenizer_eos_deterministically():
-    """When the template has no EOS after {OUTPUT}, construct_chat_template appends one
-    itself and picks `extra_eos_tokens[0]`. `extra_eos_tokens.insert(0, tokenizer.eos_token)`
-    exists to make that the tokenizer's own EOS, so the choice must not depend on set
-    ordering: de-duplicating through `set()` made the appended token, and therefore the
-    token ending every formatted training sample, vary with PYTHONHASHSEED."""
+    """The auto-appended EOS must be the tokenizer's own EOS, not depend on set order or PYTHONHASHSEED."""
 
     class _TwoEosTokenizer(_SuccessFakeTokenizer):
         def get_vocab(self):
@@ -269,17 +246,11 @@ _APOSTROPHE_CHAT_TEMPLATE = (
         "Answer the user's question.",
         r"Put the answer in \boxed{}.",
         r"Files live in C:\Users\me",
-        # Windows CRLF: Jinja rewrites a raw \r to \n.
         "Answer briefly.\r\nBe polite.",
     ],
 )
 def test_quotes_and_backslashes_survive_into_the_jinja_template(default_system_message):
-    """Template text is concatenated into Jinja `'...'` literals, so it has to be
-    escaped on the way in. An apostrophe used to close the literal early
-    (TemplateSyntaxError: expected token 'end of print statement'), and a backslash was
-    read as a Jinja escape, so `\\boxed` silently became a backspace character and
-    `C:\\Users` raised `truncated \\UXXXXXXXX escape`. Covers the system message and
-    the instruction/response sections, which are spliced by three separate call sites."""
+    """Template text is spliced into Jinja string literals, so apostrophes and backslashes need escaping."""
     _, jinja_template, _, _ = construct_chat_template(
         tokenizer = _SuccessFakeTokenizer(),
         chat_template = _APOSTROPHE_CHAT_TEMPLATE,

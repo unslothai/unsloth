@@ -7,6 +7,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import {
   SIDEBAR_WIDTH_MIN,
   clampSidebarWidth,
+  useSidebarWidth,
 } from "@/hooks/use-sidebar-width";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -42,13 +43,15 @@ export function SidebarEdgeTrigger({
     pinned,
     setPeeking,
     toggleSidebar,
+  } = useSidebar();
+  const {
     width,
-    widthScale,
-    storedWidth,
-    maxWidth,
+    scale: widthScale,
+    stored: storedWidth,
+    max: maxWidth,
     setWidth,
     resetWidth,
-  } = useSidebar();
+  } = useSidebarWidth();
   // A drag that reaches the minimum pins the sidebar part-way through, which
   // would unmount this: the handle would lose pointer capture and the width
   // would never commit. Hold on until the pointer is released.
@@ -56,7 +59,7 @@ export function SidebarEdgeTrigger({
   const release = () => setHolding(false);
 
   const sidebarShowing = isMobile ? openMobile : pinned;
-  if (!isTauri || (sidebarShowing && !holding)) {
+  if (!isTauri) {
     return null;
   }
 
@@ -78,74 +81,56 @@ export function SidebarEdgeTrigger({
       onFocus={() => setPeeking(true)}
       onBlur={() => setPeeking(false)}
     >
-      <PanelResizeHandle
-        edge="right"
-        // Follows the pin, which a drag flips part-way through: from there the
-        // handle resizes the sidebar it just opened and commits on release.
-        open={pinned}
-        width={width}
-        stored={storedWidth}
-        min={SIDEBAR_WIDTH_MIN}
-        max={maxWidth}
-        scale={widthScale}
-        clamp={clampSidebarWidth}
-        setWidth={setWidth}
-        resetWidth={resetWidth}
-        onToggle={toggleSidebar}
-        // Start from what is on screen: held out, the panel is already at its
-        // full width, so a drag carries on from there instead of jumping.
-        measure={() => (peeking ? width : 0)}
-        target={() =>
-          ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ??
-          null
-        }
-        cssVar="--sidebar-width"
-        rootVar="--studio-sidebar-live-width"
-        // The sidebar declares --sidebar-width on itself, so a live width
-        // painted any higher up is shadowed. Queried, not `closest`: this
-        // strip is the sidebar's sibling.
-        scopedTarget={() =>
-          ref.current
-            ?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]')
-            ?.querySelector<HTMLElement>('[data-slot="sidebar"]') ?? null
-        }
-        rootVarTargets={() =>
-          Array.from(
-            document.querySelectorAll<HTMLElement>(
-              "[data-titlebar-live-width-scope]",
-            ),
-          )
-        }
-        label={t("shell.aria.resizeSidebar")}
-        toggleLabel={t("shell.aria.openSidebar")}
-        // The sidebar coming out says it better than a label would.
-        hideTooltip={true}
-        onHoverChange={setPeeking}
-        dataSlot="sidebar-edge-trigger"
-        className={cn(
-          // Below the titlebar so the window controls and drag region keep
-          // their clicks, above the panel it holds out so the edge still
-          // answers under the sidebar. `block` beats the handle's
-          // `hidden sm:block`, which a narrowed window would trip.
-          "fixed bottom-0 left-0 right-auto top-[var(--studio-desktop-titlebar-height,48px)] z-[55] block",
-          // The window edge and nothing more: every pixel here takes a click
-          // from the page. Wider where the window is undecorated (Windows,
-          // Linux, see `setup_custom_titlebar`): there the toolkit hit-tests
-          // its own resize border inside the window, so 2px would land
-          // entirely within it. macOS keeps that border outside the content.
-          usesCustomTitlebar ? "w-3" : "w-0.5",
-          // The sidebar sliding out is the hover feedback, not a hairline
-          // hanging down the middle of the page.
-          "after:hidden",
-          // That hairline is also where the shared handle marks focus, and on
-          // a 2px strip it would sit off-screen, so mark it on the strip.
-          "focus-visible:bg-sidebar-ring/60",
-          // The two-headed resize cursor other chat apps put here, not the
-          // one-way `e-resize` of a collapsed panel border.
-          "cursor-col-resize!",
-          className,
-        )}
-      />
+      {(!sidebarShowing || holding) && (
+        <PanelResizeHandle
+          edge="right"
+          open={pinned}
+          width={width}
+          stored={storedWidth}
+          min={SIDEBAR_WIDTH_MIN}
+          max={maxWidth}
+          scale={widthScale}
+          clamp={clampSidebarWidth}
+          setWidth={setWidth}
+          resetWidth={resetWidth}
+          onToggle={toggleSidebar}
+          measure={() => (peeking ? width : 0)}
+          target={() =>
+            ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ??
+            null
+          }
+          cssVar="--sidebar-width"
+          rootVar="--studio-sidebar-live-width"
+          // The sidebar declares --sidebar-width itself, shadowing any ancestor.
+          scopedTarget={() =>
+            ref.current
+              ?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]')
+              ?.querySelector<HTMLElement>('[data-slot="sidebar"]') ?? null
+          }
+          rootVarTargets={() =>
+            Array.from(
+              document.querySelectorAll<HTMLElement>(
+                "[data-titlebar-live-width-scope]",
+              ),
+            )
+          }
+          label={t("shell.aria.resizeSidebar")}
+          toggleLabel={t("shell.aria.openSidebar")}
+          hideTooltip={true}
+          onHoverChange={setPeeking}
+          dataSlot="sidebar-edge-trigger"
+          className={cn(
+            // Below the titlebar, above the held-out panel; `block` beats the handle's `hidden sm:block`.
+            "fixed bottom-0 left-0 right-auto top-[var(--studio-desktop-titlebar-height,48px)] z-[55] block",
+            // Undecorated windows (Windows, Linux) hit-test their resize border inside the content.
+            usesCustomTitlebar ? "w-3" : "w-0.5",
+            "after:hidden",
+            "focus-visible:bg-sidebar-ring/60",
+            "cursor-col-resize!",
+            className,
+          )}
+        />
+      )}
     </div>
   );
 }

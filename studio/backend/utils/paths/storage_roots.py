@@ -21,6 +21,7 @@ import tempfile
 from loggers import get_logger
 from utils.account_context import current_account, is_owner_context
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
+from utils.paths.private_tmp import private_tmp_dir, private_tmp_path
 
 logger = get_logger(__name__)
 
@@ -416,11 +417,12 @@ def project_workspaces_root() -> Path:
 
 
 def shared_tmp_root() -> Path:
-    return Path(tempfile.gettempdir()) / "unsloth-studio"
+    return private_tmp_path("unsloth-studio")
 
 
 def tmp_root() -> Path:
-    root = shared_tmp_root()
+    # Created and checked here: on a shared /tmp another account could own or plant the root.
+    root = private_tmp_dir("unsloth-studio")
     if is_owner_context():
         return root
     return root / "accounts" / current_account().account_id
@@ -1285,6 +1287,29 @@ def parseable_cache_fallback(key: str, intended: str) -> str | None:
     return candidate
 
 
+def _use_studio_uv_tools() -> None:
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its own uv in <studio>/uv, off the user
+    PATH, and its uv-managed Python in <studio>/python. Keyed on those directories, which only
+    that installer creates, so nothing else opts in. Its uv goes first: the installer only places
+    one there when PATH had none or one below its minimum."""
+    root = studio_root()
+    try:
+        if root.resolve() == (Path.home() / ".unsloth" / "studio").resolve():
+            return
+    except (OSError, RuntimeError, ValueError):
+        return
+    if (root / "python").is_dir() and not (os.environ.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+        os.environ["UV_PYTHON_INSTALL_DIR"] = str(root / "python")
+    uv_dir = root / "uv"
+    if (uv_dir / ("uv.exe" if os.name == "nt" else "uv")).is_file():
+        os.environ["PATH"] = _path_with_first(os.environ.get("PATH", ""), str(uv_dir))
+
+
+def _path_with_first(path: str, first: str) -> str:
+    rest = [entry for entry in path.split(os.pathsep) if entry and entry != first]
+    return os.pathsep.join([first, *rest])
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -1292,6 +1317,7 @@ def _setup_cache_env() -> None:
     stored location. Unsloth seeds import-time variables once, while each later
     worker receives its own captured cache location.
     """
+    _use_studio_uv_tools()
     root = cache_root()
     from utils.hf_cache_settings import initialize_hf_cache_environment
 

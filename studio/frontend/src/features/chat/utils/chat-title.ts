@@ -459,7 +459,6 @@ export function heuristicChatTitle(messages: readonly MessageRecord[]): string |
   const count = (text: string, value: number) => {
     for (const word of text.match(TITLE_WORD) ?? []) {
       if (!isTitleWord(word)) continue;
-      // Names (React, LoRA) weigh more.
       const name = /[A-Z]/.test(word) ? 1.5 : 1;
       const key = word.toLowerCase();
       weight.set(key, (weight.get(key) ?? 0) + value * name);

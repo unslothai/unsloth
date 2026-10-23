@@ -45,7 +45,7 @@ test("mascot changes persist, hydrate with older payloads, and reset", async () 
 test("mascot and sloth searches reach Appearance on desktop and web", () => {
   const key = "settings.appearance.custom.mascots.label";
   for (const desktop of [true, false]) {
-    assert.ok(createSettingsSearchIndex({ desktop, closeToTray: desktop }).appearance.includes(key));
+    assert.ok(createSettingsSearchIndex({ desktop, closeToTray: desktop, menuBarIcon: desktop }).appearance.includes(key));
   }
   assert.equal(SETTINGS_SEARCH_KEYWORDS[key], "settings.appearance.custom.mascots.keywords");
 });

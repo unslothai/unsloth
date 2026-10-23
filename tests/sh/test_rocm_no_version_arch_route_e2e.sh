@@ -1,10 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# End-to-end routing assertions for the no-readable-version AMD reroute (issue #8731). Separate from
-# test_rocm_no_version_arch_route.sh because the reroute is TOP-LEVEL code: get_torch_index_url returns
-# */cpu and defers, so sourcing functions never runs the decision and grepping for its variable names
-# passes with the reroute deleted. The splice runs PAST it: Strix gfx115x and gfx906 still rewrite it.
+# The reroute is TOP-LEVEL code (get_torch_index_url returns */cpu and defers), so it is
+# spliced out and run, along with the code after it: Strix gfx115x and gfx906 still rewrite it.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,12 +13,12 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 _ROOT=$(mktemp -d)
 cleanup() { rm -rf "$_ROOT"; }
 trap cleanup EXIT
-# The spliced block runs its own mktemp -d (the ROCm tag memo) without a cleanup trap, so keep it under $_ROOT.
+# The spliced block runs its own mktemp -d with no cleanup trap, so keep it under $_ROOT.
 TMPDIR="$_ROOT/tmp"
 export TMPDIR
 mkdir -p "$TMPDIR"
 
-# Host paths are redirected into $_FAKE, or a real GPU on this box gets measured and the suite passes regardless.
+# Host paths are redirected into $_FAKE, or a real GPU on this box gets measured.
 _FAKE="$_ROOT/fake"
 _F_ROCM="$_FAKE/opt-rocm"
 _F_PROCNV="$_FAKE/proc-driver-nvidia"
@@ -61,7 +59,7 @@ _BLOCK="$_ROOT/block.sh"
 for _fn in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$' "$INSTALL_SH" \
              | sed 's/().*//' | sort -u); do
     sed -n "/^$_fn()[[:space:]]*{[[:space:]]*\$/,/^}\$/p" "$INSTALL_SH" > "$_ROOT/.one"
-    # A heredoc with a bare `}` truncates this extraction into a syntax error; the check below covers the loss.
+    # A heredoc with a bare `}` truncates this extraction; the check below catches it.
     if bash -n "$_ROOT/.one" 2>/dev/null; then
         cat "$_ROOT/.one" >> "$_ROOT/funcs.raw"
         echo "" >> "$_ROOT/funcs.raw"
@@ -108,7 +106,6 @@ reset_host() {
     printf 'Linux version 7.1.5 (builder) #1 SMP\n' > "$_F_PROCVER"
 }
 
-# rocminfo names each agent twice, as the real tool does.
 mock_rocminfo() {
     {
         echo "ROCk module is loaded"
@@ -277,8 +274,7 @@ EOF
         printf 'INDEX=<installer exited %s>\n' "$?"
 }
 
-# run_installer unsets UNSLOTH_ROCM_GFX_ARCH inside the generated script, so this variant
-# re-applies it AFTER that unset, for the stale-declared-arch cases.
+# run_installer unsets UNSLOTH_ROCM_GFX_ARCH, so this re-applies it after that unset.
 run_installer_env() {   # $1 = "VAR=value", $2 = _ARCH
     run_installer "${2:-x86_64}" >/dev/null 2>&1 || true
     sed -i "s|^_ARCH=|export $1\n_ARCH=|" "$_ROOT/run.sh"
@@ -341,7 +337,6 @@ fedora_no_version_host gfx1100
 assert_eq "gfx1100 with no readable version routes to its own family" \
     "$_AMD/gfx110X-all/" "$(run_index)"
 
-# gfx906 (MI50) is served only through a generic rocmX.Y leaf, so there is nothing to reroute to.
 fedora_no_version_host gfx906
 assert_eq "gfx906 with no readable version stays on cpu" "$_BASE/cpu" "$(run_index)"
 
@@ -353,7 +348,7 @@ fedora_no_version_host gfx1201 gfx1036
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "gfx1201 beside gfx1036 stays on cpu" "$_BASE/cpu" "$(run_index)"
 
-# UNSLOTH_ROCM_GFX_ARCH must stay unset: setup.sh makes a visibility-aware pick that naming a card overrules.
+# UNSLOTH_ROCM_GFX_ARCH must stay unset: naming a card overrules setup.sh's visibility-aware pick.
 fedora_no_version_host gfx1200 gfx1201
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "a same-family pair routes to the shared family" \
@@ -362,20 +357,16 @@ fedora_no_version_host gfx1200 gfx1201
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "a same-family pair names no single card" "" "$(run_gfx)"
 
-# rocminfo calls every consumer card "Radeon", and the AMD per-arch mirror is
-# repo.amd.com/ROCM/whl/gfx120X-all/, so branding the host off the whole URL sends the
-# rerouted install down the repo.radeon.com branch: the summary reports wheels it never
-# fetched and the Radeon path then warns it cannot read the ROCm version it does not need.
+# rocminfo calls every consumer card "Radeon" and the AMD mirror path is gfx120X-all, so
+# branding off the whole URL would wrongly take the repo.radeon.com branch.
 fedora_no_version_host gfx1201
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "a per-arch reroute is not branded a Radeon repo install" "false" "$(run_radeon)"
 fedora_no_version_host gfx1200 gfx1201
 assert_eq "nor is the same-family reroute" "false" "$(run_radeon)"
 
-# Real ROCm 7.x rocminfo for one gfx1201: the agent Name, an ISA triple carrying feature
-# flags, and a SECOND ISA "gfx12-generic" (ROCm/ROCm#6110). One card must not read as two,
-# and gfx12-generic must not read as an arch -- either way the sole-arch check rejects the
-# host and a working 9070 XT falls back to cpu.
+# ROCm 7.x lists a second ISA "gfx12-generic" (ROCm/ROCm#6110): one card must not read as
+# two, and gfx12-generic is not an arch.
 fedora_no_version_host gfx1201
 {
     echo "ROCk module is loaded"
@@ -414,7 +405,7 @@ assert_eq "a GPU-less host with stale ROCm packages stays on cpu" \
 fedora_no_version_host gfx1201
 assert_eq "the same host on aarch64 does not reroute" "$_BASE/cpu" "$(run_index aarch64)"
 
-# install.sh is #!/bin/sh but CI runs these files with bash, so a bashism would surface only on a dash host.
+# install.sh is #!/bin/sh but CI runs these with bash, so bashisms only surface on dash.
 _SH_REAL=$(command -v sh 2>/dev/null || true)
 if [ -n "$_SH_REAL" ]; then
     _RUN_SHELL="$_SH_REAL"
@@ -429,10 +420,8 @@ else
     echo "  SKIP: no /bin/sh to cross-check"
 fi
 
-# HSA_OVERRIDE_GFX_VERSION=11.0.0 is the standard Strix Halo workaround, so ROCr reports
-# the spoofed gfx1100 on a physical gfx1151. The reroute derives BOTH the wheel family and
-# the exported arch from that probe, so without the correction this host takes gfx110X-all
-# wheels and hands setup.sh a gfx1100 to build llama.cpp for.
+# HSA_OVERRIDE_GFX_VERSION=11.0.0 (the Strix Halo workaround) makes ROCr report gfx1100 on a
+# physical gfx1151; the reroute must correct both the wheel family and the exported arch.
 mock_strix_cpuinfo() { printf 'model name\t: AMD Ryzen AI Max+ 395 w/ Radeon 8060S\n' > "$_F_CPUINFO"; }
 mock_kfd_gfx() {   # $1 = gfx_target_version, which the override cannot reach
     : > "$_F_KFD"
@@ -450,8 +439,7 @@ mock_strix_cpuinfo; mock_kfd_gfx 110501
 assert_eq "and hands setup.sh the physical arch, not the spoof" \
     "gfx1151" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_gfx)"
 
-# Controls. Without the override the same probe is the truth, and the correction must not
-# fire on a real gfx1100 that merely sits in a Ryzen AI Max chassis.
+# The correction must not fire on a real gfx1100 in a Ryzen AI Max chassis.
 fedora_no_version_host gfx1100
 mock_strix_cpuinfo; mock_kfd_gfx 110501
 assert_eq "with no override the probed arch is taken at face value" \
@@ -461,28 +449,22 @@ mock_strix_cpuinfo; mock_kfd_gfx 110000
 assert_eq "a real gfx1100 corroborated by the kernel keeps its own family" \
     "$_AMD/gfx110X-all/" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
 
-# gfx1033 (Van Gogh) shares gfx103X-all with gfx1030-gfx1036, so a mixed 103X host is the one
-# shape where _amd_agreed_index_family AGREES while _amd_sole_index_arch declines, and the
-# shared-family arm then rewrote the cpu index the gate had just chosen back to ROCm wheels.
+# gfx1033 shares gfx103X-all with gfx1030-1036: the family agrees while the sole-arch check
+# declines, and the shared-family arm must not undo the gate's cpu choice.
 fedora_no_version_host gfx1033 gfx1030
 assert_eq "a mixed gfx1033 + gfx1030 host does not reroute to the shared family" \
     "$_BASE/cpu" "$(run_index)"
 fedora_no_version_host gfx1033 gfx1030
 assert_eq "and names no arch for setup.sh to build" "" "$(run_gfx)"
-# The same family without the bad arch still reroutes: this is a gfx1033 rule, not a
-# "distrust shared families" rule.
+# A gfx1033 rule, not a "distrust shared families" rule.
 fedora_no_version_host gfx1030 gfx1032
 assert_eq "gfx1030 + gfx1032 still take the shared gfx103X-all index" \
     "$_AMD/gfx103X-all/" "$(run_index)"
-# A lone Deck was already covered by the gate itself; assert it here too so the reroute
-# cannot regrow its own path back to ROCm.
 fedora_no_version_host gfx1033
 assert_eq "a lone gfx1033 does not reroute" "$_BASE/cpu" "$(run_index)"
 
-# A stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Deck: _infer_linux_amd_gfx_arch returns the
-# override, so an arm testing only the inferred value walked the gate's cpu index back to
-# gfx103X-all. A READABLE ROCm version takes the plain inferred-gfx arm, which never consults
-# the probe.
+# A stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Deck must not walk the gate's cpu index
+# back to gfx103X-all.
 readable_version_host() {   # $@ = gfx arches
     reset_host
     mock_rocminfo "$@"
@@ -498,14 +480,11 @@ assert_eq "a stale gfx1030 override on a real Deck does not reroute" \
 readable_version_host gfx1033
 assert_eq "and the rejected override is not forwarded to setup.sh" \
     "" "$(run_gfx_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
-# A declared arch on hardware that really is that arch still routes normally, so this
-# stays a gfx1033 veto rather than a blanket distrust of the override.
+# A gfx1033 veto, not a blanket distrust of the override.
 readable_version_host gfx1030
-# A readable ROCm version means get_torch_index_url returns the version-keyed index and never
-# reaches the */cpu reroute, so the override is simply not consulted here.
+# A readable version returns the version-keyed index and never reaches the */cpu reroute.
 assert_eq "a gfx1030 override on real gfx1030 keeps the version index" \
     "$_BASE/rocm7.2" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
-# The no-version path stays covered too, since it reaches the family arm instead.
 fedora_no_version_host gfx1033
 assert_eq "a stale override on a no-version Deck does not reroute either" \
     "$_BASE/cpu" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
@@ -521,9 +500,7 @@ mock_kfd_two() {   # $1 $2 = gfx_target_version per KFD node
         "$2" > "$_F_SYSKFD/kfd/topology/nodes/2/properties"
 }
 
-# The override can collapse a mixed host into ONE reported arch, and a singleton probe then
-# agrees on a family neither physical GPU can run. The spoof helper already declines here;
-# an empty correction must not be read as "no spoof".
+# The override can collapse a mixed host into one arch; an empty correction is not "no spoof".
 fedora_no_version_host gfx1100
 mock_strix_cpuinfo; mock_kfd_two 110501 120001
 assert_eq "a spoof-collapsed mixed host does not reroute" \
@@ -533,16 +510,13 @@ mock_strix_cpuinfo; mock_kfd_two 110501 120001
 assert_eq "and names no arch for setup.sh to build" \
     "" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_gfx)"
 
-# Two nodes that agree are still a decline, because the shipped helper declines on any
-# multi-node KFD. This asserts the conservative outcome rather than the ideal one:
-# correcting here would mean changing the helper, which the Strix path shares.
+# The shipped helper declines on any multi-node KFD; this pins the conservative outcome.
 fedora_no_version_host gfx1100
 mock_strix_cpuinfo; mock_kfd_two 110501 110501
 assert_eq "two nodes the helper will not vouch for do not reroute either" \
     "$_BASE/cpu" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
 
-# Native wheels plus a live override is the worst of both: the kernels are there and ROCr
-# keeps reporting the arch they are not for. The rocm* leaf clears it; a gfx* leaf must too.
+# Native gfx* wheels must also clear a live override, as the rocm* leaf does.
 fedora_no_version_host gfx1100
 mock_strix_cpuinfo; mock_kfd_gfx 110501
 assert_eq "a corroborated spoof is cleared once native wheels are chosen" \

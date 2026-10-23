@@ -167,6 +167,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
         for gindex, group in enumerate(self.param_groups):
             for pindex, p in enumerate(group["params"]):
                 if p.grad is None:
+                    # Unrouted weights were densified by the model pre-hook; the INT8 copy is still current.
+                    if self._has_weight_quant(p, group) and _is_materialized(p):
+                        p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
                     continue
 
                 state = self.state[p]
@@ -176,14 +179,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 has_weight_quant = self._has_weight_quant(p, group)
 
                 if has_weight_quant:
-                    if p._q_scales is not None:
-                        float_weight = _dequantize(
-                            p._q_data,
-                            p._q_scales,
-                            p._q_zeros,
-                            p._q_shape,
-                        )
-                        p.data = float_weight
+                    _materialize_weight(p)
 
                 if "rank" in group:
                     if "projector" not in state:
@@ -293,30 +289,70 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 p._weight_group_size = group_size
 
 
+def _is_placeholder(p):
+    return getattr(p, "_q_scales", None) is not None and p.shape != p._q_shape
+
+
+def _is_materialized(p):
+    return getattr(p, "_q_scales", None) is not None and p.shape == p._q_shape
+
+
+def _dequantized(p):
+    return _dequantize(p._q_data, p._q_scales, p._q_zeros, p._q_shape).to(p.device)
+
+
+def _materialize_weight(p):
+    if _is_placeholder(p):
+        p.data = _dequantized(p)
+
+
 def _weight_quant_pre_hook(module, args):
     """Forward pre-hook: dequantize INT8 weights to float before forward."""
     for p in module.parameters(recurse = False):
-        if hasattr(p, "_q_scales") and p._q_scales is not None:
-            float_weight = _dequantize(
-                p._q_data,
-                p._q_scales,
-                p._q_zeros,
-                p._q_shape,
-            )
-            p.data = float_weight.to(p.data.device)
+        _materialize_weight(p)
+
+
+def _weight_quant_model_pre_hook(module, args, kwargs):
+    # Runs outside torch.compile'd submodules, whose own pre-hooks never see the placeholder.
+    for p in module.parameters():
+        _materialize_weight(p)
+
+
+def _weight_quant_state_dict_hook(module, state_dict, prefix, local_metadata):
+    """Serialize full weights without materializing the live placeholders."""
+    for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
+        if _is_placeholder(p):
+            state_dict[prefix + name] = _dequantized(p)
+
+
+def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
+    # Loaded values must win over the INT8 copy, so drop it.
+    for name, p in module.named_parameters(recurse = False, remove_duplicate = False):
+        if prefix + name in state_dict and getattr(p, "_q_scales", None) is not None:
+            _materialize_weight(p)
+            p._q_scales = None
+            p._q_zeros = None
+            del p._q_data
 
 
 def install_weight_quant_hooks(model: torch.nn.Module) -> list:
-    """Register forward pre-hooks on modules whose weights are INT8-quantized.
+    """Register forward and checkpoint hooks for INT8-quantized weights.
 
     Returns a list of hook handles so the caller can remove them if needed.
     """
-    handles = []
+    handles = [
+        model.register_forward_pre_hook(
+            _weight_quant_model_pre_hook, prepend = True, with_kwargs = True
+        )
+    ]
     for module in model.modules():
         has_quant_param = any(hasattr(p, "_q_scales") for p in module.parameters(recurse = False))
         if has_quant_param:
-            h = module.register_forward_pre_hook(_weight_quant_pre_hook)
-            handles.append(h)
+            handles.append(module.register_forward_pre_hook(_weight_quant_pre_hook))
+            handles.append(module.register_state_dict_post_hook(_weight_quant_state_dict_hook))
+            handles.append(
+                module.register_load_state_dict_pre_hook(_weight_quant_load_state_dict_hook)
+            )
     return handles
 
 
@@ -352,7 +388,7 @@ def make_q_galore_param_groups(
 ) -> list:
     """Build param groups suitable for :class:`QGaLoreAdamW8bit`.
 
-    Parameters matching ``target_modules`` (or the default set of attention
+    Two-dimensional parameters matching ``target_modules`` (or the default set of attention
     and MLP projection names) are placed in the GaLore group.  All other
     trainable parameters go into the non-GaLore group.
 
@@ -387,10 +423,9 @@ def make_q_galore_param_groups(
         if not param.requires_grad:
             continue
 
-        # Match target module names and exclude 1-D params (biases, norms), since GaLoreProjector.project
-        # requires 2-D gradients.
+        # GaLoreProjector requires matrices; biases, norms, and stacked experts use ordinary AdamW.
         name_parts = name.split(".")
-        is_galore = param.dim() >= 2 and any(t in name_parts for t in targets)
+        is_galore = param.dim() == 2 and any(t in name_parts for t in targets)
 
         if is_galore:
             galore_params.append(param)

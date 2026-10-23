@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A managed sd.cpp install made for an older pin is upgraded to the pin this Studio ships.
-
-Before this, ensure_sd_cpp_binary / ensure_sd_server_binary reinstalled only a missing, unrunnable or
-wrong-accelerator binary, so moving DEFAULT_TAG reached new installs only: a host that installed the
-2026-08-09 u13b9d92 bundle kept running it after the pin moved to u1d02858 (observed on a benchmark
-host whose Studio pinned u1d02858 while ~/.unsloth/stable-diffusion.cpp still held u13b9d92).
-"""
+"""An older-pin managed install is upgraded to the shipped pin."""
 
 from __future__ import annotations
 
@@ -80,7 +74,6 @@ def test_an_install_for_an_older_pin_is_upgraded_once(tmp_path, monkeypatch):
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
     assert [k["accelerator"] for k in installs] == ["cuda"]
     assert cli.read_bytes() == b"new-build"
-    # The record now names the shipped pin: the next load reuses it.
     assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
     assert len(installs) == 1
@@ -138,8 +131,8 @@ def test_the_current_pin_is_never_reinstalled(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "record",
     [
-        None,  # predates the record
-        {"accelerator": "cuda", "repo": "r"},  # no tag
+        None,
+        {"accelerator": "cuda", "repo": "r"},
         {"accelerator": "cuda", "repo": "r", "tag": ""},
     ],
 )
@@ -150,7 +143,6 @@ def test_an_install_that_cannot_say_its_pin_is_left_alone(tmp_path, monkeypatch,
         raise AssertionError("unknown is not stale")
 
     monkeypatch.setattr(sdmod, "install", _install)
-    # cpu: an unrecorded install is not an accelerator mismatch either, so only the pin check could fire.
     assert bk.ensure_sd_cpp_binary(accelerator = "cpu") == str(cli)
 
 
@@ -185,6 +177,39 @@ def test_an_old_record_holding_the_upstream_form_of_the_pin_is_current(tmp_path,
         sdmod, "install", lambda **_k: (_ for _ in ()).throw(AssertionError("current"))
     )
     assert bk.ensure_sd_cpp_binary(accelerator = "vulkan") == str(cli)
+
+
+@pytest.mark.parametrize("with_requested_tag", [True, False])
+def test_the_previous_pins_upstream_fallback_is_upgraded(tmp_path, monkeypatch, with_requested_tag):
+    # #12470: leejet master-813, the previous pin's upstream fallback, cannot run Qwen-Image-2.1.
+    record = {
+        "accelerator": "cuda",
+        "repo": sdmod.UPSTREAM_FALLBACK_REPO,
+        "tag": "master-813-bfbef5b",
+    }
+    if with_requested_tag:
+        record["requested_tag"] = "master-813-bfbef5b-u1d02858"
+    bk, root, cli, server = _tree(tmp_path, monkeypatch, record)
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        cli.write_bytes(b"new-build")
+        server.write_bytes(b"new-build")
+        sdmod._write_install_record(
+            root,
+            accelerator = kwargs["accelerator"],
+            repo = sdmod.UPSTREAM_FALLBACK_REPO,
+            tag = sdmod.upstream_tag_for(sdmod.DEFAULT_TAG),
+        )
+        return cli
+
+    monkeypatch.setattr(sdmod, "install", _install)
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert cli.read_bytes() == b"new-build"
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert len(installs) == 1
 
 
 def test_kill_switch_keeps_the_installed_bundle(tmp_path, monkeypatch):

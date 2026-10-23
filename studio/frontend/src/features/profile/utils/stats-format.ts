@@ -72,7 +72,8 @@ export function formatCompactNumber(value: number, locale: Locale): string {
   // reads as false precision where the pre-localization code said 13. Asked of Intl (is there
   // a `compact` part?) rather than a hardcoded 1000, because the first unit is per-locale:
   // en and hi compact at 1K, ja and de not until 万 and Mio.
-  if (!hasCompactUnit(locale, value)) return compactFormatter(locale, 0).format(value);
+  if (!hasCompactUnit(locale, value))
+    return compactFormatter(locale, 0).format(value);
   return compactInteger(locale, value) < 100
     ? compactFormatter(locale, 1).format(value)
     : compactFormatter(locale, 0).format(value);
@@ -299,18 +300,87 @@ export function formatMilliseconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/**
- * Bucket a day's tokens into one of five heatmap intensities (0 = empty).
- * Thresholds are relative to the busiest day so any usage scale looks alive.
- */
-export function heatLevel(tokens: number, peak: number): 0 | 1 | 2 | 3 | 4 {
+export type HeatLevel = 0 | 1 | 2 | 3 | 4;
+
+/** Quartiles of the active days, then the busiest. Not ratios to the peak: one outlier washed out every other day. */
+export function heatThresholds(values: readonly number[]): [number, number, number, number] {
+  const active = values.filter((value) => value > 0).sort((a, b) => a - b);
+  if (active.length === 0) return [0, 0, 0, 0];
+  const at = (fraction: number) =>
+    active[Math.min(active.length - 1, Math.floor(fraction * active.length))] ?? 0;
+  return [at(0.25), at(0.5), at(0.75), active.at(-1) ?? 0];
+}
+
+/** A day's shade, 0 for none. The busiest always takes the strongest: with 2 to 4 active days it is the top quartile itself. */
+export function heatLevel(
+  tokens: number,
+  thresholds: readonly [number, number, number, number],
+): HeatLevel {
   if (tokens <= 0) return 0;
-  if (peak <= 0) return 1;
-  const ratio = tokens / peak;
-  if (ratio > 0.6) return 4;
-  if (ratio > 0.3) return 3;
-  if (ratio > 0.1) return 2;
+  const [q1, q2, q3, peak] = thresholds;
+  if (tokens > q3 || tokens >= peak) return 4;
+  if (tokens > q2) return 3;
+  if (tokens > q1) return 2;
   return 1;
+}
+
+export type ActivityCell<Day> = { key: string; day: Day | null; value: number };
+
+/** The latest `columns` Monday-started weeks; days after today stay `null`. */
+export function buildActivityColumns<Day extends { date: string }>(
+  daily: readonly Day[],
+  values: readonly number[],
+  columns: number,
+  mode: ActivityMode,
+): ActivityCell<Day>[][] {
+  const lastDay = daily.at(-1);
+  if (!lastDay || columns <= 0) return [];
+  const trailing = DAYS_PER_WEEK - 1 - mondayIndex(lastDay.date);
+  const capacity = columns * DAYS_PER_WEEK - trailing;
+  const start = Math.max(0, daily.length - capacity);
+  const visible = daily.slice(start);
+  const firstVisible = visible[0];
+  if (!firstVisible) return [];
+  const baseline = windowBaseline([...values], start, mode);
+
+  const cells: ActivityCell<Day>[] = [];
+  for (let index = 0; index < mondayIndex(firstVisible.date); index += 1) {
+    cells.push({ key: `pad-${index}`, day: null, value: 0 });
+  }
+  for (const [index, day] of visible.entries()) {
+    cells.push({ key: day.date, day, value: (values[start + index] ?? 0) - baseline });
+  }
+  for (let index = 0; index < trailing; index += 1) {
+    cells.push({ key: `after-${index}`, day: null, value: 0 });
+  }
+  const grid: ActivityCell<Day>[][] = [];
+  for (let index = 0; index < cells.length; index += DAYS_PER_WEEK) {
+    grid.push(cells.slice(index, index + DAYS_PER_WEEK));
+  }
+  return grid;
+}
+
+const DAYS_PER_WEEK = 7;
+
+/** 0 for Monday through 6 for Sunday. */
+function mondayIndex(dayKey: string): number {
+  return (parseDayKey(dayKey).getDay() + 6) % DAYS_PER_WEEK;
+}
+
+/** One label per shown 1st; a leading partial month yields to it, never the reverse (lost Jan). */
+export function monthLabelColumns(
+  grid: ReadonlyArray<ReadonlyArray<{ day: { date: string } | null }>>,
+): Array<{ column: number; date: string }> {
+  const labels: Array<{ column: number; date: string }> = [];
+  for (const [column, week] of grid.entries()) {
+    const first = week.find((cell) => cell.day?.date.endsWith("-01"))?.day;
+    if (first) labels.push({ column, date: first.date });
+  }
+  const leading = grid[0]?.find((cell) => cell.day !== null)?.day;
+  if (leading && labels[0]?.column !== 0 && (labels[0]?.column ?? Number.POSITIVE_INFINITY) >= 3) {
+    labels.unshift({ column: 0, date: leading.date });
+  }
+  return labels;
 }
 
 /** Local YYYY-MM-DD, matching the backend's day keys (which use local time). */
@@ -376,6 +446,34 @@ export function activitySummaryForMode(
       column.reduce((total, cell) => total + (cell.day?.tokens ?? 0), sum),
     0,
   );
+}
+
+export type WeekChartPoint = { week: string; tokens: number };
+
+/**
+ * One chart point per visible week, keyed by its first shown day. Weekly
+ * series carry the week total on every day and cumulative ones only grow, so
+ * the week's largest value is its total or its end-of-week running total.
+ */
+export function weekChartPoints(
+  grid: Array<Array<{ day: { date: string } | null; value: number }>>,
+): WeekChartPoint[] {
+  const points: WeekChartPoint[] = [];
+  for (const column of grid) {
+    let week: string | null = null;
+    let tokens = 0;
+    for (const cell of column) {
+      if (!cell.day) {
+        continue;
+      }
+      week ??= cell.day.date;
+      tokens = Math.max(tokens, cell.value);
+    }
+    if (week !== null) {
+      points.push({ week, tokens });
+    }
+  }
+  return points;
 }
 
 export function seriesForMode(

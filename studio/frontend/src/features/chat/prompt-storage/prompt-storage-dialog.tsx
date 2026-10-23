@@ -87,6 +87,7 @@ import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
   buildNamedConversationsMarkdown,
+  conversationExportBasename,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
@@ -304,6 +305,12 @@ function exportTs(): string {
   return new Date().toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
+async function conversationBasename(threadId: string): Promise<string> {
+  // Best effort: the content is already loaded, so a failed name lookup must not fail the export.
+  const thread = await getStoredChatThread(threadId).catch(() => undefined);
+  return conversationExportBasename(thread, new Date());
+}
+
 // attachment content is separate from message content and must be flattened for export
 function messageToText(msg: { content: unknown; attachments?: unknown }): string {
   const parts: string[] = [];
@@ -418,7 +425,13 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
         pushText("[image attachment]");
       } else if (p.type === "tool-call") {
         const callRoundId = codexLocalToolRoundId(p.provenance);
-        if (toolCalls.length > 0 && startsNewCodexToolRound(roundId, callRoundId)) flush();
+        // A completed local call with no round (a forced recall) is its own exchange, as in the chat adapter.
+        const ownPair =
+          callRoundId === null &&
+          (p.provenance as { source?: unknown } | undefined)?.source === "local" &&
+          p.result !== undefined &&
+          p.result !== null;
+        if (toolCalls.length > 0 && (ownPair || startsNewCodexToolRound(roundId, callRoundId))) flush();
         if (callRoundId !== null) roundId = callRoundId;
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${callCount}`;
         callCount++;
@@ -434,7 +447,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           const resultStr =
             typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
-          if (callRoundId === null && (p.provenance as { source?: unknown } | undefined)?.source === "local") flush();
+          if (ownPair) flush();
         }
       }
     }
@@ -480,7 +493,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
     ndjsonBody([JSON.stringify({ conversations })]),
-    "conversation-" + exportTs() + ".jsonl",
+    `${await conversationBasename(threadId)}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -509,7 +522,7 @@ async function exportConversationJsonl(
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
     ndjsonBody([conversationJsonlBody(oaiMsgs, layout)]),
-    `conversation${layout === "messages" ? "-messages" : ""}-${exportTs()}.jsonl`,
+    `${await conversationBasename(threadId)}${layout === "messages" ? " messages" : ""}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -528,7 +541,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   await downloadBlob(
     csvDocument(rows),
-    "conversation-" + exportTs() + ".csv",
+    `${await conversationBasename(threadId)}.csv`,
     CSV_MIME,
   );
 }
@@ -550,7 +563,7 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   loadMessages: loadDisplayedBranchMessages,
   renderMessage: messageToMarkdown,
   download: downloadBlob,
-  exportTimestamp: exportTs,
+  exportBasename: conversationBasename,
   notifyNoContent: () => toast.info("No exportable content."),
 });
 

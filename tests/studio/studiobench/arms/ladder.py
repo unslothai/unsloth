@@ -1,46 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The telescoping ladder: how a correlation becomes a cause, and where the risk goes.
-
-A set of independent on/off ablations produces a set of differences that do not add up to the
-total, and the gap between them is a residual. A residual is not a measurement of anything. It is
-the part nobody can name, and it grows every time an arm is added, because overlapping arms
-double-count the same work.
-
-A TELESCOPING LADDER removes the residual by construction. Arms are nested,
-
-    A0 (shipping)  superset  A1  superset  ...  superset  An (floor)
-
-with adjacent pairs differing by exactly one mechanism. Then
-
-    cost(A0) - cost(An)  =  sum of the adjacent differences
-
-IDENTICALLY. Not approximately, not up to a residual: the interior terms cancel algebraically, so
-the identity is a property of the arithmetic and any failure of it is a failure of MEASUREMENT
-(a missing cell, a voided arm) that the code reports rather than absorbs.
-
-THE RISK DOES NOT VANISH, IT MOVES. What was "an unnamed remainder" becomes "a possibly
-mislabelled step". That is a strict improvement for one reason: a step is testable. If step 3 is
-labelled "layout geometry" and someone doubts it, they can attack step 3 directly with a
-different knob. Nobody can attack a residual.
-
-TWO RULES, ENFORCED IN CODE:
-
-  1. NO ARM IS EVER QUOTED ALONE. `LadderRoute.quote_arm()` raises. A single arm's absolute cost
-     is not a measurement of a mechanism; it is a measurement of that arm's whole configuration
-     against nothing. Only adjacent differences are quotable.
-  2. TWO LADDERS MUST REACH THE SAME FLOOR BY DIFFERENT ROUTES. Where they disagree about the
-     same mechanism, that disagreement is the INTERACTION TERM and it is reported as such. It is
-     never averaged away: two routes disagreeing by 3 ms means the mechanisms are not additive,
-     which is a finding, and the mean of the two hides exactly that finding.
-
-FUSED STEPS. Some mechanisms cannot be separated by any knob available at runtime: `display:none`
-removes layout geometry AND sibling count in one move, and there is no knob that removes one
-without the other. A step may therefore declare more than one mechanism ONLY when it is marked
-`fused` with a reason, and the report prints it as fused. That is honest; pretending it is one
-mechanism is how a step gets mislabelled, which is the one risk this design accepts.
-"""
+"""No arm is ever quoted alone; only adjacent differences on a telescoping ladder are quotable."""
 
 from __future__ import annotations
 
@@ -50,8 +11,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from ..scoring.schema import Measure
 from .manifest import ArmOutcome, ArmStatus
 
-#: The named mechanisms this ladder can remove. A step must name mechanisms from this set, so a typo
-#: becomes an error rather than a new, unexplained row in the report.
+# A step must name mechanisms from this set, so a typo errors.
 MECHANISMS: tuple[str, ...] = (
     "paint_raster",
     "offscreen_style_layout",
@@ -297,15 +257,7 @@ def differences(
     *,
     detection_floor_ms: float | None = None,
 ) -> RouteResult:
-    """Compute every adjacent difference on a route and check the telescoping identity.
-
-    `outcomes` is keyed by `arms_key(...)`, so the shipping rung is `"shipping"` and a rung with
-    arms C and D applied is `"C+D"`.
-
-    The identity is checked only when EVERY rung on the route produced a reading. A route with a
-    voided or missing rung has no identity to check, and reporting `residual = 0` for it would be
-    a claim about arithmetic that was never performed.
-    """
+    """Identity is checked only when every rung has a reading; a voided rung must not report residual 0."""
 
     result = RouteResult(route = route)
     all_readable = True
@@ -365,8 +317,7 @@ def differences(
         and result.sum_of_steps
     ):
         result.residual_ms = float(result.total.value) - float(result.sum_of_steps.value)
-        # An arithmetic identity, not an empirical claim: the interior terms cancel, so a non-zero residual
-        # means a bug in this function, not a finding about the app.
+        # An arithmetic identity: a non-zero residual is a bug here, not a finding.
         result.identity_holds = abs(result.residual_ms) < 1e-9
         result.identity_note = (
             "top minus floor equals the sum of the adjacent differences, identically, because the "
@@ -418,15 +369,7 @@ def interaction_terms(
     *,
     detection_floor_ms: float | None = None,
 ) -> list[InteractionTerm]:
-    """Compare two routes mechanism by mechanism. Disagreement is reported, never averaged.
-
-    Two routes reaching the same floor must agree about each mechanism if the mechanisms are
-    additive. Where they do not, the mechanisms interact: removing the autoscroll observer first
-    makes the paint step look cheaper, because some of that paint was being forced by the
-    observer. That is a real property of the system and it is the most interesting thing a
-    two-route ladder can find. Averaging the two numbers produces one that describes neither
-    route and hides the finding completely.
-    """
+    """Disagreement between two routes to the same floor is an interaction term; never average it away."""
 
     if result_a.route.floor != result_b.route.floor:
         raise LadderError(
@@ -495,14 +438,8 @@ def interaction_terms(
     return terms
 
 
-# the two declared routes
-
-# ---------------------------------------------------------------------------------------
-
 _SHIPPING: frozenset[str] = frozenset()
 
-#: Route 1 walks down the rendering pipeline first: stop painting, then stop laying out off-screen,
-#: then stop occupying layout at all, and only then touch the observers and React.
 ROUTE_VISUAL_FIRST = LadderRoute(
     route_id = "visual_first",
     name = "paint, then off-screen layout, then geometry, then observers, then React",
@@ -546,9 +483,7 @@ ROUTE_VISUAL_FIRST = LadderRoute(
     ),
 )
 
-#: Route 2 reaches the identical floor from the other end: kill the observers and React first, then
-#: walk down the rendering pipeline. If the mechanisms are additive both routes report the same
-#: per-mechanism numbers; where they do not, that gap is the interaction term.
+# Both routes reach the same floor; where per-mechanism numbers differ, that gap is the interaction.
 ROUTE_SCHEDULER_FIRST = LadderRoute(
     route_id = "scheduler_first",
     name = "observers, then React, then paint, then off-screen layout, then geometry",

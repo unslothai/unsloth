@@ -32,8 +32,44 @@ def _threads_that_fit(threads: int, cost: int) -> int:
     return max(1, min(threads, int(headroom * _OPENBLAS_MEMORY_SHARE) // cost))
 
 
+def _windows_affinity_cpus() -> Optional[int]:
+    """CPUs in this process's Windows affinity mask when narrower than the system's, else None.
+
+    Python reads no affinity on Windows (process_cpu_count is cpu_count there). Zero masks mean the
+    process spans processor groups, and a full group mask says nothing about the others.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        get_mask = kernel32.GetProcessAffinityMask
+        get_mask.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        get_mask.restype = wintypes.BOOL
+        process_mask, system_mask = ctypes.c_size_t(), ctypes.c_size_t()
+        if not get_mask(
+            kernel32.GetCurrentProcess(), ctypes.byref(process_mask), ctypes.byref(system_mask)
+        ):
+            return None
+        allowed = bin(process_mask.value).count("1")
+        if not allowed or allowed >= bin(system_mask.value).count("1"):
+            return None
+        return allowed
+    except Exception:  # noqa: BLE001 -- unknown affinity means the core count
+        return None
+
+
 def _usable_cpus() -> int:
     """CPUs this process may run on: an affinity mask (taskset, Slurm, cpusets) can be far below the host's."""
+    if sys.platform == "win32":
+        allowed = _windows_affinity_cpus()
+        if allowed is not None:
+            return allowed
     count = getattr(os, "process_cpu_count", None)  # 3.13+
     if count is not None:
         return count() or 1
@@ -229,7 +265,22 @@ def _openblas_thread_target(environ: Optional[MutableMapping[str, str]] = None) 
     if target < 1:
         return None
     # OpenBLAS clamps an env value to the core count; its runtime setter only to MAX_THREADS.
-    return min(target, os.cpu_count() or target)
+    return min(target, os.cpu_count() or target, _usable_cpus())
+
+
+def runtime_capped_openblas_loaded() -> bool:
+    """Whether torch's CPU BLAS is AMD's Windows ROCm OpenBLAS: about 30x slower per core than MKL (#14313)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        get_module = ctypes.WinDLL("kernel32", use_last_error = True).GetModuleHandleW
+        get_module.argtypes = [ctypes.c_wchar_p]
+        get_module.restype = ctypes.c_void_p
+        return any(get_module(name) for name in _RUNTIME_CAPPED_OPENBLAS)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def apply_openblas_runtime_cap() -> list:
@@ -263,6 +314,45 @@ def apply_openblas_runtime_cap() -> list:
     return capped
 
 
+_affinity_lock = threading.Lock()
+_torch_threads_unfitted: Optional[int] = None
+_fitted_affinity: Optional[int] = None
+
+
+def fit_threads_to_affinity() -> None:
+    """Fit torch's pool on this thread, and the ROCm OpenBLAS one, to the CPUs Windows lets this process use.
+
+    Affinity is often narrowed after launch (Task Manager), and neither pool reads it: 16 threads on one
+    allowed CPU spin against each other (#14313). Widening it again restores the launch counts. Cheap
+    enough to call before every CPU batch; a no-op off Windows, before torch loads, or while unrestricted.
+    """
+    if sys.platform != "win32" or "torch" not in sys.modules:
+        return
+    global _torch_threads_unfitted, _fitted_affinity
+    with _affinity_lock:
+        allowed = _windows_affinity_cpus()
+        if allowed is None and _torch_threads_unfitted is None:
+            return
+        try:
+            torch = sys.modules["torch"]
+            current = int(torch.get_num_threads())
+            if _torch_threads_unfitted is None:
+                _torch_threads_unfitted = current
+            target = (
+                _torch_threads_unfitted
+                if allowed is None
+                else min(_torch_threads_unfitted, allowed)
+            )
+            # Per thread under OpenMP: the setter reaches only the calling thread's pool.
+            if current != target:
+                torch.set_num_threads(target)
+        except Exception:  # noqa: BLE001 -- a thread cap must never break a CPU batch
+            return
+        if allowed != _fitted_affinity:
+            _fitted_affinity = allowed
+            apply_openblas_runtime_cap()
+
+
 class _TorchLoader(importlib.abc.Loader):
     __slots__ = ("_loader",)
 
@@ -284,6 +374,7 @@ class _TorchLoader(importlib.abc.Loader):
             if getattr(module, "__loader__", None) is self:
                 module.__loader__ = self._loader
         apply_openblas_runtime_cap()
+        fit_threads_to_affinity()
 
     def __getattr__(self, attribute):
         if attribute == "_loader":
@@ -328,6 +419,7 @@ def install_openblas_runtime_cap() -> bool:
         return False
     if "torch" in sys.modules:
         apply_openblas_runtime_cap()
+        fit_threads_to_affinity()
         return True
     if not any(getattr(finder, _OPENBLAS_CAP_SENTINEL, False) for finder in sys.meta_path):
         sys.meta_path.insert(0, _TorchImportFinder())

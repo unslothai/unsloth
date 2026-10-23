@@ -111,18 +111,41 @@ export function HfTokenIndicator({
           aria-label={ariaLabel}
           className={cn(
             // Solid circle reads optically larger than the flat HTTP/Xet box, so keep it 22px.
-            "inline-flex h-[calc(22px*var(--ui-space-scale,1))] w-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "group relative inline-flex h-[calc(22px*var(--ui-space-scale,1))] w-[calc(22px*var(--ui-space-scale,1))] shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
-              ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
-              : "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+              ? "text-muted-foreground hover:text-foreground/80"
+              : "text-destructive-foreground",
           )}
         >
-          <HugeiconsIcon
-            icon={AiSecurity03Icon}
-            strokeWidth={1.75}
-            // Shield ink leans right; nudge left to optically centre it.
-            className="block size-[calc(13px*var(--ui-space-scale,1))] shrink-0 -translate-x-[0.5px]"
-          />
+          {/* One SVG: a CSS background and an inline SVG pixel-snap apart, off centre at fractional scales. */}
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 22 22"
+            className="absolute inset-0 block size-full"
+          >
+            <circle
+              cx="11"
+              cy="11"
+              r="11"
+              className={cn(
+                "transition-[fill]",
+                hasToken
+                  ? "fill-transparent group-hover:fill-[color-mix(in_srgb,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:group-hover:fill-accent"
+                  : "fill-destructive group-hover:fill-destructive/90",
+              )}
+            />
+            <g
+              transform={`translate(4.5 4.5) scale(${13 / 24})`}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.75}
+              strokeLinejoin="round"
+            >
+              {AiSecurity03Icon.map(([, attrs]) => (
+                <path key={String(attrs.key)} d={String(attrs.d)} />
+              ))}
+            </g>
+          </svg>
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">

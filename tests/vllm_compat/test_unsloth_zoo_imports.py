@@ -1,20 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""CPU-only smoke imports for unsloth_zoo modules touching vLLM / GRPO +
-fast_inference, under the tests/_zoo_aggressive_cuda_spoof harness.
-
-rl_replacements and empty_model are vllm-free and MUST import on CPU with no
-vllm; the three vllm-hard-import modules are skipped without it (covered
-statically by test_vllm_pinned_symbols.py).
-
-Cross-references (unsloth_zoo commits that fixed bugs surfaced here):
-  e3072a23 (WorkerLoRAManager.supports_tower_connector_lora missing),
-  0c95753a (_call_create_lora_manager TypeError on vLLM 0.9.x),
-  2a80d543 (vLLM 0.15 LoRA manager compat),
-  ec186187 (vLLM PR #30253 vllm.lora.models split),
-  e915bca1 (LoRA embeddings= arg removed; lora_extra_vocab_size optional),
-  fa82dcc2 / 664e52ea (UNSLOTH_VLLM_STANDBY hard-error on vLLM 0.10/0.14).
-"""
+"""CPU smoke imports of unsloth_zoo vLLM/GRPO modules; rl_replacements and empty_model need no vllm."""
 
 from __future__ import annotations
 
@@ -28,7 +14,7 @@ from pathlib import Path
 import pytest
 
 
-# Apply the consolidated CPU spoof at import time, before any unsloth import.
+# Apply the CPU spoof before any unsloth import.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
@@ -36,7 +22,6 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# Some unsloth_zoo modules read pynvml at import; stub it for the runner.
 def _stub_module(name: str, attrs: dict | None = None) -> None:
     if name in sys.modules:
         return
@@ -87,20 +72,8 @@ def _has_vllm() -> bool:
 
 
 def _pulls_in_vllm(module_name: str, *exports: str) -> tuple[bool, list[str]]:
-    """(did importing `module_name` pull in vllm, which of `exports` it has).
-
-    Asked in a FRESH interpreter, because `"vllm" in sys.modules` is a property
-    of the process, not of the import under test. In-process this answers "has
-    anything in this pytest worker ever imported vllm" -- the vllm-hard-import
-    tests in this same file do exactly that, and popping the module under test
-    from sys.modules cannot undo it, because its already-cached dependencies are
-    not re-imported on the second import either. So the check passed or failed on
-    test ordering and never observed what it claimed to.
-
-    The subprocess re-applies the same CPU spoof this module applies at import,
-    so a CPU-only runner is still covered. subprocess + sys.executable keeps this
-    working on Linux, macOS and Windows alike.
-    """
+    """Runs in a fresh interpreter: sys.modules is per-process, so in-process checks depend on test
+    order."""
     probe = (
         "import sys\n"
         f"sys.path.insert(0, {str(_SPOOF_DIR)!r})\n"
@@ -125,8 +98,6 @@ def _pulls_in_vllm(module_name: str, *exports: str) -> tuple[bool, list[str]]:
     return lines[-2] == "VLLM", found
 
 
-# rl_replacements: zero direct vllm imports;
-# the GRPO + fast_inference surface.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_rl_replacements_imports_without_vllm():
     """unsloth_zoo.rl_replacements must NOT pull in vllm at import time."""
@@ -144,8 +115,6 @@ def test_rl_replacements_imports_without_vllm():
     assert exports, "expected at least one GRPO-related export in rl_replacements"
 
 
-# empty_model: no vllm import;
-# pure builder for the fast_inference=True path.
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_empty_model_imports_without_vllm():
     pulled, exports = _pulls_in_vllm(
@@ -159,8 +128,6 @@ def test_empty_model_imports_without_vllm():
     assert exports, "expected a create_empty_* helper in empty_model"
 
 
-# vllm_lora_request / vllm_lora_worker_manager / vllm_utils: hard-import vllm,
-# so skip without it (pinned-symbols test covers version compat statically).
 @pytest.mark.skipif(
     not (_has_unsloth_zoo() and _has_vllm()), reason = "vllm not installed on this runner"
 )
@@ -175,8 +142,6 @@ def test_vllm_lora_request_imports():
 def test_vllm_lora_worker_manager_imports():
     sys.modules.pop("unsloth_zoo.vllm_lora_worker_manager", None)
     mod = importlib.import_module("unsloth_zoo.vllm_lora_worker_manager")
-    # e3072a23 added supports_tower_connector_lora for vLLM 0.14's gpu_model_runner; assert the patched class exposes
-    # it.
     cls = getattr(mod, "WorkerLoRAManager", None)
     if cls is not None:
         assert (

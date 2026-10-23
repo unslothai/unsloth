@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The dev-server lifecycle the browser smokes share.
-
-Linux CI exercises the POSIX path only, and the Windows path is the one nobody runs until it
-is broken on someone's machine. These drive both by injecting `os.name`, so the branch that
-picks CREATE_NEW_PROCESS_GROUP and taskkill is checked on every run.
-
-Everything here is monkeypatched: no npm, no browser, no sockets bound.
-"""
+"""Drives both POSIX and Windows paths by injecting os.name; Linux CI never runs the Windows one."""
 
 from __future__ import annotations
 
@@ -63,21 +56,7 @@ def posix_branch(monkeypatch, no_signals):
 
 @pytest.fixture
 def installed_frontend(monkeypatch, tmp_path):
-    """A frontend tree that satisfies start_vite's toolchain precondition, without an install.
-
-    `start_vite` refuses up front when `studio/frontend/node_modules` carries no vite, which
-    is the whole point of #9654: a missing toolchain must not reach npm and come back as
-    "vite exited with code 127", because that reads as a vite crash rather than as a setup
-    step nobody ran. It is a precondition of the same kind as the occupied-port refusal
-    above it, and the tests below are about process-group selection and port refusal, not
-    about the toolchain, so they get a tree that has one.
-
-    Pointed at a tmp_path tree rather than stubbed out on purpose. Stubbing
-    `_require_frontend_toolchain` to a no-op would keep these tests green if the check were
-    deleted outright; a synthetic tree makes the check actually run, and
-    test_start_vite_refuses_a_tree_with_no_frontend_toolchain below pins the other
-    direction. It also keeps this file's promise that nothing here touches a real install.
-    """
+    """Creates node_modules/.bin/vite rather than stubbing the toolchain check, so the check really runs."""
     binaries = tmp_path / "node_modules" / ".bin"
     binaries.mkdir(parents = True)
     (binaries / "vite").write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -114,22 +93,7 @@ def test_start_vite_picks_the_platform_process_group(
 
 
 def _require_playwright_page():
-    """
-    Skip unless `from playwright.sync_api import Page` would actually work.
-
-    Two weaker guards were tried and both let this through. Checking the
-    top-level package passes because "playwright" resolves as a namespace
-    directory on the Repo tests (CPU) runner; checking "playwright.sync_api"
-    passes too, because that resolves as a namespace package as well. Only the
-    symbol the harnesses import is a real test of whether the import below can
-    succeed, so that is what is checked, and it is checked the way the harness
-    does it. The failure mode is a skip condition reported as
-
-      ImportError: cannot import name 'Page' from 'playwright.sync_api'
-      (unknown location)
-
-    on every branch, which costs an investigation each time it is seen.
-    """
+    """Checks the Page symbol itself, because a namespace directory makes the module import but not Page."""
     sync_api = pytest.importorskip("playwright.sync_api")
     if not hasattr(sync_api, "Page"):
         pytest.skip(
@@ -177,13 +141,7 @@ def test_teardown_tolerates_a_process_that_already_vanished(monkeypatch, posix_b
 def test_an_occupied_port_is_refused_rather_than_measured(
     monkeypatch, no_signals, installed_frontend
 ) -> None:
-    """--strictPort makes our vite exit, and the readiness poll would then be reading whatever
-    else holds the port. Refuse up front instead.
-
-    Given a satisfied toolchain even though the port check currently runs first, so this
-    keeps asserting the port refusal specifically and not the order the two preconditions
-    happen to be written in.
-    """
+    """Refuses an occupied port up front, since the poll would otherwise read whatever holds it."""
     monkeypatch.setattr(robust, "_port_is_taken", lambda port, host: True)
     with pytest.raises(RuntimeError, match = "already serving"):
         robust.start_vite(5199)

@@ -27,7 +27,7 @@ export function StatsCard({
       )}
     >
       {title ? (
-        <header className="flex items-start justify-between gap-3">
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-0.5">
             <h3 className="text-sm font-semibold font-heading text-foreground">
               {title}
@@ -36,7 +36,7 @@ export function StatsCard({
               <p className="text-xs text-muted-foreground">{description}</p>
             ) : null}
           </div>
-          {action ? <div className="shrink-0">{action}</div> : null}
+          {action ? <div className="max-w-full shrink-0">{action}</div> : null}
         </header>
       ) : null}
       {children}

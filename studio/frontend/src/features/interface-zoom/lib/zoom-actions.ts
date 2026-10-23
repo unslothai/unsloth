@@ -35,6 +35,8 @@ export function zoomInterface(direction: ZoomDirection): void {
 export type ZoomScope = {
   contains: (element: Element) => boolean;
   zoom: (direction: ZoomDirection) => void;
+  /** Holds the keys outside this document (a native page view), where activeElement can't show it. */
+  holdsKeys?: () => boolean;
 };
 
 const scopes = new Set<ZoomScope>();
@@ -75,7 +77,9 @@ export function zoomScopeFromChord(scope: ZoomScope, direction: ZoomDirection): 
 /** The View menu's zoom: the focused scope's, else the interface's. */
 export function zoomInterfaceFromMenu(direction: ZoomDirection): void {
   if (echoed("menu")) return;
-  const scope = zoomScopeFor(document.activeElement);
+  // A click into a native page moves the keys there but leaves activeElement wherever it was, e.g.
+  // the composer, so that alone would zoom the app.
+  const scope = [...scopes].find((candidate) => candidate.holdsKeys?.()) ?? zoomScopeFor(document.activeElement);
   if (scope) scope.zoom(direction);
   else zoomInterface(direction);
 }

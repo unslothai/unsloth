@@ -196,6 +196,8 @@ function Exit-SetupFailure {
     )
     if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
     if ($Code -eq 0) { $Code = 1 }
+    # A rerun right after this must not find the old frontend build still writing (#8818).
+    if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }
     if (-not $NoTauriMarker -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
         (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
@@ -203,6 +205,153 @@ function Exit-SetupFailure {
         [Console]::Out.Flush()
     }
     exit $Code
+}
+
+# Frontend build overlapped with the Python and llama.cpp steps (#8818).
+$script:FrontendBuildProc = $null
+$script:FrontendBuildFiles = @()
+$script:FrontendBuildHidden = @()
+
+# Serial for Desktop, staged updates and verbose runs. `tsc -b && vite build` alone peaks near
+# 7 GB, so ask for 4 logical CPUs and 12 GiB usable; a failing probe keeps the serial path.
+function Test-FrontendBuildInBackground {
+    if (@("1", "true") -contains $env:UNSLOTH_STUDIO_SERIAL_SETUP) { return $false }
+    if ($script:UnslothVerbose) { return $false }
+    if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    try {
+        if ([Environment]::ProcessorCount -lt 4) { return $false }
+        return ([long](Get-UsableMemoryMb -AvailableOnly) -ge 12288)
+    } catch { return $false }
+}
+
+# Start `npm run build` with its output in files and stdin on an empty file (a Ctrl-C must not
+# leave cmd.exe asking "Terminate batch job"). $false when it could not start: build serially.
+function Start-FrontendBuildBackground {
+    param(
+        [string]$WorkingDirectory,
+        [object[]]$HiddenGitignores = @(),
+        [string]$FilePath = $env:ComSpec,
+        [string[]]$ArgumentList = @("/d", "/c", "npm run build")
+    )
+    # cmd.exe finds only npm.cmd / .exe / .bat; a PowerShell-only npm.ps1 keeps the serial path.
+    if ($FilePath -eq $env:ComSpec -and
+        -not (Get-Command npm.cmd, npm.exe, npm.bat -CommandType Application -ErrorAction SilentlyContinue)) { return $false }
+    $files = @()
+    try {
+        foreach ($i in 1..3) { $files += (New-UnslothTemporaryFile).FullName }
+        $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory `
+            -NoNewWindow -PassThru -RedirectStandardOutput $files[0] -RedirectStandardError $files[1] `
+            -RedirectStandardInput $files[2] -ErrorAction Stop
+        # Windows PowerShell only reports ExitCode later if the handle was taken now.
+        $null = $proc.Handle
+    } catch {
+        foreach ($f in $files) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+        return $false
+    }
+    $script:FrontendBuildProc = $proc
+    $script:FrontendBuildFiles = $files
+    $script:FrontendBuildHidden = @($HiddenGitignores)
+    try { [System.IO.File]::WriteAllText($FrontendBuildMark, "$($proc.Id) $($proc.StartTime.ToFileTimeUtc())") } catch { }
+    return $true
+}
+
+# Wait (up to 10 min, then stop it) for a build a killed setup left running (marker = id + start time).
+function Wait-FrontendBuildOwner {
+    param([int]$TimeoutSeconds = 600)
+    try { $owner = @(([System.IO.File]::ReadAllText($FrontendBuildMark)).Trim() -split ' ') } catch { return }
+    if ($owner.Count -ne 2) { return }
+    $said = $false
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ($true) {
+        try {
+            $p = Get-Process -Id ([int]$owner[0]) -ErrorAction Stop
+            # Within 1 s: .NET on Linux derives StartTime from boot time and drifts by microseconds.
+            if ([Math]::Abs($p.StartTime.ToFileTimeUtc() - [long]$owner[1]) -gt 10000000) { return }
+        } catch { return }
+        if ((Get-Date) -ge $deadline) { break }
+        if (-not $said) { substep "waiting for an earlier frontend build in this checkout (pid $($owner[0]))..."; $said = $true }
+        Start-Sleep -Seconds 1
+    }
+    # Still alive after that: hung, so stop its tree rather than share node_modules and dist with it.
+    try {
+        $taskkill = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\taskkill.exe" } else { $null }
+        if ($taskkill -and (Test-Path -LiteralPath $taskkill)) {
+            & $taskkill /T /F /PID $p.Id *> $null
+        } else {
+            try { $p.Kill($true) } catch { $p.Kill() }
+        }
+        [void]$p.WaitForExit(10000)
+    } catch { }
+}
+
+function Restore-FrontendBuildGitignores {
+    foreach ($gi in $script:FrontendBuildHidden) {
+        Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
+    }
+    $script:FrontendBuildHidden = @()
+}
+
+function Remove-FrontendBuildFiles {
+    foreach ($f in $script:FrontendBuildFiles) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    $script:FrontendBuildFiles = @()
+}
+
+# Kill the build's process tree and restore what it hid; the mark stays, so the next run rebuilds.
+function Stop-FrontendBuildBackground {
+    $proc = $script:FrontendBuildProc
+    if (-not $proc) { return }
+    $script:FrontendBuildProc = $null
+    try {
+        if (-not $proc.HasExited) {
+            $taskkill = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\taskkill.exe" } else { $null }
+            if ($taskkill -and (Test-Path -LiteralPath $taskkill)) {
+                & $taskkill /T /F /PID $proc.Id *> $null
+            } else {
+                try { $proc.Kill($true) } catch { $proc.Kill() }
+            }
+            [void]$proc.WaitForExit(10000)
+        }
+    } catch { }
+    Restore-FrontendBuildGitignores
+    Remove-FrontendBuildFiles
+}
+
+# CSS check, the "built" line, and clearing the build mark: shared by the serial path and the join.
+function Complete-FrontendBuildOutput {
+    $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
+    $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
+    if ($MaxCssSize -lt 100000) {
+        step "frontend" "built (warning: CSS may be truncated)" "Yellow"
+    } else {
+        step "frontend" "built"
+    }
+    Remove-Item -LiteralPath $FrontendBuildMark -Force -ErrorAction SilentlyContinue
+}
+
+# Join the background build; with -IfDone, only when it has already exited.
+function Complete-FrontendBuildBackground {
+    param([switch]$IfDone)
+    $proc = $script:FrontendBuildProc
+    if (-not $proc) { return }
+    if ($IfDone -and -not $proc.HasExited) { return }
+    if (-not $proc.HasExited) { substep "waiting for the frontend build..." }
+    $proc.WaitForExit()
+    $buildExit = $proc.ExitCode
+    $script:FrontendBuildProc = $null
+    $output = ""
+    foreach ($f in $script:FrontendBuildFiles[0..1]) {
+        $text = Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue
+        if ($text) { $output += $text }
+    }
+    Restore-FrontendBuildGitignores
+    Remove-FrontendBuildFiles
+    if ($buildExit -ne 0) {
+        if ($output) { Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red }
+        Write-StudioLine "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
+        Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
+    }
+    Complete-FrontendBuildOutput
 }
 
 function Test-SetupScriptReplaced {
@@ -276,6 +425,8 @@ function Get-SetupHostInterpreterInVenv {
 
 # Detect if running from pip install (no frontend/ dir in studio)
 $FrontendDir = Join-Path $ScriptDir "frontend"
+# Build state, not a source input, so the CI dist cache key rightly leaves it out.
+$FrontendBuildMark = Join-Path $FrontendDir ".unsloth-build.local"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
@@ -1043,7 +1194,7 @@ function Invoke-MirrorFallback {
     $minBps = 1MB
     $useUv = -not (Test-MirrorConfigured -Tool uv)
     $usePip = -not (Test-MirrorConfigured -Tool pip)
-    $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
+    $uvWheel = 'packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
     $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
     $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
     $artifact = @{
@@ -1051,7 +1202,7 @@ function Invoke-MirrorFallback {
         'torch' = "https://download-r2.pytorch.org/$torchWheel"; 'cernet-torch' = "$cernet/pytorch/$torchWheel"
         'node' = "https://nodejs.org/dist/$nodeTarball"; 'npmmirror-node' = "$npmMirror/-/binary/node/$nodeTarball"
         'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
-        'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
+        'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz'
     }
     $hosts = [ordered]@{}
     if ($useUv -or $usePip) { $hosts['pypi'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
@@ -1463,10 +1614,13 @@ function Get-LlamaJobsFor {
 # rather than treated as unreadable, since falling back to installed RAM under
 # real pressure would hand the machine its full core count at the worst moment.
 function Get-UsableMemoryMb {
+    # -AvailableOnly: -1 rather than installed RAM when free memory cannot be read.
+    param([switch]$AvailableOnly)
     try {
         $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes
         if ($null -ne $avail) { return [long]$avail }
     } catch { }
+    if ($AvailableOnly) { return -1 }
     try {
         $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
         if ($bytes -gt 0) { return [long]($bytes / 1MB) }
@@ -2473,6 +2627,7 @@ function Get-IntelRegistryAdapterNames {
 function Get-ProbableStudioVenvDir {
     $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
             elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { Join-Path $env:UNSLOTH_HOME.Trim() "studio" }
             else { $null }
     # Expand a leading ~ like the canonical resolver; without it the path stays cwd-relative.
     if ($root -and ($root -eq "~" -or $root -like "~/*" -or $root -like "~\*")) {
@@ -3367,6 +3522,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $env:UNSLOTH_STUDIO_HOME.Trim()
         } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
             $env:STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+            $env:UNSLOTH_HOME.Trim()
         } else {
             $_unslothRoot
         }
@@ -3401,6 +3558,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
 } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
     $_studioOverrideVar = "STUDIO_HOME"
     $_studioOverride = $env:STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+    $_studioOverrideVar = "UNSLOTH_HOME (studio child)"
+    $_studioOverride = Join-Path $env:UNSLOTH_HOME.Trim() "studio"
 }
 if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
@@ -3490,7 +3650,7 @@ function Test-MasterRootNoteIsHonoured {
     # warned about nothing, and was then honoured by nobody.
     $legacyStudio = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")
     if ($legacyStudio -and ($here -ieq $legacyStudio)) {
-        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio is the" -ForegroundColor Yellow
+        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio is the" -ForegroundColor Yellow
         Write-StudioLine "        default install at $here, where no reader honours a recorded root." -ForegroundColor Yellow
         Write-StudioLine "        That root cannot be recorded, so a later launch or uninstall will" -ForegroundColor Yellow
         Write-StudioLine "        not find them. Set UNSLOTH_STUDIO_HOME to $norm\studio, or re-set" -ForegroundColor Yellow
@@ -3499,14 +3659,13 @@ function Test-MasterRootNoteIsHonoured {
     }
     # A note must describe the tree it is written into: every reader requires the Studio
     # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
-    # a removal at the original install. install.ps1 does not read UNSLOTH_HOME yet, so a master
-    # root on an ordinary install leaves Studio at the legacy path with the runtimes elsewhere,
-    # which is that shape: say so, rather than leave a file that behaves as no note at all.
+    # a removal at the original install. A split layout, with the runtimes under the master root
+    # and Studio outside it, is that shape: say so, rather than leave a note no reader honours.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
-    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio lives at" -ForegroundColor Yellow
+    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio lives at" -ForegroundColor Yellow
     Write-StudioLine "        $here, which is outside it. That root cannot be recorded, so a later" -ForegroundColor Yellow
     Write-StudioLine "        launch or uninstall will not find them. Set UNSLOTH_STUDIO_HOME to" -ForegroundColor Yellow
     Write-StudioLine "        $norm\studio, or re-set UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
@@ -4994,9 +5153,7 @@ if ($HasNvidiaSmi) {
     # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
     # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
     # VAR=value resolves as a command name here and sets nothing.
-    # Both claims are conditional: an explicit index pin is honoured for any arch, and
-    # this same script THROWS on the Vulkan variable on Windows ARM64, where no bundle
-    # is published, so the usual advice would abort the next update instead of helping.
+    # Conditional: an explicit index pin is honoured for any arch.
     $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                    (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     if ($unsupPinned) {
@@ -5007,14 +5164,10 @@ if ($HasNvidiaSmi) {
         substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
         substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
     }
-    if ((Get-HostMachineArch) -eq "arm64") {
-        substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
-    } else {
-        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-        substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
-        substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
-        substep "until you install or update again." "Yellow"
-    }
+    substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+    substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+    substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+    substep "until you install or update again." "Yellow"
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
@@ -5048,12 +5201,19 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
 } elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
     step "long paths" "disabled; already asked earlier in this update" "Yellow"
+} elseif ($env:UNSLOTH_SKIP_LONG_PATHS -eq '1') {
+    # Declined on the desktop app's explainer: no second UAC.
+    step "long paths" "disabled; skipped at your request" "Yellow"
+    substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
+    substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
+    Write-StudioLine "   Windows will show a 'Registry Console Tool' prompt (reg.exe, verified publisher Microsoft Windows)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
-        $proc = Start-Process -FilePath "reg.exe" `
+        # The system directory itself, not a PATH lookup: this is the binary the prompt names.
+        $proc = Start-Process -FilePath "$([Environment]::SystemDirectory)\reg.exe" `
             -ArgumentList 'add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' `
             -Verb RunAs -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
@@ -5590,16 +5750,8 @@ function Resolve-ReusedSetupPython {
         (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
         return $env:UNSLOTH_SETUP_PYTHON
     }
-    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
-            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
-            else { Join-Path $env:USERPROFILE ".unsloth\studio" }
-    if ($root -eq "~") {
-        # Join-Path with an empty child throws on Windows PowerShell 5.1.
-        $root = $env:USERPROFILE
-    } elseif ($root -like "~/*" -or $root -like "~\*") {
-        $root = Join-Path $env:USERPROFILE $root.Substring(1).TrimStart('/', '\')
-    }
-    $venvPy = Join-Path $root "unsloth_studio\Scripts\python.exe"
+    # Root preflight already applied the overrides, including any staged update.
+    $venvPy = Join-Path $VenvDir "Scripts\python.exe"
     if (Test-Path -LiteralPath $venvPy) { return $venvPy }
     return $null
 }
@@ -5774,11 +5926,14 @@ if ($SkipFrontend) {
             Where-Object { $_.Name -ne "bun.lock" -and $_.LastWriteTime -gt $DistTime } |
             Select-Object -First 1
     }
-    if (-not $NewerFile) {
+    if ($NewerFile) {
+        substep "Frontend source changed since last build -- rebuilding..." "Yellow"
+    } elseif (Test-Path -LiteralPath $FrontendBuildMark) {
+        # An earlier build that never finished (killed, failed) left its mark: redo it.
+        substep "Previous frontend build did not finish -- rebuilding..." "Yellow"
+    } else {
         $NeedFrontendBuild = $false
         step "frontend" "up to date"
-    } else {
-        substep "Frontend source changed since last build -- rebuilding..." "Yellow"
     }
 }
 
@@ -5830,12 +5985,24 @@ if ($NeedNodeForSetup) {
         substep "installing isolated Node (system Node/npm left untouched)..."
         # Prefer the validated handed-off/venv Python: bare `python` may be a Store stub here.
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
-        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
-        $nodeExit = $LASTEXITCODE
+        # PS 5.1 turns redirected native stderr (even Python warnings) into errors; the exit code decides.
+        $prevEAPNode = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
+            $nodeExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEAPNode
+        }
         # A failed download gets one retry through the mirror; 3 is another install holding the lock and 4 an unwritable directory, which no mirror fixes.
         if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
-            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
-            $nodeExit = $LASTEXITCODE
+            try {
+                $ErrorActionPreference = "Continue"
+                $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
+                $nodeExit = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $prevEAPNode
+            }
         }
         if ($nodeExit -eq 3) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
@@ -5908,12 +6075,19 @@ if ($NeedNodeForSetup) {
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-StudioLine ""
     substep "building frontend..."
+    Wait-FrontendBuildOwner
+    # Cleared only once the build succeeds, so one that dies at any point is redone next run.
+    try { [System.IO.File]::WriteAllText($FrontendBuildMark, "$PID") } catch { }
 
     # Tailwind v4's oxide scanner respects parent .gitignore, and a venv's "*" hides the .tsx files.
     $HiddenGitignores = @()
     $WalkDir = (Get-Item $FrontendDir).Parent.FullName
     while ($WalkDir -and $WalkDir -ne [System.IO.Path]::GetPathRoot($WalkDir)) {
         $gi = Join-Path $WalkDir ".gitignore"
+        # A build stopped by Ctrl-C or a closed window never put its hidden file back.
+        if (-not (Test-Path -LiteralPath $gi) -and (Test-Path -LiteralPath "$gi._twbuild" -PathType Leaf)) {
+            Rename-Item -LiteralPath "$gi._twbuild" -NewName ".gitignore" -ErrorAction SilentlyContinue
+        }
         if (Test-Path $gi) {
             $content = Get-Content $gi -Raw -ErrorAction SilentlyContinue
             if ($content -and ($content.Trim() -match '^\*$')) {
@@ -5980,29 +6154,28 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
 
-    $buildExit = Invoke-SetupCommand { npm run build }
-    if ($buildExit -ne 0) {
+    if ((Test-FrontendBuildInBackground) -and
+        (Start-FrontendBuildBackground -WorkingDirectory $FrontendDir -HiddenGitignores $HiddenGitignores)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
-        foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-        Write-StudioLine "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
-        Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
-    }
-    Pop-Location
-    $ErrorActionPreference = $prevEAP_npm
-
-    # ── Restore hidden .gitignore files ──
-    foreach ($gi in $HiddenGitignores) {
-        Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
-    }
-
-    # ── Validate CSS output ──
-    $CssFiles = Get-ChildItem (Join-Path $DistDir "assets") -Filter "*.css" -ErrorAction SilentlyContinue
-    $MaxCssSize = ($CssFiles | Measure-Object -Property Length -Maximum).Maximum
-    if ($MaxCssSize -lt 100000) {
-        step "frontend" "built (warning: CSS may be truncated)" "Yellow"
     } else {
-        step "frontend" "built"
+        $buildExit = Invoke-SetupCommand { npm run build }
+        if ($buildExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_npm
+            foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
+            Write-StudioLine "[ERROR] npm run build failed (exit code $buildExit)" -ForegroundColor Red
+            Exit-SetupFailure "Frontend build failed (exit code $buildExit)"
+        }
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_npm
+
+        # ── Restore hidden .gitignore files ──
+        foreach ($gi in $HiddenGitignores) {
+            Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
+        }
+
+        Complete-FrontendBuildOutput
     }
 }
 
@@ -7556,14 +7729,14 @@ function Assert-VenvActivated {
 # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # Bumping the version means bumping all 3 hashes, and each Wheel/WheelSha256 as in install.ps1:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
-$UvPinnedVersion = "0.12.1"
+$UvPinnedVersion = "0.13.5"
 $UvPinnedAssets = @{
-    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A"
-                  Wheel = "packages/0d/a4/467c99c76fefa8b1259a1d382a5e49f73068f38a2d58db401504a783ed2c/uv-0.12.1-py3-none-win_amd64.whl"; WheelSha256 = "BD02F2DA212E6A983115DC64A6FC94E9256C2D60E056D6B669DE0A6025AAEC05" }
-    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568"
-                  Wheel = "packages/68/80/ec1acbf8e22dc4866f9070c30b064728cc0da73bedc30f2fbfdc0c5901a7/uv-0.12.1-py3-none-win_arm64.whl"; WheelSha256 = "EAD7AD064F291A5DF358C3FFA8FFAB347A32BD5A75A6A068CA22254C2539A829" }
-    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97"
-                  Wheel = "packages/fd/02/f73e4867c0748eaa3dea90cdfeb73d15bab0f04802c5c20bb37fc14918fe/uv-0.12.1-py3-none-win32.whl"; WheelSha256 = "173EE216F17D89FC39F65339D311A53584FC7DE4918D27C0F3C7EDAFABC6B54D" }
+    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "A38B8D1902B7CFBC76B423BA1BB456F623F42064CDC72628B6075B89AFD1019A"
+                  Wheel = "packages/32/ea/771744a784b16aa21d195cb5d5d5a2878d72fa00fc26f11ea3f9646994fe/uv-0.13.5-py3-none-win_amd64.whl"; WheelSha256 = "1FB29FC46BA12033E2EF95A95AC79D649E71BBB1358419BBBCBD19D86026EF2F" }
+    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "09F47EDF90726084A70F9426F6E3CA4F46E9BF7CBF23B1716EC64D60B055FAE3"
+                  Wheel = "packages/52/67/1f31243f75ece410f2db1afdfc9a9f9722fdee2385e4a347c3ca1dee6d13/uv-0.13.5-py3-none-win_arm64.whl"; WheelSha256 = "0548460D46C8667488B1F089E936F29F0EDFB1CC753F9152FFBD8BC84A46AA20" }
+    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "96228420D0A89A64757AFBA59932C1E58C4977E4122F2CC9F8615A51BA2D3084"
+                  Wheel = "packages/00/7c/e38b312abaae1bd59ff5886126f48e9e223fbb9a8edf9e236ede976f67cb/uv-0.13.5-py3-none-win32.whl"; WheelSha256 = "F4E55A6E2A1089FE74ED50FBDF2DF0F6F336EE148AD232B05932DB5DEEE8007E" }
 }
 
 # Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
@@ -7855,12 +8028,9 @@ function Find-InstalledUv {
 }
 
 # The floor a found uv has to clear: install.ps1's UvMinVersion, so reuse accepts exactly what
-# the Windows installer accepts. It is not install.sh's 0.9.3, and deliberately: that number is
-# about uv's managed-Python manifest topping out at a CPython that cannot import torch, and
-# nothing here asks uv for an interpreter -- the one uv command this file runs is
-# `uv pip install --python <the venv's python>`. install.ps1 keeps 3.13.8 out with its own
-# $PythonSkip instead.
-$SetupUvMinVersion = "0.8.16"
+# the Windows installer accepts. Below 0.13.4 uv's bundled roots still trust the compromised
+# emSign CAs (GHSA-hq85-5cpj-mr62).
+$SetupUvMinVersion = "0.13.4"
 
 function Test-SetupUvVersionAtLeast {
     # "uv 0.12.1 (abcdef0 2026-01-01)" -> $true when 0.12.1 is at least $Minimum. Unparseable is
@@ -7895,17 +8065,42 @@ function Get-InstalledUvVerdict {
 }
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
+# A uv on PATH below the floor is passed over like an installed one, and kept only when the
+# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
+# never downloads: it keeps the old uv, as before, behind the Windows trust store.
+function Get-SetupPathUvTooOld {
+    $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pathUv) { return $null }
+    # Timed: a uv that hangs on --version must not stall every setup before the pinned one installs.
+    $verdict = @(Get-SetupUvExecutableVerdict -Path $pathUv.Source)[-1]
+    if ($verdict -ne "ok") { return $pathUv.Source }
+    $line = $script:SetupUvVersionLine
+    if ("$line" -notmatch '^\s*uv\s' -or
+        -not (Test-SetupUvVersionAtLeast -VersionLine "$line" -Minimum $SetupUvMinVersion)) {
+        return $pathUv.Source
+    }
+    return $null
+}
+
 $UseUv = $false
 $installedUvDir = $null
-if (Get-Command uv -ErrorAction SilentlyContinue) {
+$pathUvOld = Get-SetupPathUvTooOld
+if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
     $UseUv = $true
 } elseif (($installedUvDir = Find-InstalledUv)) {
     # Read-only reuse, fine under a stage root. Appended: a python.exe beside uv must not
     # step in front of the staged interpreter.
     $env:PATH = "$env:PATH;$installedUvDir"
+    if ($pathUvOld) {
+        # Re-entering the venv restores the pre-venv PATH first, so it goes before the current uv
+        # is put in front of the old one, right behind the venv's Scripts.
+        Enter-StudioVenv
+        $env:PATH = (Join-Path $VenvDir "Scripts") + ";$installedUvDir;$env:PATH"
+    }
     substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true
 } elseif (-not $StageRoot) {
+    if (-not $script:InstalledUvTooOld) { $script:InstalledUvTooOld = $pathUvOld }
     if ($script:InstalledUvTooOld) {
         substep "the uv at $($script:InstalledUvTooOld) is older than $SetupUvMinVersion; installing the pinned release"
     } elseif ($script:InstalledUvProbeMiss) {
@@ -7945,6 +8140,25 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         }
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
+    # No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
+    if ($pathUvOld -and -not $UseUv -and (Get-Command uv -ErrorAction SilentlyContinue)) { $UseUv = $true }
+    # Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the
+    # Windows store decides instead. A download that failed while online lands here too.
+    if ($UseUv -and -not $script:UvPinnedInstalled) {
+        $activeUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($activeUv) {
+            $null = Get-SetupUvExecutableVerdict -Path $activeUv.Source
+            if (-not (Test-SetupUvVersionAtLeast -VersionLine "$($script:SetupUvVersionLine)" -Minimum $SetupUvMinVersion)) {
+                if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
+                if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
+            }
+        }
+    }
+} elseif ($pathUvOld) {
+    # Staged runs never download: the old uv on PATH still beats pip, behind the Windows store.
+    $UseUv = $true
+    if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
+    if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
 }
 # Refresh-Environment rebuilt PATH from the registry, and the re-activation meant to put the venv
 # back sits inside a catch that swallows everything -- including a dot-source that died after
@@ -8760,6 +8974,18 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
+# triton-windows: torch 2.13 -> 3.7, 2.14 -> 3.8, older keeps <3.7.
+function Get-TritonWindowsSpec {
+    param([string]$TorchVersion, [bool]$WinArm64 = $false)
+    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
+    if ($TorchVersion -match '^2\.(\d+)\.') {
+        switch ([int]$Matches[1]) {
+            13 { return "triton-windows>=3.7,<3.8" }
+            14 { return "triton-windows>=3.8,<3.9" }
+        }
+    }
+    return "triton-windows<3.7"
+}
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
@@ -8808,7 +9034,7 @@ if ($ROCmIndexUrl) {
         if (-not ($ROCmTorchSpec -match 'torch>=2\.11' -and $_keptMinor -lt 11)) {
             $ROCmTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
             $ROCmVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-            $ROCmAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+            $ROCmAudioSpec  = "torchaudio==2.$([Math]::Min($_keptMinor, 11)).*"
             $_rocmKeptActive = $true
         }
     }
@@ -8972,7 +9198,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         $cpuTorchSpec  = "torch==$($env:UNSLOTH_KEPT_TORCH)"
         $cpuVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-        $cpuAudioSpec  = "torchaudio==2.$($_keptMinor).*"
+        $cpuAudioSpec  = "torchaudio==2.$([Math]::Min($_keptMinor, 11)).*"
         $_cpuKeptActive = $true
     }
     while ($true) {
@@ -9026,12 +9252,28 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # Release preservation: keep the same release across re-runs (+cuXXX follows this index).
     # Not on win_arm64: the kept release is one NVIDIA's channel does not publish.
     $_cudaKeptActive = $false
-    $_cudaOrigTorch = $cudaTorchSpec; $_cudaOrigVision = $cudaVisionSpec; $_cudaOrigAudio = $cudaAudioSpec
-    if (-not $WinArm64Venv -and $env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
-        $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
-        $cudaTorchSpec = "torch==$($env:UNSLOTH_KEPT_TORCH)"
+    $_cudaKeptRelease = $env:UNSLOTH_KEPT_TORCH
+    $_cudaKeptFromResident = $false
+    # No installer handoff (`studio update`, the startup repair, a re-run of setup): keep the resident
+    # release like install.sh, forced or not. Unpinned, a missing torchvision alone resolves the
+    # newest one and drags torch up with it. UPGRADE=1 asks for newer.
+    if (-not $WinArm64Venv -and -not $_cudaKeptRelease -and $env:UNSLOTH_TORCH_UPGRADE -ne "1") {
+        $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
+        # Only a release this index publishes, so a CUDA family change never pins an unservable one.
+        # download.pytorch.org win_amd64: cu126 2.6-2.14, cu128 2.7-2.11, cu129 2.8-2.9, cu130 2.9-2.14.
+        $_keptRange = @{ "cu126" = @(6, 14); "cu128" = @(7, 11); "cu129" = @(8, 9); "cu130" = @(9, 14) }[[string]$CuTag]
+        if ($_keptRange -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and
+                [int]$Matches[2] -ge $_keptRange[0] -and [int]$Matches[2] -le $_keptRange[1]) {
+            $_cudaKeptRelease = $Matches[1]
+            $_cudaKeptFromResident = $true
+        }
+    }
+    if (-not $WinArm64Venv -and $_cudaKeptRelease -match '^\d+\.\d+(\.\d+)?$') {
+        $_keptMinor = [int](($_cudaKeptRelease -split '\.')[1])
+        $cudaTorchSpec = "torch==$_cudaKeptRelease"
         $cudaVisionSpec = "torchvision==0.$($_keptMinor + 15).*"
-        $cudaAudioSpec = "torchaudio==2.$($_keptMinor).*"
+        # torchaudio 2.11 is the last release (stable ABI), so newer torch minors pair with it.
+        $cudaAudioSpec = "torchaudio==2.$([Math]::Min($_keptMinor, 11)).*"
         $_cudaKeptActive = $true
     }
     while ($true) {
@@ -9089,10 +9331,16 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
             foreach ($_woaCutoffName in @($_woaCutoffSaved.Keys)) { Set-Item "Env:$_woaCutoffName" $_woaCutoffSaved[$_woaCutoffName] }
         }
         if ($torchInstallExit -eq 0 -or -not $_cudaKeptActive) { break }
-        substep "[WARN] torch==$($env:UNSLOTH_KEPT_TORCH) not installable from this CUDA index -- using the supported release" "Yellow"
-        $cudaTorchSpec = $_cudaOrigTorch; $cudaVisionSpec = $_cudaOrigVision; $cudaAudioSpec = $_cudaOrigAudio
-        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-        $_cudaKeptActive = $false
+        # Nothing forced and the pin was only ours: retry exactly what an unpinned run would have done.
+        if ($_cudaKeptFromResident -and $cudaForce.Count -eq 0) {
+            $cudaTorchSpec = "torch"; $cudaVisionSpec = "torchvision"; $cudaAudioSpec = "torchaudio"
+            $_cudaKeptActive = $false
+            continue
+        }
+        # Otherwise stop, like install_python_stack.py: a second resolve under another range would
+        # download a different torch (usually after a transient failure) and move the release unasked.
+        substep "[WARN] torch==$_cudaKeptRelease could not be reinstalled; re-run, or set UNSLOTH_TORCH_UPGRADE=1 to move to the supported release" "Yellow"
+        break
     }
     if ($torchInstallExit -ne 0) {
         Write-StudioLine "[FAILED] PyTorch CUDA install failed (exit code $torchInstallExit)" -ForegroundColor Red
@@ -9121,7 +9369,13 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         }
     }
 
-    # Triton for Windows enables torch.compile (without it training can hang).
+    # Triton for Windows enables torch.compile (without it training can hang). Paired with the
+    # installed torch, read from metadata.
+    $_tritonTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
+    if ($_tritonTorchProbe.Ok) {
+        $_tritonTorchVer = @($_tritonTorchProbe.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($_tritonTorchVer.Count -gt 0) { $_tritonSpec = Get-TritonWindowsSpec -TorchVersion $_tritonTorchVer[-1] -WinArm64 ([bool]$WinArm64Venv) }
+    }
     substep "installing Triton for Windows..."
     if ($script:UnslothVerbose) {
         Fast-Install $_tritonSpec
@@ -9368,6 +9622,7 @@ if ($stackExit -ne 0) {
 # Phases a release adds below would be skipped by the update installing it. A module scope keeps this
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
+    Complete-FrontendBuildBackground
     step "setup" "the update replaced this setup script; finishing with the new version"
     $_setupRerunArgs = $script:SetupArgs
     Restore-SetupStartEnvironment
@@ -9398,13 +9653,16 @@ if (Test-SetupScriptReplaced) {
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
 }
+Complete-FrontendBuildBackground -IfDone
 
 # Windows MXC Preview is an optional, pinned prebuilt like the other native
 # runtimes. Keep this outside the Python dependency fast path: a missing or
 # corrupt runtime must be installed or repaired even when the venv is current.
 if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
-    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    # Must match mxc_runtime._installed_package_root(): ARM64 PCs get Microsoft's ARM64 build.
+    $_mxcArchDir = if ((Get-UvHostArch) -eq "arm64") { "windows-arm64" } else { "windows-x86_64" }
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\$_mxcArchDir"
     if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
         substep "installing Windows MXC Preview runtime..."
         # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
@@ -9433,7 +9691,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         } elseif ($_mxcExit -eq 3) {
             step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
         } else {
-            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+            step "MXC Preview" "prebuilt unavailable; Unsloth Studio will use software safeguards" "Yellow"
         }
         if ($script:UnslothVerbose -and $_mxcOutput) {
             Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })
@@ -10030,6 +10288,8 @@ if ($LocalLlamaCppLinked) {
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 # A pre-CUDA 11 library still proves physical NVIDIA presence, even when AMD/Intel selects torch.
                 if ($script:NvidiaDriverLibraryOnly) { $expectedKinds += $_nvidiaKinds }
+                # ARM64 Vulkan (a Vulkan GPU found, or UNSLOTH_LLAMA_CPP_BACKEND=vulkan) can land on any ARM64 host.
+                if (Test-WinArm64Venv) { $expectedKinds += "windows-arm64-vulkan" }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -10065,18 +10325,9 @@ if ($LocalLlamaCppLinked) {
         # marker, so forwarding a second copy from here could only ever disagree
         # with it. The override does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $windowsArm64 = (
-            $env:OS -eq "Windows_NT" -and
-            (
-                "$($env:PROCESSOR_ARCHITECTURE)".ToUpperInvariant() -eq "ARM64" -or
-                "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
-            )
-        )
         if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan") {
             if ($IsMacOS) {
                 Write-StudioLine "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
-            } elseif ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
             } else {
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
@@ -10344,6 +10595,9 @@ if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
         }
     } elseif ($audioCppExit -eq 3) {
         step "audio.cpp" "install busy; keeping existing runtime" "Yellow"
+    } elseif ($audioCppOutput -match "cannot be read by this account") {
+        # An elevated run left it owned by Administrators (#14052); only an elevated shell can remove it.
+        step "audio.cpp" "$AudioCppDir is unreadable (left by an elevated run); in an elevated PowerShell run Remove-Item -Recurse -Force `"$AudioCppDir`", then unsloth studio update" "Yellow"
     } else {
         step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "Yellow"
     }
@@ -10352,6 +10606,8 @@ if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
 if ($StageRoot -and $NeedLlamaSourceBuild) {
     Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
+# A CMake build next to `tsc -b && vite build` can exhaust a host the overlap gate admitted.
+if ($NeedLlamaSourceBuild) { Complete-FrontendBuildBackground }
 
 # Asked before Phase 3.5: OpenSSL is a system install too.
 $script:LlamaBuildToolsDeclined = $NeedLlamaSourceBuild -and $script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and
@@ -10387,7 +10643,10 @@ if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
-            winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements
+            # Optional: a winget that cannot launch (#13662) must not abort setup under EAP Stop.
+            try {
+                Invoke-SetupCommand { winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+            } catch { }
             # Re-check after install
             foreach ($root in $OpenSslRoots) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
@@ -11058,6 +11317,8 @@ if (-not $llamaCppIsLink -and (
     )) {
     Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
 }
+
+Complete-FrontendBuildBackground
 
 # ─────────────────────────────────────────────
 # Footer

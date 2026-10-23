@@ -274,7 +274,6 @@ def test_moe_fp8_loads_nf4_experts_bit_identical(moe_pair):
         for name, p in model.named_parameters()
         if ".experts." in name and type(p).__name__ == "Params4bit"
     ]
-    # gate_up_proj and down_proj stacks on both layers go through Unsloth's bnb expert path.
     assert len(experts) == 4, experts
     assert _count_fp8(model) == 0
     ours = _fingerprint(model)
@@ -391,8 +390,7 @@ def test_moe_merged_16bit_save_equals_dequantized_checkpoint(moe_pair, tmp_path)
     model = FastModel.get_peft_model(
         model, r = 8, target_modules = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
-    # lora_B starts at zero, so the merge must give back the dequantized fp8 weights exactly,
-    # read from the fp8 shards on disk rather than the NF4 copy in memory.
+    # lora_B starts at zero, so the merge must equal the fp8 weights read from disk, not the NF4 copy.
     model.save_pretrained_merged(str(tmp_path / "merged"), tokenizer, save_method = "merged_16bit")
     _free(model)
     merged = {}
@@ -458,7 +456,6 @@ def test_arming_needs_an_explicit_request(monkeypatch):
     config = _fp8_config()
     assert from_pretrained("x", load_in_4bit = True)[:2] == (True, False)
     assert inside == {"armed": True, "stripped": True}
-    # The outermost from_pretrained hands the caller's config back as it was.
     assert config.quantization_config["quant_method"] == "fp8"
     assert not fp8_to_nf4.fp8_to_nf4_armed(config)
 
@@ -627,7 +624,7 @@ def test_planner_sizes_an_armed_load_expert_merge_in_the_load_dtype():
         finally:
             fp8_to_nf4._ARMED_CONFIGS.reset(token)
     assert measured[False][0] and not measured[True][0]
-    assert measured[True][1] == measured[False][1]  # weights still sized as 4bit
+    assert measured[True][1] == measured[False][1]
     assert measured[True][2] == 4 * measured[False][2]  # bf16 stack, not packed nibbles
 
 

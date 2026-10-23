@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { FC, ReactNode } from "react";
+import { type FC, type ReactNode, useEffect, useState } from "react";
 
 type ResponseDetailsMetadata = {
   modelId?: string;
@@ -94,7 +94,7 @@ function formatDate(value: Date | number | string | undefined): string | null {
 const TOOL_CATEGORY_LABELS: Record<string, string> = {
   search: "Search",
   fetch: "Fetch",
-  code: "Code",
+  code: "Tools",
   images: "Images",
   mcp: "MCP",
   docs: "Docs",
@@ -109,6 +109,8 @@ const TOOL_CALL_LABELS: Record<string, string> = {
   terminal: "Terminal",
   edit_file: "Edit",
   image_generation: "Images",
+  generate_image: "Images",
+  generate_video: "Video",
   search_knowledge_base: "Docs",
   render_html: "Canvas",
 };
@@ -129,7 +131,13 @@ function toolCategoryFromCall(toolName: string): string | null {
   ) {
     return "code";
   }
-  if (normalized === "image_generation") return "images";
+  if (
+    normalized === "image_generation" ||
+    normalized === "generate_image" ||
+    normalized === "generate_video"
+  ) {
+    return "images";
+  }
   if (normalized === "search_knowledge_base") return "docs";
   if (normalized === "render_html") return "artifacts";
   if (normalized.startsWith("mcp__")) return "mcp";
@@ -337,6 +345,26 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
 };
 
 export const MessageResponseDetailsSheet: FC<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}> = ({ open, onOpenChange }) => {
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  useEffect(() => {
+    if (open) return;
+    const timer = window.setTimeout(() => setMounted(false), 500);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+  if (!mounted && !open) return null;
+  return (
+    <MessageResponseDetailsSheetContent
+      open={open}
+      onOpenChange={onOpenChange}
+    />
+  );
+};
+
+const MessageResponseDetailsSheetContent: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }> = ({ open, onOpenChange }) => {

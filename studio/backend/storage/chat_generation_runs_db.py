@@ -603,6 +603,14 @@ def create_run(
             (assistant_message_id,),
         ).fetchone()
         if assistant is None:
+            # An empty placeholder adds no attachment entries. Preserve an already
+            # clean inventory without clearing older dirtiness or advancing its version.
+            inventory_was_clean = (
+                conn.execute(
+                    "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
+                ).fetchone()
+                is not None
+            )
             conn.execute(
                 """INSERT INTO chat_messages
                    (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
@@ -615,6 +623,8 @@ def create_run(
                     created,
                 ),
             )
+            if inventory_was_clean:
+                conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
         else:
             assistant_metadata = _loads(assistant["metadata_json"], {})
             existing_run_id = (

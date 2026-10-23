@@ -9,9 +9,13 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
+import { CpuIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { isEngineReady } from "../api/engines";
 import { useManagedEngineOfferStore } from "../hooks/managed-engine-offer";
@@ -23,6 +27,7 @@ const QUANTIZATION_NAMES: Record<string, string> = {
   "compressed-tensors": "compressed-tensors",
   awq: "AWQ",
   gptq: "GPTQ",
+  "auto-round": "AutoRound",
 };
 
 /** Root-mounted: a Default-engine load only vLLM / SGLang can run waits here for an engine. */
@@ -46,6 +51,9 @@ export function ManagedEngineOfferDialog() {
   if (!open && shown.length > 0) setShown([]);
   else if (open && ready.length === 0 && unshown.length > 0)
     setShown([...shown, ...unshown]);
+  const visible = offered.filter(
+    (engine) => ready.length === 0 || shown.includes(engine.engine),
+  );
   const names = (offer?.engines ?? []).map((name) => ENGINE_NAMES[name]);
   const displayName = modelName?.split("/").pop() || "This model";
   const quantization =
@@ -58,9 +66,16 @@ export function ManagedEngineOfferDialog() {
         if (!next) resolve(null);
       }}
     >
-      <AlertDialogContent className="max-w-lg">
+      <AlertDialogContent size="sm" className="data-[size=sm]:max-w-md">
         <AlertDialogHeader className="min-w-0">
-          <AlertDialogTitle>
+          <AlertDialogMedia className="size-12">
+            <HugeiconsIcon
+              icon={CpuIcon}
+              strokeWidth={1.75}
+              className="size-5 text-muted-foreground"
+            />
+          </AlertDialogMedia>
+          <AlertDialogTitle className="min-w-0 break-words">
             {displayName} needs {names.join(" or ")}
           </AlertDialogTitle>
           <AlertDialogDescription>
@@ -70,38 +85,43 @@ export function ManagedEngineOfferDialog() {
         {offered.length === 0 ? (
           error ? (
             // The check keeps retrying; say why it is stuck rather than spinning silently.
-            <p role="alert" className="text-ui-12 text-destructive">
+            <p role="alert" className="text-center text-ui-12 text-destructive">
               Could not check installed engines: {error}
             </p>
           ) : (
-            <p className="flex items-center gap-2 text-ui-12 text-muted-foreground">
+            <p className="flex items-center justify-center gap-2 text-ui-12 text-muted-foreground">
               <Spinner className="size-3.5" />
               Checking installed engines...
             </p>
           )
-        ) : (
-          offered
-            .filter(
-              (engine) => ready.length === 0 || shown.includes(engine.engine),
-            )
-            .map((engine) => (
+        ) : visible.length === 0 ? null : (
+          <div className="space-y-3">
+            {visible.map((engine) => (
               <section
                 key={engine.engine}
                 aria-label={ENGINE_NAMES[engine.engine]}
-                className="space-y-2 rounded-lg border p-3"
+                // The title already names a lone engine; a choice of two needs each labelled.
+                className={cn(
+                  "space-y-2",
+                  visible.length > 1 && "rounded-2xl border p-3",
+                )}
               >
-                <p className="text-ui-13 font-medium">
-                  {ENGINE_NAMES[engine.engine]}
-                </p>
+                {visible.length > 1 && (
+                  <p className="text-center text-ui-13 font-medium">
+                    {ENGINE_NAMES[engine.engine]}
+                  </p>
+                )}
                 <EngineInstall
                   engine={engine}
+                  centered={true}
                   onUse={() => resolve(engine.engine)}
                 />
               </section>
-            ))
+            ))}
+          </div>
         )}
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+        <AlertDialogFooter className="group-data-[size=sm]/alert-dialog-content:flex sm:justify-center">
+          <AlertDialogCancel variant="ghost">Cancel</AlertDialogCancel>
           {ready.map((engine) => (
             <AlertDialogAction
               key={engine.engine}

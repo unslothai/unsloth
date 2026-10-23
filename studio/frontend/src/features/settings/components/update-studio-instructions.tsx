@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useT } from "@/i18n";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -12,7 +13,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactElement } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 const STUDIO_INSTALL_UNIX_CMD =
   "curl -fsSL https://unsloth.ai/install.sh | sh";
@@ -27,6 +28,9 @@ const DOCS_UPDATING_URL =
 const DOCS_MAC_URL = "https://unsloth.ai/docs/get-started/install/mac";
 const DOCS_WINDOWS_URL =
   "https://unsloth.ai/docs/get-started/install/windows-installation";
+const DOCS_LINUX_URL = "https://unsloth.ai/docs/get-started/install/linux";
+const DOCS_DOCKER_URL = "https://unsloth.ai/docs/get-started/install/docker";
+const DOCS_AMD_URL = "https://unsloth.ai/docs/get-started/install/amd";
 
 export type UpdateShell = "windows" | "unix";
 export type UpdateInstallSource =
@@ -168,6 +172,18 @@ function UpdateDocsLinks(): ReactElement {
         href={DOCS_WINDOWS_URL}
         label={t("settings.about.update.docsWindows")}
       />
+      <DocsLink
+        href={DOCS_LINUX_URL}
+        label={t("settings.about.update.docsLinux")}
+      />
+      <DocsLink
+        href={DOCS_DOCKER_URL}
+        label={t("settings.about.update.docsDocker")}
+      />
+      <DocsLink
+        href={DOCS_AMD_URL}
+        label={t("settings.about.update.docsAmd")}
+      />
     </p>
   );
 }
@@ -175,10 +191,12 @@ function UpdateDocsLinks(): ReactElement {
 function ShellToggleButton({
   active,
   label,
+  pillGroup,
   onClick,
 }: {
   active: boolean;
   label: string;
+  pillGroup: string;
   onClick: () => void;
 }): ReactElement {
   return (
@@ -187,12 +205,13 @@ function ShellToggleButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-12 font-medium transition-colors",
+        "relative inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-12 font-medium transition-colors",
         active
-          ? "hub-tab-toggle-pill text-foreground"
+          ? "text-foreground"
           : "cursor-pointer text-muted-foreground hover:text-foreground",
       )}
     >
+      {active && <SegmentedPill group={pillGroup} />}
       {label}
     </button>
   );
@@ -211,6 +230,7 @@ export function UpdateStudioInstructions({
   showTitle?: boolean;
 }): ReactElement {
   const t = useT();
+  const pillId = useId();
   const [shellOverride, setShellOverride] = useState<UpdateShell | null>(null);
   const shell = shellOverride ?? defaultShell;
   const prefersReducedMotion = useReducedMotion();
@@ -268,11 +288,13 @@ export function UpdateStudioInstructions({
           <ShellToggleButton
             active={!windows}
             label="MacOS / Linux"
+            pillGroup={`${pillId}-shell`}
             onClick={() => setShellOverride("unix")}
           />
           <ShellToggleButton
             active={windows}
             label="Windows"
+            pillGroup={`${pillId}-shell`}
             onClick={() => setShellOverride("windows")}
           />
         </div>

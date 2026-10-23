@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards that every test that starts PowerShell goes through the shared runner.
-
-tests/_shared/unsloth_pwsh_runner.py exists because a `pwsh -NonInteractive` startup
-reads and rewrites $XDG_CACHE_HOME/powershell/StartupProfileData-NonInteractive, and
-under xdist every worker shares one $HOME, so the whole job races on one ~83 KB file.
-A startup that deserialises a half-written one dies before it reaches our script, as
-`Stack overflow.` + SIGABRT or as `System.IO.FileLoadException: The given assembly name
-was invalid`. Measured at 7/4000 startups on a shared cache against 0/4000 with one
-cache directory per worker; the runner's own header records both arms.
-
-That protection is opt-in: it lives in `run_pwsh`, so a test file that calls
-`subprocess.run(["pwsh", ...])` directly silently opts out and rejoins the race. This
-happened to tests/studio/install/test_installed_release_backend_line.py, whose 498
-parametrised `test_ps1_printer` cases fail ~9 at a time at `-n 16` with exactly that
-FileLoadException. Grepping for "pwsh" does not catch it -- the string sits in an argv
-list, and every file that DOES use the runner mentions pwsh in prose too -- so this
-walks the AST of each test file and reports the call nodes themselves, with line
-numbers.
-
-A direct call is not always wrong. A test that hands its child a private HOME has
-already left the race by another route, which is why tests/test_windows_amd_gpu_scan_
-fallback.py was the one pwsh-heavy file with zero failures in backend CI run
-32341628757. Those files are listed in _ALLOWED_DIRECT_PWSH_CALLS with the reason,
-in the style of _EXPECTED_CI_SKIPS in tests/studio/test_ci_shell_suite_coverage.py:
-an entry is a claim someone made and can be checked, a silent exemption is not.
-"""
+"""Direct pwsh spawns must go through the shared runner; xdist workers race on one startup cache."""
 
 from __future__ import annotations
 
@@ -39,35 +14,19 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS_ROOT = REPO_ROOT / "tests"
 
-# Both test trees, because the race is a property of the interpreter's startup cache and
-# not of which directory the test lives in. studio/backend/tests runs under xdist in the
-# same job and reaches tests/_shared through its own conftest, so a direct spawn there is
-# the identical defect; it was invisible while this guard scanned tests/ alone, and
-# studio/backend/tests/test_setup_llama_cpp_backend.py duly died with SIGABRT in the
-# Backend-CI "rest" shard while every allowlisted file in tests/ stayed green.
+# Both test trees: studio/backend/tests also runs under xdist and reaches tests/_shared.
 _SCAN_ROOTS = (TESTS_ROOT, REPO_ROOT / "studio" / "backend" / "tests")
 
-# The runner itself calls subprocess.run on a pwsh argv -- that is the whole point of it.
 _RUNNER = TESTS_ROOT / "_shared" / "unsloth_pwsh_runner.py"
 
-# subprocess entry points that start a process. `subprocess.run(...)`, and the
-# from-import spellings, are both resolved; nothing else in subprocess spawns.
 _SPAWNERS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 
-# Interpreter names, lowercased and stripped of a .exe suffix, that mean PowerShell.
 _PWSH_EXECUTABLES = frozenset({"pwsh", "powershell", "powershell_ise"})
 
-# Switches only PowerShell takes. An argv that passes one is a PowerShell launch whatever
-# its argv0 is called: tests/python/test_windows_setup_download_progress.py hands the
-# interpreter to a helper as a parameter (`[shell, "-NoLogo", "-NonInteractive", ...]`),
-# which no module-level binding resolves, and it lost three startups to SIGSEGV in one
-# Repo tests (CPU, studio) run.
+# Switches only PowerShell takes: an argv carrying one is a PowerShell launch whatever argv0 is.
 _PWSH_ONLY_SWITCHES = frozenset({"-noninteractive", "-executionpolicy", "-noprofile"})
 
-# Files allowed to spawn PowerShell without the shared runner, each with the reason the
-# startup-cache race does not reach them. Keyed on the path relative to the REPO ROOT,
-# because two test trees are scanned and a bare filename would not say which. Keep the
-# reason specific enough to re-check.
+# Files allowed to spawn PowerShell directly, keyed by repo-root path since two trees are scanned.
 _ALLOWED_DIRECT_PWSH_CALLS = {
     "tests/test_windows_amd_gpu_scan_fallback.py": (
         "hands the child a hermetic env whose HOME is the per-test tmp_path, so "
@@ -79,13 +38,7 @@ _ALLOWED_DIRECT_PWSH_CALLS = {
 
 
 def _scanned_files() -> list[Path]:
-    """Every Python file under each scanned tree except the runner.
-
-    All of each tree, not just test_*.py: a conftest or a tests/_shared helper that spawns
-    pwsh puts every file that imports it back in the race, and would be invisible to a
-    scan keyed on the filename. Each root is asserted non-empty separately, so a tree that
-    moves takes this guard red rather than quietly dropping out of it.
-    """
+    """Every .py file, not just test_*.py: a conftest or helper that spawns pwsh reopens the race."""
     files: list[Path] = []
     for root in _SCAN_ROOTS:
         found = sorted(p for p in root.rglob("*.py") if p != _RUNNER)
@@ -103,19 +56,7 @@ def _is_pwsh_executable(text: str) -> bool:
 
 
 class _PwshCallFinder(ast.NodeVisitor):
-    """Collects (lineno, rendered_call) for subprocess spawns of PowerShell.
-
-    Two ways a call site names the interpreter, both seen in this repo:
-
-      * a literal, `subprocess.run(["pwsh", "-NoLogo", ...])`;
-      * a module constant, `subprocess.run([PWSH, "-Command", ...])` or a parametrised
-        `[shell, ...]`, where the name is bound elsewhere to shutil.which("pwsh").
-
-    The second is resolved by collecting, per module, every name assigned from a
-    shutil.which()/`os.environ`-style expression that mentions a PowerShell binary, so
-    a rename of the constant does not silently drop the file off this guard. A name is
-    only treated as PowerShell if some assignment in the file ties it to one.
-    """
+    """Resolves PowerShell names bound by assignment, so a renamed constant cannot hide a spawn."""
 
     def __init__(self, pwsh_names: set[str], private_env_names: set[str]) -> None:
         self.pwsh_names = pwsh_names
@@ -124,7 +65,6 @@ class _PwshCallFinder(ast.NodeVisitor):
         self._subprocess_aliases = {"subprocess"}
         self._bare_spawners: set[str] = set()
 
-    # -- import bookkeeping ---------------------------------------------------------
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if alias.name == "subprocess":
@@ -138,7 +78,6 @@ class _PwshCallFinder(ast.NodeVisitor):
                     self._bare_spawners.add(alias.asname or alias.name)
         self.generic_visit(node)
 
-    # -- the check ------------------------------------------------------------------
     def _is_spawner(self, func: ast.expr) -> bool:
         if isinstance(func, ast.Attribute):
             return (
@@ -158,15 +97,8 @@ class _PwshCallFinder(ast.NodeVisitor):
         return False
 
     def _has_private_cache(self, node: ast.Call) -> bool:
-        """True if this spawn's `env` comes from the runner's `pwsh_env`.
-
-        The second supported way through the module, for the call sites `run_pwsh` cannot
-        own -- a Popen holder, a deliberate control, a caller with its own crash policy.
-        Matched on the AST rather than trusted from a comment, so the exemption is a fact
-        about the call and disappears the moment the argument does. Accepted inline
-        (`env = pwsh_env(env)`) or through a name the file bound to it earlier, which is
-        what a call site inside a retry loop naturally writes.
-        """
+        """True if the spawn's env comes from pwsh_env; checked on the AST, so it vanishes with the
+        argument."""
         for kw in node.keywords:
             if kw.arg != "env":
                 continue
@@ -190,13 +122,7 @@ class _PwshCallFinder(ast.NodeVisitor):
 
 
 def _pwsh_bound_names(tree: ast.AST) -> set[str]:
-    """Module-level names whose assigned value names a PowerShell binary.
-
-    Deliberately generous on the right-hand side -- `shutil.which("pwsh")`,
-    `shutil.which("pwsh") or shutil.which("powershell")`, a bare `"pwsh"`, a list of
-    them -- and deliberately narrow on the left: only plain `Name` targets, so nothing
-    is inferred about attributes or subscripts.
-    """
+    """Matches any right-hand side naming a PowerShell binary, but only plain Name targets on the left."""
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
@@ -204,7 +130,6 @@ def _pwsh_bound_names(tree: ast.AST) -> set[str]:
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             targets, value = [node.target], node.value
         elif isinstance(node, (ast.For, ast.comprehension)):
-            # `for shell in POWERSHELLS:` / `[... for shell in (PWSH, PS5)]`
             targets, value = [node.target], node.iter
         else:
             continue
@@ -214,10 +139,7 @@ def _pwsh_bound_names(tree: ast.AST) -> set[str]:
             and _is_pwsh_executable(child.value)
             for child in ast.walk(value)
         )
-        # Aliases of an already-known name, and only in the forms that really are aliases:
-        # `PWSH_OR_NONE = PWSH`, `for shell in POWERSHELLS:`. A Call on the right-hand side
-        # is excluded on purpose, or `proc = subprocess.run([PWSH, ...])` would make `proc`
-        # itself read as an interpreter.
+        # A Call on the right is excluded, or `proc = subprocess.run([PWSH, ...])` reads as a shell.
         aliases_a_known_name = isinstance(
             value, (ast.Name, ast.Tuple, ast.List, ast.Set, ast.BoolOp, ast.IfExp)
         ) and any(isinstance(child, ast.Name) and child.id in names for child in ast.walk(value))
@@ -292,14 +214,8 @@ class TestEveryPwshCallUsesTheSharedRunner:
         )
 
     def test_the_scan_reaches_the_backend_test_tree(self):
-        """The scope this guard silently lacked, pinned so it cannot be lost again.
-
-        studio/backend/tests/test_setup_llama_cpp_backend.py spawned pwsh directly and
-        this guard never saw it, because the scan was rooted at tests/ alone; the bill
-        came in as SIGABRT in the Backend-CI "rest" shard instead. Checking that the root
-        is listed is not enough on its own -- a root contributing no files would pass
-        that -- so this checks a file from under it is really in the scanned set.
-        """
+        """Checks that a real backend test file is scanned; listing the root alone can pass with no
+        files."""
         backend = REPO_ROOT / "studio" / "backend" / "tests"
         assert backend in _SCAN_ROOTS, "the backend test tree dropped off the scan roots"
         scanned = _scanned_files()
@@ -334,7 +250,6 @@ class TestEveryPwshCallUsesTheSharedRunner:
             'from subprocess import run\nrun(["powershell", "-NoProfile"])\n': 2,
             'import subprocess as sp\nPWSH = shutil.which("pwsh")\nsp.Popen([PWSH, "-c", "x"])\n': 3,
             'import subprocess\nsubprocess.check_output(args = ["pwsh", "-c", "x"])\n': 2,
-            # An env is given, but not the runner's one.
             'import subprocess\nsubprocess.run(["pwsh", "-c", "x"], env = os.environ.copy())\n': 2,
             # The interpreter arrives as a parameter, named only by the switches it is given.
             'import subprocess\ndef start(shell):\n    subprocess.Popen([shell, "-NoLogo", "-NonInteractive", "-File", "x.ps1"])\n': 3,
@@ -355,7 +270,6 @@ class TestEveryPwshCallUsesTheSharedRunner:
             'import subprocess\ndef start(shell):\n    subprocess.Popen([shell, "-NoLogo", "-NonInteractive"], env = pwsh_env(env))\n',
             # "pwsh" as prose, not as an argv0.
             'import subprocess\nsubprocess.run(["bash", "-c", "which pwsh"])\n',
-            # The pwsh_env route, inline and through a hoisted name.
             'import subprocess\nsubprocess.run(["pwsh", "-c", "x"], env = pwsh_env())\n',
             'import subprocess\nsubprocess.Popen(["pwsh", "-c", "x"], env = pwsh_env(env))\n',
             'import subprocess\ne = pwsh_env()\nsubprocess.run(["pwsh", "-c", "x"], env = e)\n',

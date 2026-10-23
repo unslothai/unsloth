@@ -14,6 +14,8 @@ on:
       - 'studio/backend/requirements/studio.txt'
       - 'studio/backend/tests/test_vae_tile_geometry.py'
       - 'studio/backend/tests/fixtures/vae_tile_configs.json'
+      - 'studio/backend/tests/test_diffusion_autoopt_parity.py'
+      - 'studio/backend/tests/fixtures/diffusion_autoopt_parity.json'
       - '.github/workflows/studio-vae-seam-guard.yml'
   push:
     branches: [main]
@@ -23,6 +25,8 @@ on:
       - 'studio/backend/requirements/studio.txt'
       - 'studio/backend/tests/test_vae_tile_geometry.py'
       - 'studio/backend/tests/fixtures/vae_tile_configs.json'
+      - 'studio/backend/tests/test_diffusion_autoopt_parity.py'
+      - 'studio/backend/tests/fixtures/diffusion_autoopt_parity.json'
       - '.github/workflows/studio-vae-seam-guard.yml'
   workflow_dispatch:
 
@@ -30,8 +34,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a main run; superseded PR pushes are cancelled.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Superseded PR pushes are cancelled; on main a running run finishes and a burst runs the tip (see studio-backend-ci.yml).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -63,3 +67,8 @@ jobs:
       - name: Seam guard
         working-directory: studio/backend
         run: python -m pytest tests/test_vae_tile_geometry.py -q -rxXs --tb=short --timeout=600
+
+      # Backend CI has no diffusers, so the auto-optimizer parity fixture is checked here.
+      - name: Diffusion auto-optimizer parity
+        working-directory: studio/backend
+        run: python -m pytest tests/test_diffusion_autoopt_parity.py -q -rxXs --tb=short --timeout=600

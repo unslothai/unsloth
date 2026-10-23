@@ -8,7 +8,9 @@ import contextlib
 
 import torch
 import torch.nn.functional as F
+from transformers.cache_utils import DynamicCache
 
+from .diffusion_loss import chunked_cross_entropy, compile_loss
 from .diffusion_profiles import DiffusionProfile, register_diffusion_profile, unwrap_diffusion_model
 
 __all__ = ["DiffusionGemmaProfile"]
@@ -54,6 +56,31 @@ def _eos_token_id(model):
             "Unsloth: DiffusionGemma training needs an eos_token_id to fill the canvas."
         )
     return int(eos)
+
+
+class _DiffusionGemmaPrefixCache(DynamicCache):
+    """Keep the sampled prefix for decoding while the encoder processes the full AR sequence."""
+
+    def __init__(
+        self,
+        ddp_cache_data = None,
+        *,
+        config = None,
+        prefix_indices = None,
+    ):
+        super().__init__(ddp_cache_data = ddp_cache_data, config = config)
+        self.prefix_indices = prefix_indices
+
+    def update(self, key_states, value_states, layer_idx, *args, **kwargs):
+        # The encoder attends to the full returned K/V; only the stored decoder context is regathered.
+        keys, values = super().update(key_states, value_states, layer_idx, *args, **kwargs)
+        layer = self.layers[layer_idx]
+        cache_length = layer.keys.shape[-2]
+        indices = self.prefix_indices[:, self.prefix_indices.shape[1] - cache_length :]
+        indices = indices.to(keys.device)[:, None, :, None]
+        layer.keys = keys.gather(2, indices.expand(-1, keys.shape[1], -1, keys.shape[-1]))
+        layer.values = values.gather(2, indices.expand(-1, values.shape[1], -1, values.shape[-1]))
+        return keys, values
 
 
 class DiffusionGemmaProfile(DiffusionProfile):
@@ -129,7 +156,10 @@ class DiffusionGemmaProfile(DiffusionProfile):
         random_tokens = torch.randint(vocab_size, (batch_size, block_size), device = device)
         canvas_ids = torch.where(corrupt, random_tokens, canvas_target)
 
-        cache_mask = positions < encoder_len[:, None]
+        # Right-align each prefix so sliding layers keep the window ending at the sampled block, as inference does.
+        prefix_positions = positions + encoder_len[:, None] - seq_len
+        prefix_indices = prefix_positions.clamp(min = 0)
+        cache_mask = (prefix_positions >= 0) & attention_mask.bool().gather(1, prefix_indices)
         canvas_mask = torch.ones(batch_size, block_size, dtype = torch.bool, device = device)
         model_kwargs = {
             "input_ids": input_ids,
@@ -141,9 +171,19 @@ class DiffusionGemmaProfile(DiffusionProfile):
         # Two-pass self-conditioning: a no-grad first pass supplies the logits, kept per example with prob p.
         if sc_p > 0:
             with torch.no_grad():
-                model_kwargs["self_conditioning_logits"] = model(**model_kwargs).logits
+                model_kwargs["self_conditioning_logits"] = model(
+                    **model_kwargs,
+                    past_key_values = _DiffusionGemmaPrefixCache(
+                        config = text_config, prefix_indices = prefix_indices
+                    ),
+                ).logits
             model_kwargs["self_conditioning_mask"] = torch.rand(batch_size, device = device) < sc_p
-        outputs = model(**model_kwargs)
+        outputs = model(
+            **model_kwargs,
+            past_key_values = _DiffusionGemmaPrefixCache(
+                config = text_config, prefix_indices = prefix_indices
+            ),
+        )
 
         # Flat CE over the whole canvas, corrupted and clean alike: the uniform kernel's ELBO has no 1/t weight.
         diffusion_target = canvas_target.masked_fill(truncated[:, None] & ~in_response, -100)
@@ -157,32 +197,43 @@ class DiffusionGemmaProfile(DiffusionProfile):
             diffusion_logits = diffusion_logits.float().scatter_add(
                 2, canvas_ids.unsqueeze(-1), bump[:, :, None].expand(-1, block_size, 1)
             )
-        if (diffusion_target != -100).any():
-            diffusion_loss = F.cross_entropy(
-                diffusion_logits.flatten(0, 1), diffusion_target.flatten(), ignore_index = -100
-            )
-        else:
-            diffusion_loss = outputs.logits.sum() * 0.0
+        # Eager under "auto": compiled chunks were 5-10% slower per step on DiffusionGemma-26B-A4B (B200) at equal memory.
+        compiled = compile_loss(args, device, auto = False)
+        # Sum / count instead of a mean: an all-ignored batch gives 0 (with grad), not NaN, and needs no branch.
+        diffusion_sum, _, diffusion_count = chunked_cross_entropy(
+            diffusion_logits, diffusion_target, compiled = compiled
+        )
+        diffusion_loss = diffusion_sum / diffusion_count.clamp_min(1)
 
+        # Encoder AR co-loss straight from the hidden states: the [B, L, V] encoder logits never exist.
         lm_head = base.get_output_embeddings()
         hidden_states = outputs.encoder_last_hidden_state.to(lm_head.weight.dtype)
-        with _gather_lm_head(lm_head.weight, lm_head.bias):
-            encoder_logits = hidden_states @ lm_head.weight.t()
-            if lm_head.bias is not None:
-                encoder_logits = encoder_logits + lm_head.bias
-        encoder_logits = encoder_logits.float()
-        encoder_logits = torch.tanh(encoder_logits / softcap) * softcap
         ar_mask = attention_mask[:, :-1].bool() & attention_mask[:, 1:].bool()
         ar_targets = torch.where(ar_mask, input_ids[:, 1:], -100)
-        ar_loss = F.cross_entropy(
-            encoder_logits[:, :-1].flatten(0, 1), ar_targets.flatten(), ignore_index = -100
-        )
+        if hasattr(lm_head.weight, "ds_id"):
+            # ZeRO-3 re-partitions the head when the gather exits, so the projection must happen inside it
+            # (autograd then keeps the gathered tensor); the fused path would re-read it in backward.
+            with _gather_lm_head(lm_head.weight, lm_head.bias):
+                encoder_logits = F.linear(hidden_states[:, :-1], lm_head.weight, lm_head.bias)
+            ar_sum, _, ar_count = chunked_cross_entropy(
+                encoder_logits, ar_targets, softcap = softcap, compiled = compiled
+            )
+        else:
+            ar_sum, _, ar_count = chunked_cross_entropy(
+                hidden_states[:, :-1],
+                ar_targets,
+                weight = lm_head.weight,
+                bias = lm_head.bias,
+                softcap = softcap,
+                compiled = compiled,
+            )
+        ar_loss = ar_sum / ar_count.clamp_min(1)
 
         loss = diffusion_loss + ar_weight * ar_loss
         metrics = {
-            "diffusion_loss": diffusion_loss.detach().item(),
-            "encoder_ar_loss": ar_loss.detach().item(),
-            "mean_t": t.mean().item(),
+            "diffusion_loss": diffusion_loss.detach(),
+            "encoder_ar_loss": ar_loss.detach(),
+            "mean_t": t.mean().detach(),
         }
         return loss, outputs, metrics
 

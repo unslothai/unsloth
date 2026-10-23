@@ -47,8 +47,10 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
               })}
             </time>
           )}
-          {/* Right after the time. Shown while this row is hovered, or when reached by keyboard. */}
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-full opacity-0 transition-opacity group-hover/menu-time:bg-accent group-hover/menu-time:text-accent-foreground group-hover/menu-time:opacity-100 group-focus/menu-time:bg-accent group-focus/menu-time:text-accent-foreground group-focus/menu-time:opacity-100">
+          {/* Right after the time. Shown while this row is hovered, or when reached by keyboard.
+              Visibility, not an opacity fade: the fade's compositing layer, clipped by the menu's
+              rounded scroller, was left on screen in the desktop app's WebKit after the pointer left. */}
+          <span className="invisible flex size-7 shrink-0 items-center justify-center rounded-full group-hover/menu-time:visible group-hover/menu-time:bg-accent group-hover/menu-time:text-accent-foreground group-focus/menu-time:visible group-focus/menu-time:bg-accent group-focus/menu-time:text-accent-foreground">
             <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={1.75} className="size-icon" />
           </span>
         </ActionBarMorePrimitive.Item>

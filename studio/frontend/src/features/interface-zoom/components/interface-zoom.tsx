@@ -200,6 +200,10 @@ export function InterfaceZoom() {
     const wheelStep = createWheelZoomAccumulator();
     const scopeWheelStep = createWheelZoomAccumulator();
     const onWheel = (event: WheelEvent) => {
+      if (modifierHeld && !event.ctrlKey && !event.metaKey) {
+        modifierHeld = false;
+        syncWheel();
+      }
       if (event.defaultPrevented || !isZoomWheel(event)) return;
       const scope = zoomScopeFor(event.target);
       if (scope) {
@@ -213,9 +217,57 @@ export function InterfaceZoom() {
       const direction = wheelStep(event, getAppliedInterfaceZoom());
       if (direction !== null) zoomInterface(direction);
     };
-    window.addEventListener("wheel", onWheel, { passive: false });
+    let wheelArmed = false;
+    const armWheel = () => {
+      if (wheelArmed) return;
+      wheelArmed = true;
+      window.addEventListener("wheel", onWheel, { passive: false });
+    };
+    const disarmWheel = () => {
+      if (!wheelArmed) return;
+      wheelArmed = false;
+      window.removeEventListener("wheel", onWheel);
+    };
+    let modifierHeld = false;
+    let pointerInScope = false;
+    const syncWheel = () => {
+      if (modifierHeld || pointerInScope) armWheel();
+      else disarmWheel();
+    };
+    const onModifierChange = (event: KeyboardEvent) => {
+      modifierHeld = event.ctrlKey || event.metaKey;
+      syncWheel();
+    };
+    const onPointerOver = (event: PointerEvent) => {
+      modifierHeld = event.ctrlKey || event.metaKey;
+      pointerInScope = zoomScopeFor(event.target) !== null;
+      syncWheel();
+    };
+    const onBlur = () => {
+      modifierHeld = false;
+      syncWheel();
+    };
+    const onPassiveWheel = (event: WheelEvent) => {
+      if (wheelArmed || !isZoomWheel(event)) return;
+      modifierHeld = true;
+      syncWheel();
+    };
+    if (mac) {
+      armWheel();
+    } else {
+      window.addEventListener("keydown", onModifierChange, true);
+      window.addEventListener("keyup", onModifierChange, true);
+      window.addEventListener("pointerover", onPointerOver, true);
+      window.addEventListener("blur", onBlur);
+      window.addEventListener("wheel", onPassiveWheel, { passive: true });
+    }
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keydown", onModifierChange, true);
+      window.removeEventListener("keyup", onModifierChange, true);
+      window.removeEventListener("pointerover", onPointerOver, true);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("wheel", onPassiveWheel);
       window.removeEventListener("wheel", onWheel);
     };
   }, []);

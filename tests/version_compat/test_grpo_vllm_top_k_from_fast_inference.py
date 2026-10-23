@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""A fast_inference model must not hand vLLM top_k=None.
-
-Unsloth's GRPOConfig defaults top_k to None and maps it to -1 only when use_vllm is set on the
-config. A notebook that gets vLLM from FastLanguageModel(fast_inference=True) never sets it, so
-the trainer turns use_vllm on in __init__, after that guard ran, and TRL >= 0.27 passes the None
-straight to vllm.SamplingParams, which raises TypeError. Runs the generated __init__ block.
-"""
+"""The -1 top_k mapping runs before use_vllm is set for fast_inference, so vLLM gets None."""
 
 from __future__ import annotations
 
@@ -73,6 +67,6 @@ def test_a_user_top_k_is_kept(top_k):
 
 
 def test_a_model_without_vllm_keeps_none():
-    # HF generate reads None as "use the model's generation_config", so it must survive.
+    # HF generate reads None as 'use generation_config', so it must survive.
     args = _run(_vllm_setter_block(), types.SimpleNamespace(), use_vllm = False, top_k = None)
     assert args.top_k is None and args.use_vllm is False

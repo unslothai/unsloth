@@ -4,7 +4,6 @@
 """Model loading and streaming shared by `inference` and `chat`."""
 
 import asyncio
-import itertools
 import json
 import os
 import re
@@ -37,16 +36,12 @@ _MPI_ENV_PAIRS = (
     ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
 )
 
-# Built lazily; urllib stays function-local to match this module.
-_no_redirect_opener = None
+_openers: dict = {}
 
 
-def urlopen_no_redirect(request, timeout):
-    """urlopen that errors on any redirect: following a 3xx would send a bearer
-    token (or accept an identity proof) to a base we never vetted, letting a port
-    squatter relay a real Unsloth's response."""
-    global _no_redirect_opener
-    if _no_redirect_opener is None:
+def _opener(follow_redirects: bool, loopback: bool):
+    key = (follow_redirects, loopback)
+    if key not in _openers:
         import urllib.error
         import urllib.request
 
@@ -56,8 +51,27 @@ def urlopen_no_redirect(request, timeout):
                     req.full_url, code, f"refusing redirect to {newurl}", headers, fp
                 )
 
-        _no_redirect_opener = urllib.request.build_opener(_NoRedirect)
-    return _no_redirect_opener.open(request, timeout = timeout)
+        # urllib proxies 127.0.0.1 unless no_proxy lists it, leaking the bearer key to http_proxy.
+        handlers = [urllib.request.ProxyHandler({})] if loopback else []
+        if not follow_redirects:
+            handlers.append(_NoRedirect)
+        _openers[key] = urllib.request.build_opener(*handlers)
+    return _openers[key]
+
+
+def urlopen_no_redirect(request, timeout):
+    """urlopen that errors on any redirect: following a 3xx would send a bearer
+    token (or accept an identity proof) to a base we never vetted, letting a port
+    squatter relay a real Unsloth's response."""
+    return _opener(False, is_loopback_url(request.full_url)).open(request, timeout = timeout)
+
+
+def urlopen_local(request, timeout):
+    """urllib.request.urlopen that never sends a loopback request through a proxy."""
+    if not is_loopback_url(request.full_url):
+        import urllib.request
+        return urllib.request.urlopen(request, timeout = timeout)
+    return _opener(True, True).open(request, timeout = timeout)
 
 
 # /api/inference/load and /unload pad their body so a proxy cannot time a slow load out,
@@ -430,6 +444,38 @@ class ChatBackend:
         model_id = getattr(
             self._backend, "model_identifier" if self._kind == "gguf" else "active_model_name", None
         )
+        if self._kind == "gguf":
+            from core.inference.llama_cpp import _extra_args_set_any_flag
+
+            # These pass-throughs render a template the flags were not read from.
+            supports_reasoning = getattr(
+                self._backend, "supports_reasoning", False
+            ) and not _extra_args_set_any_flag(
+                getattr(self._backend, "extra_args", None),
+                {"--chat-template", "--chat-template-file", "--no-jinja"},
+            )
+            style = getattr(self._backend, "reasoning_style", None)
+            always_on = getattr(self._backend, "reasoning_always_on", False)
+        else:
+            from core.inference.chat_template_helpers import _selected_template_strings_from_value
+            from core.inference.llama_cpp import detect_reasoning_flags
+
+            info = (getattr(self._backend, "models", {}).get(model_id) or {}).get(
+                "chat_template_info"
+            ) or {}
+            selected = _selected_template_strings_from_value(info.get("template"))
+            flags = detect_reasoning_flags(
+                selected[0] if selected else None, model_id, log_level = "debug"
+            )
+            supports_reasoning = flags["supports_reasoning"]
+            style = flags["reasoning_style"]
+            always_on = flags["reasoning_always_on"]
+        # An effort-only template has no off switch: thinking off still renders a low effort.
+        always_on = always_on or style == "reasoning_effort"
+        thinking = (always_on or enable_thinking) if supports_reasoning else None
+        # Instruct-2507 never reasons (its template still parses <think>); -GGUF ids miss its defaults.
+        if re.search(r"qwen3[-_].*instruct[-_]2507", (model_id or "").lower()):
+            thinking = False
         sampling = resolve_effective_sampling(
             model_id,
             dict(
@@ -438,6 +484,7 @@ class ChatBackend:
                 top_k = top_k,
                 repetition_penalty = repetition_penalty,
             ),
+            thinking = thinking,
         )
         if self._kind == "gguf":
             # llama-server takes the system prompt as the first message.
@@ -751,28 +798,31 @@ def _recorded_studio_bases(tried: list):
                 yield candidate
 
 
-def find_studio_server(timeout: float = 3.0) -> Optional[str]:
+def _answers_as_studio(base: str, timeout: float) -> bool:
     import urllib.request
+    request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
+    try:
+        with urlopen_local(request, timeout = timeout) as response:
+            # A live port is not Studio: a stranger answering every path would get our key.
+            body = json.loads(response.read(65536).decode() or "{}")
+            return body.get("service") == _STUDIO_SERVICE_MARKER
+    except Exception:
+        return False
 
+
+def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     candidates = _loopback_candidate_bases(base)
-    if not os.environ.get("UNSLOTH_STUDIO_URL"):
-        candidates = itertools.chain(candidates, _recorded_studio_bases(candidates))
     # Try the concrete loopback addresses in order and return the first that answers, so the rest of
     # the flow talks to that exact address.
-    for candidate in candidates:
-        request = urllib.request.Request(
-            f"{candidate}/api/health", headers = {"User-Agent": _USER_AGENT}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout = timeout) as response:
-                # A live port is not Studio: a stranger answering every path would get our key.
-                body = json.loads(response.read(65536).decode() or "{}")
-                if body.get("service") == _STUDIO_SERVICE_MARKER:
-                    return candidate
-        except Exception:
-            continue
-    return None
+    found = next((c for c in candidates if _answers_as_studio(c, timeout)), None)
+    if os.environ.get("UNSLOTH_STUDIO_URL"):
+        return found
+    recorded = list(_recorded_studio_bases(candidates))
+    # Another install may own the default port: prefer the server this install recorded.
+    if found is not None and (not recorded or verify_studio_identity(found, timeout)):
+        return found
+    return next((c for c in recorded if _answers_as_studio(c, timeout)), found)
 
 
 def is_loopback_url(base: str) -> bool:
@@ -1119,6 +1169,23 @@ def connect_studio_server(
     if not token:
         return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
+    from unsloth_cli._npu import npu_model_path, prepare_npu_model
+
+    npu_path = npu_model_path(model)
+    if npu_path:
+        # `unsloth inference` passes the bare id the picker shows; load it by its model path.
+        model = npu_path
+        try:
+            prepare_npu_model(
+                lambda method, path, payload, timeout: backend._request(
+                    method, path, payload, timeout = timeout
+                ),
+                model,
+                lambda line: typer.echo(line, err = True),
+            )
+        except RuntimeError as exc:
+            typer.echo(f"Error: {exc}", err = True)
+            raise typer.Exit(code = 1)
     backend.ensure_loaded(
         model,
         hf_token = hf_token,

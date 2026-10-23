@@ -36,6 +36,8 @@ export interface PersistedChatSettings {
   inferenceParams?: PersistedInferenceParams;
   /** Last-used params per checkpoint id, replayed on model switch. */
   inferenceParamsByModel?: Record<string, PersistedInferenceParams>;
+  /** Outgoing only: per model id, keys of the entry above the server drops before merging the rest. */
+  forgetInferenceParamsByModel?: Record<string, string[]>;
   rememberParamsPerModel?: boolean;
   customPresets?: PersistedChatPreset[];
   activePreset?: string;
@@ -80,6 +82,8 @@ export interface PersistedChatSettings {
   fitOnDeviceOnly?: boolean;
   /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
   autoCompactEnabled?: boolean;
+  /** Off: a reply or Deep Research run stops once no tab follows it, instead of finishing on the server. */
+  keepRunningWhenTabClosed?: boolean;
 }
 
 interface ChatSettingsResponse {

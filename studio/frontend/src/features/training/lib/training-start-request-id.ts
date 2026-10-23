@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 interface RandomUuidCrypto {
-  getRandomValues?: <T extends ArrayBufferView>(array: T) => T;
+  getRandomValues?: <T extends ArrayBufferView<ArrayBuffer>>(array: T) => T;
   randomUUID?: () => string;
 }
 

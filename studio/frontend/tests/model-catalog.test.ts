@@ -169,14 +169,30 @@ test("DeepSeek direct maps the snapshot ladder onto its low / high / max wire", 
   assert.equal(getExternalReasoningCapabilities("deepseek", "deepseek-unknown").supportsReasoning, false);
 });
 
-test("Qwen and Kimi only have a wire toggle, so a ladder collapses to on/off", () => {
-  for (const [provider, model] of [["qwen", "qwen3.5-plus"], ["kimi", "kimi-k3"]] as const) {
-    const caps = getExternalReasoningCapabilities(provider, model);
+test("Qwen only has a wire toggle, so a ladder collapses to on/off", () => {
+  const caps = getExternalReasoningCapabilities("qwen", "qwen3.5-plus");
+  assert.equal(caps.reasoningStyle, "enable_thinking");
+  assert.equal(caps.supportsReasoning, true);
+  assert.equal(caps.supportsReasoningOff, true);
+  assert.equal(getExternalReasoningCapabilities("kimi", "kimi-k2.6").supportsReasoning, true);
+});
+
+test("QwenCloud reads the Qwen catalog for its thinking toggle and vision", () => {
+  for (const model of ["qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash"]) {
+    const caps = getExternalReasoningCapabilities("qwencloud", model);
     assert.equal(caps.reasoningStyle, "enable_thinking", model);
     assert.equal(caps.supportsReasoning, true, model);
     assert.equal(caps.supportsReasoningOff, true, model);
+    assert.equal(providerModelSupportsVision("qwencloud", model), true, model);
   }
-  assert.equal(getExternalReasoningCapabilities("kimi", "kimi-k2.6").supportsReasoning, true);
+});
+
+test("Kimi K3's documented always-on effort ladder outranks the catalog's toggle", () => {
+  // models.dev lists a toggle, but the Kimi API has no thinking switch for kimi-k3.
+  const caps = getExternalReasoningCapabilities("kimi", "kimi-k3");
+  assert.equal(caps.reasoningStyle, "reasoning_effort");
+  assert.equal(caps.supportsReasoningOff, false);
+  assert.deepEqual([...caps.reasoningEffortLevels], ["low", "high", "max"]);
 });
 
 test("Mistral models outside the table get the documented none / high form", () => {
@@ -212,6 +228,29 @@ test("vLLM and llama.cpp resolve by bare model name and clamp to low / medium / 
   assert.equal(getExternalReasoningCapabilities("llama_cpp", "Llama-3.2-1B-Instruct-Q4_K_M.gguf").supportsReasoning, false);
   assert.equal(getExternalReasoningCapabilities("llama_cpp", "mystery-7b.gguf").supportsReasoning, false);
   assert.equal(getExternalReasoningCapabilities("custom", "openai/gpt-oss-20b").supportsReasoning, false);
+});
+
+test("vLLM forwards the model's own ladder; llama.cpp still clamps it", () => {
+  // Qwen3.8's template accepts low / medium / xhigh only and raises on "high".
+  const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3.8-27B");
+  assert.deepEqual([...qwen.reasoningEffortLevels], ["none", "low", "medium", "xhigh"]);
+  const glm = getExternalReasoningCapabilities("vllm", "zai-org/GLM-5.3-FP8");
+  assert.deepEqual([...glm.reasoningEffortLevels], ["low", "high", "max"]);
+  const gguf = getExternalReasoningCapabilities("llama_cpp", "Qwen3.8-27B-Q4_K_M.gguf");
+  assert.deepEqual([...gguf.reasoningEffortLevels], ["none", "low", "medium", "high"]);
+});
+
+test("a flagged vLLM connection takes a catalogued ladder and keeps the switch otherwise", () => {
+  const flagged = { isReasoningProvider: true };
+  const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3.8-27B", flagged);
+  assert.equal(qwen.reasoningStyle, "reasoning_effort");
+  assert.deepEqual([...qwen.reasoningEffortLevels], ["none", "low", "medium", "xhigh"]);
+  for (const model of ["my-served-name", "Qwen/Qwen3.5-35B-A3B"]) {
+    const caps = getExternalReasoningCapabilities("vllm", model, flagged);
+    assert.equal(caps.reasoningStyle, "enable_thinking", model);
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+  }
 });
 
 test("Gemini aliases outside the prefix tables fall back to the snapshot", () => {
@@ -254,10 +293,7 @@ test("a served models.dev catalog outranks the bundled snapshot and feeds the na
 });
 
 test("a served bucket overrides its own models without hiding the rest of the bundled one", async () => {
-  // The browser cache survives an app upgrade and the backend serves an expired disk copy
-  // while offline, so a bucket written by an older release can omit models the newer
-  // bundled snapshot knows. Replacing the namespace wholesale dropped their controls.
-  // DeepSeek, not Ollama: the Ollama branch has a by-name fallback that hides the defect.
+  // A stale browser cache can omit models; DeepSeek avoids Ollama's by-name fallback.
   const { setModelsDevCatalog } = await import("../src/features/chat/model-catalog.ts");
   const bundled = getExternalReasoningCapabilities("deepseek", "deepseek-v4-pro");
   assert.deepEqual([...bundled.reasoningEffortLevels], ["none", "high", "max"]);

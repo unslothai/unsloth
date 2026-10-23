@@ -332,8 +332,11 @@ export function useDatasetUploads() {
       );
     };
 
-    void import("@tauri-apps/api/window")
-      .then(async ({ getCurrentWindow }) => {
+    void Promise.all([
+      import("@tauri-apps/api/window"),
+      import("@tauri-apps/api/webview"),
+    ])
+      .then(async ([{ getCurrentWindow }, { getCurrentWebview }]) => {
         const currentWindow = getCurrentWindow();
         const stopScaleChanged = await currentWindow.onScaleChanged(
           ({ payload }) => {
@@ -359,7 +362,7 @@ export function useDatasetUploads() {
           scaleFactor = currentScaleFactor;
         }
 
-        const stopDragDrop = await currentWindow.onDragDropEvent((event) => {
+        const stopDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
           if (disposed) {
             return;
           }

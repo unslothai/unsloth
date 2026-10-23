@@ -42,7 +42,7 @@ export function DocumentUploadRedirectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="sm:max-w-lg"
-        overlayClassName="bg-background/45 supports-backdrop-filter:backdrop-blur-[1px]"
+        overlayClassName="bg-background/45"
       >
         <DialogHeader className="gap-3">
           <div className="flex items-center gap-2">

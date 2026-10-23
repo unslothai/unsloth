@@ -17,7 +17,7 @@ export const world: any = { toasts: [], unloads: 0 };
 
 let phase: string | null = null;
 const chatModelLifecycleGate = { currentPhase: () => phase };
-const params = { checkpoint: "org/model" };
+const checkpoint = "org/model";
 function setModelsError(_message: string | null): void {}
 function clearCheckpoint(): void {}
 async function refresh(): Promise<void> {}
@@ -66,8 +66,8 @@ def test_eject_toasts_before_the_check_and_refuses_a_second_click_as_unloading()
     require_node((HOOK,))
     body = slice_between(
         read(HOOK),
-        "    if (!params.checkpoint) {\n      return false;\n    }",
-        "  }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);",
+        "    if (!checkpoint) {\n      return false;\n    }",
+        "  }, [checkpoint, clearCheckpoint, refresh, setModelsError]);",
     )
     out = run_harness(
         WORKDIR / "temp" / "chat_eject_in_flight",

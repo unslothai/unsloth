@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import {
   Select,
   SelectContent,
@@ -11,12 +12,14 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { translate, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
   useEffect,
+  useId,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -35,14 +38,13 @@ import {
   MCP_API_KEY_ENV,
   MCP_SHELL_AGENT_IDS,
   buildMcpSnippet,
+  hasMcpSnippet,
 } from "./mcp-agent-snippet";
 import { SettingsRow } from "./settings-row";
-import {
-  readUseTunnelPref,
-  subscribeUseTunnelPref,
-} from "./tunnel-preference";
+import { readUseTunnelPref, subscribeUseTunnelPref } from "./tunnel-preference";
 
 const ENV_FORCE = "UNSLOTH_STUDIO_ENABLE_MCP";
+const MCP_AGENTS = SUPPORTED_AGENTS.filter((agent) => hasMcpSnippet(agent.id));
 const OS_OPTIONS = [
   { os: "unix", labelKey: "settings.apiKeys.osUnix" },
   { os: "windows", labelKey: "settings.apiKeys.osWindows" },
@@ -59,6 +61,7 @@ export function McpAccessSection({
   apiKey?: string | null;
 }): ReactElement | null {
   const t = useT();
+  const pillId = useId();
   const [settings, setSettings] = useState<McpAccessSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,9 +74,9 @@ export function McpAccessSection({
   const setStoredOs = useSettingsPanelPrefsStore((s) => s.setMcpOs);
 
   const agent =
-    storedAgent && SUPPORTED_AGENTS.some((a) => a.id === storedAgent)
+    storedAgent && MCP_AGENTS.some((a) => a.id === storedAgent)
       ? storedAgent
-      : SUPPORTED_AGENTS[0].id;
+      : MCP_AGENTS[0].id;
   // an explicit pick wins, since the agent may run on another machine.
   const os: ExampleOs =
     storedOs ?? (deviceType === "windows" ? "windows" : "unix");
@@ -128,7 +131,11 @@ export function McpAccessSection({
   // match the server address shown by the API examples.
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
   const snippet = settings?.enabled
     ? (buildMcpSnippet(agent, base, os, apiKey) ??
       buildMcpSnippet(agent, settings.url, os, apiKey))
@@ -197,7 +204,7 @@ export function McpAccessSection({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent align="end">
-                    {SUPPORTED_AGENTS.map((option) => (
+                    {MCP_AGENTS.map((option) => (
                       <SelectItem key={option.id} value={option.id}>
                         <span className="flex min-w-0 items-center gap-2">
                           <AgentIcon {...option} />
@@ -223,12 +230,15 @@ export function McpAccessSection({
                           onClick={() => setStoredOs(option.os)}
                           aria-pressed={os === option.os}
                           className={cn(
-                            "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                            "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                             os === option.os
-                              ? "hub-tab-toggle-pill text-foreground"
+                              ? "text-foreground"
                               : "text-muted-foreground hover:text-foreground",
                           )}
                         >
+                          {os === option.os && (
+                            <SegmentedPill group={`${pillId}-shell`} />
+                          )}
                           {t(option.labelKey)}
                         </button>
                       ))}

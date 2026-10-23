@@ -52,7 +52,6 @@ def test_scoped_mapping_constructs_the_model(monkeypatch):
         modeling_utils.PreTrainedModel, "_flash_attn_import_error"
     ):
         pytest.skip(reason = "flash_attn package checks not stubbable on this Transformers")
-    # Stub only the package / kernel import so the per-class support check runs without flash_attn.
     monkeypatch.setattr(
         modeling_utils.PreTrainedModel, "_flash_attn_import_error", lambda self, **kwargs: None
     )

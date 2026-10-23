@@ -29,13 +29,20 @@ def _reload(monkeypatch, value):
 @pytest.mark.parametrize(
     "value, expected",
     [
-        (None, config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS),
-        ("", config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS),
+        (
+            None,
+            config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS | config.DOCUMENT_UPLOAD_EXTS,
+        ),
+        ("", config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS | config.DOCUMENT_UPLOAD_EXTS),
         (" .MD , .Markdown ", {".md", ".markdown"}),
         ("md,pdf", {".md", ".pdf"}),
         (".md,.exe", {".md"}),
         (".py,.exe", {".py"}),
-        (".exe", config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS),
+        (".xlsx,.epub", {".xlsx", ".epub"}),
+        (
+            ".exe",
+            config.SUPPORTED_UPLOAD_EXTS | config.SOURCE_TEXT_EXTS | config.DOCUMENT_UPLOAD_EXTS,
+        ),
     ],
 )
 def test_upload_exts_env(monkeypatch, value, expected):

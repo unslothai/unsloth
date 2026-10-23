@@ -55,17 +55,20 @@ export function AgentIcon({
   darkIcon,
   color,
   mark,
+  compact = false,
 }: {
   logo?: string;
   icon?: string;
   darkIcon?: string;
   color?: string;
   mark?: string;
+  compact?: boolean;
 }) {
+  const markSize = compact ? "size-4" : "size-5";
   if (logo) {
     return (
       <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
-        <ApiProviderLogo providerType={logo} className="size-5 rounded" />
+        <ApiProviderLogo providerType={logo} className={cn(markSize, "rounded")} />
       </span>
     );
   }
@@ -80,14 +83,14 @@ export function AgentIcon({
           src={iconSrc}
           alt=""
           aria-hidden={true}
-          className={cn("size-5 object-contain", darkIconSrc && "dark:hidden")}
+          className={cn(markSize, "object-contain", darkIconSrc && "dark:hidden")}
         />
         {darkIconSrc ? (
           <img
             src={darkIconSrc}
             alt=""
             aria-hidden={true}
-            className="hidden size-5 object-contain dark:block"
+            className={cn("hidden object-contain dark:block", markSize)}
           />
         ) : null}
       </span>
@@ -110,8 +113,10 @@ export function CommandBlock({ command }: { command: string }) {
 
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
-      <pre className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
-        <code className="font-mono whitespace-pre">{command}</code>
+      <pre className="py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
+        <code className="block font-mono whitespace-pre-wrap break-all">
+          {command}
+        </code>
       </pre>
       <button
         type="button"

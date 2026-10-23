@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Command,
@@ -50,7 +51,14 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
   buildAgentShellCommands,
@@ -65,6 +73,7 @@ import {
 } from "../components/agent-command-block";
 import {
   type AgentDetails,
+  NOT_AUTO_PICKED_AGENTS,
   SUPPORTED_AGENTS,
   UNSLOTH_START_DOCS_URL,
   detailsFor,
@@ -89,7 +98,7 @@ const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
-const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
+const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
 
 function isLoopbackBase(base: string): boolean {
   try {
@@ -452,6 +461,7 @@ function SubagentSection({
 
 export function AgentsTab() {
   const t = useT();
+  const pillId = useId();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
   const hfAccessToken = hfApiToken(hfToken);
@@ -693,8 +703,10 @@ export function AgentsTab() {
             if (agentSelectionChanged.current) {
               return current;
             }
-            const detected = next.detected.find((agent) =>
-              next.agents.includes(agent),
+            const detected = next.detected.find(
+              (agent) =>
+                next.agents.includes(agent) &&
+                !NOT_AUTO_PICKED_AGENTS.has(agent),
             );
             return (
               detected ??
@@ -725,7 +737,10 @@ export function AgentsTab() {
     agentSelectionChanged.current = false;
     setStoredAgent(null);
     setSelectedAgent(
-      agents.find((agent) => detectedAgents.has(agent)) ??
+      agents.find(
+        (agent) =>
+          detectedAgents.has(agent) && !NOT_AUTO_PICKED_AGENTS.has(agent),
+      ) ??
         agents[0] ??
         FALLBACK_AGENT.id,
     );
@@ -758,7 +773,9 @@ export function AgentsTab() {
         }
         const localEntries = localGgufEntries(local?.models ?? []);
         const discovered = discoverGgufModels(info?.models ?? [], [
-          ...cachedGgufs.map((cached) => cached.repo_id),
+          ...cachedGgufs
+            .filter((cached) => !cached.umbrella_folder)
+            .map((cached) => cached.repo_id),
           ...localEntries.map((entry) => entry.id),
         ]);
         // Keep the snapshot load_id for --model while listing the model by repo id.
@@ -1143,12 +1160,15 @@ export function AgentsTab() {
             }}
             aria-pressed={commandOs === "unix"}
             className={cn(
-              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               commandOs === "unix"
-                ? "hub-tab-toggle-pill text-foreground"
+                ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {commandOs === "unix" && (
+              <SegmentedPill group={`${pillId}-shell`} />
+            )}
             {t("settings.apiKeys.osUnix")}
           </button>
           <button
@@ -1160,12 +1180,15 @@ export function AgentsTab() {
             }}
             aria-pressed={commandOs === "windows"}
             className={cn(
-              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               commandOs === "windows"
-                ? "hub-tab-toggle-pill text-foreground"
+                ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {commandOs === "windows" && (
+              <SegmentedPill group={`${pillId}-shell`} />
+            )}
             {t("settings.apiKeys.osWindows")}
           </button>
         </div>
@@ -1224,6 +1247,7 @@ export function AgentsTab() {
                         darkIcon={selectedAgentDetails.darkIcon}
                         color={selectedAgentDetails.color}
                         mark={selectedAgentDetails.mark}
+                        compact={selectedAgentDetails.compact}
                       />
                       <span className="truncate">
                         {selectedAgentDetails.name}
@@ -1231,7 +1255,11 @@ export function AgentsTab() {
                     </span>
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start">
+                {/* Seven 36px rows plus the 4px surface padding. */}
+                <SelectContent
+                  align="start"
+                  className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                >
                   {agents.map((agentId) => {
                     const agent = detailsFor(agentId);
                     return (
@@ -1243,6 +1271,7 @@ export function AgentsTab() {
                             darkIcon={agent.darkIcon}
                             color={agent.color}
                             mark={agent.mark}
+                            compact={agent.compact}
                           />
                           <span className="truncate">{agent.name}</span>
                           {localDetection &&
@@ -1460,6 +1489,11 @@ export function AgentsTab() {
             copied={copied}
             onCopy={handleCopy}
           />
+          {selectedAgent === "vscode" && (
+            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+              {t("settings.agents.vscodeNote")}
+            </p>
+          )}
           <p className="text-ui-11 leading-relaxed text-muted-foreground">
             {t("settings.agents.configurationNote")}{" "}
             <a

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type ComponentProps, useState } from "react";
-import { useAppearanceCustomStore } from "@/features/settings";
+import { useAppearanceCustomStore } from "@/features/settings/stores/appearance-custom-store";
 
 // Bundled as a data URI so the fallback ships inside the JS bundle and can
 // never 404, unlike the public-folder originals.

@@ -59,6 +59,8 @@ class LoraCatalogEntry:
     size_bytes: int = 0
     weight_default: float = 1.0
     fine_tuned: bool = False
+    # Id of the loras/diffusion adapter this custom-folder file is an export of: listed once, still resolvable.
+    copy_of: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -240,11 +242,25 @@ def _scan_local() -> list[LoraCatalogEntry]:
             found.append((p, entry_id))
 
     entries: list[LoraCatalogEntry] = []
+    # An export carries its source's sidecar plus ``kind``. Only trainer sidecars (``created_at``) qualify, and the
+    # bytes at both ends must match too: equal size and metadata alone fit two different same-rank LoRAs.
+    originals: dict[tuple, tuple[str, Path]] = {}
     for p, entry_id in found:
         try:
             size = p.stat().st_size
         except OSError:
             size = 0
+        sidecar = _sidecar_data(p) or {}
+        meta = {k: v for k, v in sidecar.items() if k != "kind"}
+        signature = (
+            (size, json.dumps(meta, sort_keys = True, default = str)) if "created_at" in meta else None
+        )
+        copy_of = None
+        if p.parent == root_dir:
+            if signature:
+                originals.setdefault(signature, (entry_id, p))
+        elif signature in originals and _same_ends(originals[signature][1], p):
+            copy_of = originals[signature][0]
         # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so
         # it is family-gated instead of "unknown". Best-effort.
         families, weight_default = _read_lora_sidecar(p)
@@ -258,10 +274,27 @@ def _scan_local() -> list[LoraCatalogEntry]:
                 size_bytes = size,
                 families = families,
                 weight_default = weight_default,
-                fine_tuned = (_sidecar_data(p) or {}).get("source") == "studio-trained",
+                fine_tuned = sidecar.get("source") == "studio-trained",
+                copy_of = copy_of,
             )
         )
     return entries
+
+
+def _same_ends(
+    a: Path,
+    b: Path,
+    n: int = 1 << 16,
+) -> bool:
+    try:
+        with _open_pinned(a) as fa, _open_pinned(b) as fb:
+            if fa.read(n) != fb.read(n):
+                return False
+            for f in (fa, fb):
+                f.seek(max(0, os.fstat(f.fileno()).st_size - n))
+            return fa.read(n) == fb.read(n)
+    except OSError:
+        return False
 
 
 def _sidecar_data(weight_path: Path) -> Optional[dict]:
@@ -303,13 +336,15 @@ def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
     return tuple(names), weight_default
 
 
-def list_loras(*, family: Optional[str] = None) -> list[LoraCatalogEntry]:
+def list_loras(
+    *, family: Optional[str] = None, include_copies: bool = False
+) -> list[LoraCatalogEntry]:
     """The merged catalog (curated + local), optionally family-filtered.
 
     Cheap: one directory scan plus the in-memory curated list. Network is only touched on
     resolve(), when a hub adapter is selected.
     """
-    merged = list(_CURATED) + _scan_local()
+    merged = [e for e in list(_CURATED) + _scan_local() if include_copies or not e.copy_of]
     if family:
         fam = family.strip().lower()
         merged = [e for e in merged if not e.families or fam in {f.lower() for f in e.families}]
@@ -555,12 +590,20 @@ def resolve_specs(
     return out
 
 
-def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[ResolvedLora]:
+def materialize_native_dir(
+    resolved: list[ResolvedLora],
+    dest: Path,
+    *,
+    real_files: bool = False,
+) -> list[ResolvedLora]:
     """Populate ``dest`` with symlinks (copy fallback) to the resolved LoRA files.
 
     sd-cli resolves ``<lora:ALIAS:w>`` against filenames in ``--lora-model-dir``, so each adapter
     needs a uniquely-named file in this dedicated managed directory. Returns the resolved list with
     aliases updated to the (collision-broken) stems written, so the caller injects matching tags.
+    ``real_files``: hard links (copy fallback) instead of symlinks. sd-server (master-982+) canonicalizes
+    each file under ``--lora-model-dir`` and skips one that resolves outside it, so a symlink into the
+    LoRA cache is never listed and a request naming it is rejected.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()
@@ -579,10 +622,21 @@ def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[Res
         try:
             if link.exists() or link.is_symlink():
                 link.unlink()
-            os.symlink(os.path.realpath(r.path), link)
+            if real_files:
+                os.link(os.path.realpath(r.path), link)
+            else:
+                os.symlink(os.path.realpath(r.path), link)
         except OSError:
             import shutil
-            shutil.copy2(r.path, link)
+            try:
+                shutil.copy2(r.path, link)
+            except BaseException:
+                # A partial multi-GB copy (disk full, cancelled) must not outlive the failed request.
+                try:
+                    link.unlink()
+                except OSError:
+                    pass
+                raise
         out.append(ResolvedLora(r.id, alias, str(link), r.fmt, r.weight))
     return out
 
@@ -632,6 +686,19 @@ _NATIVE_LORA_FAMILY_TOKENS = (
 _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
+# In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES = ("moss-image",)
+
+
+def diffusers_lora_family_supported(family: Optional[str]) -> bool:
+    return (family or "").strip().lower() not in _DIFFUSERS_LORA_UNSUPPORTED_FAMILIES
+
+
+def diffusers_lora_family_message(family: Optional[str]) -> str:
+    return (
+        f"LoRA is not supported for {family} yet: its pipeline has no LoRA loader. "
+        "Clear the LoRA selection to load or generate."
+    )
 
 
 def supports_lora(
@@ -656,6 +723,8 @@ def supports_lora(
     fam = (family or "").lower()
     if engine == "sd_cpp":
         return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
+    if not diffusers_lora_family_supported(fam):
+        return False
     quant = (transformer_quant or "").lower()
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
         return True  # load-time bake; adapters ride inside the compiled quantized build

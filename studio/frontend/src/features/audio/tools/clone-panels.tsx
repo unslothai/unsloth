@@ -118,7 +118,7 @@ const indexTts2EmotionPanel: AudioToolPanel<EmotionValue> = {
             onChange={(event) =>
               onChange({ ...value, text: event.target.value })
             }
-            className="min-h-16"
+            className="min-h-16 rounded-lg"
           />
         </Field>
       ) : value.mode === "audio" ? (
@@ -243,7 +243,7 @@ const cosyVoiceModePanel: AudioToolPanel<CosyVoiceModeValue> = {
             onChange={(event) =>
               onChange({ ...value, instruction: event.target.value })
             }
-            className="min-h-16"
+            className="min-h-16 rounded-lg"
           />
         </Field>
       ) : null}
@@ -262,7 +262,7 @@ const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
         max={2}
         step={0.05}
         disabled={disabled}
-        displayValue={`${value.speed.toFixed(2)}×`}
+        format={(v) => `${v.toFixed(2)}×`}
         onChange={(speed) => onChange({ ...value, speed })}
       />
       {specs.some((spec) => spec.name === "dialect") ? (

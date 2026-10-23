@@ -36,7 +36,7 @@ export {
   type ApiModelOverrides,
 } from "./api/model-overrides";
 export { useActiveModelConfig } from "./hooks/use-active-model-config";
-export { useVllmAvailable } from "./hooks/use-vllm-available";
+export { useVllmAvailable, useVllmPlatform } from "./hooks/use-vllm-available";
 export { ManagedEngineOfferDialog } from "./components/managed-engine-offer-dialog";
 export {
   confirmManagedEngineIfNeeded,

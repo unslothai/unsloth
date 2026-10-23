@@ -427,9 +427,6 @@ def _calibration_functions():
 def patch_peft_calibration_eager():
     import functools
     import sys
-
-    if not hasattr(torch.compiler, "set_stance"):
-        return
     for module, name in _calibration_functions():
         original = getattr(module, name, None)
         if original is None or getattr(original, "_unsloth_eager", False):
@@ -441,8 +438,27 @@ def patch_peft_calibration_eager():
             __original = original,
             **kwargs,
         ):
-            with torch.compiler.set_stance("force_eager"):
-                return __original(*args, **kwargs)
+            # Runs before get_peft_model, so the tokenizer still pads left; labelled training forwards drop the mask.
+            model = args[0] if args else kwargs.get("model")
+            masked = []
+            if isinstance(model, torch.nn.Module):
+                masked = [
+                    m
+                    for m in model.modules()
+                    if not getattr(m, "_unsloth_keep_padding_mask", False)
+                ]
+            for m in masked:
+                m._unsloth_keep_padding_mask = True
+            try:
+                with (
+                    torch.compiler.set_stance("force_eager")
+                    if hasattr(torch.compiler, "set_stance")
+                    else contextlib.nullcontext()
+                ):
+                    return __original(*args, **kwargs)
+            finally:
+                for m in masked:
+                    m._unsloth_keep_padding_mask = False
 
         eager._unsloth_eager = True
         # vars(), not getattr: getattr on lazy modules (transformers) imports submodules.

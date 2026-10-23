@@ -31,6 +31,8 @@ class Checkpoint:
     revision: str | None = None
     # Display name where the frontend has none of its own.
     label: str | None = None
+    # A Hub entry whose model hears audio; a local folder says so in its config.
+    audio: bool = False
 
     @property
     def is_local(self) -> bool:
@@ -82,6 +84,18 @@ CHECKPOINTS = {
             "Cloudflare Clef on Qwen3.8 27B: the most accurate decisions, needs a large GPU.",
             54_976_000_000,
             "clef",
+        ),
+        Checkpoint(
+            "clef-omni",
+            "mlx-community/clef-omni-8bit",
+            None,
+            "Cloudflare Clef Omni on Qwen3-Omni 30B (8-bit, MLX only): text, images and audio, "
+            "needs Apple Silicon with 48 GB of memory or more.",
+            35_044_686_208,
+            "clef",
+            "mlx",
+            label = "Clef Omni",
+            audio = True,
         ),
         _gguf(
             "kev-0.8b",
@@ -433,12 +447,12 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
             CLEF_FINE_TUNE_PREFIX + folder_name,
             str(folder),
             None,
-            "Clef fine-tuned in Studio.",
+            "Clef fine-tuned in Unsloth.",
             layout = "clef",
         )
     else:
         checkpoint = Checkpoint(
-            FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Studio."
+            FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Unsloth."
         )
     return checkpoint if is_cached(checkpoint) else None
 

@@ -3,6 +3,7 @@
 
 import { validateHubResourceId } from "@/components/resource-picker/hub-resource-id";
 import type { TranslationKey } from "@/i18n";
+import { isAdapterMethod } from "@/types/training";
 import type { TrainingConfigState } from "../types/config";
 import { requiresExplicitCachedDatasetSplit } from "./dataset-split-policy";
 import {
@@ -43,11 +44,24 @@ function isTrainingConfigSupportedOnDevice(
   if (deviceType !== "mac") {
     return true;
   }
-  return !(config.isEmbeddingModel || config.isDatasetAudio === true);
+  return !(config.isEmbeddingModel || hasChatAudioRows(config, deviceType));
+}
+
+/** A Mac Clef (or Clef-head LLM) trainer reads its own audio rows; elsewhere, and for Laya, they train as text. */
+function hasChatAudioRows(
+  config: TrainingConfigState,
+  deviceType?: string,
+): boolean {
+  const trainerReadsRows =
+    deviceType === "mac" &&
+    config.modelType === "decision" &&
+    (config.decisionLayout === "clef" || config.decisionLayout === "llm");
+  return config.isDatasetAudio === true && !trainerReadsRows;
 }
 
 export function hasIncompatibleTrainingModalities(
   config: TrainingConfigState,
+  deviceType?: string,
 ): boolean {
   return (
     (!config.isVisionModel && config.isDatasetImage === true) ||
@@ -57,7 +71,7 @@ export function hasIncompatibleTrainingModalities(
     // real download error, which is what a gated text model already does.
     (!config.audioCapabilityUnknown &&
       !config.isAudioModel &&
-      config.isDatasetAudio === true)
+      hasChatAudioRows(config, deviceType))
   );
 }
 
@@ -179,13 +193,25 @@ export function validateTrainingConfig(
     };
   }
   if (isUntrainableModelFormat(config.modelFormat)) {
-    return {
-      ok: false,
-      errorKey:
-        config.modelFormat === "gguf"
-          ? "studio.modelPicker.reasonGguf"
-          : "studio.modelPicker.reasonAdapter",
-    };
+    if (config.modelFormat === "gguf") {
+      return { ok: false, errorKey: "studio.modelPicker.reasonGguf" };
+    }
+    // Adapter format is valid when continuing LoRA / CPT from a saved adapter (#13140).
+    // Decision, embedding and Apple Silicon runs build a fresh adapter, so they need a base.
+    // Only a saved local adapter folder is continued; a Hub adapter repo is not yet.
+    if (
+      !isAdapterMethod(config.trainingMethod) ||
+      !isLocalTrainingModelSelection({
+        model: config.selectedModel,
+        knownCached: config.modelKnownCached,
+        localPath: config.modelLocalPath,
+      }) ||
+      config.modelType === "decision" ||
+      config.isEmbeddingModel ||
+      deviceType === "mac"
+    ) {
+      return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
+    }
   }
 
   if (!isTrainingConfigSupportedOnDevice(config, deviceType)) {
