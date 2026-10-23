@@ -39752,6 +39752,10 @@ class LlamaCppBackend:
             )
             return None
         extra_gpu_bytes += sidecar_bytes
+        # A LoRA tensor whose base tensor spills goes to the CPU buffer with it, and
+        # which ones spill is not known until the plan is made. Charge the adapter to
+        # host RAM too, so a spill cannot admit host weights against RAM it then uses.
+        host_ram_bytes = max(0, host_ram_bytes - sidecar_bytes)
 
         # The reserve floor the snapshot priced from what usable VRAM already withheld, so the
         # TOTAL per-device reserve is never below the #67 curve.
