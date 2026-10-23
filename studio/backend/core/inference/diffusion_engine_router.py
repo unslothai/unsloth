@@ -483,8 +483,7 @@ def _refuse_lora_fallback(
     gguf_filename: Optional[str],
     engine: Optional[str],
 ) -> None:
-    """ValueError, before anything is unloaded, when MLX would serve this pick but for its LoRAs and the engine
-    the load falls back to cannot apply them either (diffusers on a GGUF, or a native family without LoRA)."""
+    """Raise before unloading when MLX is skipped for LoRAs and the fallback engine cannot apply them."""
     if (
         not with_loras
         or not mlx_selection(

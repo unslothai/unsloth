@@ -474,8 +474,7 @@ def test_a_lora_load_keeps_sd_cpp_under_the_mlx_opt_in(monkeypatch, gguf):
 def test_a_lora_load_with_no_lora_capable_fallback_is_refused_before_the_switch(
     monkeypatch, sd_cpp_off
 ):
-    # No native engine (absent, or UNSLOTH_DIFFUSION_SD_CPP=0): diffusers cannot apply LoRAs on a GGUF here, nor
-    # build a family its diffusers lacks, so the load is refused before it unloads the resident model.
+    # No native engine: diffusers cannot apply GGUF LoRAs, so refuse before unloading.
     _apple(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     if sd_cpp_off:
