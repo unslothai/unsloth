@@ -163,7 +163,6 @@ export function ArtifactHtmlFrame({
   onFixWithModel?: (prompt: string) => void;
   // A React preview runs compiled code, so its runtime line numbers aren't shown.
   kind?: "html" | "react";
-  // Browser file previews register the frame for rendered-page annotations.
   onFrameReady?: (frame: HTMLIFrameElement) => (() => void) | undefined;
 }) {
   const t = useT();
