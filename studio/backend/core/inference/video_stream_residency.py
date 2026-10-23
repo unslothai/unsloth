@@ -352,7 +352,7 @@ def _failed_captures() -> int:
 
 
 def _graphs_off_for_load(handles: tuple) -> bool:
-    """True only when every whole-step graph is off for good: dropped by the speed check or poisoned, with no
+    """True only when every whole-step graph is off for good: its placement declined recording or it is poisoned, with no
     per-block fallback armed or engaged. A request-specific eager call (a refused argument, a placement refusal)
     can still capture on a later request, so it keeps the graph key."""
     if not handles:
@@ -363,7 +363,11 @@ def _graphs_off_for_load(handles: tuple) -> bool:
             or getattr(h, "fallback_handle", None) is not None
         ):
             return False
-        dropped = bool(getattr(h, "_slower", None)) and not getattr(h, "cache", None)
+        # load-wide only: a streamed speed drop declines the placement; a per-key drop (an unpaid resident replay,
+        # a probe OOM) leaves other shapes free to capture
+        placement = getattr(h, "placement", None)
+        declined = placement is not None and getattr(placement, "_declined", None) is not None
+        dropped = declined and not getattr(h, "cache", None)
         if not (dropped or getattr(h, "poisoned", False) is True):
             return False
     return True
