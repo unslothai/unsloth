@@ -17,8 +17,8 @@ import {
 } from "./icon-data";
 import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
+import { rerollNode, runToNode } from "./node-actions";
 import { ParamField } from "./param-fields";
-import { runFlow } from "./run-controller";
 
 function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
@@ -161,7 +161,7 @@ function InspectorImpl() {
       <div className="flex flex-wrap gap-1.5 border-white/10 border-b px-4 py-2">
         <button
           type="button"
-          onClick={() => void runFlow({ targetNodes: [node.id] })}
+          onClick={() => void runToNode(node.id)}
           className="flex items-center gap-1 rounded-md bg-sky-600/80 px-2 py-1 text-[12px] hover:bg-sky-500"
           title="Run only what this node needs"
         >
@@ -169,13 +169,7 @@ function InspectorImpl() {
         </button>
         <button
           type="button"
-          onClick={() => {
-            const hasSeed = spec.params.some(
-              (p) => p.id === "seed" && p.kind === "seed",
-            );
-            if (hasSeed) setParam("seed", Math.floor(Math.random() * 2 ** 31));
-            void runFlow({ targetNodes: [node.id], forceNodes: [node.id] });
-          }}
+          onClick={() => void rerollNode(node.id)}
           className="flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-[12px] hover:bg-white/5"
           title="Run this node again, ignoring the cache (new seed when it has one)"
         >

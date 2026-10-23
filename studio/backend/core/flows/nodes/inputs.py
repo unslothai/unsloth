@@ -34,7 +34,8 @@ def _bool(value: Any) -> bool:
 def _media(value: Any, kind: str) -> dict:
     if isinstance(value, dict) and value.get("kind") == kind and isinstance(value.get("ref"), str):
         return value
-    raise FlowNodeError(f"Pick {'an image' if kind == 'image' else 'an audio clip'} for this node")
+    what = {"image": "an image", "audio": "an audio clip", "video": "a video"}.get(kind, "a file")
+    raise FlowNodeError(f"Pick {what} for this node")
 
 
 @handler("input.text")
@@ -76,6 +77,11 @@ async def image(ctx: NodeContext) -> dict:
 @handler("input.audio")
 async def audio(ctx: NodeContext) -> dict:
     return {"audio": _media(ctx.params.get("asset"), "audio")}
+
+
+@handler("input.video")
+async def video(ctx: NodeContext) -> dict:
+    return {"video": _media(ctx.params.get("asset"), "video")}
 
 
 def coerce_param(kind: str, value: Any) -> Any:

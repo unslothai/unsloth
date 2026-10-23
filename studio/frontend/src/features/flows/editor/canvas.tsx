@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useNativeFileDrop } from "@/features/native-intents/use-native-file-drop";
 import {
   Background,
   BackgroundVariant,
@@ -29,6 +30,7 @@ import { categoryColor, findPort, getSpec } from "../stores/catalog-store";
 import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge } from "../types";
+import { dragHasFiles } from "./canvas-rules";
 import {
   checkConnection,
   parseHandle,
@@ -41,10 +43,12 @@ import {
   type RfEdge,
   type RfNode,
 } from "./derive-rf";
+import { addFileNodes } from "./file-drop";
 import { FlowEdgeView } from "./flow-edge";
 import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
 import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
+import { SelectedNodeToolbar } from "./node-toolbar";
 
 const NODE_TYPES = {
   flowNode: FlowNodeView,
@@ -381,6 +385,34 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     event.dataTransfer.dropEffect = "move";
   }, []);
 
+  // Files from the desktop become input blocks where they land (the view's centre for a Desktop drop).
+  const dropPoint = useRef<{ x: number; y: number } | null>(null);
+  const wrapper = useRef<HTMLDivElement | null>(null);
+  const fileDrop = useNativeFileDrop({
+    disabled: readOnly,
+    disabledReason: "This flow is read-only",
+    onFiles: (files) => {
+      const rect = wrapper.current?.getBoundingClientRect();
+      const point =
+        dropPoint.current ??
+        (rect
+          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+          : { x: 0, y: 0 });
+      dropPoint.current = null;
+      return addFileNodes(files, screenToFlowPosition(point)).then(
+        () => undefined,
+      );
+    },
+  });
+  const { ref: fileDropRef } = fileDrop;
+  const setWrapper = useCallback(
+    (element: HTMLDivElement | null) => {
+      wrapper.current = element;
+      fileDropRef(element);
+    },
+    [fileDropRef],
+  );
+
   const onDrop = useCallback(
     (event: DragEvent) => {
       const type = event.dataTransfer.getData(NODE_DRAG_MIME);
@@ -402,8 +434,17 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
 
   return (
     <div
+      ref={setWrapper}
       className="relative h-full w-full"
       onDoubleClick={onDoubleClick}
+      onDragEnter={fileDrop.dragHandlers.onDragEnter}
+      onDragOver={(event) => {
+        if (dragHasFiles(Array.from(event.dataTransfer.types)))
+          dropPoint.current = { x: event.clientX, y: event.clientY };
+        fileDrop.dragHandlers.onDragOver(event);
+      }}
+      onDragLeave={fileDrop.dragHandlers.onDragLeave}
+      onDrop={fileDrop.dragHandlers.onDrop}
       data-testid="flows-canvas"
     >
       <ReactFlow<RfNode, RfEdge>
@@ -462,6 +503,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           showInteractive={false}
           className="!rounded-lg !border !border-white/10 !shadow-none"
         />
+        <SelectedNodeToolbar readOnly={readOnly} />
       </ReactFlow>
     </div>
   );
