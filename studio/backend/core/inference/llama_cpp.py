@@ -19387,7 +19387,8 @@ class LlamaCppBackend:
                 # Without flash attention the graph takes the dense branch, which materializes
                 # float32 KQ scores ([n_kv, n_ubatch, n_head]); the measured rate is flash only.
                 n_head = getattr(self, "_n_heads", None) or max(1, n_embd // 64)
-                per_tok += ub * n_head * 4
+                # The measured rate holds one f16 KQ mask; without flash attention it is f32.
+                per_tok += ub * n_head * 4 + ub * 2
             return int(self._DSV41_CTX_COMPUTE_FLAT_BYTES + per_tok * n_ctx)
         if getattr(self, "_architecture", None) == "inkling":
             ub_scale = ub / self._DEFAULT_N_UBATCH

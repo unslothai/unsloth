@@ -528,7 +528,8 @@ class TestContextBufferDSV41:
         n_ctx = 262144
         on = b._compute_buffer_ctx_bytes(n_ctx, 512, "f16")
         off = b._compute_buffer_ctx_bytes(n_ctx, 512, "f16", flash_attn = False)
-        assert off - on == 512 * 64 * 4 * n_ctx
+        # Dense float32 scores plus the f32 mask in place of the measured f16 one.
+        assert off - on == (512 * 64 * 4 + 512 * 2) * n_ctx
         assert off >= 512 * 64 * 4 * n_ctx
 
 
