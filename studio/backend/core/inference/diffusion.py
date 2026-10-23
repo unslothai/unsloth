@@ -2378,7 +2378,7 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
     pipeline carries no split record). Raises the guard's refusal (a ValueError); returns the number of cards
     checked. Fails open on anything unknown."""
     from .diffusion_layer_split_plan import applied_layer_split, secondary_block_cards
-    from .diffusion_memory import _oversized_generate_override
+    from .diffusion_memory import _device_user_budget_reserve_mib, _oversized_generate_override
 
     split = applied_layer_split(pipe)
     if split is None or guard_kwargs.get("allow_oversized") or _oversized_generate_override():
@@ -2403,16 +2403,19 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
         if working + reserve <= 0:
             continue
         with diffusion_device_scope(int(ordinal)):
-            free = reclaimable_snapshot_device_memory(guard_target).free_mib
+            card = reclaimable_snapshot_device_memory(guard_target)
+        free = card.free_mib
         if free is None:
             continue
+        # the user's VRAM Budget keeps its share of this card free too (0 at the default), as the split planned it
+        free = int(free) - _device_user_budget_reserve_mib(card, card.total_mib or free)
         checked += 1
         need = int(working * scale) + reserve
         if need > int(free):
             raise ImageActivationShortfallError(
                 f"Generating at {guard_kwargs.get('width')}x{guard_kwargs.get('height')} needs about "
                 f"{need / 1024:.2f} GB of working memory on cuda:{int(ordinal)}, which runs part of the model split "
-                f"across GPUs, but only about {int(free) / 1024:.2f} GB is free there. Generate at a smaller "
+                f"across GPUs, but only about {max(0, int(free)) / 1024:.2f} GB is free there. Generate at a smaller "
                 "resolution, or free GPU memory on that GPU. To try anyway, turn on 'Allow oversized generations' "
                 "under Advanced on the Images page."
             )

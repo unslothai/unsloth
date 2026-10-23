@@ -369,14 +369,20 @@ def resolve_selected_cuda_ordinal(
 
 
 def rank_cuda_ordinals(ordinals: list[int]) -> list[int]:
-    """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last)."""
+    """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last). Under a
+    lowered VRAM Budget, by free VRAM less each card's reserve (a big, partly used card can hold less than a small idle
+    one); the raw order at the default."""
 
     def _free_vram(ordinal: int) -> int:
         try:
             import torch
-            return int(torch.cuda.mem_get_info(ordinal)[0])
+
+            from .diffusion_memory import _user_budget_reserve_mib
+
+            free, total = torch.cuda.mem_get_info(ordinal)
+            return int(free) - (_user_budget_reserve_mib(int(total) >> 20) << 20)
         except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
-            return -1
+            return -(1 << 62)
 
     return sorted(ordinals, key = lambda ordinal: (-_free_vram(ordinal), ordinal))
 

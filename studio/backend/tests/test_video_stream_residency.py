@@ -96,7 +96,9 @@ def test_video_request_path_fits_the_residency_before_the_vram_check():
     free_reads = [
         n.lineno
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "trusted_mem_get_info"
+        if isinstance(n, ast.Call)
+        # the guard's own reading, or the reserve-charging helper that wraps it
+        and getattr(n.func, "id", None) in ("trusted_mem_get_info", "_request_available_bytes")
     ]
     assert any(line > fit.lineno for line in free_reads)
 

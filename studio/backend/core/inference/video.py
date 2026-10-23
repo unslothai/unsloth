@@ -2512,6 +2512,41 @@ def _h3_planned_denoiser_bytes(
         return None
 
 
+def _user_reserve_bytes(device: Any, total_bytes: Optional[int]) -> int:
+    """What the user's VRAM Budget keeps free on ``device`` (total ``total_bytes``), in bytes: 0 at the default and on
+    Metal / CPU, where the setting does not apply (as ``_device_user_budget_reserve_mib``)."""
+    kind = str(getattr(device, "type", device) or "").split(":")[0]
+    if kind in ("cpu", "mps") or not total_bytes:
+        return 0
+    from .diffusion_memory import _user_budget_reserve_mib
+
+    return _user_budget_reserve_mib(int(total_bytes) >> 20) << 20
+
+
+def _planned_free_less_user_reserve_mib(memory: Any) -> Optional[int]:
+    """The load-time placement guard's free MiB: the plan's settled reading less the user's VRAM Budget reserve (the
+    reading itself at the default, on Metal and CPU). None when unread."""
+    free = getattr(memory, "free_mib", None)
+    if free is None:
+        return None
+    from .diffusion_memory import _device_user_budget_reserve_mib
+
+    return int(free) - _device_user_budget_reserve_mib(
+        memory, getattr(memory, "total_mib", None) or free
+    )
+
+
+def _request_available_bytes(device_obj: Any, module: Any) -> int:
+    """A request guard's available VRAM on ``device_obj``: trusted free (#8403) plus this process's allocator cache,
+    less the user's VRAM Budget reserve (raw at the default). Signed: a card already inside the reserve reads below 0.
+    Exceptions propagate, as the guards' own readings did."""
+    from utils.hardware import trusted_mem_get_info
+
+    free_bytes, total_bytes = trusted_mem_get_info(device_obj, module = module)
+    reserved_bytes = module.memory_reserved(device_obj) if hasattr(module, "memory_reserved") else 0
+    return int(free_bytes) + int(reserved_bytes) - _user_reserve_bytes(device_obj, total_bytes)
+
+
 def _h3_free_device_bytes(device: str) -> Optional[int]:
     """Live free VRAM, or None when it cannot be read. None means "cannot tell", never zero."""
     free = _h3_signed_free_device_bytes(device)
@@ -2540,7 +2575,8 @@ def _h3_card_memory_bytes(
     device: Optional[str], ordinal: Optional[int]
 ) -> tuple[Optional[int], Optional[int]]:
     """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
-    ordinal 0."""
+    ordinal 0. Free is less the user's VRAM Budget reserve (raw at the default), so the sd.cpp resident-vs-offload
+    pick, its ``--max-vram`` probe and the server-pressure check all keep that share free."""
     if device != "cuda":
         return None, None
     try:
@@ -2557,7 +2593,8 @@ def _h3_card_memory_bytes(
             if total is None or used is None:
                 return None, None
             total_bytes = int(float(total) * 1024**3)
-            return max(0, int((float(total) - float(used)) * 1024**3)), total_bytes
+            free_bytes = int((float(total) - float(used)) * 1024**3)
+            return max(0, free_bytes - _user_reserve_bytes("cuda", total_bytes)), total_bytes
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None, None
     return None, None
@@ -3143,7 +3180,7 @@ def _stage_denoiser_for_quant(
         device = torch.device(getattr(target, "torch_device", None) or "cuda")
         from utils.hardware import trusted_mem_get_info
 
-        free_bytes, _ = trusted_mem_get_info(device, module = torch.cuda)
+        free_bytes, total_bytes = trusted_mem_get_info(device, module = torch.cuda)
         largest_linear = max(
             (
                 _module_dense_bytes(m)
@@ -3154,6 +3191,8 @@ def _stage_denoiser_for_quant(
         )
         budget = (
             int(free_bytes)
+            # the user's VRAM Budget reserve stays free while the DiT is staged too (0 at the default)
+            - _user_reserve_bytes(device, total_bytes)
             - DEFAULT_BASE_OVERHEAD_MIB * 1024 * 1024
             - _STAGE_LINEAR_WORKSPACE * largest_linear
         )
@@ -9487,7 +9526,7 @@ class VideoBackend:
                 plan = refined
             plan = _video_refine_for_multigpu(fam, pipe, plan, logger)
             vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
-            free_mib = getattr(getattr(plan, "device_memory", None), "free_mib", None)
+            free_mib = _planned_free_less_user_reserve_mib(getattr(plan, "device_memory", None))
             if vram_floor_mib is not None and free_mib is not None:
                 shortfall = video_offload_shortfall_message(
                     family = fam.name,
@@ -11769,15 +11808,10 @@ class VideoBackend:
                     if device_module is not None and hasattr(device_module, "mem_get_info"):
                         # Windows ROCm's free half is an over-report and this is a hard refusal, so cap it against the
                         # allocator (#8403).
-                        from utils.hardware import trusted_mem_get_info
-
-                        free_bytes, _ = trusted_mem_get_info(device_obj, module = device_module)
-                        reserved_bytes = (
-                            device_module.memory_reserved(device_obj)
-                            if hasattr(device_module, "memory_reserved")
-                            else 0
+                        # The user's VRAM Budget reserve is charged here for every tier, residency or not.
+                        available_vram_gb = (
+                            _request_available_bytes(device_obj, device_module) / 1_000_000_000
                         )
-                        available_vram_gb = (free_bytes + reserved_bytes) / 1_000_000_000
                         # Size the floor from the components this load ACTUALLY holds, not from the released bfloat16
                         # pair. Both fields are the ENGAGED schemes (a declined or failed request is recorded as None at
                         # load), so a dense fallback keeps the dense floor.
@@ -11825,7 +11859,7 @@ class VideoBackend:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "
                                 f"VRAM for {width}x{height} at {frames} frames; "
-                                f"{available_vram_gb:.1f} GB is available. Lower the resolution "
+                                f"{max(0.0, available_vram_gb):.1f} GB is available. Lower the resolution "
                                 "or duration, or load the GGUF artifact."
                             )
 
@@ -11835,7 +11869,7 @@ class VideoBackend:
                         # other from the released pair refuses exactly the configuration the quantized components exist
                         # for.
                         shortfall = h3_host_ram_shortfall(
-                            available_vram_gb,
+                            max(0.0, available_vram_gb),
                             text_encoder_gb = h3_te_resident_gb(
                                 state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
                             ),
@@ -11852,17 +11886,13 @@ class VideoBackend:
                     and hasattr(torch, "cuda")
                     and hasattr(torch.cuda, "mem_get_info")
                 ):
-                    from utils.hardware import trusted_mem_get_info
 
                     def _available_mib(ordinal: int) -> int:
-                        device_obj = torch.device("cuda", ordinal)
-                        free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
-                        reserved_bytes = (
-                            torch.cuda.memory_reserved(device_obj)
-                            if hasattr(torch.cuda, "memory_reserved")
-                            else 0
+                        # less the user's VRAM Budget reserve on each card (raw at the default)
+                        available = _request_available_bytes(
+                            torch.device("cuda", ordinal), torch.cuda
                         )
-                        return int((free_bytes + reserved_bytes) // (1024 * 1024))
+                        return int(available // (1024 * 1024))
 
                     shortfall = video_split_shortfall_message(
                         state.vram_split_cards,
@@ -11890,8 +11920,6 @@ class VideoBackend:
                     and hasattr(torch.cuda, "mem_get_info")
                 ):
                     # Otherwise a card that cannot hold the tier's weights is admitted and dies at the first onload.
-                    from utils.hardware import trusted_mem_get_info
-
                     ordinal = getattr(state, "placed_ordinal", None)
                     device_obj = (
                         torch.device("cuda", int(ordinal))
@@ -11969,16 +11997,13 @@ class VideoBackend:
                             frames = frames,
                             device = device_obj,
                         )
-                    free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
-                    reserved_bytes = (
-                        torch.cuda.memory_reserved(device_obj)
-                        if hasattr(torch.cuda, "memory_reserved")
-                        else 0
-                    )
+                    # less the user's VRAM Budget reserve (raw at the default): a fully streamed denoiser leaves
+                    # nothing for the residency fit to give back, so this is where the reserve holds
+                    available_bytes = _request_available_bytes(device_obj, torch.cuda)
                     shortfall = video_offload_shortfall_message(
                         family = fam.name,
                         floor_mib = int(state.vram_floor_mib),
-                        available_mib = int((free_bytes + reserved_bytes) // (1024 * 1024)),
+                        available_mib = int(available_bytes // (1024 * 1024)),
                         placement = f"'{state.offload_policy}' offload",
                         width = width,
                         height = height,

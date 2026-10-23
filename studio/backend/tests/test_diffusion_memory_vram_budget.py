@@ -417,3 +417,205 @@ def test_video_h3_residency_budget_keeps_the_reserve_deficit(fraction, monkeypat
     assert (
         vid._h3_free_device_bytes("cuda") == 0
     )  # the plain free reading still never goes negative
+
+
+# Request-time guards and residency checks read live free memory: each charges the same reserve (raw at the default).
+
+
+def test_video_request_available_reading_charges_the_reserve(fraction, monkeypatch):
+    import core.inference.video as vid
+    from utils import hardware
+
+    monkeypatch.setattr(
+        hardware, "trusted_mem_get_info", lambda *a, **k: (40 * GiB << 20, 80 * GiB << 20)
+    )
+    cuda = types.SimpleNamespace(memory_reserved = lambda device = None: 2 * GiB << 20)
+    dev = types.SimpleNamespace(type = "cuda", index = 0)
+    assert vid._request_available_bytes(dev, cuda) == 42 * GiB << 20
+    fraction["value"] = 0.80  # keeps 16 GiB of the 80 GiB card free
+    assert vid._request_available_bytes(dev, cuda) == (42 * GiB - int(80 * GiB * (1 - 0.80))) << 20
+    # Metal / CPU never charge it
+    assert vid._user_reserve_bytes(types.SimpleNamespace(type = "mps"), 80 * GiB << 20) == 0
+    assert vid._user_reserve_bytes("cpu", 80 * GiB << 20) == 0
+
+
+def test_every_video_request_guard_reads_through_the_reserve():
+    """No request guard (H3 tiers with or without residency, the multi-GPU split, the conventional offload floor) sums
+    raw free + allocator cache on its own any more: they all read ``_request_available_bytes``."""
+    import ast
+    import inspect
+
+    import core.inference.video as vid
+
+    tree = ast.parse(inspect.getsource(vid))
+    raw = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Add)
+        and {getattr(node.left, "id", None), getattr(node.right, "id", None)}
+        == {"free_bytes", "reserved_bytes"}
+    ]
+    assert raw == []
+    generate = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and "MiniMax-H3 needs about" in ast.get_source_segment(inspect.getsource(vid), n)
+        and n.name != "_request_available_bytes"
+    )
+    calls = [
+        n
+        for n in ast.walk(generate)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_request_available_bytes"
+    ]
+    assert len(calls) == 3
+
+
+def test_video_load_placement_guard_charges_the_reserve(fraction):
+    import core.inference.video as vid
+
+    card = _card(22 * GiB, 24 * GiB)
+    assert vid._planned_free_less_user_reserve_mib(card) == 22 * GiB
+    assert vid._planned_free_less_user_reserve_mib(_card(None, 24 * GiB)) is None
+    fraction["value"] = 0.75
+    assert vid._planned_free_less_user_reserve_mib(card) == 22 * GiB - 6 * GiB
+    mac = DeviceMemory("mps", "mps", "unified_memory", 20 * GiB, 32 * GiB)
+    assert vid._planned_free_less_user_reserve_mib(mac) == 20 * GiB
+
+
+def test_h3_native_card_free_charges_the_reserve(fraction, monkeypatch):
+    import contextlib
+
+    import core.inference.video as vid
+    from utils import hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda **k: {
+            "devices": [{"visible_ordinal": 0, "vram_total_gb": 24.0, "vram_used_gb": 4.0}]
+        },
+    )
+    from utils.hardware import gpu_query
+
+    monkeypatch.setattr(gpu_query, "fresh_reads", contextlib.nullcontext)
+    gib = 1024**3
+    assert vid._h3_card_memory_bytes("cuda", 0) == (20 * gib, 24 * gib)
+    fraction["value"] = 0.50
+    # the sd.cpp resident pick, its --max-vram probe and the server-pressure check all read this
+    assert vid._h3_card_memory_bytes("cuda", 0) == (8 * gib, 24 * gib)
+    assert vid._h3_card_free_bytes("cuda", 0) == 8 * gib
+
+
+def test_quant_staging_keeps_the_reserve_free(fraction, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.video as V
+
+    moved = []
+
+    class Block(torch.nn.Linear):
+        def to(self, *a, **k):
+            moved.append(self)
+            return self
+
+    dit = torch.nn.Module()
+    dit.blocks = torch.nn.ModuleList(
+        [Block(1024, 1024, bias = False).to(torch.bfloat16) for _ in range(4)]
+    )
+    moved.clear()
+    block = 1024 * 1024 * 2
+    total = 64 * GiB << 20
+    free = (
+        V.DEFAULT_BASE_OVERHEAD_MIB * 1024 * 1024
+        + V._STAGE_LINEAR_WORKSPACE * block
+        + 4 * block
+        + (1 * GiB << 20)
+    )
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr("utils.hardware.trusted_mem_get_info", lambda d, module = None: (free, total))
+    target = types.SimpleNamespace(device = "cuda", torch_device = "cuda")
+    assert len(V._stage_denoiser_for_quant(dit, target)) == 4
+    moved.clear()
+    fraction["value"] = 0.99  # 0.64 GiB reserve: the 1 GiB spare covers it, all four still stage
+    assert len(V._stage_denoiser_for_quant(dit, target)) == 4
+    fraction["value"] = 0.90  # 6.4 GiB reserve: nothing fits beside it
+    assert V._stage_denoiser_for_quant(dit, target) == []
+
+
+def test_image_layer_split_card_guard_charges_the_reserve(fraction, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion as D
+    from core.inference import diffusion_layer_split_plan as lsp
+
+    from . import test_diffusion_layer_split_plan as T
+
+    for env in (T.mg.MULTIGPU_ENV, T.mg.CFG_PARALLEL_ENV, lsp.LAYER_SPLIT_ENV):
+        monkeypatch.delenv(env, raising = False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
+    monkeypatch.setattr(T.mg, "_capability", lambda o: None)
+    monkeypatch.setattr(lsp, "_is_rocm", lambda: False)
+    monkeypatch.setattr(T.mg, "_rocm_torch", lambda: False)
+    eng = T._Engine()
+    monkeypatch.setattr(lsp, "engine_available", lambda: True)
+    monkeypatch.setattr(lsp, "place_layer_split", eng.place)
+    monkeypatch.setattr(lsp, "undo_layer_split", eng.undo)
+    plan, pipe = T._layer_plan(monkeypatch, eng)
+    lsp.apply_layer_split_plan(pipe, plan, placement = "cuda:0")
+    monkeypatch.setattr(D, "estimate_image_runtime_mib", lambda **k: 4096)
+    working, reserve = lsp.applied_layer_split(pipe).working_mib(1)
+    free = working + reserve + 512
+    monkeypatch.setattr(
+        D,
+        "reclaimable_snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free, 24 * GiB),
+    )
+    kw = {"width": 1024, "height": 1024, "family": "flux2"}
+    assert D._guard_layer_cards(pipe, object(), kw) == 1
+    fraction["value"] = 0.90  # 2.4 GiB of cuda:1 kept free: the 512 MiB spare is not enough
+    with pytest.raises(ValueError, match = "cuda:1"):
+        D._guard_layer_cards(pipe, object(), kw)
+
+
+def test_denoiser_hold_between_calls_keeps_the_reserve_free(fraction, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_multistage as MS
+
+    param = types.SimpleNamespace(device = types.SimpleNamespace(type = "cuda"))
+    dit = types.SimpleNamespace(parameters = lambda: iter([param]))
+    monkeypatch.setattr(MS, "_denoisers", lambda pipe: [dit])
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (4 * GiB << 20, 24 * GiB << 20))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 0)
+    assert MS.companions_fit_beside_denoiser(object(), ()) is True  # 2 GiB margin within 4 GiB free
+    fraction["value"] = 0.90  # 2.4 GiB kept free leaves 1.6 GiB, under the margin
+    assert MS.companions_fit_beside_denoiser(object(), ()) is False
+
+
+def test_cfg_batch_doubled_call_keeps_the_reserve_free(fraction, monkeypatch):
+    from core.inference import diffusion_cfg_batch as cb
+
+    fake = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(
+            mem_get_info = lambda device: (10 * GiB << 20, 24 * GiB << 20),
+            memory_reserved = lambda device: 2 * GiB << 20,
+            memory_allocated = lambda device: 1 * GiB << 20,
+        )
+    )
+    monkeypatch.setattr(cb, "_torch", lambda: fake)
+    assert cb._usable_free_mib("cuda:0") == 11 * GiB
+    fraction["value"] = 0.75
+    assert cb._usable_free_mib("cuda:0") == 11 * GiB - 6 * GiB
+
+
+def test_primary_card_rank_uses_free_less_the_reserve(fraction, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_device as dd
+
+    cards = {0: (20 * GiB << 20, 80 * GiB << 20), 1: (14 * GiB << 20, 16 * GiB << 20)}
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda o: cards[o])
+    assert dd.rank_cuda_ordinals([0, 1]) == [0, 1]
+    fraction["value"] = (
+        0.80  # cuda:0 keeps 16 GiB (4 GiB left), cuda:1 keeps 3.2 GiB (10.8 GiB left)
+    )
+    assert dd.rank_cuda_ordinals([0, 1]) == [1, 0]
