@@ -7393,6 +7393,7 @@ const ComposerToolsMenu: FC<{
         <button
           type="button"
           aria-label="Tools and attachments"
+          data-pill-label="Add files and more"
           className="unsloth-composer-plus"
           data-tour="chat-plus-menu"
         >
