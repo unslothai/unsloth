@@ -119,12 +119,13 @@ def _fetch_level_zero_sdk(dest: Path) -> None:
 
 
 def _provide_level_zero_sdk() -> str | None:
-    """Studio's cached copy of the SDK, fetched on first need. None when it cannot be had (offline)."""
+    """Studio's cached copy of the SDK, fetched on first need unless installs are offline; else None."""
     try:
         from utils.paths.storage_roots import cache_root  # noqa: PLC0415
+        from utils.utils import package_installs_offline  # noqa: PLC0415
 
         dest = cache_root() / f"level-zero-sdk-{_L0_VERSION}"
-        if not _sdk_complete(dest):
+        if not _sdk_complete(dest) and not package_installs_offline():
             _fetch_level_zero_sdk(dest)
         return str(dest) if _sdk_complete(dest) else None
     except Exception:  # noqa: BLE001

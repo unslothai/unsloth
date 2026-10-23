@@ -281,3 +281,29 @@ def test_the_windows_gate_prepares_xpu_triton(monkeypatch):
     _msvc_env.gate_torch_compile_on_windows(logging.getLogger("t"))
 
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("offline", [True, False])
+def test_offline_installs_use_only_a_cached_sdk(tmp_path, monkeypatch, offline):
+    from utils import utils as studio_utils
+    from utils.paths import storage_roots
+
+    monkeypatch.setattr(storage_roots, "cache_root", lambda: tmp_path)
+    monkeypatch.setattr(studio_utils, "package_installs_offline", lambda: offline)
+    fetched = []
+
+    def fetch(dest):
+        fetched.append(dest)
+        for rel in (("include", "level_zero", "ze_api.h"), ("lib", "ze_loader.lib")):
+            dest.joinpath(*rel).parent.mkdir(parents = True, exist_ok = True)
+            dest.joinpath(*rel).write_text("")
+
+    monkeypatch.setattr(toolchain, "_fetch_level_zero_sdk", fetch)
+
+    got = toolchain._provide_level_zero_sdk()
+
+    assert bool(fetched) is not offline
+    assert (got is None) is offline
+    if offline:
+        fetch(tmp_path / f"level-zero-sdk-{toolchain._L0_VERSION}")
+        assert toolchain._provide_level_zero_sdk() is not None
