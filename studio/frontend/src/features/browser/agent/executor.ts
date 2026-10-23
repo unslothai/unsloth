@@ -15,7 +15,7 @@ import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
 import { isLoopbackUrl } from "../address";
 import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
-import { requestFrameAgent } from "../page-frame";
+import { requestFrameAgent, sendFrameCommand } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
 import {
@@ -804,6 +804,13 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     if (action.op !== "reload" && !nativeMove && !entry) {
       const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
       if (!ready) return { ok: false, error: "the browser tab closed." };
+      // A router's pushState / hash history lives in the page, as the toolbar's Back finds it.
+      const since = Date.now();
+      if (ready.pageHistory?.[action.op] && sendFrameCommand(ready.id, { command: "go", delta: action.op === "back" ? -1 : 1 })) {
+        const after = await settle(ready.id, before, since, signal);
+        if (!after) return { ok: false, error: "the browser tab closed." };
+        return arrive(after, before, action, context, since);
+      }
       const refused = await stillAllowed(ready, action, context);
       if (refused) return { ok: false, error: refused };
       return observe(ready, context, `There is no ${action.op === "back" ? "previous" : "next"} page in this tab's history; this is still the same page.`);

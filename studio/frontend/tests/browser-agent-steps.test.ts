@@ -68,3 +68,25 @@ test("Back with no page behind it still holds the page it stays on to the site r
     useBrowserAgentStore.getState().setSiteRule("example.com", null);
   }
 });
+
+test("Back through a router's own history goes back in the page", async () => {
+  const tabId = agentChat(CHAT).tabId ?? "";
+  const store = useBrowserStore.getState();
+  store.updateTab(tabId, { pageHistory: { back: true, forward: false } });
+  const sent: Array<Record<string, unknown>> = [];
+  globals.__frameCommand = (id: string, command: Record<string, unknown>) => {
+    sent.push(command);
+    store.updateTab(id, { displayUrl: "https://example.com/list" });
+    return true;
+  };
+  try {
+    await runBrowserAction({ id: "b3", sessionId: "s", op: "back", direction: "down", policy }, run);
+  } finally {
+    delete globals.__frameCommand;
+    store.updateTab(tabId, { pageHistory: null });
+  }
+  const result = resultOf("b3");
+  assert.equal(result?.ok, true, result?.error);
+  assert.deepEqual(sent, [{ command: "go", delta: -1 }]);
+  assert.doesNotMatch(result?.note ?? "", /no previous page/);
+});

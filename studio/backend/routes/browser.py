@@ -1848,6 +1848,23 @@ def _fetch_module(
     return code
 
 
+def _comment_end(page: str, start: int) -> int:
+    """End of the comment whose text starts at ``start`` (after "<!--"), or -1 if unclosed. The
+    tokenizer also ends one at "<!-->", "<!--->" and "--!>" (WHATWG HTML 13.2.5.43-52)."""
+    if page.startswith(">", start):
+        return start + 1
+    if page.startswith("->", start):
+        return start + 2
+    close = page.find("--", start)
+    while close >= 0:
+        if page.startswith(">", close + 2):
+            return close + 3
+        if page.startswith("!>", close + 2):
+            return close + 4
+        close = page.find("--", close + 1)
+    return -1
+
+
 def _inert_spans(page: str, tags: bool = True) -> list[tuple[int, int]]:
     """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does.
     ``tags``: count every tag's own span too (its attributes are text, not markup)."""
@@ -1855,8 +1872,8 @@ def _inert_spans(page: str, tags: bool = True) -> list[tuple[int, int]]:
     at = 0
     while match := _INERT_START_RE.search(page, at):
         if match.group(0).startswith("<!--"):
-            close = page.find("-->", match.end())
-            end = len(page) if close < 0 else close + 3
+            end = _comment_end(page, match.end())
+            end = len(page) if end < 0 else end
             spans.append((match.start(), end))
         elif match.group(1) is None:
             end = match.end()
@@ -1886,10 +1903,9 @@ def _template_close(page: str, start: int) -> "Optional[re.Match[str]]":
         text = match.group(0)
         name = (match.group(1) or "").lower()
         if text.startswith("<!--"):
-            close = page.find("-->", match.end())
-            if close < 0:
+            at = _comment_end(page, match.end())
+            if at < 0:
                 return None
-            at = close + 3
         # Not a prefix test: the ordinary-tag branch also matches </template-card>.
         elif _TEMPLATE_CLOSE_RE.match(page, match.start()):
             depth -= 1

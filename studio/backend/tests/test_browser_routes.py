@@ -375,6 +375,15 @@ def test_prepare_page_scans_for_inert_text_only_when_a_tag_needs_it(monkeypatch)
     assert calls == [1]
 
 
+@pytest.mark.parametrize("comment", ["<!-->", "<!--->", "<!-- x --!>"])
+def test_a_comment_ends_where_the_tokenizer_ends_it(comment):
+    page = f'{comment}<base href="/docs/"><meta http-equiv="refresh" content="1; url=next">'
+    html, base, refresh = browser_mod._prepare_page(page, "https://example.com/a/")
+    assert base == "https://example.com/docs/"
+    assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
+    assert html == comment
+
+
 def test_custom_elements_named_like_raw_text_ones_are_not_inert():
     page = (
         "<title-bar>x</title-bar><template-card></template-card><script-loader></script-loader>"
