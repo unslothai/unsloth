@@ -174,3 +174,17 @@ test("the Run Flow picker refetches the flow list and history never shows anothe
   const reset = history.slice(history.indexOf("a different node starts with nothing viewed"));
   assert.ok(reset.indexOf("setEntries(null)") < reset.indexOf("}, [nodeId, onView]);"));
 });
+
+test("an untouched seed keeps randomizing, a typed-in seed is used as is", () => {
+  const d = doc([
+    {
+      ...node("seed", "input.seed", [0, 0]),
+      params: { value: 42, randomize: true },
+    },
+  ]);
+  const fields = appFields(d as never);
+  const seedOf = (value: unknown) =>
+    applyAppValues(d as never, fields, { seed: value }).doc.nodes[0].params;
+  assert.equal(seedOf(42).randomize, true);
+  assert.deepEqual(seedOf(7), { value: 7, randomize: false });
+});

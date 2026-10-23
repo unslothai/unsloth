@@ -151,8 +151,9 @@ export function applyAppValues(
     const known = NODE_FIELDS[node.type];
     if (!known) return node;
     const next = { ...node.params, [known.param]: nodeValues.get(node.id) };
-    // A typed-in seed is the seed to use.
-    if (node.type === "input.seed") next.randomize = false;
+    // A typed-in seed is the seed to use; the untouched default keeps the block's randomize setting.
+    if (node.type === "input.seed" && Number(next.value) !== Number(node.params.value))
+      next.randomize = false;
     return { ...node, params: next };
   });
   return { doc: { ...doc, nodes }, params };
