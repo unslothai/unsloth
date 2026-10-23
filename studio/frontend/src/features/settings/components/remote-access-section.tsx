@@ -393,8 +393,8 @@ export function RemoteAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices through a secure,
-              temporary public Cloudflare URL.
+              Use Unsloth and its APIs from other devices over a secure,
+              temporary Cloudflare URL.
             </p>
           </div>
         </div>
@@ -402,7 +402,7 @@ export function RemoteAccessSection() {
           type="button"
           size="sm"
           variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
+          className="shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -422,7 +422,7 @@ export function RemoteAccessSection() {
 
         <SettingsRow
           label="Start automatically"
-          description="Create a new remote URL each time Unsloth starts. Stopping remote access now won’t turn this off."
+          description="Create a new remote URL each time Unsloth starts. Stopping now won’t turn this off."
         >
           <Switch
             checked={status?.autoStart ?? false}
