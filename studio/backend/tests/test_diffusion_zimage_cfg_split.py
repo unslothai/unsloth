@@ -322,3 +322,60 @@ def test_cfg_parallel_router_splits_and_keeps_both_branches_on_the_primary():
     for a, b in zip(routed, plain):
         assert torch.equal(a, b)
     assert zs.zimage_cfg_split_status(pipe)["batched"] == 0
+
+
+def test_compiled_only_keeps_an_eager_denoiser_batched_and_splits_once_compiled():
+    """Eager tier: the split has no graph to protect and two serial calls are slower, so the guided call stays batched;
+    a compile engaged after the load (deferred / auto compile) splits from the next render on."""
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True) is None
+    args = _guided_args(_latent(10), torch.tensor([0.4]), 9, 12, 10)
+    with zs.render(pipe, 1):
+        eager = _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 0, "batched": 0}
+    with torch.no_grad():
+        batched = model(*args, return_dict = False)[0]
+    for a, b in zip(eager, batched):
+        assert torch.equal(a, b)
+    _compile_blocks(model)
+    with zs.render(pipe, 1):
+        _run(model, *args)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+@pytest.mark.parametrize("engage", ["regional_mark", "compiled_block", "cuda_graphs"])
+def test_compiled_only_splits_every_engaged_form(engage):
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    if engage == "regional_mark":
+        model._unsloth_regional_compile_kwargs = {"dynamic": True}
+    elif engage == "compiled_block":
+        model.layers[0].compile(backend = "eager", dynamic = True)
+    else:
+        pipe._unsloth_cuda_graphs = (object(),)
+    with zs.render(pipe, 1):
+        _run(model, *_guided_args(_latent(11), torch.tensor([0.4]), 45, 9, 11))
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_studio_load_arms_the_split_compiled_only():
+    import ast
+    import pathlib
+
+    source = pathlib.Path(zs.__file__).with_name("diffusion.py").read_text()
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "install_zimage_cfg_split"
+    ]
+    assert calls
+    for call in calls:
+        flags = {k.arg: k.value for k in call.keywords}
+        assert (
+            isinstance(flags.get("compiled_only"), ast.Constant)
+            and flags["compiled_only"].value is True
+        )

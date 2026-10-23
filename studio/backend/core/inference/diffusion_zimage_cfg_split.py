@@ -20,6 +20,11 @@ Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` s
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
 recompile. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
 Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
+
+Studio arms it ``compiled_only``: a render splits only while the denoiser runs compiled code or replays CUDA graphs,
+checked per render since a deferred compile can engage after the load. An eager denoiser has no graph to keep, and
+there the two serial calls cost more than one batched guided call (B200, eager, random weights: ~2x at 256px,
+~1.3-1.5x at 512px, parity at 1024px).
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ _STREAMED_POLICIES = ("group", "streaming", "sequential")
 _ARMED_ATTR = "_unsloth_zimage_cfg_split"
 _SAMPLES_ATTR = "_unsloth_zimage_cfg_samples"
 _STATS_ATTR = "_unsloth_zimage_cfg_split_stats"
+_COMPILED_ONLY_ATTR = "_unsloth_zimage_cfg_split_compiled_only"
 # Keyword arguments a split call may carry (anything else, e.g. siglip / controlnet / noise masks, runs batched).
 _PLAIN_KWARGS = frozenset({"return_dict", "joint_attention_kwargs", "patch_size", "f_patch_size"})
 
@@ -77,6 +83,26 @@ def _declined_now(module: Any) -> Optional[str]:
     if getattr(module, "training", False):
         return "training"
     return None
+
+
+def _graphs_engaged(pipe: Any, denoiser: Any) -> bool:
+    """Whether ``denoiser`` runs compiled code or replays CUDA graphs now, the only case a split saves anything."""
+    if getattr(pipe, "_unsloth_cuda_graphs", None):
+        return True
+    try:
+        from .diffusion_cfg_batch import compiled_denoiser
+    except Exception:  # noqa: BLE001 - unknown: keep the split
+        return True
+    try:
+        if compiled_denoiser(denoiser) is not None:
+            return True
+        # A block whose instance forward was replaced by a torch.compile'd one.
+        return any(
+            hasattr(getattr(sub, "__dict__", {}).get("forward"), "_torchdynamo_orig_callable")
+            for sub in denoiser.modules()
+        )
+    except Exception:  # noqa: BLE001 - unknown: keep the split
+        return True
 
 
 def _halves(samples: int, args: tuple, kwargs: dict) -> Optional[tuple]:
@@ -164,7 +190,7 @@ def uninstall_zimage_cfg_split(pipe: Any = None) -> None:
     denoiser = getattr(pipe, "transformer", None) if pipe is not None else None
     slots = getattr(denoiser, "__dict__", None)
     if isinstance(slots, dict):
-        for name in (_ARMED_ATTR, _SAMPLES_ATTR, _STATS_ATTR):
+        for name in (_ARMED_ATTR, _SAMPLES_ATTR, _STATS_ATTR, _COMPILED_ONLY_ATTR):
             slots.pop(name, None)
     with _LOCK:
         for cls, (own, patched) in list(_PATCHED.items()):
@@ -181,8 +207,10 @@ def install_zimage_cfg_split(
     *,
     offload_policy: str,
     logger: Any = None,
+    compiled_only: bool = False,
 ) -> Optional[str]:
-    """Arm the split on ``pipe.transformer``; the decline reason, or None when armed. Never fails a load."""
+    """Arm the split on ``pipe.transformer``; the decline reason, or None when armed. Never fails a load.
+    ``compiled_only``: a render splits only while the denoiser is compiled or replays CUDA graphs."""
     try:
         denoiser = getattr(pipe, "transformer", None)
         if denoiser is None or not _is_zimage(denoiser):
@@ -199,6 +227,7 @@ def install_zimage_cfg_split(
             _patch_class(type(denoiser))
             denoiser.__dict__[_ARMED_ATTR] = True
             denoiser.__dict__[_STATS_ATTR] = {"split": 0, "batched": 0}
+            denoiser.__dict__[_COMPILED_ONLY_ATTR] = bool(compiled_only)
         else:
             denoiser.__dict__.pop(_ARMED_ATTR, None)
         if logger is not None:
@@ -227,7 +256,10 @@ def zimage_cfg_split_status(pipe: Any) -> Optional[dict]:
 def render(pipe: Any, samples: int):
     """For one pipeline call whose guidance-off transformer call carries ``samples`` images."""
     denoiser = getattr(pipe, "transformer", None)
-    armed = denoiser is not None and bool(getattr(denoiser, "__dict__", {}).get(_ARMED_ATTR))
+    slots = getattr(denoiser, "__dict__", {}) if denoiser is not None else {}
+    armed = bool(slots.get(_ARMED_ATTR))
+    if armed and slots.get(_COMPILED_ONLY_ATTR) and not _graphs_engaged(pipe, denoiser):
+        armed = False
     if not armed:
         yield
         return
