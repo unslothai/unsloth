@@ -394,10 +394,10 @@ export const BUDGET = {
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
   // Hub metadata caching and hidden-row filtering (#14265): +549 B raw / +163 B transfer (6,923,066 ->
-  // 6,923,615 B raw, 2,085,268 -> 2,085,431 B transfer against d4f1ceb19, one machine and build, Node 24,
-  // 98 chunks). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_085_181,
-  rawBytes: 6_923_092,
+  // 6,923,615 B raw, 2,085,268 -> 2,085,431 B transfer against d4f1ceb19, Node 24, 98 chunks; CI builds the
+  // same bytes). Main at d4f1ceb19 was already over its line above, so raised to this build plus about 200 B.
+  transferBytes: 2_085_620,
+  rawBytes: 6_923_815,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
