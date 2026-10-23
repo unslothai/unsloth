@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useSingleLine } from "@/hooks/use-single-line";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -117,10 +118,19 @@ export function AgentIcon({
 export function CommandBlock({ command }: { command: string }) {
   const t = useT();
   const { copied, copy } = useCopyButton(command);
+  const [preRef, singleLine] = useSingleLine<HTMLPreElement>();
 
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
-      <pre className="py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
+    <div
+      className={cn(
+        "group relative overflow-hidden border border-border bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+        singleLine ? "rounded-full" : "rounded-lg",
+      )}
+    >
+      <pre
+        ref={preRef}
+        className="py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground"
+      >
         <code className="block font-mono whitespace-pre-wrap break-all">
           {command}
         </code>
