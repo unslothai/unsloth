@@ -21,6 +21,7 @@ import { EMBEDDING_TAGS, estimateSizeFromDtypes } from "../lib/hf-model-meta";
 import { mergeTaskIterators } from "../lib/merge-task-iterators";
 import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
+import { ggufRepoParams } from "@/lib/model-size";
 import { type FreshRankable, rankFresh } from "../lib/fresh-ranking";
 import { type ProviderLogo, resolveOwnerProviderLogo } from "../lib/provider-logos";
 import {
@@ -272,7 +273,9 @@ function makeMapModel(
       likes: m.likes ?? 0,
       private: m.private,
       gated: m.gated,
-      totalParams: m.safetensors?.total ?? m.gguf?.total,
+      totalParams:
+        m.safetensors?.total ??
+        (m.gguf ? ggufRepoParams(m.name, m.gguf.total) : undefined),
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
       baseModel: detectBaseModel(m.tags),

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
+import { ggufRepoParams } from "../src/lib/model-size.ts";
 
 const source = readFileSync(
   new URL("../src/features/hub/hooks/use-hub-model-search.ts", import.meta.url),
@@ -14,7 +15,7 @@ const start = source.indexOf("function makeMapModel(");
 assert.notEqual(start, -1);
 const end = source.indexOf("\n}\n", start) + 2;
 const makeMapModel = new Function(
-  "classifyUnslothSupport", "EMBEDDING_TAGS", "isGgufLike", "estimateSizeFromDtypes", "detectBaseModel",
+  "classifyUnslothSupport", "EMBEDDING_TAGS", "isGgufLike", "estimateSizeFromDtypes", "detectBaseModel", "ggufRepoParams",
   ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText +
     "; return makeMapModel;",
 )(
@@ -23,6 +24,7 @@ const makeMapModel = new Function(
   (id: string) => /-gguf$/i.test(id),
   () => undefined,
   () => null,
+  ggufRepoParams,
 );
 
 // unsloth/MiniMax-M3.1-Flash-GGUF as the listing reported it while only README.md was uploaded.
@@ -61,4 +63,20 @@ test("every Hub listing in the model picker opts in", () => {
     const options = call.slice(0, call.indexOf("});"));
     assert.match(options, /hideEmptyUploads: true/);
   }
+});
+
+test("a GGUF repo's size is its largest reading, not the drafter the Hub sampled", () => {
+  const map = makeMapModel(false, true, "", "cuda", true);
+  // The Hub's gguf.total here comes from a 1.6B DFlash drafter shipped beside the 120B quants.
+  const nemotron = map({
+    name: "unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF",
+    gguf: { total: 1632922404, architecture: "dflash" },
+    tags: ["gguf"],
+  });
+  assert.equal(nemotron?.totalParams, 120e9);
+  // Metadata stays when it is the larger, more exact figure, or the name has no size.
+  assert.equal(map({ name: "unsloth/Qwen3-30B-A3B-GGUF", gguf: { total: 30.5e9 }, tags: ["gguf"] })?.totalParams, 30.5e9);
+  assert.equal(map({ name: "unsloth/flint-GGUF", gguf: { total: 39785287456 }, tags: ["gguf"] })?.totalParams, 39785287456);
+  // Safetensors totals already count every weight and keep precedence.
+  assert.equal(map({ name: "unsloth/MiniMax-M3.1-Flash", safetensors: { total: 220490854016 }, tags: [] })?.totalParams, 220490854016);
 });
