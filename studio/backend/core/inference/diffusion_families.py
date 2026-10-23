@@ -3063,13 +3063,8 @@ _SD_CPP_TEXT_ENCODER_CACHED_ORDER = ("BF16", "Q8_0", "Q4_K_M")
 
 
 def sd_cpp_text_encoder_cached_alternatives(repo: str, filename: str, kind: str) -> tuple[str, ...]:
-    """Other precisions of this sd.cpp encoder a load that cannot download may use instead.
-
-    The defaults moved to BF16 after builds had fetched Q8_0 / Q4_K_M, so an offline (or
-    background, cache-only) load of a model that loaded before would otherwise fail on the
-    missing BF16 file while an older quant of the same encoder sits in the cache. Empty under
-    UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT (an explicit pick is honoured, not swapped) and for any
-    encoder that is not one of the unsloth LLM GGUFs that ship every precision."""
+    """Other precisions a cache-only load may use: defaults moved to BF16 after builds cached
+    Q8_0 / Q4_K_M. Empty under UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT (explicit pick honoured)."""
     if sd_cpp_text_encoder_quant() is not None:
         return ()
     if kind != "llm" or str(repo).lower() not in _SD_CPP_REQUANTABLE_TE_REPOS:

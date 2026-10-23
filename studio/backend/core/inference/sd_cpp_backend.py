@@ -4154,9 +4154,8 @@ class SdCppDiffusionBackend:
         local_only: bool = False,
     ) -> list[tuple[str, str, str]]:
         """(repo, filename, kind) for every file sd-cli needs. ``kind`` is the SdCppModelFiles
-        field; the transformer reuses the diffusers GGUF. ``local_only`` (a cache-only load) or HF
-        offline mode swaps an encoder whose file is not cached for a cached other precision of
-        it, so the plan the UI shows and the load agree on the file that will be read."""
+        field; the transformer reuses the diffusers GGUF. Offline / ``local_only`` swaps an uncached
+        encoder for a cached other precision so the UI plan and the load agree."""
         specs: list[tuple[str, str, str]] = [(repo_id, gguf_filename, "diffusion_model")]
         if fam.sd_cpp_vae:
             specs.append((fam.sd_cpp_vae[0], fam.sd_cpp_vae[1], "vae"))
@@ -4249,8 +4248,7 @@ class SdCppDiffusionBackend:
                         gguf_header_delta = True,
                     )
                 except _local_entry_not_found_error() as exc:
-                    # Not cached and not fetchable (local_files_only, HF offline mode, or no network). An encoder
-                    # whose default precision changed may still be cached as an earlier quant: read that one.
+                    # Not fetchable: an encoder whose default precision changed may be cached as an older quant.
                     alternative = _cached_text_encoder_alternative(repo, fn, kind)
                     if alternative is not None:
                         logger.warning(
@@ -4270,16 +4268,11 @@ class SdCppDiffusionBackend:
                             gguf_header_delta = True,
                         )
                     else:
-                        # Raised by huggingface_hub for exactly "not cached and outgoing traffic is disabled", so it can
-                        # only fire under local_files_only. Its own text names neither the repo nor the file, and this
-                        # string is what /images/load-progress toasts, so restate it with both. Re-raised untouched in the
-                        # (unreachable) online case rather than relabelled, so nothing changes when the flag is off.
+                        # Only fires under local_files_only; hub text omits repo/file and this string is the UI toast.
                         if not local_files_only:
                             raise
                         if kind == "llm_vision" and vision_optional:
-                            # Only editing reads the projector, and edit is offered only when it is loaded. A
-                            # Qwen-Image-2.1 GGUF cached before the projector was listed still loads for
-                            # text-to-image; opening it from the Images page fetches the projector.
+                            # Only edit reads the projector; text-to-image still loads without it.
                             logger.info(
                                 "sd_cpp.llm_vision_not_cached: %s/%s, editing unavailable", repo, fn
                             )
