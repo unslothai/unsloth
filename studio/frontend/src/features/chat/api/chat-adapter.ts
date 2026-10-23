@@ -4652,6 +4652,10 @@ export function createOpenAIStreamAdapter(
       // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
         (runThreadId ?? runtime.activeThreadId) || undefined;
+      // Taken as it sends: the browser agent's pages stay out of history after a switch to a saved chat.
+      const browserTemporary =
+        runtime.incognito ||
+        (resolvedThreadId ? isThreadIncognito(resolvedThreadId) : false);
       if (resolvedThreadId) {
         rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
       }
@@ -7653,6 +7657,7 @@ export function createOpenAIStreamAdapter(
                           scope: liveThreadKey(serverCancel),
                           userText,
                           fullAccess: bypassPermissions,
+                          temporary: browserTemporary,
                           signal: runSignal,
                         });
                       }

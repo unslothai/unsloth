@@ -175,3 +175,28 @@ test("a new chat's run stays in it after a switch, and Stop in the saved chat en
   assert.equal(agentChat(chatKeyOfThread("bound")).question, null);
 });
 
+
+test("a temporary chat's run keeps its pages out of history after a switch to a saved chat", async () => {
+  globals.__native = true;
+  const store = useBrowserStore.getState();
+  // The saved chat on screen is not temporary: only the run itself says its pages are.
+  store.showChat(chatKeyOfThread("saved-shown"));
+  const run = (id: string, url: string) =>
+    runBrowserAction(
+      { id, sessionId: "s", op: "navigate", url, direction: "down", policy },
+      { runKey: "run-hidden-temp", scope: "hidden-temp", temporary: true, userText: `open ${url}` },
+    );
+  // The first opens the run's tab in its own chat; the second moves that tab on.
+  await run("t1", "https://private.example/");
+  await run("t2", "https://private.example/next");
+  assert.equal(resultOf("t1")?.ok, true, resultOf("t1")?.error);
+  assert.equal(resultOf("t2")?.ok, true, resultOf("t2")?.error);
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === agentChat(chatKeyOfThread("hidden-temp")).tabId);
+  assert.deepEqual(
+    tab?.history.map((entry) => (entry.kind === "web" ? [entry.url, entry.temporary] : null)),
+    [
+      ["https://private.example/", true],
+      ["https://private.example/next", true],
+    ],
+  );
+});
