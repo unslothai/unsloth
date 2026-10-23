@@ -2607,12 +2607,17 @@ def _h3_device_capacity_bytes(device: str) -> Optional[int]:
     pipeline is not torn down until ``load_pipeline`` runs, so a free reading taken while the plan
     is being built describes the OLD model's occupancy, not this load's. Capacity cannot -- it is
     an upper bound on any later free reading, so "does not fit in the whole card" still holds when
-    the loader asks again against live free memory."""
+    the loader asks again against live free memory. Less the user's VRAM Budget reserve, which
+    ``_h3_free_device_bytes`` charges at placement, so planning and placement cannot disagree."""
     if device != "cuda":
         return None
     try:
         import torch
-        return int(torch.cuda.mem_get_info()[1])
+
+        from .diffusion_memory import _user_budget_reserve_mib
+
+        total = int(torch.cuda.mem_get_info()[1])
+        return max(0, total - (_user_budget_reserve_mib(total >> 20) << 20))
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None
 

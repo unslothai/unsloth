@@ -309,14 +309,20 @@ def best_secondary(
 ) -> Optional[int]:
     if not selection.secondaries:
         return None
-    from .diffusion_memory import _user_budget_reserve_mib
+    from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
+
+    # Raw free at the default budget (the order is unchanged there). Under a lowered one, the safe budget the
+    # secondary limits are cut from, i.e. the larger of the card's planner reserve and the user's: a big, partly used
+    # card can hold less than a small idle one.
+    budgeted = _user_budget_reserve_mib(1 << 20) > 0
 
     def usable(free: Optional[int], total: Optional[int]) -> int:
-        # what the user's VRAM Budget leaves: a big, partly used card can hold less than a small idle one (raw free
-        # at the default budget, so the order is unchanged there)
         if free is None:
             return -1
-        return int(free) - _user_budget_reserve_mib(total or free)
+        if not budgeted:
+            return int(free)
+        memory = DeviceMemory("cuda", "cuda", "discrete_vram", int(free), total)
+        return int(_safe_device_budget_mib(memory) or 0)
 
     if probes is None and selection.automatic:
         free = {o: _free_total_mib(o) for o in selection.secondaries}

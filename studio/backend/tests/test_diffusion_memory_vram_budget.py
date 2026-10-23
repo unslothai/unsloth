@@ -332,3 +332,38 @@ def test_companion_card_is_ranked_by_what_the_budget_leaves(fraction, monkeypatc
     monkeypatch.setattr(mg, "_free_total_mib", lambda o: readings[o])
     automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2), automatic = True)
     assert mg.best_secondary(automatic) == 2
+
+
+def test_companion_card_rank_uses_the_reserve_the_limit_enforces(fraction):
+    import core.inference.diffusion_multigpu as mg
+
+    probes = {
+        0: mg.DeviceProbe(ordinal = 0, name = "a", total_mib = 24 * GiB, free_mib = 23 * GiB),
+        1: mg.DeviceProbe(ordinal = 1, name = "a", total_mib = 24 * GiB, free_mib = 20 * GiB),
+        2: mg.DeviceProbe(ordinal = 2, name = "b", total_mib = 192 * GiB, free_mib = 26 * GiB),
+    }
+    selection = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))
+    assert mg.best_secondary(selection, probes) == 2  # default: most free
+    fraction["value"] = 0.96  # just below the default: the planner reserves still bind
+    limits = {
+        o: dm._safe_device_budget_mib(
+            DeviceMemory("cuda", "cuda", "discrete_vram", probes[o].free_mib, probes[o].total_mib)
+        )
+        for o in (1, 2)
+    }
+    assert limits[2] > limits[1]
+    assert mg.best_secondary(selection, probes) == 2
+
+
+def test_video_h3_capacity_probe_charges_the_same_reserve_as_placement(fraction, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.video as vid
+    from utils import hardware
+
+    total = 80 * GiB << 20
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a, **k: (total, total))
+    monkeypatch.setattr(hardware, "trusted_mem_get_info", lambda *a, **k: (total, total))
+    assert vid._h3_device_capacity_bytes("cuda") == total
+    fraction["value"] = 0.50
+    # an idle card: what the plan sees before the download equals what placement sees after it
+    assert vid._h3_device_capacity_bytes("cuda") == vid._h3_free_device_bytes("cuda") == total // 2
