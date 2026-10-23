@@ -1328,7 +1328,8 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None" in src
+    at = src.index("pipe._unsloth_phase_seeds = (")
+    assert "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None" in src[at : at + 200]
 
 
 def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
