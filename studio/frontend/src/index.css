@@ -282,7 +282,6 @@
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
-	--radius: 1.1rem;
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
 	--sidebar-base: #ffffff;
@@ -520,8 +519,6 @@
 	--sidebar-border-base: #3a3a3a;
 	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
-	/* Match light's radius so every rounded-* element is the same in both themes. */
-	--radius: 1.1rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -1985,6 +1982,27 @@ html[data-chat-font] .aui-root {
 	}
 }
 
+@theme {
+	/* One radius scale for the whole app, fixed so no theme or region shifts it. Tiers nest
+	   concentrically (outer = inner + inset), as the composer (28px around an 18px send circle
+	   at a 10px inset) and the + menu (21px around 12px rows at a 9px gutter) do. Anything one
+	   line tall is rounded-full.
+	   sm   8px  tiny tiles and swatches
+	   md  12px  rows in menus and lists, tiles inside a card (bare `rounded` too)
+	   lg  16px  compact multi-line boxes: code blocks, thumbnails
+	   xl  21px  menus, popovers, textareas, boxes inside a card or dialog
+	   2xl 24px  cards and panels
+	   3xl 28px  composer, dialogs, sheets, large floating surfaces */
+	--radius-sm: 8px;
+	--radius-md: 12px;
+	--radius-lg: 16px;
+	--radius-xl: 21px;
+	--radius-2xl: 24px;
+	--radius-3xl: 28px;
+	--radius-4xl: 32px;
+	--radius: 12px;
+}
+
 @theme inline {
 	/* Named so they sort after lg/xl. 3xl = 1920px, 4xl = 2560px. */
 	--breakpoint-3xl: 120rem;
@@ -2092,26 +2110,8 @@ html[data-chat-font] .aui-root {
 	--color-card: var(--card);
 	--color-foreground: var(--foreground);
 	--color-background: var(--background);
-	/* One radius scale for the whole app, fixed so no theme or region shifts it. Tiers nest
-	   concentrically (outer = inner + inset), as the composer (28px around an 18px send circle
-	   at a 10px inset) and the + menu (21px around 12px rows at a 9px gutter) do. Anything one
-	   line tall is rounded-full.
-	   sm   8px  tiny tiles and swatches
-	   md  12px  rows in menus and lists, tiles inside a card (bare `rounded` too)
-	   lg  16px  compact multi-line boxes: code blocks, thumbnails
-	   xl  21px  menus, popovers, textareas, boxes inside a card or dialog
-	   2xl 24px  cards and panels
-	   3xl 28px  composer, dialogs, sheets, large floating surfaces */
-	--radius-sm: 8px;
-	--radius-md: 12px;
-	--radius-lg: 16px;
-	--radius-xl: 21px;
-	--radius-2xl: 24px;
-	--radius-3xl: 28px;
-	--radius-4xl: 32px;
 	--font-mono: var(--font-mono);
 	--font-serif: var(--font-serif);
-	--radius: 12px;
 	--tracking-tighter: 0em;
 	--tracking-tight: 0em;
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
@@ -3079,9 +3079,20 @@ html[data-chat-font] .aui-root {
 		border-radius: calc(var(--radius-md) + 10px) !important;
 	}
 
-	/* The model selector holds pill rows and fields, not 12px rows; it keeps the menu tier. */
+	/* The model picker keeps the corners it was designed with: the scale it had before the fixed
+	   tiers (derived from a 1.25rem base) and its 1.25rem surface. */
+	.unsloth-model-selector-menu {
+		--radius: 1.1rem;
+		--radius-sm: calc(1.25rem - 4px);
+		--radius-md: calc(1.25rem - 2px);
+		--radius-lg: 1.25rem;
+		--radius-xl: calc(1.25rem + 4px);
+		--radius-2xl: calc(1.25rem + 8px);
+		--radius-3xl: calc(1.25rem + 12px);
+		--radius-4xl: calc(1.25rem + 16px);
+	}
 	.unsloth-model-selector-menu[data-slot] {
-		border-radius: var(--radius-xl) !important;
+		border-radius: 1.25rem !important;
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
