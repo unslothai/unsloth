@@ -209,7 +209,8 @@ function ImportDialog({
     disabled: busy,
     onFiles: (files) => {
       const file = files[0];
-      if (file) return submit(file, file.name);
+      // A flow file carries its own name; the file name would replace it.
+      if (file) return submit(file);
     },
   });
   const fileRef = useRef<HTMLInputElement>(null);
@@ -308,7 +309,7 @@ function ImportDialog({
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 e.target.value = "";
-                if (file) void submit(file, file.name);
+                if (file) void submit(file);
               }}
             />
             <textarea

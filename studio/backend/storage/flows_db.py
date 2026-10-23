@@ -41,6 +41,10 @@ def _flow_from_row(row: sqlite3.Row) -> dict:
 def _summary_from_row(row: sqlite3.Row) -> dict:
     doc = json.loads(row["doc_json"])
     meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
+    cover = meta.get("cover")
+    # An imported package keeps its cover as a media value.
+    if isinstance(cover, dict):
+        cover = cover.get("url")
     return {
         "id": row["id"],
         "name": row["name"],
@@ -48,7 +52,7 @@ def _summary_from_row(row: sqlite3.Row) -> dict:
         "description": doc.get("description") or "",
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
-        "cover": meta.get("cover") if isinstance(meta.get("cover"), str) else None,
+        "cover": cover if isinstance(cover, str) else None,
         "nodeCount": len(doc.get("nodes") or []),
     }
 
