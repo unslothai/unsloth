@@ -127,9 +127,12 @@ def test_a_legacy_auth_db_gains_the_purpose_column_unset(tmp_path, monkeypatch):
     storage._auth_schema_ready.clear()
 
     assert storage.validate_api_key_account(legacy_key, touch = False)[0]["key_purpose"] is None
-    assert inf._request_may_use_saved_provider_key(
-        SimpleNamespace(headers = {"authorization": f"Bearer {legacy_key}"})
-    ) is False
+    assert (
+        inf._request_may_use_saved_provider_key(
+            SimpleNamespace(headers = {"authorization": f"Bearer {legacy_key}"})
+        )
+        is False
+    )
 
 
 def test_the_cli_mints_the_reserved_name():
