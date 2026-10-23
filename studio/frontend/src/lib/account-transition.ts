@@ -21,6 +21,38 @@ export const OWNER_BROWSER_ACCOUNT = "unsloth";
 
 export const APPEARANCE_KEY = "unsloth_appearance_customization";
 
+const CHAT_PREFERENCES_KEY = "unsloth_chat_preferences";
+// Only chat UI preferences survive here, never credentials, drafts or chat content.
+const ACCOUNT_CHAT_PREFERENCES_PREFIX = "unsloth.account-chat-preferences.v1:";
+
+function chatPreferencesKey(account: MarkedAccount): string {
+  const owner =
+    account.accountId === "owner" ||
+    (!account.accountId && account.username === OWNER_BROWSER_ACCOUNT);
+  const identity = owner
+    ? ["id", "owner"]
+    : account.accountId
+      ? ["id", account.accountId]
+      : ["username", account.username];
+  return ACCOUNT_CHAT_PREFERENCES_PREFIX + JSON.stringify(identity);
+}
+
+/** Keep the active key compatible with the preference store, migrations and Reset preferences. */
+function switchChatPreferences(
+  storage: Storage,
+  previous: MarkedAccount,
+  next: MarkedAccount,
+): void {
+  const current = storage.getItem(CHAT_PREFERENCES_KEY);
+  const saved = storage.getItem(chatPreferencesKey(next));
+  if (current === null) {
+    if (storage.getItem(chatPreferencesKey(previous)) !== null)
+      storage.removeItem(chatPreferencesKey(previous));
+  } else storage.setItem(chatPreferencesKey(previous), current);
+  if (saved === null && current !== null) storage.removeItem(CHAT_PREFERENCES_KEY);
+  else if (saved !== null) storage.setItem(CHAT_PREFERENCES_KEY, saved);
+}
+
 /** Browser chrome only. Never add credentials, content, model choices or profile data. */
 export const ACCOUNT_CHROME_KEYS = new Set([
   "theme",
@@ -202,12 +234,11 @@ export async function transitionBrowserAccount(
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;
-  const changed = !isSameAccount(
-    parseAccountMarker(
-      storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
-    ),
-    parseAccountMarker(marker),
+  const previous = parseAccountMarker(
+    storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
   );
+  const next = parseAccountMarker(marker);
+  const changed = !isSameAccount(previous, next);
   if (changed) {
     // First, as it can fail: a failure then leaves this account's data in place, not half purged.
     await clearSiteData();
@@ -218,6 +249,9 @@ export async function transitionBrowserAccount(
       if (
         !key ||
         key === BROWSER_ACCOUNT_KEY ||
+        // Swap the active preferences only after cleanup succeeds, so a failed switch can retry.
+        key === CHAT_PREFERENCES_KEY ||
+        key.startsWith(ACCOUNT_CHAT_PREFERENCES_PREFIX) ||
         ACCOUNT_CHROME_KEYS.has(key) ||
         // About this machine's install, not the account signed in to it.
         key === RUNTIME_REPAIR_KEY ||
@@ -234,6 +268,7 @@ export async function transitionBrowserAccount(
         deleteAccountDatabase(browser.indexedDB, name),
       ),
     );
+    switchChatPreferences(storage, previous, next);
   }
   // Fence first: peers see it before the tokens, so nothing of the previous account goes out
   // under the new credentials while their reload is pending.
