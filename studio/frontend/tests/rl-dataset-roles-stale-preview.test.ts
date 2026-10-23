@@ -37,13 +37,17 @@ function harness() {
       previewCell: () => "",
       useRlWorkspaceStore: (select: (s: unknown) => unknown) =>
         select({ previewRow: shared.preview, setPreviewRow: (row: unknown) => (shared.preview = row) }),
-      useTrainingConfigStore: (select: (s: unknown) => unknown) =>
-        select({
-          datasetSource: "huggingface",
-          dataset: shared.dataset,
-          rlRoleMapping: {},
-          setRlRoleMapping: () => {},
-        }),
+      useTrainingConfigStore: Object.assign(
+        (select: (s: unknown) => unknown) =>
+          select({
+            datasetSource: "huggingface",
+            dataset: shared.dataset,
+            rlRoleMapping: {},
+            setRlRoleMapping: () => {},
+          }),
+        { setState: () => {} },
+      ),
+      useTrainingRuntimeStore: (select: (s: unknown) => unknown) => select({ isStarting: false }),
       RL_IGNORE: "__ignore",
       RL_REQUIRED_ROLES: { grpo: [] },
       RL_ROLES: { grpo: [] },

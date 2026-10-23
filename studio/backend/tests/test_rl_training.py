@@ -1787,6 +1787,29 @@ def test_declared_nullable_tool_arguments_keep_their_null():
     }
 
 
+def test_padded_null_is_dropped_where_the_schema_does_not_allow_null():
+    from core.training.rl import _without_padded_arguments
+
+    props = {
+        "city": {"type": "string"},
+        "units": {"type": "string"},
+        "note": {"type": ["string", "null"]},
+        "tag": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    }
+    tools = [
+        {"type": "function", "function": {"name": "weather", "parameters": {"properties": props}}}
+    ]
+    args = {"city": "Paris", "units": None, "note": None, "tag": None}
+    msgs = [
+        {"role": "assistant", "tool_calls": [{"function": {"name": "weather", "arguments": args}}]}
+    ]
+    assert _without_padded_arguments(msgs, tools)[0]["tool_calls"][0]["function"]["arguments"] == {
+        "city": "Paris",
+        "note": None,
+        "tag": None,
+    }
+
+
 def test_preference_rows_render_a_thinking_field_as_reasoning():
     pytest.importorskip("trl")
     from core.training.rl import render_preference_rows
