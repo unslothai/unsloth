@@ -719,9 +719,11 @@ function NavItem({
   );
 }
 
-/** A chat row's spinner, swapped in while its run waits on an Allow / Deny prompt. The accent of
- *  the unread dot, told apart by its ring even with reduced motion, and pulsing otherwise; boxed at
- *  the spinner's size so it centres on the same column. */
+/** A chat row's spinner, swapped in while its run waits on an Allow / Deny prompt. Amber, not the
+ *  accent of the unread dot: it is waiting on the user, not news. A warm theme's accent can be amber
+ *  too, so the pulse and the ring still tell the two apart, the ring also with reduced motion. The
+ *  shades keep it at 3:1 or more on both sidebars. Boxed at the spinner's size so it centres on the
+ *  same column. */
 function ChatRowApprovalDot({ label }: { label: string }) {
   return (
     <span
@@ -730,7 +732,7 @@ function ChatRowApprovalDot({ label }: { label: string }) {
       data-testid="chat-row-approval"
       className="flex size-3.5 shrink-0 items-center justify-center"
     >
-      <span className="size-2 rounded-full bg-primary ring-2 ring-primary/30 motion-safe:animate-pulse" />
+      <span className="size-2 rounded-full bg-amber-600 ring-2 ring-amber-600/30 motion-safe:animate-pulse dark:bg-amber-400 dark:ring-amber-400/30" />
     </span>
   );
 }

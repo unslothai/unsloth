@@ -213,9 +213,14 @@ test("the sidebar watches once and swaps the row spinner for the approval dot", 
     /function ChatRowApprovalDot\([\s\S]*?\n\}\n/.exec(sidebar)?.[0] ?? "";
   // Announced like the spinner it replaces, not motion-only.
   assert.match(component, /role="status"\s+aria-label=\{label\}/);
-  assert.match(
-    component,
-    // The ring tells it from the unread dot when reduced motion stops the pulse.
-    /size-2 rounded-full bg-primary ring-2 ring-primary\/30 motion-safe:animate-pulse/,
-  );
+  const dotClasses = /<span className="(size-2 rounded-full [^"]*)"/.exec(component)?.[1] ?? "";
+  // Amber in both themes, never the accent the unread dot uses.
+  assert.match(dotClasses, /(?:^| )bg-amber-600(?: |$)/);
+  assert.match(dotClasses, /(?:^| )dark:bg-amber-400(?: |$)/);
+  assert.doesNotMatch(dotClasses, /primary/);
+  // The pulse, and the ring for when reduced motion stops it, keep it apart from an amber accent.
+  assert.match(dotClasses, /(?:^| )motion-safe:animate-pulse(?: |$)/);
+  assert.match(dotClasses, /(?:^| )ring-2(?: |$)/);
+  assert.match(dotClasses, /(?:^| )ring-amber-600\/30(?: |$)/);
+  assert.match(dotClasses, /(?:^| )dark:ring-amber-400\/30(?: |$)/);
 });
