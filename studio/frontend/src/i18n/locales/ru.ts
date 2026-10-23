@@ -1428,7 +1428,7 @@ export const ru = {
       lineCount: "Строк: {count}",
       filteredLineCount: "{shown} из {total} строк",
       wrapLines: "Перенос строк",
-      jumpToLatest: "К последним",
+      jumpToLatest: "Последние",
       resizeLog: "Перетащите, чтобы изменить размер журнала",
       noMatches: "Ни одна строка не соответствует фильтру.",
       mode: "Режим",

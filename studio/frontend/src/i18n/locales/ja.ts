@@ -1427,7 +1427,7 @@ export const ja = {
       lineCount: "{count} 行",
       filteredLineCount: "{total} 行中 {shown} 行",
       wrapLines: "行を折り返す",
-      jumpToLatest: "最新へ移動",
+      jumpToLatest: "最新",
       resizeLog: "ドラッグしてログのサイズを変更",
       noMatches: "フィルターに一致する行はありません。",
       mode: "モード",

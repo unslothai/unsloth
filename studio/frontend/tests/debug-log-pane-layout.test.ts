@@ -34,7 +34,7 @@ test("the frame draws the border so the pane's scrollbar stays off its corners",
 });
 
 test("jump to latest is a plain down arrow with even padding", () => {
-  assert.match(pane, /rounded-full px-2\.5 shadow-md"\s*>\s*<ArrowDownIcon/);
+  assert.match(pane, /rounded-full pr-2\.5 pl-2 shadow-md"\s*>\s*<ArrowDownIcon/);
   assert.doesNotMatch(tab, /ChevronDownDouble/);
 });
 

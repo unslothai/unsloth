@@ -838,7 +838,7 @@ export function DebuggingTab() {
                 onClick={() => setWrap((previous) => !previous)}
                 data-testid="debug-log-wrap"
                 className={cn(
-                  "absolute top-2 right-4 bg-background/80 shadow-sm backdrop-blur-sm hover:bg-background",
+                  "absolute top-2.5 right-7 size-7 bg-background/80 shadow-sm backdrop-blur-sm hover:bg-background [&_svg]:size-3.5",
                   wrap ? "text-foreground" : "text-muted-foreground",
                 )}
               >
@@ -853,7 +853,7 @@ export function DebuggingTab() {
               variant="dark"
               onClick={scrollToBottom}
               data-testid="debug-log-jump-to-latest"
-              className="absolute right-4 bottom-3 rounded-full px-2.5 shadow-md"
+              className="absolute right-4 bottom-3 rounded-full pr-2.5 pl-2 shadow-md"
             >
               <ArrowDownIcon strokeWidth={2} />
               {t("settings.debugging.jumpToLatest")}

@@ -1425,7 +1425,7 @@ export const ar = {
       lineCount: "{count} سطر",
       filteredLineCount: "{shown} من {total} سطر",
       wrapLines: "التفاف الأسطر",
-      jumpToLatest: "الانتقال إلى الأحدث",
+      jumpToLatest: "الأحدث",
       resizeLog: "اسحب لتغيير حجم السجل",
       noMatches: "لا توجد أسطر تطابق عامل التصفية.",
       mode: "الوضع",
