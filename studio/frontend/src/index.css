@@ -2732,12 +2732,12 @@ html[data-chat-font] .aui-root {
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
 	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
-	/* 32px like every other inline control on the panel. */
+	/* Editing only deepens the fill: a focus ring outside the pill reads as the box growing. */
 	.panel-number-input {
-		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-7 min-w-7 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(0_0_0_/_calc(0.07*var(--contrast-wash-gain,1)))] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
-		@apply hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))];
+		@apply hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Select trigger on the panel: the surface and padding the model rows
@@ -2761,8 +2761,7 @@ html[data-chat-font] .aui-root {
 	/* These controls suppress the ring, so keyboard focus would otherwise
 	   land with nothing drawn. Same soft 1px halo as .composer-pill-btn. */
 	.panel-field:focus-visible,
-	.panel-select-trigger:focus-visible,
-	.panel-number-input:focus-visible {
+	.panel-select-trigger:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft) !important;
 	}
