@@ -189,6 +189,21 @@ export function forgetStaleImageComponents(
   if (saved && !componentFilesMatch(saved, status.component_files)) rememberImageComponents(model, {});
 }
 
+/** Record a finished load's files: a load this page started stores what it asked for (`fieldFiles`, which a native
+ *  load strips from the request), and returns them. A load it only resumed (re-entered mid-load, so `lastLoad` is the
+ *  resident descriptor) carries no request, so the saved entry is kept if the build engages it and forgotten if not. */
+export function rememberLoadedImageComponents(
+  load: ImageModelKey & { fieldFiles?: ImageComponentFiles },
+  status: { engine?: string | null; component_files?: Record<string, string> | null },
+): ImageComponentFiles | null {
+  if (!load.fieldFiles) {
+    forgetStaleImageComponents(load, status);
+    return null;
+  }
+  rememberImageComponents(load, load.fieldFiles);
+  return load.fieldFiles;
+}
+
 /** Who owns the fields after a load finished: that load, only while they show its files. A load that never touched
  *  them (an adapter deploy, a recalled generation) leaves them with the model that filled them. */
 export function componentFieldsOwnerAfterLoad(

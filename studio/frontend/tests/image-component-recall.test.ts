@@ -12,6 +12,7 @@ import {
   readImageModel,
   recalledComponentFiles,
   rememberImageComponents,
+  rememberLoadedImageComponents,
   rememberImageModel,
   sameComponentFiles,
   seedImageComponents,
@@ -128,7 +129,7 @@ test("a successful load stores the requested files per model and the page starts
   const source = readSrc("features/images/images-page.tsx");
   assert.match(
     source,
-    /rememberImageModel\(remembered\);\s*setRememberedModel\(remembered\);\s*const files = lastLoad\.current\.fieldFiles \?\? lastLoad\.current;\s*rememberImageComponents\(lastLoad\.current, files\);/,
+    /rememberImageModel\(remembered\);\s*setRememberedModel\(remembered\);\s*const files = rememberLoadedImageComponents\(lastLoad\.current, loaded\);/,
   );
   // The requested files, not the load's: the native engine drops them from the request.
   assert.match(source, /const fieldFiles = componentFileFields\(opts\.kind, picked\.text_encoder_file, picked\.vae_file\);/);
@@ -346,4 +347,31 @@ test("a resident build with other components than the map's forgets the entry; a
   const source = readSrc("features/images/images-page.tsx");
   const recall = source.slice(source.indexOf("const handleGenerateWithRecall = useCallback"));
   assert.ok(recall.slice(0, recall.indexOf("if (!rememberedModel || !prompt.trim())")).includes("forgetStaleImageComponents(model, status);"));
+});
+
+test("a resumed load the page did not start keeps the saved files it engages; a page load stores its request", () => {
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  // Re-entered mid-reload: lastLoad is the resident descriptor (no fieldFiles), and the diffusers build uses the files.
+  const resumed = { ...zImage, kind: "gguf" as const };
+  const engaged = { engine: "diffusers", component_files: { text_encoder: "qwen_3_4b.safetensors", vae: "ae.safetensors" } };
+  assert.equal(rememberLoadedImageComponents(resumed, engaged), null);
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  // A native resume reports no components: the entry still stays.
+  assert.equal(rememberLoadedImageComponents(resumed, { engine: "sd_cpp", component_files: null }), null);
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  // A resumed diffusers build without them: the entry is stale.
+  assert.equal(rememberLoadedImageComponents(resumed, { engine: "diffusers", component_files: {} }), null);
+  assert.equal(readImageComponents(zImage), null);
+  // A load this page started stores what it asked for, and an empty request forgets.
+  assert.deepEqual(rememberLoadedImageComponents({ ...zImage, fieldFiles: zFiles }, { component_files: {} }), zFiles);
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  assert.deepEqual(rememberLoadedImageComponents({ ...zImage, fieldFiles: {} }, { component_files: {} }), {});
+  assert.equal(readImageComponents(zImage), null);
+
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(
+    source,
+    /const files = rememberLoadedImageComponents\(lastLoad\.current, loaded\);\s*if \(files\) componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(/,
+  );
 });
