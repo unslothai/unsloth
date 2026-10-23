@@ -140,12 +140,9 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# The fork runs a quantized matmul with at least this many activation rows as a BF16 dequantize + cuBLAS GEMM instead
-# of int8 MMQ (ggml-patches/0001). Studio turns it on only for Q8_0 diffusion GGUFs: there MMQ's 8-bit activations are
-# the larger error, and the BF16 route renders closer to the unquantized model (Z-Image Turbo Q8_0 vs its BF16 weights,
-# B200: LPIPS 0.0148 -> 0.0052). For k-quant and 4-bit GGUFs the weight error dominates and neither route is reliably
-# closer, so they keep MMQ. The env knob covers every quantized type, hence the per-file check. Ada, consumer Ampere and
-# Orin keep MMQ (int8 runs at twice their BF16-with-FP32-accumulate rate); sm120 gains only at large sizes.
+# Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
+# Q8_0 only: there MMQ's 8-bit activations dominate the error (Z-Image Turbo Q8_0 vs BF16, B200: LPIPS 0.0148 -> 0.0052);
+# for k-quants / 4-bit the weight error dominates, so keep MMQ. Ada, consumer Ampere, Orin keep MMQ (int8 is 2x faster).
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -162,8 +159,7 @@ def quant_cublas_min_batch(cuda_cc: tuple[int, int]) -> Optional[int]:
 
 
 def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]:
-    """Names of the quantized tensor types in the GGUF at ``path`` (F32 / F16 / BF16 excluded), or None when it is
-    not a readable GGUF. Reads only the tensor table (the file is memory-mapped, no tensor data is touched)."""
+    """Quantized tensor types in the GGUF at ``path``, or None if unreadable. Reads only the mmapped tensor table."""
     if not path or not str(path).lower().endswith(".gguf"):
         return None
     try:
@@ -180,8 +176,7 @@ def quant_cublas_env(
     environ: Optional[dict] = None,
     weight_types: Optional[frozenset[str]] = None,
 ) -> dict[str, str]:
-    """Child env for every card sd.cpp may pick (``cuda_ccs``) rendering a diffusion GGUF whose quantized tensors are
-    ``weight_types``: set only when the cards all agree and every quantized tensor is Q8_0; a user value always wins."""
+    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
     import os
 
     environ = os.environ if environ is None else environ

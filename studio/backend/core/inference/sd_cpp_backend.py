@@ -731,7 +731,7 @@ def torch_cuda_compute_capability(
 
 
 def _torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
-    """Compute capability of ``ordinal``, or of every visible card when None (sd.cpp may pick any); [] when unknown."""
+    """Capability of ``ordinal``, or of every visible card when None (sd.cpp may pick any)."""
     try:
         import torch
 
@@ -744,8 +744,6 @@ def _torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
 
 
 def _sd_cpp_quant_cublas_env(ordinal: Optional[int], diffusion_model: Optional[str]) -> dict[str, str]:
-    """``GGML_CUDA_QUANT_CUBLAS_MIN_BATCH`` for a CUDA sd.cpp spawn of ``diffusion_model`` on ``ordinal`` (see
-    ``quant_cublas_env``: Q8_0 GGUFs only)."""
     weight_types = sd_cpp_args_mod.gguf_quantized_weight_types(diffusion_model)
     if not weight_types or not weight_types <= sd_cpp_args_mod.QUANT_CUBLAS_WEIGHT_TYPES:
         return {}
