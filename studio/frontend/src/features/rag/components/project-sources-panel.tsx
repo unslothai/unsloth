@@ -6,9 +6,9 @@ import { useNativeFileDrop } from "@/features/native-intents";
 import type { NativeIntent } from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
 import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
-import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useRef } from "react";
 import {
@@ -202,7 +202,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
-              icon={FolderPlusIcon}
+              icon={PlusSignIcon}
               strokeWidth={1.75}
               className="size-6"
             />
