@@ -363,7 +363,6 @@ type NavRowDef = {
   pendingTooltip?: string;
   // Greyed out but clickable: Train on an upgradable Chat only install opens the full install dialog.
   dimmed?: boolean;
-  // A button under the tooltip text, e.g. Install Training on a greyed Train row.
   tooltipAction?: { label: string; onClick: () => void };
   badge?: string;
   onClick: () => void;
