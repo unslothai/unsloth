@@ -1827,7 +1827,7 @@ def test_load_installs_the_vae_sync_on_mps(fake_runtime, monkeypatch, device, ho
     assert len(hooks) == hooked
     for hook in hooks:
         hook(None, (), None)
-    assert len(syncs) == hooked  # every decoder call, however much memory is free
+    assert len(syncs) == hooked
 
 
 def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):

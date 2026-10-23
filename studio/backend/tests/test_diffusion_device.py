@@ -592,7 +592,6 @@ def test_vae_sync_runs_after_every_decoder_call_and_keeps_its_output(monkeypatch
 
 
 def test_vae_sync_runs_after_every_encoder_call_too(monkeypatch):
-    # img2img / edit / i2v encodes tile the same way and grow the same way.
     torch = _mps_torch()
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder, encoder = _FakeDecoder(), _FakeDecoder()
@@ -614,7 +613,6 @@ def test_vae_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
 
 
 def test_vae_sync_survives_a_synchronize_that_raises(monkeypatch):
-    # The bound is an optimisation; losing the generation to it is not a trade worth making.
     torch = _mps_torch()
 
     def _boom():

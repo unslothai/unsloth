@@ -146,14 +146,10 @@ def install_vae_sync(
     *,
     logger: Any = None,
 ) -> bool:
-    """Synchronise Metal after every VAE decoder and encoder call to bound the memory they hold.
+    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
 
-    Tiled and framewise decodes / encodes issue one call per tile or latent frame and never force a
-    commit, and Metal cannot reuse a buffer until the work holding it completes, so intermediates
-    accumulate (25 GB for a 1024x1024 Qwen-Image decode, 44 GB for 17 Wan frames) until the OS
-    swaps or kills the process. ``empty_cache`` cannot return them and torch's watermarks only trip
-    past the working set. A sync per call holds a decode to one call's working set at no measured
-    wall-clock cost.
+    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
+    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
     """
     if target.device != "mps":
         return False
