@@ -105,6 +105,7 @@ def _companion_base(request):
     """The companion base the single-file loader assembles the pipeline around (``_resolve_base_repo``, no card tag
     offline), as the repo it fetches from."""
     from core.inference import diffusion
+
     fam = next(f for f in df._FAMILIES if f.name == "flux.3-klein")
     with patch.object(diffusion, "_hf_base_model", return_value = None):
         resolved = diffusion._resolve_base_repo(

@@ -1728,7 +1728,10 @@ def retired_full_copy_base(repo_id: Optional[str]) -> Optional[str]:
 
 
 def retired_copy_loads_from_disk(
-    source: Optional[str], filename: Optional[str] = None, *, companion: bool = False
+    source: Optional[str],
+    filename: Optional[str] = None,
+    *,
+    companion: bool = False,
 ) -> bool:
     """Whether a retired full copy that is already on disk loads as itself rather than through its base.
 
