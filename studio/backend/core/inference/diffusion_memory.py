@@ -3525,6 +3525,13 @@ def refine_plan_from_loaded_weights(
             measured_compute_bytes = compute_bytes,
             measured_static_seed = static_seed,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
+            # peak measured on text-to-image; unpriced reference requests fall back to the flat estimate
+            measured_omits_references = bool(
+                dense_mib is not None
+                and getattr(pipe, "_unsloth_dense_tier_seeds", False)
+                and getattr(pipe, "_unsloth_unpriced_references", False)
+                and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+            ),
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
