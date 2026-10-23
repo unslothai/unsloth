@@ -769,7 +769,7 @@ def test_upscale_resizes_when_the_loaded_model_cannot_upscale():
 
 def test_upscale_still_raises_other_errors():
     from core.flows.nodes.image import upscale
-    ctx = _UpscaleCtx(_png_bytes(8, 8), "No image model is loaded")
+    ctx = _UpscaleCtx(_png_bytes(8, 8), "CUDA out of memory")
     with pytest.raises(FlowNodeError):
         asyncio.run(upscale(ctx))
 

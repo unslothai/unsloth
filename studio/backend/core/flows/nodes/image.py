@@ -114,8 +114,9 @@ async def upscale(ctx: NodeContext) -> dict:
             upscale = factor,
         )
     except FlowNodeError as exc:
-        # Some families (FLUX.2-klein among them) cannot upscale; a plain resize still gives the size asked for.
-        if "not supported" not in str(exc):
+        # No image model loaded (a cached step before this one), or a family that cannot upscale
+        # (FLUX.2-klein among them): a plain resize still gives the size asked for.
+        if "not supported" not in str(exc) and "model is loaded" not in str(exc):
             raise
         ctx.log(f"{exc} Resized with Lanczos instead.", level = "warning")
         data, _ = await ctx.media_bytes(source)
