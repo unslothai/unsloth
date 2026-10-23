@@ -12,6 +12,7 @@ from core.flows.nodes import (  # noqa: F401
     logic,
     output,
     story,
+    table,
     text,
     training,
     transform,

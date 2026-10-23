@@ -4,6 +4,54 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { Prng, seedFrom } from "../../expr";
+import type { StoryTransition } from "../../types";
+
+const REDUCED = "(prefers-reduced-motion: reduce)";
+
+export function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () =>
+      typeof window !== "undefined" && !!window.matchMedia?.(REDUCED).matches,
+  );
+  useEffect(() => {
+    const q = window.matchMedia?.(REDUCED);
+    if (!q) return;
+    const on = () => setReduced(q.matches);
+    q.addEventListener("change", on);
+    return () => q.removeEventListener("change", on);
+  }, []);
+  return reduced;
+}
+
+const SPRITE: Record<StoryTransition, [string, number]> = {
+  dissolve: ["flows-sprite-dissolve", 500],
+  fade: ["flows-sprite-dissolve", 900],
+  flash: ["flows-sprite-flash", 450],
+  slideleft: ["flows-sprite-slideleft", 550],
+  slideright: ["flows-sprite-slideright", 550],
+  none: ["", 0],
+};
+
+/** CSS animation for a sprite coming on (or going off, played in reverse and held). */
+export function spriteAnimation(
+  t: StoryTransition,
+  out: boolean,
+): string | undefined {
+  const [name, ms] = SPRITE[t] ?? SPRITE.dissolve;
+  if (!name) return undefined;
+  return out
+    ? `${name} ${ms}ms ease-in reverse forwards`
+    : `${name} ${ms}ms ease-out both`;
+}
+
+const BG_MS: Record<StoryTransition, number> = {
+  dissolve: 700,
+  fade: 1000,
+  flash: 500,
+  slideleft: 650,
+  slideright: 650,
+  none: 0,
+};
 
 /** A soft painted-looking gradient with drifting light blobs, seeded by the scene, for scenes without art. */
 export const ProceduralBackdrop = memo(function ProceduralBackdrop({
@@ -47,21 +95,54 @@ interface Layer {
   key: string;
   url: string | null;
   shown: boolean;
+  t: StoryTransition;
 }
 
-/** Crossfades between scene backgrounds; `url` null shows the procedural backdrop for `seedKey`. */
+function layerStyle(l: Layer): React.CSSProperties {
+  const ms = BG_MS[l.t] ?? 700;
+  if (l.t === "slideleft" || l.t === "slideright") {
+    const from = l.t === "slideleft" ? "100%" : "-100%";
+    return {
+      transform: l.shown ? "none" : `translateX(${from})`,
+      transition: `transform ${ms}ms ease-out`,
+    };
+  }
+  if (l.t === "fade" || l.t === "flash") {
+    // Swap under the overlay at its peak.
+    return {
+      opacity: l.shown ? 1 : 0,
+      transition: `opacity 1ms linear ${Math.round(ms * 0.45)}ms`,
+    };
+  }
+  return {
+    opacity: l.shown ? 1 : 0,
+    transition: ms ? `opacity ${ms}ms ease-out` : "none",
+  };
+}
+
+/** Changes scene backgrounds with a transition (default crossfade); `url` null shows the procedural backdrop. */
 export function BackgroundStage({
   seedKey,
   url,
   painting,
-}: { seedKey: string; url: string | null; painting: boolean }) {
+  transition = "dissolve",
+}: {
+  seedKey: string;
+  url: string | null;
+  painting: boolean;
+  transition?: StoryTransition;
+}) {
   const key = url ?? `proc:${seedKey}`;
-  const [layers, setLayers] = useState<Layer[]>([{ key, url, shown: true }]);
+  const [layers, setLayers] = useState<Layer[]>([
+    { key, url, shown: true, t: "none" },
+  ]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the transition belongs to the change of `key`, not a trigger
   useEffect(() => {
     setLayers((prev) => {
       if (prev[prev.length - 1]?.key === key) return prev;
-      return [...prev.slice(-1), { key, url, shown: false }];
+      const t = transition;
+      return [...prev.slice(-1), { key, url, shown: t === "none", t }];
     });
     const raf = requestAnimationFrame(() =>
       setLayers((prev) =>
@@ -71,10 +152,14 @@ export function BackgroundStage({
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(
       () => setLayers((prev) => prev.filter((l) => l.key === key)),
-      900,
+      (BG_MS[transition] ?? 700) + 200,
     );
     return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, url]);
+  const top = layers[layers.length - 1];
+  const veil =
+    layers.length > 1 && (top.t === "fade" || top.t === "flash") ? top : null;
   useEffect(
     () => () => {
       if (timer.current) clearTimeout(timer.current);
@@ -84,11 +169,7 @@ export function BackgroundStage({
   return (
     <div className="absolute inset-0 overflow-hidden bg-black">
       {layers.map((l) => (
-        <div
-          key={l.key}
-          className="absolute inset-0 transition-opacity duration-700 ease-out"
-          style={{ opacity: l.shown ? 1 : 0 }}
-        >
+        <div key={l.key} className="absolute inset-0" style={layerStyle(l)}>
           {l.url ? (
             <img
               src={l.url}
@@ -104,6 +185,16 @@ export function BackgroundStage({
           )}
         </div>
       ))}
+      {veil ? (
+        <div
+          key={`veil:${veil.key}`}
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background: veil.t === "flash" ? "#fff" : "#000",
+            animation: `flows-veil ${BG_MS[veil.t]}ms ease-in-out both`,
+          }}
+        />
+      ) : null}
       {painting ? (
         <div
           className="pointer-events-none absolute inset-0 opacity-60"
@@ -135,6 +226,12 @@ export function PlayerKeyframes() {
 @keyframes flows-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(4px); } }
 @keyframes flows-rise { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
 @keyframes flows-dots { 0%,80%,100% { opacity: .2; } 40% { opacity: 1; } }
+@keyframes flows-veil { 0%,100% { opacity: 0; } 45%,55% { opacity: 1; } }
+@keyframes flows-swap { from { opacity: .35; } to { opacity: 1; } }
+@keyframes flows-sprite-dissolve { from { opacity: 0; } to { opacity: 1; } }
+@keyframes flows-sprite-flash { from { opacity: 0; filter: brightness(4); } to { opacity: 1; filter: none; } }
+@keyframes flows-sprite-slideleft { from { opacity: 0; transform: translateX(60vw); } to { opacity: 1; transform: none; } }
+@keyframes flows-sprite-slideright { from { opacity: 0; transform: translateX(-60vw); } to { opacity: 1; transform: none; } }
 `}</style>
   );
 }
