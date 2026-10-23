@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -1000,7 +1001,8 @@ def test_full_dcp_load_refuses_a_packed_4bit_weight_without_its_quant_state():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available()
+    not has_real_cuda()
+    or not torch.cuda.is_available()
     or torch.cuda.device_count() < 2
     or not torch.distributed.is_nccl_available(),
     reason = "needs two CUDA GPUs and NCCL",

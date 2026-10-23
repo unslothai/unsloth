@@ -179,10 +179,31 @@ def unbacked_supported() -> bool:
     return callable(getattr(builder, "is_unbacked_source", None))
 
 
+def _torchao_float8_weights(transformer: Any) -> bool:
+    """Whether a torchao float8 tensor holds any of ``transformer``'s weights (wrapped in a plain Parameter or not)."""
+    try:
+        from .diffusion_speed import torchao_weight_tensors
+        for t in torchao_weight_tensors(transformer):
+            if "float8" in type(t).__name__.lower():
+                return True
+            # torchao < 0.12: AffineQuantizedTensor + Float8Layout
+            layout = getattr(t, "_layout", None)
+            if layout is not None and "float8" in type(layout).__name__.lower():
+                return True
+    except Exception:  # noqa: BLE001 - unreadable: keep the family's choice
+        return False
+    return False
+
+
 def unbacked_sources_for(transformer: Any) -> tuple[str, ...]:
     if not unbacked_supported():
         return ()
-    return _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    unbacked = _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    if unbacked and _torchao_float8_weights(transformer):
+        # torchao float8 activation quant guards on the row count (``_get_reduction_params``): an unbacked
+        # ``temb`` is a data-dependent error and the compile falls back to eager. Backed costs one respecialise.
+        return ()
+    return unbacked
 
 
 def sources_for(transformer: Any) -> tuple[str, ...]:
