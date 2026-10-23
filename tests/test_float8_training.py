@@ -194,7 +194,9 @@ def test_named_recipe_only_where_measured_faster(monkeypatch, cap, name, hip, al
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: name)
     monkeypatch.setattr(torch.version, "hip", hip)
     probed = []
-    monkeypatch.setattr(f8t, "_probe_float8_gemm", lambda d, r: probed.append(f8t._recipe_scaling(r)))
+    monkeypatch.setattr(
+        f8t, "_probe_float8_gemm", lambda d, r: probed.append(f8t._recipe_scaling(r))
+    )
     if allowed:
         f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
         assert probed == ["tensorwise"]
@@ -314,9 +316,13 @@ def _fnuz_config():
     base = _emulated_config("tensorwise")
     casts = {}
     for name in ("input", "input_for_grad_weight", "weight", "weight_for_grad_input"):
-        casts[f"cast_config_{name}"] = replace(getattr(base, f"cast_config_{name}"), target_dtype = torch.float8_e4m3fnuz)
+        casts[f"cast_config_{name}"] = replace(
+            getattr(base, f"cast_config_{name}"), target_dtype = torch.float8_e4m3fnuz
+        )
     for name in ("grad_output", "grad_output_for_grad_weight"):
-        casts[f"cast_config_{name}"] = replace(getattr(base, f"cast_config_{name}"), target_dtype = torch.float8_e5m2fnuz)
+        casts[f"cast_config_{name}"] = replace(
+            getattr(base, f"cast_config_{name}"), target_dtype = torch.float8_e5m2fnuz
+        )
     return replace(base, **casts)
 
 
@@ -334,7 +340,9 @@ def test_rocm_explicit_fnuz_config_reaches_the_probe_with_its_dtypes(monkeypatch
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "AMD Instinct MI300X")
     monkeypatch.setattr(torch.version, "hip", "6.4")
     seen = []
-    monkeypatch.setattr(f8t, "_probe_float8_gemm", lambda d, r: seen.extend(f8t._probe_dtype_pairs(r)))
+    monkeypatch.setattr(
+        f8t, "_probe_float8_gemm", lambda d, r: seen.extend(f8t._probe_dtype_pairs(r))
+    )
     f8t._check_hardware(torch.device("cuda", 0), _fnuz_config())
     assert (torch.float8_e4m3fnuz, torch.float8_e4m3fnuz) in seen
     assert torch.float8_e4m3fn not in {d for pair in seen for d in pair}
@@ -346,4 +354,3 @@ def test_probe_named_recipes_cover_forward_and_backward(monkeypatch):
         (torch.float8_e5m2, torch.float8_e4m3fn),
     ]
     assert _probe_dtypes(monkeypatch, "rowwise") == [(torch.float8_e4m3fn, torch.float8_e4m3fn)]
-

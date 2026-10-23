@@ -113,7 +113,6 @@ def _probe_dtype_pairs(recipe):
     config = recipe
     if isinstance(recipe, str):
         from torchao.float8 import Float8LinearConfig
-
         config = Float8LinearConfig.from_recipe_name(recipe)
 
     def target(cast, default):
