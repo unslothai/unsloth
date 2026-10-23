@@ -5,15 +5,19 @@
 
 from core.flows.nodes import (  # noqa: F401
     audio,
+    chat,
     data,
     image,
     inputs,
+    knowledge,
     logic,
     memory,
     output,
     story,
+    table,
     text,
     training,
+    transform,
     video,
     world,
 )

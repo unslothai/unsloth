@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
-from core.flows import compiler, package
+from core.flows import compiler, notebook_import, package
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -195,6 +195,23 @@ async def import_flow(request: Request, name: Optional[str] = None) -> dict:
     return {"flow": record, "report": report}
 
 
+@router.post("/import/notebook")
+async def import_notebook(request: Request, name: str = "notebook.ipynb") -> dict:
+    """An Unsloth notebook read as data (never run): a new flow, or a report saying to open it in Colab."""
+    data = await _read_body(request, notebook_import.MAX_NOTEBOOK_BYTES)
+    if not data:
+        raise HTTPException(status_code = 400, detail = "The upload is empty")
+    try:
+        doc, report = await asyncio.to_thread(notebook_import.read_notebook, data, name[:200])
+    except notebook_import.NotebookImportError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    if doc is None:
+        return {"flow": None, "report": report}
+    record, _report = await asyncio.to_thread(_import_doc, json.dumps(doc).encode())
+    report["missing_models"] = await _missing_models(request, record["doc"])
+    return {"flow": record, "report": report}
+
+
 @router.post("/assets")
 async def upload_asset(
     request: Request,
@@ -202,13 +219,23 @@ async def upload_asset(
     mime: Optional[str] = None,
 ) -> dict:
     data = await _read_body(request, MAX_ASSET_BYTES)
-    if asset_store.kind_of(asset_store.sniff_mime(data) or "") not in ("image", "audio", "video"):
-        raise HTTPException(status_code = 415, detail = "Flows take images, audio and video")
+    hint = asset_store.text_hint(mime, name)
+    # Text sniffing decodes the whole upload; keep it off the event loop.
+    sniffed = asset_store.sniff_mime(data) or await asyncio.to_thread(
+        asset_store.sniff_text, data, hint
+    )
+    if asset_store.kind_of(sniffed or "") not in ("image", "audio", "video", "document"):
+        raise HTTPException(
+            status_code = 415,
+            detail = "Flows take images, audio, video and documents (PDF, DOCX, text)",
+        )
     try:
-        digest, sniffed = await asyncio.to_thread(asset_store.store, data, mime)
+        digest, sniffed = await asyncio.to_thread(asset_store.store, data, hint or mime)
     except ValueError as exc:
         raise HTTPException(status_code = 415, detail = str(exc))
-    return {"media": asset_store.media_value(digest, sniffed)}
+    # A document keeps its file name so the block can show which file it holds.
+    label = (name or "")[:200] if asset_store.kind_of(sniffed) == "document" else None
+    return {"media": asset_store.media_value(digest, sniffed, name = label or None)}
 
 
 @router.get("/assets/{ref}")
@@ -218,10 +245,16 @@ def get_asset(ref: str) -> Response:
     if got is None:
         raise HTTPException(status_code = 404, detail = "Asset not found")
     data, mime = got
+    if mime.startswith("text/"):
+        # Never as HTML: an uploaded page served on Studio's origin would run its scripts.
+        mime = "text/plain; charset=utf-8"
     return Response(
         content = data,
         media_type = mime,
-        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+        headers = {
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

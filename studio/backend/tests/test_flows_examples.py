@@ -8,10 +8,13 @@ import pytest
 
 from core.flows import compiler
 from core.flows.examples.build_examples import build
+from core.flows.nodes import transform
 from core.flows.schema import FlowDocument
 from core.flows.specs import SPECS_BY_TYPE
 from core.flows.story import compile_story_report, walk_check
 from core.flows.world import normalize_world, resolve_world_report
+
+from .flows_player_fakes import FakeCtx, run
 
 BUILT = {d["id"]: d for d in build()}
 IDS = sorted(BUILT)
@@ -22,7 +25,7 @@ def _example(name: str) -> dict:
 
 
 def test_the_example_count():
-    assert len(BUILT) == 19
+    assert len(BUILT) == 32
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -31,7 +34,12 @@ def test_example_is_valid(name):
     FlowDocument.model_validate(doc)
     result = compiler.validate(doc)
     assert result["ok"], result["errors"]
-    assert all(w["message"].startswith("Disabled") for w in result["warnings"]), result["warnings"]
+    assert [w for w in result["warnings"] if not w["message"].startswith("Disabled")] == []
+    for n in doc["nodes"]:
+        known = {p["id"]: p for p in SPECS_BY_TYPE[n["type"]]["params"]}
+        assert set(n["params"]) <= set(known), f"{n['id']} sets params its block does not have"
+        for key, value in n["params"].items():
+            assert value in (known[key].get("options") or [value]), f"{n['id']}.{key}={value!r}"
     assert doc["meta"]["example"] is True and doc["meta"]["tags"]
     model_nodes = [
         n for n in doc["nodes"] if SPECS_BY_TYPE[n["type"]]["model_kind"] and not n.get("disabled")
@@ -109,3 +117,38 @@ def test_frontend_story_fixtures_are_fresh(name):
     assert (
         json.loads(fixture.read_text(encoding = "utf-8")) == compile_story(doc, {})
     ), 'refresh the fixture: json.dumps(compile_story(example), separators=(",", ":")) -> studio/frontend/tests/fixtures'
+
+
+def test_contact_cleanup_list_blocks_clean_the_rows():
+    params = {n["id"]: n["params"] for n in _example("contact-cleanup")["nodes"]}
+    rows = [
+        {"name": "Ana Lima", "email": "ANA@example.com", "company": "Acme"},
+        {"name": "ben ortiz", "email": "ben@example.org", "company": ""},
+        {"name": "Ana Lima", "email": "ana@example.com", "company": "Acme Inc"},
+        {"name": "Chris Wu", "email": "", "company": "Globex"},
+    ]
+    kept = run(
+        transform.filter_list(
+            FakeCtx("list.filter", params = params["has_email"], inputs = {"items": rows})
+        )
+    )
+    assert [r["name"] for r in kept["dropped"]] == ["Chris Wu"]
+    tidy = run(
+        transform.edit_fields(
+            FakeCtx("json.set", params = params["tidy"], inputs = {"value": kept["items"]})
+        )
+    )
+    unique = run(
+        transform.dedupe_list(
+            FakeCtx("list.dedupe", params = params["unique"], inputs = {"items": tidy["value"]})
+        )
+    )
+    out = run(
+        transform.sort_list(
+            FakeCtx("list.sort", params = params["sorted"], inputs = {"items": unique["items"]})
+        )
+    )
+    assert [(r["name"], r["email"], r["company"]) for r in out["items"]] == [
+        ("Ana Lima", "ana@example.com", "Acme"),
+        ("ben ortiz", "ben@example.org", "unknown"),
+    ]

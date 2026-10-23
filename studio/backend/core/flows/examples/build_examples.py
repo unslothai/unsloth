@@ -20,6 +20,8 @@ TTS = {"repo": "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", "variant": None}
 
 CLONE = {"repo": "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF", "variant": None}
 MUSIC = {"repo": "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", "variant": None}
+RIVAL = {"repo": "unsloth/gemma-3-4b-it-GGUF", "variant": "Q4_K_M"}
+COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/"
 REQ = {
     "chat": {
         "ref": "writer",
@@ -35,6 +37,14 @@ REQ = {
         **IMAGE,
     },
     "video": {"ref": "director", "kind": "video", "note": "5B text+image to video.", **VIDEO},
+    "embedding": {
+        "ref": "embedder",
+        "kind": "embedding",
+        "note": "Studio's local embedding model for knowledge bases (Settings can change it); runs offline once "
+        "downloaded.",
+        "repo": "unsloth/bge-small-en-v1.5",
+        "variant": None,
+    },
     "tts": {
         "ref": "voice",
         "kind": "tts",
@@ -249,6 +259,21 @@ def sloth_moon() -> B:
         b.n(cid, "story.character", 2, 4 + i, name = name, look = look, color = color, side = side)
         b.e(f"art_{cid}.image", f"cut_{cid}.image")
         b.e(f"cut_{cid}.image", f"{cid}.portrait")
+    b.n(
+        "faces_mo",
+        "story.expressions",
+        1,
+        3.2,
+        label = "Mo's expressions",
+        model = IMAGE,
+        name = "Mo",
+        look = chars[0][2],
+        style = style,
+        expressions = ["worried", "happy"],
+        seed = 200,
+    )
+    b.e("art_mo.image", "faces_mo.portrait")
+    b.e("faces_mo.expressions", "mo.expressions")
     scenes = [
         (
             "porch",
@@ -286,7 +311,7 @@ def sloth_moon() -> B:
             -2,
             "Fog Hollow",
             "a hollow filled with thick silver fog, faint shapes of trees, mysterious",
-            "Narrator: Fog swallowed the path.\nPip: I... can't see my own glow.\nMo: Then I'll carry you. Slowly. Very slowly.",
+            "[scene with fade]\nNarrator: Fog swallowed the path.\nPip: I... can't see my own glow.\nMo: Then I'll carry you. Slowly. Very slowly.",
         ),
         (
             "dance",
@@ -304,7 +329,7 @@ def sloth_moon() -> B:
             "Mirror Lake",
             "a perfectly still lake reflecting the stars, reeds, a small wooden dock",
             "Narrator: At the lake, the water was so still it looked like a second sky.\n"
-            "Mo: Look! The moon is in the water!\nOttoline: Or is it?",
+            "Mo (happy): Look! The moon is in the water!\nOttoline: Or is it?",
         ),
     ]
     for sid, col, row, title, bg, lines in scenes:
@@ -382,7 +407,7 @@ def sloth_moon() -> B:
         title = "The Moon Comes Home",
         kind = "good",
         text = "Narrator: The moon, who had only felt forgotten, rose back into the sky.\n"
-        "Mo: Goodnight, moon. We'll watch you every night.",
+        "Mo (happy): Goodnight, moon. We'll watch you every night.",
     )
     b.n(
         "end_secret",
@@ -2058,6 +2083,721 @@ def long_form_writer() -> B:
     return b
 
 
+def notebook_template(
+    id: str,
+    name: str,
+    notebook: str,
+    description: str,
+    *,
+    dataset: str,
+    tune: dict[str, Any],
+    export: Optional[dict[str, Any]],
+    ask: Optional[str] = None,
+    tags: list[str],
+) -> B:
+    """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
+    b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
+    b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
+    b.n("tune", "train.finetune", 1, 1, **{"training_type": "lora", **tune})
+    b.e("data.dataset", "tune.dataset")
+    b.n("metrics", "output.preview", 2, 0)
+    b.e("tune.metrics", "metrics.value")
+    if ask:
+        b.n("ask", "input.text", 1, 2.2, value = ask)
+        b.n("test", "train.chat_checkpoint", 2, 1, max_tokens = 300)
+        b.e("tune.checkpoint", "test.checkpoint")
+        b.e("ask.text", "test.prompt")
+        b.n("answer", "output.preview", 3, 1)
+        b.e("test.text", "answer.value")
+    if export:
+        b.n("export", "train.export", 3 if ask else 2, 2.2 if ask else 1, **export)
+        b.e("tune.checkpoint", "export.checkpoint")
+    b.note(
+        "n1",
+        f"Based on the Unsloth notebook {notebook}: {COLAB_NB}{notebook}. Training needs a GPU and stops chat "
+        "models while it runs.",
+        0,
+        -0.2,
+        1.8,
+        0.9,
+    )
+    return b
+
+
+def text_sft() -> B:
+    return notebook_template(
+        "notebook-text-sft",
+        "Notebook: Llama 3.1 Alpaca fine-tune",
+        "Llama3.1_(8B)-Alpaca.ipynb",
+        "The Llama 3.1 (8B) Alpaca notebook as a flow: LoRA fine-tune on Alpaca, ask the result a question, export to GGUF.",
+        dataset = "unsloth/alpaca-cleaned",
+        tune = {
+            "base_model": "unsloth/Llama-3.1-8B",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "format_type": "alpaca",
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        ask = "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8",
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["sft"],
+    )
+
+
+def vision_sft() -> B:
+    return notebook_template(
+        "notebook-vision-sft",
+        "Notebook: Qwen2.5-VL LaTeX OCR fine-tune",
+        "Qwen2.5_VL_(7B)-Vision.ipynb",
+        "The Qwen2.5-VL (7B) vision notebook as a flow: teach the model to write LaTeX from images of equations, then save the adapter.",
+        dataset = "unsloth/LaTeX_OCR",
+        tune = {
+            "base_model": "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
+            "task": "vision",
+            "max_steps": 30,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["vision"],
+    )
+
+
+def tts_sft() -> B:
+    return notebook_template(
+        "notebook-tts-sft",
+        "Notebook: Orpheus TTS voice fine-tune",
+        "Orpheus_(3B)-TTS.ipynb",
+        "The Orpheus (3B) TTS notebook as a flow: fine-tune a voice on a speech dataset, then save the adapter.",
+        dataset = "Etherll/kaira",
+        tune = {
+            "base_model": "unsloth/orpheus-3b-0.1-ft",
+            # The notebook trains a 16-bit LoRA.
+            "load_in_4bit": False,
+            "task": "audio",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 64,
+            "lora_alpha": 64,
+            "max_seq_length": 2048,
+            "batch_size": 1,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["audio", "tts"],
+    )
+
+
+def embedding_sft() -> B:
+    return notebook_template(
+        "notebook-embedding",
+        "Notebook: EmbeddingGemma retrieval fine-tune",
+        "EmbeddingGemma_(300M).ipynb",
+        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
+        "retrieval, then export to GGUF.",
+        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
+        # so this uses a 40 MB set of the same question and passage shape.
+        dataset = "sentence-transformers/natural-questions",
+        tune = {
+            "base_model": "unsloth/embeddinggemma-300m",
+            "task": "embedding",
+            "max_steps": 30,
+            "learning_rate": 0.00002,
+            "lora_r": 32,
+            "lora_alpha": 64,
+            "max_seq_length": 1024,
+            "batch_size": 64,
+            "gradient_accumulation_steps": 2,
+            "dataset_slice_end": 19999,
+        },
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["embedding"],
+    )
+
+
+def model_arena() -> B:
+    b = B(
+        "model-arena",
+        "Model Arena",
+        "pipeline",
+        "Two local chat models answer the same prompts, a judge scores every answer, and the scores land in a "
+        "table and a bar chart with each model's lead over the other.",
+        tags = ["evaluation", "compare", "table", "chart", "for each"],
+        seed = 41,
+    ).need("chat")
+    b.doc["requirements"]["models"].append(
+        {
+            "ref": "rival",
+            "kind": "chat",
+            "note": "The second contestant; any chat model works.",
+            "optional": False,
+            **RIVAL,
+        }
+    )
+    b.n(
+        "prompts",
+        "input.list",
+        0,
+        1,
+        items = [
+            "Explain why the sky is blue to a ten year old.",
+            "Write a haiku about debugging at 3am.",
+            "Give three tips for a first marathon.",
+        ],
+    )
+    b.n("each", "logic.for_each", 1, 1, group = "arena_loop", max_items = 8)
+    b.e("prompts.items", "each.items")
+    for nid, row, label, model in (("a", 0.5, "Qwen3 4B", CHAT), ("b", 1.5, "Gemma 3 4B", RIVAL)):
+        b.n(
+            nid,
+            "llm.generate",
+            2,
+            row,
+            group = "arena_loop",
+            label = label,
+            model = model,
+            temperature = 0.3,
+            max_tokens = 400,
+        )
+        b.e("each.item", f"{nid}.prompt")
+    b.n(
+        "pair",
+        "text.template",
+        3,
+        1,
+        group = "arena_loop",
+        template = "PROMPT: {{values.0}}\nQwen3 4B: {{values.1}}\nGemma 3 4B: {{values.2}}",
+    )
+    b.e("each.item", "pair.values")
+    b.e("a.text", "pair.values")
+    b.e("b.text", "pair.values")
+    b.e("pair.text", "each.collect")
+    b.group("arena_loop", "For each prompt", (1, 0.2, 3, 2.2), "#22c55e")
+    b.n(
+        "judge",
+        "llm.generate",
+        4.4,
+        1,
+        label = "Judge",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 1200,
+        system = "You are a strict, fair judge of chat answers.",
+        prompt = "Score each model's answer to each prompt from 1 to 10 for helpfulness and accuracy:\n{{context}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string"},
+                            "model": {"type": "string", "enum": ["Qwen3 4B", "Gemma 3 4B"]},
+                            "score": {"type": "number"},
+                        },
+                        "required": ["prompt", "model", "score"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    )
+    b.e("each.results", "judge.context")
+    b.n("rows", "json.get", 5.4, 1, path = "rows")
+    b.e("judge.json", "rows.json")
+    b.n("scores", "table.concat", 6.4, 1, label = "Every score")
+    b.e("rows.value", "scores.tables")
+    b.n(
+        "avg",
+        "table.aggregate",
+        7.4,
+        1,
+        label = "Mean per model",
+        group_by = ["model"],
+        metrics = ["score"],
+        stat = "mean",
+    )
+    b.e("scores.table", "avg.table")
+    b.n(
+        "lead",
+        "table.compare",
+        8.4,
+        0.4,
+        label = "Lead over Qwen3",
+        key = ["model"],
+        metric = "score",
+        baseline_row = "Qwen3 4B",
+    )
+    b.e("avg.table", "lead.table")
+    b.n("bars", "table.chart", 8.4, 1.6, type = "bar", x = "model", y = ["score"])
+    b.e("avg.table", "bars.table")
+    b.n("show_scores", "output.preview", 7.4, 2.2, label = "Every score")
+    b.e("scores.table", "show_scores.value")
+    b.n("show_lead", "output.preview", 9.4, 0.4)
+    b.e("lead.table", "show_lead.value")
+    b.n("show_chart", "output.preview", 9.4, 1.6)
+    b.e("bars.chart", "show_chart.value")
+    b.note(
+        "tip",
+        "Swap either contestant's model or add prompts to the list, then Run.",
+        0,
+        2.2,
+        1.6,
+        0.6,
+    )
+    return b
+
+
+def summarise_pdf() -> B:
+    b = B(
+        "summarise-pdf",
+        "Summarise a Document",
+        "pipeline",
+        "Load a PDF, Word or text file, cut it into chunks, summarise each chunk, then write one summary of the "
+        "whole document.",
+        tags = ["documents", "llm", "for each"],
+        seed = 12,
+    ).need("chat")
+    b.n("doc", "input.file", 0, 1, label = "Your document")
+    b.n("read", "doc.load", 1, 1)
+    b.e("doc.file", "read.file")
+    b.n("chunks", "text.split", 2, 1, mode = "chunks", unit = "words", chunk_size = 700, overlap = 50)
+    b.e("read.text", "chunks.text")
+    b.n("each", "logic.for_each", 3, 1, group = "s_loop", max_items = 32)
+    b.n(
+        "part",
+        "llm.generate",
+        4,
+        1,
+        group = "s_loop",
+        label = "Summarise a part",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 300,
+        prompt = "Summarise this part of a document in 3 short bullet points:\n\n{{prompt}}",
+    )
+    b.group("s_loop", "For each chunk", (3, 0.4, 2.2, 1.6), "#0d9488")
+    b.e("chunks.items", "each.items")
+    b.e("each.item", "part.prompt")
+    b.e("part.text", "each.collect")
+    b.n("joined", "list.join", 5.4, 1)
+    b.e("each.results", "joined.items")
+    b.n(
+        "summary",
+        "llm.generate",
+        6.4,
+        1,
+        label = "Whole summary",
+        model = CHAT,
+        temperature = 0.3,
+        max_tokens = 700,
+        prompt = "These are notes on each part of one document, in order:\n{{context}}\n\nWrite a clear summary "
+        "of the whole document in one paragraph, then list the 5 key points.",
+    )
+    b.e("joined.text", "summary.context")
+    b.n("show", "output.preview", 7.4, 1)
+    b.e("summary.text", "show.value")
+    b.note("tip", "Upload a document in the first block, then Run.", 0, 2.2, 1.6, 0.6)
+    return b
+
+
+def ask_documents() -> B:
+    b = B(
+        "ask-documents",
+        "Ask Your Documents",
+        "pipeline",
+        "Add a document to a knowledge base (the same ones chat searches), then answer a question from the passages "
+        "that match it, with the sources cited.",
+        tags = ["documents", "knowledge base", "rag", "llm"],
+        seed = 13,
+    ).need("chat", "embedding")
+    b.n("doc", "input.file", 0, 0.5, label = "Your document")
+    b.n("add", "kb.add", 1, 0.5, knowledge_base = "Flows")
+    b.e("doc.file", "add.file")
+    b.n("question", "input.text", 0, 1.6, value = "What are the main points of this document?")
+    b.n("search", "kb.search", 2, 1.2, knowledge_base = "Flows", top_k = 6)
+    b.e("question.text", "search.query")
+    b.e("add.knowledge_base", "search.after")
+    b.n(
+        "answer",
+        "llm.generate",
+        3,
+        1.2,
+        label = "Answer",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 600,
+        prompt = "Answer the question using only these passages, and cite them like [1].\n\n{{context}}\n\n"
+        "Question: {{prompt}}",
+    )
+    b.e("question.text", "answer.prompt")
+    b.e("search.context", "answer.context")
+    b.n("show", "output.preview", 4, 1.2)
+    b.e("answer.text", "show.value")
+    b.note(
+        "tip",
+        "Upload a document, then Run. Parsing, embedding and search all run locally on Studio's own models, "
+        "offline once they are downloaded. Later runs can drop the first two blocks and search what is indexed.",
+        0,
+        2.5,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def contact_cleanup() -> B:
+    b = B(
+        "contact-cleanup",
+        "Clean Up a Contact List",
+        "pipeline",
+        "Paste a messy list or spreadsheet: a local model turns it into rows, then the list blocks drop rows "
+        "without an email, remove duplicates, tidy the fields and sort by name.",
+        tags = ["data", "json", "transform"],
+        seed = 13,
+    ).need("chat")
+    b.n(
+        "pasted",
+        "input.text",
+        0,
+        1,
+        label = "Pasted list",
+        value = "name,email,company\nAna Lima,ANA@example.com,Acme\nben ortiz,ben@example.org,\nAna Lima,"
+        "ana@example.com,Acme Inc\nChris Wu,,Globex\nDee Park,dee@example.net,Initech",
+    )
+    b.n(
+        "rows",
+        "llm.generate",
+        1,
+        1,
+        label = "Read the rows",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 2048,
+        system = "Copy every person in the text into rows exactly as written. Use an empty string for a missing "
+        "field. Do not fix, merge or drop anything.",
+        prompt = "{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "company": {"type": "string"},
+                        },
+                        "required": ["name", "email", "company"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    )
+    b.e("pasted.text", "rows.prompt")
+    b.n("list", "json.get", 2, 1, path = "rows")
+    b.e("rows.json", "list.json")
+    b.n(
+        "has_email",
+        "list.filter",
+        3,
+        1,
+        label = "Has an email",
+        condition = {"op": "contains", "args": [{"var": "item.email"}, "@"]},
+    )
+    b.e("list.value", "has_email.items")
+    b.n(
+        "tidy",
+        "json.set",
+        4,
+        1,
+        label = "Tidy fields",
+        fields = {
+            "email": {"op": "lower", "args": [{"var": "item.email"}]},
+            "company": {
+                "op": "if",
+                "args": [{"var": "item.company"}, {"var": "item.company"}, "unknown"],
+            },
+        },
+    )
+    b.e("has_email.items", "tidy.value")
+    b.n("unique", "list.dedupe", 5, 1, label = "One per email", key = {"var": "item.email"})
+    b.e("tidy.value", "unique.items")
+    b.n(
+        "sorted",
+        "list.sort",
+        6,
+        1,
+        label = "Sort by name",
+        key = {"op": "lower", "args": [{"var": "item.name"}]},
+    )
+    b.e("unique.items", "sorted.items")
+    b.n("clean", "output.result", 7, 1, name = "contacts")
+    b.e("sorted.items", "clean.value")
+    b.n("dropped", "output.preview", 4, 2)
+    b.e("has_email.dropped", "dropped.value")
+    b.note(
+        "tip",
+        "Only the first block uses a model; the cleanup after it is plain list blocks, so you can change a rule "
+        "and re-run in a blink.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def chat_with_documents() -> B:
+    b = B(
+        "chat-with-documents",
+        "Chat With My Documents",
+        "pipeline",
+        "A chat assistant that answers from one of your knowledge bases, fully offline with a local model. Open it "
+        "in the player to chat; pick the knowledge base in the Agent block.",
+        tags = ["chat", "agent", "knowledge base"],
+        seed = 41,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Ask me anything about your documents.")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 6)
+    b.e("in.history", "memory.history")
+    b.n(
+        "agent",
+        "llm.agent",
+        2,
+        1,
+        model = CHAT,
+        system = "Answer from the knowledge base and say which document you used. If it does not have the answer, "
+        "say so.",
+        web_search = False,
+    )
+    b.e("in.message", "agent.prompt")
+    b.e("memory.history", "agent.history")
+    b.n("out", "chat.output", 3, 1)
+    b.e("agent.text", "out.reply")
+    b.note(
+        "tip",
+        "Pick a knowledge base in the Agent block, then press Play to chat.",
+        0,
+        2.4,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def support_bot() -> B:
+    b = B(
+        "support-bot",
+        "Support Bot",
+        "pipeline",
+        "Sorts each message (question, bug report or other), then answers in the matching style. Open it in the "
+        "player to chat.",
+        tags = ["chat", "classify"],
+        seed = 42,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Hi! What can I help you with today?")
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["question", "bug report", "other"])
+    b.e("in.message", "kind.text")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 4)
+    b.e("in.history", "memory.history")
+    b.n(
+        "reply",
+        "llm.generate",
+        2,
+        1,
+        model = CHAT,
+        temperature = 0.5,
+        system = "You are a friendly support agent for a software product. The context gives the message's "
+        "category (question, bug report or other) and the conversation so far. For a bug report, thank them and "
+        "ask for steps to reproduce. Keep it short.",
+        prompt = "New message: {{prompt}}",
+    )
+    b.e("kind.label", "reply.context")
+    b.e("memory.text", "reply.context")
+    b.e("in.message", "reply.prompt")
+    b.n("out", "chat.output", 3, 1)
+    b.e("reply.text", "out.reply")
+    return b
+
+
+def research_agent() -> B:
+    b = B(
+        "research-agent",
+        "Research Agent",
+        "pipeline",
+        "Give it a question: a local model searches the web, reads what it finds and writes a short report with "
+        "its sources.",
+        tags = ["agent", "web search"],
+        seed = 43,
+    ).need("chat")
+    b.n("question", "input.text", 0, 1, value = "What changed in the latest stable Python release?")
+    b.n(
+        "agent",
+        "llm.agent",
+        1,
+        1,
+        label = "Researcher",
+        model = CHAT,
+        system = "Research the question with web search. Write a short report in plain sentences, then a Sources "
+        "list with the URL of every page you used. Never invent a source.",
+        web_search = True,
+        max_tool_calls = 6,
+        temperature = 0.3,
+    )
+    b.e("question.text", "agent.prompt")
+    b.n("report", "output.result", 2, 1, name = "report")
+    b.e("agent.text", "report.value")
+    b.note(
+        "tip",
+        "Web search is the only tool the Agent gets here; the model itself runs on your machine.",
+        0,
+        2,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def invoice_extractor() -> B:
+    b = B(
+        "invoice-extractor",
+        "Invoice Extractor",
+        "pipeline",
+        "Pulls the vendor, date, total and line items out of a pasted invoice or receipt as clean JSON.",
+        tags = ["extract", "json"],
+        seed = 44,
+    ).need("chat")
+    b.n(
+        "invoice",
+        "input.text",
+        0,
+        1,
+        value = "ACME Tools Ltd\nInvoice #2041, 3 March 2026\n2 x Claw hammer @ 18.50\n1 x Tape measure @ 7.25\n"
+        "Shipping 4.00\nTotal due: 48.25 GBP",
+    )
+    b.n(
+        "extract",
+        "llm.extract",
+        1,
+        1,
+        model = CHAT,
+        instructions = "Amounts are numbers without currency signs. Dates are YYYY-MM-DD.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "vendor": {"type": "string"},
+                "invoice_number": {"type": "string"},
+                "date": {"type": "string"},
+                "currency": {"type": "string"},
+                "total": {"type": "number"},
+                "line_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "quantity": {"type": "number"},
+                            "unit_price": {"type": "number"},
+                        },
+                        "required": ["description", "quantity", "unit_price"],
+                    },
+                },
+            },
+            "required": ["vendor", "date", "currency", "total", "line_items"],
+        },
+    )
+    b.e("invoice.text", "extract.text")
+    b.n("total", "json.get", 2, 0.5, path = "total")
+    b.e("extract.json", "total.json")
+    b.n("show_total", "output.preview", 3, 0.5)
+    b.e("total.value", "show_total.value")
+    b.n("data", "output.result", 2, 1.5, name = "invoice")
+    b.e("extract.json", "data.value")
+    b.note(
+        "tip",
+        'For a scan or photo, put an Image block and Describe Image ("Copy every line of this invoice") in front '
+        "of Extract.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def email_triage() -> B:
+    b = B(
+        "email-triage",
+        "Email Triage",
+        "pipeline",
+        "Sorts an incoming email (refund, bug report or other) and drafts a reply in the right style for each kind.",
+        tags = ["classify", "switch", "email"],
+        seed = 45,
+    ).need("chat")
+    b.n(
+        "email",
+        "input.text",
+        0,
+        1,
+        value = "Hi, I was charged twice for my subscription this month. Can I get one of them refunded? Thanks, Sam",
+    )
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["refund", "bug report", "other"])
+    b.e("email.text", "kind.text")
+    b.n("route", "logic.switch", 2, 1, cases = ["refund", "bug report"])
+    b.e("email.text", "route.value")
+    b.e("kind.label", "route.key")
+    replies = (
+        (
+            "refund",
+            "case_1",
+            "Apologise, confirm the refund will be checked within two working days, and ask for "
+            "the order number if it is missing.",
+        ),
+        (
+            "bug",
+            "case_2",
+            "Thank them, ask for the steps to reproduce, their app version and a screenshot.",
+        ),
+        ("other", "default", "Answer helpfully, or say who on the team will follow up."),
+    )
+    for row, (name, port, style) in enumerate(replies):
+        b.n(
+            f"reply_{name}",
+            "llm.generate",
+            3,
+            row * 0.9 + 0.1,
+            label = f"Reply: {name}",
+            model = CHAT,
+            temperature = 0.4,
+            max_tokens = 400,
+            system = f"You draft short, friendly support emails. {style} Sign off as the Support Team.",
+            prompt = "Reply to this email:\n\n{{prompt}}",
+        )
+        b.e(f"route.{port}", f"reply_{name}.prompt")
+    b.n("first", "logic.merge", 4, 1)
+    b.e("reply_refund.text", "first.a")
+    b.e("reply_bug.text", "first.b")
+    b.e("reply_other.text", "first.c")
+    b.n("draft", "output.result", 5, 1, name = "draft")
+    b.e("first.value", "draft.value")
+    b.n("label", "output.result", 2, 0.1, name = "category")
+    b.e("kind.label", "label.value")
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -2078,6 +2818,19 @@ BUILDERS = (
     product_listing,
     song_maker,
     long_form_writer,
+    text_sft,
+    vision_sft,
+    tts_sft,
+    embedding_sft,
+    model_arena,
+    summarise_pdf,
+    ask_documents,
+    contact_cleanup,
+    chat_with_documents,
+    support_bot,
+    research_agent,
+    invoice_extractor,
+    email_triage,
 )
 
 
