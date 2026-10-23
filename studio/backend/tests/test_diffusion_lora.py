@@ -182,7 +182,6 @@ def test_materialize_native_dir_hardlink_falls_back_to_copy(tmp_path, monkeypatc
 
 @pytest.mark.skipif(os.name == "nt", reason = "symlinks need a privilege on Windows")
 def test_materialize_native_dir_default_still_symlinks(tmp_path):
-    # sd-cli resolves --lora-model-dir by joining paths, so symlinks remain fine there.
     src = tmp_path / "a.safetensors"
     src.write_bytes(b"x")
     out = dl.materialize_native_dir(

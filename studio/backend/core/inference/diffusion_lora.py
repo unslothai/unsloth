@@ -602,9 +602,7 @@ def materialize_native_dir(
     needs a uniquely-named file in this dedicated managed directory. Returns the resolved list with
     aliases updated to the (collision-broken) stems written, so the caller injects matching tags.
 
-    ``hardlink=True`` stages hardlinks (copy fallback, never a symlink): sd-server canonicalizes each
-    LoRA entry and skips any whose target lies outside its LoRA directory, so a symlink to the hub
-    cache is never discovered and the request fails with HTTP 400.
+    ``hardlink=True`` never symlinks: sd-server skips LoRA entries whose real path leaves its LoRA dir.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()

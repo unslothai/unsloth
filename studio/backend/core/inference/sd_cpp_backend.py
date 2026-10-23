@@ -4738,8 +4738,7 @@ class SdCppDiffusionBackend:
         lora_stages: list[Path] = []
 
         def _stage_loras(server: Any) -> Optional[list[dict]]:
-            """The ``lora`` entries, staged into a per-request subdir of THIS server's lora-model-dir (so a prior
-            request's adapters cannot leak in); removed after."""
+            """``lora`` entries staged in a per-request subdir of this server's lora-model-dir."""
             if not lora_resolved or not server.lora_dir:
                 return None
             stage = Path(server.lora_dir) / f"gen_{os.urandom(6).hex()}"
@@ -4835,7 +4834,6 @@ class SdCppDiffusionBackend:
                         if self._state is not None and self._state.server is not None:
                             self._state = state
                     if lora_payload is not None:
-                        # The replacement server has its own scratch dir: stage the LoRAs there again.
                         lora_payload = _stage_loras(server)
                         payload.pop("lora", None)
                         if lora_payload:

@@ -2051,8 +2051,7 @@ def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tm
 
 
 def test_generate_server_stages_loras_inside_lora_dir(monkeypatch, tmp_path):
-    # sd-server (master-982+) canonicalizes each LoRA entry and skips any whose target leaves its
-    # --lora-model-dir, so the staged adapter must be a real file inside it, not a symlink to the hub cache.
+    # sd-server (master-982+) skips LoRA entries whose real path leaves --lora-model-dir.
     import os as _os
     from pathlib import Path as _P
 
@@ -2111,7 +2110,6 @@ def _lora_source(monkeypatch, tmp_path):
 
 
 def test_cpu_backend_restart_restages_loras_in_the_new_server_dir(monkeypatch, tmp_path):
-    # The replacement server has its own lora-model-dir: the retried chunk must name adapters staged there.
     _lora_source(monkeypatch, tmp_path)
     b = SdCppDiffusionBackend()
     servers: list = []
