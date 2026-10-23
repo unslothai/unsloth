@@ -2739,6 +2739,9 @@ def _architecture_skip_modules(model_types):
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
+    # Moonshine's LM head is proj_out (untied on moonshine-streaming): kept 16-bit like lm_head, which the fused CE loss reads as a plain weight.
+    if any(mt in ("moonshine", "moonshine_streaming") for mt in model_types):
+        skip.append("proj_out")
     if any(mt.startswith("gemma3n") for mt in model_types):
         skip.extend(("correction_coefs", "prediction_coefs"))
         for name in ("altup_projections", "altup_unembed_projections"):
