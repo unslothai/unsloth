@@ -81,6 +81,8 @@ class StoredComponent:
     dtype: str  # dominant stored float dtype ("bfloat16", "float16", "float32", ...)
     # stored MiB of ``_keep_in_fp32_modules`` tensors: they convert to fp32 on the host even on the route
     kept_fp32_mib: int = 0
+    # loading library from model_index.json ("transformers", "diffusers", ...); "" when unknown
+    library: str = ""
 
 
 def _keep_fp32_from_config(sub: Path) -> tuple[str, ...]:
@@ -112,6 +114,10 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
         root = Path(snapshot)
         if not root.is_dir():
             return out
+        try:
+            index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
+        except Exception:  # noqa: BLE001
+            index = {}
         for sub in sorted(p for p in root.iterdir() if p.is_dir()):
             totals: dict[str, int] = {}
             keep = _keep_fp32_from_config(sub) if sub.name.startswith("text_encoder") else ()
@@ -122,8 +128,10 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
             if not totals:
                 continue
             dtype = max(totals.items(), key = lambda kv: kv[1])[0]
+            entry = index.get(sub.name)
+            library = str(entry[0]) if isinstance(entry, list) and entry and entry[0] else ""
             out[sub.name] = StoredComponent(
-                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB)
+                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB), library
             )
     except Exception:  # noqa: BLE001 - no claim
         return {}
@@ -213,6 +221,7 @@ def decide_small_host(
     host_available_mib: Optional[int],
     lora_active: bool = False,
     host_commit_mib: Optional[int] = None,
+    pread_libraries: tuple[str, ...] = (),
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
     (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
@@ -247,8 +256,11 @@ def decide_small_host(
     )
     reserve = host_reserve_mib(host_total_mib)
     # Windows charges each copy-on-write safetensors view to commit until the load ends: stored bytes plus the
-    # converted copy (measured 2.06x dense, Qwen-Image encoder). Linux / macOS do not enforce commit.
-    dense_commit = dense + int(sum(c.mib for c in converted.values()) * _CONVERT_MARGIN)
+    # converted copy (measured 2.06x dense, Qwen-Image encoder). A component read through ``pread``
+    # (``pread_libraries``) holds no view. Linux / macOS do not enforce commit.
+    dense_commit = dense + int(
+        sum(c.mib for c in converted.values() if c.library not in pread_libraries) * _CONVERT_MARGIN
+    )
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()
     if host_available_mib is None and not forced:

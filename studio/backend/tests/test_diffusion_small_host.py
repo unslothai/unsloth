@@ -132,6 +132,49 @@ def test_windows_commit_headroom_routes_a_dense_load_that_fits_physical_ram():
     assert not d.engaged and "commit headroom" in d.reason
 
 
+def test_pread_read_components_need_no_source_view_commit():
+    # with the encoder read through pread (Windows, safetensors >= 0.8), the #14513 load commits ~one fp16 copy and
+    # stays dense on the reporter's headroom; a diffusers-loaded or mmap-read component still counts its view
+    te = sh.StoredComponent("text_encoder", 16717, "bfloat16", 0, "transformers")
+    comps = {"text_encoder": te, "vae": QWEN_GGUF_COMPANIONS["vae"]}
+    mapped = _decide(comps, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 30 * 1024)
+    read = _decide(
+        comps,
+        total = WIN_TOTAL,
+        available = 30 * 1024,
+        host_commit_mib = 30 * 1024,
+        pread_libraries = ("transformers",),
+    )
+    assert mapped.engaged and not read.engaged
+    assert read.dense_commit_mib == read.dense_host_mib
+    dit = {"transformer": sh.StoredComponent("transformer", 20000, "bfloat16", 0, "diffusers")}
+    d = _decide(dit, total = 128 * 1024, available = 100 * 1024, pread_libraries = ("transformers",))
+    assert d.dense_commit_mib == 2 * d.dense_host_mib
+
+
+def test_stored_components_record_the_loading_library(tmp_path):
+    from safetensors.torch import save_file
+
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+                "vae": ["diffusers", "X"],
+            }
+        )
+    )
+    for name in ("text_encoder", "vae", "transformer"):
+        (tmp_path / name).mkdir()
+        save_file(
+            {"w": torch.zeros(8, 8, dtype = torch.bfloat16)},
+            str(tmp_path / name / "model.safetensors"),
+        )
+    comps = sh.stored_components(tmp_path)
+    assert comps["text_encoder"].library == "transformers"
+    assert comps["vae"].library == "diffusers"
+    assert comps["transformer"].library == ""
+
+
 def test_commit_headroom_only_routes_and_never_refuses():
     # the route's refusal stays on physical RAM: commit can grow with a system-managed pagefile
     d = _decide(QWEN_GGUF_COMPANIONS, total = WIN_TOTAL, available = 30 * 1024, host_commit_mib = 0)
@@ -212,6 +255,8 @@ def test_the_pipeline_decision_passes_the_commit_headroom_and_logs_a_dense_decis
     monkeypatch.setattr(dif, "host_ram_mib", lambda: (WIN_TOTAL, 30 * 1024))
     monkeypatch.setattr(dif, "stored_components", lambda snapshot: dict(QWEN_GGUF_COMPANIONS))
     monkeypatch.setattr(dif, "logger", _LogSpy())
+
+    monkeypatch.setattr(dif, "pread_available", lambda: False)
 
     def decide(commit):
         monkeypatch.setattr(dif, "host_commit_mib", lambda: commit)
