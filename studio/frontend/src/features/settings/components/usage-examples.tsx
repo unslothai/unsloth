@@ -410,6 +410,7 @@ function buildSnippets(
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
+const MODEL_PLACEHOLDER = "YOUR_MODEL";
 // OpenAI SDKs require an api_key value even for keyless access.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
 // retry while /v1 has no model because downloads and loads do not update the store.
@@ -883,9 +884,10 @@ export function UsageExamples({
   const agentKey =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
-  // Null model: nothing is servable, so there is no snippet worth copying.
+  // Null model: nothing is servable yet, so the example names a placeholder (and the note
+  // above it says so) rather than vanishing, which left the pickers looking dead.
   const snippets = useMemo(
-    () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
+    () => buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os),
     [base, key, toolsKey, model, os],
   );
   // Agent command must target the server the panel shows, not the :8888 default.
@@ -903,7 +905,6 @@ export function UsageExamples({
       : "python";
 
   const handleCopy = async () => {
-    if (!snippets) return;
     if (await copyToClipboard(snippets[lang])) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
@@ -1076,33 +1077,32 @@ export function UsageExamples({
           </Field>
         </div>
       </div>
-      {snippets ? (
-        <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label={t("settings.apiKeys.copySnippet")}
-          >
-            <HugeiconsIcon
-              icon={copied ? Tick02Icon : Copy01Icon}
-              className={cn("size-3.5", copied && "text-control-accent")}
-            />
-            {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
-          </button>
-          <HighlightedCode
-            key={snippets[lang]}
-            code={snippets[lang]}
-            language={shikiLang}
-            label={t("settings.apiKeys.usageExamples")}
-            redactFromReload={Boolean(apiKey)}
-          />
-        </div>
-      ) : (
+      {model ? null : (
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.usageNoModel")}
         </p>
       )}
+      <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-label={t("settings.apiKeys.copySnippet")}
+        >
+          <HugeiconsIcon
+            icon={copied ? Tick02Icon : Copy01Icon}
+            className={cn("size-3.5", copied && "text-control-accent")}
+          />
+          {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
+        </button>
+        <HighlightedCode
+          key={snippets[lang]}
+          code={snippets[lang]}
+          language={shikiLang}
+          label={t("settings.apiKeys.usageExamples")}
+          redactFromReload={Boolean(apiKey)}
+        />
+      </div>
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
         <div className="flex h-5 items-center justify-between gap-3">
           <span className="text-xs font-medium text-foreground">

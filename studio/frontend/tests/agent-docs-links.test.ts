@@ -37,3 +37,13 @@ test("the API tab's platform follows the user's machine until they pick one", ()
   );
   assert.match(src, /p\.startsWith\("win"\) \|\| p\.includes\("windows"\)/);
 });
+
+test("with no model loaded the example still renders, naming a placeholder", () => {
+  const src = readSrc("features/settings/components/usage-examples.tsx");
+  assert.match(src, /const MODEL_PLACEHOLDER = "YOUR_MODEL";/);
+  assert.match(
+    src,
+    /buildSnippets\(base, key, toolsKey, model \?\? MODEL_PLACEHOLDER, os\)/,
+  );
+  assert.doesNotMatch(src, /\{snippets \? \(/);
+});
