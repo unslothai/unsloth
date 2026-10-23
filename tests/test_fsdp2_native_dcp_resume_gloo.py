@@ -133,7 +133,12 @@ def _diff_optims(a, b):
     return out
 
 
-def _init(rank, world, port):
+def _init(
+    rank,
+    world,
+    port,
+    timeout = 300,
+):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -146,7 +151,7 @@ def _init(rank, world, port):
     import torch.distributed as dist
 
     dist.init_process_group(
-        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 300)
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = timeout)
     )
     return dist
 
@@ -370,27 +375,208 @@ def _case_trainer(native, dist, rank, tmp):
     return res
 
 
+class _ReaderError(OSError):
+    pass
+
+
+def _case_diverge(native, dist, rank, tmp, part):
+    """Two ranks with different environment / torch / file views must still take one path."""
+    import shutil
+    import types
+
+    import torch.distributed.checkpoint as dcp
+    from transformers import Trainer
+
+    cfg = native.FSDP2Config(param_dtype = torch.float32)
+    res = {}
+    if part in ("env", "gate", "read"):
+        calls = _spy(native)
+        src = native.shard_model(_model(1), cfg)
+        want = _full_model(src)
+        state = native.native_full_state_dict(src)
+        ckpt = os.path.join(tmp, "ckpt")
+        if rank == 0:
+            src.save_pretrained(ckpt, state_dict = state, safe_serialization = True)
+        dist.barrier()
+
+        def _load(name):
+            dst = native.shard_model(_model(2), cfg)
+            before = len(calls)
+            native.native_load_model_checkpoint(dst, ckpt)
+            res[name] = {"calls": calls[before:], "diff": _diff_models(want, _full_model(dst))}
+
+        if part == "env":
+            # Rank 1 alone turns the sharded read off.
+            if rank == 1:
+                os.environ["UNSLOTH_FSDP2_DCP_RESUME"] = "0"
+            _load("env")
+            os.environ.pop("UNSLOTH_FSDP2_DCP_RESUME", None)
+        elif part == "gate":
+            # Rank 1 alone has no usable reader (another torch build).
+            if rank == 1:
+                native._hf_reader_class = lambda: None
+            _load("gate")
+        else:
+            # A read error, on rank 1 alone and on both: dcp.load raises a CheckpointException.
+            reader_cls = dcp.HuggingFaceStorageReader
+            held_read = reader_cls.read_data
+            for name, ranks in (("read_error_r1", (1,)), ("read_error_both", (0, 1))):
+
+                def _fail(self, *args, **kwargs):
+                    raise _ReaderError("injected unreadable shard")
+
+                if rank in ranks:
+                    reader_cls.read_data = _fail
+                _load(name)
+                reader_cls.read_data = held_read
+        return res
+
+    model = native.shard_model(_model(1), cfg)
+    opt = torch.optim.AdamW(model.parameters(), lr = 1e-2, foreach = False)
+    _step(model, opt, 1, rank)
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0)
+    args = types.SimpleNamespace(should_save = rank == 0)
+    if part == "save":
+        # Optimizer save through the Trainer hook with a different flag per rank.
+        trainer = types.SimpleNamespace(
+            model = model, optimizer = opt, lr_scheduler = sched, args = args, is_fsdp_enabled = False
+        )
+        save_dir = os.path.join(tmp, "opt_mixed_flag")
+        os.makedirs(save_dir, exist_ok = True)  # save_model made it, in a Trainer checkpoint
+        os.environ["UNSLOTH_FSDP2_DCP_OPTIM"] = "1" if rank == 0 else "0"
+        Trainer._save_optimizer_and_scheduler(trainer, save_dir)
+        os.environ.pop("UNSLOTH_FSDP2_DCP_OPTIM", None)
+        dist.barrier()
+        res["save_mixed_flag_files"] = sorted(os.listdir(save_dir))
+        return res
+
+    # Node-local views: every rank passes its own directory. both = .pt + dcp + scheduler,
+    # pt = .pt + scheduler, dcp = dcp + scheduler.
+    want_opt = _full_optim(model, opt)
+    views = {k: os.path.join(tmp, f"view_{k}") for k in ("both", "pt", "dcp")}
+    native.native_save_optimizer_sharded(model, opt, os.path.join(views["both"], "optimizer_dcp"))
+    native.native_save_optimizer(
+        model, opt, os.path.join(views["both"], "optimizer.pt"), should_save = rank == 0
+    )
+    if rank == 0:
+        torch.save(sched.state_dict(), os.path.join(views["both"], "scheduler.pt"))
+        shutil.copytree(views["both"], views["pt"])
+        shutil.rmtree(os.path.join(views["pt"], "optimizer_dcp"))
+        shutil.copytree(views["both"], views["dcp"])
+        os.remove(os.path.join(views["dcp"], "optimizer.pt"))
+    dist.barrier()
+
+    def _resume(name, view):
+        m = native.shard_model(_model(2), cfg)
+        o = torch.optim.AdamW(m.parameters(), lr = 1e-2, foreach = False)
+        sc = torch.optim.lr_scheduler.LambdaLR(o, lambda s: 1.0)
+        t = types.SimpleNamespace(
+            model = m, optimizer = o, lr_scheduler = sc, args = args, is_fsdp_enabled = False
+        )
+        try:
+            Trainer._load_optimizer_and_scheduler(t, view)
+            res[name] = {"diff": _diff_optims(want_opt, _full_optim(m, o))}
+        except RuntimeError as exc:
+            res[name] = {"error": str(exc)[:200]}
+
+    # Rank 0 sees both formats, rank 1 only optimizer.pt: both read optimizer.pt.
+    _resume("load_both_vs_pt", views["both"] if rank == 0 else views["pt"])
+    # Rank 0 sees only the sharded dir, rank 1 only optimizer.pt: no common format, both refuse.
+    _resume("load_dcp_vs_pt", views["dcp"] if rank == 0 else views["pt"])
+    return res
+
+
+def _case_amsgrad(native, dist, rank, tmp):
+    """A replicated (ignored) parameter in an AMSGrad group, resumed into an optimizer built with
+    amsgrad = False: the restored hyperparameters ask for max_exp_avg_sq on the next step."""
+    cfg_holder = {}
+
+    def _new(seed, amsgrad):
+        model = _model(seed)
+        first = model.model.layers[0].input_layernorm.weight
+        cfg = native.FSDP2Config(param_dtype = torch.float32, ignored_params = {first})
+        model = native.shard_model(model, cfg)
+        rep = [model.model.layers[0].input_layernorm.weight]
+        rest = [p for p in model.parameters() if p is not rep[0]]
+        cfg_holder["rep_is_dtensor"] = type(rep[0]).__name__
+        opt = torch.optim.AdamW(
+            [{"params": rest}, {"params": rep, "amsgrad": amsgrad}], lr = 1e-2, foreach = False
+        )
+        return model, opt
+
+    model, opt = _new(1, True)
+    for step in (1, 2):
+        _step(model, opt, step, rank)
+    ckpt = os.path.join(tmp, "ckpt")
+    os.makedirs(ckpt, exist_ok = True)
+    native.native_save_optimizer(
+        model, opt, os.path.join(ckpt, "optimizer.pt"), should_save = rank == 0
+    )
+    native.native_save_optimizer_sharded(model, opt, os.path.join(ckpt, "optimizer_dcp"))
+    state = native.native_full_state_dict(model)
+    if rank == 0:
+        model.save_pretrained(ckpt, state_dict = state, safe_serialization = True)
+    dist.barrier()
+    res = {"rep_type": cfg_holder["rep_is_dtensor"]}
+    arms = {}
+    for arm, src in (("old", "optimizer.pt"), ("new", "optimizer_dcp")):
+        m, o = _new(2, False)
+        native.native_load_model_checkpoint(m, ckpt)
+        try:
+            native.native_load_optimizer(m, o, os.path.join(ckpt, src))
+            loss = _step(m, o, 3, rank).item()
+            arms[arm] = {"loss": loss, "after": _full_model(m), "optim": _full_optim(m, o)}
+        except Exception as exc:
+            res[f"{arm}_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    if "old" in arms and "new" in arms:
+        res["loss"] = [arms["old"]["loss"], arms["new"]["loss"]]
+        res["after_diff"] = _diff_models(arms["old"]["after"], arms["new"]["after"])
+        res["optim_diff"] = [
+            str(d)[:200] for d in _diff_optims(arms["old"]["optim"], arms["new"]["optim"])
+        ]
+    return res
+
+
+_SHORT_TIMEOUT_CASES = ("amsgrad",)
+
+
 def _worker(rank, world, port, out, case, tmp):
-    dist = _init(rank, world, port)
+    # Divergence cases run on a short collective timeout: a rank waiting on a collective the
+    # other never joins fails within a minute instead of hanging the suite.
+    short = case in _SHORT_TIMEOUT_CASES or case.startswith("diverge_")
+    dist = _init(rank, world, port, timeout = 60 if short else 300)
     try:
         native = _load_native()
         if case == "fallbacks":
             res = _case_fallbacks(native, dist, rank, tmp)
         elif case == "trainer":
             res = _case_trainer(native, dist, rank, tmp)
+        elif case.startswith("diverge_"):
+            res = _case_diverge(native, dist, rank, tmp, case[len("diverge_") :])
+        elif case == "amsgrad":
+            res = _case_amsgrad(native, dist, rank, tmp)
         else:
             res = _case_roundtrip(
                 native, dist, rank, tmp, tied = case == "tied", shard_files = case == "index"
             )
         out.put((rank, res))
-    except Exception as exc:
+    except BaseException as exc:  # CheckpointException is a BaseException
         import traceback
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
-        dist.destroy_process_group()
+        try:
+            dist.destroy_process_group()
+        except Exception:
+            pass
 
 
-def _run(case, tmp):
+def _run(
+    case,
+    tmp,
+    timeout = 900,
+):
+    import queue
+
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -399,9 +585,19 @@ def _run(case, tmp):
     procs = [ctx.Process(target = _worker, args = (r, 2, port, out, case, tmp)) for r in range(2)]
     for p in procs:
         p.start()
-    results = dict(out.get(timeout = 900) for _ in procs)
-    for p in procs:
-        p.join(timeout = 60)
+    results = {}
+    try:
+        for _ in procs:
+            rank, r = out.get(timeout = timeout)
+            results[rank] = r
+    except queue.Empty:
+        pass
+    finally:
+        for p in procs:
+            p.join(timeout = 60)
+            if p.is_alive():
+                p.kill()
+    assert sorted(results) == [0, 1], f"{case}: ranks did not report within {timeout} s: {results}"
     for rank, r in results.items():
         print("DCP_RESUME", case, rank, {k: v for k, v in r.items() if k != "crash"})
         assert "crash" not in r, r["crash"]
@@ -460,3 +656,33 @@ def test_trainer_resume_both_optimizer_formats(tmp_path):
             "optimizer_dcp" in full["ck4_files"] and "optimizer.pt" not in full["ck4_files"]
         ), full
         assert dcp["diff"] == [] and full["diff"] == [], r
+
+
+@pytest.mark.parametrize("part", ["env", "gate", "read", "save", "load"])
+def test_ranks_with_different_views_agree(part, tmp_path):
+    pytest.importorskip("transformers")
+    if part == "read" and not _hf_reader_available():
+        pytest.skip("torch < 2.9: no sharded read to fail")
+    for rank, r in _run(f"diverge_{part}", str(tmp_path), timeout = 600).items():
+        names = {"env": ["env"], "gate": ["gate"], "read": ["read_error_r1", "read_error_both"]}
+        for name in names.get(part, []):
+            # Every rank took the full load (a lone sharded rank would have hung or crashed).
+            assert r[name]["calls"] == [None], (name, r[name])
+            assert r[name]["diff"] == [], (name, r[name])
+        if part == "save":
+            # Mixed UNSLOTH_FSDP2_DCP_OPTIM: the vote picks the full file on every rank.
+            assert "optimizer.pt" in r["save_mixed_flag_files"], r
+            assert "optimizer_dcp" not in r["save_mixed_flag_files"], r
+        if part == "load":
+            assert r["load_both_vs_pt"].get("diff") == [], r["load_both_vs_pt"]
+            assert "different optimizer" in r["load_dcp_vs_pt"].get("error", ""), r
+
+
+def test_sharded_optimizer_restores_amsgrad_state(tmp_path):
+    pytest.importorskip("transformers")
+    for rank, r in _run("amsgrad", str(tmp_path), timeout = 600).items():
+        assert r["rep_type"] != "DTensor", r  # the AMSGrad group's parameter is replicated
+        assert "old_error" not in r, r
+        assert "new_error" not in r, r
+        assert r["loss"][0] == r["loss"][1], r
+        assert r["after_diff"] == [] and r["optim_diff"] == [], r
