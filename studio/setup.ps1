@@ -977,6 +977,48 @@ function Invoke-ManagedLlamaCppPreflight {
     return "$reason Nothing was installed."
 }
 
+# uv's own boolish set, for every UV_* switch this script reads out of the caller's
+# environment. Verified against uv 0.10.7, crates/uv-static/src/lib.rs
+# parse_boolish_environment_variable, which restates clap's str_to_bool: true is
+# y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
+# anything else aborts uv rather than being guessed at.
+#
+# `-notin @("", "0", "false")`, which each of these sites used to spell inline, read
+# off, no, n and f as TRUE, the exact opposite of uv's answer for them.
+#
+# Trimmed where uv is not: uv aborts on a padded value, so the resolve fails whatever
+# this returns, and trimming keeps the answer identical to setup.sh's
+# _uv_offline_requested and install_python_stack.py's _uv_env_flag, which is the
+# property worth having. ToLowerInvariant, not ToLower: a Turkish-locale host
+# lowercases "I" to a dotless i and would stop matching.
+#
+# install.ps1 carries the same function: the two scripts cannot dot-source each other
+# (install.ps1 is run straight off the wire by `irm | iex`, with no file and no sibling
+# on disk), so the parity is pinned by test instead. Defined ahead of Test-MirrorConfigured,
+# which `Invoke-MirrorFallback -SpareOnly` reaches long before the rest of the helpers.
+function Test-UvEnvFlag {
+    param([string]$Name)
+    $value = [string][Environment]::GetEnvironmentVariable($Name)
+    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+}
+
+# pip's rule, kept separate on purpose: PIP_NO_INDEX is pip's variable and uv never
+# reads it, so uv's parser has no authority over it. pip routes it through
+# ConfigOptionParser._update_defaults -> strtobool (pip/_internal/utils/misc.py): true
+# is y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive and
+# untrimmed, with anything else exiting pip on "is not a valid value". An empty value
+# never reaches strtobool, because _get_ordered_configuration_items drops falsy values
+# first, so PIP_NO_INDEX="" is simply not set.
+#
+# The literals coincide with uv's today. They are restated rather than shared anyway,
+# so that the day either project changes its mind this is a one-function edit instead
+# of a silent behaviour change in the other resolver.
+function Test-PipEnvFlag {
+    param([string]$Name)
+    $value = [string][Environment]::GetEnvironmentVariable($Name)
+    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
+}
+
 function Test-MirrorConfigured {
     param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
     if ($Tool -ne 'pip') {
@@ -989,17 +1031,15 @@ function Test-MirrorConfigured {
             $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
         }
         # uv's discovery: UV_CONFIG_FILE alone (even with UV_NO_CONFIG); relative paths from --directory.
-        # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
-        $uvTrue = @('1', 't', 'true', 'y', 'yes', 'on')
         $files = @("$env:APPDATA\uv\uv.toml")
-        if ($uvTrue -notcontains "$env:UV_NO_SYSTEM_CONFIG".Trim().ToLowerInvariant()) { $files += "$env:ProgramData\uv\uv.toml" }
+        if (-not (Test-UvEnvFlag 'UV_NO_SYSTEM_CONFIG')) { $files += "$env:ProgramData\uv\uv.toml" }
         $dir = (Get-Location -PSProvider FileSystem).ProviderPath
         $workDir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
         if ($workDir) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $workDir)) }
         $configFile = if ($env:UV_CONFIG_FILE) { [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_CONFIG_FILE)) }
         if ($env:UV_PROJECT) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_PROJECT)) }
         if ($configFile) { $files = @($configFile); $dir = $null }
-        elseif ($uvTrue -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
+        elseif (Test-UvEnvFlag 'UV_NO_CONFIG') { $files = @(); $dir = $null }
         while ($dir) {
             $pyproject = Join-Path $dir 'pyproject.toml'
             if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
@@ -6010,39 +6050,23 @@ function Read-WoaUvTomlIndexKeys {
     return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex; ExtraIndexes = @($extras | Where-Object { $_ }) }
 }
 
-# uv's own boolish set, for every UV_* switch this script reads out of the caller's
-# environment. Verified against uv 0.10.7, crates/uv-static/src/lib.rs
-# parse_boolish_environment_variable, which restates clap's str_to_bool: true is
-# y, yes, t, true, on, 1; false is n, no, f, false, off, 0; case-insensitive, and
-# anything else aborts uv rather than being guessed at.
+# UV_NO_INDEX is OURS, not uv's, and the distinction is not pedantic: uv 0.10.7 defines
+# no such environment variable. `--no-index` exists only as a command-line flag, it is
+# absent from `uv pip install --help`'s environment list beside UV_OFFLINE and
+# UV_NO_CONFIG, and grepping the 0.10.7 tree for the name returns nothing. uv will
+# ignore it however it is spelled. So this is not "what uv was told"; it is the
+# operator telling US they want no registry index, and what we do about it is shape the
+# arguments we pass.
 #
-# `-notin @("", "0", "false")`, which each of these sites used to spell inline, read
-# off, no, n and f as TRUE, the exact opposite of uv's answer for them.
+# Read with uv's boolish set deliberately, not by inheritance. A caller sets this
+# beside UV_OFFLINE and UV_NO_CONFIG, which uv really does read, and one spelling
+# across all three is the entire point. It is a choice, and the test says so.
 #
-# Trimmed where uv is not: uv aborts on a padded value, so the resolve fails whatever
-# this returns, and trimming keeps the answer identical to setup.sh's
-# _uv_offline_requested and install_python_stack.py's _uv_env_flag, which is the
-# property worth having. ToLowerInvariant, not ToLower: a Turkish-locale host
-# lowercases "I" to a dotless i and would stop matching.
-#
-# install.ps1 carries the same function: the two scripts cannot dot-source each other
-# (install.ps1 is run straight off the wire by `irm | iex`, with no file and no sibling
-# on disk), so the parity is pinned by test instead.
-function Test-UvEnvFlag {
-    param([string]$Name)
-    $value = [string][Environment]::GetEnvironmentVariable($Name)
-    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
-}
-
-# pip's own strtobool rule for PIP_* vars, kept separate from uv's on purpose.
-function Test-PipEnvFlag {
-    param([string]$Name)
-    $value = [string][Environment]::GetEnvironmentVariable($Name)
-    return (@("1", "t", "true", "y", "yes", "on") -contains $value.Trim().ToLowerInvariant())
-}
-
-# UV_NO_INDEX is OUR convention: uv 0.10.7 defines no such environment variable (--no-index is a
-# command-line flag only). Deliberately not turned into --no-index.
+# Deliberately NOT turned into a `--no-index` argument. That would make our behaviour
+# and uv's actually agree, which is the honest long-term answer, but it would also turn
+# a resolve that works today into one with no index at all. That is a behaviour change
+# for existing users and belongs in its own change, not riding along with a truthiness
+# fix.
 function Test-NoIndexRequested {
     return (Test-UvEnvFlag "UV_NO_INDEX")
 }

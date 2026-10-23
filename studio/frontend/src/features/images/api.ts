@@ -11,6 +11,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import type { DetailerRecord, DetailerRequest } from "./lib/detailer";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
 import type { SdControlsCapability } from "./lib/sd-controls";
@@ -263,6 +264,7 @@ export interface DiffusionGenerateRequest {
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
+  detailer?: DetailerRequest;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
   allow_oversized?: boolean;
@@ -401,6 +403,8 @@ export interface GalleryImage {
   mask_blur?: number | null;
   inpaint_only_masked?: boolean | null;
   inpaint_padding?: number | null;
+  // The Detailer pass this image ran (settings, detections) or why it did not; absent = none.
+  detailer?: DetailerRecord | null;
   upscale_model?: string | null;
   // Hires fix; `width` / `height` stay the output size, hires_base_* the base pass.
   hires_scale?: number | null;

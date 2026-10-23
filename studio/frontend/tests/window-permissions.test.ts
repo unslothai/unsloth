@@ -11,7 +11,7 @@ const CAPABILITIES = new URL(
   import.meta.url,
 );
 const WINDOW_SETTER =
-  /\b(?:win|appWindow|getCurrentWindow\(\))\.(set\w+|maximize|unmaximize|minimize|unminimize|toggleMaximize|show|hide|center|close|start\w+)\(/g;
+  /\b(?:win|appWindow|getCurrentWindow\(\))\.(set\w+|maximize|unmaximize|minimize|unminimize|toggleMaximize|show|hide|center|close|start\w+|request\w+)\(/g;
 const SOURCE_FILE = /\.tsx?$/;
 const toPermission = (method: string) =>
   `core:window:allow-${method.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;

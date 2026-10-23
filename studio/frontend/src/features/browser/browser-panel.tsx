@@ -1717,38 +1717,30 @@ function BrowserFileToolbar({
             <span className="min-w-0 break-words">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger disabled={!blob}>
-              <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
-              {t("browser.file.openIn")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-lg p-1">
-              <DropdownMenuItem onSelect={openInNewChat}>
-                <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
-                {t("browser.file.newChat")}
-              </DropdownMenuItem>
-              {/* A blob URL can't be handed to another app from the desktop app. */}
-              {isTauri || !tabType ? null : (
+          {/* A blob URL can't be handed to another app from the desktop app. */}
+          {isTauri || !tabType ? (
+            <DropdownMenuItem disabled={!blob} onSelect={openInNewChat}>
+              <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4" />
+              {t("browser.file.newChat")}
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger disabled={!blob}>
+                <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
+                {t("browser.file.openIn")}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="browser-menu min-w-52 rounded-lg p-1">
+                <DropdownMenuItem onSelect={openInNewChat}>
+                  <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
+                  {t("browser.file.newChat")}
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={openInBrowser}>
                   <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4.5" />
                   {t("browser.file.newBrowserTab")}
                 </DropdownMenuItem>
-              )}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-          {kind === "html" ? (
-            <>
-              <DropdownMenuItem onSelect={runAgain}>
-                <RefreshGlyph strokeWidth={1.75} className="size-4" />
-                {t("browser.file.runAgain")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={toggleConsole}>
-                <HugeiconsIcon icon={ComputerTerminal01Icon} strokeWidth={1.75} className="size-4" />
-                {consoleLabel}
-                {errorBadge ? <span className="ml-auto">{errorBadge}</span> : null}
-              </DropdownMenuItem>
-            </>
-          ) : null}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
           {kind ? (
             <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
               <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
@@ -1778,7 +1770,6 @@ function FloatingFileToolbar({
   visible,
 }: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
-  const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
   const canAnnotate = useBrowserStore((state) => state.sendAnnotations !== null);
   const annotating = useBrowserStore((state) => state.annotateTabId === tab.id);
@@ -1786,12 +1777,12 @@ function FloatingFileToolbar({
   const [copied, setCopied] = useState(false);
   const download = tabDownload(tab);
   const blob = download?.blob;
+  // HTML and code take BrowserFileToolbar.
   const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
-  const hasSource = kind === "html" || kind === "markdown";
+  const hasSource = kind === "markdown";
   const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
   const timed = media === "video" || media === "audio";
-  const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
-  const htmlPreview = kind === "html" && view.mode === "preview";
+  const showsSource = kind === "text" || (hasSource && view.mode === "source");
   const setView = (patch: Partial<FileViewState>) => useBrowserStore.getState().setFileView(tab.id, patch);
   const toggleAnnotating = () =>
     useBrowserStore.getState().setAnnotating(annotating ? null : tab.id);
@@ -1806,32 +1797,20 @@ function FloatingFileToolbar({
       window.setTimeout(() => setCopied(false), 2000);
     });
   };
-  const runAgain = () => {
-    setView({ mode: "preview" });
-    useBrowserStore.getState().reload(tab.id);
-  };
-  const toggleConsole = () =>
-    htmlPreview
-      ? setView({ consoleOpen: !view.consoleOpen })
-      : setView({ mode: "preview", consoleOpen: true });
-  const openInNewChat = () => {
-    if (!blob) return;
-    startLibraryChat(navigate, {
-      files: [
-        new File([blob], entry.name, { type: entry.contentType || blob.type }),
-      ],
-    });
-  };
-  // Null for HTML and SVG, which would run on Studio's origin from a blob URL.
-  const tabType = browserTabType(entry.name, entry.contentType || blob?.type || "");
-  const openInBrowser = () => {
-    if (!blob || !tabType) return;
-    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  };
+  const fileLabel = (
+    <>
+      <KindIcon
+        name={entry.name}
+        contentType={entry.contentType}
+        className="size-4.5"
+        mono={true}
+      />
+      <span className="min-w-0 truncate">{fileTitle(entry.name)}</span>
+    </>
+  );
   return (
     <>
+      {kind ? (
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <button
@@ -1841,13 +1820,7 @@ function FloatingFileToolbar({
               "flex h-9 min-w-24 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full pl-3.5 pr-2.5 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
             )}
           >
-            <KindIcon
-              name={entry.name}
-              contentType={entry.contentType}
-              className="size-4.5"
-              mono={true}
-            />
-            <span className="min-w-0 truncate">{fileTitle(entry.name)}</span>
+            {fileLabel}
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={1.75}
@@ -1870,78 +1843,13 @@ function FloatingFileToolbar({
             <span className="min-w-0 break-words">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger disabled={!blob}>
-              <HugeiconsIcon
-                icon={ArrowUpRight01Icon}
-                strokeWidth={1.75}
-                className="size-4"
-              />
-              {t("browser.file.openIn")}
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-lg p-1">
-              <DropdownMenuItem onSelect={openInNewChat}>
-                <HugeiconsIcon
-                  icon={BubbleChatAddIcon}
-                  strokeWidth={1.75}
-                  className="size-4.5"
-                />
-                {t("browser.file.newChat")}
-              </DropdownMenuItem>
-              {/* A blob URL can't be handed to another app from the desktop app. */}
-              {isTauri || !tabType ? null : (
-                <DropdownMenuItem onSelect={openInBrowser}>
-                  <HugeiconsIcon
-                    icon={InternetIcon}
-                    strokeWidth={1.75}
-                    className="size-4.5"
-                  />
-                  {t("browser.file.newBrowserTab")}
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-          {kind === "html" ? (
-            <>
-              <DropdownMenuItem onSelect={runAgain}>
-                <RefreshGlyph strokeWidth={1.75} className="size-4" />
-                {t("browser.file.runAgain")}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={toggleConsole}>
-                <HugeiconsIcon
-                  icon={ComputerTerminal01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                {t("browser.file.console")}
-                {view.errorCount > 0 ? (
-                  <span className="ml-auto rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
-                    {view.errorCount}
-                  </span>
-                ) : null}
-              </DropdownMenuItem>
-            </>
-          ) : null}
-          {kind ? (
-            <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
-              <HugeiconsIcon
-                icon={Copy01Icon}
-                strokeWidth={1.75}
-                className="size-4"
-              />
-              {t("browser.file.copy")}
-            </DropdownMenuItem>
-          ) : null}
-          <DropdownMenuItem
-            disabled={!download}
-            onSelect={() => download && void saveBrowserDownload(download)}
-          >
+          <DropdownMenuItem disabled={!blob} onSelect={copyContents}>
             <HugeiconsIcon
-              icon={Download01Icon}
+              icon={Copy01Icon}
               strokeWidth={1.75}
               className="size-4"
             />
-            {t("browser.download")}
+            {t("browser.file.copy")}
           </DropdownMenuItem>
           {showsSource ? (
             <>
@@ -1963,6 +1871,17 @@ function FloatingFileToolbar({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
+      ) : (
+        <div
+          title={entry.name}
+          className={cn(
+            PILL_SURFACE,
+            "flex h-9 min-w-24 max-w-[55%] shrink items-center gap-2 rounded-full px-3.5 text-ui-13p5 text-foreground",
+          )}
+        >
+          {fileLabel}
+        </div>
+      )}
       {/* A true circle, glyph centred; the label is its tooltip. A clip or a track has nothing to mark. */}
       {timed ? null : (
         <IconButton
@@ -2027,46 +1946,6 @@ function FloatingFileToolbar({
             </Tooltip>
           ))}
         </div>
-      ) : null}
-      {kind === "html" ? (
-        <>
-          <CircleButton
-            label={t("browser.file.runAgain")}
-            onClick={runAgain}
-            className="hidden size-9 @[40rem]:flex"
-          >
-            <RefreshGlyph strokeWidth={1.75} className="size-4" />
-          </CircleButton>
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                aria-label={t("browser.file.console")}
-                aria-pressed={htmlPreview && view.consoleOpen}
-                onClick={toggleConsole}
-                className={cn(
-                  PILL,
-                  "hidden h-9 min-w-9 @[40rem]:flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  htmlPreview && view.consoleOpen && "text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={ComputerTerminal01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                {view.errorCount > 0 ? (
-                  <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
-                    {view.errorCount}
-                  </span>
-                ) : null}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="tooltip-compact">
-              {t("browser.file.console")}
-            </TooltipContent>
-          </Tooltip>
-        </>
       ) : null}
       <CopySplit tab={tab} entry={entry} blob={blob} copied={copied} onCopyContents={copyContents} />
       {timed ? null : (
@@ -2257,6 +2136,8 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
     : tabType
       ? { label: t("browser.video.open"), run: openInBrowser }
       : { label: t("browser.file.newChat"), run: openInNewChat };
+  // Else the menu would only repeat New chat.
+  const hasMenu = isTauri || tabType !== null;
   return (
     <div className={SPLIT_PILL} onPointerEnter={listApps} onFocus={listApps}>
       <button
@@ -2264,7 +2145,7 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
         disabled={!blob}
         onClick={primary.run}
         title={defaultApp ? defaultApp.name : undefined}
-        className={cn(SPLIT_PART, "gap-2 pr-1.5 pl-3")}
+        className={cn(SPLIT_PART, hasMenu ? "gap-2 pr-1.5 pl-3" : "gap-2 px-3")}
       >
         {defaultApp && !runsCode ? (
           <AppIcon app={defaultApp} />
@@ -2277,6 +2158,7 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
         )}
         {primary.label}
       </button>
+      {hasMenu ? (
       <DropdownMenu onOpenChange={(open) => open && listApps()}>
         <DropdownMenuTrigger asChild={true}>
           <button
@@ -2330,6 +2212,7 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      ) : null}
     </div>
   );
 }
