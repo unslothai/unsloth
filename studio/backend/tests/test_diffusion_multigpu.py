@@ -483,9 +483,7 @@ def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
 
 
 def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch):
-    """FLUX.3 / MiniMax-H3 load as a ModularPipeline, which is not a DiffusionPipeline and reports its FIRST
-    component's card: the text encoder's, on the secondary of a layer split. The denoise loop then made the latents
-    and timesteps there and the denoiser's root Linear (on the primary) raised a device mismatch on step 0."""
+    """ModularPipeline reports its first component's card (the text encoder, on the secondary): step 0 device mismatch."""
     monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
     import importlib
 
@@ -503,7 +501,7 @@ def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkey
             return self.weight.device
 
     class Pipe(ModularPipeline):
-        def __init__(self, text_encoder, transformer):  # no hub config: just the two components
+        def __init__(self, text_encoder, transformer):
             self._component_specs = {"text_encoder": None, "transformer": None}
             self.text_encoder = text_encoder
             self.transformer = transformer

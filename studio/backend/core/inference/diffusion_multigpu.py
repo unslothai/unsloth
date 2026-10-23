@@ -1112,10 +1112,7 @@ def _split_home(pipe: Any) -> Any:
 
 
 def _pipeline_bases() -> list[type]:
-    """The diffusers base classes whose ``_execution_device`` / ``device`` a split pipeline must answer: the classic
-    ``DiffusionPipeline`` and the ``ModularPipeline`` FLUX.3 and MiniMax-H3 load as (it is not a subclass, and returns
-    its FIRST component's card, the text encoder's on a split). A diffusers without modular pipelines has only the first.
-    """
+    """``DiffusionPipeline`` plus ``ModularPipeline`` (FLUX.3 / MiniMax-H3; not a subclass) when this diffusers has it."""
     bases: list[type] = []
     try:
         from diffusers import DiffusionPipeline
@@ -1153,12 +1150,10 @@ def _patch_execution_device(cls: type) -> bool:
 
 
 def install_execution_device_patch() -> bool:
-    """``_execution_device`` / ``.device`` report the primary card of a split pipeline, on ``DiffusionPipeline`` and on
-    ``ModularPipeline``. diffusers returns the first non-CPU component in signature order (the VAE on the secondary for
-    most classic families) or, for a modular pipeline, the first component (its text encoder): the latents and
-    timesteps were then made on the text encoder's card and the denoiser's root weights on the primary crashed the
-    first step. Inert for any pipeline without a split denoiser; also covers ``from_pipe`` siblings, which share the
-    modules. True when ``DiffusionPipeline`` is patched."""
+    """``_execution_device`` / ``.device`` report the primary card of a split pipeline. diffusers returns the first
+    non-CPU component (the VAE) or, for a modular pipeline, the first component (the text encoder), so latents landed
+    on the secondary. Inert without a split denoiser; covers ``from_pipe`` siblings. True when ``DiffusionPipeline``
+    is patched."""
     bases = _pipeline_bases()
     if not bases:
         return False
