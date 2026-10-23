@@ -8,7 +8,6 @@ import pytest
 
 from core.inference import mxc_probe, mxc_read_grants, os_sandbox, sandbox_windows_mxc
 
-# What Git for Windows' bash prints under an AppContainer before it reads its command (microsoft/mxc#1061).
 MSYS_STARTUP_FAILURE = (
     "      0 [main] bash (8852) C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe: *** fatal error - "
     "NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1888ae32e00d56aa): 0xC0000022\n"
@@ -18,7 +17,6 @@ DLL_INIT_FAILED = 3221225794  # 0xC0000142
 
 @pytest.fixture(autouse = True)
 def _fresh_probe_cache(monkeypatch):
-    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
     monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
     monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
     mxc_probe.invalidate_cache()
@@ -73,11 +71,9 @@ def test_git_bash_namespace_failure_is_named(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "executable, kind, output, cleanup",
     [
-        # Another bash failure is not this one.
         ("bash.exe", "terminal", "bash: some other startup error\n", "complete"),
         # Uncertain cleanup outranks any diagnosis of the shell.
         ("bash.exe", "terminal", MSYS_STARTUP_FAILURE, "uncertain"),
-        # The signature only means something from the shell it describes.
         ("cmd.exe", "terminal", MSYS_STARTUP_FAILURE, "complete"),
         ("pwsh.exe", "terminal", MSYS_STARTUP_FAILURE, "complete"),
         ("python.exe", "python", MSYS_STARTUP_FAILURE, "complete"),
@@ -232,7 +228,6 @@ def test_an_in_place_git_update_probes_the_shell_again(monkeypatch, tmp_path):
     mxc_probe.probe(str(bash), execution_kind = "terminal")
     mxc_probe.probe(str(bash), execution_kind = "terminal")
     assert len(calls) == 1
-    # Same path, new runtime: an upgrade that may have fixed the namespace call.
     runtime.write_bytes(b"msys-new-and-longer")
     mxc_probe.probe(str(bash), execution_kind = "terminal")
     assert len(calls) == 2

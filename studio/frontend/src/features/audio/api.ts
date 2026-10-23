@@ -294,11 +294,15 @@ export async function fetchClipBlob(url: string): Promise<Blob> {
   return response.blob();
 }
 
-export async function fetchClipObjectUrl(
-  url: string,
-): Promise<{ url: string; bytes: number; blob: Blob }> {
-  const blob = await fetchClipBlob(url);
-  return { url: URL.createObjectURL(blob), bytes: blob.size, blob };
+/** Let the media element buffer and seek without downloading the entire WAV first. */
+export async function fetchGalleryAudioSignedUrl(id: string): Promise<string> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/${encodeURIComponent(id)}/signed-url`,
+  );
+  const body = await parseJson<{ url?: string }>(response);
+  if (!body.url) throw new Error("The server returned no audio link.");
+  // Media elements bypass authFetch; desktop URLs need the backend origin.
+  return apiUrl(body.url);
 }
 
 export async function listTranscripts(
@@ -538,6 +542,34 @@ export async function runAudio(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(withAudioSlotModel(buildAudioRunBody(request))),
+    signal,
+  });
+  return parseAudioJson<AudioRunResponse>(response);
+}
+
+export async function runSpeechOnConnection(
+  request: {
+    text: string;
+    providerId: string;
+    model: string;
+    voice: string;
+    instructions: string | null;
+    speed: number;
+  },
+  signal?: AbortSignal,
+): Promise<AudioRunResponse> {
+  const response = await authFetch("/api/inference/audio/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      workflow: "speak",
+      text: request.text,
+      provider_id: request.providerId,
+      model: request.model,
+      voice: request.voice,
+      speed: request.speed,
+      ...(request.instructions ? { instructions: request.instructions } : {}),
+    }),
     signal,
   });
   return parseAudioJson<AudioRunResponse>(response);

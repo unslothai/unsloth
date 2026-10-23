@@ -1756,6 +1756,14 @@
       "evidence_hash": "1493feaf122ac84c21097206624c3dad13814a6c24f2c3f1b03581879b2d5f2d"
     },
     {
+      "package": "pandas",
+      "file": "pandas/tests/util/test_find_stack_level.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L50:     exec(compile(_SRC, module_path, \"exec\"), module.__dict__)\nExec: L50:     exec(compile(_SRC, module_path, \"exec\"), module.__dict__)",
+      "evidence_hash": "d964080b66d4a99e39c1c0b8af1d6722bc535f35f4a2f385937d942e90242403"
+    },
+    {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/device_map_planner.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",

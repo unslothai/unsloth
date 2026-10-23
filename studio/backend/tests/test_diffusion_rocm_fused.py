@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 
 from core.inference import diffusion_eager_patches as ep  # noqa: E402
 from core.inference import diffusion_rocm_fused as rf  # noqa: E402
@@ -21,7 +23,11 @@ fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux")
 from diffusers.models import normalization as nm  # noqa: E402
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
 
-# Another test file in the same session may leave Studio's eager AdaLN patch live on the classes: start from stock.
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
+
+# another test file may leave Studio's eager AdaLN patch on the classes: start from stock
 ep.uninstall_patches()
 _STOCK_FWD = {name: getattr(nm, name).forward for name in rf._ADALN_CLASSES}
 
@@ -57,6 +63,7 @@ def fake_kernels(monkeypatch):
 
 def _nvidia(monkeypatch, platform = "linux"):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.version, "cuda", "13.0", raising = False)
     monkeypatch.setattr(rf.sys, "platform", platform)
 
@@ -79,6 +86,7 @@ def test_auto_is_inert_on_nvidia_outside_linux(fake_kernels, monkeypatch, platfo
 
 def test_auto_is_inert_without_a_gpu_torch(fake_kernels, monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setattr(torch.version, "cuda", None, raising = False)
     monkeypatch.setattr(rf.sys, "platform", "linux")
     assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
@@ -109,7 +117,7 @@ def test_flux2_fp16_keeps_its_own_patch_on_nvidia(fake_kernels, monkeypatch):
 
 
 def test_auto_engages_rope_only_on_rocm(fake_kernels, monkeypatch):
-    # auto = the bit-identical RoPE kernel on ROCm; fused AdaLN bought no speed on gfx1151 and is opt-in.
+    # ROCm auto = bit-identical RoPE kernel; fused AdaLN gave no speed on gfx1151, so it is opt-in
     monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
     got = rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
     assert got == {"rope": True, "adaln": 0}
@@ -135,6 +143,7 @@ def test_kill_switches_on_rocm(fake_kernels, monkeypatch, value):
 
 def test_force_on_engages_on_cuda(fake_kernels, monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     monkeypatch.setenv(rf.FUSED_ROPE_ENV, "1")
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     assert rf.install_for_pipe(_PipeLike(), torch.float16, "cuda") == {"rope": True, "adaln": 3}
@@ -168,7 +177,6 @@ def test_reinstall_is_clean(fake_kernels, monkeypatch):
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     for _ in range(2):
         rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
-    # the second install must not have stashed the first install's fused forward as "previous"
     assert all(prev not in rf._FORWARDS.values() for prev in rf._ADALN_PREV.values())
 
 
@@ -310,11 +318,10 @@ def test_adaln_matches_stock(monkeypatch, dtype, cls_name, D, S):
         )
     assert rf.COUNTS["adaln_fused"] == before + 1
     got0, want0 = (got, want) if torch.is_tensor(got) else (got[0], want[0])
-    if not torch.is_tensor(got):  # gates / mlp modulation pass through untouched
+    if not torch.is_tensor(got):
         assert all(torch.equal(a, b) for a, b in zip(got[1:], want[1:]))
     diff = (got0.float() - want0.float()).abs()
-    # The stock rounding chain is reproduced; only the row reduction order differs, which can flip the rounding of the
-    # normalised value by one ULP. Bound: that flip carried through the product, plus one rounding of product and sum.
+    # only the row reduction order differs: allow a one-ULP flip plus one rounding of product and sum
     with torch.no_grad():
         e = mod.linear(mod.silu(emb))
         scale = (
@@ -426,8 +433,7 @@ def test_tiny_flux2_transformer_default_on(monkeypatch):
 
 
 def test_teardown_survives_a_later_eager_layer(fake_kernels, monkeypatch):
-    # Deferred speed profile: fused AdaLN at load, Studio's eager patch layered on top at the 3rd image, then unload
-    # in the order diffusion.py uses (fused teardown first, eager after).
+    # unload in diffusion.py's order: fused teardown first, eager after
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     try:
         assert rf.install_adaln(torch.bfloat16, "cuda") == len(rf._ADALN_CLASSES)
