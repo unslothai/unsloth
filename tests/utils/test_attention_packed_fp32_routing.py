@@ -114,6 +114,35 @@ def test_packed_fp32_dropout_stays_on_sdpa(native_packed_host):
     )
 
 
+def test_packed_fp32_deterministic_stays_on_sdpa(native_packed_host):
+    # xformers' flash backward is non-deterministic; the per-segment SDPA path is the deterministic one.
+    lengths = [3, 5]
+    Q, K, V = _packed_qkv(torch.float32, lengths)
+    previous = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        _attend(Q, K, V, _seq_info(lengths), ad.SDPA)
+    finally:
+        torch.use_deterministic_algorithms(previous)
+    assert native_packed_host["xformers"] == 0 and native_packed_host["sdpa"] == 2
+
+
+def test_packed_fp32_large_head_dim_stays_on_sdpa_on_sm100(native_packed_host, monkeypatch):
+    # sm_100+ downcasts fp32 for xformers' flash op, which has no kernel above head_dim 256.
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
+    lengths = [3, 5]
+    T = sum(lengths)
+    Q, K, V = [
+        torch.randn(1, h, T, 512).as_subclass(_CudaLooking) for h in (H, KV, KV)
+    ]
+    config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = KV, n_groups = H // KV)
+    context = ad.AttentionContext(1, T, T, H, 512, True, _seq_info(lengths), None, None)
+    assert not ad._packed_fp32_prefers_xformers(config, context, Q, K, V)
+    # Below sm_100 cutlass runs fp32 at any head dim, so the single call is kept.
+    monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: False)
+    assert ad._packed_fp32_prefers_xformers(config, context, Q, K, V)
+
+
 def test_xformers_fp32_downcast_follows_q_device(monkeypatch):
     # A B200 host (device 0 rejects fp32 in xformers) must not downcast CPU tensors.
     monkeypatch.setattr(ad, "_XFORMERS_FP32_UNSUPPORTED", True)

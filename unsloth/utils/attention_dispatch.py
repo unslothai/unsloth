@@ -771,6 +771,12 @@ def _packed_fp32_prefers_xformers(config, context, Q: Tensor, K: Tensor, V: Tens
     # Dropout and ring attention reach SDPA for their own reasons.
     if (config.sdpa_kwargs or {}).get("dropout_p") or _ring_attention_active():
         return False
+    # Deterministic mode keeps per-segment SDPA, as _torch_varlen_takes does: xformers' flash backward
+    # is non-deterministic. sm_100+ downcasts to that flash op, which has no head_dim above 256.
+    if torch.are_deterministic_algorithms_enabled():
+        return False
+    if Q.shape[-1] > 256 and _xformers_rejects_fp32(Q.device):
+        return False
     return True
 
 
