@@ -2030,7 +2030,6 @@ const ForkContinuationRule: FC = () => {
           }}
           className={cn(
             labelClass,
-            // Styled like an answer link.
             "cursor-pointer rounded-sm text-foreground underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           )}
         >
