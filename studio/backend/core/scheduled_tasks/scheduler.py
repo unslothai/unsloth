@@ -148,15 +148,26 @@ def _chat_model_loaded() -> bool:
     return _loaded_slot_ident() is not None
 
 
-def _sole_kept_model() -> Optional[str]:
-    """With the primary slot empty, the one model kept alongside: named, a run routes to it without a load."""
-    from core.inference import model_slots
-
-    if _chat_model_loaded():
-        return None
-    kept = [slot for slot in model_slots.visible() if getattr(slot.llama, "is_loaded", False)]
-    name = getattr(kept[0].llama, "model_identifier", None) if len(kept) == 1 else None
+def _slot_model(slot: Any) -> Optional[str]:
+    if getattr(slot.llama, "is_loaded", False) and getattr(slot.llama, "model_identifier", None):
+        return str(slot.llama.model_identifier)
+    name = getattr(slot.orchestrator, "active_model_name", None)
     return str(name) if name else None
+
+
+def _sole_kept_model() -> Optional[str]:
+    """With no primary this account may use, its one model kept alongside: named, a run routes to it without a load."""
+    from core.inference import model_slots
+    from hub.services.models import account_access
+    from routes.inference import _loaded_slot_ident
+
+    primary = _loaded_slot_ident()
+    if primary is not None and not (
+        account_access.managed_account() and account_access.resident_hidden("chat", primary)
+    ):
+        return None
+    names = [name for name in map(_slot_model, model_slots.visible()) if name]
+    return names[0] if len(names) == 1 else None
 
 
 async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threading.Event) -> Answer:

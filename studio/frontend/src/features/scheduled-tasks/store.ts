@@ -44,9 +44,20 @@ interface ScheduledTasksState {
 
 let refreshGeneration = 0;
 
+type LastRun = ScheduledTask["lastRun"];
+
+/** The newer of two records of a task's last run: a write's answer can predate a refresh that saw it finish. */
+function newerRun(held: LastRun, incoming: LastRun): LastRun {
+  if (!held || !incoming) return incoming ?? held;
+  if (held.id !== incoming.id) return incoming.createdAt >= held.createdAt ? incoming : held;
+  return held.finishedAt !== null && incoming.finishedAt === null ? held : incoming;
+}
+
 function withTask(tasks: ScheduledTask[], task: ScheduledTask): ScheduledTask[] {
   return tasks.some((entry) => entry.id === task.id)
-    ? tasks.map((entry) => (entry.id === task.id ? task : entry))
+    ? tasks.map((entry) =>
+        entry.id === task.id ? { ...task, lastRun: newerRun(entry.lastRun, task.lastRun) } : entry,
+      )
     : [task, ...tasks];
 }
 
@@ -111,9 +122,8 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
         () => runScheduledTaskNow(id),
         (run) =>
           set((state) => ({
-            // A refresh may already hold this run finished: the queued answer must not undo that.
             tasks: state.tasks.map((task) =>
-              task.id === id && task.lastRun?.id !== run.id ? { ...task, lastRun: run } : task,
+              task.id === id ? { ...task, lastRun: newerRun(task.lastRun, run) } : task,
             ),
           })),
       );

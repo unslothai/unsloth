@@ -905,8 +905,11 @@ def test_a_run_names_the_one_model_kept_alongside_only_when_the_primary_is_empty
 ):
     from core.inference import model_slots
 
-    kept = SimpleNamespace(llama = SimpleNamespace(is_loaded = True, model_identifier = "qwen-kept"))
-    monkeypatch.setattr(model_slots, "visible", lambda: [kept])
+    gguf = SimpleNamespace(
+        llama = SimpleNamespace(is_loaded = True, model_identifier = "qwen-kept"),
+        orchestrator = SimpleNamespace(active_model_name = None),
+    )
+    monkeypatch.setattr(model_slots, "visible", lambda: [gguf])
     monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: primary)
     producer = FakeProducer(completion("Dawn light."))
 
@@ -916,6 +919,26 @@ def test_a_run_names_the_one_model_kept_alongside_only_when_the_primary_is_empty
         assert producer.payload.model == "qwen-kept"
     else:
         assert "model" not in producer.payload.model_fields_set
+
+
+def test_a_run_finds_a_kept_safetensors_model_and_skips_a_primary_hidden_from_its_account(
+    monkeypatch,
+):
+    from core.inference import model_slots
+    from hub.services.models import account_access
+
+    mlx = SimpleNamespace(
+        llama = SimpleNamespace(is_loaded = False, model_identifier = None),
+        orchestrator = SimpleNamespace(active_model_name = "my/mlx-model"),
+    )
+    monkeypatch.setattr(model_slots, "visible", lambda: [mlx])
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: "their/model")
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "resident_hidden", lambda kind, ident: True)
+    assert scheduler_module._sole_kept_model() == "my/mlx-model"
+
+    monkeypatch.setattr(account_access, "resident_hidden", lambda kind, ident: False)
+    assert scheduler_module._sole_kept_model() is None
 
 
 def test_a_run_with_no_model_loaded_says_so(monkeypatch):

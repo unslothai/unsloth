@@ -497,10 +497,49 @@ test("a Run now answer arriving after its run finished keeps the finished run", 
     const tasks = store.useScheduledTasksStore;
     tasks.setState({ tasks: [{ id: "t1", lastRun: null } as never] });
     const pending = tasks.getState().runNow("t1");
-    tasks.setState({ tasks: [{ id: "t1", lastRun: { id: "r1", status: "succeeded" } } as never] });
-    answer({ id: "r1", status: "queued" });
+    tasks.setState({
+      tasks: [{ id: "t1", lastRun: { id: "r1", createdAt: 1, finishedAt: 2, status: "succeeded" } } as never],
+    });
+    answer({ id: "r1", createdAt: 1, finishedAt: null, status: "queued" });
     await pending;
     assert.equal(tasks.getState().tasks[0].lastRun?.status, "succeeded");
+  } finally {
+    globals.window = saved.window;
+    globals.localStorage = saved.localStorage;
+  }
+});
+
+test("an edit answer that predates its run's finish keeps the finished run", async () => {
+  const globals = globalThis as Record<string, unknown>;
+  const saved = { window: globals.window, localStorage: globals.localStorage };
+  globals.window = new EventTarget();
+  globals.localStorage = { setItem: () => undefined };
+  try {
+    let answer: (task: unknown) => void = () => undefined;
+    const store = loadWithStubs<typeof ScheduledTasksStore>(
+      new URL("../src/features/scheduled-tasks/store.ts", import.meta.url),
+      {
+        zustand,
+        "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: "signed-out", getAuthSessionEpoch: () => 1 },
+        "@/features/chat": { notifyChatHistoryUpdated: () => undefined },
+        "./api": { updateScheduledTask: () => new Promise((resolve) => (answer = resolve)) },
+        "./results": {
+          SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
+        },
+      },
+    );
+    const tasks = store.useScheduledTasksStore;
+    const run = { id: "r1", createdAt: 1, finishedAt: null, status: "running" };
+    const pending = tasks.getState().update("t1", { title: "Renamed" });
+    tasks.setState({
+      tasks: [{ id: "t1", title: "Old", lastRun: { ...run, finishedAt: 2, status: "succeeded" } } as never],
+    });
+    answer({ id: "t1", title: "Renamed", lastRun: run });
+    await pending;
+    const [task] = tasks.getState().tasks;
+    assert.equal(task.title, "Renamed");
+    assert.equal(task.lastRun?.status, "succeeded");
   } finally {
     globals.window = saved.window;
     globals.localStorage = saved.localStorage;
