@@ -21,3 +21,15 @@ export function parseParamCountB(id: string): number | null {
   const v = Number.parseFloat(m[1]);
   return Number.isFinite(v) ? v : null;
 }
+
+/** A GGUF repo's parameter count. The Hub reads `gguf.total` from one file of its choosing, which
+ *  can be a drafter or vision projector (1.6B on a 120B repo), so a larger name token wins. */
+export function ggufRepoParams(
+  id: string,
+  ggufTotal: number | undefined,
+): number | undefined {
+  const fromName = (parseParamCountB(id) ?? 0) * 1e9;
+  const total = ggufTotal ?? 0;
+  const largest = Math.max(fromName, total);
+  return largest > 0 ? largest : undefined;
+}

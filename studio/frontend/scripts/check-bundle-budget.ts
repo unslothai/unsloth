@@ -393,6 +393,11 @@ export const BUDGET = {
   // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
+  // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
+  // adopt-only pick in the chat runtime, +1,970 B raw / +627 B transfer (6,922,858 -> 6,924,828 B raw,
+  // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
+  // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
+  // about 100 B over a local one).
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -413,8 +418,10 @@ export const BUDGET = {
   // Merged with main at aab980fe77. CI on the previous head measured 6,765.1 KB raw / 2,037.8 KB transfer (over by 3.5 KB / 0.3 KB:
   // the summed limits under-counted). This merge measured 6,766.0 KB raw / 2,038.1 KB transfer (Node 24, 97 chunks): set to that plus about 200 B.
   // Merged with main at 96ccc9a256: measured 6,767.9 KB raw / 2,038.8 KB transfer (Node 24, 98 chunks), set to that plus about 200 B.
-  transferBytes: 2_087_990,
-  rawBytes: 6_930_590,
+  // Merged with main at 14e0178e00: measured 6,770.5 KB raw / 2,039.7 KB transfer (Node 24, 98 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  transferBytes: 2_088_810,
+  rawBytes: 6_933_350,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

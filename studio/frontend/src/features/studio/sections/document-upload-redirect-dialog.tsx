@@ -46,7 +46,7 @@ export function DocumentUploadRedirectDialog({
       >
         <DialogHeader className="gap-3">
           <div className="flex items-center gap-2">
-            <div className="flex size-10 items-center justify-center rounded-2xl border border-border/70 bg-muted/30">
+            <div className="flex size-10 items-center justify-center rounded-md border border-border/70 bg-muted/30">
               <HugeiconsIcon
                 icon={DocumentAttachmentIcon}
                 className="size-5 text-foreground/90"
@@ -66,7 +66,7 @@ export function DocumentUploadRedirectDialog({
           </div>
         </DialogHeader>
 
-        <div className="corner-squircle rounded-2xl border border-border/70 bg-muted/20 p-4">
+        <div className="corner-squircle rounded-xl border border-border/70 bg-muted/20 p-4">
           <p className="text-sm font-medium text-foreground">
             {t("studio.dataset.documentRedirect.nextStepTitle")}
           </p>

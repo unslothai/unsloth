@@ -282,7 +282,7 @@ export function ArchivedChatsView() {
                     aria-label={t("settings.data.library.unarchiveItem", {
                       title: item.title,
                     })}
-                    className="rounded-xl bg-muted/60 hover:bg-muted"
+                    className="rounded-full bg-muted/60 hover:bg-muted"
                   >
                     {t("settings.data.library.unarchive")}
                   </Button>
