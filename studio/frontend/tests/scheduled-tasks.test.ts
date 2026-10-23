@@ -8,6 +8,7 @@ import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import * as zustand from "zustand";
 import type * as ScheduledTasksApi from "../src/features/scheduled-tasks/api.ts";
 import type * as ScheduledTasksStore from "../src/features/scheduled-tasks/store.ts";
+import type * as UnseenStore from "../src/features/scheduled-tasks/unseen.ts";
 import {
   ACTIVE_POLL_MS,
   CATCH_UP_MS,
@@ -352,12 +353,10 @@ test("a backlog longer than one poll reads is picked up again shortly", async ()
   assert.equal(nextPollDelay(last), ACTIVE_POLL_MS);
 });
 
-test("unread chats follow the stored unseen results: added once, cleared only when opened", () => {
-  assert.deepEqual(unseenChatChanges({ a: "c1", b: null }, {}), { added: ["c1"], opened: [] });
-  assert.deepEqual(unseenChatChanges({ a: "c1" }, { a: "c1" }), { added: [], opened: [] });
-  // Today's run replaces yesterday's in the record; yesterday's chat stays unread.
-  assert.deepEqual(unseenChatChanges({ a: "c2" }, { a: "c1" }), { added: ["c2"], opened: [] });
-  assert.deepEqual(unseenChatChanges({}, { a: "c2", b: null }), { added: [], opened: ["c2"] });
+test("unread chats follow the stored unread result chats", () => {
+  assert.deepEqual(unseenChatChanges(["c1"], []), { added: ["c1"], opened: [] });
+  assert.deepEqual(unseenChatChanges(["c1", "c2"], ["c1"]), { added: ["c2"], opened: [] });
+  assert.deepEqual(unseenChatChanges(["c2"], ["c1", "c2"]), { added: [], opened: ["c1"] });
 });
 
 test("a failed run is worded from its error code, else from the server's text", () => {
@@ -549,6 +548,77 @@ test("an edit answer that predates its run's finish keeps the finished run", asy
     const [task] = tasks.getState().tasks;
     assert.equal(task.title, "Renamed");
     assert.equal(task.lastRun?.status, "succeeded");
+  } finally {
+    globals.window = saved.window;
+    globals.localStorage = saved.localStorage;
+  }
+});
+
+test("every unopened result chat stays unread across reloads, and opening one clears only it", () => {
+  const globals = globalThis as Record<string, unknown>;
+  const saved = { window: globals.window, localStorage: globals.localStorage };
+  const stored = new Map<string, string>();
+  globals.window = new EventTarget();
+  globals.localStorage = {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => void stored.set(key, value),
+  };
+  try {
+    const load = () =>
+      loadWithStubs<typeof UnseenStore>(new URL("../src/features/scheduled-tasks/unseen.ts", import.meta.url), {
+        zustand,
+        "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: "out", AUTH_SESSION_STORED_EVENT: "in", getAuthToken: () => "t" },
+        "@/lib/account-transition": { browserAccountKey: () => "owner" },
+        "./results": { UNSEEN_KEY_PREFIX: "unseen:" },
+      }).useUnseenScheduledRuns;
+    const first = load();
+    first.getState().markFinished([{ taskId: "t1", threadId: "c1" }], false);
+    first.getState().markFinished([{ taskId: "t1", threadId: "c2" }], false);
+    assert.deepEqual(load().getState().threads, ["c1", "c2"]);
+    load().getState().clearThread("c1");
+    assert.deepEqual(load().getState().threads, ["c2"]);
+  } finally {
+    globals.window = saved.window;
+    globals.localStorage = saved.localStorage;
+  }
+});
+
+test("a write that drops a list refresh in flight asks for the list again", async () => {
+  const globals = globalThis as Record<string, unknown>;
+  const saved = { window: globals.window, localStorage: globals.localStorage };
+  globals.window = new EventTarget();
+  globals.localStorage = { setItem: () => undefined };
+  try {
+    let lists = 0;
+    let firstList: (list: unknown) => void = () => undefined;
+    const store = loadWithStubs<typeof ScheduledTasksStore>(
+      new URL("../src/features/scheduled-tasks/store.ts", import.meta.url),
+      {
+        zustand,
+        "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: "signed-out", getAuthSessionEpoch: () => 1 },
+        "@/features/chat": { notifyChatHistoryUpdated: () => undefined },
+        "./api": {
+          listScheduledTasks: () => {
+            lists += 1;
+            if (lists === 1) return new Promise((resolve) => (firstList = resolve));
+            return Promise.resolve({ tasks: [{ id: "t1", lastRun: { id: "r1", status: "succeeded" } }], now: 0 });
+          },
+          runScheduledTaskNow: async () => ({ id: "r1", createdAt: 1, finishedAt: null, status: "queued" }),
+        },
+        "./results": {
+          SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
+        },
+      },
+    );
+    const tasks = store.useScheduledTasksStore;
+    const dropped = tasks.getState().refresh();
+    await tasks.getState().runNow("t1");
+    firstList({ tasks: [], now: 0 });
+    await dropped;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(lists, 2);
+    assert.equal(tasks.getState().tasks[0]?.lastRun?.status, "succeeded");
   } finally {
     globals.window = saved.window;
     globals.localStorage = saved.localStorage;

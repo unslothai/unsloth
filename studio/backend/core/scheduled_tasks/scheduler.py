@@ -179,23 +179,6 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
     from models.inference import ChatCompletionRequest
     from routes.inference import produce_openai_chat_completions
 
-    payload = ChatCompletionRequest.model_validate(
-        {
-            # No model: the loaded one answers, and an idle-unloaded one is brought back. Naming
-            # one could switch models under the user.
-            "messages": [
-                {"role": "system", "content": system_prompt(task, db.now_ms())},
-                {"role": "user", "content": task["prompt"]},
-            ],
-            "stream": False,
-            "cancel_id": run["id"],
-            # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
-            # means every built-in, python and terminal included.
-            "tool_choice": "none",
-            "enabled_tools": [],
-            **({"model": kept} if (kept := _sole_kept_model()) else {}),
-        }
-    )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _RUN_TIMEOUT_SECONDS
     request = _producer_request(app, run["id"], cancel_event, task["timezone"])
@@ -212,6 +195,24 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             raise RunFailed("timeout") from None
         if cancel_event.is_set():
             raise RunFailed("cancelled")
+        # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
+        payload = ChatCompletionRequest.model_validate(
+            {
+                # No model: the loaded one answers, and an idle-unloaded one is brought back. Naming
+                # one could switch models under the user.
+                "messages": [
+                    {"role": "system", "content": system_prompt(task, db.now_ms())},
+                    {"role": "user", "content": task["prompt"]},
+                ],
+                "stream": False,
+                "cancel_id": run["id"],
+                # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
+                # means every built-in, python and terminal included.
+                "tool_choice": "none",
+                "enabled_tools": [],
+                **({"model": kept} if (kept := _sole_kept_model()) else {}),
+            }
+        )
 
         async def produce() -> Any:
             # Settled in this task: slot routing lives in its context, which the caller never sees.

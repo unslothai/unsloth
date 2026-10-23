@@ -157,15 +157,15 @@ export function runsToNotify<T extends { status: string; taskNotify: string }>(
   );
 }
 
-/** Chats to mark unread and to clear, from two copies of the unseen record (task -> latest chat).
- *  Only a removed task clears its chat: a newer run replacing it leaves the older chat unread. */
+/** Chats to mark unread and to clear between two copies of the stored unread result chats. */
 export function unseenChatChanges(
-  now: Record<string, string | null>,
-  before: Record<string, string | null>,
+  now: readonly string[],
+  before: readonly string[],
 ): { added: string[]; opened: string[] } {
-  const added = Object.entries(now).flatMap(([task, id]) => (id && before[task] !== id ? [id] : []));
-  const opened = Object.entries(before).flatMap(([task, id]) => (id && !(task in now) ? [id] : []));
-  return { added, opened };
+  return {
+    added: now.filter((id) => !before.includes(id)),
+    opened: before.filter((id) => !now.includes(id)),
+  };
 }
 
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;

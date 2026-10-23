@@ -971,6 +971,30 @@ def test_a_named_kept_model_keeps_its_own_refusal(monkeypatch):
     assert (failure.value.code, failure.value.message) == (None, "Too long.")
 
 
+def test_a_run_picks_its_kept_model_after_the_model_gate_lets_it_in(monkeypatch):
+    from core.inference import model_slots
+
+    def kept(name):
+        return SimpleNamespace(
+            llama = SimpleNamespace(is_loaded = True, model_identifier = name),
+            orchestrator = SimpleNamespace(active_model_name = None),
+        )
+
+    slots = [kept("before-the-wait")]
+    monkeypatch.setattr(model_slots, "visible", lambda: slots)
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)
+    real_start = llama_keepwarm.InferenceActivityReservation.start
+
+    async def start(self, cancel_event = None):
+        slots[:] = [kept("after-the-wait")]
+        return await real_start(self, cancel_event)
+
+    monkeypatch.setattr(llama_keepwarm.InferenceActivityReservation, "start", start)
+    producer = FakeProducer(completion("Done."))
+    generate(monkeypatch, producer)
+    assert producer.payload.model == "after-the-wait"
+
+
 def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
     monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)

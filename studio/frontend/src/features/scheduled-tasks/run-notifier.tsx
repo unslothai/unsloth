@@ -129,16 +129,16 @@ export function ScheduledTaskRunNotifier() {
   // Recents' unread marks follow the account's stored unseen results, so every tab and a reload
   // show them, and opening one anywhere clears it everywhere.
   useEffect(() => {
-    const sync = (now: Record<string, string | null>, before: Record<string, string | null>) => {
+    const sync = (now: readonly string[], before: readonly string[]) => {
       const chats = useChatNavigationStore.getState();
       const { added, opened } = unseenChatChanges(now, before);
       const fresh = added.filter((id) => !chats.unreadThreadIds.has(id));
       if (fresh.length > 0) chats.markThreadsUnread(fresh);
       if (opened.length > 0) chats.clearThreadsUnread(opened);
     };
-    sync(useUnseenScheduledRuns.getState().tasks, {});
+    sync(useUnseenScheduledRuns.getState().threads, []);
     return useUnseenScheduledRuns.subscribe((state, previous) => {
-      if (state.tasks !== previous.tasks) sync(state.tasks, previous.tasks);
+      if (state.threads !== previous.threads) sync(state.threads, previous.threads);
     });
   }, []);
   useEffect(() => {

@@ -16,6 +16,8 @@ function storageKey(): string | null {
 interface Stored {
   tasks: Record<string, string | null>;
   page: boolean;
+  /** Result chats not yet opened, apart from `tasks`, which keeps only each task's latest. */
+  threads: string[];
 }
 
 interface UnseenState extends Stored {
@@ -25,7 +27,7 @@ interface UnseenState extends Stored {
   clearPage: () => void;
 }
 
-const NOTHING_UNSEEN: Stored = { tasks: {}, page: false };
+const NOTHING_UNSEEN: Stored = { tasks: {}, page: false, threads: [] };
 
 function stored(): Stored | null {
   const key = storageKey();
@@ -33,7 +35,10 @@ function stored(): Stored | null {
   try {
     const value = JSON.parse(localStorage.getItem(key) ?? "null") as Partial<Stored> | null;
     if (value && typeof value.tasks === "object" && value.tasks !== null) {
-      return { tasks: value.tasks, page: value.page === true };
+      const threads = Array.isArray(value.threads)
+        ? value.threads.filter((id): id is string => typeof id === "string")
+        : [];
+      return { tasks: value.tasks, page: value.page === true, threads };
     }
     return NOTHING_UNSEEN;
   } catch {
@@ -45,11 +50,11 @@ function load(): Stored {
   return stored() ?? NOTHING_UNSEEN;
 }
 
-function save({ tasks, page }: Stored): void {
+function save({ tasks, page, threads }: Stored): void {
   const key = storageKey();
   if (key === null) return;
   try {
-    localStorage.setItem(key, JSON.stringify({ tasks, page }));
+    localStorage.setItem(key, JSON.stringify({ tasks, page, threads }));
   } catch {
     // Without storage the dots last until the next launch.
   }
@@ -58,7 +63,7 @@ function save({ tasks, page }: Stored): void {
 export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
   // Start each change from the stored record: another tab may have changed it, and a stale copy would undo that.
   const change = (apply: (current: Stored) => Stored | null) => {
-    const current = stored() ?? { tasks: get().tasks, page: get().page };
+    const current = stored() ?? { tasks: get().tasks, page: get().page, threads: get().threads };
     const next = apply(current);
     if (next === null) return;
     set(next);
@@ -68,32 +73,38 @@ export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
     if (taskId === undefined || !(taskId in current.tasks)) return null;
     const tasks = { ...current.tasks };
     delete tasks[taskId];
-    return { tasks, page: current.page };
+    return { ...current, tasks };
   };
   return {
     ...(typeof window === "undefined" ? NOTHING_UNSEEN : load()),
     markFinished: (runs, onPage) =>
       change((current) => {
         const tasks = { ...current.tasks };
-        for (const run of runs) tasks[run.taskId] = run.threadId;
-        return { tasks, page: current.page || !onPage };
+        const threads = new Set(current.threads);
+        for (const run of runs) {
+          tasks[run.taskId] = run.threadId;
+          if (run.threadId) threads.add(run.threadId);
+        }
+        // The newest only: a result never opened must not grow the record without end.
+        return { tasks, page: current.page || !onPage, threads: [...threads].slice(-200) };
       }),
     clearTask: (taskId) => change((current) => withoutTask(current, taskId)),
     clearThread: (threadId) =>
-      change((current) =>
-        withoutTask(
-          current,
-          Object.keys(current.tasks).find((id) => current.tasks[id] === threadId),
-        ),
-      ),
+      change((current) => {
+        const read = current.threads.includes(threadId)
+          ? { ...current, threads: current.threads.filter((id) => id !== threadId) }
+          : current;
+        const task = Object.keys(read.tasks).find((id) => read.tasks[id] === threadId);
+        return withoutTask(read, task) ?? (read === current ? null : read);
+      }),
     clearPage: () =>
-      change((current) => (current.page ? { tasks: current.tasks, page: false } : null)),
+      change((current) => (current.page ? { ...current, page: false } : null)),
   };
 });
 
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
-    useUnseenScheduledRuns.setState({ tasks: {}, page: false });
+    useUnseenScheduledRuns.setState(NOTHING_UNSEEN);
   });
   window.addEventListener(AUTH_SESSION_STORED_EVENT, () => {
     useUnseenScheduledRuns.setState(load());

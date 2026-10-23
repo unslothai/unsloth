@@ -43,6 +43,7 @@ interface ScheduledTasksState {
 }
 
 let refreshGeneration = 0;
+let refreshesInFlight = 0;
 
 type LastRun = ScheduledTask["lastRun"];
 
@@ -67,8 +68,11 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
     const epoch = getAuthSessionEpoch();
     const result = await request();
     if (getAuthSessionEpoch() === epoch) {
+      const dropped = refreshesInFlight > 0;
       refreshGeneration += 1;
       apply(result);
+      // The dropped refresh may have carried a run finishing meanwhile: ask again, after this write.
+      if (dropped) void get().refresh();
     }
     announceChange();
     return result;
@@ -82,6 +86,7 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
     refresh: async () => {
       const generation = ++refreshGeneration;
       if (get().status === "idle") set({ status: "loading" });
+      refreshesInFlight += 1;
       try {
         const list = await listScheduledTasks();
         if (generation !== refreshGeneration) return;
@@ -97,6 +102,8 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
           status: get().status === "ready" ? "ready" : "error",
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        refreshesInFlight -= 1;
       }
     },
     create: (input) =>
