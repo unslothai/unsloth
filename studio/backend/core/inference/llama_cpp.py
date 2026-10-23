@@ -1083,10 +1083,13 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
 
     ``gpu_mib`` / ``host_mib`` sum the buffer lines after the main model's "offloaded N/M layers"
     line (largest M; a drafter logs its own block after). llama.cpp still logs "offloaded 31/31" when
-    eight layers keep their experts in RAM, so ``overflow_layers`` comes from --fit's final per-device
-    lines: after a dense-only fill every GPU layer holds dense weights only (all but the output layer
-    on the last device), and an extra partial layer on any device but the last overflows to the next
-    GPU, not RAM. None when --fit did not run. ``expert_cache_mib`` marks the --moe-cache-mib auto
+    seven layers keep expert weights in RAM, so ``overflow_layers`` comes from --fit's final per-device
+    lines: after a dense-only fill every GPU layer holds dense weights only, and an extra partial layer
+    on any device but the last overflows to the next GPU, not RAM. --fit puts a device's partial layers
+    at the end of its range, and the last device's range ends at the output layer, whose overflow
+    pattern matches no tensor, so its count includes one layer that keeps everything on the GPU (a
+    3090 gemma-4-26B load printing "8 overflowing" holds exactly seven layers' worth in CUDA_Host).
+    None when --fit did not run. ``expert_cache_mib`` marks the --moe-cache-mib auto
     path, where every routed expert is in RAM and --fit prints no per-device line."""
     blocks: list[list] = []
     current: Optional[list] = None
@@ -1157,13 +1160,16 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
         for index, device in enumerate(devices):
             layers, counted = verdict[device]
             if counted is None:
-                # Dense-only fill (filled back to front, so the first device it printed is the last one, which
-                # also holds the output layer). A dense model's layers are full.
+                # Dense-only fill (filled back to front, so the first device it printed is the last one). A dense
+                # model's layers are full. The last device keeps one layer full and its output slot spills nothing.
                 if not moe:
                     continue
                 last = bool(dense_only_order) and device == dense_only_order[0]
-                counted = max(0, layers - 1) if last else layers
-            elif index < len(devices) - 1 and index in extra_layer_on and counted > 0:
+                counted = max(0, layers - 2) if last else layers
+            elif index < len(devices) - 1:
+                if index in extra_layer_on and counted > 0:
+                    counted -= 1
+            elif counted > 0:
                 counted -= 1
             overflow += counted
     return {

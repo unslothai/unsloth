@@ -1941,9 +1941,10 @@ class _InferenceRuntimeFields(BaseModel):
     overflow_layers: Optional[int] = Field(
         None,
         description = (
-            "Layers whose MoE experts llama.cpp's --fit left in system memory. offloaded_layers "
-            "still counts them as on the GPU, so a spill shows only here. Every MoE layer when "
-            "expert_cache_mib is set. None when --fit did not run."
+            "Layers with MoE expert weights that llama.cpp's --fit left in system memory: their "
+            "routed experts, or part of the FFN for the first partial layer on a device. "
+            "offloaded_layers still counts them as on the GPU, so a spill shows only here. Every "
+            "MoE layer when expert_cache_mib is set. None when --fit did not run."
         ),
     )
     expert_cache_mib: Optional[float] = Field(

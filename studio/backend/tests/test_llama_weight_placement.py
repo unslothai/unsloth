@@ -44,7 +44,7 @@ def test_moe_spill_is_read_from_fit_not_from_the_layer_count():
     assert parse_weight_placement(_MOE_SPILL_LOG) == {
         "gpu_mib": 20709.2,
         "host_mib": 5639.4,
-        "overflow_layers": 8,
+        "overflow_layers": 7,
         "all_experts_in_ram": False,
         "expert_cache_mib": None,
     }
@@ -101,7 +101,8 @@ def test_multi_gpu_extra_layer_overflows_to_the_next_gpu_not_ram():
         "I load_tensors:          CPU model buffer size =  4000.00 MiB",
     ]
     out = parse_weight_placement(lines)
-    assert (out["gpu_mib"], out["host_mib"], out["overflow_layers"]) == (32000.0, 4000.0, 4)
+    # CUDA1's 4 partial slots end at the output layer, which spills nothing.
+    assert (out["gpu_mib"], out["host_mib"], out["overflow_layers"]) == (32000.0, 4000.0, 3)
 
 
 def test_moe_fit_that_stops_after_the_dense_only_fill_has_every_gpu_layer_spilled():
@@ -114,7 +115,8 @@ def test_moe_fit_that_stops_after_the_dense_only_fill_has_every_gpu_layer_spille
         "I load_tensors:    CUDA_Host model buffer size = 120000.00 MiB",
     ]
     # One device, so it is also the last: its output layer carries no experts.
-    assert parse_weight_placement(lines)["overflow_layers"] == 59
+    # 60 slots, 59 partial; the last partial slot is the output layer and the first layer stays full.
+    assert parse_weight_placement(lines)["overflow_layers"] == 58
     dense = [line.replace("dense-only layers", "dense layers") for line in lines]
     assert parse_weight_placement(dense)["overflow_layers"] == 0, "a dense model's layers are full"
 
