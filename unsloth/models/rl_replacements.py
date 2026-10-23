@@ -2624,6 +2624,15 @@ def _unsloth_vllm_peft_unsupported(model):
         if type(module).__name__ == "MultiheadAttention" and hasattr(module, "lora_A"):
             problems.append(f"LoRA on MultiheadAttention at {module_name}")
             break
+    for module_name, module in model.named_modules():
+        # A custom tuner layer on a composite base: its weights live in child modules the copy
+        # merge does not see, so the merged weights would never be sent.
+        if getattr(module, "base_layer", None) is None or not hasattr(module, "get_base_layer"):
+            continue
+        base = module.get_base_layer()
+        if any(any(True for _ in child.parameters()) for child in base.children()):
+            problems.append(f"adapter on the composite module {module_name}")
+            break
     for module in _unsloth_vllm_lora_layers(model):
         for adapter, variant in (getattr(module, "lora_variant", None) or {}).items():
             if adapter not in active:
@@ -2827,14 +2836,22 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
         (layer, list(getattr(layer, "merged_adapters", [])), dict(getattr(layer, "_caches", {})))
         for layer in layers
     ]
+    # Eval mode while merging: LoHa / LoKr rank dropout would otherwise thin the delta at random.
+    modes = [(module, module.training) for layer in layers for module in layer.modules()]
     try:
         for param, data in zip(params, originals):
             param.data = data.clone()
-        # model.modules() order, as PeftModel.merge_adapter merges them.
         for layer in layers:
-            layer.merge()
+            layer.train(False)
+        # model.modules() order, as PeftModel.merge_adapter merges them. A disabled layer runs only
+        # its base in training, so it adds nothing (PEFT's merge ignores disable_adapters).
+        for layer in layers:
+            if not getattr(layer, "disable_adapters", False):
+                layer.merge()
         return {id(param): param.data for param in params}
     finally:
+        for module, training in modes:
+            module.training = training
         for param, data in zip(params, originals):
             param.data = data
         for layer, merged_adapters, caches in states:
@@ -2843,6 +2860,17 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
             if isinstance(getattr(layer, "_caches", None), dict):
                 layer._caches.clear()
                 layer._caches.update(caches)
+
+
+def _unsloth_vllm_adapter_param_ids(model):
+    """Adapter tensors: every parameter under a tuner layer except its base layer's own."""
+    ids = set()
+    for module in model.modules():
+        if getattr(module, "base_layer", None) is None or not hasattr(module, "get_base_layer"):
+            continue
+        base_ids = {id(param) for param in module.get_base_layer().parameters()}
+        ids.update(id(param) for param in module.parameters() if id(param) not in base_ids)
+    return ids
 
 
 _UNSLOTH_VLLM_MODULES_TO_SAVE = re.compile(r"\.(?:modules_to_save\.[^.]+|original_module)\.")
@@ -2871,7 +2899,8 @@ def _unsloth_vllm_sync_peft_merged(trainer):
         if served is not None:
             unserved.append(f"{wrapper}.original_module.")
     unserved = tuple(unserved)
-    prefix = getattr(model, "prefix", "lora_")
+    # Structural, not a name match: a base module named q_lora_proj is still a base weight.
+    adapter_ids = _unsloth_vllm_adapter_param_ids(model)
     # TRL 0.18 has no vllm_mode: its in-process engine is the colocated one.
     mode = getattr(trainer, "vllm_mode", None) or (
         "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
@@ -2885,9 +2914,9 @@ def _unsloth_vllm_sync_peft_merged(trainer):
     for full_name, param in model.named_parameters():
         if unserved and full_name.startswith(unserved):
             continue
-        name = full_name.removeprefix("base_model.model.").replace(".base_layer", "")
-        if prefix in name:
+        if id(param) in adapter_ids:
             continue
+        name = full_name.removeprefix("base_model.model.").replace(".base_layer", "")
         name = fix_name(_UNSLOTH_VLLM_MODULES_TO_SAVE.sub(".", name))
         if plain:
             module = lora_of.get(id(param))

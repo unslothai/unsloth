@@ -812,3 +812,66 @@ def test_trainer_without_vllm_mode_uses_its_colocated_engine():
     trainer.vllm_client = None
     assert _patched_method()(trainer) is None
     assert sorted(dict(rec.tensors)) == ["0.weight", "1.bias", "1.weight"]
+
+
+def test_loha_rank_dropout_is_off_while_merging():
+    # Training mode with rank dropout: the pushed weight is the full inference-time merge.
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(
+        _base_mlp(), peft.LoHaConfig(r = 4, target_modules = ["0"], rank_dropout = 0.5, init_weights = False)
+    )
+    _perturb_trainable(model)
+    model.eval()
+    expected = _merged_state(model)
+    model.train()
+    trainer, rec = _peft_trainer(model)
+    method = _patched_method()
+    assert method(trainer) is None and method(trainer) is None
+    pushed = [tensor for name, tensor in rec.tensors if name == "0.weight"]
+    assert len(pushed) == 2 and torch.equal(pushed[0], pushed[1])
+    torch.testing.assert_close(pushed[0], expected["0.weight"])
+    assert all(m.training for m in model.modules())
+
+
+def test_disabled_non_plain_adapter_pushes_the_base():
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(_base_mlp(), _non_lora_config("loha"))
+    _perturb_trainable(model)
+    trainer, rec = _peft_trainer(model)
+    with model.disable_adapter():
+        assert _patched_method()(trainer) is None
+    pushed = dict(rec.tensors)
+    assert torch.equal(pushed["0.weight"], model.base_model.model[0].base_layer.weight)
+
+
+def test_base_module_named_like_the_adapter_prefix_is_still_pushed():
+    peft = pytest.importorskip("peft")
+
+    class _Named(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_lora_proj = torch.nn.Linear(16, 16, bias = False)
+
+    model = peft.get_peft_model(
+        _Named(), peft.LoraConfig(r = 2, target_modules = ["q_lora_proj"], init_lora_weights = False)
+    )
+    trainer, rec = _peft_trainer(model)
+    assert _patched_method()(trainer) is None
+    assert sorted(dict(rec.tensors)) == ["q_lora_proj.weight"]
+
+
+def test_adapter_on_a_composite_base_is_refused():
+    from unsloth.models.rl_replacements import _unsloth_vllm_peft_unsupported
+
+    class _Custom(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base_layer = torch.nn.Sequential(torch.nn.Linear(4, 4))
+            self.lora_A = torch.nn.ModuleDict()
+
+        def get_base_layer(self):
+            return self.base_layer
+
+    model = torch.nn.Sequential(_Custom())
+    model.peft_config = {}
+    assert any("composite" in p for p in _unsloth_vllm_peft_unsupported(model))
