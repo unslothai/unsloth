@@ -3564,7 +3564,7 @@ export function SharedComposer({
             ) : busy ? (
               <Button
                 type="button"
-                variant="dark"
+                variant="primary"
                 size="icon"
                 className="aui-composer-cancel ml-1.5 size-9 rounded-full"
                 aria-label="Stop generating"
@@ -3579,7 +3579,7 @@ export function SharedComposer({
                   t("promptQueue.sendTooltip", { shortcut: shortcutLabels.send })
                 }
                 side="bottom"
-                variant="dark"
+                variant="primary"
                 size="icon"
                 className="aui-composer-send ml-1.5 size-9 rounded-full"
                 onClick={send}

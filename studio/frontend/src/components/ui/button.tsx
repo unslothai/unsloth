@@ -17,6 +17,8 @@ export const buttonVariants = cva(
         // Neutral grey; the one key action on a surface uses `dark` instead.
         default: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         dark: "bg-foreground text-background hover:bg-foreground/85 dark:bg-foreground dark:text-background",
+        // Brand green, kept for the chat send / stop buttons.
+        primary: "bg-primary text-primary-foreground hover:bg-primary/80",
         // Filled, not bordered: a border is reserved for fields and value pickers (`picker`).
         outline:
           "btn-fill hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",

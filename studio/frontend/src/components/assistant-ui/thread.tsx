@@ -7739,7 +7739,7 @@ const ComposerRightControls: FC<{
             }
             side="bottom"
             type="submit"
-            variant="dark"
+            variant="primary"
             size="icon"
             // Stay clickable while docs index so a click can queue the send;
             // disabled only once a send is parked.
@@ -7763,7 +7763,7 @@ const ComposerRightControls: FC<{
               tooltip="Resume queue"
               side="bottom"
               type="button"
-              variant="dark"
+              variant="primary"
               size="icon"
               onClick={onResumeClick}
               className="aui-composer-send ml-1.5 size-9 rounded-full"
@@ -7775,7 +7775,7 @@ const ComposerRightControls: FC<{
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
               type="button"
-              variant="dark"
+              variant="primary"
               size="icon"
               className="aui-composer-cancel ml-1.5 size-9 rounded-full"
               aria-label="Stop queued message"
@@ -7788,7 +7788,7 @@ const ComposerRightControls: FC<{
               tooltip={followUpTooltip}
               side="bottom"
               type="button"
-              variant="dark"
+              variant="primary"
               size="icon"
               disabled={disabled || queueDisabled}
               onClick={onQueueClick}
@@ -7803,7 +7803,7 @@ const ComposerRightControls: FC<{
       {isResearchActive ? (
         <Button
           type="button"
-          variant="dark"
+          variant="primary"
           size="icon"
           className="aui-composer-cancel ml-1.5 size-9 rounded-full"
           aria-label={researchStopping ? "Stopping research" : "Stop research"}
@@ -7824,7 +7824,7 @@ const ComposerRightControls: FC<{
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
-                variant="dark"
+                variant="primary"
                 size="icon"
                 className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
@@ -7840,7 +7840,7 @@ const ComposerRightControls: FC<{
                 tooltip={followUpTooltip}
                 side="bottom"
                 type="button"
-                variant="dark"
+                variant="primary"
                 size="icon"
                 onClick={onQueueClick}
                 className="aui-composer-send size-9 rounded-full"
