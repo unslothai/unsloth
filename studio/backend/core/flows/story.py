@@ -10,6 +10,7 @@ Player conventions (see `studio/frontend/src/features/flows/player/story/reducer
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Optional
 
@@ -230,6 +231,8 @@ def parse_direction(
         try:
             secs = float(rest[0]) if rest else 1.0
         except ValueError:
+            secs = math.nan
+        if not math.isfinite(secs):
             warn("pause takes a number of seconds")
             return None
         stage["pause"] = min(max(secs, 0.0), 30.0)

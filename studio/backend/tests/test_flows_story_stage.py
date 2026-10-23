@@ -190,3 +190,11 @@ def test_illustrate_makes_expression_portraits_from_the_uncut_base():
     ctx2 = FakeCtx("story.illustrate", inputs = {"story": story})
     run(story_nodes.story_illustrate(ctx2))
     assert not any(i.get("workflow") for i in ctx2.images)
+
+
+def test_a_pause_that_is_not_a_finite_number_is_skipped():
+    for bad in ("nan", "inf", "-inf"):
+        warnings = []
+        lines = parse_lines(f"[pause {bad}]\nMo: Still here.", CHARS, warnings = warnings)
+        assert [ln["text"] for ln in lines] == ["Still here."], bad
+        assert any("pause takes a number" in w for w in warnings)
