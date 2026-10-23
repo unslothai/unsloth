@@ -1356,6 +1356,62 @@ def test_drafter_packaging_reads_the_manifest_at_the_loaded_commit(
     assert all(local is offline for _, _, local in calls)
 
 
+_ADAPTER_SHA = "a" * 40
+
+
+@pytest.mark.parametrize("path", ["merged", "gguf", "lora"])
+@pytest.mark.parametrize("adapter_commit", [_ADAPTER_SHA, None])
+def test_hub_adapter_packaging_never_pins_the_base_commit(
+    tmp_path, monkeypatch, path, adapter_commit
+):
+    """A Hub LoRA adapter's current_model.config is the base's, so its _commit_hash names the base
+    repo: the adapter's manifest is read at the adapter's own commit, or unpinned when unknown."""
+    backend, calls, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend.current_checkpoint = "org/trained-adapter"
+    backend.is_peft = True
+    backend._adapter_commit = ("org/trained-adapter", adapter_commit)
+    info = _package_through_backend(backend, path, tmp_path / "out")
+    assert info["strategy"] == "mtp"
+    assert calls and all(revision == adapter_commit for _, revision, _ in calls)
+
+
+def test_hub_adapter_commit_of_another_checkpoint_is_not_reused(tmp_path, monkeypatch):
+    backend, calls, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend.current_checkpoint = "org/other-adapter"
+    backend.is_peft = True
+    backend._adapter_commit = ("org/trained-adapter", _ADAPTER_SHA)
+    assert backend._loaded_commit() is None
+
+
+def test_full_fine_tune_keeps_the_base_commit(tmp_path, monkeypatch):
+    backend, _, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, False)
+    backend.current_checkpoint = "org/trained-full-mtp"
+    backend.is_peft = False
+    backend._adapter_commit = None
+    assert backend._loaded_commit() == "abc123"
+
+
+def test_hub_adapter_commit_comes_from_the_local_cache(tmp_path, monkeypatch):
+    """The adapter's commit is the cached snapshot its adapter_config.json sits in, read offline."""
+    import huggingface_hub
+    from core.export import export as export_module
+
+    repo = tmp_path / "models--org--trained-adapter"
+    (repo / "snapshots" / _ADAPTER_SHA).mkdir(parents = True)
+    (repo / "snapshots" / _ADAPTER_SHA / "adapter_config.json").write_text("{}")
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(_ADAPTER_SHA)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+    assert export_module._cached_hub_adapter_commit("org/trained-adapter") == _ADAPTER_SHA
+    assert export_module._cached_hub_adapter_commit("org/not-cached") is None
+    assert export_module._cached_hub_adapter_commit(str(tmp_path)) is None
+
+
+def test_load_records_the_adapter_commit_for_a_peft_checkpoint():
+    src = _source("core/export/export.py")
+    assert "(checkpoint_path, _cached_hub_adapter_commit(checkpoint_path))" in src
+
+
 def test_drafter_packaging_without_a_hub_load_passes_no_revision(tmp_path, monkeypatch):
     """A local checkpoint (no resolved commit, online load) calls the helpers exactly as before."""
     from core.export import drafter_export

@@ -9,6 +9,7 @@ import structlog
 import tempfile
 from loggers import get_logger
 import os
+import re
 import sys
 import shutil
 import contextlib
@@ -783,6 +784,25 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
     return None
 
 
+def _cached_hub_adapter_commit(checkpoint_path: str) -> Optional[str]:
+    """The commit of a Hub adapter's cached snapshot (the one its load just used), read from the
+    local cache only; None for a local folder or when it cannot be told."""
+    if not checkpoint_path or os.path.isdir(checkpoint_path):
+        return None
+    if os.path.isabs(checkpoint_path) or checkpoint_path.count("/") != 1:
+        return None
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        path = try_to_load_from_cache(checkpoint_path, "adapter_config.json")
+    except Exception:
+        return None
+    if not isinstance(path, str):
+        return None
+    commit = os.path.basename(os.path.dirname(path))
+    return commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None
+
+
 class ExportBackend:
     # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
     decision: Optional[dict] = None
@@ -1129,6 +1149,13 @@ class ExportBackend:
             self.current_checkpoint = checkpoint_path
             self._checkpoint_token = token
             self._checkpoint_local_files_only = bool(local_files_only)
+            # The base config's _commit_hash names the base repo: a Hub adapter's own commit is the
+            # snapshot its adapter_config.json was just cached in.
+            self._adapter_commit = (
+                (checkpoint_path, _cached_hub_adapter_commit(checkpoint_path))
+                if self.is_peft
+                else None
+            )
             if not self.is_peft and not _IS_MLX:
                 self._attach_full_checkpoint_mtp_head(checkpoint_path)
 
@@ -2199,7 +2226,13 @@ class ExportBackend:
             logger.warning(f"Could not attach the trained MTP head: {exception}")
 
     def _loaded_commit(self) -> Optional[str]:
-        """The Hub commit the current model's load resolved (None for a local folder)."""
+        """The Hub commit of the repo current_checkpoint names, as the load resolved it (None for a
+        local folder, or a Hub adapter whose commit is unknown: no pin beats the base's commit)."""
+        if getattr(self, "is_peft", False):
+            recorded = getattr(self, "_adapter_commit", None)
+            if recorded and recorded[0] == getattr(self, "current_checkpoint", None):
+                return recorded[1]
+            return None
         return getattr(getattr(self.current_model, "config", None), "_commit_hash", None)
 
     def _loaded_manifest_kwargs(self) -> dict:
