@@ -5501,9 +5501,13 @@ def _check_agent_context(
         if ctx is not None and ctx.get_parameter_source("api_key").name == "COMMANDLINE":
             # Not remembered yet before the load; never echo the key itself.
             given += ["--api-key", "<your key>"]
-        forwarded = [quote(arg) for arg in ctx.args] if ctx is not None else []
+        forwarded = list(ctx.args) if ctx is not None else []
         target = "".join(f" {part}" for part in given)
-        tail = "".join(f" {arg}" for arg in forwarded)
+        # Only a refused launch's args (none, or resume flags) are echoed: scripted ones can carry a prompt.
+        if refuse:
+            tail = "".join(f" {quote(arg)}" for arg in forwarded)
+        else:
+            tail = " plus your other arguments" if forwarded else ""
         hint = (
             f"Run unsloth start {agent}{target} --max-seq-length {suggested}{tail} "
             "(a smaller quant if that does not fit in memory"

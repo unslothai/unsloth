@@ -7947,6 +7947,17 @@ def test_agent_context_check_refuses_a_resumed_session(
     assert not launched
 
 
+@pytest.mark.parametrize(
+    "agent, args", [("claude", ["-p", "SECRET_PROMPT"]), ("opencode", ["run", "SECRET_PROMPT"])]
+)
+def test_agent_context_warning_never_echoes_a_scripted_prompt(fake_studio, launched, agent, args):
+    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
+    result = CliRunner().invoke(start.start_app, [agent, *args])
+    assert result.exit_code == 0, result.output
+    assert "too few" in result.output and "plus your other arguments" in result.output
+    assert "SECRET_PROMPT" not in result.output
+
+
 def test_opencode_context_retry_keeps_max_tokens(fake_studio, launched):
     target = "unsloth/other-GGUF"
     args = ["opencode", "--model", target, "--max-tokens", "1000", "--max-seq-length", "8192"]
