@@ -442,6 +442,10 @@ class NodeContextImpl:
         from core.flows.nodes import _common
         return await _common.remove_background(self, image, subject, trim)
 
+    async def segment(self, image: dict, subject: str) -> bytes:
+        from core.flows.nodes import _common
+        return await _common.segment(self, image, subject)
+
     async def speak(self, **kwargs: Any) -> dict:
         from core.flows.nodes import _common
         return await _common.speak(self, **kwargs)

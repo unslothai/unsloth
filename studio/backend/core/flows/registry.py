@@ -116,8 +116,12 @@ class NodeContext(Protocol):
         references: Optional[list[dict]] = None,
         workflow: Optional[str] = None,
         count: int = 1,
+        upscale: Optional[float] = None,
+        mask: Optional[dict] = None,
+        control: Optional[dict] = None,
+        options: Optional[dict] = None,
     ) -> list[dict]:
-        """Returns MediaValue dicts (Studio gallery images)."""
+        """Returns MediaValue dicts (Studio gallery images). Unset ``options`` keys are not sent."""
         ...
 
     async def remove_background(
@@ -127,6 +131,10 @@ class NodeContext(Protocol):
         trim: bool = True,
     ) -> tuple[dict, dict]:
         """Returns (cutout MediaValue, mask MediaValue)."""
+        ...
+
+    async def segment(self, image: dict, subject: str) -> bytes:
+        """A grayscale mask PNG (white = ``subject``) at the image's size."""
         ...
 
     async def speak(

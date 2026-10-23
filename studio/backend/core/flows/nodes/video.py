@@ -32,8 +32,21 @@ async def generate(ctx: NodeContext) -> dict:
         body["negative_prompt"] = str(ctx.params["negative_prompt"])
     if ctx.params.get("size"):
         body["size"] = str(ctx.params["size"])
-    if ctx.params.get("seconds"):
+    if ctx.params.get("num_frames"):
+        # The route takes seconds or a frame count, never both.
+        body["num_frames"] = int(ctx.params["num_frames"])
+    elif ctx.params.get("seconds"):
         body["seconds"] = str(ctx.params["seconds"])
+    for key, cast in (("steps", int), ("guidance", float), ("fps", int)):
+        if ctx.params.get(key) is not None:
+            body[key] = cast(ctx.params[key])
+    references = [r for r in ctx.inputs.get("reference") or [] if isinstance(r, dict)]
+    if references and (ctx.inputs.get("first_frame") or ctx.inputs.get("last_frame")):
+        raise FlowNodeError(
+            "Connect either keyframes (first or last frame) or reference images: the video model takes one or the other"
+        )
+    if references:
+        body["reference_images"] = [await data_url(ctx, r) for r in references[:9]]
     if ctx.inputs.get("first_frame"):
         body["input_reference"] = await data_url(ctx, ctx.inputs["first_frame"])
     if ctx.inputs.get("last_frame"):
@@ -99,3 +112,61 @@ async def frame(ctx: NodeContext) -> dict:
 @handler("video.playlist")
 async def playlist(ctx: NodeContext) -> dict:
     return {"videos": [v for v in ctx.inputs.get("videos") or [] if isinstance(v, dict)]}
+
+
+MAX_CONCAT_CLIPS = 32
+MAX_CONCAT_FRAMES = 20_000
+
+
+def concat_clips(clips: list[bytes]) -> bytes:
+    """One H.264 MP4 of the clips back to back, at the first clip's size and frame rate (audio is dropped)."""
+    import io
+
+    import av
+
+    out = io.BytesIO()
+    frames = 0
+    with av.open(out, mode = "w", format = "mp4") as dst:
+        stream = None
+        for data in clips:
+            with av.open(io.BytesIO(data)) as src:
+                if not src.streams.video:
+                    raise FlowNodeError("One of the clips has no video track")
+                source = src.streams.video[0]
+                if stream is None:
+                    rate = source.average_rate or 24
+                    stream = dst.add_stream("libx264", rate = rate)
+                    # yuv420p needs even sides.
+                    stream.width = source.codec_context.width // 2 * 2
+                    stream.height = source.codec_context.height // 2 * 2
+                    stream.pix_fmt = "yuv420p"
+                for frame in src.decode(source):
+                    frames += 1
+                    if frames > MAX_CONCAT_FRAMES:
+                        raise FlowNodeError(
+                            f"The joined video would pass {MAX_CONCAT_FRAMES} frames"
+                        )
+                    frame = frame.reformat(
+                        width = stream.width, height = stream.height, format = "yuv420p"
+                    )
+                    frame.pts = None
+                    for packet in stream.encode(frame):
+                        dst.mux(packet)
+        if stream is not None:
+            for packet in stream.encode():
+                dst.mux(packet)
+    if not frames:
+        raise FlowNodeError("The clips had no frames")
+    return out.getvalue()
+
+
+@handler("video.concat")
+async def concat(ctx: NodeContext) -> dict:
+    videos = [v for v in ctx.inputs.get("videos") or [] if isinstance(v, dict)]
+    if not videos:
+        raise FlowNodeError("No videos to join")
+    if len(videos) > MAX_CONCAT_CLIPS:
+        raise FlowNodeError(f"Join at most {MAX_CONCAT_CLIPS} videos at once")
+    clips = [(await ctx.media_bytes(v))[0] for v in videos]
+    mp4 = await asyncio.to_thread(concat_clips, clips)
+    return {"video": await ctx.save_asset(mp4, "video/mp4", kind = "video")}

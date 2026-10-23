@@ -7,7 +7,7 @@ import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
-import type { NodeSpec } from "../types";
+import type { NodeSpec, ParamSpec } from "../types";
 import {
   Cancel01Icon,
   Copy01Icon,
@@ -89,6 +89,33 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
           ) : null,
         )}
     </section>
+  );
+}
+
+function ParamRow({
+  param,
+  bound,
+  value,
+  onChange,
+}: {
+  param: ParamSpec;
+  bound: boolean;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11.5px] font-medium text-zinc-400">
+        {param.label}
+      </span>
+      {bound ? (
+        <p className="rounded-md border border-dashed border-white/15 px-2 py-1.5 text-[12px] text-zinc-400">
+          Set by its connected input
+        </p>
+      ) : (
+        <ParamField spec={param} value={value} onChange={onChange} />
+      )}
+    </div>
   );
 }
 
@@ -246,24 +273,37 @@ function InspectorImpl() {
               This node has no settings.
             </p>
           )}
-          {spec.params.map((param) => (
-            <div key={param.id} className="flex flex-col gap-1">
-              <span className="text-[11.5px] font-medium text-zinc-400">
-                {param.label}
-              </span>
-              {param.bindable && boundParams.has(param.id) ? (
-                <p className="rounded-md border border-dashed border-white/15 px-2 py-1.5 text-[12px] text-zinc-400">
-                  Set by its connected input
-                </p>
-              ) : (
-                <ParamField
-                  spec={param}
-                  value={node.params[param.id]}
-                  onChange={(value) => setParam(param.id, value)}
-                />
-              )}
-            </div>
-          ))}
+          {spec.params
+            .filter((param) => !param.advanced)
+            .map((param) => (
+              <ParamRow
+                key={param.id}
+                param={param}
+                bound={param.bindable === true && boundParams.has(param.id)}
+                value={node.params[param.id]}
+                onChange={(value) => setParam(param.id, value)}
+              />
+            ))}
+          {spec.params.some((param) => param.advanced) && (
+            <details>
+              <summary className="cursor-pointer select-none text-[11.5px] font-medium text-zinc-400 hover:text-zinc-200">
+                Advanced
+              </summary>
+              <div className="mt-3 flex flex-col gap-3">
+                {spec.params
+                  .filter((param) => param.advanced)
+                  .map((param) => (
+                    <ParamRow
+                      key={param.id}
+                      param={param}
+                      bound={param.bindable === true && boundParams.has(param.id)}
+                      value={node.params[param.id]}
+                      onChange={(value) => setParam(param.id, value)}
+                    />
+                  ))}
+              </div>
+            </details>
+          )}
         </section>
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
