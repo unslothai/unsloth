@@ -826,7 +826,9 @@ def _act_quant_device_ok(index: int) -> bool:
             rq, rs = reference_act_quant(x)
             if not (torch.equal(q, rq) and s.dtype == rs.dtype and torch.equal(s, rs)):
                 return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001 - any failure keeps torchao's quant
         return False

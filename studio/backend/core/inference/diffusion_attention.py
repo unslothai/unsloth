@@ -813,13 +813,19 @@ def _time_rocm_flash_block(
     for _ in range(1 if long else 2):
         for fn in arms.values():
             block(fn)
-    torch.cuda.synchronize(device)
+    from .diffusion_cuda_graph import synchronize_outside_capture
+
+    synchronize_outside_capture(device)
     for _ in range(3 if long else 5):
         for name, fn in arms.items():
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             t0 = time.perf_counter()
             block(fn)
-            torch.cuda.synchronize(device)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(device)
             times[name].append((time.perf_counter() - t0) * 1000.0)
     med = {name: sorted(v)[len(v) // 2] for name, v in times.items()}
     return {

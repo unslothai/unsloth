@@ -452,7 +452,9 @@ def _probe(index: int, cfg: tuple) -> bool:
         ws = torch.ones(w.shape[0], device = dev, dtype = torch.bfloat16)
         if not torch.equal(_launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
             return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001 - out of shared memory, compile failure, ...
         return False
