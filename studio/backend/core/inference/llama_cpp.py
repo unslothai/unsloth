@@ -13662,7 +13662,8 @@ class LlamaCppBackend:
         and order, else None. Their ``index`` is a CUDA device id, not an nvidia-smi row."""
         snapshot = getattr(LlamaCppBackend, "_MIG_DEVICE_SNAPSHOT", None)
         if snapshot is not None and snapshot[:2] == (
-            os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")
+            os.environ.get("CUDA_VISIBLE_DEVICES"),
+            os.environ.get("CUDA_DEVICE_ORDER"),
         ):
             return snapshot[2]
         return None
@@ -13719,7 +13720,9 @@ class LlamaCppBackend:
             # gpu_indices are CUDA devices here. A MIG instance has no NVLink matrix row; whole
             # cards on a mixed host keep the matrix through their nvidia-smi (physical) index.
             by_id = {int(r["index"]): r for r in mig_rows}
-            selected = sorted(by_id) if gpu_indices is None else sorted(set(int(i) for i in gpu_indices))
+            selected = (
+                sorted(by_id) if gpu_indices is None else sorted(set(int(i) for i in gpu_indices))
+            )
             if any(i not in by_id or by_id[i].get("mig") for i in selected):
                 return "MIG device UUIDs cannot be verified by the physical-card NVLink matrix"
             gpu_indices = [int(by_id[i]["physical_index"]) for i in selected]
@@ -15471,7 +15474,6 @@ class LlamaCppBackend:
         mig_rows = LlamaCppBackend._mig_snapshot_rows()
         if mig_rows is not None:
             from utils.hardware import mig
-
             return mig.visibility_for(mig_rows, gpu_indices)
         if (
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
@@ -15675,10 +15677,17 @@ class LlamaCppBackend:
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
             LlamaCppBackend._MIG_DEVICE_SNAPSHOT = (
                 os.environ.get("CUDA_VISIBLE_DEVICES"),
-                os.environ.get("CUDA_DEVICE_ORDER"), mig_rows,
+                os.environ.get("CUDA_DEVICE_ORDER"),
+                mig_rows,
             )
-            gpus = sorted((int(r["index"]), int(r.get("memory_free_mib") or 0),
-                           int(r.get("memory_total_mib") or 0)) for r in mig_rows)
+            gpus = sorted(
+                (
+                    int(r["index"]),
+                    int(r.get("memory_free_mib") or 0),
+                    int(r.get("memory_total_mib") or 0),
+                )
+                for r in mig_rows
+            )
             return LlamaCppBackend._cuda_sm_gate_keep(binary, gpus) if for_llama_server else gpus
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         unsized_ids: list[int] = []

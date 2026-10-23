@@ -607,7 +607,8 @@ def test_p2p_vetoes_mig_instances_but_whole_cards_keep_the_physical_matrix(monke
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_P2P", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_DC_P2P", raising = False)
     monkeypatch.setattr(
-        B, "_MIG_DEVICE_SNAPSHOT",
+        B,
+        "_MIG_DEVICE_SNAPSHOT",
         (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"), rows),
         raising = False,
     )
@@ -639,7 +640,6 @@ def test_a_failed_refresh_backs_off_for_fresh_callers():
 
 def test_concurrent_fresh_callers_share_one_probe_child():
     import threading
-
     with host():
         assert len(B._get_gpu_memory()) == 3
         _age_cache(mig._FRESH_SHARE_S + 1)
