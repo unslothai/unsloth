@@ -545,7 +545,6 @@ class CloudflareTunnel:
         except Exception:
             pass
         finally:
-            # stdout closed means cloudflared exited; unblock waiters at once.
             if self.url is None:
                 self.error = "cloudflared exited before emitting a tunnel URL"
             elif not self.ready:

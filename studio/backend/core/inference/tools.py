@@ -1887,7 +1887,6 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 
 # Auto mode prompting gate; fails closed: anything not provably read-only asks.
-
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
     {
         "ls",
@@ -10872,7 +10871,6 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
 
 # Exact-string replacement, not a unified diff: models corrupt hunk headers. A missing or
 # non-unique old_string is a hard error naming the match count.
-
 _EDIT_FILE_MAX_BYTES = _env_int("UNSLOTH_STUDIO_EDIT_FILE_MAX_BYTES", 16 * 1024 * 1024)
 
 # Characters are capped per line and overall: one line of minified JS can be the whole file.
@@ -13481,7 +13479,10 @@ def _search_knowledge_base_with_budget(
         if deadline is not None and time.monotonic() >= deadline:
             return "Error: knowledge base search timed out."
 
-    # The worker releases the slot in its finally, not the caller on timeout, so concurrency stays one.
+    # The running search owns the admission slot until it actually stops; release it exactly once, from whichever path
+    # terminates the work. Releasing on caller timeout/cancel would let a second search in while the first worker is
+    # still doing embedding/index/GPU work, defeating the capacity-of-one bound, so the worker frees the slot in its
+    # finally instead.
     _slot_lock = threading.Lock()
     _slot_released = False
 
@@ -14592,7 +14593,6 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, lis
 
     try:
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
-    # IDNA encoding rejects a hostname with UnicodeError, not OSError.
     except (OSError, UnicodeError) as e:
         # IDNA encoding rejects a hostname with UnicodeError, not OSError.
         return False, f"{_RESOLVE_FAILED}: {e}", []

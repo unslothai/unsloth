@@ -4134,7 +4134,6 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"inherited device pin unreadable: {e}")
 
-            # The planner reads inherited LLAMA_ARG_CTX_SIZE only when its n_ctx is zero.
             _ctx_was_omitted = not n_ctx
             # Only an unpinned context is auto-fitted; an inherited one over budget is a real overage.
             _context_is_pinned = not _ctx_was_omitted

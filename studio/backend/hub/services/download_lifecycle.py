@@ -1452,7 +1452,6 @@ def launch_worker(
         except HTTPException:
             registry.set_job(key, "error", "Repository not found")
             raise
-    # Xet only: sampling lazy-loads unsloth_zoo (torch) on the request path.
     _baseline: Optional[int] = None
     if transport == download_registry.TRANSPORT_XET:
         # Before spawn(), deliberately: a small download can finalize its blobs while we are still registering the process, and a later baseline would show no growth for a real transfer.

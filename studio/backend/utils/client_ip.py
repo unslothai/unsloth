@@ -80,7 +80,6 @@ def client_ip(request) -> str:
 
 
 def _is_loopback_ip(host: str | None) -> bool:
-    # A scope id (::1%eth0) is never a plain loopback.
     if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
         return False
     try:

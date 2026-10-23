@@ -488,10 +488,12 @@ class LlamaServerBackend:
         # Companion repo, then the naming variants, then the model repo itself.
         repo = desired
         candidates = list(dict.fromkeys([repo, *config.gguf_repo_candidates(model)]))
-        # Retire the marker here, or the model stays cache-only and later eviction reads as never downloaded.
+        # Only the preferred repo: a file cached under the fallback must not pre-empt a companion repo the
+        # hub can still resolve.
         cached = self._resolve_cached_gguf(desired)
         if cached is not None:
-            # Repo may lack the configured quant: take any complete cached quant; never go online while pending.
+            # Retire the pending marker here, or the model stays cache-only for the life of the install and a
+            # later eviction reads as "never downloaded".
             try:
                 from utils.embedding_model_settings import clear_stored_download_pending
                 clear_stored_download_pending(model)
@@ -504,10 +506,12 @@ class LlamaServerBackend:
         except Exception:  # noqa: BLE001 - old/unavailable settings store
             download_pending = False
         if download_pending:
-            # Variant is not cached here, which happens two ways that need opposite answers.
+            # A published repo may not carry the configured quant, so accept any complete cached quant; never
+            # fall through to the online loader while the transfer is pending or cancelled.
             cached = self._resolve_cached_gguf(desired, require_variant = False)
             if cached is not None:
-                # Repo publishes no such variant, so this quant is what the picker fetched: retire the marker.
+                # Reaching here means the configured variant is NOT cached (the strict pass returned if it
+                # were), which happens two ways that need opposite answers.
                 if self._is_planned_family(model, desired, cached):
                     # Serve a stand-in instead of failing the index; keep the marker or it pins the wrong quant.
                     try:
@@ -515,7 +519,8 @@ class LlamaServerBackend:
                         clear_stored_download_pending(model)
                     except Exception:  # noqa: BLE001 - a settings write must not fail a load
                         pass
-                # Typed so /v1/embeddings maps it to 409 as the ST path does; a bare error hit the 502 catch-all.
+                # Serve a stand-in rather than fail the index, but leave the marker: retiring on it would pin this
+                # model to the wrong quant.
                 return self._adopt_model_path(cached, desired)
             # Only when the hub named no file; a transfer failing on its own (disk, checksum) must still surface.
             from .embeddings import EmbeddingModelDownloadRequiredError
@@ -614,7 +619,8 @@ class LlamaServerBackend:
                     break
                 errors.append(f"{candidate!r}: no .gguf files")
             if filename is None:
-                # Fetch the whole split family: llama-server given -m shard1 opens the sibling shards itself.
+                # Only where the hub failed to NAME a file: a transfer failing on its own (no disk, bad checksum)
+                # must surface.
                 for candidate in candidates:
                     cached = self._resolve_cached_gguf(candidate, require_variant = False)
                     if cached is not None:
@@ -809,7 +815,8 @@ class LlamaServerBackend:
         try:
             self._spawn_once(use_gpu, model_name)
         except RuntimeError:
-            # A cached GGUF can change in place; capture pooling per spawn so the flag matches stored identity.
+            # A shutdown refusal is terminal: the CPU fallback would just spawn into the
+            # same latch and be refused again.
             if is_process_shutting_down():
                 raise
             if use_gpu and not config.embed_device_requires_gpu():

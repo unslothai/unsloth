@@ -115,6 +115,8 @@ def _is_windows() -> bool:
 
 
 # ── Parent setup ──
+
+
 def initialize_parent_lifetime() -> None:
     """Idempotent and never raises; on Windows it holds the Job Object, while POSIX installs nothing."""
     global _initialized
@@ -236,6 +238,8 @@ def _install_windows_job() -> None:
 
 
 # ── Child binding ──
+
+
 def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
     # Runs pre-exec in the child. Compare getppid to owner_pid, not 1: a parent can legitimately
     # be pid 1 (container entrypoint), and subreapers are not pid 1.
@@ -1152,7 +1156,13 @@ def _still_the_same(pid: int, identity: "Optional[str]") -> bool:
 
 
 def _provably_different(pid: int, identity: "Optional[str]") -> bool:
-    """True only when the pid is provably a different process; an unreadable identity is not proof."""
+    """True only when the pid is provably a DIFFERENT process than it was.
+
+    The third answer `_provably_the_same` cannot give. That one folds "somebody else" and
+    "cannot tell" into the same False, which is right for deciding whether to signal and
+    wrong for deciding whether to report: a number that has moved on to a stranger is not
+    our leaked worker and must not be adopted, while one we merely cannot read might be.
+    """
     if identity is None:
         return False
     current = _pid_identity(pid)

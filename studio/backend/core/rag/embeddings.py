@@ -605,9 +605,11 @@ def _get(model_name: str | None = None):
                 # Load the cached snapshot path, not the repo id, so ST cannot fetch a newer revision.
                 load_target = str(st_source[1])
             if local_only:
-                # Loadable check and snapshot lookup share no lock; eviction between them still counts as pending.
+                # ST-specific AND complete: a hybrid repo's cached GGUF, or a transfer that finalized only its first
+                # shard, would otherwise retire the marker.
                 if download_pending and st_source is None:
-                    # Local paths skip the Hub: offline-safe even on sentence-transformers predating local_files_only.
+                    # Defensive: a loadable check and snapshot lookup share no lock, so eviction between them is
+                    # still a pending model.
                     raise EmbeddingModelDownloadRequiredError(
                         f"Embedding model {name!r} is not downloaded yet. "
                         "Finish its Settings download before indexing documents."
@@ -647,7 +649,6 @@ def _get(model_name: str | None = None):
                     _emit_load_reports(report)
             _route_linears_through_onednn(_model)
             _name = name
-            # Retire the marker only after construction succeeds.
             if download_pending:
                 # Admission and model lookup are one lease; lookup first lets unload clear globals mid-call.
                 try:
@@ -900,7 +901,8 @@ def _plan_prefers_llama_server(model: str) -> bool:
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """Auto, but honouring the saved backend: an embedder with no GGUF stays on sentence-transformers."""
     model = model_name or config.effective_embedding_model()
-    # Ranks below the stored record since names only guess; a torn GGUF with usable safetensors is ST.
+    # Ahead of the stored record, since the filesystem was asked rather than guessed at; only auto
+    # consults this, so an explicit RAG_EMBED_BACKEND still wins.
     if _model_is_local_gguf(model):
         return "llama-server"
     try:
@@ -1239,7 +1241,8 @@ def release_backend() -> bool:
     """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
     global _backend, _backend_key, _resident_hardware
     with _backend_lock:
-        # Nothing published yet a module-level model may remain; freeing it here prevents a permanent leak.
+        # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
+        # model picks its backend again.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None

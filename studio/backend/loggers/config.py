@@ -360,7 +360,6 @@ def quiet_third_party_progress_bars() -> None:
             module.utils.logging.disable_progress_bar()
         except Exception:  # noqa: BLE001
             pass
-    # datasets: the UI reads its bar counters, so only the output goes.
     _silence_datasets_bar_output()
     # Direct tqdm users bypass diffusers' toggle; preserve counters but discard redraws.
     _redirect_every_bar_output()

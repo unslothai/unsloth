@@ -1339,7 +1339,13 @@ def _is_vision_model_uncached(
     local_files_only: bool = False,
     revision: Optional[str] = None,
 ) -> Optional[bool]:
-    """Latest-tier archs: trust the sidecar probe over heuristic False; an inconclusive probe returns None so the False is not cached."""
+    """Uncached vision detection; use is_vision_model() instead.
+
+    Returns True/False for definitive results, or None on transient errors
+    (network, timeout, subprocess failure) so the caller knows not to cache.
+    """
+    # Try the raw-config reader FIRST (code-free, version-independent): it classifies repo-code
+    # VLMs like DeepSeek-OCR via declarative vision_config, with no remote code or subprocess.
     raw_kwargs = {
         "hf_token": hf_token,
         "local_files_only": local_files_only,
@@ -2550,7 +2556,6 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
             return str(_local_gguf_load_path(p))
-
     # A dir named *.gguf falls through to the dir scan, which skips mmproj and MTP drafter .gguf files.
     if p.is_dir():
         gguf_files = []
@@ -3864,7 +3869,6 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                     return base_model
 
         # training_args.bin read disabled: weights_only rejects it, and it is a code-exec sink; needs a trust check.
-
         base_model = _base_model_from_dir_name(lora_path_obj.name)
         if base_model:
             logger.info(f"Detected base model from directory name: {base_model}")
@@ -4138,7 +4142,9 @@ class ModelConfig:
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
-    gguf_hf_repo: Optional[str] = None
+    gguf_hf_repo: Optional[str] = (
+        None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
+    )
     # Repo a refused-Hub cached GGUF came from, for the download interlock.
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")

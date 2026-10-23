@@ -2599,7 +2599,6 @@ class UnslothTrainer:
         # Cast so datasets 4.x AudioDecoder yields dicts; skip resample since BiCodec target_sr may differ.
         from datasets import Audio
 
-        # No resample: BiCodec's target_sr may differ.
         dataset = dataset.cast_column(audio_col, Audio())
 
         self._update_progress(status_message = "Loading BiCodec tokenizer...")

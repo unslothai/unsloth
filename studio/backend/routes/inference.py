@@ -1799,8 +1799,6 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
 
 # Default per-image upper bound (llama.cpp Qwen-VL); a load may raise it (_openai_llama_admission_image_tokens); under-reserving overcommits KV.
 _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP = 4096
-# mtmd delimiters measured at +2 (b10639, Qwen3-VL); 128 leaves headroom.
-# Default only: a load may raise the cap (_openai_llama_admission_image_tokens).
 _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS = 128
 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
@@ -12540,7 +12538,6 @@ def _estimate_gguf_required_gb(
                 _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
         elif _extras_draft and _extras_draft_is_remote and not local_only:
             _extras_bytes = _remote_drafter_repo_bytes(str(_extras_draft), hf_token = hf_token)
-
         # Inherited LLAMA_ARG_MMPROJ loads unless our --mmproj is on argv; --no-mmproj empties argv, not mmproj.path. Added to return, not total_bytes.
         _studio_mmproj_on_argv = bool(
             (_mmproj_override or getattr(config, "gguf_mmproj_file", None)) and _dv_opens_projector
@@ -17312,7 +17309,6 @@ async def _load_model_impl(
             if resolved_ollama_path is not None
             else request._advertised_id
         )
-
         # Resolve once so the reload-dedup check and load_model compare the same template.
         effective_chat_template_override = resolve_effective_chat_template_override(
             model_identifier = model_identifier,
@@ -20987,6 +20983,11 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
         return LoadProgressResponse()
 
 
+# =====================================================================
+
+# Audio (TTS) Generation  (/audio/generate)
+# =====================================================================
+
 _TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
     (
         "snac",
@@ -23397,6 +23398,12 @@ async def openai_audio_translations(
             }
         )
     return JSONResponse(content = {"text": text})
+
+
+# =====================================================================
+
+# Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
+# =====================================================================
 
 
 def _stt_engine_for_model(model: Optional[str]) -> Optional[str]:
@@ -28263,6 +28270,8 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
 
 
 # ── OpenAI shell-tool container management ───────────────────────
+
+
 def _resolve_openai_cloud_client(
     body: OpenAIContainerRequest, *, allow_saved_key: bool
 ) -> ExternalProviderClient:
@@ -31101,6 +31110,7 @@ async def produce_openai_chat_completions(
                 _tracker.__exit__(None, None, None)
 
         # ── Standard GGUF path (no tools) ─────────────────────
+
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
@@ -31766,7 +31776,6 @@ async def produce_openai_chat_completions(
                 if admission_lease is not None:
                     admission_lease.release()
                 _tracker.__exit__(None, None, None)
-
     # Re-derived: an auto-switch may have changed models.
     served_images: list[str] = []
     images: list = []
@@ -33580,6 +33589,11 @@ async def produce_openai_chat_completions(
             _tracker.__exit__(None, None, None)
 
 
+# =====================================================================
+
+# Sandbox file serving  (/sandbox/{session_id}/{filename})
+# =====================================================================
+
 _SANDBOX_MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -34941,6 +34955,12 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     )
 
 
+# =====================================================================
+
+# OpenAI-Compatible Completions Proxy  (/completions → /v1/completions)
+# =====================================================================
+
+
 def _flatten_monitor_prompt(value) -> str:
     """Flatten an OpenAI prompt/input field (str or list) into the single
     string the api_monitor prompt preview expects."""
@@ -35954,6 +35974,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         )
 
 
+# =====================================================================
+
+# OpenAI-Compatible Embeddings Proxy  (/embeddings → /v1/embeddings)
+# =====================================================================
+
+
 _STUDIO_EMBED_CONCURRENCY = 4
 _STUDIO_EMBED_MAX_INPUTS = 2048
 _studio_embed_semaphores: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -36630,6 +36656,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     )
 
 
+# =====================================================================
+
+# OpenAI Responses API  (/responses → /v1/responses)
+# =====================================================================
+
+
 _RESPONSES_CUSTOM_APPLY_PATCH = "apply_patch"
 
 
@@ -37095,7 +37127,6 @@ def _reject_unserviceable_responses_attachment(part, *, role = "user") -> None:
 
 # Metadata parts may be dropped only on assistant replay turns, never system or developer; an allowlist, since an input_ prefix misses computer_screenshot
 _RESPONSES_TEXT_PART_TYPES = frozenset({"input_text", "output_text"})
-# Droppable only on assistant replay turns; on system/developer it is caller content.
 _RESPONSES_ASSISTANT_METADATA_PART_TYPES = frozenset({"refusal", "summary_text"})
 
 
@@ -39891,7 +39922,6 @@ async def _mlx_count_chat_tokens(
         )
     )
     _date_controls = _template_controls(payload)
-    # Only with a request: the helper's requestless mode injects the date unconditionally.
     if request is not None:
         system_prompt = _apply_current_date_prompt(
             system_prompt, request, image = _renders_media, controls = _date_controls
@@ -46895,7 +46925,12 @@ _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
 
 
 def _generate_failure_detail(message: str) -> str:
-    """Names the failure class from fixed text only; engine output can carry local paths and argv."""
+    """A user-facing reason for a failed generation, built only from fixed text.
+
+    The bare literal left a real failure undiagnosable from the UI: on a Metal host the native
+    renderer aborts inside its own text encoder, and the page showed "Image generation failed."
+    with nothing to act on. Naming the CLASS of failure keeps the message useful without echoing
+    the engine's text, which can carry local paths and argv."""
     text = str(message or "").lower()
     for needles, detail in _GENERATE_FAILURE_CLASSES:
         if any(n in text for n in needles):

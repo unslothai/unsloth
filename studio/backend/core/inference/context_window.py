@@ -342,14 +342,16 @@ def _compacted_arguments(
     phrase = phrase or _completed_phrase_for(name, reply)
     if not isinstance(arguments, str):
         return None
-    # Unparseable arguments get a size-only receipt worded from phrase; hardcoding after-the-call-ran replayed a REFUSED call as having run
+    # A refused call ignores the general floor: its refusal is about to enter a prompt that already does not fit. The
+    # size check at the end still stops the receipt growing the prompt.
     refused = phrase == _REFUSED_PHRASE
     if not refused and len(arguments) < _ARG_COMPACTION_TOTAL_FLOOR_CHARS:
         return None
     try:
         parsed = json.loads(arguments)
     except Exception:
-        # Checked here too: without the general floor a short refused call can get a receipt longer than the call it replaces
+        # Size alone is an honest receipt for unparseable arguments. Worded from `phrase`: hardcoding
+        # after-the-call-ran replayed a REFUSED call as having run.
         _unparseable = json.dumps(
             {"_unsloth_compacted": f"{len(arguments)} chars {phrase.format(where = '')}"},
             ensure_ascii = False,
@@ -375,7 +377,8 @@ def _compacted_arguments(
         """Elide every large string at any depth: `edit_file` takes an `edits` ARRAY, so content
         sits at `edits[i].new_string`."""
         nonlocal elided
-        # The target path is repeated in each leaf's receipt only when cheaper than the field it points at; `path` is kept verbatim either way
+        # The destination is never expendable: it names WHICH file the call touched, and the receipt promises the
+        # content is there.
         if key in _PATH_KEYS:
             return value
         if isinstance(value, str) and len(value) >= _leaf_floor:

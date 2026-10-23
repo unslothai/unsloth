@@ -998,7 +998,6 @@ def _retire_replaced_slots(root: Path, *, restore: bool) -> None:
         except OSError:
             return 0.0
 
-    # NEWEST first per slot: replacements stack, so restore the actual predecessor.
     entries.sort(key = _written_at, reverse = True)
     restored_slots: set[Path] = set()
     for entry in entries:

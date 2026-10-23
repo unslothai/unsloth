@@ -105,14 +105,18 @@ class DiffusionFamily:
     # reload). None = unsupported.
     img2img_pipeline_class: Optional[str] = None
     inpaint_pipeline_class: Optional[str] = None
-    # True when the inpaint pipeline keeps the canvas size, so it can also drive outpaint; False for FLUX.2, which scales >1MP inputs to ~1MP
+    # ControlNet pipeline + model classes: the model loads via from_pretrained, the pipeline via ``from_pipe``. None
+    # on both = no support.
     controlnet_pipeline_class: Optional[str] = None
     controlnet_model_class: Optional[str] = None
-    # Instruction-editing families (Qwen-Image-Edit, FLUX Kontext): the pipeline is edit-only; base_repo supplies VAE, text encoder, processor, scheduler
+    # True when the inpaint pipeline keeps the canvas size, so it can also drive outpaint. False for FLUX.2 (it scales
+    # >1MP inputs to ~1MP).
     inpaint_preserves_size: bool = True
-    # True for families whose text-to-image pipeline also takes reference images (FLUX.2 image): no strength, size from width/height
+    # True for instruction-editing families (Qwen-Image-Edit / FLUX Kontext): the pipeline IS the edit pipeline (image
+    # + instruction, no plain text-to-image). ``base_repo`` supplies the VAE / text-encoder / processor / scheduler.
     edit: bool = False
-    # True when text-to-image also follows edit instructions over image (Qwen-Image-2.1); never inferred from reference, which does not imply editing
+    # True for families whose text-to-image pipeline ALSO accepts reference image(s) (FLUX.2 ``image``): no
+    # ``strength``, size from width/height.
     reference: bool = False
     # True for families whose activations overflow float16 (black image); the backend promotes a resolved float16 to float32
     unified_edit: bool = False
@@ -164,7 +168,8 @@ class DiffusionFamily:
     # minor) archs (``filter_reduction_configs_archs``); both unset = inductor's pick. Same two fields on VideoFamily.
     filter_reduction_configs: bool = False
     filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
-    # Non-default bases as (base_repo, scheme, repo_id), base_repo lowercased; one entry covers differing-weight variants; exact match, then prequant_repos
+    # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
+    # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # sd.cpp single-file assets, used only on the no-GPU engine; transformer GGUF is shared with diffusers, VAE and text encoders are (repo_id, filename)
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
@@ -215,9 +220,11 @@ class DiffusionFamily:
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
-    # When set, a LoRA trained on this family deploys onto this repo instead (Krea: train on Raw, preview on Turbo); same precision both sides
+    # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA prequant repo, then bf16). Surfaced by
+    # the Train UI.
     train_base_repos: tuple[str, ...] = field(default_factory = tuple)
-    # Variant train-base to inference-base mappings: FLUX.2 Klein trains undistilled and runs on its 4-step checkpoint, so variants cannot share deploy_base_repo
+    # When set, deploying a LoRA trained on this family loads THIS repo instead (Krea: train on Raw, preview on
+    # Turbo). Same precision both sides.
     deploy_base_repo: Optional[str] = None
     # Checkpoints baked from dev / Krea-dev weights (same arch, different weights); without them every int8/fp8 load pays dense download plus quantising
     deploy_base_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -857,7 +864,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
-        # 2512 is a different checkpoint with its own baked artifacts; without these rows a 2512 pick plans the Qwen-Image artifact and is refused by base_model_id
+        # Qwen-Image-FP8.pt was rebuilt with the activation scale floor (LPIPS 0.044 against the bf16
+        # render at 1024, seed 20260914), so an fp8 host seeds it instead of quantising bf16 in memory.
         prequant_repos = (
             ("int8", "unsloth/Qwen-Image-FP8"),
             ("fp8", "unsloth/Qwen-Image-FP8"),
@@ -967,7 +975,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         cfg_kwarg = "true_cfg_scale",
         # Unified: t2i plus optional condition images, so reference, not edit.
         reference = True,
-        # Condition tokens are prefilled once into a KV cache, not denoised per step, so each 1024-square condition costs ~2.5-2.7 GiB, not the estimator's 8 GiB/MP
+        # Model card: ten inputs, alpha kept for the VAE, 32 px grid (16x VAE, 2x2 token groups), 2K presets up to
+        # 2400 x 1792. ``reference_resolutions`` maps to the pipeline's ``output_resolution``.
         unified_edit = True,
         max_condition_images = 10,
         condition_image_mode = "RGBA",
@@ -1834,7 +1843,8 @@ def _upstream_is_cached(
         if other_root:
             from huggingface_hub import constants
 
-            # One revision per root, unioned across roots: a name may come from either root, but within a root only from the revision its fetch would resolve
+            # Exactly what ``cache_dir = None`` resolves to, i.e. the root the per-file reuse probe falls back to
+            # (file_download reads constants.HF_HUB_CACHE per call).
             fallback = Path(constants.HF_HUB_CACHE)
             if fallback != roots[0]:
                 roots.append(fallback)
@@ -2209,7 +2219,9 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "Flux3ModularPipeline": "0.42.0",
     "Flux3DistilledModularPipeline": "0.42.0",
     "Krea2Pipeline": "0.39.0",
-    # WanPipeline arrived with Wan2.1 in 0.33.0; the Wan2.2 family wants weights only 0.35 carries, but this table answers class presence only
+    # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
+    # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
+    # existed since 0.30 is the same wrong remedy.
     "QwenImagePipeline": "0.35.0",
     "QwenImageImg2ImgPipeline": "0.35.0",
     "QwenImageInpaintPipeline": "0.35.0",

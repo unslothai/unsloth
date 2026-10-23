@@ -2857,12 +2857,15 @@ def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
         try:
             from utils.wheel_utils import probe_torch_wheel_env, xformers_wheel_url
 
-            # Not cached, since the next request may settle it: an unnamed platform (macOS, Windows on ARM) or a timed-out probe; aarch64 Linux is not here
+            # include_windows: this is the one resolver that HAS win_amd64 wheels upstream. timeout matches the other
+            # probe_torch_wheel_env callers.
             env = probe_torch_wheel_env(timeout = 30, include_windows = True)
         except Exception as exc:  # noqa: BLE001 -- must never break a model load
             return (None, f"the xFormers wheel could not be resolved ({exc})")
         if env is None:
-            # Name the platform: Linux aarch64 reaches here with ordinary torch, and naming only torch and CUDA would read as an unbuilt pair, not an unbuilt arch
+            # Ambiguous: a platform wheel_platform_tag() does not name (macOS, Windows on ARM) which is deterministic,
+            # or a probe that timed out on a busy box which is transient. Not cached, so the next request can settle
+            # it. Linux aarch64 is NOT here: it gets a platform_tag and so lands on the branch below.
             return (
                 None,
                 "torch could not be probed, or this platform has no xFormers wheel "
@@ -3379,7 +3382,8 @@ def apply_attention_backend(
             if logger is not None:
                 logger.info("diffusion.attention: backend=%s", backend)
             return backend
-    # Native means torch SDPA picks per call, which is MATH on a device with no fused kernel; say so now, as the flags read off it would lie
+    # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in. One reset
+    # covers every fresh DiT.
     _tag_dits(pipe, None)
     _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)

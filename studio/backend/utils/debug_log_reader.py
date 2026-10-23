@@ -25,7 +25,6 @@ from utils.log_redaction import redact_log_text
 
 BLOCK_BYTES = 65_536
 DEFAULT_TAIL_LINES = 1_000
-# == MAX_LINES_PER_RESPONSE: a larger ?lines= would be silently capped.
 MAX_TAIL_LINES = 2_000  # == MAX_LINES_PER_RESPONSE: a larger ?lines= was silently capped
 # /api is not gzipped, so this is what goes on the wire on first paint.
 MAX_TAIL_BYTES = 1_048_576

@@ -135,7 +135,8 @@ def _pick(
             newest_position[found[0]] = index
 
     def _walk(order: list[int]) -> list[str]:
-        # Dedupe before charging the cost, so a repeated rule cannot exhaust the budget; every copy renders at newest_position anyway
+        # (position, text) so the render can sort by position: with a reserved item the selection order is no longer the
+        # reverse of the transcript order, and `reversed(chosen)` put the oldest turn LAST, inverting supersession.
         picked: list[tuple[int, str]] = []
         seen: set[str] = set()
         spent = 0
@@ -144,7 +145,9 @@ def _pick(
                 break
             found = _item(index)
             if found is None:
-                # `unit` is oldest-first (an abandoned opening is its first entry); `spend` is newest-first, so a shrunk budget keeps the newest bullets
+                # One restated rule used to take all eight slots. Checked before the cost is charged, so a repeat cannot
+                # exhaust the budget; every copy renders at `newest_position` anyway, so which one the walk saw first is
+                # moot.
                 continue
             item, cost = found
             if item in seen:

@@ -99,7 +99,6 @@ def partial_is_process_unique(name: str) -> bool:
 def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
     """Whether some process holds huggingface_hub's per-blob download lock right now. hf takes ``<hub cache>/.locks/<repo dir>/<etag>.lock`` for the whole of a file download, so a lock we cannot take means a live writer, including a client in another process that no peer registry here can see. It answers False when the lock cannot be probed at all, since upstream calls the lock best-effort and some filesystems grant it to everyone; callers pair it with a staleness check rather than trusting it alone."""
     lock_path = entry.parent / ".locks" / entry.name / f"{blob_hash}.lock"
-    # hf creates the lock file before locking, so no file means no writer.
     if not lock_path.exists():
         # hf creates the lock file before taking the lock, so no file means no writer; it is also the answer for a SoftFileLock, whose file IS the lock.
         return False
@@ -617,7 +616,6 @@ def preferred_repo_cache_dirs(
     )
     if active_entries:
         return active_entries
-    # A running job writes only to the active root; never read a previous cache's copy.
     if force_active:
         # A running or cancelling job writes into the active root and nowhere else, so its progress may only be read from there: hf_cache_root returns None for a root not yet created, and falling through would read a previous cache's completed copy as this run's progress.
         root = hf_cache_root(root = active_root) or active_root or _configured_hub_cache()

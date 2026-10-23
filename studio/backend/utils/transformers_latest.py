@@ -90,7 +90,8 @@ _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
-# Derived from the worst case of the refresh so tuning cannot shrink the backstop below it; giving up early reads as no upgrade needed at the Start button.
+# Set whenever no refresh is in flight; a concurrent caller waits on it for the running
+# fetch's answer instead of reporting "no answer" (see _get_snapshot).
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
 # Body, or None if still running at deadline; read1 returns what has arrived, since resp.read() has no bound against a drip-fed body.

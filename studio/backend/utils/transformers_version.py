@@ -69,7 +69,8 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 
-# True if an HF offline env var is truthy, or an open force_hf_offline window (a spawn briefly restores env, so an env-only check would send the held request).
+# Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
+# cannot pin a transformers version into sys.modules before the sidecar is activated.
 from utils.training_runs import base_model_from_run_dir_name
 
 logger = get_logger(__name__)
@@ -1816,6 +1817,8 @@ def needs_transformers_5(model_name: str) -> bool:
 
 
 # --- Version switching (in-process, used only by export) ---
+
+
 def _get_in_memory_version() -> str | None:
     """Return the transformers version currently loaded in this process."""
     tf = sys.modules.get("transformers")

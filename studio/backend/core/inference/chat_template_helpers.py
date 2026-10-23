@@ -649,7 +649,8 @@ def _neutralize_content_parts(
             continue
         # Keep each carrier's own text: Llama-3.1 serializes the list in order.
         run = [texts[index] for index in carriers]
-        # A trimming renderer could re-form a marker split across a non-text part; moving the opener across it beats collapsing all text into one carrier
+        # First choice: migrate an opener only between carriers that really are adjacent, so nothing crosses an image
+        # or a JSON part sitting between them.
         redistributed = _redistribute_swept(
             run,
             rewrite,
@@ -1055,7 +1056,9 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
         "contentMediaType",
-        # OpenAPI xml holds only name, namespace, prefix and two booleans, all identifiers with no prose, so a rewrite advertises names the server never emits
+        # An OpenAPI discriminator holds only "propertyName" and a "mapping" whose keys and targets are identifiers,
+        # with no prose field to protect, so every leaf under it is machine-valued: the server resolves the original
+        # while the model sees the rewrite.
         "discriminator",
         # Gemma-4 emits a response declaration from function.response, and a JSON-serializing template exposes the rest of it
         "xml",
@@ -1277,7 +1280,9 @@ _JINJA_STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", re.S)
 
 # Replayed tool_calls and tool outputs count as tool use without a tools read (DeepSeek-R1); this pattern keeps string literals as mapping keys.
 _TOOL_TURN = re.compile(
-    # Covers both "message['role'] == 'tool'" and "message.role == 'tool'"; the closing quote and bracket sit between the name and the comparison
+    # message.tool_calls / message["tool_calls"] / "tool_calls" in message, and the role comparison a template uses to
+    # render a tool result. Matching the bare word instead let "{{ 'tool_calls are unsupported' }}" count as taking
+    # part in tool calling.
     r"\.tool_calls\b"
     r"|\[\s*['\"]tool_calls['\"]\s*\]"
     r"|['\"]tool_calls['\"]\s+in\b"
@@ -1983,7 +1988,8 @@ class RecipientChannelNormalizer:
                 if pieces is not None:
                     output.append("".join(text for _, text in pieces))
                     continue
-                # A reply is content, but the turn can continue after it, so follow it to its close rather than giving up on the rest
+                # No call in it at all: keep the body, but this block is closed and the next header is still ours to
+                # read, so do not stop normalizing the turn.
                 output.append(_atem_surrounding_text(block))
                 continue
 
@@ -2083,7 +2089,8 @@ class RecipientChannelNormalizer:
         output = self._buffer
         self._buffer = ""
         if self._tool_header is not None:
-            # feed() held this back in case it became framing; the stream ended first, so drop it rather than show the control markup
+            # No terminator arrived, so unlike feed() there is no complete block to hand on: keep the text the model
+            # had written and drop the rest.
             pieces = _atem_block_pieces(output, complete = False)
             if pieces is None:
                 output = _atem_surrounding_text(output, complete = False)
@@ -2355,9 +2362,11 @@ def markup_for_tokenizer(
         template = getattr(inner, "chat_template", None)
     # Keyed on template too (a mapped template lands on the same object at generate time) and on tools presence, since named dicts emit different literals.
     is_processor = _is_processor(tokenizer)
-    # A named-template dict is unhashable, so the cache key is its sorted json.dumps; without it every call raised TypeError and rebuilt the profile
+    # A processor always renders "default", so its profile does not vary with tools and the cache must not key two
+    # identical entries under different selectors.
     selector = bool(tools) and not is_processor
-    # ProcessorMixin.apply_chat_template never picks "tool_use" implicitly (it renders "default"); tokenizer-rule profiling left its boundary unswept
+    # A named-template dict is unhashable, so the key is a stable serialization of it; without this the cache write
+    # raised TypeError and every call rebuilt the profile.
     if not isinstance(template, str):
         try:
             template_key = json.dumps(template, sort_keys = True, default = str)
@@ -3055,7 +3064,9 @@ def render_with_native_template_fallback(
     ):
         if return_metadata:
             if advertised is None and tools:
-                # Gemma 4 can emit native reasoning after an override rendered a marker-free prompt; keep no-tools thinking, but cached metadata must not describe tool prompts
+                # With *tools*, so the reported catalog is the one the render sanitized:
+                # apply_chat_template_for_generation profiles with them, and omitting them here described a "default"
+                # template the request never rendered (#7066).
                 advertised = neutralize_tool_descriptions(
                     tools, None, markup_for_tokenizer(tokenizer, tools)
                 )
@@ -3063,7 +3074,9 @@ def render_with_native_template_fallback(
         return prompt
 
     if not tools:
-        # Probe whether the live template dropped the schema; a tools-requiring template can raise here, and on any error keep the valid tools prompt
+        # Gemma 4 can emit its native reasoning protocol even when a generation-time Unsloth override rendered a
+        # marker-free prompt. Preserve the live-verified no-tools thinking behavior without letting cached native
+        # metadata describe unrelated tool prompts that kept the active override.
         markers = live_markers
         if markers is None:
             markers = detect_reasoning_channel_markers_from_model_info(

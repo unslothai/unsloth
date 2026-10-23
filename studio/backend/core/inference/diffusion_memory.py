@@ -3571,7 +3571,6 @@ def _keep_groups_resident(
                 kick = state.get("kick")
                 if callable(kick):
                     kick()
-                # a prefetching predecessor skips its own copy-stream wait and relies on this one
                 if stream is not None and state["streamed"] and not state.get("fenced"):
                     stream.synchronize()
 

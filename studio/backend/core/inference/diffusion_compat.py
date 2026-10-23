@@ -258,7 +258,10 @@ def flux2_inner_dim_for_pick(
     if local is None and not allow_network:
         return None
     if local is not None:
-        # Crude eviction (the whole cache is cleared at the bound): it only bounds a session's picks, and a re-probe costs one range request
+        # Same prefix parse as the remote path, so both read the file the same way: the loader's
+        # backstop memory-maps the whole multi-GB checkpoint and builds a view over every tensor,
+        # which is a lot of work for a table in the first 15 KiB. Fall back to it only if the
+        # prefix said nothing, so a header past the cap is still answered.
         inner_dim = gguf_flux2_inner_dim_from_header(_read_local_header(local))
         if inner_dim is None:
             inner_dim = gguf_flux2_inner_dim(local)
@@ -415,7 +418,8 @@ def _speech_probe_architecture(
                 return arch
             del _SPEECH_ARCH_CACHE[key]
     if local is None and not allow_network:
-        # Inside the memo, so a republished checkpoint is caught either way and the HEAD is spent once per cached copy, not on every pick
+        # Memo or local header only, as the size pairing does. Nothing is memoised, so the next
+        # caller that CAN wait still gets a real answer instead of this one's silence.
         return None
     prefix = (
         _read_local_header(local)

@@ -1646,7 +1646,17 @@ def _pageable_env_value(
     value: str,
     drop_shadowed_mlock: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """A shadowed LLAMA_ARG_MLOCK is dropped, not promoted, or it would page-lock the oversized mapping."""
+    """``(rewrite, new_value)`` for an inherited var that disables mmap.
+
+    ``rewrite`` False leaves the var alone. ``new_value`` None means remove it; a string replaces
+    it, which is how a locked mode keeps its lock. ``LLAMA_ARG_MLOCK`` is otherwise left alone: on
+    its own it sets the lock bit over the default mapping and holds no unmapped copy.
+
+    ``drop_shadowed_mlock`` says the launch is NOT locked before the rewrite, because a later
+    selector reset the mlock bit -- llama.cpp resolves these last-wins, so ``LLAMA_ARG_MLOCK=1``
+    beside ``LLAMA_ARG_NO_MMAP`` leaves the child unlocked. There is then no lock to carry, so the
+    var goes and a ``mlock`` mode is dropped rather than promoted to ``mmap+mlock``.
+    """
     normalized = value.strip().lower()
     if name == "LLAMA_ARG_MLOCK":
         # Only when already shadowed: resurrecting it would page-lock the oversized mapping

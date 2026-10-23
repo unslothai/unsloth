@@ -170,7 +170,8 @@ def load_krea2_pipeline(
     check_cancelled()
     import diffusers
 
-    # Read first: it is a few KB and configures the components, so a corrupt index fails before the encoder, VAE and 26 GB transformer are built
+    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
+    # AttributeError, so fail first with the fix.
     if not hasattr(diffusers, "Krea2Pipeline"):
         from .diffusion_families import DIFFUSERS_UPDATE_REMEDY
         raise RuntimeError(
