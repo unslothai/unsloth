@@ -23,7 +23,6 @@ from typing import Any, Optional
 VIDEO_DIT_RESIDENT_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT"
 VIDEO_DIT_RESIDENT_BLOCKS_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS"
 VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
-# Offload tiers whose denoiser streams as block-level groups the fit can keep resident.
 RESIDENT_POLICIES = ("group", "streaming")
 # Single-DiT families measured under the fit (MiniMax-H3 has its own controller, video_minimax_h3_residency).
 RESIDENT_FAMILY_PREFIXES = ("wan", "hunyuanvideo-1.5")
@@ -75,7 +74,6 @@ def applies(
         and not modular
         and not is_moe
         and str(family_name or "").startswith(RESIDENT_FAMILY_PREFIXES)
-        # streaming streams the encoders leaf by leaf too; its denoiser groups are the same block-level groups
         and offload_policy in RESIDENT_POLICIES
         and str(device or "").startswith("cuda")
     )

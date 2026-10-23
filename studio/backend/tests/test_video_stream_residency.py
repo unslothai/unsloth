@@ -32,7 +32,6 @@ def _applies(**kw):
 
 def test_applies_only_to_block_streamed_single_dit_wan_and_hunyuanvideo_on_cuda(monkeypatch):
     assert _applies()
-    # streaming (an encoder too large for the card) streams the same block-level denoiser groups
     assert _applies(offload_policy = "streaming")
     assert _applies(device = "cuda")
     assert not _applies(family = "wan2.2-t2v-a14b", is_moe = True)
