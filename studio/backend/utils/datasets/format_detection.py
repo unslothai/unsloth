@@ -984,7 +984,7 @@ def detect_vlm_dataset_structure(dataset):
             # The owner opted out of the guard: still probe, so a broken column loses to a working one.
             import urllib.request
             try:
-                request = urllib.request.Request(sample_value, method = "HEAD")
+                request = urllib.request.Request(guard_url(sample_value), method = "HEAD")
                 with urllib.request.urlopen(request, timeout = 3) as response:
                     return response.status < 400
             except Exception:

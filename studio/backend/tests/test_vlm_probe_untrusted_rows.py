@@ -108,6 +108,7 @@ def test_the_opt_in_still_probes_so_a_working_column_wins(monkeypatch):
             return False
 
     def fake_urlopen(request, timeout = None):
+        assert " " not in request.full_url
         if "good" in request.full_url:
             return _Ok()
         raise OSError("HTTP 404")
@@ -115,7 +116,7 @@ def test_the_opt_in_still_probes_so_a_working_column_wins(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     row = {
         "image": "http://192.168.1.5/bad.png",
-        "image_filename": "http://192.168.1.5/good.png",
+        "image_filename": "http://192.168.1.5/my images/good.png",
         "caption": "a cat",
     }
     assert detect_vlm_dataset_structure([row])["image_column"] == "image_filename"
