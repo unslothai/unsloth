@@ -7318,6 +7318,9 @@ def fix_inductor_reduction_readback_race():
 
         if getattr(inductor_config, "post_grad_custom_post_pass", None) is None:
             inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+    except ImportError:
+        # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
+        inductor_config.fx_graph_cache = False
     except Exception:
         pass
     logger.info(

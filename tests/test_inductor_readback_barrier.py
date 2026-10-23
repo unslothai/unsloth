@@ -163,6 +163,26 @@ def test_skips_a_torch_that_already_has_the_barrier(monkeypatch):
     assert fake.load is load
 
 
+def test_torch_without_custom_graph_pass_skips_the_fx_graph_cache(monkeypatch):
+    import builtins
+    from torch._inductor import config as inductor_config
+    from torch._inductor.codegen import triton as triton_codegen
+
+    monkeypatch.setattr(triton_codegen, "TritonKernel", _fake_kernel_class())
+    monkeypatch.setattr(inductor_config, "fx_graph_cache", True)
+    real_import = builtins.__import__
+
+    def no_custom_graph_pass(name, *args, **kwargs):  # torch 2.4 / 2.5
+        if name == "torch._inductor.custom_graph_pass":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_custom_graph_pass)
+    _load_fixes("unsloth_import_fixes_readback_old").fix_inductor_reduction_readback_race()
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    assert inductor_config.fx_graph_cache is False
+
+
 _GPU_RUNNER = textwrap.dedent(
     """
     import importlib.util, sys, torch
