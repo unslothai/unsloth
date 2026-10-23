@@ -1089,6 +1089,8 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
     path, where every routed expert is in RAM and --fit prints no per-device line."""
     blocks: list[list] = []
     current: Optional[list] = None
+    # A build without GPU offload logs no "offloaded N/M layers" line, only the buffers: each run of them is a block.
+    unmarked = False
     moe = False
     full_phase = False
     # device -> (layers, overflow or None for a dense-only line), in the order of the final verdict
@@ -1125,12 +1127,17 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
             continue
         counts = _OFFLOADED_LAYERS_RE.search(line)
         if counts is not None:
-            current = [int(counts.group(2)), 0.0, 0.0]
+            current, unmarked = [int(counts.group(2)), 0.0, 0.0], False
             blocks.append(current)
             continue
-        buffer = _MODEL_BUFFER_RE.search(line) if current is not None else None
+        buffer = _MODEL_BUFFER_RE.search(line)
         if buffer is None:
+            if unmarked:
+                current, unmarked = None, False
             continue
+        if current is None:
+            current, unmarked = [0, 0.0, 0.0], True
+            blocks.append(current)
         mib = float(buffer.group(2))
         if _host_buffer(buffer.group(1)):
             current[2] += mib

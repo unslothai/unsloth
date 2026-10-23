@@ -148,6 +148,21 @@ def test_no_buffer_lines_means_nothing_to_report():
     assert parse_weight_placement(["I srv load_model: loading model"]) is None
 
 
+def test_a_cpu_only_build_reports_its_ram_placement():
+    # llama.cpp prints "offloaded N/M layers" only when the build supports GPU offload.
+    lines = [
+        "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",
+        "load_tensors:          CPU model buffer size =     0.6 MiB",
+        "llama_context: n_ctx = 4096",
+        # A drafter's buffers after other lines are its own block, not the main model's.
+        "load_tensors:   CPU_Mapped model buffer size =   500.0 MiB",
+    ]
+    placement = parse_weight_placement(lines)
+    assert placement is not None
+    assert (placement["gpu_mib"], placement["host_mib"]) == (0.0, 21000.6)
+    assert placement["overflow_layers"] is None
+
+
 def test_projector_and_drafter_on_the_command_line_count_toward_the_load(tmp_path):
     projector = tmp_path / "mmproj-F16.gguf"
     projector.write_bytes(b"x" * 1000)
