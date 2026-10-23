@@ -395,10 +395,10 @@ export const BUDGET = {
   // at 97). Raised by that growth so main's margin stays where it was.
   // Live prefill progress, the Generation details setting and the loaded placement readout (#14582): the
   // stream frame reader, live store slice, reply footer line and timing tooltip rows in the eager chat
-  // chunk, +7,401 B raw / +2,133 B transfer over main (6,921,859 -> 6,929,260 B raw, 2,084,722 ->
-  // 2,086,855 B transfer against 0d28035e2, Node 22, 97 chunks). Raised by that.
-  transferBytes: 2_087_151,
-  rawBytes: 6_929_944,
+  // chunk, +7,535 B raw / +2,160 B transfer over main (6,921,859 -> 6,929,394 B raw, 2,084,722 ->
+  // 2,086,882 B transfer against 0d28035e2, Node 22, 97 chunks). Raised by that.
+  transferBytes: 2_087_178,
+  rawBytes: 6_930_078,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
