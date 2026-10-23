@@ -306,8 +306,16 @@ def test_rejects_bad_requests():
         reap.reap_prune(lora, None, sparsity = 0.25, dataset = samples, device = "cpu")
     with pytest.raises(RuntimeError, match = "get_peft_model"):
         reap.reap_prune(lora.base_model.model, None, sparsity = 0.25, dataset = samples, device = "cpu")
-    # Nothing was touched by the refused calls.
+    # Adapters that are not tuner layers (adaption prompt wraps attention in its own module).
+    wrapper = type(
+        "AdaptedAttention", (torch.nn.Module,), {"__module__": "peft.tuners.adaption_prompt.layer"}
+    )
     lora.unload()
+    model.model.layers[0].adapted = wrapper()
+    with pytest.raises(RuntimeError, match = "get_peft_model"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del model.model.layers[0].adapted
+    # Nothing was touched by the refused calls.
     assert model.model.layers[1].mlp.experts.gate_up_proj.shape[0] == 16
 
 

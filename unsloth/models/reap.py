@@ -637,15 +637,9 @@ def _model_parallel_layout(model):
 
 
 def _has_unmerged_adapters(model):
-    try:
-        from peft import PeftModel
-        from peft.tuners.tuners_utils import BaseTunerLayer
-    except ImportError:
-        return hasattr(model, "peft_config")
-    # PEFT < 0.19 leaves `peft_config` on the model after `merge_and_unload`, so look for adapter layers.
-    return isinstance(model, PeftModel) or any(
-        isinstance(m, BaseTunerLayer) for m in model.modules()
-    )
+    # PEFT < 0.19 leaves `peft_config` on the model after `merge_and_unload`, so look for PEFT modules
+    # (PeftModel, tuner models, adapter layers, adaption-prompt wrappers) instead.
+    return any(type(module).__module__.split(".", 1)[0] == "peft" for module in model.modules())
 
 
 @torch.no_grad()
