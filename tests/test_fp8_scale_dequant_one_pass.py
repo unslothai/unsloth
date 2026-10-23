@@ -109,6 +109,25 @@ def test_other_inputs_keep_the_torch_path(F, monkeypatch):
     assert not calls
 
 
+def test_trainable_fp8_input_keeps_autograd(F, monkeypatch):
+    calls = _count_launches(F, monkeypatch)
+    q, s = _weight(32, 48)
+    x = q.detach().requires_grad_()
+    out = F.weight_dequant(x, s, torch.bfloat16)
+    assert out.requires_grad and not calls
+
+
+def test_strided_transposed_view_keeps_the_torch_path(F, monkeypatch):
+    calls = _count_launches(F, monkeypatch)
+    q, s = _weight(96, 160)
+    # 48 rows of a transposed (160, 96) weight: the transpose of q[:, 95:143] is not dense.
+    x = q.t()[95:143]
+    assert F._is_transposed_view(x) and not x.t().is_contiguous()
+    sx = torch.rand(48, 1, device = "cuda")
+    _assert_same_bits(F._scale_mul(x, sx, torch.float16), _reference(x, sx, torch.float16))
+    assert not calls
+
+
 def test_compiled_dequant_keeps_the_fused_expression(F, monkeypatch):
     calls = _count_launches(F, monkeypatch)
     q, s = _weight(64, 128)

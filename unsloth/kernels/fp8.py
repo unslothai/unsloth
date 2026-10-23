@@ -215,8 +215,9 @@ def _scale_dequant_one_pass_ok(x, s, dtype):
         and x.dim() == 2
         and s.device == x.device
         and s.dtype in (torch.float32, torch.bfloat16, torch.float16)
-        and not (s.requires_grad and torch.is_grad_enabled())
-        and (x.is_contiguous() or _is_transposed_view(x))
+        and not (torch.is_grad_enabled() and (x.requires_grad or s.requires_grad))
+        # The kernel indexes dense rows, so a transposed view must be a dense transpose.
+        and (x.is_contiguous() or (_is_transposed_view(x) and x.t().is_contiguous()))
         and not torch.compiler.is_compiling()
     )
 
