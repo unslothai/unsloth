@@ -5890,7 +5890,6 @@ else
             # Best-effort: the DiffusionGemma visual server (an example target, present
             # on llama.cpp PR #24423). No-op when the diffusion example is not configured.
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
-            # Best-effort: llama-bench, for throughput benchmarks.
             run_quiet_no_exit "build llama-bench" cmake --build "$_BUILD_TMP/build" --config Release --target llama-bench -j"$NCPU" || true
         fi
 

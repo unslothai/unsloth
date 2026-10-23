@@ -11199,7 +11199,7 @@ if ($LocalLlamaCppLinked) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }
 
-    # -- Step F: Build llama-bench (optional, best-effort) for throughput benchmarks --
+    # -- Step F: llama-bench (best-effort) --
     if ($BuildOk) {
         $null = cmake --build $BuildDir --config Release --target llama-bench -j $NumCpu 2>&1 | Out-String
     }
