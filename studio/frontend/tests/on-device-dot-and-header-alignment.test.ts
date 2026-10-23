@@ -167,7 +167,7 @@ test("an over budget row dims instead of putting a pill on every line", () => {
   );
   assert.ok(
     PICKERS.includes(
-      '"opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
+      '"opacity-50 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-40"',
     ),
   );
   assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[18px]"'));

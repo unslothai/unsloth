@@ -113,6 +113,7 @@ import {
   type ModelMemorySource,
   useModelMemory,
 } from "@/hooks/use-model-memory";
+import type { GpuInfo } from "@/hooks/use-gpu-info";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -870,6 +871,19 @@ function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
   );
 }
 
+/** A checkpoint (non-GGUF) row's verdict. A CPU backend chats with GGUF only, so a checkpoint
+ *  cannot run there at any size; elsewhere no GPU means nothing to judge it against. */
+function checkpointFit(
+  estGb: number,
+  gpu: Pick<GpuInfo, "available" | "backend" | "budgetKnown" | "memoryTotalGb">,
+  chat: boolean,
+): VramFitStatus | null {
+  if (chat && gpu.budgetKnown && gpu.backend === "cpu") return "exceeds";
+  return estGb > 0 && gpu.available
+    ? checkVramFit(estGb, gpu.memoryTotalGb)
+    : null;
+}
+
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
 function VramBadge({
   status,
@@ -1436,7 +1450,7 @@ function ModelRow({
           // Over budget reads as a dimmed row, which scans; hover restores it. The selected row keeps full weight.
           exceeds &&
             !selected &&
-            "opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+            "opacity-50 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-40",
         )}
       >
         <span className="flex min-w-0 flex-1 items-baseline">
@@ -2514,7 +2528,7 @@ function GgufVariantExpander({
             )}
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
-              <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>
+              <span className={cn(oom && "!text-gray-400 dark:!text-gray-500")}>
                 {ggufVariantPickerLabel(v, {
                   h3Grouped: group?.title != null,
                   hideH3PrunedBuild,
@@ -4289,6 +4303,8 @@ export function HubModelPicker({
                 : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
+      // With no GPU every load runs from RAM: `ram` is this host's best case, not an overage.
+      if (fit === "ram" && budget.memoryTotalGb <= 0) return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
         ? "exceeds"
         : fit;
@@ -4373,9 +4389,7 @@ export function HubModelPicker({
       const est = r.totalParams
         ? estimateLoadingVram(r.totalParams, "qlora")
         : 0;
-      const status =
-        est > 0 && gpu.available ? checkVramFit(est, gpu.memoryTotalGb) : null;
-      map.set(r.id, { meta, status, est });
+      map.set(r.id, { meta, status: checkpointFit(est, gpu, !task), est });
     }
     return map;
   }, [
@@ -6003,16 +6017,13 @@ export function HubModelPicker({
       const detail = r.totalParams ? formatCompact(r.totalParams) : null;
       if (r.totalParams) {
         const est = estimateLoadingVram(r.totalParams, "qlora");
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
-        map.set(r.id, { est, status, detail });
+        map.set(r.id, { est, status: checkpointFit(est, gpu, !task), detail });
       } else {
         map.set(r.id, { est: 0, status: null, detail });
       }
     }
     return map;
-  }, [results, gpu]);
+  }, [results, gpu, task]);
 
   const recommendedVramMap = useMemo(() => {
     const map = new Map<
@@ -6046,11 +6057,8 @@ export function HubModelPicker({
       }
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
         const detail = formatCompact(totalParams);
-        map.set(id, { est, status, detail });
+        map.set(id, { est, status: checkpointFit(est, gpu, !task), detail });
       }
     }
     return map;
