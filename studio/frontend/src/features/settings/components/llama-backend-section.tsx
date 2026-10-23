@@ -239,7 +239,13 @@ export function LlamaBackendSection() {
   // Null means the marker holds a choice a newer Unsloth wrote. Show it as
   // unknown rather than as Automatic, and let it be replaced deliberately.
   const unknownRecorded = status?.backendRequest === null;
-  const value = selected ?? status?.backendRequest ?? "unknown";
+  // A value with no item renders a blank Select that reads as "no backends at all".
+  const statusPending = !status && !loadError;
+  const value = status
+    ? (selected ?? status.backendRequest ?? "unknown")
+    : statusPending
+      ? "loading"
+      : "unknown";
   const options = visibleLlamaBackendOptions(
     status,
     selected ?? status?.backendRequest ?? null,
@@ -284,7 +290,12 @@ export function LlamaBackendSection() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {unknownRecorded ? (
+              {statusPending ? (
+                <SelectItem value="loading" disabled>
+                  {t("common.loading")}
+                </SelectItem>
+              ) : null}
+              {unknownRecorded || (!status && loadError) ? (
                 <SelectItem value="unknown">
                   {t("settings.resources.environment.unknown")}
                 </SelectItem>

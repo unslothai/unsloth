@@ -387,8 +387,12 @@ export const BUDGET = {
   // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
   // (a CI build measured about 100 B over a local one). Raised by that.
+  // The Vulkan CPU fallback notices and the Compute backend picker's loading item (#14521) in the eager chat and
+  // settings chunks: +1,248 B raw / +240 B transfer over main (6,919,932 -> 6,921,180 B raw, 2,084,279 ->
+  // 2,084,519 B transfer merged at 2f9e7d3200, Node 24, 97 chunks). Raw raised to that plus 160 B; transfer
+  // still fits.
   transferBytes: 2_084_696,
-  rawBytes: 6_920_821,
+  rawBytes: 6_921_340,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
