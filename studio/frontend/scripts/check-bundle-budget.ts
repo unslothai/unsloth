@@ -389,8 +389,12 @@ export const BUDGET = {
   // (a CI build measured about 100 B over a local one). Raised by that.
   // Install Training button under the greyed Train row's hint: +424 B raw / +141 B transfer against ee55c3c9a
   // (6,920,512 -> 6,920,936 B raw, 2,084,382 -> 2,084,523 B transfer, Node 24, 97 chunks). Raised by that.
-  transferBytes: 2_084_837,
-  rawBytes: 6_921_245,
+  // MOSS-Image (#14552): its two image catalog groups, family label and generation defaults sit in the eager
+  // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
+  // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
+  // at 97). Raised by that growth so main's margin stays where it was.
+  transferBytes: 2_085_018,
+  rawBytes: 6_922_543,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
