@@ -242,15 +242,13 @@ def _real_probe(extension, path):
     )
 
 
-# Stand-ins for selective_scan_cuda / causal_conv1d_cuda, so a real CUDA build on the host cannot
-# change the answer.
+# Stand-ins for selective_scan_cuda / causal_conv1d_cuda: a CUDA build on the host cannot interfere.
 _FAKE_SCAN, _FAKE_CONV = "unsloth_test_selective_scan_ext", "unsloth_test_causal_conv1d_ext"
 
 
 def test_the_probe_passes_an_extension_free_mamba_ssm_only(monkeypatch, tmp_path):
     pytest.importorskip("torch")
     monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN})
-    # The extension-free mamba_ssm wheel ships no selective_scan_cuda at all: kept.
     assert _real_probe(_FAKE_SCAN, tmp_path).returncode == 0
     # causal_conv1d has no extension-free wheel: a missing causal_conv1d_cuda is still broken.
     missing = _real_probe(_FAKE_CONV, tmp_path)
@@ -263,8 +261,7 @@ def test_the_probe_passes_an_extension_free_mamba_ssm_only(monkeypatch, tmp_path
 
 
 def test_setup_keeps_the_extension_free_mamba_ssm(monkeypatch, tmp_path):
-    # Studio's Triton route installs mamba_ssm without selective_scan_cuda; setup must not
-    # uninstall it as stale on every update (offline, the next Mamba-2 load would lose it).
+    # Removing it on every update leaves an offline Mamba-2 load without mamba_ssm.
     pytest.importorskip("torch")
     monkeypatch.setattr(ips, "_SSM_KERNEL_EXTENSIONS", {"mamba_ssm": _FAKE_SCAN})
     monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN}, raising = False)

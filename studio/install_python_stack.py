@@ -8761,8 +8761,7 @@ def _ensure_flash_attn() -> None:
 _SSM_KERNEL_EXTENSIONS = {"causal_conv1d": "causal_conv1d_cuda", "mamba_ssm": "selective_scan_cuda"}
 # Exit code of the probe below when torch imported and the extension raised ImportError / OSError.
 _SSM_EXTENSION_BROKEN_EXIT = 87
-# mamba_ssm without selective_scan_cuda is the extension-free wheel Studio's Triton route installs:
-# nothing in it was built against torch, so it is kept. causal_conv1d has no such wheel.
+# Missing outright = the extension-free mamba_ssm wheel (Triton route); causal_conv1d has none.
 _SSM_EXTENSION_OPTIONAL = {"selective_scan_cuda"}
 _SSM_EXTENSION_PROBE = (
     "import importlib.util\n"
