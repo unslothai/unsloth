@@ -563,8 +563,9 @@ export function KeyboardShortcutsTab() {
         <Button
           type="button"
           variant="dark"
-          size="sm"
-          className="pointer-events-auto shadow-md disabled:bg-muted-foreground disabled:opacity-100"
+          // Disabled is an opaque mix rather than faded, so rows never show through it, and it reads
+          // as off in both themes; the dark: pair outranks the variant's own dark fill.
+          className="pointer-events-auto px-4 shadow-md disabled:bg-[color-mix(in_oklab,var(--foreground)_18%,var(--background))] disabled:text-muted-foreground disabled:opacity-100 dark:disabled:bg-[color-mix(in_oklab,var(--foreground)_18%,var(--background))] dark:disabled:text-muted-foreground"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {
             stopRecording();
