@@ -20,14 +20,16 @@ export function LoadedPlacementRow() {
       data-slot="loaded-placement"
       className="flex flex-col gap-1 border-b border-border pb-5"
     >
-      <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+      <span className="flex min-h-8 items-center text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
         Loaded placement
       </span>
       {layers !== null && (
-        <span className="text-ui-12 leading-snug text-muted-foreground">{layers}</span>
+        <span className="text-ui-12 leading-snug text-muted-foreground">
+          {layers}
+        </span>
       )}
       {memory !== null && (
-        <span className="font-mono text-ui-12 leading-snug text-muted-foreground tabular-nums">
+        <span className="text-ui-12 leading-snug text-muted-foreground tabular-nums">
           {memory}
         </span>
       )}
