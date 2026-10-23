@@ -351,3 +351,39 @@ def test_a_cpt_notebook_is_not_imported_as_sft():
         "Mistral_v0.3_(7B)-CPT.ipynb",
     )
     assert doc is None and any("continued pretraining" in line for line in report["unsupported"])
+
+
+def test_importer_carries_responses_only_vision_by_name_and_no_embedding_streaming():
+    doc, _ = notebook_import.read_notebook(
+        _plain(
+            "dataset = load_dataset('imdb', split = 'train')",
+            "trainer = train_on_responses_only(trainer)",
+        ),
+        "x.ipynb",
+    )
+    assert _tune(doc)["train_on_completions"] is True
+    assert _start_body({"train_on_completions": True})["train_on_completions"] is True
+    assert "train_on_completions" not in _start_body({})
+    vision, _ = notebook_import.read_notebook(
+        _nb(
+            "model, processor = FastModel.from_pretrained(model_name = 'unsloth/gemma-3n-E4B-it')",
+            "dataset = load_dataset('unsloth/LaTeX_OCR', split = 'train')",
+        ),
+        "Gemma3N_(4B)-Vision.ipynb",
+    )
+    assert _tune(vision)["task"] == "vision"
+    emb, report = notebook_import.read_notebook(
+        _nb(
+            "model = FastSentenceTransformer.from_pretrained(model_name = 'unsloth/embeddinggemma-300m')",
+            "dataset = load_dataset('a/b', split = 'train', streaming = True)",
+        ),
+        "x.ipynb",
+    )
+    assert "dataset_streaming" not in _tune(emb)
+    assert any("Streaming" in line for line in report["approximated"])
+
+
+def test_bundled_templates_keep_the_notebooks_lora_alpha():
+    for template in ("notebook-embedding", "notebook-tts-sft"):
+        doc = next(d for d in build_examples.build() if d["id"] == template)
+        assert _tune(doc)["lora_alpha"] == 64

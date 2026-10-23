@@ -163,6 +163,8 @@ class _Reader(ast.NodeVisitor):
                     self.tune["max_seq_length"] = seq
                 if self.kw(node, "load_in_4bit") is False:
                     self.tune["load_in_4bit"] = False
+        elif fn == "train_on_responses_only":
+            self.tune["train_on_completions"] = True
         elif fn == "get_peft_model":
             self.found["peft"] = True
             r = self.kw(node, "r")
@@ -281,9 +283,14 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     if not found.get("peft"):
         # No get_peft_model call: the notebook trains every weight, so the flow does too.
         tune["training_type"] = "full"
-    # TTS notebooks load through FastLanguageModel; the notebook's own name says it is audio.
-    if found["task"] == "text" and _category(name) == "audio":
-        found["task"] = "audio"
+    # TTS and Gemma-style vision notebooks load through FastLanguageModel / FastModel; the name says which they are.
+    if found["task"] == "text" and _category(name) in ("audio", "vision"):
+        found["task"] = _category(name)
+    if found["task"] == "embedding" and tune.pop("dataset_streaming", None):
+        # Studio's embedding trainer loads the whole dataset; it refuses streaming.
+        report["approximated"].append(
+            "Streaming: Studio's embedding training loads the whole dataset instead"
+        )
     tune["base_model"] = found["model"]
     if found["task"] != "text":
         tune["task"] = found["task"]
