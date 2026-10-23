@@ -4875,6 +4875,13 @@ class DiffusionLoadRequest(BaseModel):
         )
         if base is not None and retired_copy_loads_from_disk(self.model_path, self.gguf_filename):
             base = None
+            # Its root transformer pick takes its companions (encoder, VAE, manifest) from the copy too: with no
+            # base named, the loader would assemble around the family default, the base's -FP8 mirror.
+            if (
+                (self.gguf_filename or "").strip().replace("\\", "/") == "model.safetensors"
+                and not (self.base_repo or "").strip()
+            ):
+                self.base_repo = self.model_path
         if base is not None:
             single = (self.gguf_filename or "").strip().replace("\\", "/")
             if not single:

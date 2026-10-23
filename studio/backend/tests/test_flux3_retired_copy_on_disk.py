@@ -101,6 +101,63 @@ def test_its_root_transformer_pick_stays_on_the_snapshot(tmp_path, offline_hub):
     )
 
 
+def _companion_base(request):
+    """The companion base the single-file loader assembles the pipeline around (``_resolve_base_repo``, no card tag
+    offline), as the repo it fetches from."""
+    from core.inference import diffusion
+    fam = next(f for f in df._FAMILIES if f.name == "flux.3-klein")
+    with patch.object(diffusion, "_hf_base_model", return_value = None):
+        resolved = diffusion._resolve_base_repo(
+            request.model_path, request.base_repo, fam, None, request.gguf_filename
+        )
+    return df.prefer_ungated_mirror(resolved)
+
+
+@pytest.mark.parametrize("by_id", [False, True])
+def test_its_root_transformer_pick_takes_companions_from_the_copy(tmp_path, offline_hub, by_id):
+    """The root transformer pick of a complete copy, with no explicit base, assembles around the copy itself: the
+    family default would be the base's -FP8 mirror, absent offline and a second download online."""
+    snapshot = str(_snapshot(tmp_path))
+    source = _COPY if by_id else snapshot
+    request = DiffusionLoadRequest(
+        model_path = source,
+        display_repo_id = None if by_id else _COPY,
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+    )
+    assert (request.model_path, request.base_repo) == (source, source)
+    fetched = _companion_base(request)
+    assert fetched == source
+    if not by_id:
+        from core.inference import diffusion
+        from huggingface_hub.errors import LocalEntryNotFoundError
+
+        # The route's preflight accepts the snapshot as a companion base (what validate_load_request runs on it).
+        diffusion._assert_local_base_is_pipeline(
+            request.base_repo,
+            modular_only = True,
+            excluded_components = ("transformer",),
+            fixed_component_folders = flux3.FLUX3_COMPONENT_FOLDERS,
+        )
+
+        with patch(
+            "huggingface_hub.hf_hub_download", side_effect = LocalEntryNotFoundError("offline")
+        ) as hub:
+            assert flux3._read_index(fetched, None, True) == {"_class_name": "Flux3ModularPipeline"}
+        assert hub.call_count == 0
+
+
+def test_an_explicit_base_on_the_root_transformer_pick_is_kept(tmp_path, offline_hub):
+    snapshot = str(_snapshot(tmp_path))
+    request = DiffusionLoadRequest(
+        model_path = snapshot,
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+        base_repo = _BASE,
+    )
+    assert request.base_repo == _BASE
+
+
 def test_the_copy_named_by_id_loads_from_a_complete_cached_snapshot(tmp_path, offline_hub):
     _snapshot(tmp_path)
     request = DiffusionLoadRequest(model_path = _COPY, model_kind = "pipeline", base_repo = _COPY)

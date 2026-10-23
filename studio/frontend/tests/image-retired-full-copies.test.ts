@@ -4,12 +4,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isRetiredCopySnapshot,
   matchesRememberedModel,
   readImageModel,
   redirectRetiredImagePick,
   rememberImageModel,
 } from "../src/features/images/image-model-recall.ts";
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 installLocalStorageFake();
 
@@ -88,4 +89,29 @@ test("a model remembered as the copy's snapshot path is recalled as that snapsho
     kind: "pipeline" as const,
   };
   assert.equal(redirectRetiredImagePick(mirror), mirror);
+});
+
+test("a retired copy's snapshot is planned before it loads, since only the backend knows it is complete", () => {
+  // An incomplete snapshot loads through the base: a direct load would pull the base's mirror inline, outside the
+  // download plan and its staging. So the snapshot is planned by its path, with the copy as the display id.
+  const snapshot = "/hf/hub/models--unsloth--flux-3-image-klein/snapshots/abc";
+  assert.equal(isRetiredCopySnapshot({ repoId: snapshot, displayRepoId: "unsloth/flux-3-image-klein" }), true);
+  assert.equal(isRetiredCopySnapshot({ repoId: snapshot }), true);
+  assert.equal(isRetiredCopySnapshot({ repoId: "/models/klein", displayRepoId: "unsloth/flux-3-image-klein-base" }), true);
+  // The copy's id is redirected to the base outright; other repos and their snapshots are not this case.
+  assert.equal(isRetiredCopySnapshot({ repoId: "unsloth/flux-3-image-klein" }), false);
+  assert.equal(
+    isRetiredCopySnapshot({ repoId: "/hf/hub/models--unsloth--flux-3-image-klein-FP8/snapshots/abc" }),
+    false,
+  );
+  assert.equal(isRetiredCopySnapshot({ repoId: "/models/other", displayRepoId: "unsloth/flux-3-image-klein-FP8" }), false);
+
+  const page = readSrc("features/images/images-page.tsx");
+  const body = page.slice(page.indexOf("const loadOrStage = useCallback("), page.indexOf("const loadOrStageRef"));
+  assert.match(body, /const retiredSnapshot = isRetiredCopySnapshot\(\{ repoId, displayRepoId: opts\.displayRepoId \}\);\s*if \(retiredSnapshot\) source = "hub";/);
+  // Planned as the path (the display id rides along for the backend's redirect), and nothing it returns is dropped.
+  assert.match(body, /requestDownloadPlan\(repoId, opts, advanced, opts\.displayRepoId\)/);
+  assert.match(body, /retiredSnapshot\s*\? diffusionStagingEntries\(plan\.entries, repoId, \{ filename: opts\.filename \}\)/);
+  // The source check that sends a local pick straight to the load comes after the retired-snapshot override.
+  assert.ok(body.indexOf("if (retiredSnapshot) source") < body.indexOf('if (source !== "hub" && !downloadOnly)'));
 });

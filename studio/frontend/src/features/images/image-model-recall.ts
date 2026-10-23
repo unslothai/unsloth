@@ -26,6 +26,24 @@ const RETIRED_FULL_COPIES: Record<string, string> = {
   "unsloth/flux-3-image-klein-base": "black-forest-labs/flux-3-image-klein-base",
 };
 
+// ``.../models--unsloth--flux-3-image-klein/snapshots/<sha>`` -> the repo id it is a snapshot of ("" otherwise).
+function retiredSnapshotRepo(path: string): string {
+  const match = /(?:^|[\\/])models--unsloth--(flux-3-image-klein(?:-base)?)[\\/]snapshots[\\/][^\\/]+[\\/]?$/i.exec(
+    path.trim(),
+  );
+  return match ? `unsloth/${match[1].toLowerCase()}` : "";
+}
+
+/** A downloaded snapshot of a retired copy (its path, with the copy as the display id, or the path alone). It loads
+ * from disk only when complete, which only the backend can tell: an incomplete one loads through the base, so it is
+ * planned by its path like a Hub pick and whatever that load fetches is staged first, never pulled inline. */
+export function isRetiredCopySnapshot(pick: { repoId: string; displayRepoId?: string }): boolean {
+  if (RETIRED_FULL_COPIES[pick.repoId.trim().toLowerCase()]) return false;
+  return Boolean(
+    RETIRED_FULL_COPIES[(pick.displayRepoId ?? "").trim().toLowerCase()] || retiredSnapshotRepo(pick.repoId),
+  );
+}
+
 export function redirectRetiredImagePick<
   T extends {
     repoId: string;
