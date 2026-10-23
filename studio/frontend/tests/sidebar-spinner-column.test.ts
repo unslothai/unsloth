@@ -59,7 +59,7 @@ test("nav and Recents spinners land on one trailing column", async () => {
 // The kebab overlays the row's right edge, so a spinner row must pad past it.
 // The spinner, the waiting-for-approval dot and the unread dot take turns in one slot; a dot off
 // that centre reads as misaligned next to a spinner or a dot in the row above.
-test("the Recents spinner and both dots share one centre", () => {
+test("the Recents spinner, the approval mark and the unread dot share one centre", () => {
   const centre = (anchor: string, box: string) => inset(anchor, "right") + inset(box, "size") / 2;
   const spinnerAnchor = grab(
     APP_SIDEBAR,
@@ -73,8 +73,8 @@ test("the Recents spinner and both dots share one centre", () => {
   );
   const approvalBox = grab(
     APP_SIDEBAR,
-    /function ChatRowApprovalDot[\s\S]*?className="([^"]*)"/,
-    "approval dot box",
+    /<ApprovalMark testId="chat-row-approval" className="([^"]*)"/,
+    "approval mark",
   );
   const unreadAnchor = grab(
     APP_SIDEBAR,
@@ -84,9 +84,30 @@ test("the Recents spinner and both dots share one centre", () => {
 
   const spinnerCentre = centre(spinnerAnchor, spinner);
   assert.equal(spinnerCentre, 23);
-  // The approval dot is drawn inside the spinner's own anchor.
+  // The approval mark is drawn inside the spinner's own anchor.
   assert.equal(centre(spinnerAnchor, approvalBox), spinnerCentre);
   assert.equal(centre(unreadAnchor, unreadAnchor), spinnerCentre, "the unread dot left the spinner's column");
+});
+
+test("every trailing mark yields to the row actions on hover, an open menu and keyboard focus", () => {
+  const marks: [string, RegExp][] = [
+    ["spinner", /\{showWorkSpinner \? \([\s\S]{0,1600}?\{awaitingApproval \? \(/],
+    ["unread dot", /\{hasUnreadActivity \? \([\s\S]{0,900}?aria-hidden/],
+    ["fork mark", /\{showForkMark \? \([\s\S]{0,1600}?<GitBranchIcon/],
+  ];
+  for (const [name, pattern] of marks) {
+    const block = pattern.exec(APP_SIDEBAR)?.[0] ?? "";
+    assert.ok(block, `could not find the ${name}`);
+    for (const group of ["recent-item", "project-chat-item"]) {
+      for (const fade of [
+        `group-hover/${group}:opacity-0`,
+        `group-has-[.sidebar-row-action[data-state=open]]/${group}:opacity-0`,
+        `group-has-[.sidebar-row-action:focus-visible]/${group}:opacity-0`,
+      ]) {
+        assert.ok(block.includes(fade), `the ${name} lacks ${fade}`);
+      }
+    }
+  }
 });
 
 test("a working Recents row clears the kebab on hover", async () => {

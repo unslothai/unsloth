@@ -646,6 +646,7 @@ function NavItem({
   dataTour,
   className,
   spinner,
+  waiting,
   tooltip,
   alwaysTooltip,
   onIntent,
@@ -663,6 +664,8 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  // Replaces the spinner with the approval mark; the text is read after the label.
+  waiting?: string;
   onIntent?: () => void;
   // Stable hook for the UI smokes, which assert a row spins rather than greys out
   // while its capability verdict is still unmeasured.
@@ -690,7 +693,7 @@ function NavItem({
         isActive={active}
         data-tour={dataTour}
         data-testid={testId}
-        data-spinner={spinner ? "true" : undefined}
+        data-spinner={spinner && !waiting ? "true" : undefined}
         className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
@@ -700,13 +703,28 @@ function NavItem({
             {badge}
           </Badge>
         )}
-        {spinner && (
-          // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
-          <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+        {waiting ? (
+          <>
+            <span className="sr-only"> {waiting}</span>
+            {/* In the spinner's place, here and on the collapsed rail below. */}
+            <ApprovalMark className="ml-auto mr-1.5 size-3.5 group-data-[collapsible=icon]:hidden" />
+          </>
+        ) : (
+          spinner && (
+            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+          )
         )}
       </SidebarMenuButton>
-      {spinner && (
-        <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+      {waiting ? (
+        <ApprovalMark
+          testId="nav-approval"
+          className="pointer-events-none absolute right-1 top-1 hidden size-2.5 group-data-[collapsible=icon]:block"
+        />
+      ) : (
+        spinner && (
+          <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+        )
       )}
       {overlay}
     </div>
@@ -719,21 +737,29 @@ function NavItem({
   );
 }
 
-/** A chat row's spinner, swapped in while its run waits on an Allow / Deny prompt. Amber, not the
- *  accent of the unread dot: it is waiting on the user, not news. A warm theme's accent can be amber
- *  too, so the pulse and the ring still tell the two apart, the ring also with reduced motion. The
- *  shades keep it at 3:1 or more on both sidebars. Boxed at the spinner's size so it centres on the
- *  same column. */
-function ChatRowApprovalDot({ label }: { label: string }) {
+/** Shown in place of the spinner while a chat's run waits on an Allow / Deny prompt: a filled amber
+ *  disc with an exclamation mark. Shape and size set it apart from the 8 px unread dot on every theme,
+ *  including those whose accent is amber, and for colour-blind users; amber, not the accent, because
+ *  it is waiting on the user rather than news. Static, since motion is the spinner's "working" cue and
+ *  the wait can last an hour. Both shades and the mark inside reach at least 5:1. Decorative: the row
+ *  or nav button carries the words. */
+function ApprovalMark({ className, testId }: { className: string; testId?: string }) {
   return (
-    <span
-      role="status"
-      aria-label={label}
-      data-testid="chat-row-approval"
-      className="flex size-3.5 shrink-0 items-center justify-center"
+    <svg
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+      data-testid={testId}
+      className={cn("shrink-0", className)}
     >
-      <span className="size-2 rounded-full bg-amber-600 ring-2 ring-amber-600/30 motion-safe:animate-pulse dark:bg-amber-400 dark:ring-amber-400/30" />
-    </span>
+      <circle cx="7" cy="7" r="7" className="fill-amber-700 dark:fill-amber-400" />
+      <path
+        d="M7 3.6v4.1"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        className="stroke-white dark:stroke-neutral-900"
+      />
+      <circle cx="7" cy="10.3" r="1" className="fill-white dark:fill-neutral-900" />
+    </svg>
   );
 }
 
@@ -2067,6 +2093,10 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
+  const anyChatWaiting = useMemo(
+    () => [...approvalWaitingThreadIds].some((id) => runningByThreadId[id]),
+    [approvalWaitingThreadIds, runningByThreadId],
+  );
   // Where "Return to Chat" lands: the newest running chat, not an empty New Chat draft (map
   // insertion order is start order). Compare rows resolve back to the pair id /chat expects.
   const runningTarget = useMemo(() => {
@@ -5538,7 +5568,8 @@ export function AppSidebar() {
               data-thread-type={item.type}
               data-thread-id={item.id}
               data-generating={isGenerating ? "true" : undefined}
-              aria-busy={isGenerating || undefined}
+              // Not busy while it waits on the user, so the row reads as waiting, not working.
+              aria-busy={(isGenerating && !awaitingApproval) || undefined}
               isActive={activeThreadId === item.id}
               data-selected={selectedChatIds.has(item.id) ? "true" : undefined}
               className={buttonClass}
@@ -5559,6 +5590,13 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
+              {/* The approval mark and the unread dot sit outside the button and are drawn
+                  only, so the button's name carries what they show. */}
+              {awaitingApproval ? (
+                <span className="sr-only"> {translate("shell.navigation.chatAwaitingApproval")}</span>
+              ) : hasUnreadActivity ? (
+                <span className="sr-only"> {translate("shell.navigation.chatUnread")}</span>
+              ) : null}
             </SidebarMenuButton>
             {showWorkSpinner ? (
               // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
@@ -5577,9 +5615,7 @@ export function AppSidebar() {
                 )}
               >
                 {awaitingApproval ? (
-                  <ChatRowApprovalDot
-                    label={translate("shell.navigation.chatAwaitingApproval")}
-                  />
+                  <ApprovalMark testId="chat-row-approval" className="size-3.5" />
                 ) : (
                   <Spinner
                     data-testid="chat-row-spinner"
@@ -5600,8 +5636,8 @@ export function AppSidebar() {
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 flex size-3.5 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
                 aria-hidden
               >
@@ -6119,6 +6155,13 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
+              // A wait also shows on the chat route when the rail hides the Recents rows.
+              waiting={
+                anyChatWaiting &&
+                (!isChatRoute || (!isMobile && sidebarState === "collapsed"))
+                  ? t("shell.navigation.chatAwaitingApproval")
+                  : undefined
+              }
               // An action, not a destination, so it never marks itself active: the active pill is the
               // hover pill, and on a blank new chat it left the row looking permanently hovered.
               active={false}

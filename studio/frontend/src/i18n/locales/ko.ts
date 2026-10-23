@@ -733,6 +733,7 @@ export const ko = {
       returnToChats: "채팅 {count}개로 돌아가기",
       chatGenerating: "생성 중",
       chatAwaitingApproval: "승인 대기 중",
+      chatUnread: "읽지 않음",
       compare: "비교",
       search: "검색",
       hub: "모델 허브",
