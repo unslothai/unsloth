@@ -195,14 +195,33 @@ def _active_adapters(model):
     return set(names) if names else None
 
 
+def _is_transformers_native_peft(model):
+    """Adapters added through transformers' integration (`add_adapter` / `load_adapter`), not a PeftModel."""
+    if not getattr(model, "_hf_peft_config_loaded", False):
+        return False
+    try:
+        from peft import PeftModel
+    except Exception:
+        return True
+    return not isinstance(model, PeftModel)
+
+
 def _fresh_adapter_dirs(model, save_directory, started, selected = None):
     """Adapter folders this save wrote, relative to `save_directory` ("" is the folder itself),
     as (adapter name, folder) pairs.
 
     PEFT writes the `default` adapter into `save_directory` and every other adapter into
-    `save_directory/<adapter_name>/`, only for `selected_adapters` when given.
+    `save_directory/<adapter_name>/`, only for `selected_adapters` when given. Transformers' own
+    PEFT integration (`PreTrainedModel.add_adapter`) writes only the active adapter, whatever its
+    name, into `save_directory`.
     """
     config = getattr(model, "peft_config", None)
+    if _is_transformers_native_peft(model):
+        active = _active_adapters(model) or {"default"}
+        adapter_config = os.path.join(save_directory, "adapter_config.json")
+        if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
+            return [(name, "") for name in sorted(active)]
+        return []
     names = list(selected) if selected is not None else list(config or {})
     if not names:
         names = ["default"]

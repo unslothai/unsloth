@@ -762,6 +762,44 @@ def test_head_is_written_only_beside_the_active_adapter(save_module, tmp_path):
     assert not list(out.rglob("mtp_head.safetensors"))
 
 
+@pytest.mark.parametrize("adapter_name", ["default", "task"])
+def test_transformers_native_adapter_head_goes_to_the_root(
+    save_module, tmp_path, monkeypatch, adapter_name
+):
+    """`PreTrainedModel.add_adapter` saves the active adapter into `<out>/` whatever its name."""
+    import torch
+    from peft import LoraConfig
+
+    pytest.importorskip("unsloth_zoo.speculative.nextn")
+    import unsloth.save as save
+    from unsloth.models.speculative import attach_saved_mtp_head, get_mtp_head
+
+    model = _tiny_glm(tmp_path, torch)
+    model.add_adapter(
+        LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj"]),
+        adapter_name = adapter_name,
+    )
+    model.set_adapter(adapter_name)
+    head = get_mtp_head(model, random_init = True)
+    with torch.no_grad():
+        for p in head.parameters():
+            p.add_(0.01)
+    expected = {k: v.detach().clone() for k, v in head.mtp_state_dict().items()}
+
+    out = tmp_path / "saved"
+    monkeypatch.setattr(
+        save, "_stitch_mtp_head", lambda *a, **k: pytest.fail("stitched an adapter save")
+    )
+    model.save_pretrained(str(out))
+    assert (out / "adapter_config.json").is_file()
+    assert (out / "mtp_head.safetensors").is_file()
+    assert not (out / adapter_name).exists()
+
+    reloaded = attach_saved_mtp_head(_tiny_glm(tmp_path, torch), str(out))
+    assert reloaded is not None
+    assert all(torch.equal(reloaded.mtp_state_dict()[k], v) for k, v in expected.items())
+
+
 def test_an_empty_adapter_selection_saves_no_head(save_module, tmp_path, monkeypatch):
     """`selected_adapters = []` saves nothing: no head, no `default` fallback, no checkpoint stitch."""
     import torch
