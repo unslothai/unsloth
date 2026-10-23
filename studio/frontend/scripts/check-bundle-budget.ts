@@ -353,11 +353,57 @@ export const BUDGET = {
   // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
   // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
   // (already 244 B above the measured 6_879_345).
+  // Chat fork affordances (the sidebar fork mark, the "Forked from" divider and the shared fork toasts) in the
+  // eager chat chunk: +1_460 B raw / +361 B transfer against 77e742c8e2 (6_879_345 -> 6_880_805 raw,
+  // 2_071_823 -> 2_072_184 transfer, 97 chunks). Raised by that growth.
+  // Projects recency and the polling cuts behind projects and sources (#14586) live in the eager chat chunk:
+  // +505 B raw / +309 B transfer (6,879,331 -> 6,879,836 B raw, 2,071,848 -> 2,072,157 B transfer against
+  // 2749eeedaa, one machine and build, Node 26, 97 chunks). Raised by that, on top of the fork affordances above.
+  // The shared custom folder store and its Undo / already-added toasts in the eager model picker: +557 B raw /
+  // +627 B transfer against 2749eeedaa (6_879_345 -> 6_879_902 raw, 2_071_823 -> 2_072_450 transfer, 97
+  // chunks); the folders dialog itself stays lazy. Raised by that, on top of the above.
+  // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
+  // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
+  // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
+  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
+  // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
+  // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
+  // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
+  // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
+  // Install Training button under the greyed Train row's hint: +424 B raw / +141 B transfer against ee55c3c9a
+  // (6,920,512 -> 6,920,936 B raw, 2,084,382 -> 2,084,523 B transfer, Node 24, 97 chunks). Raised by that.
+  // MOSS-Image (#14552): its two image catalog groups, family label and generation defaults sit in the eager
+  // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
+  // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
+  // at 97). Raised by that growth so main's margin stays where it was.
+  // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
+  // adopt-only pick in the chat runtime, +1,970 B raw / +627 B transfer (6,922,858 -> 6,924,828 B raw,
+  // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
+  // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
+  // about 100 B over a local one).
   // Live monitor VRAM beside an unreported iGPU (#14040) adds 316 B raw / 94 B transfer (6,879,331 -> 6,879,647 B
   // raw, 2,071,848 -> 2,071,942 B transfer against 4ff4c6689a, one machine and build, Node 24, 97 chunks):
   // resolveGpuVramUsage lives in gpu-vram, which the startup chunks already load. Raised by that growth.
-  transferBytes: 2_072_106,
-  rawBytes: 6_879_905,
+  // Re-applied on top of main at merge: +316 B raw / +94 B transfer.
+  transferBytes: 2_086_084,
+  rawBytes: 6_925_446,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -6,7 +6,7 @@ import functools
 import inspect
 import logging
 import os
-import threading
+import types
 import warnings
 from typing import Optional
 from dataclasses import asdict
@@ -63,7 +63,6 @@ _SUPPORTS_TMA = _check_tma_support()
 
 _DEVICE_AUTOTUNERS = {}
 _MODEL_AUTOTUNE_CACHES = {}
-_MODEL_AUTOTUNE_LOCKS = {}
 _DEVICE_MODELS = {}
 
 
@@ -89,10 +88,89 @@ def _device_model(device):
     return model
 
 
+_DEVICE_SM_COUNTS = {}
+
+
+def _num_sms(device):
+    """multi_processor_count of ``device``, read once per card (it cannot change in a process)."""
+    index = _device_index(device)
+    count = _DEVICE_SM_COUNTS.get(index)
+    if count is None:
+        count = _DEVICE_SM_COUNTS[index] = torch.cuda.get_device_properties(
+            index
+        ).multi_processor_count
+    return count
+
+
+_OPERAND_TILE_FITS = {}
+
+
+def _autotune_cache():
+    from .. import autotune_cache
+    return autotune_cache
+
+
+def _fit_tiles_to_operand_device(
+    kind, operand, weight_dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+):
+    """Caller-supplied tiles were fitted to the current card's shared memory when the caller passed no device
+    (unsloth_zoo <= 2026.10.7). If the operands sit on a different GPU model, shrink a copy to fit their card.
+    One GPU, or the same model as the current card: returned unchanged."""
+    tiles = (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    device = operand.device
+    try:
+        if device.type != "cuda" or DEVICE_TYPE != "cuda" or torch.cuda.device_count() <= 1:
+            return tiles
+        current = torch.cuda.current_device()
+        index = _device_index(device)
+        if index == current or _device_model(device) == _device_model(
+            torch.device("cuda", current)
+        ):
+            return tiles
+    except Exception:
+        return tiles
+    key = (kind, index, operand.dtype, weight_dtype, tiles)
+    fitted = _OPERAND_TILE_FITS.get(key)
+    if fitted is None:
+        fitted = tiles
+        try:
+            from types import SimpleNamespace
+
+            autotune_cache = _autotune_cache()
+
+            smem = autotune_cache._device_smem_per_block(device)
+            if smem is not None:
+                config = SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                autotune_cache._fit_config_to_smem(
+                    kind,
+                    config,
+                    operand.dtype.itemsize,
+                    weight_dtype.itemsize,
+                    tuple(torch.cuda.get_device_capability(device)),
+                    smem,
+                )
+                fitted = (
+                    config.BLOCK_SIZE_M,
+                    config.BLOCK_SIZE_N,
+                    config.BLOCK_SIZE_K,
+                    config.num_stages,
+                )
+        except Exception:
+            fitted = tiles
+        _OPERAND_TILE_FITS[key] = fitted
+    return fitted
+
+
 def _autotuner_for(kernel, device):
     """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
-    the same GPU model share one results cache, so identical cards tune once; a run's scratch state
-    (nargs) stays per card, since backward runs one autograd thread per device."""
+    the same GPU model share one results cache, so identical cards reuse each other's tuning; a run's
+    scratch state (nargs) stays per card, since backward runs one autograd thread per device. No lock:
+    a cached launch never waits on another card's tuning."""
     if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
         return kernel
     key = (id(kernel), _device_index(device))
@@ -101,22 +179,6 @@ def _autotuner_for(kernel, device):
         tuner = copy.copy(kernel)
         model_key = (id(kernel), _device_model(device))
         tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault(model_key, {})
-        # One tuning per shape per model: a second card waits, then reads the first card's result
-        # (concurrent benchmarking would also skew both timings). A cached launch holds it briefly.
-        lock = _MODEL_AUTOTUNE_LOCKS.setdefault(model_key, threading.Lock())
-        run = getattr(tuner, "run", None)
-        if run is not None:
-
-            def _run_single_flight(
-                *args,
-                _run = run,
-                _lock = lock,
-                **kwargs,
-            ):
-                with _lock:
-                    return _run(*args, **kwargs)
-
-            tuner.run = _run_single_flight
         _DEVICE_AUTOTUNERS[key] = tuner
     # Callers reassign kernel.configs (benchmarks, tests): follow it like the shared tuner would.
     configs = getattr(kernel, "configs", None)
@@ -163,6 +225,9 @@ def get_per_device_per_stream_alloc_fn(device):
 def log_kernel_info(
     compiled_kernel: triton.compiler.CompiledKernel, best_config: triton.Config = None
 ):
+    # Runs after every launch: formatting the metadata costs several us per call even when nothing logs.
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     kernel_name = compiled_kernel.name
     nregs = compiled_kernel.n_regs
     nspills = compiled_kernel.n_spills
@@ -283,13 +348,15 @@ def _grouped_gemm_forward_impl(
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count
+    NUM_SMS = _num_sms(X.device)
 
     def grid(META):
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "fwd", X, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -430,13 +497,15 @@ def _grouped_gemm_dX_impl(
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties(dY.device).multi_processor_count
+    NUM_SMS = _num_sms(dY.device)
 
     def grid(META):
         return (NUM_SMS,)
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dX", dY, W.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     if debug:
         print(
@@ -500,6 +569,43 @@ def _use_per_expert_dW_kernel():
     return os.environ.get("UNSLOTH_MOE_DW_KERNEL", "").strip().lower() != "legacy"
 
 
+_PER_EXPERT_DW_FITS = {}
+
+
+def _per_expert_dW_fits(device, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages):
+    """False when this tile overflows ``device`` shared memory in the per-expert dW kernel.
+
+    It double buffers both operands, so a caller-supplied tile the legacy kernel launched can raise OutOfResources."""
+    index = _device_index(device)
+    key = (index, act_bytes, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages)
+    fits = _PER_EXPERT_DW_FITS.get(key)
+    if fits is None:
+        fits = True
+        try:
+            if not getattr(torch.version, "hip", None):
+                from ..autotune_cache import _estimate_smem
+
+                props = torch.cuda.get_device_properties(index)
+                smem = int(props.shared_memory_per_block_optin)
+                tile = types.SimpleNamespace(
+                    BLOCK_SIZE_M = BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = BLOCK_SIZE_K,
+                    num_stages = num_stages,
+                )
+                need = _estimate_smem("dW", tile, act_bytes, act_bytes, (props.major, props.minor))
+                fits = need <= smem
+                if not fits:
+                    logger.info(
+                        f"Unsloth: MoE dW tile (M, N, K, stages) {key[2:]} needs ~{need} B shared "
+                        f"memory per-expert, over {smem} B on cuda:{index}; using the legacy dW kernel."
+                    )
+        except Exception:
+            fits = True
+        _PER_EXPERT_DW_FITS[key] = fits
+    return fits
+
+
 def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
@@ -532,7 +638,7 @@ def _launch_grouped_gemm_dW(
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
-    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count if not debug else 1
+    NUM_SMS = _num_sms(X.device) if not debug else 1
     X = X.view(-1, X.shape[-1]).contiguous()
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
@@ -577,6 +683,14 @@ def _launch_grouped_gemm_dW(
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
     per_expert = _use_per_expert_dW_kernel()
+    if (
+        per_expert
+        and not autotune
+        and not _per_expert_dW_fits(
+            X.device, X.element_size(), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
+    ):
+        per_expert = False
 
     if accumulate:
         # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
@@ -596,7 +710,9 @@ def _launch_grouped_gemm_dW(
         use_tma_store = False
 
     if not autotune:
-        pass
+        BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages = _fit_tiles_to_operand_device(
+            "dW", X, X.dtype, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages
+        )
 
     def grid(META):
         if per_expert:
@@ -883,10 +999,9 @@ def _dW_accumulate_enabled():
 def _dW_accumulate_target(ctx, X, autotune):
     """The leaf parameter whose existing .grad the dW kernel may add into, else None.
 
-    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW.
-    Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook) cannot be
-    enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores the
-    returned-gradient path."""
+    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW,
+    including Node hooks that can rewrite dW: prehooks on W's AccumulateGrad and post hooks on this
+    GroupedGemmBackward. Post hooks on AccumulateGrad only observe (they see None for this dW)."""
     if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
         return None
     # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
@@ -927,7 +1042,32 @@ def _dW_accumulate_target(ctx, X, autotune):
             return None
     except RuntimeError:
         return None  # autograd.grad(): W's gradient is captured, never accumulated
+    # Last: the only checks that cost Python work, so they run only for an otherwise eligible weight.
+    if _node_has_python_hooks(acc.register_prehook) or _node_has_python_hooks(ctx.register_hook):
+        return None
     return param
+
+
+def _node_hook_probe(*args):
+    return None
+
+
+def _node_has_python_hooks(register):
+    """True if the Node behind `register` (register_hook / register_prehook) already holds a Python hook.
+
+    Nodes cannot list their hooks, but every Python hook of one kind shares a single dict, and the
+    handle of a new registration points at it: register a no-op, count, remove it again."""
+    try:
+        handle = register(_node_hook_probe)
+    except Exception:
+        return True
+    try:
+        hooks = handle.hooks_dict_ref()
+        return hooks is None or len(hooks) > 1
+    except Exception:
+        return True
+    finally:
+        handle.remove()
 
 
 class GroupedGemm(torch.autograd.Function):

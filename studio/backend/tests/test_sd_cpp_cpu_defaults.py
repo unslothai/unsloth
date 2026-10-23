@@ -61,11 +61,13 @@ def _host(
     cpus = 192,
     limit = None,
     platform = "linux",
+    physical = None,
 ):
     monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
     monkeypatch.setattr(bk.sys, "platform", platform)
     monkeypatch.setattr(bk.os, "cpu_count", lambda: cpus)
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda: limit)
+    monkeypatch.setattr(bk, "_linux_physical_cores", lambda *a, **k: physical)
 
 
 def test_without_a_quota_the_default_is_unchanged(monkeypatch):
@@ -264,6 +266,11 @@ def test_h3_video_keeps_sd_cpps_default_threads_unless_studio_knows_better(monke
     monkeypatch.setattr(bk.os, "cpu_count", lambda: 32)
     monkeypatch.setattr(bk.sys, "platform", "linux")
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda *a, **k: None)
+    monkeypatch.setattr(bk, "_linux_physical_cores", lambda *a, **k: None)
+    assert bk._explicit_threads() is None
+    monkeypatch.setattr(
+        bk, "_linux_physical_cores", lambda *a, **k: 16
+    )  # 2-way SMT: what sd.cpp picks too
     assert bk._explicit_threads() is None
     monkeypatch.setattr(
         bk, "_cgroup_cpu_limit", lambda *a, **k: 16
@@ -278,3 +285,102 @@ def test_h3_video_keeps_sd_cpps_default_threads_unless_studio_knows_better(monke
     monkeypatch.delenv("UNSLOTH_CPU_THREADS")
     monkeypatch.setattr(bk, "_apple_performance_cores", lambda: 10)
     assert bk._explicit_threads() == 10
+
+
+def _sysfs(tmp_path, siblings):
+    """``/sys/devices/system/cpu`` with ``siblings[cpu]`` as each CPU's thread_siblings_list."""
+    root = tmp_path / "cpu"
+    for cpu, line in siblings.items():
+        d = root / f"cpu{cpu}" / "topology"
+        d.mkdir(parents = True)
+        (d / "thread_siblings_list").write_text(line + "\n")
+    return str(root)
+
+
+_SMT8 = {
+    c: f"{c % 4},{c % 4 + 4}" for c in range(8)
+}  # 4 cores, 2 threads each (siblings c and c + 4)
+_NO_SMT8 = {c: str(c) for c in range(8)}
+
+
+@pytest.mark.parametrize(
+    "siblings, allowed, expected",
+    [
+        (_SMT8, set(range(8)), 4),
+        (_SMT8, {0, 1, 2, 3}, 4),  # one thread of each core
+        (_SMT8, {0, 4}, 1),  # both threads of one core
+        (_SMT8, {0, 4, 1}, 2),
+        (_NO_SMT8, set(range(8)), 8),
+        (_NO_SMT8, {2, 5, 7}, 3),
+    ],
+)
+def test_physical_cores_count_distinct_sibling_sets_in_the_affinity_mask(
+    monkeypatch, tmp_path, siblings, allowed, expected
+):
+    monkeypatch.setattr(bk.os, "sched_getaffinity", lambda pid: allowed, raising = False)
+    assert bk._linux_physical_cores(_sysfs(tmp_path, siblings)) == expected
+
+
+def test_physical_cores_is_none_without_topology_or_affinity(monkeypatch, tmp_path):
+    monkeypatch.setattr(bk.os, "sched_getaffinity", lambda pid: {0, 1}, raising = False)
+    assert bk._linux_physical_cores(_sysfs(tmp_path, {0: "0"})) is None  # cpu1 has no topology
+    assert bk._linux_physical_cores(_sysfs(tmp_path / "e", {0: "", 1: "1"})) is None
+
+    def _denied(pid):
+        raise OSError("no")
+
+    monkeypatch.setattr(bk.os, "sched_getaffinity", _denied, raising = False)
+    assert bk._linux_physical_cores(_sysfs(tmp_path / "x", _NO_SMT8)) is None
+    monkeypatch.delattr(bk.os, "sched_getaffinity", raising = False)
+    assert bk._linux_physical_cores(_sysfs(tmp_path / "y", _NO_SMT8)) is None
+
+
+def test_the_linux_default_is_the_physical_core_count(monkeypatch):
+    # No SMT: every core, not half of them
+    _host(monkeypatch, cpus = 8, physical = 8)
+    assert bk._default_threads() == 8
+    # A 4-CPU cpuset (2 cores) on a 192-CPU host: 2, not 96
+    _host(monkeypatch, cpus = 192, physical = 2)
+    assert bk._default_threads() == 2
+    # 2-way SMT with the whole machine: unchanged
+    _host(monkeypatch, cpus = 192, physical = 96)
+    assert bk._default_threads() == 96
+    # The quota still caps it, and an unreadable topology keeps half the CPUs
+    _host(monkeypatch, cpus = 8, physical = 8, limit = 3)
+    assert bk._default_threads() == 3
+    _host(monkeypatch, cpus = 12, physical = None)
+    assert bk._default_threads() == 6
+
+
+def test_the_physical_count_is_never_read_off_linux(monkeypatch):
+    _host(monkeypatch, cpus = 8, platform = "win32")
+    monkeypatch.setattr(bk, "_linux_physical_cores", lambda *a, **k: pytest.fail("Linux only"))
+    assert bk._default_threads() == 4
+
+
+@pytest.mark.parametrize(
+    "cpus, physical, limit, expected",
+    [
+        (32, 16, None, None),  # SMT: sd.cpp's own default is the same count
+        (8, 8, None, 8),  # no SMT: sd.cpp's fallback would run 4
+        (192, 2, None, 2),  # cpuset: sd.cpp ignores the affinity mask
+        (4, 4, None, None),  # sd.cpp keeps every CPU at 4 or fewer
+        (32, 16, 6, 6),  # a tighter quota, as before
+    ],
+)
+def test_explicit_threads_passes_the_count_when_sd_cpp_would_pick_another(
+    monkeypatch, cpus, physical, limit, expected
+):
+    _host(monkeypatch, cpus = cpus, physical = physical, limit = limit)
+    monkeypatch.setattr(bk, "_apple_performance_cores", lambda: None)
+    assert bk._explicit_threads() == expected
+
+
+def test_the_real_host_topology_reads(monkeypatch):
+    """On this test host: a positive count, never more than the CPUs this process may use."""
+    if not hasattr(bk.os, "sched_getaffinity"):
+        pytest.skip("no affinity API")
+    count = bk._linux_physical_cores()
+    if count is None:
+        pytest.skip("no sysfs topology here")
+    assert 1 <= count <= len(bk.os.sched_getaffinity(0))

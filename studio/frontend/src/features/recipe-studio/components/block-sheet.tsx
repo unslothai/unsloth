@@ -213,7 +213,7 @@ function BlockSheetButton({
             : "border-transparent hover:border-border/60"
       } ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
-      <div className="flex size-9 items-center justify-center rounded-xl text-foreground/70">
+      <div className="flex size-9 items-center justify-center rounded-md text-foreground/70">
         <HugeiconsIcon icon={icon} className="size-5" />
       </div>
       <div className="min-w-0 flex-1">
@@ -480,9 +480,9 @@ export function BlockSheet({
           <div className="flex-1 min-h-0 overflow-y-auto py-4">
             <div className="mt-4 flex flex-col gap-2">
               {isRootView && !hasSearch && (
-                <div className={`mx-3 mb-2 rounded-2xl border px-4 py-4 ${RECIPE_STUDIO_ONBOARDING_SURFACE_TONE}`}>
+                <div className={`mx-3 mb-2 rounded-xl border px-4 py-4 ${RECIPE_STUDIO_ONBOARDING_SURFACE_TONE}`}>
                   <div className="flex items-start gap-3">
-                    <div className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl ${RECIPE_STUDIO_ONBOARDING_ICON_TONE}`}>
+                    <div className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md ${RECIPE_STUDIO_ONBOARDING_ICON_TONE}`}>
                       <HugeiconsIcon
                         icon={DocumentAttachmentIcon}
                         className="size-4"
@@ -586,8 +586,8 @@ export function BlockSheet({
                         Recommended first step
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Best when you want to turn PDFs, DOCX files, or text
-                        files into source rows.
+                        Best when you want to turn PDFs, ebooks, Office files,
+                        or text files into source rows.
                       </p>
                     </div>
                     <BlockSheetButton
@@ -715,7 +715,7 @@ export function BlockSheet({
                       setSheetOpen(false);
                       onOpenProcessors();
                     }}
-                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
+                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
                   >
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground">

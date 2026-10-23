@@ -295,7 +295,7 @@ test("the Images page wires downloads, the stamp setting and import", () => {
   );
   assert.match(page, /onDrop=\{onImportDrop\}/);
   const store = readSrc("features/library/settings-store.ts");
-  assert.match(store, /imageInfoStamp: true,/);
+  assert.match(store, /imageInfoStamp: false,/);
 });
 
 // ComfyUI's default text-to-image graph from its `prompt` chunk, seed wired through a primitive.
@@ -659,6 +659,7 @@ test("a newer recipe loads what this build knows and names what it does not", ()
     ...JSON.parse(RECIPE),
     schema_version: 2,
     cfg_rescale: 0.7,
+    freeu_b1: 1.1,
     tiling: false,
     empty_list: [],
     unset: null,
@@ -667,9 +668,14 @@ test("a newer recipe loads what this build knows and names what it does not", ()
   assert.ok(recipe);
   const settings = recipeSettings(recipe, defaults);
   assert.equal(settings.seed, 6630007);
-  assert.deepEqual(unknownRecipeKeys(recipe), ["tiling"]);
-  // A setting this build parses but cannot send yet is named by label, not by key.
+  assert.deepEqual(unknownRecipeKeys(recipe), ["freeu_b1", "tiling"]);
+  assert.equal(settings.cfg_rescale, 0.7);
+  // Without the control on the loaded model it is named by label, not by key; with it, it restores.
   assert.deepEqual(importNotApplied(recipe), ["CFG rescale 0.7"]);
+  assert.deepEqual(
+    importNotApplied(recipe, "sdxl", false, { cfg_rescale: { min: 0, max: 1, default: 0 } }),
+    [],
+  );
   assert.equal(newerRecipeSchema(recipe), true);
   // Every key today's recipe writes is known, so a current image reports nothing.
   assert.deepEqual(unknownRecipeKeys(JSON.parse(RECIPE)), []);

@@ -4,6 +4,11 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
+import type { CompareContext } from "./compare/compare-axes";
+import type { CompareRun } from "./compare/compare-run";
+// Statically imported: this page is already its own lazy chunk, and a nested import() of the panel split modules
+// the startup set shares out of their eager chunks (+3 startup chunks, measured with bundle:check).
+import ComparePanel from "./compare/compare-panel";
 import {
   type DragEvent,
   type ReactNode,
@@ -115,6 +120,7 @@ import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
+import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { translate, useT } from "@/i18n";
 import {
@@ -266,6 +272,7 @@ import {
   type ControlNetSpecInput,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
+  type DiffusionGenerateRequest,
   type DiffusionGenerateResponse,
   type DiffusionLoadProgress,
   type DiffusionLoadRequest,
@@ -287,10 +294,7 @@ import {
   getDiffusionStatus,
   getGallery,
   getGenerateProgress,
-  listDiffusionControlNets,
   listDiffusionLoras,
-  addGalleryImageToProject,
-  moveGalleryImage,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
@@ -319,6 +323,8 @@ import {
   type ImportedRecipe,
   importedRecipe,
   importNotApplied,
+  literalPromptNotApplied,
+  variationApplies,
   textualInversionLabel,
   isGenerationParametersPaste,
   loraTagNames,
@@ -366,7 +372,24 @@ import {
   withEmbeddingTrigger,
 } from "./lib/shift-choice";
 import { listDiffusionEmbeddings } from "./embeddings-api";
+import { addGalleryImageToProject, listDiffusionControlNets, moveGalleryImage } from "./images-page-api";
 import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
+import { HiresControls, UpscaleModelField } from "./hires-controls";
+import {
+  HIRES_OFF,
+  HIRES_UPSCALER_LABELS,
+  hiresBaseSize,
+  hiresEngagesNegative,
+  hiresFromRecipe,
+  hiresRecordUsedNegative,
+  hiresNotApplied,
+  hiresRequest,
+  hiresSummary,
+  hiresVisible,
+  resolveRestoredHires,
+  upscaleModelRequest,
+  type HiresChoice,
+} from "./lib/hires-choice";
 import {
   enhancePromptRequestField,
   enhanceRestoreFor,
@@ -402,6 +425,19 @@ import {
   sendsEngine,
   withEngineChoice,
 } from "./lib/engine-choice";
+import {
+  canVaryImage,
+  DEFAULT_SD_CONTROLS,
+  FALLBACK_VARY_STRENGTH,
+  parseVariationSeed,
+  randomVariationSeed,
+  sdControlsFromRecipe,
+  sdControlsNotRestored,
+  sdControlsRecipeRows,
+  sdControlsRequestFields,
+  type SdControlsChoice,
+  varyBlockedReason,
+} from "./lib/sd-controls";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -804,6 +840,17 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
 // What the load toast shows while the backend saves the chat model's context ahead of this load.
 const SAVING_PROGRESS: DiffusionLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
 
+
+// The request one Generate run sends: a compare cell's own, else the form's.
+function compareRequest(
+  run: CompareRun | null,
+  i: number,
+  baseSeed: number,
+  body: DiffusionGenerateRequest,
+): DiffusionGenerateRequest {
+  return run ? run.request(i, body, baseSeed) : body;
+}
+
 // One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one
 // control.
 function SliderField({
@@ -879,7 +926,7 @@ function ResolvedBadge({
   const badge = (
     <span
       className={cn(
-        "shrink-0 rounded-sm px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
+        "shrink-0 rounded-full px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
         info.tone === "warn"
           ? "bg-destructive/15 text-destructive"
           : "bg-muted text-muted-foreground",
@@ -1137,7 +1184,7 @@ function MaskCanvas({
   };
 
   return (
-    <div className="relative overflow-hidden rounded-[10px] border border-border bg-muted/30">
+    <div className="relative overflow-hidden rounded-lg border border-border bg-muted/30">
       <img
         src={image}
         alt="Inpaint source"
@@ -1390,6 +1437,12 @@ function RecipePopover({
           {image.upscale != null && image.workflow === "upscale" ? (
             <RecipeRow label="Upscale" value={`${image.upscale}×`} />
           ) : null}
+          {image.upscale_model && image.workflow === "upscale" ? (
+            <RecipeRow label="Upscaler" value={HIRES_UPSCALER_LABELS[image.upscale_model] ?? image.upscale_model.replace(/^local:/, "")} />
+          ) : null}
+          {image.hires_scale != null ? (
+            <RecipeRow label="Hires fix" value={hiresSummary(hiresFromRecipe(image))} wrap />
+          ) : null}
           {image.reference_image_count != null &&
           (image.workflow === "reference" || image.workflow === "edit") ? (
             <RecipeRow label="References" value={String(image.reference_image_count)} />
@@ -1409,6 +1462,9 @@ function RecipePopover({
               value={samplerRecipeLabel(image.sampler, image.schedule_type) ?? ""}
             />
           ) : null}
+          {sdControlsRecipeRows(image).map(([label, value]) => (
+            <RecipeRow key={label} label={label} value={value} />
+          ))}
           {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
@@ -1452,7 +1508,7 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-ui-11">
+    <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
         Loaded build
         <InfoHint>
@@ -1737,6 +1793,8 @@ export function ImagesPage({
   // Upscale (hires fix): the enlargement factor and the low denoise strength that re-details the result.
   const [upscaleFactor, setUpscaleFactor] = useState(2);
   const [upscaleStrength, setUpscaleStrength] = useState(0.35);
+  const [upscaleModel, setUpscaleModel] = useState<string | null>(null);
+  const [hires, setHires] = useState<HiresChoice>(HIRES_OFF);
   // Reference and Edit: the ADDITIONAL images after the source. "" holds a cleared slot so others do not renumber.
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
@@ -1795,6 +1853,11 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
+  // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
+  const compareOnce = useRef<CompareRun | null>(null);
+  const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
+  // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
+  const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
   // Set only around a confirmed Load anyway retry.
   const oversizedLoadOnce = useRef(false);
   const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
@@ -1975,7 +2038,12 @@ export function ImagesPage({
     }),
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
-  const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
+  const residentDefaults = residentDefaultsKey(
+    status?.repo_id ?? "",
+    status?.base_repo,
+    status?.resolved?.family_override,
+    status?.gguf_filename,
+  );
   const { steps: residentSteps, guidance: residentGuidance } = residentRecipeFor(
     residentDefaults,
     status?.generation_defaults,
@@ -2033,7 +2101,12 @@ export function ImagesPage({
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string, effectiveFamilyOverride = familyOverride, forceLoad = false) => {
+    (
+      repoId: string,
+      effectiveFamilyOverride = familyOverride,
+      forceLoad = false,
+      ggufFilename: string | null = null,
+    ) => {
       if (modelSelectionAction === "download" && !forceLoad) return;
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
@@ -2045,7 +2118,7 @@ export function ImagesPage({
       // whether the user takes the form after THIS pick.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
@@ -2194,6 +2267,9 @@ export function ImagesPage({
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
   const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
   const controlnetCapable = !external && controlnetSupported;
+  // What Create sends as a ControlNet run (strength 0 runs plain text-to-image): its SDXL pipeline has no CFG rescale.
+  const controlnetEngaged =
+    controlnetCapable && Boolean(controlnetId && controlImage) && workflow === "create" && controlStrength > 0;
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
@@ -2205,11 +2281,19 @@ export function ImagesPage({
     status?.loaded && status.negative_prompt_min_guidance !== undefined
       ? status.negative_prompt_min_guidance
       : 0;
+  // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
+  const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
+  const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
+  // Hires CFG can turn CFG on for the refine pass alone; that pass then reads the negative prompt.
   const negativeEngaged =
-    negativeCapable && (negativeMinGuidance === null || effectiveGuidance > negativeMinGuidance);
+    negativeCapable &&
+    (negativeMinGuidance === null ||
+      effectiveGuidance > negativeMinGuidance ||
+      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance));
   const livePreviewUnavailable =
     !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
+  const sdCaps = (!external && status?.loaded ? status.sd_controls : null) ?? null;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
   const samplerChoice = normalizeSamplerChoice(
@@ -2781,10 +2865,13 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false) => {
+  // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
+  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
     const viaConnection = image.model_kind === "connection";
-    // Negative prompt only applies when guidance>0; do not restore a hidden value.
-    const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
+    // Negative prompt only applies when guidance>0 (the base pass's, or Hires CFG's for the refine pass); do not
+    // restore a hidden value.
+    const restoredNegative =
+      image.guidance > 0 || hiresRecordUsedNegative(image) ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
     if (restoredNegative) setNegativeOpen(true);
     if (!viaConnection) {
@@ -2797,10 +2884,15 @@ export function ImagesPage({
     };
     if (samplerOptions.length > 0) changeSamplerChoice(restoredChoice);
     else setRestoredSampler(restoredChoice);
+    setSdChoice(sdControlsFromRecipe(image));
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
-    const restored = restorableSize(image.width, image.height, image.workflow, sizeLimits);
+    // A Hires fix image records its output size; the Width / Height controls take the base pass.
+    const base = hiresBaseSize(image) ?? { width: image.width, height: image.height };
+    const restored = restorableSize(base.width, base.height, image.workflow, sizeLimits);
+    setHires(resolveRestoredHires(hiresFromRecipe(image), status?.hires));
+    setUpscaleModel(image.upscale_model ?? null);
     setWidth(restored.width);
     setHeight(restored.height);
     // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.
@@ -2859,18 +2951,34 @@ export function ImagesPage({
     // The Recipe popover goes on showing the recorded size, so a restore that had to move it says
     // so rather than leaving the two silently disagreeing.
     const rescaled =
-      restored.width !== image.width || restored.height !== image.height
+      restored.width !== base.width || restored.height !== base.height
         ? { description: `Size scaled to ${restored.width} × ${restored.height} to fit the ${MIN_DIM}-${sizeLimits.maxSide} range.` }
         : undefined;
     // Say so, rather than letting a conditioned image restore as a plain Create that generates something unrelated.
     const conditioned =
       restoreInputsNote(image) ?? CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
+    if (via === "vary") return;
     if (conditioned) {
       toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`, rescaled);
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits]);
+    // sd.cpp has no off switch for (word:1.2) syntax, so a literal-prompt run would replay weighted.
+    const literal =
+      via === "restore"
+        ? literalPromptNotApplied(image, Boolean(status?.loaded && isNativeEngineStatus(status)), sdCaps)
+        : null;
+    // Generate omits (or clamps) the SD controls this load lacks, so name them rather than claim a full restore.
+    const notApplied = [
+      ...(literal ? [literal] : []),
+      ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
+    ];
+    if (notApplied.length > 0) {
+      toast.warning("Some settings in this image were not applied", {
+        description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
+      });
+    }
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -2943,17 +3051,24 @@ export function ImagesPage({
           : recipe;
       const settings = recipeSettings(merged, { width, height, steps, guidance });
       const localized = settings.localized_edit;
-      restoreSettings({
-        ...settings,
-        id: "",
-        url: "",
-        seed: settings.seed ?? 0,
-        batch_index: 0,
-        created_at: 0,
-        localized_edit:
-          localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
-      });
+      restoreSettings(
+        {
+          ...settings,
+          id: "",
+          url: "",
+          seed: settings.seed ?? 0,
+          batch_index: 0,
+          created_at: 0,
+          localized_edit:
+            localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
+        },
+        false,
+        "import",
+      );
       if (settings.seed === null && settings.model_kind !== "connection") setSeed("");
+      // A variation seed this model or workflow cannot apply is named below, not left armed (the backend refuses it).
+      if (!variationApplies(merged, sdCaps))
+        setSdChoice((c) => ({ ...c, variationSeed: "", variationStrength: 0 }));
       const loaded = status?.display_repo_id ?? status?.repo_id ?? null;
       const quant = typeof recipe.gguf_filename === "string" ? recipe.gguf_filename : null;
       if (settings.model && settings.model !== loaded) {
@@ -2981,11 +3096,13 @@ export function ImagesPage({
           recipe,
           status?.loaded ? status.family : null,
           Boolean(status?.loaded && isNativeEngineStatus(status)),
+          sdCaps,
         ),
         ...tagged.unmatched.map((name) => `LoRA ${name} (not installed)`),
         ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
         ...shiftNotApplied(recipe, shiftControl),
+        ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
       if (tiMatch) {
@@ -3049,7 +3166,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, embeddingsEnabled, shiftControl],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -3286,7 +3403,12 @@ export function ImagesPage({
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
           pickDefaults.current,
-          residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),
+          residentDefaultsKey(
+            loaded.repo_id ?? "",
+            loaded.base_repo,
+            loaded.resolved?.family_override,
+            loaded.gguf_filename,
+          ),
           loaded.generation_defaults,
         );
         pickDefaults.current = null;
@@ -3477,6 +3599,7 @@ export function ImagesPage({
       model_kind: status?.model_kind,
       gguf_filename: status?.gguf_filename,
       display_repo_id: status?.display_repo_id,
+      base_repo: status?.base_repo,
       component_files: status?.component_files,
     });
     if (resident) lastLoad.current = resident;
@@ -4321,7 +4444,7 @@ export function ImagesPage({
           if (downloadOnly) return;
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
-          applyImageModelDefaults(repoId, effectiveFamilyOverride);
+          applyImageModelDefaults(repoId, effectiveFamilyOverride, false, filename);
         },
         onNotStarted: () => {
           // Nothing was applied for a download-only pick, so there is nothing to hand back, and
@@ -4407,7 +4530,12 @@ export function ImagesPage({
     if (revert) {
       quantRevert.current = revert;
       setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
-      applyImageModelDefaults(wanted, "auto");
+      applyImageModelDefaults(
+        wanted,
+        "auto",
+        false,
+        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+      );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
       if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
@@ -4584,7 +4712,7 @@ export function ImagesPage({
         if (revert) {
           quantRevert.current = revert;
           setQuant(meta.ggufVariant);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, meta.ggufFilename);
         }
         void loadOrStage(
           id,
@@ -4629,7 +4757,7 @@ export function ImagesPage({
         if (revert) {
           quantRevert.current = revert;
           setQuant(filename);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
         void loadOrStage(dir, { kind: "gguf", filename }, meta.source, token).then((started) => {
           // Guarded like every sibling branch: quantRevert is one slot, so a pick that no longer
@@ -5068,6 +5196,8 @@ export function ImagesPage({
     // Consume before any early return so it never leaks into a later run.
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
+    const vary = sdCaps?.variation_seed ? varyOnce.current : null;
+    varyOnce.current = null;
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
       return;
@@ -5184,7 +5314,9 @@ export function ImagesPage({
     }
     // Resolve a base seed up front, so each sequential image gets a distinct, reproducible seed (base + i).
     let baseSeed: number;
-    if (seed.trim() && !external) {
+    if (vary) {
+      baseSeed = vary.seed;
+    } else if (seed.trim() && !external) {
       const n = Number(seed);
       if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
         toast.error("Seed must be a non-negative integer");
@@ -5194,6 +5326,19 @@ export function ImagesPage({
     } else {
       baseSeed = Math.floor(Math.random() * 2 ** 32);
     }
+    const runChoice: SdControlsChoice = vary
+      ? { ...sdChoice, variationSeed: String(vary.variationSeed), variationStrength: vary.strength }
+      : sdChoice;
+    const varying = Boolean(sdCaps?.variation_seed) && workflow === "create" && runChoice.variationStrength > 0;
+    // A compare grid checks it at any form strength: a Var. strength axis can engage it with the form's at 0.
+    const checkVariation = varying || (compareOnce.current !== null && Boolean(sdCaps?.variation_seed));
+    if (checkVariation && runChoice.variationSeed.trim() && parseVariationSeed(runChoice.variationSeed) === null) {
+      toast.error("Variation seed must be an integer from 0 to 4294967295");
+      return;
+    }
+    const baseVariationSeed = varying
+      ? (parseVariationSeed(runChoice.variationSeed) ?? randomVariationSeed())
+      : null;
 
     // Snap to the model's grid and bounds so a half-typed value cannot 400.
     const sent = unifiedEditRun ? editSize : fitSize(width, height, sizeLimits);
@@ -5207,10 +5352,14 @@ export function ImagesPage({
     // A large run count is legitimate, so no upper cap: floor at 1 and ignore non-numeric input.
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
+    // A compare grid sends one request per cell, in the order compare/ chose.
+    const compare = compareOnce.current;
+    const runTotal = compare ? compare.cellCount : runs;
 
     // An explicit seed near the 2**53-1 backend cap can overflow once the per-run and in-batch
-    // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work.
-    if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
+    // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work. A compare grid adds
+    // no offset (every cell runs at batch size 1 on the base seed or its Seed axis value, both already in range).
+    if (!compare && baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
       toast.error("Seed too large for this run count and batch size; use a smaller seed");
       return;
     }
@@ -5263,7 +5412,7 @@ export function ImagesPage({
     // arrive: settleLostGeneration proves a lost POST landed by finding a record outside it.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
-      for (let i = 0; i < runs; i++) {
+      for (let i = 0; i < runTotal; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
         // cancel only reaches the denoise in flight, so a count > 1 request would run on.
         if (
@@ -5283,10 +5432,10 @@ export function ImagesPage({
         );
         // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
         // would regenerate batch-mates.
-        const runBaseSeed = baseSeed + i * batchSize;
+        const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage({
+          res = await generateDiffusionImage(compareRequest(compare, i, baseSeed, {
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
             negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
@@ -5303,9 +5452,20 @@ export function ImagesPage({
             strength: condStrength,
             ...condInpaint,
             upscale: condUpscale,
+            upscale_model: isUpscale ? upscaleModelRequest(upscaleModel, upscaleModels) : undefined,
+            hires: hiresRequest(hires, hiresCapability, workflow),
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
+            ...sdControlsRequestFields(
+              sdCaps,
+              runChoice,
+              // A compare grid keeps the form's variation seed for every cell (its axis, if any, replaces it), so
+              // only the swept setting differs between cells.
+              baseVariationSeed !== null ? (baseVariationSeed + (compare ? 0 : i * batchSize)) % 2 ** 32 : null,
+              varying,
+              !controlnetEngaged,
+            ),
             ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
@@ -5329,7 +5489,7 @@ export function ImagesPage({
                   }
                 : undefined,
             ...(external && { provider_id: external.providerId, model: external.modelId }),
-          });
+          }));
         } catch (err) {
           // The POST response was lost while the backend kept generating (the secure-mode tunnel caps
           // the response near 100s). Retrying would duplicate the work, so wait the run out.
@@ -5339,11 +5499,13 @@ export function ImagesPage({
           await settleLostGeneration(() => isMounted.current, probeBaseline);
           if (!isMounted.current) break;
           await loadGallery();
+          // A compare cell takes its record from what the gallery gained (matched by seed in compare/).
+          compare?.onImages(i, galleryCache.images.filter((image) => !knownIds.has(image.id)));
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
           // The run landed without its records, so Reuse last seed takes the seed it was sent.
-          if (!external) setSessionSeed(runBaseSeed);
+          if (!external) setSessionSeed(compare?.sentSeed(i) ?? runBaseSeed);
           setGenDone(i + 1);
           continue;
         }
@@ -5364,6 +5526,7 @@ export function ImagesPage({
           if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
         }
         res.images.forEach((image) => void ensureSrc(image));
+        compare?.onImages(i, res.images);
         setGenDone(i + 1);
       }
     } catch (err) {
@@ -5375,13 +5538,23 @@ export function ImagesPage({
         message: msg,
         stopRequested: cancelRequested.current && cancelAcked.current,
       });
-      if (report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent })) {
+      const offerAnyway = report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent });
+      // Not for a compare cell: the queued retry would run after the grid has ended, as a plain form generation.
+      if (offerAnyway && compare) {
+        toast.error(MEMORY_REFUSAL_TITLE, {
+          description: `${msg} To run the grid anyway, turn on "${ALLOW_OVERSIZED_LABEL}" and generate it again.`,
+          duration: 20_000,
+        });
+      } else if (offerAnyway) {
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
           duration: 20_000,
           action: {
             label: GENERATE_ANYWAY_LABEL,
-            onClick: () => setOversizedRetryQueued(true),
+            onClick: () => {
+              varyOnce.current = vary;
+              setOversizedRetryQueued(true);
+            },
           },
         });
       } else if (report)
@@ -5404,7 +5577,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5438,6 +5611,55 @@ export function ImagesPage({
       if (cancelAbort.current === abort) cancelAbort.current = null;
     }
   }, []);
+
+  // Compare grid: handleGenerate reads the run from compareOnce, so a grid shares Stop, progress and the gallery
+  // merge with Generate. Text-to-image on a loaded local model only.
+  const [compareRun, setCompareRun] = useState<CompareRun | null>(null);
+  const runCompare = useCallback(
+    async (run: CompareRun) => {
+      // Like Generate: the stored preset must replace the default steps / size before any request is sent.
+      if (busy !== null || !imagePresets.hydrated) return;
+      compareOnce.current = run;
+      setCompareRun(run);
+      try {
+        await handleGenerate();
+      } finally {
+        compareOnce.current = null;
+        setCompareRun(null);
+      }
+    },
+    [busy, handleGenerate, imagePresets.hydrated],
+  );
+  const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
+  const compareSdControls = sdCaps;
+  const compareContext = useMemo<CompareContext>(
+    () => ({
+      prompt,
+      negativePrompt,
+      negativeCapable,
+      negativeMinGuidance,
+      guidanceFixed,
+      guidance: effectiveGuidance,
+      samplers: samplerOptions,
+      samplerChoice,
+      shift: shiftControl,
+      loraCapable,
+      loras: loras
+        .filter((l) => l.id.trim())
+        .map((l) => ({
+          id: l.id,
+          weight: l.weight,
+          label: availableLoras.find((a) => a.id === l.id)?.display_name ?? l.id.split(/[\\/]/).pop() ?? l.id,
+        })),
+      sdControls: compareSdControls,
+      hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
+      // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
+      controlnetEngaged,
+    }),
+    // samplerChoice is rebuilt every render; its two fields are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
+  );
 
   const handleGenerateWithRecall = useCallback(async () => {
     if (busy !== null || !imagePresets.hydrated) return;
@@ -5518,6 +5740,28 @@ export function ImagesPage({
       oversizedOnce.current = false;
     });
   }, [oversizedRetryQueued, busy, handleGenerateWithRecall]);
+
+  const canVary =
+    !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null &&
+    canVaryImage(selected, status?.display_repo_id ?? status?.repo_id ?? null);
+  const varyBlocked = canVary && selected ? varyBlockedReason(selected, loraCapable, sdCaps, status ?? {}) : null;
+  // Vary runs the SELECTED image's recipe, not the form: restore it, then generate once the form has rendered.
+  const [varyQueued, setVaryQueued] = useState(false);
+  const handleVary = useCallback(() => {
+    if (busy !== null || !selected || !sdCaps?.variation_seed || varyBlocked) return;
+    varyOnce.current = {
+      seed: selected.seed,
+      variationSeed: randomVariationSeed(),
+      strength: sdCaps.vary_strength ?? FALLBACK_VARY_STRENGTH,
+    };
+    restoreSettings(selected, true, "vary");
+    setVaryQueued(true);
+  }, [busy, restoreSettings, sdCaps, selected, varyBlocked]);
+  useEffect(() => {
+    if (!varyQueued || busy !== null) return;
+    setVaryQueued(false);
+    void handleGenerate();
+  }, [varyQueued, busy, handleGenerate]);
 
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
@@ -5787,6 +6031,80 @@ export function ImagesPage({
           aria-label="Live preview"
         />
       </div>
+      {sdCaps && (
+        <>
+          {sdCaps.prompt_weighting && (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                Prompt weighting
+                <InfoHint>
+                  AUTOMATIC1111 syntax: (word:1.2) weights a word, (word) is 1.1x, [word] is 1/1.1x,
+                  \( and \) type a literal bracket, BREAK starts a new 75-token chunk. Prompts past 75
+                  tokens are encoded in chunks instead of cut off. A prompt without this syntax that fits in
+                  75 tokens renders exactly as before. Off reads brackets as plain text.
+                </InfoHint>
+              </span>
+              <Switch
+                checked={sdChoice.promptWeighting}
+                onCheckedChange={(on) => setSdChoice((c) => ({ ...c, promptWeighting: on }))}
+                aria-label="Prompt weighting"
+              />
+            </div>
+          )}
+          {sdCaps.clip_skip && (
+            <SliderField
+              label="CLIP skip"
+              hint={`AUTOMATIC1111 numbering: 1 uses the model's own text-encoder layer. SDXL already reads the penultimate layer, so 1 and 2 render the same (Pony and Illustrious cards often say 2). ${sdCaps.clip_skip.max > 2 ? "3 and up read earlier layers." : ""}`}
+              value={sdChoice.clipSkip}
+              min={1}
+              max={sdCaps.clip_skip.max}
+              step={1}
+              onChange={(v) => setSdChoice((c) => ({ ...c, clipSkip: v }))}
+            />
+          )}
+          {sdCaps.cfg_rescale && (
+            <SliderField
+              label="CFG rescale"
+              hint={
+                controlnetEngaged
+                  ? "Not available with a ControlNet: the SDXL ControlNet pipeline has no CFG rescale. Set the ControlNet strength to 0 or clear it to use this."
+                  : sdCaps.cfg_rescale.recommended
+                  ? `Rescales the guided prediction to fix overexposure. This is a v-prediction model: ${sdCaps.cfg_rescale.recommended} is the value from the zero-terminal-SNR paper. 0 = off.`
+                  : "Rescales the guided prediction to fix overexposure, mostly for v-prediction checkpoints (0.7 there). 0 = off."
+              }
+              value={sdChoice.cfgRescale}
+              min={0}
+              max={sdCaps.cfg_rescale.max}
+              step={0.05}
+              onChange={(v) => setSdChoice((c) => ({ ...c, cfgRescale: v }))}
+              disabled={controlnetEngaged}
+            />
+          )}
+          {sdCaps.variation_seed && workflow === "create" && (
+            <>
+              <SliderField
+                label="Variation strength"
+                hint="Blends the seed's starting noise toward the variation seed's (AUTOMATIC1111 Variation seed): 0 = off, small values keep the composition, 1 = the variation seed alone. Text to image only. A batch keeps one seed and steps the variation seed."
+                value={sdChoice.variationStrength}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(v) => setSdChoice((c) => ({ ...c, variationStrength: v }))}
+              />
+              {sdChoice.variationStrength > 0 && (
+                <Field label="Variation seed" hint="Leave empty for a random variation seed each run.">
+                  <Input
+                    placeholder="Random if empty"
+                    value={sdChoice.variationSeed}
+                    onChange={(e) => setSdChoice((c) => ({ ...c, variationSeed: e.target.value }))}
+                    aria-label="Variation seed"
+                  />
+                </Field>
+              )}
+            </>
+          )}
+        </>
+      )}
       <LoadedBuildSummary status={status} />
     </>
   );
@@ -5885,6 +6203,10 @@ export function ImagesPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <MediaApiButton
+                kind="images"
+                model={status?.loaded ? (status.repo_id ?? null) : null}
+              />
               <LibraryPageLink
                 tab="images"
                 labelClassName="hidden @[50rem]:inline"
@@ -6146,7 +6468,7 @@ export function ImagesPage({
                           className={cn(
                             // No border in either mode: the fill alone marks the state, and a ring would not survive
                             // mouse focus anyway (index.css blanks it).
-                            "rounded-lg px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            "rounded-full px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
                               ? "bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"
                               : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
@@ -6187,6 +6509,7 @@ export function ImagesPage({
                   step={0.05}
                   onChange={setUpscaleStrength}
                 />
+                <UpscaleModelField models={upscaleModels} value={upscaleModel} onChange={setUpscaleModel} />
               </>
             )}
 
@@ -6490,7 +6813,7 @@ export function ImagesPage({
               />
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
                 <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
@@ -6498,7 +6821,7 @@ export function ImagesPage({
               </div>
             )}
             {!external && !loraCapable && offersCompiledLoraReload(status) && (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <span>Speed compiled this model after a few images, so LoRAs are off. Reload it to add LoRAs.</span>
                 {(canReapply || residentReloadTarget(status) !== null) && (
                   <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
@@ -6756,6 +7079,11 @@ export function ImagesPage({
               </Field>
             )}
             <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            {hiresVisible(hiresCapability, workflow) ? (
+              <HiresControls capability={hiresCapability} choice={hires} onChange={setHires} width={width} height={height} />
+            ) : !external && workflow === "create" && status?.hires_unavailable_reason ? (
+              <p className="pt-2 text-xs text-muted-foreground">{status.hires_unavailable_reason}</p>
+            ) : null}
             <EmbeddingsField
               family={status?.family}
               enabled={embeddingsEnabled}
@@ -6804,6 +7132,21 @@ export function ImagesPage({
                   </div>
                 </Field>
 
+                {compareAvailable && (
+                  <ComparePanel
+                    context={compareContext}
+                    busy={busy !== null || compareRun !== null || !imagePresets.hydrated}
+                    seedFieldEmpty={!seed.trim()}
+                    variationSeed={sdCaps?.variation_seed ? parseVariationSeed(sdChoice.variationSeed) : null}
+                    modelName={status?.repo_id ?? null}
+                    width={width}
+                    height={height}
+                    steps={steps}
+                    guidance={effectiveGuidance}
+                    onRun={runCompare}
+                  />
+                )}
+
                 <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
                   {advancedControls}
                 </AdvancedDisclosure>
@@ -6833,6 +7176,31 @@ export function ImagesPage({
                 >
                   Generate
                 </Button>
+                {canVary && (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      {/* A disabled button gets no pointer events; the span keeps the reason reachable. */}
+                      <span className="relative z-10 inline-flex">
+                        <Button
+                          className="h-11 px-5"
+                          variant="secondary"
+                          disabled={busy !== null || varyBlocked !== null}
+                          onClick={handleVary}
+                        >
+                          Vary
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {varyBlocked ?? (
+                        <>
+                          Restore the selected image&apos;s settings and re-run its seed with a new variation seed at
+                          strength {sdCaps?.vary_strength ?? FALLBACK_VARY_STRENGTH}: same composition, small changes
+                        </>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 {!external && status?.loaded && (canReapply || residentReloadTarget(status) !== null) && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
@@ -6942,7 +7310,7 @@ export function ImagesPage({
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   <Button
                     size="icon-sm"
                     variant="ghost"
@@ -7018,7 +7386,7 @@ export function ImagesPage({
                     className="size-full object-contain"
                   />
                 )}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   {srcErrors[selected.id] ? (
                     <>
                       <span role="alert" className="sr-only">Full-resolution download failed.</span>
@@ -7072,9 +7440,11 @@ export function ImagesPage({
                     // Drop the chat min-height: this floating card has no layout to stabilise.
                     className="min-h-0"
                     title={
-                      genDone != null && count > 1
-                        ? `Run ${genDone + 1}/${count}`
-                        : null
+                      compareRun && genDone != null
+                        ? compareRun.title(genDone)
+                        : genDone != null && count > 1
+                          ? `Run ${genDone + 1}/${count}`
+                          : null
                     }
                     message="Starting…"
                     progressPercent={genStep ? genStep.fraction * 100 : null}
@@ -7128,7 +7498,7 @@ export function ImagesPage({
                   <button
                     type="button"
                     onClick={() => setSelectedId(image.id)}
-                    className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                    className="relative size-full overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {(thumbById[image.id] ?? srcById[image.id]) ? (
                       <img
@@ -7144,7 +7514,7 @@ export function ImagesPage({
                     )}
                     {/* Selection marker on a non-focusable overlay, so the button's focus state cannot mask it. */}
                     {image.id === selected?.id && (
-                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+                      <span className="pointer-events-none absolute inset-0 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
                     )}
                   </button>
                   {/* Pin marker and Unpin button, bottom-left so it clears the menu. */}

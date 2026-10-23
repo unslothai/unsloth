@@ -7,6 +7,7 @@ import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
+from .remote_images import fetch_untrusted_image_bytes, is_network_share
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -27,6 +28,8 @@ def _own_image_path(path, account):
     from utils.account_context import run_as
     from utils.security.dataset_media import require_readable_media
 
+    if isinstance(path, str) and is_network_share(path):
+        raise OSError(f"Refusing an image path on a network share: {path}")
     run_as(account, require_readable_media, path)
     return path
 
@@ -392,6 +395,13 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
+def _fetch_row_image(url):
+    from io import BytesIO
+
+    from PIL import Image
+    return Image.open(BytesIO(fetch_untrusted_image_bytes(url))).convert("RGB")
+
+
 def convert_to_vlm_format(
     dataset,
     instruction = None,
@@ -444,10 +454,7 @@ def convert_to_vlm_format(
 
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    image_data = Image.open(BytesIO(f.read())).convert("RGB")
+                image_data = _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
@@ -508,6 +515,7 @@ def convert_to_vlm_format(
     if (
         not has_urls
         and isinstance(first_image, str)
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -775,6 +783,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     if (
         isinstance(first_image, str)
         and not first_image.startswith(("http://", "https://"))
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -814,10 +823,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             return image_data
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    return Image.open(BytesIO(f.read())).convert("RGB")
+                return _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache

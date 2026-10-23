@@ -165,8 +165,9 @@ function literalTagPipeline(
  * formatting tags used as markup are unwrapped. */
 export function withLiteralUnknownTags(
   allowedTags: Record<string, string[]> = {},
+  beforeHarden: Pluggable[] = [],
 ): Pluggable[] {
-  return literalTagPipeline(allowedTags, [], [], true);
+  return literalTagPipeline(allowedTags, [], beforeHarden, true);
 }
 
 /** Keep data images, keep tags outside the schema as text, resolve sandbox paths before URL hardening. */
