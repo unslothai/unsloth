@@ -26,8 +26,9 @@ Env knobs:
 
 The MLX engine (``mlx_diffusion_backend``) is considered only when UNSLOTH_DIFFUSION_MLX=1, on macOS 14+ on
 Apple Silicon, for a GGUF of a family that declares ``mlx_model_config`` in a quant the converter handles
-(Q4_0 / Q4_1 / Q8_0 / BF16 / F16), with ``mlx`` and ``mflux`` installed. Every refusal is recorded
-(``mlx_fallback_reason`` in the status) and falls through to the choice this module makes without it.
+(Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0, the Q4_K / Q5_K / Q6_K mixes, BF16 / F16), with ``mlx`` and ``mflux`` installed.
+Every refusal is recorded (``mlx_fallback_reason`` in the status) and falls through to the choice this module makes
+without it.
 """
 
 from __future__ import annotations
@@ -394,6 +395,8 @@ def _mlx_host_refusal() -> Optional[str]:
 # mflux's own darwin mlx range plus the light deps install_python_stack.py installs beside it (mflux goes in --no-deps).
 _MLX_RUNTIME_REQUIREMENTS: tuple[str, ...] = (
     "mlx>=0.32.0,<0.33.0",
+    # Pillow 13.0.0 breaks every mflux import (PIL._typing), so it is refused here, not at load.
+    "pillow>=12.3.0,<13",
     "piexif>=1.1.3,<2",
     "platformdirs>=4,<5",
     "toml>=0.10.2,<1",
@@ -747,6 +750,8 @@ def select_and_activate_engine(
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
         return _activate(ENGINE_DIFFUSERS, "native engine disabled (UNSLOTH_DIFFUSION_SD_CPP=0)")
+    if native_gguf_only(fam, model_kind):
+        prefer_native = True
 
     target = resolve_diffusion_device_target()
     backend = target.backend
@@ -870,12 +875,17 @@ def select_and_activate_engine(
     if off_torch is not None:
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
-    if requested == ENGINE_SD_CPP:
-        # The load asked for native: say why it cannot run, rather than load it on diffusers behind its back.
+    if requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind):
+        # Refuse before anything unloads rather than silently fall back to diffusers.
         raise ValueError(f"The native sd.cpp engine cannot load this model here: {reason}.")
     if before_fallback is not None:
         before_fallback()
     return _activate(ENGINE_DIFFUSERS, reason)
+
+
+def native_gguf_only(fam: Optional[DiffusionFamily], model_kind: Optional[str]) -> bool:
+    """A GGUF of a family whose transformer-only files load natively only (``native_transformer_files_only``)."""
+    return model_kind == "gguf" and bool(getattr(fam, "native_transformer_files_only", False))
 
 
 def refuse_engine_pick(
@@ -898,6 +908,10 @@ def refuse_engine_pick(
                 f"The native sd.cpp engine has no support for the {fam.name} model family."
             )
     elif requested == ENGINE_DIFFUSERS:
+        if native_gguf_only(fam, model_kind):
+            raise ValueError(
+                f"Diffusers cannot load a {fam.name} GGUF; use the Auto or native engine, or the pipeline repo."
+            )
         if fam is not None and not family_pipeline_available(fam):
             raise ValueError(
                 f"Diffusers cannot build the {fam.name} model family with the installed version; "
@@ -997,6 +1011,8 @@ def predict_engine(
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
         return ENGINE_DIFFUSERS
+    if native_gguf_only(fam, model_kind):
+        prefer_native = True
 
     backend = resolve_diffusion_device_target().backend
     if off_torch_sd_cpp_device(backend) is not None:
@@ -1021,11 +1037,16 @@ def predict_engine(
     choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
-    if requested == ENGINE_SD_CPP and choice != ENGINE_SD_CPP:
+    if (
+        requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind)
+    ) and choice != ENGINE_SD_CPP:
         # Selection raises the same refusal; planning diffusers here would stage GB for a load that cannot run.
-        raise ValueError(
-            "The native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable."
+        why = (
+            "native sd.cpp binary unavailable"
+            if requested == ENGINE_SD_CPP
+            else f"no usable sd.cpp build here supports '{fam.name}'"
         )
+        raise ValueError(f"The native sd.cpp engine cannot load this model here: {why}.")
     return choice
 
 
@@ -1053,6 +1074,11 @@ def family_buildable_here(
     ``predict_engine`` activates nothing and installs nothing."""
     if fam is None:
         return False
+    if native_gguf_only(fam, model_kind):
+        try:
+            return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+        except Exception:  # noqa: BLE001 -- refused or unprobeable: not buildable here
+            return False
     if family_pipeline_available(fam):
         return True
     if model_kind == "gguf" and gguf_filename and family_mlx_supported(fam):

@@ -2013,6 +2013,8 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
+          mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
+          mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           ...(targetIsMlx ? { spec_draft_model: ownConfig.specDraftModel ?? null } : {}),
@@ -2555,6 +2557,21 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // The open menu inerts the composer, so closing skips the gate.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
   useShortcut("stopGeneration", stop, {
     enabled: chatActive && busy,
     claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
@@ -2934,11 +2951,7 @@ export function SharedComposer({
             />
             {/* Same + menu as single-chat (ComposerToolsMenu), wired to the compare composer's own file/audio
                 inputs and tools. */}
-            <DropdownMenu
-              onOpenChange={(open) => {
-                if (open) void refreshRecentPrompts();
-              }}
-            >
+            <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
               <DropdownMenuTrigger asChild={true}>
                 <button
                   type="button"

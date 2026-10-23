@@ -46,7 +46,6 @@ test("stop stays available when the running composer can queue", async () => {
     /<Button[\s\S]*?aria-label="Stop generating"[\s\S]*?>/,
   );
   assert.ok(stopButton, "the running composer must render a stop button");
-  // Without it a cancelled reply just advances the queue (#6244 wired it).
   assert.match(
     stopButton[0],
     /onClick=\{stop\}/,
