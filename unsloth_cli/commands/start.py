@@ -5414,7 +5414,10 @@ def _check_agent_context(
     native = int(entry.get("native_context_length") or 0)
     if native:
         suggested = min(suggested, native)
-    if native and (
+    if entry.get("connection"):
+        # --max-seq-length only labels a Connection's window; it cannot grow the provider's.
+        hint = "A Connection's context is set by its provider, so pick a model with a longer one."
+    elif native and (
         native <= window or _agent_compacts_at(agent, native, max_tokens) < prompt_tokens
     ):
         hint = f"Its full context is {native:,} tokens, so pick a model with a longer one."
@@ -5423,9 +5426,13 @@ def _check_agent_context(
         target = f" --model {quote(model)}" if model else ""
         if gguf_variant:
             target += f" --gguf-variant {quote(gguf_variant)}"
+        if max_tokens:
+            target += f" --max-tokens {int(max_tokens)}"
         hint = (
             f"Run unsloth start {agent}{target} --max-seq-length {suggested} "
-            "(a smaller quant if that does not fit in memory)."
+            "(a smaller quant if that does not fit in memory"
+            + ("" if loaded else "; for a Connection, a model with a longer context")
+            + ")."
         )
     state = "is loaded" if loaded else "would load"
     if compacts_at < prompt_tokens:

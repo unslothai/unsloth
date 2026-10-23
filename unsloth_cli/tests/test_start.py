@@ -7841,6 +7841,30 @@ def test_agent_context_retry_keeps_the_requested_model(
     assert launched
 
 
+def test_agent_context_check_does_not_resize_a_connection(fake_studio):
+    fake_studio.state["providers"] = [GEMINI_CONNECTION]
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--no-launch", "--model", "gemini-2.5-flash", "--max-seq-length", "8192"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "too few for Claude Code" in result.output
+    assert "A Connection's context is set by its provider" in result.output
+    assert "--max-seq-length 65536" not in result.output
+
+
+def test_opencode_context_retry_keeps_max_tokens(fake_studio, launched):
+    target = "unsloth/other-GGUF"
+    args = ["opencode", "--model", target, "--max-tokens", "1000", "--max-seq-length", "8192"]
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 1, result.output
+    command = f"unsloth start opencode --model {target} --max-tokens 1000 --max-seq-length 16384"
+    assert command in result.output
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    assert launched
+
+
 @pytest.mark.parametrize("agent, suggested", [("claude", 65536), ("opencode", 32768)])
 def test_agent_context_retry_restarts_the_model_after_fitting(
     fake_studio, launched, monkeypatch, agent, suggested
