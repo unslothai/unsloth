@@ -8366,6 +8366,7 @@ def disable_broken_wandb():
 # stub them only when broken.
 
 # Stamped on stub modules so a second call is a strict no-op.
+# ---------------------------------------------------------------------------
 
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
 _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (

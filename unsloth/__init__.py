@@ -100,6 +100,7 @@ if platform.system() == "Darwin" and platform.machine() == "arm64":
     os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
 
 # Legacy cp1252 consoles cannot encode Unsloth's glyphs; errors="replace" avoids UnicodeEncodeError.
+# ── Windows console UTF-8 safety ─────────────────────────────────────────────
 if platform.system() == "Windows":
     import sys as _sys
     for _name in ("stdout", "stderr"):
