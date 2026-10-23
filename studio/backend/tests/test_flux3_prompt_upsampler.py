@@ -1779,6 +1779,118 @@ def test_warm_declines_beside_a_render_and_holds_the_slot_while_it_starts(warmab
     sidecar._cancel_idle_locked()
 
 
+@pytest.fixture
+def cold_render(monkeypatch):
+    """A GPU host with the image model resident; returns (engine, sidecar, spawned) where spawned records whether
+    the engine's generation slot was held at each spawn."""
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import gpu_arbiter, stt_sidecar
+
+    class _Engine:
+        def __init__(self):
+            self._generate_lock = threading.Lock()
+            self._loading = None
+
+    engine = _Engine()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: engine)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    monkeypatch.setattr(pup, "_accelerator_memory_mib", lambda ordinal = None: (20000, 24000, "cuda"))
+    monkeypatch.setattr(pup, "_post_chat", lambda *a, **k: "caption")
+    sidecar = pup.PromptUpsamplerSidecar(keep_alive_seconds = 0)
+    spawned = []
+
+    def spawn(binary, model, mmproj):
+        spawned.append(engine._generate_lock.locked())
+        sidecar._process = type("P", (), {"poll": lambda self: None})()
+        sidecar._port, sidecar._key, sidecar._gpu_layers = 1, (binary, model, mmproj), 32
+
+    monkeypatch.setattr(sidecar, "_spawn_server", spawn)
+    return engine, sidecar, spawned
+
+
+def _generate_in_thread(sidecar, **kwargs):
+    out = {}
+
+    def run():
+        try:
+            out["text"] = sidecar.generate({}, binary = "b", model = "m", mmproj = None, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = exc
+
+    worker = threading.Thread(target = run, daemon = True)
+    worker.start()
+    return worker, out
+
+
+def test_a_cold_start_waits_for_a_render_in_flight(cold_render):
+    """Another request denoising holds the slot: the cold start (which sizes its offload to free memory) waits for
+    it, holds the slot while the server comes up, and leaves it free for this request's own render."""
+    engine, sidecar, spawned = cold_render
+    engine._generate_lock.acquire()
+    worker, out = _generate_in_thread(sidecar)
+    time.sleep(0.6)
+    assert spawned == [] and worker.is_alive()
+    engine._generate_lock.release()
+    worker.join(5)
+    assert out == {"text": "caption"} and spawned == [True]
+    assert not engine._generate_lock.locked()
+    # Warm: no start, so no wait beside a render.
+    engine._generate_lock.acquire()
+    try:
+        assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+    finally:
+        engine._generate_lock.release()
+    assert spawned == [True]
+
+
+def test_a_stop_while_a_cold_start_waits_for_the_slot_cancels_it(cold_render):
+    engine, sidecar, spawned = cold_render
+    engine._generate_lock.acquire()
+    try:
+        stop = threading.Event()
+        worker, out = _generate_in_thread(sidecar, cancel_event = stop)
+        time.sleep(0.4)
+        stop.set()
+        worker.join(5)
+        assert isinstance(out.get("error"), pup.UpsamplerCancelledError) and spawned == []
+        assert not sidecar.is_loading()
+    finally:
+        engine._generate_lock.release()
+
+
+def test_a_cold_start_after_the_slot_for_a_leaving_model_is_unavailable(cold_render):
+    engine, sidecar, spawned = cold_render
+    engine._loading = type("L", (), {"error": None})()
+    with pytest.raises(pup.UpsamplerUnavailableError):
+        sidecar.generate({}, binary = "b", model = "m", mmproj = None)
+    assert spawned == [] and not engine._generate_lock.locked()
+
+
+@pytest.mark.parametrize("why", ["cpu", "training", "unowned", "engine"])
+def test_a_cold_start_that_cannot_offload_does_not_wait_for_a_render(cold_render, monkeypatch, why):
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import gpu_arbiter, stt_sidecar
+
+    engine, sidecar, spawned = cold_render
+    if why == "cpu":
+        monkeypatch.setattr(
+            pup, "_accelerator_memory_mib", lambda ordinal = None: (None, None, "cpu")
+        )
+    elif why == "training":
+        monkeypatch.setattr(stt_sidecar, "_training_active", lambda: True)
+    elif why == "unowned":
+        monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    else:
+        monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: 1 / 0)
+    engine._generate_lock.acquire()
+    try:
+        assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+    finally:
+        engine._generate_lock.release()
+    assert spawned == [True]
+
+
 def test_render_slot_is_never_taken_beside_a_render_or_a_load(monkeypatch):
     import core.inference.diffusion_engine_router as engine_router
 
