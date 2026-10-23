@@ -2956,6 +2956,7 @@ export function SharedComposer({
                 <button
                   type="button"
                   aria-label="Tools and attachments"
+                  data-pill-label="Add files and more"
                   className="unsloth-composer-plus"
                 >
                   <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />

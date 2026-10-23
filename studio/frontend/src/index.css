@@ -3472,7 +3472,13 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-plus {
-		@apply flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+		@apply relative flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	/* The pills' hover label, kept off while the menu it opens is showing. */
+	.unsloth-composer-plus[data-pill-label]:not([data-state="open"]):hover::after {
+		content: attr(data-pill-label);
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
 	}
 
 	.unsloth-composer-plus[data-state="open"] {
