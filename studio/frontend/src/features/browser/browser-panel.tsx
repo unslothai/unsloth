@@ -1717,7 +1717,7 @@ function BrowserFileToolbar({
             <span className="min-w-0 break-words">{entry.name}</span>
           </div>
           <DropdownMenuSeparator />
-          {/* A blob URL can't be handed to another app from the desktop app, so there New chat stands alone. */}
+          {/* A blob URL can't be handed to another app from the desktop app. */}
           {isTauri || !tabType ? (
             <DropdownMenuItem disabled={!blob} onSelect={openInNewChat}>
               <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4" />
@@ -1777,7 +1777,7 @@ function FloatingFileToolbar({
   const [copied, setCopied] = useState(false);
   const download = tabDownload(tab);
   const blob = download?.blob;
-  // HTML and code take BrowserFileToolbar (usesBrowserChrome), so only markdown and text reach here.
+  // HTML and code take BrowserFileToolbar.
   const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "markdown";
   const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
@@ -1810,7 +1810,6 @@ function FloatingFileToolbar({
   );
   return (
     <>
-      {/* Open and Download sit beside it, so only Copy (hidden on narrow bars) and Wrap need a menu. */}
       {kind ? (
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
@@ -2137,7 +2136,7 @@ function OpenSplit({ entry, blob }: { entry: FileEntry; blob: Blob | undefined }
     : tabType
       ? { label: t("browser.video.open"), run: openInBrowser }
       : { label: t("browser.file.newChat"), run: openInNewChat };
-  // On the web a file no tab can show has only New chat, which the button already is.
+  // Else the menu would only repeat New chat.
   const hasMenu = isTauri || tabType !== null;
   return (
     <div className={SPLIT_PILL} onPointerEnter={listApps} onFocus={listApps}>
