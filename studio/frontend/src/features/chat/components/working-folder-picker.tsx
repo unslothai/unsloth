@@ -69,7 +69,7 @@ export function WorkingFolderPicker({
       <p className="text-ui-13 text-muted-foreground">
         Where code and file tools run for every chat in this project.
       </p>
-      <div className="flex min-w-0 items-center gap-2 rounded-[16px] border border-border px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2 rounded-full border border-border px-3 py-2">
         <span
           className="min-w-0 flex-1 truncate text-sm"
           title={value ?? undefined}
