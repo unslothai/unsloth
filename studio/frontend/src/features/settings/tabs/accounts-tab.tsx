@@ -227,7 +227,7 @@ function OwnerAccountsTab() {
       </div>
 
       {error && !confirming && !editorOpen && !modelAccess && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/20 bg-destructive/5 p-3">
           <p
             role="alert"
             className="min-w-0 break-words text-xs text-destructive"
@@ -261,7 +261,7 @@ function OwnerAccountsTab() {
           <table className="w-full table-fixed border-separate border-spacing-x-0 border-spacing-y-1 text-left text-xs">
             <thead className="text-muted-foreground">
               <tr className="[&>th]:bg-muted/40">
-                <th scope="col" className="rounded-l-xl py-2 pl-5 pr-3 font-normal">
+                <th scope="col" className="rounded-l-full py-2 pl-5 pr-3 font-normal">
                   {t("settings.accounts.username")}
                 </th>
                 <th
@@ -273,7 +273,7 @@ function OwnerAccountsTab() {
                 <th scope="col" className="w-24 py-2 font-normal">
                   {t("settings.accounts.status")}
                 </th>
-                <th scope="col" className="w-12 rounded-r-xl py-2">
+                <th scope="col" className="w-12 rounded-r-full py-2">
                   <span className="sr-only">
                     {t("settings.accounts.actions")}
                   </span>
@@ -287,7 +287,7 @@ function OwnerAccountsTab() {
                   className="[&>td]:transition-colors hover:[&>td]:bg-muted/40 focus-within:[&>td]:bg-muted/40"
                   data-testid={`account-${account.username}`}
                 >
-                  <td className="rounded-l-xl py-3 pl-3 pr-3">
+                  <td className="rounded-l-md py-3 pl-3 pr-3">
                     <div className="flex items-center gap-2.5">
                       <UserAvatar
                         name={account.username}
@@ -344,7 +344,7 @@ function OwnerAccountsTab() {
                         : t("settings.accounts.inactive")}
                     </span>
                   </td>
-                  <td className="rounded-r-xl py-3 pr-3 text-right">
+                  <td className="rounded-r-md py-3 pr-3 text-right">
                     {account.role !== "owner" && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>

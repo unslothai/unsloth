@@ -438,7 +438,7 @@ const ActivityRow = memo(function ActivityRow({
           key={`${activity.id}-${source.id ?? source.url}`}
           type="button"
           onClick={() => openLink(source.url)}
-          className="group/source flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group/source flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <InternetGlyph className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
@@ -905,7 +905,7 @@ export function ResearchActivityPanel({
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
             <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
           </div>
           <div className="min-w-0 flex-1">

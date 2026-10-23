@@ -107,7 +107,7 @@ function SnippetLine({
 
 function UnsafeFileCard({ file }: { file: UnsafeFile }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-muted/40 px-3 py-2">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border bg-muted/40 px-3 py-2">
       <Badge
         variant="outline"
         className={cn(
@@ -129,7 +129,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   const fileLabel = finding.line ? `${finding.file}:${finding.line}` : finding.file;
   const snippet = finding.snippet ?? [];
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border">
+    <div className="min-w-0 overflow-hidden rounded-xl border">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-muted/40 px-3 py-2">
         <Badge
           variant="outline"

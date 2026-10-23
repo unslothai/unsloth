@@ -39,7 +39,7 @@ import { useLinkedFolders } from "./use-linked-folders";
 
 /** Grouped folder card, shared with the create project dialog. */
 export const FOLDER_CARD_CLASS =
-  "overflow-hidden rounded-[16px] border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
+  "overflow-hidden rounded-xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
 export const FOLDER_ROW_CLASS =
   "flex min-w-0 items-center gap-3 px-3.5 py-2.5 border-t border-border/60 first:border-t-0 dark:border-[rgb(255_255_255_/_calc(0.08*var(--contrast-edge-gain,1)))]";
 

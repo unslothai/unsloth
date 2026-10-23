@@ -52,7 +52,7 @@ export function LazyImportFailure({
           ref={reloadRef}
           type="button"
           onClick={() => window.location.reload()}
-          className="rounded-md border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
+          className="rounded-full px-3 py-1.5 font-medium text-xs bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
         >
           {reloadLabel}
         </button>
@@ -60,7 +60,7 @@ export function LazyImportFailure({
           <button
             type="button"
             onClick={onDismiss}
-            className="rounded-md border border-border bg-background px-3 py-1.5 font-medium text-xs hover:bg-accent"
+            className="rounded-full px-3 py-1.5 font-medium text-xs bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             {dismissLabel}
           </button>

@@ -106,7 +106,7 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
             openTab();
           }}
           onClick={() => openTab()}
-          className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white"
+          className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white"
         >
           <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(var(--icon-size)*0.95)]" />
         </button>

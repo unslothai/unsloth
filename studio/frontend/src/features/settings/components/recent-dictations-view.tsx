@@ -230,7 +230,7 @@ export function RecentDictationsView({
 
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
-          <article className="rounded-lg border border-border/60 bg-muted/20 p-4">
+          <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
               {selected.text}
             </p>
@@ -268,7 +268,7 @@ export function RecentDictationsView({
                   setPendingDelete({ kind: "one", dictation: selected });
                 }
               }
-              className="text-destructive hover:border-destructive/60 hover:text-destructive"
+              className="text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.delete")}
@@ -325,7 +325,7 @@ export function RecentDictationsView({
               variant="outline"
               size="sm"
               onClick={() => setPendingDelete({ kind: "all" })}
-              className="shrink-0 text-destructive hover:border-destructive/60 hover:text-destructive"
+              className="shrink-0 text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
               {t("settings.voice.recents.clear")}
@@ -510,7 +510,7 @@ export function RecentDictationsView({
             {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
               <AlertDialogAction
                 variant="outline"
-                className="text-destructive hover:border-destructive/60 hover:text-destructive"
+                className="text-destructive hover:text-destructive"
                 onClick={(event) => {
                   // Close only through state so the dismissal can't race a
                   // click on whatever ends up under the pointer.

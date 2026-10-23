@@ -52,7 +52,7 @@ export function CopyableErrorChip({
         <button
           type="button"
           className={cn(
-            "flex max-w-[calc(28rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center rounded-md text-left text-xs text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "flex max-w-[calc(28rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center rounded-full text-left text-xs text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             className,
           )}
         >
@@ -71,8 +71,8 @@ export function CopyableErrorChip({
             onClick={handleCopy}
             aria-label={copied ? "Copied" : "Copy error message"}
             className={cn(
-              "inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              copied && "border-emerald-500/40 text-emerald-600 dark:text-emerald-500",
+              "inline-flex items-center gap-1 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-2 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              copied && "text-emerald-600 dark:text-emerald-500",
             )}
           >
             <HugeiconsIcon

@@ -263,7 +263,7 @@ export default function ComparePanel(props: ComparePanelProps) {
         </div>
       </div>
       {enabled && (
-        <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
+        <div className="space-y-2 rounded-xl border border-border bg-muted/30 p-2">
           {effective.map((axis, i) => {
             const def = defs.find((d) => d.id === axis.axisId);
             return (
@@ -358,7 +358,7 @@ export default function ComparePanel(props: ComparePanelProps) {
           <div className="max-h-[70dvh] space-y-4 overflow-auto">
             {grids.map((g, i) => (
               <figure key={g.url} className="space-y-2">
-                <img src={g.url} alt={g.title || "Compare grid"} className="mx-auto max-w-full rounded-md" />
+                <img src={g.url} alt={g.title || "Compare grid"} className="mx-auto max-w-full rounded-lg" />
                 <figcaption className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>
                     {g.title ? `${g.title}, ` : ""}

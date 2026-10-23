@@ -44,7 +44,7 @@ export function KeyRevealCard({
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+    <div className="flex flex-col gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
       <div className="flex items-center gap-1.5">
         <HugeiconsIcon
           icon={Tick02Icon}
@@ -56,7 +56,7 @@ export function KeyRevealCard({
       </div>
       <div
         className={cn(
-          "flex w-full items-center gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors",
+          "flex w-full items-center gap-3 rounded-full border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors",
           "has-[input:focus-visible]:ring-1 has-[input:focus-visible]:ring-ring",
           copied && "border-emerald-500/40 bg-emerald-500/10",
         )}

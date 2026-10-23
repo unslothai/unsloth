@@ -90,7 +90,7 @@ function ExamplePreviews({ repo }: { repo: string }) {
   return (
     <div className="flex gap-1">
       {urls.map((u) => (
-        <div key={u} className="h-9 w-12 shrink-0 overflow-hidden rounded-[8px] bg-muted">
+        <div key={u} className="h-9 w-12 shrink-0 overflow-hidden rounded-sm bg-muted">
           <img src={u} alt="" loading="lazy" className="size-full object-cover" />
         </div>
       ))}
@@ -124,7 +124,7 @@ export function ExampleDatasetCards({
         {examples.map((ex) => (
           <div
             key={ex.id}
-            className="flex min-w-0 flex-col gap-2.5 rounded-lg border border-border px-4 py-3"
+            className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border px-4 py-3"
           >
             <div className="flex min-w-0 items-center gap-1.5">
               {/* Both are truncated, so the full text lives in a tooltip. */}

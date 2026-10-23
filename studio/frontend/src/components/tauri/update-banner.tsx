@@ -123,7 +123,7 @@ export function UpdateBanner({
           data-testid="tauri-update-banner"
         >
           {/* Paint the full floor even when the notes are short. */}
-          <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -282,7 +282,7 @@ export function UpdateBanner({
                     readOnly={true}
                     value={manualReport}
                     onFocus={(event) => event.currentTarget.select()}
-                    className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
+                    className="mt-2 h-28 w-full resize-none rounded-xl border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
                   />
                 )}
               </div>

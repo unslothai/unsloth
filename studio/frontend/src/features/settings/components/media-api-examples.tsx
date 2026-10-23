@@ -168,7 +168,7 @@ export function MediaApiExamples({
       <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
         {t("settings.apiKeys.mediaApi.description")}
       </p>
-      <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
+      <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-muted/20">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-border px-2 py-1.5">
           <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
             {MEDIA_API_KINDS.map((id) => (
@@ -234,7 +234,7 @@ export function MediaApiExamples({
           <button
             type="button"
             onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon

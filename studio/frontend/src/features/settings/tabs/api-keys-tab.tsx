@@ -165,12 +165,12 @@ export function ApiKeysTab() {
           {t("settings.apiKeys.accessTokens")}
         </h2>
         {actionError ? (
-          <div className="mb-2 rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+          <div className="mb-2 rounded-xl border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
             {actionError}
           </div>
         ) : null}
         {error ? (
-          <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
+          <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive">
             {error}
           </div>
         ) : loading ? (

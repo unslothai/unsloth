@@ -53,7 +53,7 @@ export function MonitorLink(): ReactElement {
           useSettingsDialogStore.getState().closeDialog();
           void navigate({ to: "/api-monitor" });
         }}
-        className="flex w-full min-w-0 items-center gap-3 rounded-lg border border-border/70 bg-background px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="flex w-full min-w-0 items-center gap-3 rounded-xl border border-border/70 bg-background px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <span className="relative flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
           <HugeiconsIcon
@@ -88,7 +88,7 @@ export function MonitorLink(): ReactElement {
       </button>
 
       {/* Where the panel's own "stop opening this" gets turned back on. */}
-      <div className="flex items-center justify-between gap-3 rounded-lg px-1 py-1">
+      <div className="flex items-center justify-between gap-3 rounded-md px-1 py-1">
         <span className="flex min-w-0 flex-col">
           <span className="text-sm text-foreground">
             {t("settings.resources.liveMonitor.autoOpen")}

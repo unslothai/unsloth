@@ -329,7 +329,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         <button
           type="button"
           title="Download image"
-          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
+          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
             // Reuse fetched bytes under the desktop CSP.
             try {

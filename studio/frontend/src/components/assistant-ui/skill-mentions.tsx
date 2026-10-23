@@ -241,7 +241,7 @@ export function SkillMentionPopover({
       char="@"
       adapter={adapter}
       aria-label={t("skills.mentions")}
-      className="data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100"
+      className="data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-xl border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100"
     >
       <ComposerPrimitive.Unstable_TriggerPopover.Directive
         {...mention.directive}
@@ -267,7 +267,7 @@ export function SkillMentionPopover({
                   index={index}
                   // Keep focus (and the caret) in the textarea so the token replacer sees it.
                   onMouseDown={(event) => event.preventDefault()}
-                  className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-highlighted:bg-accent data-highlighted:text-accent-foreground"
+                  className="flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-highlighted:bg-accent data-highlighted:text-accent-foreground"
                 >
                   <HugeiconsIcon
                     icon={Scroll01Icon}
@@ -411,7 +411,7 @@ export function useTextareaSkillMentions({
   );
 
   const popover = open ? (
-    <div className="animate-in fade-in-0 zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100">
+    <div className="animate-in fade-in-0 zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-xl border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100">
       <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
         {t("skills.mentions")}
       </div>
@@ -432,7 +432,7 @@ export function useTextareaSkillMentions({
             tabIndex={-1}
             data-mention-index={index}
             data-highlighted={index === highlighted}
-            className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-[highlighted=true]:bg-accent data-[highlighted=true]:text-accent-foreground"
+            className="flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-[highlighted=true]:bg-accent data-[highlighted=true]:text-accent-foreground"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => insert(skill)}
             onMouseEnter={() => setHighlighted(index)}

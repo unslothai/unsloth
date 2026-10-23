@@ -88,7 +88,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
             // No border line; elevation comes from the shadow in index.css.
             "--normal-border": "transparent",
             // Rounder than cards, a step below the composer's 28px.
-            "--border-radius": "calc(var(--radius) + 8px)",
+            "--border-radius": "var(--radius-xl)",
             // Pin the close button inside the toast's top-right corner.
             // Sonner defaults to the left/outside edge, so keep the horizontal
             // override here and the top offset in index.css.

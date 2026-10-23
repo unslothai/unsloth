@@ -62,7 +62,7 @@ export function CitationBadge({
       size="sm"
       className={`rounded-full inline-flex items-center gap-1.5 max-w-[calc(15rem*var(--ui-space-scale,1))] ${
         clickable
-          ? "cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
+          ? "cursor-pointer border-transparent bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-accent-foreground transition-colors"
           : "cursor-default"
       }`}
     >
@@ -209,7 +209,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
               </>
             ) : resultText ? (
               <ScrollPane
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {resultText}
@@ -220,7 +220,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {query.length > QUERY_INLINE_MAX ? (
               <ScrollPane
                 data-slot="knowledge-base-query"
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {query}

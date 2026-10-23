@@ -167,7 +167,7 @@ export function ExecutionsView({
                 src={imagePreview.src}
                 alt={`${name} preview`}
                 loading="lazy"
-                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-md border border-border/60 bg-muted/20 object-contain"
+                className="h-24 w-auto max-w-[calc(260px*var(--ui-space-scale,1))] rounded-lg border border-border/60 bg-muted/20 object-contain"
               />
             </div>
           );

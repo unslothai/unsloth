@@ -2037,7 +2037,7 @@ export function ExportPage() {
                         onChange={setQuantLevels}
                         sizes={quantSizeLabels}
                       />
-                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                      <div className="flex items-center justify-between gap-3 rounded-xl border p-3">
                         <div className="space-y-0.5">
                           <div className="text-sm font-medium">
                             Importance matrix (imatrix)
@@ -2088,7 +2088,7 @@ export function ExportPage() {
                           </p>
                         </div>
                       )}
-                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                      <div className="flex items-center justify-between gap-3 rounded-xl border p-3">
                         <div className="space-y-0.5">
                           <div className="text-sm font-medium">
                             Also convert to Q4NX (AMD NPU)
@@ -2238,7 +2238,7 @@ export function ExportPage() {
                     })
                   }
                   aria-label="Scroll to export output"
-                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full border border-border/60 bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
+                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
                 >
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}

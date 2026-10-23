@@ -118,7 +118,7 @@ export function ChatModelNotice({
               type="button"
               data-chat-model-notice=""
               aria-label={`Last used model: ${label}`}
-              className="flex h-[var(--studio-chat-control-height,34px)] min-w-[calc(30px*var(--ui-space-scale,1))] max-w-56 shrink cursor-pointer items-center rounded-[10px] px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white max-sm:min-w-[calc(22px*var(--ui-space-scale,1))] max-sm:px-1"
+              className="flex h-[var(--studio-chat-control-height,34px)] min-w-[calc(30px*var(--ui-space-scale,1))] max-w-56 shrink cursor-pointer items-center rounded-full px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white max-sm:min-w-[calc(22px*var(--ui-space-scale,1))] max-sm:px-1"
             >
               <HugeiconsIcon
                 icon={ArrowTurnBackwardIcon}
@@ -142,7 +142,7 @@ export function ChatModelNotice({
         sideOffset={6}
         collisionPadding={12}
         aria-label="Last used model"
-        className="menu-soft-surface w-64 gap-1 rounded-[14px] p-1"
+        className="menu-soft-surface w-64 gap-1 rounded-xl p-1"
       >
         <div className="space-y-1 px-3 py-2">
           <p className="text-ui-12 text-muted-foreground">Last used model</p>
@@ -153,7 +153,7 @@ export function ChatModelNotice({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 justify-start gap-2.5 rounded-[10px] px-3 text-ui-13 font-normal"
+            className="h-8 justify-start gap-2.5 rounded-md px-3 text-ui-13 font-normal"
             onClick={() => onSwitch(switchTarget)}
           >
             <HugeiconsIcon

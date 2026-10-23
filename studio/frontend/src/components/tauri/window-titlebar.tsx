@@ -215,7 +215,7 @@ export function DesktopTitlebarNavigation({
   // Window chrome: the band around these is a fixed 34px, so they keep their
   // size while the slot holding them scales.
   const buttonClass =
-    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const customTitlebar = shouldUseCustomWindowTitlebar();
   const iconClass = customTitlebar
     ? "size-[18px]"
@@ -492,7 +492,7 @@ export function WindowTitlebar({
           <div
             className={cn(
               "absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",
-              pinned && "rounded-tl-[12px] border-l",
+              pinned && "rounded-tl-md border-l",
             )}
             style={{ left: pinned ? cornerLeft : 0 }}
           />

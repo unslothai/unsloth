@@ -16,8 +16,10 @@ export const buttonVariants = cva(
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary/80",
         dark: "bg-foreground text-background hover:bg-foreground/85 dark:bg-foreground dark:text-background",
+        // Filled, not bordered: a border is reserved for dropdowns and fields, so a menu
+        // trigger ending in a chevron (a value picker) keeps the select trigger's look.
         outline:
-          "border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",
+          "bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:border-border aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:bg-background aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:hover:bg-accent/50 dark:aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:border-transparent dark:aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
@@ -39,10 +41,9 @@ export const buttonVariants = cva(
         "icon-xs": "size-6 [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-8",
         "icon-lg": "size-10",
-        // Full-window screen actions (startup, update): taller than `lg`, and squared
-        // off rather than pill-shaped, so they read as page-level rather than in-line.
+        // Full-window screen actions (startup, update): taller than `lg`.
         // Height is left to the padding, so the label sets it.
-        hero: "h-auto rounded-lg px-5 py-2.5",
+        hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
     defaultVariants: {

@@ -103,7 +103,7 @@ export function ManagedEngineOfferDialog() {
                 // The title already names a lone engine; a choice of two needs each labelled.
                 className={cn(
                   "space-y-2",
-                  visible.length > 1 && "rounded-2xl border p-3",
+                  visible.length > 1 && "rounded-xl border p-3",
                 )}
               >
                 {visible.length > 1 && (

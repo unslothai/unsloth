@@ -343,7 +343,7 @@ export function SandboxTab() {
             target="_blank"
             rel="noreferrer"
             title={t("settings.sandbox.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {t("settings.sandbox.docs")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -731,7 +731,7 @@ function OsSandboxSections() {
                           >
                             {t("settings.sandbox.setupCommandHint")}
                           </span>
-                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-lg bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
                             {setupRow.command}
                           </pre>
                           <Button

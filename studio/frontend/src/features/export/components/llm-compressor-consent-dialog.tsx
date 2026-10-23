@@ -53,7 +53,7 @@ export function LlmCompressorConsentDialog() {
                       <>
                         <p className="[overflow-wrap:anywhere]">{summary}</p>
                         {probe?.consent_kind === "workspace" ? (
-                          <p className="rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground break-all">
+                          <p className="rounded-lg border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground break-all">
                             {probe.workspace_install_command}
                           </p>
                         ) : probe?.consent_kind === "shadow" ? (

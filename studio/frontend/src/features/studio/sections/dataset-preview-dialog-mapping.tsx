@@ -115,7 +115,7 @@ export function DatasetMappingCard({
       <div className="flex items-start gap-3">
         <div
           className={cn(
-            "rounded-xl corner-squircle p-2 shrink-0",
+            "rounded-md corner-squircle p-2 shrink-0",
             mappingOk ? "bg-emerald-500/15" : "bg-amber-500/15",
           )}
         >
@@ -180,7 +180,7 @@ export function DatasetMappingCard({
                 size="sm"
                 onClick={onAiAssist}
                 disabled={isAiLoading}
-                className="cursor-pointer bg-white/60 dark:bg-transparent"
+                className="cursor-pointer"
               >
                 {isAiLoading ? (
                   <>

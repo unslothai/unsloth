@@ -541,12 +541,12 @@ function PendingImageThumb({
     return () => URL.revokeObjectURL(url);
   }, [file]);
   if (!src)
-    return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
+    return <div className="size-14 animate-pulse rounded-lg bg-muted" />;
   return (
     <div
       data-reload-snapshot-sensitive
       data-composer-attachment="image"
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
+      className="relative size-14 shrink-0 overflow-hidden rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -2874,7 +2874,7 @@ export function SharedComposer({
             <div
               key={clip.id}
               data-composer-attachment="audio"
-              className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
+              className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
             >
               <HeadphonesIcon className="size-3.5 text-muted-foreground" />
               <span data-reload-snapshot-sensitive className="max-w-48 truncate">
@@ -3261,7 +3261,7 @@ export function SharedComposer({
                 }
                 aria-expanded={isWritingExpanded}
                 aria-controls={inputId}
-                className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-full bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={toggleWritingExpanded}
               >
@@ -3541,7 +3541,7 @@ export function SharedComposer({
                     stop();
                   }}
                   aria-label="Stop prompt queue"
-                  className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="flex items-center gap-1.5 rounded-full border border-transparent bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                 >
                   <SquareIcon className="size-2.5 shrink-0 fill-current" />
                   <span className="tabular-nums">

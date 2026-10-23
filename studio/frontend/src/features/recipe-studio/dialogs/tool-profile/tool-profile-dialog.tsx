@@ -47,7 +47,7 @@ function EmptyState({
   description: string;
 }): ReactElement {
   return (
-    <div className="rounded-2xl border border-dashed border-border/70 bg-muted/15 px-4 py-5 text-sm">
+    <div className="rounded-xl border border-dashed border-border/70 bg-muted/15 px-4 py-5 text-sm">
       <p className="font-semibold text-foreground">{title}</p>
       <p className="mt-1 text-xs text-muted-foreground">{description}</p>
     </div>
@@ -123,7 +123,7 @@ function McpServerCard({
 
   return (
     <Collapsible open={open} onOpenChange={onOpenChange}>
-      <div className="rounded-2xl border border-border/60 bg-background/80">
+      <div className="rounded-xl border border-border/60 bg-background/80">
         <div className="flex items-start gap-2 px-4 py-4">
           <CollapsibleTrigger asChild={true}>
             <button
@@ -646,7 +646,7 @@ export function ToolProfileDialog({
           </div>
         ) : (
           <>
-            <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+            <div className="rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
               <p className="text-sm font-semibold text-foreground">
                 Pick which tools this setup may use
               </p>
@@ -655,7 +655,7 @@ export function ToolProfileDialog({
                 allow all tools, or add only the ones this step should use.
               </p>
             </div>
-            <div className="space-y-3 rounded-2xl border border-border/60 bg-muted/10 p-4">
+            <div className="space-y-3 rounded-xl border border-border/60 bg-muted/10 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-foreground">
@@ -791,7 +791,7 @@ export function ToolProfileDialog({
       </TabsContent>
 
       <TabsContent value="servers" className="space-y-4 pt-3">
-        <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
+        <div className="rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
           <p className="text-sm font-semibold text-foreground">
             Add one or more tool servers
           </p>

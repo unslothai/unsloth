@@ -199,7 +199,7 @@ export function EngineInstall({
             engine: names[engine.engine],
           })}
           className={cn(
-            centered ? "space-y-1 text-muted-foreground" : "space-y-3 rounded-lg border p-3",
+            centered ? "space-y-1 text-muted-foreground" : "space-y-3 rounded-xl border p-3",
           )}
         >
           <p>
@@ -352,7 +352,7 @@ export function InferenceEnginePicker({
     return null;
   }
   return (
-    <div className="space-y-2 rounded-lg border p-3">
+    <div className="space-y-2 rounded-xl border p-3">
       <div className="flex items-center justify-between gap-3 text-ui-13">
         <span>{t("managedEngines.picker")}</span>
         <Select

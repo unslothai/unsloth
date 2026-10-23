@@ -182,7 +182,7 @@ export function ExecutionOverviewTab({
               {modelUsageRows.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No model usage yet.</p>
               ) : (
-                <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50">
+                <div className="overflow-hidden rounded-md border border-border/60 bg-card/50">
                   <Table>
                     <TableHeader>
                       <TableRow>

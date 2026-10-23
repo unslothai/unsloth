@@ -223,7 +223,7 @@ test("the connection's own settings hang off the group heading", () => {
   assert.match(pickers, /className=\{HEADING_ACTION_CLASS\}\s*>\s*\{collapsed \?/);
   assert.match(
     pickers,
-    /const HEADING_ACTION_CLASS =\s*"flex size-5 shrink-0 items-center justify-center rounded-md/,
+    /const HEADING_ACTION_CLASS =\s*"flex size-5 shrink-0 items-center justify-center rounded-full/,
   );
   assert.match(
     pickers,
