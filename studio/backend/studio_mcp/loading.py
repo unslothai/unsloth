@@ -81,6 +81,8 @@ class LoadJob(job_store.Job):
     post: Optional[asyncio.Future] = field(default = None, repr = False)
     # This process's media load request number for the slot, taken before the POST (0: none yet).
     generation: int = 0
+    # The media load request's body, so a late unload can tell whether this load is the resident one.
+    body: Optional[dict] = field(default = None, repr = False)
 
     def note(self, fraction: Optional[float], phase: str) -> None:
         # A step without a fraction keeps the last one, so progress never drops back.
@@ -657,6 +659,7 @@ async def load_media(
         outcome = _take_media_generation(kind, job)
         try:
             await prepare()
+            job.body = body
             # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
             job.post = asyncio.ensure_future(
                 route_json("POST", routes["load"], caller = caller, json_body = {**body, **knobs})
@@ -687,7 +690,7 @@ async def load_media(
                 # Only a confirmed failure withdraws it: after a transient route error the backend
                 # may still be loading it, and an older load's late unload must keep deferring.
                 if _posted_ok(job.post) and getattr(exc, "_unsloth_load_failed", False):
-                    _MEDIA_REGISTERED.get(kind, set()).discard(job.generation)
+                    _MEDIA_REGISTERED.get(kind, {}).pop(job.generation, None)
                 else:
                     # Its outcome is still unknown: keep reading the backend, so a load that later
                     # fails stops deferring an older load's late unload.
@@ -864,7 +867,7 @@ async def _watch_media_outcome(
                 return
             except Exception as exc:
                 if getattr(exc, "_unsloth_load_failed", False):
-                    _MEDIA_REGISTERED.get(kind, set()).discard(job.generation)
+                    _MEDIA_REGISTERED.get(kind, {}).pop(job.generation, None)
                     return
                 await asyncio.sleep(POLL_INTERVAL_S * failures)
     finally:
@@ -877,7 +880,7 @@ async def _watch_media_outcome(
 # (a load registered for it) and whose load has not failed since, the highest registered when an
 # unload of the slot went out (that unload ended it), and those whose outcome is not known yet.
 _MEDIA_GENERATIONS: dict[str, int] = {}
-_MEDIA_REGISTERED: dict[str, set[int]] = {}
+_MEDIA_REGISTERED: dict[str, dict[int, tuple[str, Optional[dict]]]] = {}
 _MEDIA_UNLOADED: dict[str, int] = {}
 _MEDIA_OUTCOMES: dict[str, dict[int, asyncio.Future]] = {}
 # Tries a late unload (or a watch on a newer load's outcome) makes before giving up on route errors.
@@ -892,15 +895,15 @@ def _posted_ok(post: Optional[asyncio.Future]) -> bool:
 
 def _mark_media_unloaded(kind: str) -> None:
     # Called with no await before the unload POST: every load registered so far is ended by it.
-    registered = _MEDIA_REGISTERED.get(kind, set())
+    registered = _MEDIA_REGISTERED.get(kind, {})
     _MEDIA_UNLOADED[kind] = max(_MEDIA_UNLOADED.get(kind, 0), max(registered, default = 0))
     registered.clear()
 
 
-def _newer_media_registered(kind: str, generation: int) -> bool:
-    """Whether a request newer than ``generation`` registered a load no unload has ended since."""
+def _newer_media_registered(kind: str, generation: int) -> list[int]:
+    """Requests newer than ``generation`` that registered a load no unload of this process ended since."""
     unloaded = _MEDIA_UNLOADED.get(kind, 0)
-    return any(g > generation and g > unloaded for g in _MEDIA_REGISTERED.get(kind, ()))
+    return [g for g in _MEDIA_REGISTERED.get(kind, {}) if g > generation and g > unloaded]
 
 
 def _take_media_generation(kind: str, job: LoadJob) -> asyncio.Future:
@@ -918,7 +921,7 @@ def _media_post_answered(
         _settle_media_generation(kind, job, outcome, False)
         return
     if job.generation > _MEDIA_UNLOADED.get(kind, 0):
-        _MEDIA_REGISTERED.setdefault(kind, set()).add(job.generation)
+        _MEDIA_REGISTERED.setdefault(kind, {})[job.generation] = (job.model, job.body)
     if settle:
         # The job already ended (stopped) before its POST answered: no readiness wait settles it.
         _settle_media_generation(
@@ -948,7 +951,10 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
 
     Status and load-progress carry no load identity, so the load is attributed by order: this
     process requested no newer load of the slot that registered, and the backend shows this
-    model resident or a load still in flight (a second load is refused while one runs).
+    model resident or a load still in flight (a second load is refused while one runs). A newer
+    registered load the backend no longer shows resident was evicted some other way and stops
+    counting. Limit: when the newer load is the same model, the two cannot be told apart, and the
+    resident one is left alone as the model the caller asked for last.
     """
     routes = MEDIA_ROUTES[kind]
     if job.post is None:
@@ -964,24 +970,36 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
             if newer:
                 await asyncio.wait(newer)
                 continue
-            if _newer_media_registered(kind, job.generation):
-                return  # A newer load registered and is still current: it is what the caller wants now.
-            progress = as_dict(await route_json("GET", routes["progress"], caller = caller))
-            status = as_dict(await route_json("GET", routes["status"], caller = caller))
+            # Bounded: a stalled read counts as a route error and is retried below.
+            progress = as_dict(
+                await asyncio.wait_for(route_json("GET", routes["progress"], caller = caller), READ_S)
+            )
+            status = as_dict(
+                await asyncio.wait_for(route_json("GET", routes["status"], caller = caller), READ_S)
+            )
             # Rechecked with no await before the unload, so it never cancels a newer request's load.
             if _newer_media_outcomes(kind, job.generation):
                 continue
-            if _newer_media_registered(kind, job.generation):
-                return
             phase = opt_text(progress.get("phase"))
             in_flight = phase not in (None, "ready", "error")
+            registered = _MEDIA_REGISTERED.get(kind, {})
+            replacements = _newer_media_registered(kind, job.generation)
+            if replacements:
+                if in_flight or any(
+                    _resident_matches(status, *registered[g]) for g in replacements
+                ):
+                    return  # A newer load is (or may be) what is resident: what the caller wants now.
+                # Evicted outside this process's unload (another load, Studio's own unload route):
+                # those registrations are stale and no longer defer this unload.
+                for g in replacements:
+                    registered.pop(g, None)
             if not in_flight and not _resident_matches(status, job.model):
                 return  # Gone or replaced: not a load this job can be shown to own.
             _mark_media_unloaded(kind)
             await route_json("POST", routes["unload"], caller = caller)
             return
         except Exception:
-            # A transient route error: read the slot again rather than leave the load resident.
+            # A transient route error or a stalled read: read the slot again rather than leave the load resident.
             failures += 1
             if failures >= _LATE_UNLOAD_ATTEMPTS:
                 return

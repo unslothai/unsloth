@@ -1405,6 +1405,86 @@ def test_a_late_media_unload_retries_a_transient_route_error(monkeypatch, fast_p
     assert failed and state["unloads"] == [0, 1]
 
 
+def test_a_late_media_unload_retries_a_stalled_status_read(monkeypatch, fast_polls):
+    # The late unload's first status read never answers: it times out at READ_S and is retried.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.3,))
+    monkeypatch.setattr(loading, "READ_S", 0.1)
+    fake = loading.route_json
+    stalled = []
+
+    async def route_json(method, path, **kw):
+        if path == "/api/inference/video/status" and state["registered"] and not stalled:
+            stalled.append(path)
+            await asyncio.Event().wait()
+        return await fake(method, path, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        await asyncio.sleep(0.4)
+        await asyncio.wait_for(_late_unloads_done(), 3)
+
+    asyncio.run(scenario())
+    assert stalled and state["unloads"] == [0, 1]
+
+
+def test_a_late_media_unload_runs_after_the_replacement_is_evicted_elsewhere(
+    monkeypatch, fast_polls
+):
+    # A newer load of another model registers, then is evicted without unload_model (Studio's own
+    # unload route, another load): once the stopped POST lands, its model is the resident one and
+    # the stale registration must not keep it loaded.
+    other = "Wan-AI/Wan2.1-T2V-1.3B"
+    _late_unload_scenario(monkeypatch, post_s = ())
+    state = {"resident": None, "unloads": []}
+
+    async def route_json(method, path, caller = None, json_body = None, **_kw):
+        if path == "/api/inference/video/load":
+            model = json_body["model_path"]
+            await asyncio.sleep(0.5 if model == LTX else 0.05)
+            state["resident"] = model
+            return {"loaded": True, "repo_id": model}
+        if path == "/api/inference/video/unload":
+            state["unloads"].append(state["resident"])
+            state["resident"] = None
+            return UNLOADED
+        if path.endswith("/load-progress"):
+            return READY if state["resident"] else {"phase": None}
+        if path == "/api/inference/video/status" and state["resident"]:
+            return {"loaded": True, "repo_id": state["resident"]}
+        return UNLOADED
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+    monkeypatch.setattr(loading, "try_json", lambda caller, path: route_json("GET", path))
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        newer = await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = other,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        assert newer.loaded is True
+        state["resident"] = None  # Evicted outside the MCP unload.
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [None, LTX]
+    assert state["resident"] is None
+
+
 def test_a_stopped_post_that_fails_while_the_unload_runs_needs_no_late_unload(
     monkeypatch, fast_polls
 ):
