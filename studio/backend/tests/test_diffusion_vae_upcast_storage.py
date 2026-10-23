@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An fp32 run of a force_upcast 16-bit VAE keeps its stored weights: the same tensors (and so the same pinned host
-copies under model offload) before and after, and the same fp32 output as the stock ``vae.to(torch.float32)``."""
+"""An fp32 run of a force_upcast 16-bit VAE keeps its stored (pinned) tensors and matches stock fp32 output."""
 
 from __future__ import annotations
 
@@ -99,7 +98,6 @@ def test_pipeline_round_trip_is_bit_identical_and_keeps_storage():
         assert vae.dtype == torch.float32
         out = vae.decode(z).sample
         vae.to(dtype = torch.float16)
-        # Device moves and other casts still run.
         assert vae.to("cpu") is vae
     assert "to" not in vae.__dict__
     assert _storage(vae) == before

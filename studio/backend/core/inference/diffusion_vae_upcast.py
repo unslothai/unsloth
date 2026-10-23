@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""fp32 VAE runs that leave a 16-bit VAE's stored weights in place.
-
-diffusers' ``force_upcast`` round trip (``vae.to(fp32)`` then back) replaces every parameter's storage, so under
-CPU offload the pinned host weights are lost and each onload becomes a pageable fp32 copy. Here the upcast onloads
-through the kept offload hook, casts on device, and the cast back restores the original tensor objects. Values are
-identical (16-bit -> fp32 is exact).
-"""
+"""fp32 VAE runs that leave a 16-bit VAE's stored weights in place."""
 
 from __future__ import annotations
 
@@ -66,7 +60,6 @@ def upcast_keeping_storage(
     parts: Optional[list] = None,
     dtype: Any = None,
 ) -> list:
-    """Cast ``parts`` (default ``[owner]``) to fp32; returns the token for ``restore_storage``."""
     import torch
 
     dtype = torch.float32 if dtype is None else dtype
@@ -86,8 +79,7 @@ def upcast_keeping_storage(
 
 
 def _restorable(current: Any, orig: Any, cast_ptr: Any) -> bool:
-    """``current`` holds ``orig``'s values: our untouched fp32 cast (meta included), or a load-dtype cast of it made
-    inside the block (diffusers < 0.37 ``upcast_vae`` casts a few submodules back). fp16 / bf16 -> fp32 is exact."""
+    """``current`` holds ``orig``'s values (diffusers < 0.37 ``upcast_vae`` casts some submodules back)."""
     import torch
 
     if current.device != orig.device or current.shape != orig.shape:
@@ -126,7 +118,6 @@ def restore_storage(token: list) -> None:
 
 @contextlib.contextmanager
 def fp32_keeping_storage(owner: Any, parts: Optional[list] = None):
-    """Run ``parts`` of ``owner`` in fp32 for the block, then restore the original tensors."""
     token = upcast_keeping_storage(owner, parts)
     try:
         yield
