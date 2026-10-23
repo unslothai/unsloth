@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -290,6 +292,18 @@ def test_windows_load_progress_follows_bytes_read_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: None))
     monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: 250))
     assert inst.load_progress()["fraction"] == 0.25
+
+
+def test_linux_rss_term_leaves_out_pinned_upload_buffers():
+    """With --load-mode none, CUDA's pinned host buffer is resident before a byte of the weights is
+    read (3090: VmRSS 6.39 GB, 5.99 GB of it RssShmem, 0.16 GB read), which put the bar at 23% and held
+    it there until the reads passed it. Only the file-backed share is what a mapped load pages in."""
+    status = "VmRSS:\t6390000 kB\nRssAnon:\t250000 kB\nRssFile:\t150000 kB\nRssShmem:\t5990000 kB\n"
+    with patch("builtins.open", side_effect = lambda *a, **kw: io.StringIO(status)):
+        assert LlamaCppBackend._read_rss_bytes(4242) == 150000 * 1024
+    # A kernel without the split (before 4.5) still gives VmRSS.
+    with patch("builtins.open", side_effect = lambda *a, **kw: io.StringIO("VmRSS:\t2048 kB\n")):
+        assert LlamaCppBackend._read_rss_bytes(4242) == 2048 * 1024
 
 
 def test_no_load_signal_reports_no_figure(tmp_path, monkeypatch):

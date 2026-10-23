@@ -9467,18 +9467,23 @@ class LlamaCppBackend:
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
-        """Resident set size of ``pid`` in bytes, from /proc/<pid>/status (Linux).
-        0 when the status has no VmRSS line (zombie / kernel thread); None where
-        /proc is unavailable (macOS/Windows) or the value is unreadable."""
+        """File-backed resident bytes of ``pid`` (``RssFile``) from /proc/<pid>/status (Linux): what a
+        memory-mapped load pages in. CUDA's pinned upload buffers (``RssShmem``) and other allocations
+        (``RssAnon``) are resident before a byte of the weights is read, so they are left out.
+        ``VmRSS`` on a kernel without that split (before 4.5). 0 when the status has neither
+        (zombie / kernel thread); None where /proc is unavailable (macOS/Windows) or the value is unreadable."""
+        vm_rss = None
         try:
             with open(f"/proc/{pid}/status", "r", encoding = "utf-8") as f:
                 for line in f:
-                    if line.startswith("VmRSS:"):
-                        # IndexError guards a "VmRSS:" line with no value column.
+                    # IndexError guards a line with no value column.
+                    if line.startswith("RssFile:"):
                         return int(line.split()[1]) * 1024  # kB -> bytes
+                    if line.startswith("VmRSS:"):
+                        vm_rss = int(line.split()[1]) * 1024
         except (FileNotFoundError, PermissionError, ValueError, IndexError, OSError):
             return None
-        return 0  # readable but no VmRSS line
+        return 0 if vm_rss is None else vm_rss
 
     @staticmethod
     def _read_load_bytes(pid: int) -> Optional[int]:
@@ -9552,9 +9557,9 @@ class LlamaCppBackend:
     def load_progress(self) -> Optional[dict]:
         """Return live model-load progress, or None if not loading.
 
-        ``bytes_loaded`` is the larger of the bytes read (``_read_load_bytes``) and Linux RSS, which
-        is what a memory-mapped load pages in. Windows skips its working set: it counts buffers
-        llama.cpp allocates before reading a byte. The total is the shards plus a projector or draft
+        ``bytes_loaded`` is the larger of the bytes read (``_read_load_bytes``) and Linux file-backed
+        RSS, which is what a memory-mapped load pages in. Neither counts buffers llama.cpp allocates
+        before reading a byte, which is why Windows skips its working set. The total is the shards plus a projector or draft
         model named on the command line.
 
         Shape::
