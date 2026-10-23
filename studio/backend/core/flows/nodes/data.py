@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -51,7 +52,8 @@ def declarative_recipe(payload: Any) -> dict:
         recipe.pop(key, None)
     for provider in recipe.get("model_providers") or []:
         if isinstance(provider, dict):
-            for secret in ("api_key", "api_key_env", "extra_headers"):
+            # `api_key_env` only names a variable; Studio reads it for non-managed accounts, as on the Data Recipes page.
+            for secret in ("api_key", "extra_headers"):
                 provider.pop(secret, None)
     for column in recipe.get("columns") or []:
         if isinstance(column, dict):
@@ -78,6 +80,9 @@ async def recipe(ctx: NodeContext) -> dict:
         raise FlowNodeError("Pick a saved Data Recipe")
     record = await ctx.call("GET", f"{RECIPES}/recipes/{quote(recipe_id, safe = '')}")
     body = declarative_recipe(record.get("payload") if isinstance(record, dict) else None)
+    seed = ctx.inputs.get("seed")
+    if isinstance(seed, dict) and seed.get("kind") == "dataset":
+        body["seed_config"] = await seed_config(ctx, seed, body.get("seed_config"))
     mode = "preview" if ctx.params.get("mode") == "preview" else "full"
     run: dict[str, Any] = {"execution_type": mode}
     rows = int(ctx.params.get("rows") or 0)
@@ -121,15 +126,75 @@ async def recipe(ctx: NodeContext) -> dict:
             preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
     except FlowNodeError:
         pass
-    return {
-        "dataset": {
+    rows = status.get("rows") if isinstance(status, dict) else None
+    artifact = status.get("artifact_path") if isinstance(status, dict) else None
+    if isinstance(artifact, str) and artifact.strip():
+        # The saved parquet outlives this job, unlike the job id, which only pages while it is the current job.
+        ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
+        dataset = {
             "kind": "dataset",
             "source": "recipe",
-            "ref": job_id,
-            "rows": status.get("rows") if isinstance(status, dict) else None,
-        },
-        "preview": preview,
-    }
+            "ref": ref,
+            "job_id": job_id,
+            "rows": rows,
+        }
+    else:
+        # A preview keeps its rows in memory only, so save them while this job can still page them.
+        kept = await recipe_rows(ctx, job_id)
+        if not kept:
+            raise FlowNodeError("The Data Recipe produced no rows")
+        dataset = await upload_rows(ctx, kept, f"recipe-{job_id}")
+    return {"dataset": dataset, "preview": preview}
+
+
+def recipe_artifact(ref: Any) -> bool:
+    """True for a recipe dataset saved as parquet (`recipes/<run>/parquet-files`), not an older job id."""
+    return isinstance(ref, str) and ref.startswith("recipes/") and ".." not in ref.split("/")
+
+
+async def seed_config(ctx: NodeContext, dataset: dict, current: Any) -> dict:
+    """A seed for an upstream dataset, keeping the recipe's own sampling and selection."""
+    base = current if isinstance(current, dict) else {}
+    keep = {k: base[k] for k in ("sampling_strategy", "selection_strategy") if k in base}
+    keep.setdefault("sampling_strategy", "ordered")
+    source = dataset.get("source")
+    ref = dataset.get("ref")
+    if source == "hf":
+        inspected = await ctx.call(
+            "POST",
+            f"{RECIPES}/seed/inspect",
+            json = {
+                "dataset_name": str(ref),
+                "split": dataset.get("split") or "train",
+                "subset": dataset.get("subset"),
+                "preview_size": 1,
+            },
+        )
+        path = inspected.get("resolved_path") if isinstance(inspected, dict) else None
+        if not path:
+            raise FlowNodeError(f"Unsloth Studio could not read the seed dataset {ref}")
+        return {**keep, "source": {"seed_type": "hf", "path": path}}
+    if source in ("local", "recipe"):
+        return {**keep, "source": {"seed_type": "local", "path": local_seed_path(ref)}}
+    raise FlowNodeError("A recipe seed takes a Hub dataset, a Data Recipe or Rows to Dataset")
+
+
+def local_seed_path(ref: Any) -> str:
+    from hub.utils.host_paths import resolve_host_path_reference
+    from utils.paths import resolve_dataset_path
+
+    text = str(ref or "")
+    found = resolve_host_path_reference(text) if text.startswith("ref:") else None
+    if found is None and not text.startswith("ref:"):
+        try:
+            found = str(resolve_dataset_path(text))
+        except ValueError as exc:
+            raise FlowNodeError(f"That seed dataset is not one Studio can read: {exc}") from exc
+    if not found or not Path(found).exists():
+        raise FlowNodeError(
+            "The seed dataset is no longer available; run the step that made it again"
+        )
+    return f"{found}/*.parquet" if Path(found).is_dir() else found
 
 
 @handler("data.rows_to_dataset")
