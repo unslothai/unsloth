@@ -180,7 +180,7 @@ export function DatasetMappingCard({
                 size="sm"
                 onClick={onAiAssist}
                 disabled={isAiLoading}
-                className="cursor-pointer bg-white/60 dark:bg-transparent"
+                className="cursor-pointer"
               >
                 {isAiLoading ? (
                   <>

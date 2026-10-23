@@ -531,7 +531,7 @@ export function PermissionModeDropdown({
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <Button
-            variant="outline"
+            variant="picker"
             size="sm"
             className={cn("gap-1.5", triggerClassName)}
             aria-label="Permission level for tool calls"

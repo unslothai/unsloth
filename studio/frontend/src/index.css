@@ -6463,8 +6463,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 .unsloth-files-panel-action {
 	/* pt-px: centred by its line box, the cap-height text sits half a pixel high. */
-	@apply inline-flex h-7 shrink-0 items-center rounded-full border px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
-	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
+	@apply inline-flex h-7 shrink-0 items-center rounded-full px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
+	background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
 }
 .unsloth-files-panel-action:hover {
 	background-color: rgb(0 0 0 / calc(0.09 * var(--contrast-wash-gain, 1)));

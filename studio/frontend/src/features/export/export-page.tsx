@@ -2255,7 +2255,7 @@ export function ExportPage() {
                     })
                   }
                   aria-label="Scroll to export output"
-                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full border border-border/60 bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
+                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
                 >
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}

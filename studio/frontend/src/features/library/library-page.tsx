@@ -1115,7 +1115,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onClick={bulkDownload}
               className={cn(
                 BAR_PILL,
-                "border border-border transition-colors hover:bg-sidebar-accent dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent",
+                "transition-colors bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
               )}
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
@@ -1127,7 +1127,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onClick={() => requestDelete(deletableSelection())}
               className={cn(
                 BAR_PILL,
-                "border border-red-500/70 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
+                "bg-red-500/10 text-red-600 transition-colors hover:bg-red-500/15 dark:text-red-400",
               )}
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />

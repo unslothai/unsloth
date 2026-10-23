@@ -259,7 +259,7 @@ export function ColorPickerSwatch({
                   "settings.appearance.custom.colorPicker.eyedropper",
                 )}
                 title={t("settings.appearance.custom.colorPicker.eyedropper")}
-                className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors hover:text-foreground"
+                className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] text-muted-foreground transition-colors hover:text-foreground"
               >
                 <HugeiconsIcon icon={ColorPickerIcon} className="size-4" />
               </button>

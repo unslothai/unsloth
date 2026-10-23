@@ -678,7 +678,7 @@ function RunDialogBody({
           variant="outline"
           onClick={onClose}
           disabled={loading}
-          className="corner-squircle border-border/70 bg-card/70"
+          className="corner-squircle"
         >
           Cancel
         </Button>
@@ -687,7 +687,7 @@ function RunDialogBody({
           variant="outline"
           onClick={onValidate}
           disabled={loading || validateLoading}
-          className="corner-squircle border-border/70 bg-card/70"
+          className="corner-squircle"
         >
           <HugeiconsIcon icon={TestTube01Icon} className="size-3.5" />
           {validateLoading ? "Checking..." : "Check recipe"}
