@@ -339,6 +339,29 @@ def test_prepare_rejects_non_list_masks_with_the_mask_error(mask):
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
+@pytest.mark.parametrize("fmt", [None, "numpy", "torch"])
+@pytest.mark.parametrize("mask", [0, 1.0, True])
+def test_prepare_rejects_streamed_scalar_masks_with_the_mask_error(mask, fmt, monkeypatch):
+    # Streamed rows skip the Arrow type check: a scalar mask must not surface as len()'s TypeError.
+    monkeypatch.setattr("datasets.config.TORCHVISION_AVAILABLE", False)  # torchvision without VideoReader
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "assistant_masks": [mask]}).to_iterable_dataset()
+    if fmt:
+        ds = ds.with_format(fmt)
+    out = prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100)
+    with pytest.raises(ValueError, match = "'assistant_masks' must have the same length"):
+        list(out)
+
+
+@pytest.mark.parametrize("fmt", ["numpy", "torch"])
+def test_prepare_truncates_streamed_array_masks(fmt, monkeypatch):
+    monkeypatch.setattr("datasets.config.TORCHVISION_AVAILABLE", False)
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3]], "assistant_masks": [[0, 1, 1]]}
+    ).to_iterable_dataset().with_format(fmt)
+    rows = list(prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = 100))
+    assert [list(map(int, r["assistant_masks"])) for r in rows] == [[0, 1]]
+
+
 def test_only_user_labels_turn_off_response_masking():
     assert has_custom_labels(_pretokenized(with_labels = True))
     assert not has_custom_labels(_pretokenized(with_labels = False))

@@ -168,7 +168,12 @@ def prepare_pretokenized_dataset(
             # Streamed rows never reach _check_arrow_table: check the masks before slicing.
             for name in masks:
                 for ids, mask in zip(batch["input_ids"], batch[name]):
-                    if mask is None or ids is None or len(mask) != len(ids):
+                    # A scalar (None, int, numpy 0-d) has no len(): the mask error, as on the Arrow path.
+                    try:
+                        bad = ids is None or len(mask) != len(ids)
+                    except TypeError:
+                        bad = True
+                    if bad:
                         raise _mask_error(name)
             return {
                 c: [v[:max_seq_length] if v is not None else v for v in batch[c]] for c in columns
