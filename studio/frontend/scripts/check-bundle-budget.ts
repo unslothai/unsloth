@@ -398,6 +398,17 @@ export const BUDGET = {
   // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
   // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
   // about 100 B over a local one).
+  // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +146 B transfer (6,925,639 ->
+  // 6,926,187 B raw, 2,086,290 -> 2,086,436 B transfer against 0ee5cfc58, Node 24, 98 chunks), where main
+  // was already over the line above. Set to the merged build plus about 200 B.
+  // macOS Desktop stray key text guard (#14815), eager in main.tsx: +278 B raw / +114 B transfer
+  // (6,925,639 -> 6,925,917 B raw, 2,086,290 -> 2,086,404 B transfer against 14e0178e0, Node 24, chunk count
+  // unchanged at 98). Raised by +278 B raw / +129 B transfer so main's margin stays where it was.
+  // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +298 B transfer (6,925,028 ->
+  // 6,926,117 B raw, 2,086,327 -> 2,086,625 B transfer against 394aff8545, Node 26, 99 chunks). Raised by that.
+  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
+  // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
+  // that plus about 300 B raw / 100 B transfer, as for #14568.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -420,8 +431,10 @@ export const BUDGET = {
   // Merged with main at 96ccc9a256: measured 6,767.9 KB raw / 2,038.8 KB transfer (Node 24, 98 chunks), set to that plus about 200 B.
   // Merged with main at 14e0178e00: measured 6,770.5 KB raw / 2,039.7 KB transfer (Node 24, 98 chunks), set to that plus
   // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
-  transferBytes: 2_088_810,
-  rawBytes: 6_933_350,
+  // Merged with main at fb104d2b57: measured 6,774.6 KB raw / 2,041.2 KB transfer (Node 24, 99 chunks), set to that plus
+  // about 300 B raw / 100 B transfer (CI measures about 100 B over a local build).
+  transferBytes: 2_090_340,
+  rawBytes: 6_937_540,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

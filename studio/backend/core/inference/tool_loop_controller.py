@@ -282,6 +282,15 @@ class ToolCallDecision:
     def tool_start_event(self) -> dict[str, Any]:
         return {"type": "tool_start", **self.tool_start_payload()}
 
+    def tool_approved_event(self, approval_id: str) -> dict[str, Any]:
+        """Tells the run's other followers the parked call was allowed, ahead of tool_end."""
+        return {
+            "type": "tool_approved",
+            "tool_name": self.tool_name,
+            "tool_call_id": self.card_id,
+            "approval_id": approval_id,
+        }
+
     def as_assistant_tool_call(self) -> dict[str, Any]:
         """Return an OpenAI-style tool_call with normalized arguments."""
         fragment = self.unparsed_fragment
@@ -855,9 +864,64 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         path = str(arguments.get("path") or "").strip()
         name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
         return f"Editing: {name}" if name else "Editing file..."
+    if tool_name in BROWSER_TOOL_NAMES:
+        return _browser_status(tool_name, arguments)
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"
+    return f"Calling: {tool_name}"
+
+
+def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
+    """The badge for a browser tool: what it does, in the user's terms, not the tool's name."""
+
+    def text(key: str, limit: int = 60) -> str:
+        return " ".join(str(arguments.get(key) or "").split())[:limit]
+
+    ref = text("ref", 12)
+    if tool_name == "browser_navigate":
+        url = text("url", 4096)
+        if url.lower() in ("back", "forward", "reload"):
+            return {
+                "back": "Going back",
+                "forward": "Going forward",
+                "reload": "Reloading the page",
+            }[url.lower()]
+        try:
+            host = urlparse(url if "://" in url else f"https://{url}").hostname or ""
+        except ValueError:
+            host = ""
+        host = host[4:] if host.startswith("www.") else host
+        return f"Opening: {host}" if host else "Opening a page..."
+    if tool_name == "browser_snapshot":
+        return "Reading the page"
+    if tool_name == "browser_find":
+        query = text("query")
+        return f"Finding: {query}" if query else "Finding on the page..."
+    if tool_name == "browser_click":
+        return f"Clicking: {ref}" if ref else "Clicking the page"
+    if tool_name == "browser_type":
+        preview = text("text", 40)
+        return f"Typing: {preview}" if preview else "Typing..."
+    if tool_name == "browser_select":
+        value = text("value", 40)
+        return f"Choosing: {value}" if value else "Choosing an option..."
+    if tool_name == "browser_scroll":
+        return "Scrolling up" if text("direction").lower() == "up" else "Scrolling down"
+    if tool_name == "browser_press_key":
+        key = text("key", 20)
+        return f"Pressing: {key}" if key else "Pressing a key..."
+    if tool_name == "browser_evaluate":
+        return "Running a script on the page"
+    if tool_name == "browser_screenshot":
+        return "Taking a screenshot"
+    if tool_name == "browser_history":
+        query = text("query")
+        return f"Searching browsing history: {query}" if query else "Reading browsing history"
+    if tool_name == "browser_move_mouse":
+        return "Moving the mouse"
+    if tool_name == "browser_drag":
+        return "Dragging"
     return f"Calling: {tool_name}"
 
 

@@ -482,6 +482,42 @@ def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
     assert pipe.device == before
 
 
+def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch):
+    """ModularPipeline reports its first component's card (the text encoder, on the secondary): step 0 device mismatch."""
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
+    import importlib
+
+    try:
+        diffusers = importlib.import_module("diffusers")
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"diffusers is not importable here: {type(exc).__name__}")
+    ModularPipeline = getattr(diffusers, "ModularPipeline", None)
+    if ModularPipeline is None:
+        pytest.skip("this diffusers has no modular pipelines")
+
+    class Mod(torch.nn.Linear):
+        @property
+        def device(self):
+            return self.weight.device
+
+    class Pipe(ModularPipeline):
+        def __init__(self, text_encoder, transformer):
+            self._component_specs = {"text_encoder": None, "transformer": None}
+            self.text_encoder = text_encoder
+            self.transformer = transformer
+
+    text_encoder = Mod(1, 1).to("meta")  # the secondary card of the split
+    transformer = Mod(1, 1)  # the primary
+    pipe = Pipe(text_encoder, transformer)
+    assert pipe.device == torch.device("meta")  # stock: the first component's card
+    mg.install_execution_device_patch()
+    transformer._unsloth_split_home = torch.device("cpu")
+    assert pipe._execution_device == torch.device("cpu")
+    assert pipe.device == torch.device("cpu")
+    del transformer._unsloth_split_home
+    assert pipe.device == torch.device("meta")  # no split: diffusers' own answer again
+
+
 def test_place_split_and_fallback(monkeypatch):
     class Pipe:
         def __init__(self):
@@ -2375,6 +2411,46 @@ def test_router_stays_on_the_source_for_a_forced_eager_render_and_the_compile_th
         assert replicas == [] and router.stats["replica_calls"] == 0 and router.prev_latent is None
     out = _cfg_loop(dit, latents.clone(), steps = 4)
     assert torch.equal(out, reference) and router.stats["replica_calls"] == 3
+
+
+def test_router_keeps_the_forward_signature_callers_filter_on():
+    """FLUX.3's modular denoise step filters kwargs by forward's signature; a bare router dropped img_ids/txt_ids."""
+    import inspect
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(4, 4)
+
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states = None,
+            timestep = None,
+            img_ids = None,
+            txt_ids = None,
+            return_dict = True,
+        ):
+            assert img_ids is not None and txt_ids is not None, "the ids were filtered out"
+            return (self.lin(hidden_states) + img_ids.sum() + txt_ids.sum(),)
+
+    dit = Dit()
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu")
+    dit.forward = router
+    fields = {"img_ids": torch.zeros(2, 4), "txt_ids": torch.zeros(3, 4), "guidance_hint": 1.0}
+    # the call diffusers' modular_pipelines/flux3/denoise.py makes
+    accepted = set(inspect.signature(dit.forward).parameters)
+    kwargs = {k: v for k, v in fields.items() if k in accepted}
+    assert sorted(kwargs) == ["img_ids", "txt_ids"]
+    x = torch.randn(1, 4)
+    out = dit(
+        hidden_states = x,
+        encoder_hidden_states = None,
+        timestep = torch.ones(1),
+        return_dict = False,
+        **kwargs,
+    )[0]
+    assert torch.equal(out, dit.lin(x))
 
 
 def test_replica_blocks_get_their_own_compile_guard():

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import type * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -8,10 +9,6 @@ import { cn } from "@/lib/utils";
 import {
   MoreHorizontalCircle01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Pagination({ className, ...props }: React.ComponentProps<"nav">) {
@@ -81,7 +78,7 @@ function PaginationPrevious({
       className={cn("pl-2!", className)}
       {...props}
     >
-      <ChevronLeftIcon
+      <HugeiconsIcon icon={ChevronLeftStandardIcon}
         strokeWidth={2}
         data-icon="inline-start"
       />
@@ -102,7 +99,7 @@ function PaginationNext({
       {...props}
     >
       <span className="hidden sm:block">Next</span>
-      <ChevronRightIcon
+      <HugeiconsIcon icon={ChevronRightStandardIcon}
         strokeWidth={2}
         data-icon="inline-end"
       />
