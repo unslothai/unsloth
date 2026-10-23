@@ -41,6 +41,8 @@ _KEPT_UNDER_ALWAYS = frozenset({CHAT, DIFFUSION, VIDEO})
 _lock = threading.Lock()
 _owner: Optional[str] = None
 _owner_epoch = 0
+# Counts real loads and replacements only (a re-assert by a chat request leaves it alone).
+_loads = 0
 # Account whose load put the current owner on the GPU, so routes can refuse to evict it.
 _owner_account: Optional[str] = None
 _prior_account: Optional[str] = None
@@ -539,7 +541,7 @@ def _sync_from_view() -> None:
 
 def _drop_resident(owner: str) -> None:
     """Remove ``owner`` and recompute ``_owner`` from the residents left. Caller holds ``_lock``."""
-    global _owner, _owner_epoch, _owner_account, _prior_account
+    global _owner, _owner_epoch, _owner_account, _prior_account, _loads
     _sync_from_view()
     if owner not in _residents:
         return
@@ -609,6 +611,9 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
 
 class GpuLeaseHeldError(GpuBusyForAnotherAccountError):
     """An operation (a benchmark, an eval) holds the GPU for a measurement; routes answer 409 ``gpu_leased``."""
+
+    # A training start that meets a lease at its teardown aborts instead of freeing the GPU anyway.
+    blocks_training = True
 
     def __init__(self, label: str, remaining_s: float):
         self.label = label
@@ -689,16 +694,23 @@ def operation_lease(
     global _lease
     import time
 
-    with _lease_lock:
-        lease = _live_lease()
-        if lease is not None and lease["holder"] != holder:
-            raise GpuLeaseHeldError(lease["label"], lease["expires"] - time.monotonic())
-        _lease = {
-            "kind": kind,
-            "holder": holder,
-            "label": label or kind.capitalize(),
-            "expires": time.monotonic() + max(1.0, ttl),
-        }
+    # Install under _lock too, so a residency change already past its lease check finishes first. Never block on it:
+    # callers run on the event loop, and a busy arbiter reads as "try again shortly".
+    if not _lock.acquire(blocking = False):
+        raise GpuLeaseHeldError("A model change", 2.0)
+    try:
+        with _lease_lock:
+            lease = _live_lease()
+            if lease is not None and lease["holder"] != holder:
+                raise GpuLeaseHeldError(lease["label"], lease["expires"] - time.monotonic())
+            _lease = {
+                "kind": kind,
+                "holder": holder,
+                "label": label or kind.capitalize(),
+                "expires": time.monotonic() + max(1.0, ttl),
+            }
+    finally:
+        _lock.release()
     token = _lease_holder.set(holder)
     try:
         yield
@@ -777,18 +789,19 @@ def acquire_for(
     ``need_mib`` is what an image or video load will hold per physical GPU (None: unknown, so it evicts first),
     and ``evict_first`` makes a chat load with no estimate before launch evict as "off" does.
     """
-    global _owner, _owner_epoch, _owner_account, _prior_account
+    global _owner, _owner_epoch, _owner_account, _prior_account, _loads
     if owner not in _EVICTORS:
         raise ValueError(f"unknown GPU owner: {owner!r}")
     from utils.account_context import current_account_id
 
     acting = account_id or current_account_id()
-    if register is not None or replacing or owner not in _view(current_owner()):
-        # A plain re-assert of a resident model changes nothing, so generation keeps working under a lease.
-        raise_if_leased()
     # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
     handover = owner != DIFFUSION or register is not None or replacing
     with _lock, _handover_fence() if handover else nullcontext():
+        # Checked under _lock, which a lease also takes to install, so no residency change starts after a lease does.
+        # A plain re-assert of a resident model changes nothing, so generation keeps working under a lease.
+        if register is not None or replacing or owner not in _view(current_owner()):
+            raise_if_leased()
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         coreside = policy != "off" and owner in _KEPT_UNDER_ALWAYS
@@ -882,9 +895,15 @@ def acquire_for(
                 )
         _residents[owner] = gpus_now
         _owner_epoch += 1
+        counted = register is not None or replacing
+        if counted:
+            _loads += 1
         try:
             result = register() if register is not None else None
         except BaseException:
+            if counted:
+                # A refused load changed nothing, so a loaded model's settings stay current.
+                _loads -= 1
             if held_before is not ...:
                 # The model already loaded stays where it was.
                 _residents[owner] = held_before
@@ -1030,6 +1049,11 @@ def owner_account(owner: Optional[str] = None) -> Optional[str]:
     if owner is None or owner == _owner:
         return _owner_account
     return _accounts.get(owner, (None, None))[0]
+
+
+def load_count() -> int:
+    """How many residency-changing loads have gone through; a changed value means some model was (re)loaded."""
+    return _loads
 
 
 def owner_snapshot() -> tuple[Optional[str], int]:

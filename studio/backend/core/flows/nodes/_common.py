@@ -151,6 +151,34 @@ def gallery_media(kind: str, row: dict, **extra: Any) -> dict:
     return value
 
 
+def gallery_media_present(value: Any) -> bool:
+    """False when a value holds an image, clip or video whose gallery entry is gone (the user deleted it)."""
+    from core.inference import audio_gallery, image_gallery, video_gallery
+
+    owned = {
+        "image": image_gallery.owned_image_path,
+        "audio": audio_gallery.owned_audio_path,
+        "video": video_gallery.owned_video_path,
+    }
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            ref = item.get("ref")
+            kind, _, media_id = ref.partition(":") if isinstance(ref, str) else ("", "", "")
+            if (
+                kind in owned
+                and media_id
+                and item.get("kind") == kind
+                and owned[kind](media_id) is None
+            ):
+                return False
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
+
+
 async def media_bytes(ctx: Any, media: Any) -> tuple[bytes, str]:
     if not isinstance(media, dict) or not isinstance(media.get("ref"), str):
         raise FlowNodeError("Expected an image, audio clip or video")
@@ -207,7 +235,7 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
 # Studio's status names a GGUF by repo only, so the variant Flows last loaded per slot is kept here.
 _LOADED_VARIANT: dict[str, tuple[str, str]] = {}
 # The load settings of the model Flows last loaded per slot, (repo, settings hash); absent = Studio's defaults.
-_LOADED_OPTIONS: dict[str, tuple[str, str]] = {}
+_LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 
 
 def options_hash(options: Optional[dict]) -> Optional[str]:
@@ -256,13 +284,18 @@ async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None
 
     if MODEL_SLOT.get(model_kind, model_kind) != "llm":
         return
+    title = (getattr(ctx, "spec", None) or {}).get("title") or "This step"
     try:
         _slots, status = await loading._resident(_caller(ctx))
     except Exception:
-        return
-    backend = "gguf" if status.get("is_gguf") else "transformers"
+        status = None
+    # Unverified is not a pass: a GGUF behind a failed status read would break the step later, less clearly.
+    if not isinstance(status, dict) or not isinstance(status.get("is_gguf"), bool):
+        raise FlowNodeError(
+            f"{title} could not check which backend the model loaded on; try again", retryable = True
+        )
+    backend = "gguf" if status["is_gguf"] else "transformers"
     if backend not in requires:
-        title = (getattr(ctx, "spec", None) or {}).get("title") or "This step"
         want = " or ".join("a GGUF" if r == "gguf" else "a transformers" for r in requires)
         have = "GGUF" if backend == "gguf" else "transformers"
         raise FlowNodeError(f"{title} needs {want} model, not {have}")
@@ -293,12 +326,18 @@ async def _ensure_model(
     resident = await resident_name(ctx, model_kind)
     wanted = (repo.lower(), (variant or "").lower())
     settings = options_hash(options)
+    from core.inference import gpu_arbiter
+
     loaded_with = _LOADED_OPTIONS.get(slot)
+    # Any other load since then (another caller may have reloaded this repo with defaults) voids the record.
+    if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count():
+        _LOADED_OPTIONS.pop(slot, None)
+        loaded_with = None
     # Without settings anything Studio loaded counts, as before; only a model Flows loaded with settings differs.
     same_settings = (
         loaded_with is None or loaded_with[0] != repo.lower()
         if settings is None
-        else loaded_with == (repo.lower(), settings)
+        else loaded_with is not None and loaded_with[:2] == (repo.lower(), settings)
     )
     if (
         resident
@@ -347,7 +386,7 @@ async def _ensure_model(
     if settings is None:
         _LOADED_OPTIONS.pop(slot, None)
     else:
-        _LOADED_OPTIONS[slot] = (repo.lower(), settings)
+        _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count())
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
 
@@ -505,6 +544,76 @@ def _message_text(payload: Any) -> str:
     return content or ""
 
 
+class JsonFieldStream:
+    """The decoded value of one top-level string field, read from JSON as it streams in.
+
+    ``feed(text_so_far)`` returns what the field gained since the last call, so a reply's text can be shown while the
+    rest of the object (items, quests) is still being written. An escape cut off at the end waits for the next chunk.
+    """
+
+    _ESCAPES = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+
+    def __init__(self, field: str):
+        self._key = re.compile(r'[{,]\s*"' + re.escape(field) + r'"\s*:\s*"')
+        self._start: Optional[int] = None
+        self._pos = 0
+        self._done = False
+        self._pending_high: Optional[int] = None
+
+    def feed(self, text: str) -> str:
+        if self._done:
+            return ""
+        if self._start is None:
+            found = self._key.search(text)
+            if found is None:
+                return ""
+            self._start = self._pos = found.end()
+        out: list[str] = []
+        i = self._pos
+        while i < len(text):
+            ch = text[i]
+            if ch == '"':
+                self._done = True
+                i += 1
+                break
+            if ch != "\\":
+                out.append(ch)
+                i += 1
+                continue
+            if i + 1 >= len(text):
+                break
+            code = text[i + 1]
+            if code == "u":
+                if i + 6 > len(text):
+                    break
+                try:
+                    value = int(text[i + 2 : i + 6], 16)
+                except ValueError:
+                    value = 0xFFFD
+                i += 6
+                if 0xD800 <= value < 0xDC00:
+                    self._pending_high = value
+                    continue
+                if 0xDC00 <= value < 0xE000 and self._pending_high is not None:
+                    value = 0x10000 + ((self._pending_high - 0xD800) << 10) + (value - 0xDC00)
+                self._pending_high = None
+                out.append(chr(value) if not 0xD800 <= value < 0xE000 else "\ufffd")
+                continue
+            out.append(self._ESCAPES.get(code, code))
+            i += 2
+        self._pos = i
+        return "".join(out)
+
+
 async def llm_json(
     ctx: Any,
     *,
@@ -516,7 +625,9 @@ async def llm_json(
     max_tokens: int = 4096,
     seed: Optional[int] = None,
     images: Optional[list[dict]] = None,
+    on_text: Optional[Callable[[str], None]] = None,
 ) -> Any:
+    """``on_text`` streams the answer: it is called with the raw JSON written so far after every chunk."""
     from state.tool_policy import tools_force_disabled
 
     kind = "vision" if images else "chat"
@@ -530,13 +641,15 @@ async def llm_json(
         images = images,
         thinking = False,
         seed = seed,
-        stream = False,
+        stream = on_text is not None,
     )
     body["response_format"] = {
         "type": "json_schema",
         "json_schema": {"name": "flow_output", "schema": schema, "strict": True},
     }
     try:
+        if on_text is not None:
+            return first_json(await _stream_text(ctx, body, on_text))
         with tools_force_disabled():
             payload = await ctx.call("POST", "/v1/chat/completions", json = body)
         return first_json(_message_text(payload))
@@ -554,9 +667,33 @@ async def llm_json(
     body["cancel_id"] = f"flow-{uuid.uuid4().hex[:24]}"
     # The retry is a new request, so Stop needs its id too.
     _register_chat_cancel(ctx, body["cancel_id"])
+    if on_text is not None:
+        return first_json(await _stream_text(ctx, body, on_text))
     with tools_force_disabled():
         payload = await ctx.call("POST", "/v1/chat/completions", json = body)
     return first_json(_message_text(payload))
+
+
+async def _stream_text(ctx: Any, body: dict, on_text: Callable[[str], None]) -> str:
+    from core.flows import caller as flow_caller
+    from state.tool_policy import tools_force_disabled
+
+    body["stream"] = True
+    parts: list[str] = []
+    try:
+        with tools_force_disabled():
+            async for chunk in flow_caller.stream_sse(ctx.caller, "/v1/chat/completions", body):
+                ctx.check_cancelled()
+                if isinstance(chunk.get("error"), dict):
+                    raise FlowNodeError(str(chunk["error"].get("message") or "The model failed"))
+                for choice in chunk.get("choices") or []:
+                    piece = ((choice or {}).get("delta") or {}).get("content")
+                    if isinstance(piece, str) and piece:
+                        parts.append(piece)
+                        on_text("".join(parts))
+    except flow_caller.RouteError as exc:
+        raise FlowNodeError(exc.detail, status = exc.status) from None
+    return strip_think("".join(parts))
 
 
 async def generate_image(
@@ -956,6 +1093,7 @@ async def speak(
     voice: str = "",
     instructions: str = "",
     reference: Optional[dict] = None,
+    reference_text: str = "",
     seed: Optional[int] = None,
 ) -> dict:
     await ensure_model(ctx, "tts", model)
@@ -964,6 +1102,8 @@ async def speak(
     body: dict[str, Any] = {"workflow": "clone" if reference else "speak", "text": text}
     if reference:
         body["inputs"] = {"reference": await audio_ref(ctx, reference)}
+        if reference_text.strip():
+            body["inputs"]["reference_text"] = reference_text.strip()[:4000]
     if voice and not reference:
         body["options"] = {"voice": voice}
     if instructions:

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -213,7 +213,8 @@ function useRemoteOptions(spec: ParamSpec): string[] | null {
   const path = spec.options_path;
   useEffect(() => {
     if (!source) return;
-    const key = `${source}|${path ?? ""}`;
+    // Per login session: routes are account-scoped, so a new sign-in never reuses the last account's answers.
+    const key = `${getAuthSessionEpoch()}|${source}|${path ?? ""}`;
     let request = remoteOptions.get(key);
     if (!request) {
       request = authFetch(source)

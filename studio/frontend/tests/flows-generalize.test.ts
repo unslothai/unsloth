@@ -97,3 +97,24 @@ test("picker options come from a dotted path, mapping over lists", () => {
   assert.deepEqual(pickOptions(["a", 2, null], ""), ["a", "2"]);
   assert.deepEqual(pickOptions({ tasks: "oops" }, "tasks[].id"), []);
 });
+
+test("a new run drops the last run's partial but keeps its outputs", () => {
+  fresh();
+  useRuntimeStore
+    .getState()
+    .applyEvents([
+      ev(1, "node.status", "b", { status: "running" }),
+      ev(2, "node.partial", "b", {
+        port: "table",
+        value: [1],
+        step: 1,
+        total: 4,
+      }),
+      ev(3, "node.status", "b", { status: "cancelled" }),
+    ]);
+  assert.ok(useRuntimeStore.getState().nodes.b.partial);
+  useRuntimeStore.getState().startRun("r2");
+  const node = useRuntimeStore.getState().nodes.b;
+  assert.equal(node.partial, null);
+  assert.equal(node.partialStep, null);
+});
