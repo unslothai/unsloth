@@ -4214,8 +4214,7 @@ def measured_request_extra_mib(
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
-    # the dense tier seeds and the phase seeds were measured on text-to-image: a reference the guard cannot size is
-    # not covered
+    # tier and phase seeds were measured on text-to-image: an unsized reference is not covered
     tier_seeded = str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES and (
         (dense_mib is not None and sized["dense_tier_seeds"])
         or (dense_mib is None and sized["phase_seeds"])

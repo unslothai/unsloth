@@ -72,10 +72,8 @@ def test_calibrated_activation_skips_the_reference_rule_only_when_asked(monkeypa
     nvidia = types.SimpleNamespace(backend = "cuda", vendor = "nvidia")
     klein = detect_family("black-forest-labs/FLUX.2-klein-4B")
     assert klein.reference and not klein.reference_resolutions
-    # the planner's tier choice keeps the flat plan for a reference family
     assert d._calibrated_activation(klein, nvidia) is None
     assert d._calibrated_activation(klein, nvidia, unpriced_references_ok = True) is not None
-    # off the measured target the answer stays None either way
     rocm = types.SimpleNamespace(backend = "cuda", vendor = "amd")
     assert d._calibrated_activation(klein, rocm, unpriced_references_ok = True) is None
 
@@ -112,7 +110,6 @@ def test_unpriced_reference_on_a_phase_seeded_placement_sizes_from_the_flat_esti
     flat = dm.estimate_image_runtime_mib(width = 1024, height = 1024, family = "flux.2-klein")
     extra = dm.measured_request_extra_mib
     assert extra(pipe, width = 1024, height = 1024, unpriced_references = True) == flat - 3072 > 0
-    # text-to-image keeps the seed
     assert extra(pipe, width = 1024, height = 1024) == 0
     # a placement without the phase seed (static / learned) is unchanged
     learned = types.SimpleNamespace(

@@ -2586,8 +2586,7 @@ def _calibrated_activation(
     unpriced_references_ok: bool = False,
 ) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
-    ``unpriced_references_ok``: the caller sizes a reference request from the flat estimate itself (the placement
-    seeds: ``measured_request_extra_mib`` streams resident groups back for it), so the reference rule is skipped."""
+    ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
@@ -9823,8 +9822,7 @@ class DiffusionBackend:
                             "unknown"  # adapters baked in at load: a build the key cannot name
                         )
                     try:
-                        # the phase-table seed holds only where it was measured; a reference the guard cannot price
-                        # (FLUX.2 Klein's source image) sizes from the flat estimate (measured_request_extra_mib)
+                        # the phase-table seed holds only where it was measured; unpriced references size flat
                         pipe._unsloth_phase_seeds = (
                             _calibrated_activation(fam, target, unpriced_references_ok = True)
                             is not None
