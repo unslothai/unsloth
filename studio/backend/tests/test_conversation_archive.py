@@ -1728,6 +1728,37 @@ def test_a_foreground_archive_stops_the_gap_worker_first(conn, monkeypatch):
     assert len(worker_calls) < 40
 
 
+def test_another_slots_stream_ending_does_not_restart_the_worker_mid_compaction(conn, monkeypatch):
+    """With several llama.cpp slots, a stream can end while this request is still compacting."""
+    import threading
+
+    from core.rag import embeddings
+
+    thread_id = "slots-thread"
+    turns = _gap_thread(thread_id, 2, tag = "slots")
+    other = _gap_thread("slots-other", 4, tag = "slotsother")
+    real = embeddings.encode_with_identity
+    in_archive, release = threading.Event(), threading.Event()
+
+    def held(texts, **kwargs):
+        if threading.current_thread().name != "archive-prewarm":
+            in_archive.set()
+            release.wait(5)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", held)
+    fg = threading.Thread(target = conversation_archive.archive_turns, args = (thread_id, turns))
+    fg.start()
+    assert in_archive.wait(5)
+    conversation_archive.note_branch("slots-other", other)
+    with conversation_archive.inference_running():
+        pass
+    worker = conversation_archive._prewarm_worker
+    assert worker is None or not worker.is_alive()
+    release.set()
+    fg.join(5)
+
+
 def test_an_edited_turn_misses_the_cache_and_is_embedded_fresh(conn, monkeypatch):
     thread_id = "edit-thread"
     turns = _gap_thread(thread_id, 2, tag = "edit")

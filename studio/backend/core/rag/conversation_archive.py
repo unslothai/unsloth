@@ -519,8 +519,7 @@ def note_branch(
 
 
 @contextmanager
-def inference_running():
-    """Hold while llama.cpp generates. Stops background embedding and waits out its batch in flight."""
+def _busy(restart: bool):
     global _inference_depth
     with _gap:
         _inference_depth += 1
@@ -530,7 +529,13 @@ def inference_running():
     finally:
         with _gap:
             _inference_depth -= 1
-        _start_prewarm()
+        if restart:
+            _start_prewarm()
+
+
+def inference_running():
+    """Hold while llama.cpp generates. Stops background embedding and waits out its batch in flight."""
+    return _busy(restart = True)
 
 
 def _pause_prewarm() -> None:
@@ -659,9 +664,19 @@ def archive_turns(
     if not can_archive(thread_id):
         logger.debug("conversation_archive.skipped_unpersisted_thread thread_id=%s", thread_id)
         return 0
-    # A request's own compaction goes first: the gap worker would contend for the embedder.
-    _pause_prewarm()
+    # A request's own compaction goes first and stays marked busy: another slot's stream ending must not
+    # restart the gap worker under it. Only a stream's end restarts it, so none starts before this stream.
+    with _busy(restart = False):
+        return _archive_turns(thread_id, evicted, live, branch, cancel_check)
 
+
+def _archive_turns(
+    thread_id: str,
+    evicted: list[dict],
+    live: Optional[list[dict]],
+    branch: Optional[list[dict]],
+    cancel_check: Optional[Callable[[], bool]],
+) -> int:
     # The evictor's own grouper, so an archived unit is exactly the unit the window drops. Imported lazily because the
     # inference layer imports this module.
     from core.inference.context_window import group_turns
