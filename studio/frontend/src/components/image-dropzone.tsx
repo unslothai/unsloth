@@ -3,7 +3,7 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Delete02Icon, ImageAdd02Icon, ImageCropIcon } from "@hugeicons/core-free-icons";
+import { Delete02Icon, ImageCropIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { Button } from "@/components/ui/button";
@@ -262,7 +262,7 @@ export function ImageDropzone({
         className,
       )}
     >
-      <HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />
+      <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
       <span>{label}</span>
       <input
         ref={inputRef}

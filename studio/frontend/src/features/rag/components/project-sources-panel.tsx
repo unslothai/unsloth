@@ -167,6 +167,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       onClick={pickFolder}
       title="Upload every supported file in a folder. Linking a folder that stays in sync needs the desktop app."
     >
+      <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
       Add folder
     </Button>
   );
@@ -224,6 +225,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               disabled={loading}
               onClick={() => fileInputRef.current?.click()}
             >
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add sources
             </Button>
             {addFolderButton}
@@ -255,6 +257,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 className="border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
                 onClick={() => fileInputRef.current?.click()}
               >
+                <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                 Add sources
               </Button>
             </div>

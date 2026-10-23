@@ -641,6 +641,7 @@ export function ToolProfileDialog({
               variant="outline"
               onClick={() => setActiveTab("servers")}
             >
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add servers first
             </Button>
           </div>

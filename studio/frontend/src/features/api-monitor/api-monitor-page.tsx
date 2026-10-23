@@ -49,9 +49,9 @@ import {
   CursorPointer02Icon,
   Delete02Icon,
   FlashIcon,
-  Key01Icon,
   PauseIcon,
   PlayIcon,
+  PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -885,7 +885,7 @@ function QuickStart({
         onClick={openApiSettings}
         className="h-8 gap-1.5 rounded-full"
       >
-        <HugeiconsIcon icon={Key01Icon} strokeWidth={1.75} className="size-4" />
+        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
         Create an API key and see more examples
       </Button>
     </div>

@@ -68,10 +68,10 @@ import {
   Download01Icon,
   Edit03Icon,
   Folder02Icon,
-  FolderAddIcon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  PlusSignIcon,
   Search01Icon,
   Upload01Icon,
   ViewIcon,
@@ -690,7 +690,8 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button data-tour="projects-new" onClick={() => setCreating(true)}>
+          <Button variant="secondary" data-tour="projects-new" onClick={() => setCreating(true)}>
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             New project
           </Button>
         </div>
@@ -737,7 +738,7 @@ export function ProjectsPage() {
                 className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
                 onClick={() => setCreating(true)}
               >
-                <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
                 Create your first project
               </Button>
             </>

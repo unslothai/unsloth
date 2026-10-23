@@ -2033,7 +2033,7 @@ function PromptListDetail({
               <button
                 type="button"
                 onClick={() => update({ items: [...items, ""] })}
-                className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
               >
                 <PlusIcon className="size-3.5" />Add prompt
               </button>
@@ -2056,7 +2056,7 @@ function PromptListDetail({
             <button
               type="button"
               onClick={() => setEditorMounted(true)}
-              className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+              className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
             >
               <PencilIcon className="size-3.5" />Edit all {items.length} prompts
             </button>
@@ -2222,7 +2222,7 @@ function NewPromptListForm({
         <button
           type="button"
           onClick={addItem}
-          className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+          className="flex items-center gap-1.5 self-start text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
         >
           <PlusIcon className="size-3.5" />Add another prompt
         </button>

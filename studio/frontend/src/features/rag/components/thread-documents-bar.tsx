@@ -18,8 +18,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
   FileDatabaseIcon,
-  FolderAttachmentIcon,
   Folder02Icon,
+  FolderAttachmentIcon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import {
   AttachmentKindIcon,
@@ -1489,6 +1490,7 @@ export function ThreadDocumentsBar({
                 onClick={pickFiles}
                 className="unsloth-files-panel-action"
               >
+                <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 Add files
               </button>
             </HeaderTip>

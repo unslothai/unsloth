@@ -13,6 +13,7 @@ import {
 
 import {
   FolderAddIcon,
+  PlusSignIcon,
   Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -1931,7 +1932,7 @@ export function DiffusionTrainPanel({
                     onClick={() => addInputRef.current?.click()}
                     disabled={uploading}
                   >
-                    <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
+                    <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Add"}
                   </Button>
                   <FolderPickButton disabled={uploading} onPick={() => pickFolder(dataset)} />

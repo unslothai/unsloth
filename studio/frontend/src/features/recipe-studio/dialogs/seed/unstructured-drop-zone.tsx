@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { consumeNativePathToken, useNativeFileDrop } from "@/features/native-intents";
 import {
-  CloudUploadIcon,
+  Alert02Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
-  Alert02Icon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -257,7 +257,7 @@ export function UnstructuredDropZone({
         onClick={handleClick}
       >
         <HugeiconsIcon
-          icon={CloudUploadIcon}
+          icon={PlusSignIcon}
           className="text-muted-foreground mb-2 size-8"
         />
         <p className="text-muted-foreground text-sm">

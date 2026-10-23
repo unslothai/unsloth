@@ -23,7 +23,6 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
   Delete02Icon,
   DiceFaces03Icon,
   Download01Icon,
@@ -33,6 +32,8 @@ import {
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
+  PlusSignIcon,
+  Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -5065,7 +5066,7 @@ export function ImagesPage({
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           Add image {numberOf(referenceImages.length)}
         </Button>
       )}
@@ -6678,6 +6679,7 @@ export function ImagesPage({
                           setPrompt((p) => withLocalizedHint(p, localizedMode, localizedColors))
                         }
                       >
+                        <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                         Add region wording
                       </Button>
                     </div>
@@ -6910,7 +6912,7 @@ export function ImagesPage({
                           ]);
                         }}
                       >
-                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                         Add LoRA
                       </Button>
                     )}

@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement } from "react";
 import type { LlmConfig, Score } from "../../types";
 import { FieldLabel } from "../shared/field-label";
@@ -103,6 +105,7 @@ export function LlmScoresTab({
         />
         {scores.length > 0 && (
           <Button type="button" size="xs" variant="outline" onClick={addScore}>
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             Add scorer
           </Button>
         )}
@@ -116,7 +119,8 @@ export function LlmScoresTab({
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent className="max-w-none">
-            <Button type="button" size="sm" onClick={addScore}>
+            <Button variant="secondary" type="button" size="sm" onClick={addScore}>
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add first scorer
             </Button>
           </EmptyContent>
@@ -198,6 +202,7 @@ export function LlmScoresTab({
               variant="outline"
               onClick={() => addOption(index)}
             >
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add option
             </Button>
           </div>

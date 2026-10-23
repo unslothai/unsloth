@@ -316,6 +316,7 @@ export function KnowledgeBaseDialog({
           <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end">
               <Button
+                variant="secondary"
                 size="sm"
                 onClick={startCreate}
                 disabled={ragUnavailable}
