@@ -313,10 +313,11 @@ except Exception:  # noqa: BLE001 - a broken shim must never break user code
 # the approved command never named. The finder runs after every other one, so it only supplies top-level
 # modules the host lacks (no stdlib or installed-package shadowing, no .pth execution); submodules then
 # resolve through the package's own __path__. Metadata is answered only for an exact distribution name
-# (importlib.metadata.version("pkg")), never for the name-less scan that plugin discovery uses.
+# (importlib.metadata.version("pkg")) with no explicit path, never for the name-less scan that plugin
+# discovery uses.
 # A PEP 420 namespace package (google, azure, ...) recomputes its __path__ from sys.path alone, so a
 # submodule the host's portion lacks is looked up in the folder's portion of that namespace, again last.
-# A pkgutil- or pkg_resources-style namespace (backports, ...) gets that one portion directory appended.
+# The namespace's __path__ (PEP 420, pkgutil- or pkg_resources-style) then gets that portion appended.
 class _HostPackagesFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
@@ -348,11 +349,13 @@ class _HostPackagesFinder:
         if not os.path.isdir(portion):
             return None
         found = importlib.machinery.PathFinder.find_spec(name, [portion])
-        if found is not None and pkgutil_style:
-            # What extend_path / declare_namespace would have added had the folder been on sys.path:
-            # this one portion directory, so later lookups and pkgutil.iter_modules see it too.
+        if found is not None:
+            # What extend_path / declare_namespace (or PEP 420) would have collected had the folder been
+            # on sys.path: this one portion directory, last, so later lookups, pkgutil.iter_modules and
+            # importlib.resources see it too. A PEP 420 _NamespacePath recomputes from sys.path when
+            # sys.path changes, which drops it again until the next submodule is served from it.
             search = getattr(module, "__path__", None)
-            if isinstance(search, list) and portion not in search:
+            if search is not None and hasattr(search, "append") and portion not in list(search):
                 search.append(portion)
         return found
 
@@ -408,7 +411,9 @@ class _HostPackagesFinder:
 
     def find_distributions(self, context = None):
         name = getattr(context, "name", None)
-        if not name:
+        # An explicit path is the caller's search scope: the stock path finder already honours it
+        # (folder included if listed), so only the default sys.path scope gets the folder added.
+        if not name or "path" in getattr(context, "__dict__", {}):
             return iter(())
         import importlib.metadata
 
