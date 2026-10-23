@@ -21,7 +21,6 @@ _GATHERED = "_unsloth_fsdp2_gathered"
 
 def _utils():
     from unsloth.kernels import triton_launch, utils
-
     if not utils._USE_NF4_KERNELS or not triton_launch._ENABLED:
         pytest.skip("fused NF4 kernels or the fast Triton relaunch are off here")
     return utils
@@ -36,7 +35,9 @@ def _quantize(seed, shape = (512, 256)):
 def _gathered_param(q, mark):
     # What FSDP2 hands the forward for a float-packed Params4bit: a frozen parameter whose packed
     # bytes are stored as bfloat16 (fsdp2_qlora.params4bit_to_float_storage), marked when gathered.
-    p = torch.nn.Parameter(q.reshape(-1).view(torch.bfloat16).reshape(-1, 1).clone(), requires_grad = False)
+    p = torch.nn.Parameter(
+        q.reshape(-1).view(torch.bfloat16).reshape(-1, 1).clone(), requires_grad = False
+    )
     if mark:
         setattr(p, _GATHERED, True)
     return p
