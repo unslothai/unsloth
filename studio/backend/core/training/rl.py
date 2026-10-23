@@ -455,16 +455,32 @@ def _row_template_kwargs(row: dict) -> dict:
     return {k: v for k, v in (row.get("chat_template_kwargs") or {}).items() if v is not None}
 
 
+def _allows_null(schema: Any) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    kind = schema.get("type")
+    return (
+        "type" not in schema
+        and not any(k in schema for k in ("anyOf", "oneOf", "enum", "const"))
+        or kind == "null"
+        or (isinstance(kind, list) and "null" in kind)
+        or schema.get("nullable") is True
+        or None in (schema.get("enum") or ())
+        or any(_allows_null(s) for k in ("anyOf", "oneOf") for s in schema.get(k) or ())
+    )
+
+
 def _without_padded_arguments(messages: Any, tools: Any) -> Any:
-    """Drop a null argument the called tool's schema does not declare: Arrow pads each call's
-    arguments with the keys other calls use. Declared (nullable) arguments keep their null."""
+    """Drop a null argument the called tool's schema does not accept as null: Arrow pads each
+    call's arguments with the keys other calls use. Nullable declared arguments keep their null."""
     if not isinstance(messages, list) or not isinstance(tools, list):
         return messages
     declared = {}
     for tool in tools:
         fn = tool.get("function", tool) if isinstance(tool, dict) else None
         if isinstance(fn, dict) and fn.get("name"):
-            declared[fn["name"]] = set(((fn.get("parameters") or {}).get("properties") or {}))
+            props = (fn.get("parameters") or {}).get("properties") or {}
+            declared[fn["name"]] = {k for k, v in props.items() if _allows_null(v)}
 
     def prune(call: Any) -> Any:
         fn = call.get("function") if isinstance(call, dict) else None
