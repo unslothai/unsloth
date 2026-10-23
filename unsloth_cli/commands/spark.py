@@ -865,6 +865,10 @@ def train(
     if len(chosen) > 1:
         typer.echo(f"{', '.join(chosen)} are different modes; give one.")
         raise typer.Exit(2)
+    if fsdp and not data_parallel:
+        # Only the data-parallel trainer shards with FSDP; any other mode would drop it silently.
+        typer.echo("--fsdp only applies to --data-parallel <model>.")
+        raise typer.Exit(2)
     if microbatches < 0:
         typer.echo("--microbatches cannot be negative.")
         raise typer.Exit(2)
