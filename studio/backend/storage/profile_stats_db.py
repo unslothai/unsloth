@@ -205,6 +205,7 @@ class _ApiUsageFold:
         self.completion_tokens = 0
         self.total_tokens = 0
         self.by_day: dict[date, int] = {}
+        self.requests_by_day: dict[date, int] = {}
         self.models: dict[str, dict[str, Any]] = {}
         self.requests = 0
 
@@ -240,6 +241,7 @@ def _fold_api_usage(
         if stamp is not None:
             day = stamp.date()
             fold.by_day[day] = fold.by_day.get(day, 0) + total_tokens
+            fold.requests_by_day[day] = fold.requests_by_day.get(day, 0) + 1
 
         model_id = _clean_str(row["model"])
         if on_usage is not None:
@@ -260,6 +262,7 @@ def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
     for day, tokens in api.by_day.items():
         bucket = chat.by_day.setdefault(day, {"tokens": 0, "messages": 0, "threads": set()})
         bucket["tokens"] += tokens
+        bucket["apiRequests"] = bucket.get("apiRequests", 0) + api.requests_by_day.get(day, 0)
     for model_id, api_model in api.models.items():
         model = chat.models.setdefault(
             model_id,
@@ -422,7 +425,10 @@ def _fold_messages(
             server = metadata.get("serverTimings")
             server = server if isinstance(server, dict) else {}
 
-            prompt_tokens = _as_int(usage.get("promptTokens")) or _as_int(server.get("prompt_n"))
+            # prompt_n is only what llama.cpp evaluated; the usage chunk's promptTokens includes the cache hits.
+            prompt_tokens = _as_int(usage.get("promptTokens")) or (
+                _as_int(server.get("prompt_n")) + _as_int(server.get("cache_n"))
+            )
             completion_tokens = _as_int(usage.get("completionTokens")) or _as_int(
                 server.get("predicted_n")
             )
@@ -497,6 +503,7 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
                 "tokens": int(bucket["tokens"]) if bucket else 0,
                 "messages": int(bucket["messages"]) if bucket else 0,
                 "chats": len(bucket["threads"]) if bucket else 0,
+                "apiRequests": int(bucket.get("apiRequests", 0)) if bucket else 0,
             }
         )
     return series

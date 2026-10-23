@@ -4,10 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-// Mirrors the gate in use-chat-model-runtime.ts, apply-inference-status-to-store.ts and
-// llama_cpp.py. Path segments are scanned right to left so the size nearest the leaf wins
-// over a size-like parent dir, and a directory identifier (auto-switch snapshot sha, quant
-// subdir) still resolves.
+// Mirrors the gate in use-chat-model-runtime.ts, apply-inference-status-to-store.ts and llama_cpp.py.
 const SIZE_RE = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
 
 function thinkingDefaultOff(modelId: string): boolean {
@@ -51,7 +48,6 @@ test("a trailing separator does not lose the size", () => {
 test("a size-like directory does not shadow the real size", () => {
   assert.equal(thinkingDefaultOff("/models/8bit/qwen3.6-27b.gguf"), false);
   assert.equal(thinkingDefaultOff("/models/8b/qwen3.6-27b.gguf"), false);
-  // Directory identifier, so there is no file name to prefer.
   assert.equal(thinkingDefaultOff("/models/8b/Qwen3.5-35B-A3B/UD-Q4_K_XL"), false);
   assert.equal(
     thinkingDefaultOff("/models/4b/Qwen3.6-27B-GGUF/snapshots/bfc15c3"),

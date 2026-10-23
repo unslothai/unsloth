@@ -73,6 +73,9 @@ name: MLX CI on Mac M1
 
 on:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'unsloth/__init__.py'
       - 'unsloth/_gpu_init.py'
@@ -191,6 +194,7 @@ permissions:
 
 jobs:
   dispatch:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: dispatch
     # macos-26, not macos-15, on a measurement rather than a preference. Both are
     # free Apple Silicon standard runners, so this is the same class of machine.

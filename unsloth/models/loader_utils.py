@@ -1859,6 +1859,49 @@ def get_model_name(
     return new_model_name
 
 
+def _refuse_unless_private(path, what):
+    """On POSIX, refuse a path that is a symlink, not ours, or writable by group/other."""
+    import stat
+
+    if not hasattr(os, "getuid"):
+        return
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError(
+            f"Unsloth: refusing {what} that is a symlink or owned by another user: {path}"
+        )
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        raise RuntimeError(
+            f"Unsloth: refusing a group- or world-writable {what} "
+            f"(mode {stat.S_IMODE(info.st_mode):04o}): {path}"
+        )
+
+
+def _private_fp8_cache_dir():
+    """Per-user 0700 root for fp8 artifacts. The shared /tmp lets another account pre-create
+    a predictable artifact name and have it loaded (with trust_remote_code) as this user."""
+    if hasattr(os, "getuid"):
+        directory = os.path.join(tempfile.gettempdir(), "unsloth-fp8-%d" % os.getuid())
+    else:
+        # No owner check on Windows, and TEMP can be shared (services, build agents), so use the
+        # profile's LocalAppData, which Windows ACLs to this account.
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        directory = os.path.join(base, "unsloth", "fp8-cache")
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
+    if hasattr(os, "getuid"):
+        info = os.lstat(directory)
+        # exist_ok does not apply mode, so tighten one of ours; anyone else's is refused below.
+        if not os.path.islink(directory) and info.st_uid == os.getuid() and info.st_mode & 0o077:
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
+    _refuse_unless_private(directory, "an fp8 cache directory")
+    return directory
+
+
 def _offline_quantize_to_fp8(
     model_name: str,
     fp8_mode: str,
@@ -1904,7 +1947,7 @@ def _offline_quantize_to_fp8(
             text_config = candidate
             is_vlm = False
 
-    temp_dir = tempfile.gettempdir()
+    temp_dir = _private_fp8_cache_dir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     # The basename alone would let org-a/model and org-b/model share one artifact.
@@ -1919,6 +1962,8 @@ def _offline_quantize_to_fp8(
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
     print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    if os.path.lexists(new_model_name):
+        _refuse_unless_private(new_model_name, "a cached fp8 artifact")
 
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
@@ -1985,6 +2030,130 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
     import vllm
 
     return Version(vllm.__version__) < Version("0.12.0")
+
+
+def _drop_fp8_dequantize_conversions(model):
+    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
+    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
+    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    conversions = getattr(model, "_weight_conversions", None)
+    if not conversions:
+        return 0
+    try:
+        from transformers.integrations.finegrained_fp8 import Fp8Dequantize
+    except Exception:
+        return 0
+
+    def _targets(conversion):
+        patterns = getattr(conversion, "_original_target_patterns", None) or []
+        return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
+
+    def _sources(patterns):
+        # The dequantizing copy anchors `.weight` sources with `$` and adds `.weight_scale_inv$` ones.
+        patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
+        return tuple(sorted(p for p in patterns if not p.endswith(".weight_scale_inv")))
+
+    def _source_forms(conversion):
+        return {
+            _sources(getattr(conversion, "_original_source_patterns", None)),
+            _sources(getattr(conversion, "source_patterns", None)),
+        }
+
+    def _ops(conversion):
+        operations = getattr(conversion, "operations", None) or []
+        return tuple(type(op).__name__ for op in operations if not isinstance(op, Fp8Dequantize))
+
+    def _signature(conversion):
+        return (
+            type(conversion),
+            getattr(conversion, "scope_prefix", None),
+            min(_source_forms(conversion)),
+            _targets(conversion),
+            _ops(conversion),
+        )
+
+    def _has_dequant(conversion):
+        return any(
+            isinstance(op, Fp8Dequantize) for op in getattr(conversion, "operations", None) or []
+        )
+
+    plain = None
+    kept, changed = [], 0
+    # Converters the load left untouched stay as they are; a counterpart equal to one is not re-added.
+    retained = {_signature(c) for c in conversions if not _has_dequant(c)}
+    for conversion in conversions:
+        operations = getattr(conversion, "operations", None) or []
+        if not _has_dequant(conversion):
+            kept.append(conversion)
+            continue
+        if all(isinstance(op, Fp8Dequantize) for op in operations):
+            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
+            changed += 1
+            continue
+        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
+        if plain is None:
+            try:
+                from transformers.conversion_mapping import get_model_conversion_mapping
+                plain = get_model_conversion_mapping(model, None, None)
+            except Exception:
+                plain = []
+        # A composite model scopes one converter per submodel; the dequantizing copy can lose its
+        # scope_prefix, so an unscoped conversion is replaced by every scoped counterpart with the same
+        # sources, targets and operations (another submodel's converter can share type and targets).
+        scope = getattr(conversion, "scope_prefix", None)
+        sources = _source_forms(conversion)
+        matches = [
+            c
+            for c in plain
+            if type(c) is type(conversion)
+            and _targets(c) == _targets(conversion)
+            and _source_forms(c) & sources
+            and _ops(c) == _ops(conversion)
+            and (scope is None or getattr(c, "scope_prefix", None) == scope)
+        ]
+        if not matches:
+            print(
+                "Unsloth: an fp8 load conversion has no 16bit counterpart; save_pretrained may write fp8 "
+                f"weights for {list(_targets(conversion))}."
+            )
+            kept.append(conversion)
+            continue
+        for match in matches:
+            signature = _signature(match)
+            if signature not in retained:
+                retained.add(signature)
+                kept.append(match)
+        changed += 1
+    if changed:
+        model._weight_conversions = kept
+    return changed
+
+
+def _fp8_dequantize_quantization_config(model_config):
+    """The checkpoint's fine-grained fp8 config with `dequantize = True` for an explicit 16bit load, else None.
+    On FP8-capable GPUs transformers otherwise keeps FP8Linear layers; FastModel passes the same flag."""
+    quantization_config = getattr(model_config, "quantization_config", None)
+    if quantization_config is None:
+        return None
+    as_dict = (
+        quantization_config
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "to_dict", lambda: {})()
+    )
+    quant_method = as_dict.get("quant_method", "")
+    # A config object's to_dict() can keep the QuantizationMethod enum, whose str() is not its value.
+    if str(getattr(quant_method, "value", quant_method)).lower() != "fp8":
+        return None
+    try:
+        from transformers import FineGrainedFP8Config
+    except Exception:
+        return None
+    if "dequantize" not in inspect.signature(FineGrainedFP8Config).parameters:
+        return None
+    try:
+        return FineGrainedFP8Config.from_dict(dict(as_dict), dequantize = True)
+    except Exception:
+        return None
 
 
 def _fp8_load_as_is(
@@ -3927,6 +4096,23 @@ def _hub_safetensors_header_dtypes(
     return {k: v.get("dtype") for k, v in header.items() if k != "__metadata__"}
 
 
+def _hub_live_commit(
+    repo_id,
+    revision = None,
+    token = None,
+):
+    """The commit `revision` names on the Hub now, or None when it cannot be resolved (offline,
+    network error). A branch or tag can move past what the cache holds; transformers' online
+    `hf_hub_download` refreshes it, so cache lookups must use the live commit too."""
+    if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision):
+        return revision
+    try:
+        from huggingface_hub import HfApi
+        return HfApi(token = token).model_info(repo_id, revision = revision).sha or None
+    except Exception:
+        return None
+
+
 def _checkpoint_tensor_dtypes(
     model_name,
     token = None,
@@ -3976,24 +4162,23 @@ def _checkpoint_tensor_dtypes(
     try:
         if os.path.isdir(model_name):
             root = os.path.join(model_name, subfolder) if subfolder else model_name
-            for index_file in index_files:
-                index_path = os.path.join(root, index_file)
-                if not os.path.exists(index_path):
+            # transformers' order: a lone file beats an index of the same format, so a stale index
+            # left beside a re-saved model.safetensors must not decide the layout.
+            for filename in (st_single, st_index, bin_single, bin_index):
+                path = os.path.join(root, filename) if filename else None
+                if not path or not os.path.isfile(path):
                     continue
-                weight_map = _index_weight_map(index_path)
-                return _fill_fused_dtypes(
-                    weight_map,
-                    lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
-                )
-            single_path = os.path.join(root, st_single) if st_single else None
-            if single_path and os.path.exists(single_path):
-                return _safetensors_dtypes(single_path)
-            single_path = os.path.join(root, bin_single) if bin_single else None
-            if single_path and os.path.exists(single_path):
+                if filename in index_files:
+                    return _fill_fused_dtypes(
+                        _index_weight_map(path),
+                        lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
+                    )
+                if filename == st_single:
+                    return _safetensors_dtypes(path)
                 try:
-                    return _bin_dtypes(single_path)
+                    return _bin_dtypes(path)
                 except Exception:
-                    raise _UnreadableCheckpointNames(single_path)
+                    raise _UnreadableCheckpointNames(path)
             return None
 
         if not local_files_only and not subfolder and not variant and st_single:
@@ -4011,13 +4196,20 @@ def _checkpoint_tensor_dtypes(
         from huggingface_hub import hf_hub_download
 
         hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
-        for index_file in index_files:
+        if not local_files_only and not _env_says_offline():
+            # Cached files of a moved branch are stale: look them up under the commit it names now
+            # (a miss falls through to the live header read), as transformers' online resolver does.
+            live_commit = _hub_live_commit(model_name, revision, token)
+            if live_commit is not None:
+                hub["revision"] = live_commit
+
+        def _hub_index_dtypes(index_file):
             try:
                 index_path = hf_hub_download(
                     model_name, index_file, local_files_only = local_files_only, **hub
                 )
             except Exception:
-                continue
+                return None
             weight_map = _index_weight_map(index_path)
 
             def _hub_shard_dtypes(shard, names):
@@ -4030,9 +4222,11 @@ def _checkpoint_tensor_dtypes(
                 if local_files_only or not shard.endswith(".safetensors"):
                     return {}
                 remote = f"{subfolder}/{shard}" if subfolder else shard
-                return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                return _hub_safetensors_header_dtypes(model_name, remote, hub["revision"], token)
 
             return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
+
+        # Same order as transformers: model.safetensors, its index, pytorch_model.bin, its index.
         if st_single:
             try:
                 return _safetensors_dtypes(
@@ -4043,11 +4237,17 @@ def _checkpoint_tensor_dtypes(
             if not local_files_only:
                 remote = f"{subfolder}/{st_single}" if subfolder else st_single
                 try:
-                    return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                    return _hub_safetensors_header_dtypes(
+                        model_name, remote, hub["revision"], token
+                    )
                 except Exception:
                     pass
+        if st_index:
+            found = _hub_index_dtypes(st_index)
+            if found is not None:
+                return found
         if not bin_single:
-            return None
+            return _hub_index_dtypes(bin_index) if bin_index else None
         try:
             cached_bin = hf_hub_download(model_name, bin_single, local_files_only = True, **hub)
         except Exception:
@@ -4062,12 +4262,12 @@ def _checkpoint_tensor_dtypes(
 
             remote = f"{subfolder}/{bin_single}" if subfolder else bin_single
             try:
-                exists = file_exists(model_name, remote, revision = revision, token = token)
+                exists = file_exists(model_name, remote, revision = hub["revision"], token = token)
             except Exception:
                 exists = False
             if exists:
                 raise _UnreadableCheckpointNames(f"{model_name}/{remote}")
-        return None
+        return _hub_index_dtypes(bin_index) if bin_index else None
     except _UnreadableCheckpointNames:
         raise
     except Exception:

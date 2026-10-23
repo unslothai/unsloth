@@ -15,7 +15,7 @@ import {
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
-import { Add01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -149,7 +149,7 @@ function PermissionsTable() {
         </Button>
       }
     >
-      <div className="mt-2 flex flex-col rounded-lg border border-border/80 px-3 py-1">
+      <div className="mt-2 flex flex-col rounded-xl border border-border/80 px-3 py-1">
         {row(t("browser.agentSettings.default"), permissions.defaults, null)}
         {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
         {draft !== null ? (
@@ -175,7 +175,8 @@ function PermissionsTable() {
               }}
               className="h-8 flex-1"
             />
-            <Button type="submit" size="sm">
+            <Button variant="secondary" type="submit" size="sm">
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               {t("browser.agentSettings.add")}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)}>

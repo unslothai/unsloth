@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import type { Question } from "./gate";
 import {
   type AgentPermissions,
@@ -106,6 +107,7 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
     },
   ),
 );
+syncAcrossWindows(useBrowserAgentStore);
 
 // A new chat's key -> its saved one, so a run that captured the old key still reaches its chat.
 const adopted = new Map<string, string>();

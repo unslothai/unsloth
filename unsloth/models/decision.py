@@ -29,6 +29,7 @@ from ._utils import (
     is_bfloat16_supported,
 )
 from .loader_utils import is_distributed
+from ..device_type import xpu_keeps_explicit_bf16
 from ._decision_fast import compiled_encoder, pad_length
 from ._decision_common import *  # noqa: F401,F403
 
@@ -630,7 +631,9 @@ def _clef_bnb_config(dtype):
     from transformers import BitsAndBytesConfig
     from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 
-    float16 = dtype == torch.float16 or not is_bfloat16_supported()
+    # XPU keeps an explicit bf16 request in bf16 (emulated if need be), as the loaders do.
+    keep_bf16 = dtype == torch.bfloat16 and _device().type == "xpu" and xpu_keeps_explicit_bf16()
+    float16 = dtype == torch.float16 or (not is_bfloat16_supported() and not keep_bf16)
     return BitsAndBytesConfig(
         load_in_4bit = True,
         bnb_4bit_use_double_quant = True,
@@ -646,8 +649,18 @@ def _clef_forced_float32(model) -> bool:
 
 def _clef_amp_dtype(model, device):
     # As _clef_mixed_precision trains (serving uses it too): the float32 path runs as loaded (Qwen3.5's
-    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4.
-    return None if _clef_forced_float32(model) else _amp_dtype(device)
+    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4. XPU keeps an
+    # explicit bf16 load in bf16, so its autocast follows the weights.
+    if _clef_forced_float32(model):
+        return None
+    if device.type == "xpu":
+        backbone = model._backbone() if hasattr(model, "_backbone") else model
+        dtype = getattr(backbone, "dtype", None)
+        if dtype is None:
+            dtype = next((p.dtype for p in backbone.parameters() if p.is_floating_point()), None)
+        if dtype == torch.bfloat16:
+            return torch.bfloat16
+    return _amp_dtype(device)
 
 
 def _load_clef(

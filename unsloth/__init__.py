@@ -372,11 +372,23 @@ if _IS_MLX:
     _raw_text_spec.loader.exec_module(_raw_text)
     RawTextDataLoader = _raw_text.RawTextDataLoader
     TextPreprocessor = _raw_text.TextPreprocessor
+    _ebook_path = _Path(__file__).resolve().parent / "dataprep" / "ebooks.py"
+    _ebook_spec = importlib.util.spec_from_file_location("unsloth._mlx_ebooks", _ebook_path)
+    _ebook = importlib.util.module_from_spec(_ebook_spec)
+    _ebook_spec.loader.exec_module(_ebook)
+    load_ebook_dataset = _ebook.load_ebook_dataset
+    del _ebook, _ebook_spec, _ebook_path
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
     def _mlx_from_pretrained(*args, **kwargs):
         # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
-        if not is_bfloat16_supported():
+        # Not for full finetuning: zoo trains any non-bf16 target in float32, doubling weight memory.
+        try:
+            bound = _inspect.signature(FastMLXModel.from_pretrained).bind_partial(*args, **kwargs)
+            full_finetuning = bound.arguments.get("full_finetuning", False)
+        except Exception:
+            full_finetuning = kwargs.get("full_finetuning", False)
+        if not full_finetuning and not is_bfloat16_supported():
             if len(args) > 2:
                 if args[2] is None:
                     args = (*args[:2], "float16", *args[3:])
@@ -1678,6 +1690,17 @@ else:
         from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
         _install_fsdp2_hooks()
         del _install_fsdp2_hooks
+    except Exception:
+        pass
+
+    # UNSLOTH_FSDP2=1 shards natively inside the Trainer; a custom loop's own Accelerator keeps
+    # accelerate's FSDP2 (fsdp2_launch.install_raw_accelerator_fsdp2_fallback). Env reads only.
+    try:
+        from .fsdp2_launch import (
+            install_raw_accelerator_fsdp2_fallback as _install_raw_accelerator_fallback,
+        )
+        _install_raw_accelerator_fallback()
+        del _install_raw_accelerator_fallback
     except Exception:
         pass
 

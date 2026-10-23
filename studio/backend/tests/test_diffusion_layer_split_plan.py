@@ -29,6 +29,7 @@ def _env(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
     monkeypatch.setattr(mg, "_capability", lambda o: None)
     monkeypatch.setattr(lsp, "_is_rocm", lambda: False)
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     yield
 
 
@@ -587,12 +588,16 @@ def test_cards_too_small_keep_the_offload_plan_and_record_why(monkeypatch, engin
     assert mg.placement_status(pipe)["layer_split"] == status
 
 
-def test_rocm_explicit_modes_and_legacy_cpu_offload_keep_the_plan(monkeypatch, engine):
+def test_rocm_discrete_splits_and_explicit_modes_and_legacy_cpu_offload_keep_the_plan(
+    monkeypatch, engine
+):
     _cards(monkeypatch)
     plan = _plan()
-    monkeypatch.setattr(lsp, "_is_rocm", lambda: True)
-    assert _refine(plan)[0] is plan
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _RX7900})
+    refined, pipe = _refine(plan)
+    assert refined.layer_split is not None and refined.layer_split.cards == (0, 1)
     monkeypatch.setattr(lsp, "_is_rocm", lambda: False)
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     balanced = _plan(requested_mode = "balanced")
     assert _refine(balanced)[0] is balanced
     legacy = _plan(explicit_offload = True)
@@ -945,3 +950,236 @@ def test_an_arch_pinned_attention_backend_keeps_blocks_off_other_architectures(m
     )  # runs on every admitted card
     refined, _ = _refine(plan, pipe = pipe, ordinals = (0, 1))
     assert refined.layer_split is not None and 1 in refined.layer_split.cards
+
+
+# ROCm: real classifiers (utils.hardware's unified test, rocm_bf16's gfx table) over fake device properties.
+_RX7900 = ("gfx1100", 0)  # 7900 XTX, discrete
+_MI300 = ("gfx942", 0)
+_RX6900 = ("gfx1030", 0)  # RDNA2: no native bf16
+_STRIX_HALO = ("gfx1151", 1)  # APU: the driver's integrated flag set
+
+
+def _rocm_host(monkeypatch, cards):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(lsp, "_is_rocm", lambda: True)
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_ROCM_BF16", raising = False)
+
+    def props(o = None):
+        arch, integrated = cards[int(o)]
+        return SimpleNamespace(
+            gcnArchName = f"{arch}:sramecc+:xnack-", is_integrated = integrated, name = "AMD Radeon"
+        )
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", props)
+    # the per-card SDPA probe spawns HIP children; every card has a fused kernel unless a test says otherwise
+    from core.inference import diffusion_attention as da
+
+    monkeypatch.setattr(da, "sdpa_math_only", lambda target: False)
+
+
+def test_rocm_two_discrete_cards_plan_the_same_split_as_cuda(monkeypatch, engine):
+    _cards(monkeypatch)
+    cuda, _ = _refine(_plan())
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _RX7900})
+    rocm, pipe = _refine(_plan())
+    assert rocm.layer_split is not None
+    assert rocm.layer_split.ranges == cuda.layer_split.ranges
+    assert rocm.layer_split.card_required_mib == cuda.layer_split.card_required_mib
+    assert lsp.layer_split_status(pipe) is None  # no decline recorded
+
+
+def test_rocm_two_apus_decline_with_the_unified_reason(monkeypatch, engine):
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _STRIX_HALO, 1: _STRIX_HALO})
+    plan = _plan()
+    refined, pipe = _refine(plan)
+    assert refined is plan and engine.placed == []
+    declined = lsp.layer_split_status(pipe)["declined"]
+    assert declined.startswith(lsp.UNIFIED_DECLINE) and "cuda:0" in declined
+
+
+def test_rocm_unified_primary_plan_records_why_and_cuda_stays_silent(monkeypatch, engine):
+    _cards(monkeypatch)
+    unified = dm.DeviceMemory(
+        backend = "cuda", device = "cuda", memory_kind = "unified_memory", free_mib = 90000, total_mib = 98000
+    )
+    plan = dataclasses.replace(_plan(), device_memory = unified)
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "force")
+    refined, pipe = _refine(plan)
+    assert refined is plan and lsp.layer_split_status(pipe) is None  # CUDA: unchanged
+    _rocm_host(monkeypatch, {0: _STRIX_HALO, 1: _STRIX_HALO})
+    refined, pipe = _refine(plan)
+    assert refined is plan and engine.placed == []
+    assert lsp.layer_split_status(pipe)["declined"].startswith(lsp.UNIFIED_DECLINE)
+
+
+def test_rocm_discrete_primary_skips_an_apu_secondary(monkeypatch, engine):
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _STRIX_HALO, 2: _RX7900})
+    refined, _ = _refine(_plan(), ordinals = (0, 1, 2))
+    assert refined.layer_split is not None and 1 not in refined.layer_split.cards
+    assert 2 in refined.layer_split.cards
+    refined, pipe = _refine(_plan(), ordinals = (0, 1))
+    assert refined.layer_split is None
+    assert "cuda:1" in lsp.layer_split_status(pipe)["declined"]
+
+
+def test_rocm_kill_switch_keeps_the_plan_and_records_nothing(monkeypatch, engine):
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _RX7900})
+    monkeypatch.setenv(lsp.LAYER_SPLIT_ENV, "0")
+    plan = _plan()
+    refined, pipe = _refine(plan)
+    assert refined is plan and engine.placed == [] and lsp.layer_split_status(pipe) is None
+
+
+def test_rocm_mixed_arch_selection_compares_dtype_not_gfx_order(monkeypatch):
+    # CUDA's capability order would drop MI300 (9, 4) under a 7900 XTX (11, 0) primary
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _MI300, 2: _RX6900})
+    monkeypatch.setattr(mg, "_capability", lambda o: {0: (11, 0), 1: (9, 4), 2: (10, 3)}[int(o)])
+    assert mg.make_selection(0, [0, 1]) == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    assert mg.make_selection(1, [1, 0]) == mg.MultiGpuSelection(primary = 1, secondaries = (0,))
+    # a bf16 primary keeps no RDNA2 card (it would emulate the primary's dtype); an fp16 primary keeps any
+    assert mg.make_selection(0, [0, 2]) is None
+    assert mg.make_selection(2, [2, 0, 1]) == mg.MultiGpuSelection(primary = 2, secondaries = (0, 1))
+
+
+def test_rocm_mixed_arch_native_sdpa_splits_and_flash_stays_on_the_primary_target(
+    monkeypatch, engine
+):
+    from core.inference.diffusion_attention import ATTENTION_BACKEND_ATTR
+
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _MI300, 2: _RX7900})
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1))
+    assert refined.layer_split is not None and refined.layer_split.cards == (0, 1)
+    probed = []
+    monkeypatch.setattr(
+        lsp, "_rocm_flash_runs_on", lambda o, dtype: probed.append((o, dtype)) or o != 2
+    )
+    for tag in ("flash", "aiter"):
+        setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, tag)
+        refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1))
+        assert refined.layer_split is None
+        assert f"attention backend {tag}" in lsp._DECLINES[pipe]
+    setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, "aiter")
+    refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1, 2))
+    assert refined.layer_split is not None and 1 not in refined.layer_split.cards
+    setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, "flash")
+    probed.clear()
+    refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1, 2))
+    assert probed == [
+        (2, torch.bfloat16)
+    ]  # the same-target card is probed; the MI300 never reaches the probe
+    assert refined.layer_split is None  # flash failed on cuda:2: no secondary left
+
+
+def test_windows_rocm_secondary_budget_uses_the_capped_free(monkeypatch):
+    """WDDM: mem_get_info reports free ~ total whatever is resident; the secondary is priced from what torch has not
+    reserved there (utils.hardware.trusted_mem_get_info)."""
+    import sys
+
+    from utils.hardware import hardware as hw
+
+    gib = 1 << 30
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda o = None: (24 * gib - (64 << 20), 24 * gib)
+    )
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda o = None: 10 * gib)
+    memory = mg.secondary_device_memory(1)
+    assert memory.total_mib == 24 * 1024 and memory.free_mib == 14 * 1024
+    assert mg.secondary_resident_limit_mib(1, "auto") < 14 * 1024
+    monkeypatch.setattr(hw, "IS_ROCM", False)
+    assert mg.secondary_device_memory(1).free_mib == 24 * 1024 - 64
+
+
+def test_rocm_apu_without_the_integrated_flag_gets_no_blocks(monkeypatch, engine):
+    # Windows gfx1153 Krackan Point 2 on a runtime that leaves is_integrated 0: still an APU by its gfx target
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _RX7900, 1: ("gfx1153", 0), 2: _RX7900})
+    refined, _ = _refine(_plan(), ordinals = (0, 1, 2))
+    assert refined.layer_split is not None and 1 not in refined.layer_split.cards
+    refined, pipe = _refine(_plan(), ordinals = (0, 1))
+    assert refined.layer_split is None
+    assert lsp.layer_split_status(pipe)["declined"].startswith(lsp.UNIFIED_DECLINE)
+
+
+def test_rocm_math_only_secondary_gets_no_blocks_beside_a_fused_primary(monkeypatch, engine):
+    # mixed gfx, native SDPA: cuda:1 has no fused kernel at bf16, so math SDPA would hold the full score matrix there
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _MI300, 2: _RX7900})
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    from core.inference import diffusion_attention as da
+
+    probed = []
+    monkeypatch.setattr(
+        da,
+        "sdpa_math_only",
+        lambda t: probed.append((t.torch_device, t.dtype)) or t.torch_device == "cuda:1",
+    )
+    refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1, 2))
+    assert refined.layer_split is not None and 1 not in refined.layer_split.cards
+    assert 2 in refined.layer_split.cards
+    assert ("cuda:1", torch.bfloat16) in probed  # probed per card at the denoiser's dtype
+    refined, pipe = _refine(_plan(), pipe = pipe, ordinals = (0, 1))
+    assert refined.layer_split is None
+    declined = lsp.layer_split_status(pipe)["declined"]
+    assert declined.startswith(lsp.MATH_ONLY_DECLINE) and "cuda:1" in declined
+    # a math-only primary already priced the quadratic peak: matching cards keep the split
+    monkeypatch.setattr(da, "sdpa_math_only", lambda t: True)
+    refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1))
+    assert refined.layer_split is not None and refined.layer_split.cards == (0, 1)
+
+
+def test_cuda_split_never_runs_the_rocm_sdpa_probe(monkeypatch, engine):
+    _cards(monkeypatch)
+    from core.inference import diffusion_attention as da
+
+    monkeypatch.setattr(da, "sdpa_math_only", lambda t: pytest.fail("ROCm probe on CUDA"))
+    refined, _ = _refine(_plan())
+    assert refined.layer_split is not None
+
+
+_TWO_EXPERTS = {  # only moving the second expert fits both cards
+    "transformer": (9000, "dit"),
+    "transformer_2": (9000, "dit"),
+    "text_encoder": (4000, "text_encoder"),
+    "vae": (500, "other"),
+}
+
+
+def test_rocm_second_expert_moves_only_to_a_card_that_runs_the_attention_backend(
+    monkeypatch, engine
+):
+    from core.inference import diffusion_attention as da
+    from core.inference.diffusion_attention import ATTENTION_BACKEND_ATTR
+
+    _cards(monkeypatch, sizes = _TWO_EXPERTS, sec_limit = 16000)
+    plan = _plan()
+    cuda, _ = _refine(plan)
+    # the component split moves the expert
+    assert "transformer_2" in (cuda.secondary_components or ())
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _MI300})
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    pipe.transformer_2 = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    rocm, _ = _refine(_plan(), pipe = pipe)
+    assert "transformer_2" in (rocm.secondary_components or ())  # native SDPA, fused on both cards
+    for tag in ("flash", "aiter"):  # pinned to gfx1100: the gfx942 card must not run the expert
+        setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, tag)
+        setattr(pipe.transformer_2, ATTENTION_BACKEND_ATTR, tag)
+        rocm, _ = _refine(_plan(), pipe = pipe)
+        assert "transformer_2" not in (rocm.secondary_components or ())
+    setattr(pipe.transformer, ATTENTION_BACKEND_ATTR, None)
+    setattr(pipe.transformer_2, ATTENTION_BACKEND_ATTR, None)
+    monkeypatch.setattr(da, "sdpa_math_only", lambda t: t.torch_device == "cuda:1")
+    rocm, _ = _refine(_plan(), pipe = pipe)
+    assert "transformer_2" not in (rocm.secondary_components or ())

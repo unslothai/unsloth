@@ -15,8 +15,10 @@ Attention is bandwidth-bound, so a better kernel is a real win orthogonal to wei
           bitwise-identical and near free (compiled 1.599s -> 1.572s, 1.02x; eager 0.93x, the
           per-call sdpa_kernel wrapper cost, which compile folds away) -- but FLASH and EFFICIENT
           at that same shape run 3.9x and 9.0x slower. Pinning is insurance against the heuristic
-          picking one of those on another card, head_dim or torch build. Elsewhere stays
-          ``native``. Only upgrades when a speed profile is active, so ``speed_mode=off`` stays
+          picking one of those on another card, head_dim or torch build. On Blackwell (SM100+) auto
+          leaves native when torch's own dispatch picks cuDNN at every DiT head dim and the run dtype
+          (same kernel, no per-call wrapper; ``UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN=0`` keeps the
+          pin). Elsewhere stays ``native``. Only upgrades when a speed profile is active, so ``speed_mode=off`` stays
           bit-identical.
   native - force the default SDPA (bit-identical reference).
   cudnn  - cuDNN fused attention (exact; NVIDIA).
@@ -37,6 +39,7 @@ import functools
 import os
 import re
 import threading
+import weakref
 from typing import Any, Optional
 
 ATTN_AUTO = "auto"
@@ -246,6 +249,18 @@ def _enabled_sdpa_kernels(kernels: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(k for k in kernels if getattr(torch.backends.cuda, flags[k], lambda: True)())
 
 
+MPS_PREFILL_ATTENTION_OFF_ENV = "PYTORCH_MPS_DISABLE_PREFILL_ATTENTION"
+
+
+def _mps_sdpa_kernels(torch: Any) -> tuple[str, ...]:
+    """MPS ignores ``sdpa_kernel``, so answer from the build: only torch 2.13+ has a fused (prefill) kernel."""
+    if _version_tuple(torch.__version__)[:2] < (2, 13):
+        return (SDPA_MATH,)
+    if os.environ.get(MPS_PREFILL_ATTENTION_OFF_ENV, "0") != "0":
+        return (SDPA_MATH,)
+    return (SDPA_FLASH, SDPA_MATH)
+
+
 def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     """Probe execution; ROCm runs in fresh children so launch errors stay isolated."""
     import torch
@@ -259,6 +274,8 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     )
     from core._torchao_stub import _module_is_rocm
 
+    if device.split(":")[0] == "mps":
+        return _mps_sdpa_kernels(torch)
     if device.split(":")[0] == "cuda" and _module_is_rocm(torch):
         return _probe_rocm_sdpa_kernels(device, dtype)
     # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim they cannot serve, and
@@ -284,11 +301,19 @@ def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
 
     Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
     unanswerable probe must never be read as "only math", which is a claim about the hardware."""
-    return _enabled_sdpa_kernels(_sdpa_capability(target))
+    kernels = _sdpa_capability(target)
+    if _target_device(target).split(":")[0] == "mps":
+        # MPS dispatch ignores the torch.backends.cuda toggles.
+        return kernels
+    return _enabled_sdpa_kernels(kernels)
+
+
+def _target_device(target: Any) -> str:
+    return str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
 
 
 def _sdpa_capability(target: Any) -> tuple[str, ...]:
-    device = str(getattr(target, "torch_device", None) or getattr(target, "device", "") or "")
+    device = _target_device(target)
     if device == "cuda":
         ordinal = getattr(target, "ordinal", None)
         device = f"cuda:{ordinal}" if ordinal is not None else _indexed_cuda_device(device)
@@ -473,7 +498,7 @@ def select_attention_backend(
             return None
         return backend
     if speed_active and _is_cuda_nvidia(target) and _cudnn_attention_supported():
-        return "_native_cudnn"
+        return AUTO_CUDNN
     if (speed_active or speed_unset) and _rocm_auto_flash(target, family):
         return ROCM_FLASH_CANDIDATE
     return None
@@ -506,6 +531,22 @@ def _is_cuda_rocm(target: Any) -> bool:
 
 
 ROCM_FLASH_CANDIDATE = "_rocm_flash_candidate"
+
+
+class _AutoCudnn(str):
+    """The ``auto`` cuDNN pick. Equal to ``"_native_cudnn"`` for every caller; ``apply_attention_backend`` alone tells
+    it from an explicit ``cudnn`` request, so it can leave native where torch already dispatches cuDNN (Blackwell)."""
+
+    __slots__ = ()
+
+
+AUTO_CUDNN = _AutoCudnn("_native_cudnn")
+# B200 torch 2.13 bf16: native SDPA already runs cuDNN at head_dim 64/128 (pin = 0.4-22% slower eager wrapper);
+# head_dim 256 picks FLASH, hence the per-head-dim probe.
+BLACKWELL_NATIVE_ATTN_ENV = (
+    "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
+)
+_NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
 # Accuracy is judged on the raw attention output (flash vs native SDPA, same inputs), not the block: the residual and
@@ -806,6 +847,7 @@ def _sync_rocm_flash_baseline() -> None:
     if current != _ROCM_FLASH_BASELINE[0]:
         ROCM_FLASH_ADMISSIONS.clear()
         _ROCM_FLASH_BUCKETS.clear()
+        _ROCM_FLASH_STORED_MISSES.clear()
         _ROCM_FLASH_BASELINE[0] = current
 
 
@@ -861,7 +903,7 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
         return None
     if traced:
         # Nothing here may graph-break: the device index, the verdict tables and any probe are read in plain Python
-        # by the constant-marked helper, called with constants only (the gate's own key, never a traced size).
+        # by the constant-marked helpers, called with constants only (the gate's own key, never a traced size).
         match = None
         for shape, found in gate.items():
             if shape[1] == dtype_name and heads == shape[2] and head_dim == shape[3]:
@@ -869,15 +911,38 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
                 break
         if match is None:
             return None
+        h, d, geometries = match[0][2], match[0][3], tuple(sorted(match[1]))
+        b_bucket = _rocm_flash_batch_bucket(batch)
+        joint = kv == seq  # self / joint attention: one symbol, so no guard
+        kv_bucket = None if joint else _rocm_flash_bucket(kv)
+        # Guard only where the route changes, so neighbouring same-verdict buckets reuse this graph.
+        segments = _rocm_flash_traced_segments(
+            raw_device, dtype_name, h, d, geometries, kv_bucket, b_bucket
+        )
+        for end, bucket, known, reason in segments:
+            if seq < end:
+                if known:
+                    return reason
+                return _rocm_flash_traced_reason(
+                    raw_device,
+                    dtype_name,
+                    h,
+                    d,
+                    geometries,
+                    bucket,
+                    bucket if joint else kv_bucket,
+                    b_bucket,
+                )
+        q_bucket = _rocm_flash_bucket(seq)
         return _rocm_flash_traced_reason(
             raw_device,
             dtype_name,
-            match[0][2],
-            match[0][3],
-            tuple(sorted(match[1])),
-            _rocm_flash_bucket(seq),
-            _rocm_flash_bucket(kv),
-            _rocm_flash_batch_bucket(batch),
+            h,
+            d,
+            geometries,
+            q_bucket,
+            q_bucket if joint else kv_bucket,
+            b_bucket,
         )
     device = _indexed_cuda_device(raw_device)
     try:
@@ -924,6 +989,85 @@ def _rocm_flash_traced_reason(
         return "compiled or captured"
 
 
+# Traced query lengths are routed by segments up to this many tokens; longer ones guard on their own bucket.
+_ROCM_FLASH_SEGMENT_LIMIT = 1 << 22
+# Admission keys with no stored verdict at first stored-only lookup (later verdicts reach the per-bucket route).
+_ROCM_FLASH_STORED_MISSES: set = set()
+_ROCM_FLASH_SLOWER = "slower or inexact at this size"
+
+
+def _rocm_flash_bucket_known(
+    device: str, dtype: Any, geometries: tuple, q_bucket: int, kv_bucket: int, b_bucket: int
+) -> Optional[bool]:
+    """This bucket's verdict if already known (in memory, this load's admissions or the stored timings), never
+    probing: True flash, False native, None untimed or deferred."""
+    deferred = getattr(_ROCM_FLASH_LOCAL, "deferred", None)
+    verdict: Optional[bool] = True
+    for g in geometries:
+        k = (device, str(dtype), *g, q_bucket, kv_bucket, b_bucket)
+        ok = _ROCM_FLASH_BUCKETS.get(k)
+        if ok is None and not (isinstance(deferred, set) and k in deferred):
+            ok = _rocm_flash_geometry_admitted(
+                device,
+                dtype,
+                g,
+                tokens = q_bucket,
+                batch = b_bucket,
+                stored_only = True,
+                **({} if kv_bucket == q_bucket else {"kv_tokens": kv_bucket}),
+            )
+            if ok is not None:
+                _ROCM_FLASH_BUCKETS[k] = ok
+        if ok is False:
+            return False
+        if ok is None:
+            verdict = None
+    return verdict
+
+
+def _rocm_flash_traced_segments(
+    raw_device: str,
+    dtype_name: str,
+    heads: int,
+    head_dim: int,
+    geometries: tuple,
+    kv_bucket: Optional[int],
+    b_bucket: int,
+) -> tuple:
+    """The query-length axis of a traced call as ascending ``(end, bucket, known, reason)`` segments: a run of
+    neighbouring buckets whose known verdict matches is one segment (``reason`` its route), an untimed bucket is its
+    own (``known`` False). ``kv_bucket`` None means keys are as long as queries. Run in plain Python while Dynamo
+    traces (constant-marked like ``_rocm_flash_traced_reason``); ``()`` when anything is odd (the caller falls back
+    to the per-bucket route)."""
+    try:
+        import torch
+
+        device = _indexed_cuda_device(raw_device)
+        gate = _active_rocm_flash_gate()
+        if gate and (device, dtype_name, heads, head_dim) not in gate:
+            return ()
+        dtype = getattr(torch, dtype_name.rpartition(".")[2], None)
+        if not isinstance(dtype, torch.dtype):
+            return ()
+        _sync_rocm_flash_baseline()
+        segments: list = []
+        bucket = ROCM_FLASH_MIN_BUCKET
+        with _ROCM_FLASH_GATE_LOCK:
+            while bucket < _ROCM_FLASH_SEGMENT_LIMIT:
+                ok = _rocm_flash_bucket_known(
+                    device, dtype, geometries, bucket, kv_bucket or bucket, b_bucket
+                )
+                reason = None if ok else _ROCM_FLASH_SLOWER
+                if ok is not None and segments and segments[-1][2] and segments[-1][3] == reason:
+                    segments[-1] = (bucket * 2, segments[-1][1], True, reason)
+                else:
+                    segments.append((bucket * 2, bucket, ok is not None, reason))
+                bucket *= 2
+        return tuple(segments)
+    except Exception:  # noqa: BLE001
+        return ()
+
+
 def _rocm_flash_bucket_reason(
     device: str, dtype: Any, geometries: tuple, q_bucket: int, kv_bucket: int, b_bucket: int
 ) -> Optional[str]:
@@ -932,7 +1076,7 @@ def _rocm_flash_bucket_reason(
     if all(_ROCM_FLASH_BUCKETS.get(k) is True for k in keys):
         return None
     if any(_ROCM_FLASH_BUCKETS.get(k) is False for k in keys):
-        return "slower or inexact at this size"
+        return _ROCM_FLASH_SLOWER
     deferred = getattr(_ROCM_FLASH_LOCAL, "deferred", None)
     if not isinstance(deferred, set):
         deferred = set()  # no owning DiT: nothing to remember the deferral on
@@ -957,7 +1101,7 @@ def _rocm_flash_bucket_reason(
                     return "timing deferred"
                 _ROCM_FLASH_BUCKETS[k] = ok
             verdict = verdict and ok
-    return None if verdict else "slower or inexact at this size"
+    return None if verdict else _ROCM_FLASH_SLOWER
 
 
 def _native_sdpa_fused_serves(
@@ -1040,10 +1184,12 @@ def _rocm_flash_geometry_admitted(
     kv_tokens: Optional[int] = None,
     batch: int = 1,
     live: bool = False,
+    stored_only: bool = False,
 ) -> Optional[bool]:
     """Whether flash is admitted for ``geometry`` (hidden, heads, head_dim[, context width]) at ``batch`` x ``tokens``
     queries x ``kv_tokens`` keys (default square, batch 1). None when the probe could not run (it raised, or ``live``,
-    inside a running forward, and there is no room for it beside that forward's tensors): nothing is cached."""
+    inside a running forward, and there is no room for it beside that forward's tensors): nothing is cached.
+    ``stored_only``: None instead of probing when no verdict is known yet."""
     kv = tokens if kv_tokens is None else int(kv_tokens)
     # Geometry, lengths and batch as separate fields: a flat tuple aliases (h, H, d, ctx) at n with (h, H, d) at ctx x n.
     key = (device, str(dtype), tuple(geometry), tokens, kv, batch)
@@ -1051,6 +1197,10 @@ def _rocm_flash_geometry_admitted(
     cached = ROCM_FLASH_ADMISSIONS.get(key)
     if cached is not None:
         return bool(cached.get("admitted"))
+    if stored_only and key in _ROCM_FLASH_STORED_MISSES:
+        return (
+            None  # traced segments ask for every bucket on every call: read the store once per slot
+        )
     toolchain = _rocm_flash_toolchain_key(device)
     path = _rocm_flash_cache_path(toolchain)
     size = (str(tokens) if kv == tokens else f"{tokens}x{kv}") + ("" if batch == 1 else f"b{batch}")
@@ -1067,6 +1217,9 @@ def _rocm_flash_geometry_admitted(
         ROCM_FLASH_ADMISSIONS[key] = rec
         _log_rocm_flash_verdict(logger, device, geometry, rec, "cached")
         return rec["admitted"]
+    if stored_only:
+        _ROCM_FLASH_STORED_MISSES.add(key)
+        return None
     if live:
         need = _rocm_flash_probe_bytes(geometry, tokens, kv, batch, dtype, device)
         if not _rocm_flash_probe_fits(device, need):
@@ -1104,6 +1257,7 @@ def _rocm_flash_geometry_admitted(
     valid = _rocm_flash_record_ok(rec)
     rec["admitted"] = valid and _rocm_flash_wins(rec)
     ROCM_FLASH_ADMISSIONS[key] = rec
+    _ROCM_FLASH_STORED_MISSES.discard(key)
     if valid:  # an implausible timing is not stored, so it cannot pin a verdict
         _save_rocm_flash_verdict(path, toolchain, slot, rec)
     _log_rocm_flash_verdict(logger, device, geometry, rec, "probe")
@@ -1895,6 +2049,7 @@ def _install_rocm_flash_dispatch_guard() -> bool:
     try:
         import torch
         torch.compiler.assume_constant_result(_rocm_flash_traced_reason)
+        torch.compiler.assume_constant_result(_rocm_flash_traced_segments)
     except Exception:  # noqa: BLE001 - torch without it: a traced call graph-breaks into the helper, still correct
         pass
     return _install_dispatch_guard(
@@ -1917,6 +2072,8 @@ _ROCM_FLASH_HOOKS_ATTR = "_unsloth_rocm_flash_hooks"
 # On the pipe: every DiT the hooks went on, whatever attribute holds it (a MiniMax-H3 view hooks transformer_ref, which
 # _attention_dits does not enumerate). Reset, report and the memory guard iterate this.
 _ROCM_FLASH_DITS_ATTR = "_unsloth_rocm_flash_dits"
+# On a hooked DiT: its live CFG replicas (weak refs), reset by begin_attention_run with the source.
+_ROCM_FLASH_REPLICAS_ATTR = "_unsloth_rocm_flash_replicas"
 
 
 def _rocm_flash_dits(pipe: Any) -> list:
@@ -1927,6 +2084,16 @@ def _rocm_flash_dits(pipe: Any) -> list:
         if getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None) and not any(dit is d for d in found):
             found.append(dit)
     return found
+
+
+def _with_rocm_flash_replicas(dits: list) -> list:
+    """``dits`` followed by their live CFG replicas (``track_rocm_flash_replica``)."""
+    out = list(dits)
+    for source in dits:
+        replicas = getattr(source, _ROCM_FLASH_REPLICAS_ATTR, None)
+        if isinstance(replicas, weakref.WeakSet):
+            out.extend(r for r in list(replicas) if not any(r is d for d in out))
+    return out
 
 
 def _compiling() -> bool:
@@ -1963,53 +2130,81 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
                 registry.append(dit)
         except Exception:  # noqa: BLE001
             pass
-        register_pre = getattr(dit, "register_forward_pre_hook", None)
-        register_post = getattr(dit, "register_forward_hook", None)
-        if not callable(register_pre) or not callable(register_post):
-            continue
-        if getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None):
-            continue
+        _hook_rocm_flash_dit(dit)
 
-        # Also while Dynamo traces a compiled DiT (it replays these threading.local writes), so a traced call sees the
-        # gate and runs native.
-        def pre(
-            _module,
-            _args,
-            dit = dit,
-        ) -> None:
-            outer = getattr(_ROCM_FLASH_LOCAL, "stack", None)
-            if outer is None:
-                outer = _ROCM_FLASH_LOCAL.stack = []
-            outer.append(
-                (
-                    getattr(_ROCM_FLASH_LOCAL, "gate", None),
-                    getattr(_ROCM_FLASH_LOCAL, "tally", None),
-                    getattr(_ROCM_FLASH_LOCAL, "deferred", None),
-                )
+
+def _hook_rocm_flash_dit(dit: Any) -> None:
+    register_pre = getattr(dit, "register_forward_pre_hook", None)
+    register_post = getattr(dit, "register_forward_hook", None)
+    if not callable(register_pre) or not callable(register_post):
+        return
+    if getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None):
+        return
+
+    # Dynamo replays these threading.local writes, so traced calls see the gate too.
+    # Use the hook's ``dit`` arg, never a closure: that cycle pins a dropped CFG replica's weights on its card.
+    def pre(dit, _args) -> None:
+        outer = getattr(_ROCM_FLASH_LOCAL, "stack", None)
+        if outer is None:
+            outer = _ROCM_FLASH_LOCAL.stack = []
+        outer.append(
+            (
+                getattr(_ROCM_FLASH_LOCAL, "gate", None),
+                getattr(_ROCM_FLASH_LOCAL, "tally", None),
+                getattr(_ROCM_FLASH_LOCAL, "deferred", None),
             )
-            _ROCM_FLASH_LOCAL.gate = getattr(dit, ROCM_FLASH_GATE_ATTR, None) or None
-            tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
-            _ROCM_FLASH_LOCAL.tally = tally if isinstance(tally, dict) else None
-            deferred = getattr(dit, ROCM_FLASH_DEFERRED_ATTR, None)
-            _ROCM_FLASH_LOCAL.deferred = deferred if isinstance(deferred, set) else None
+        )
+        _ROCM_FLASH_LOCAL.gate = getattr(dit, ROCM_FLASH_GATE_ATTR, None) or None
+        tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
+        _ROCM_FLASH_LOCAL.tally = tally if isinstance(tally, dict) else None
+        deferred = getattr(dit, ROCM_FLASH_DEFERRED_ATTR, None)
+        _ROCM_FLASH_LOCAL.deferred = deferred if isinstance(deferred, set) else None
 
-        def post(_module, _args, _output) -> None:
-            stack = getattr(_ROCM_FLASH_LOCAL, "stack", None)
-            gate, tally, deferred = stack.pop() if stack else (None, None, None)
-            _ROCM_FLASH_LOCAL.gate, _ROCM_FLASH_LOCAL.tally = gate, tally
-            _ROCM_FLASH_LOCAL.deferred = deferred
+    def post(_module, _args, _output) -> None:
+        stack = getattr(_ROCM_FLASH_LOCAL, "stack", None)
+        gate, tally, deferred = stack.pop() if stack else (None, None, None)
+        _ROCM_FLASH_LOCAL.gate, _ROCM_FLASH_LOCAL.tally = gate, tally
+        _ROCM_FLASH_LOCAL.deferred = deferred
 
-        try:
-            try:  # also after a forward that raised, so a failed run never leaves its gate active
-                post_handle = register_post(post, always_call = True)
-            except TypeError:
-                post_handle = register_post(post)
-            handles = [register_pre(pre), post_handle]
-            setattr(dit, _ROCM_FLASH_HOOKS_ATTR, handles)
-            setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
-            setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        try:  # also after a forward that raised, so a failed run never leaves its gate active
+            post_handle = register_post(post, always_call = True)
+        except TypeError:
+            post_handle = register_post(post)
+        handles = [register_pre(pre), post_handle]
+        setattr(dit, _ROCM_FLASH_HOOKS_ATTR, handles)
+        setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
+        setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def track_rocm_flash_replica(source: Any, replica: Any, device: Any) -> None:
+    """A CFG replica (``diffusion_multigpu.build_replica``, root hooks cleared) runs its forward on its own worker
+    thread, where the source's hooks never set the gate: give it its own hooks and the source's gate keyed to its
+    card, so its calls are gated (and their buckets timed) on that card exactly as the source's are."""
+    if not getattr(source, _ROCM_FLASH_HOOKS_ATTR, None):
+        return
+    gate = getattr(source, ROCM_FLASH_GATE_ATTR, None)
+    try:
+        if gate:
+            card = _indexed_cuda_device(str(device))
+            gate = {(card, *shape[1:]): found for shape, found in gate.items()}
+        setattr(replica, ROCM_FLASH_GATE_ATTR, gate or None)
+        setattr(
+            replica, _ROCM_FLASH_HOOKS_ATTR, None
+        )  # the copied handles point at the source's hooks
+    except Exception:  # noqa: BLE001
+        return
+    _hook_rocm_flash_dit(replica)
+    try:  # the replica outlives a generation: its deferred buckets must be retried at the next one as the source's are
+        replicas = getattr(source, _ROCM_FLASH_REPLICAS_ATTR, None)
+        if not isinstance(replicas, weakref.WeakSet):
+            replicas = weakref.WeakSet()
+            setattr(source, _ROCM_FLASH_REPLICAS_ATTR, replicas)
+        replicas.add(replica)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _untrack_rocm_flash_calls(pipe: Any) -> None:
@@ -2050,7 +2245,7 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
     if not dits:
         return None
     total: dict[str, int] = {}
-    for dit in dits:
+    for dit in _with_rocm_flash_replicas(dits):  # a CFG replica's calls are this generation's too
         tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
         if isinstance(tally, dict):
             for name, count in tally.items():
@@ -2080,7 +2275,7 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
 def begin_attention_run(state: Any) -> None:
     """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone, and
     this run's DiTs retry buckets whose probe could not run."""
-    for dit in _rocm_flash_dits(getattr(state, "pipe", None)):
+    for dit in _with_rocm_flash_replicas(_rocm_flash_dits(getattr(state, "pipe", None))):
         if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
             try:
                 setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
@@ -3054,6 +3249,60 @@ def _cudnn_runs_head_dim(target: Any, head_dim: int) -> Optional[bool]:
     return _CUDNN_HEAD_DIM_CACHE.setdefault(key, bool(ran))
 
 
+def _native_sdp_choice(device: str, dtype: Any, head_dim: int) -> int:
+    """torch's own SDPA dispatch choice (an ``SDPBackend`` value) at ``head_dim`` / ``dtype`` on ``device``."""
+    import torch
+
+    q = torch.zeros(1, 2, 256, int(head_dim), device = device, dtype = dtype)
+    return int(torch._fused_sdp_choice(q, q, q))
+
+
+def _device_capability(device: str) -> tuple[int, int]:
+    import torch
+    return tuple(torch.cuda.get_device_capability(device))  # type: ignore[return-value]
+
+
+def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
+    """True on a Blackwell (SM100+) NVIDIA card when torch's own SDPA dispatch picks cuDNN for every DiT head dim at the
+    run dtype, so the ``auto`` pin would change no kernel. Unknown head dims, dtype or capability keep the pin."""
+    if (os.environ.get(BLACKWELL_NATIVE_ATTN_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    if not _is_cuda_nvidia(target):
+        return False
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return False
+    dims = _dit_head_dims(pipe)
+    if not dims:
+        return False
+    try:
+        import torch
+        from torch.nn.attention import SDPBackend
+
+        device = _indexed_cuda_device(device)
+        if _device_capability(device) < (10, 0):
+            return False
+        dtype = getattr(target, "dtype", None)
+        if dtype not in (torch.bfloat16, torch.float16):
+            return False
+        for dim in sorted(dims):
+            key = (device, str(dtype), int(dim))
+            hit = _NATIVE_DISPATCH_CACHE.get(key)
+            if hit is None:
+                hit = _native_sdp_choice(device, dtype, dim) == int(SDPBackend.CUDNN_ATTENTION)
+                _NATIVE_DISPATCH_CACHE[key] = hit
+            if not hit:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - unaskable: keep the pin
+        return False
+
+
 def _cudnn_serves_pipe(
     pipe: Any,
     target: Any,
@@ -3182,6 +3431,20 @@ def apply_attention_backend(
             and not _cudnn_serves_pipe(pipe, target, logger)
         ):
             backend = None
+        if (
+            isinstance(backend, _AutoCudnn)
+            and target is not None
+            and _native_dispatches_cudnn(pipe, target)
+        ):
+            if logger is not None:
+                logger.info(
+                    "diffusion.attention: auto keeps native SDPA (it already dispatches cuDNN on this Blackwell card; "
+                    "%s=0 pins cuDNN)",
+                    BLACKWELL_NATIVE_ATTN_ENV,
+                )
+            backend = None
+        if backend is not None:
+            backend = str(backend)
         if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
             if logger is not None:
                 logger.warning(
