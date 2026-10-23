@@ -1365,6 +1365,111 @@ def sticker_pack() -> B:
     return b
 
 
+def daily_digest() -> B:
+    b = B(
+        "daily-digest",
+        "Daily Digest",
+        "pipeline",
+        "Every morning, fetches the Hacker News front page, has a local model write a short digest and reads it "
+        "aloud into your Library.",
+        tags = ["automation", "schedule", "http", "audio"],
+        seed = 46,
+    ).need("chat", "tts")
+    b.n("every_day", "trigger.schedule", 0, 1, cron = "0 8 * * *")
+    b.n(
+        "fetch",
+        "http.request",
+        1,
+        1,
+        label = "Front page",
+        url = "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=15"
+        "&attributesToRetrieve=title,url,points",
+    )
+    b.n("stories", "json.get", 2, 1, path = "hits")
+    b.e("fetch.data", "stories.json")
+    b.n(
+        "digest",
+        "llm.generate",
+        3,
+        1,
+        model = CHAT,
+        temperature = 0.4,
+        max_tokens = 600,
+        system = "You write a calm two-minute morning briefing. Group the stories by theme, one or two sentences "
+        "each, plain prose that reads well aloud, no lists or links.",
+        prompt = "Today's front page stories, with their points, are in the context.",
+    )
+    b.e("stories.value", "digest.context")
+    b.n("text", "output.result", 4, 0.5, name = "digest")
+    b.e("digest.text", "text.value")
+    b.n("speak", "audio.speak", 4, 1.5, model = TTS, voice = "af_heart")
+    b.e("digest.text", "speak.text")
+    b.n("save", "output.library", 5, 1.5, folder = "Digests")
+    b.e("speak.audio", "save.value")
+    b.note(
+        "tip",
+        "Studio asks you to approve the schedule and hn.algolia.com before this runs. The schedule is off until "
+        "you switch it on, and fires only while Studio is open. Press Run to try it once now.",
+        0,
+        2,
+        2,
+        0.8,
+    )
+    return b
+
+
+def webhook_reply() -> B:
+    b = B(
+        "webhook-reply",
+        "Webhook Auto-Reply",
+        "pipeline",
+        "Another app POSTs a message to this flow's secret URL; a local model drafts a reply you find in the run "
+        "history.",
+        tags = ["automation", "webhook"],
+        seed = 47,
+    ).need("chat")
+    b.n(
+        "hook",
+        "trigger.webhook",
+        0,
+        1,
+        test_payload = {
+            "name": "Ana",
+            "message": "Do you ship to Canada, and how long does it take?",
+        },
+    )
+    b.n("message", "json.get", 1, 0.5, path = "message")
+    b.e("hook.payload", "message.json")
+    b.n("name", "json.get", 1, 1.5, path = "name")
+    b.e("hook.payload", "name.json")
+    b.n(
+        "reply",
+        "llm.generate",
+        2,
+        1,
+        model = CHAT,
+        temperature = 0.4,
+        max_tokens = 400,
+        system = "You answer customer messages for a small online shop in two or three friendly sentences. The "
+        "context is the customer's name. If you do not know a fact, say a teammate will confirm it.",
+        prompt = "{{prompt}}",
+    )
+    b.e("message.value", "reply.prompt")
+    b.e("name.value", "reply.context")
+    b.n("draft", "output.result", 3, 1, name = "reply")
+    b.e("reply.text", "draft.value")
+    b.note(
+        "tip",
+        "Approve the webhook and switch it on to get its secret URL. A POST answers with the run id at once; "
+        "Run by hand uses the test payload.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1481,8 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    daily_digest,
+    webhook_reply,
 )
 
 
