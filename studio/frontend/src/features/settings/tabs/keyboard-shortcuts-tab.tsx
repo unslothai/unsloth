@@ -303,7 +303,8 @@ export function KeyboardShortcutsTab() {
         onClick={() => startRecording(def, slot)}
         aria-label={`${t("settings.keyboardShortcuts.edit")}: ${label}, ${text}`}
         className={cn(
-          "inline-flex h-8 items-center rounded-lg px-2 text-sm tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          // ChatGPT's hover: a short pill with room either side, never narrower than it is tall.
+          "inline-flex h-[calc(28px*var(--ui-space-scale,1))] min-w-[calc(28px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-3 text-sm tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           // A built-in key keeps working with the switch off; only assigned chords dim.
           parsed && !enabled && "opacity-50",
         )}
@@ -412,7 +413,7 @@ export function KeyboardShortcutsTab() {
                     setJustRecorded(null);
                     resetAction(def.id);
                   }}
-                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
+                  className="inline-flex size-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
                 >
                   <HugeiconsIcon
                     icon={UndoIcon}
@@ -426,7 +427,7 @@ export function KeyboardShortcutsTab() {
               </TooltipContent>
             </Tooltip>
           ) : null}
-          <div className="flex shrink-0 items-center gap-4">
+          <div className="flex shrink-0 items-center gap-2">
             {renderSlot(def, "primary", enabled)}
             {hasAlternate ? renderSlot(def, "alternate", enabled) : null}
           </div>
@@ -452,16 +453,32 @@ export function KeyboardShortcutsTab() {
 
   return (
     <div className="settings-page px-4">
-      <header className="flex flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.keyboardShortcuts.title")}
-          className="text-xl font-semibold font-heading"
+      <header className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h1
+            data-settings-label={t("settings.keyboardShortcuts.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.keyboardShortcuts.title")}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {t("settings.keyboardShortcuts.intro")}
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          disabled={Object.keys(overrides).length === 0}
+          onClick={() => {
+            stopRecording();
+            setJustRecorded(null);
+            resetAll();
+          }}
         >
-          {t("settings.keyboardShortcuts.title")}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {t("settings.keyboardShortcuts.intro")}
-        </p>
+          {t("settings.keyboardShortcuts.resetAll")}
+        </Button>
       </header>
 
       <div className="relative">
@@ -553,22 +570,6 @@ export function KeyboardShortcutsTab() {
           </section>
         );
       })}
-
-      <div className="flex justify-start">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={Object.keys(overrides).length === 0}
-          onClick={() => {
-            stopRecording();
-            setJustRecorded(null);
-            resetAll();
-          }}
-        >
-          {t("settings.keyboardShortcuts.resetAll")}
-        </Button>
-      </div>
     </div>
   );
 }
