@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
@@ -106,6 +107,7 @@ from .diffusion_device import (
     diffusion_device_scope,
     diffusion_device_target_from_torch_device,
     install_frame_pad_fix,
+    install_vae_sync,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
     auto_cuda_ordinal_for_load,
@@ -4832,6 +4834,7 @@ class DiffusionBackend:
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
     @_account_owned_load
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -9885,6 +9888,7 @@ class DiffusionBackend:
                     except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
+                    install_vae_sync(pipe, target, logger = logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
@@ -12692,6 +12696,7 @@ class DiffusionBackend:
         )
 
     @_release_render_on_unload
+    @holds_inference
     @with_hires
     def generate(
         self,
