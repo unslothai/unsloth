@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, seedImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -224,7 +224,7 @@ import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
-import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { isLoadInFlightPhase, watchSavingPhase } from "@/lib/swap-save-phase";
 import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
@@ -2244,6 +2244,7 @@ export function ImagesPage({
     lastLoadSig.current = null;
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
+    clearPendingImageLoad();
     setCanReapply(false);
     // Stopping the poll also stops its "cancelled or evicted" branch, which is what hands back a
     // pick that never became resident, so do it here exactly as that branch would.
@@ -3459,6 +3460,8 @@ export function ImagesPage({
         const evicted = pendingEvicted.current;
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
+        // A load resumed after a page reload takes its requested paths from the pending descriptor.
+        lastLoad.current = finishedLoadTarget(lastLoad.current, loaded);
         if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
           const remembered = withEngagedFamily(lastLoad.current, loaded);
           rememberImageModel(remembered);
@@ -3493,6 +3496,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === "error") {
+        clearPendingImageLoad();
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         dismissLoadToast();
@@ -3518,6 +3522,7 @@ export function ImagesPage({
         return;
       }
       if (p.phase === null) {
+        clearPendingImageLoad();
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
@@ -3614,7 +3619,7 @@ export function ImagesPage({
       let inFlight = false;
       try {
         const p = await getDiffusionLoadProgress();
-        inFlight = p.phase === "downloading" || p.phase === "finalizing";
+        inFlight = isLoadInFlightPhase(p.phase);
         if (inFlight) {
           setBusy("loading");
           dismissLoadToast();
@@ -3625,6 +3630,8 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      // No load to resume: a pending descriptor is left from one that ended while the page was closed.
+      if (!inFlight) clearPendingImageLoad();
       setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
@@ -3912,6 +3919,8 @@ export function ImagesPage({
         vaeFile: componentFiles.vae_file,
         fieldFiles: { textEncoderFiles: fieldFiles.text_encoder_file, vaeFile: fieldFiles.vae_file },
       };
+      // Durable copy of the request: the backend load outlives a page reload, and this ref does not.
+      rememberPendingImageLoad(lastLoad.current);
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -3961,6 +3970,7 @@ export function ImagesPage({
         resyncEvicted(pendingEvicted.current, "image");
       } catch (err) {
         pendingEvicted.current = [];
+        clearPendingImageLoad();
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;

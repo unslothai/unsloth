@@ -716,3 +716,31 @@ test("a field edit reruns no resident cleanup against a cached status, so anothe
   assert.equal(readImageComponents(zImage), null);
   assert.equal(readImageModel()?.vaeFile, undefined);
 });
+
+test("a reload that changed one override keeps the other's saved path", () => {
+  const resident = { loaded: true, repo_id: zImage.repoId, model_kind: "gguf", gguf_filename: zImage.filename, engine: "diffusers" };
+  // Another client reloaded Z-Image without the text encoder; the VAE override still engages.
+  const vaeOnly = { ...resident, component_files: { vae: "ae.safetensors" } };
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  forgetStaleImageComponents(zImage, vaeOnly);
+  assert.deepEqual(readImageComponents(zImage), { vaeFile: zFiles.vaeFile });
+  // The encoder kept, the VAE swapped for another file.
+  rememberImageComponents(zImage, zFiles);
+  forgetStaleImageComponents(zImage, { ...resident, component_files: { text_encoder: "qwen_3_4b.safetensors", vae: "x.safetensors" } });
+  assert.deepEqual(readImageComponents(zImage), { textEncoderFiles: zFiles.textEncoderFiles });
+
+  // The first-status reconcile hands back the model with the part still engaged, and the slot keeps it too.
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  rememberImageModel({ ...zImage, ...zFiles });
+  assert.deepEqual(reconcileRememberedComponents({ ...zImage, ...zFiles }, vaeOnly), { ...zImage, vaeFile: zFiles.vaeFile });
+  assert.deepEqual(readImageModel(), { ...zImage, vaeFile: zFiles.vaeFile });
+  assert.deepEqual(recalledComponentFiles(readImageModel()!), { vaeFile: zFiles.vaeFile });
+
+  // Same for the resident reconcile's last-model slot.
+  store.clear();
+  rememberImageModel({ ...zImage, ...zFiles });
+  assert.deepEqual(forgetStaleResidentComponents(vaeOnly), { ...zImage, vaeFile: zFiles.vaeFile });
+  assert.deepEqual(readImageModel(), { ...zImage, vaeFile: zFiles.vaeFile });
+});
