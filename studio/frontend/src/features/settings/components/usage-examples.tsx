@@ -155,8 +155,6 @@ const DOC_LINKS = [
     href: "https://unsloth.ai/docs/integrations/hermes-agent",
   },
   { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
-  { label: "Pi", href: "https://pi.dev" },
-  { label: "Mistral Vibe", href: "https://github.com/mistralai/mistral-vibe" },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors CODING_AGENTS in
