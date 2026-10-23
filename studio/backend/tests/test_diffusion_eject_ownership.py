@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Who may eject, and in which order the claims are read.
-
-Three claims can speak for the backend at once: a PUBLISHED resident, an admitted BACKGROUND load,
-and a bare INVOCATION record for a caller still in preflight (a CPU Diffusers load claims no GPU and
-publishes nothing, so for its whole construction it is only that record). They disagree, so the order
-matters:
-
-  * the resident wins, because require_resident_control has already authorized the caller against the
-    model that is actually loaded -- a newcomer queueing a replacement over it must not cost the owner
-    the right to eject its own model;
-  * with no resident, the admitted background load decides;
-  * with neither, the invocation record decides, which is what keeps a second account from cancelling
-    someone else's pending CPU load.
-"""
+"""Eject authority: resident first, then admitted background load, then the invocation record."""
 
 from __future__ import annotations
 
@@ -35,11 +22,8 @@ BOB = "b" * 32
 @pytest.fixture
 def backend(monkeypatch):
     engine = DiffusionBackend()
-    # The eject path's own authorization is exercised here, not the hub's: require_resident_control
-    # answers "may this account touch the RESIDENT", and every case below has already decided that.
+    # The eject path's own authorization is under test, not require_resident_control.
     monkeypatch.setattr(account_access, "require_resident_control", lambda *a, **k: None)
-    # Stands in for the real teardown, which frees weights this test never allocated. It still drops
-    # the resident, so status() afterwards reads what a real eject would leave.
     monkeypatch.setattr(engine, "_unload_locked", lambda: setattr(engine, "_state", None))
     return engine
 
@@ -64,7 +48,6 @@ def _pending_invocation(engine, account_id):
 def test_the_resident_owner_can_eject_while_another_account_queues_a_replacement(backend):
     _resident(backend)
     _background_load(backend, ALICE)
-    # Alice is merely downloading. Bob owns what is loaded, and require_resident_control said so.
     assert backend.unload(expected_account = BOB)["loaded"] is False
     assert backend._unload_waiters == 0
 
@@ -73,13 +56,11 @@ def test_a_foreign_account_cannot_cancel_a_pending_background_load(backend):
     _background_load(backend, ALICE)
     with pytest.raises(account_access.GpuBusyForAnotherAccountError):
         backend.unload(expected_account = BOB)
-    # Refused before the fence moved: the victim's load is untouched.
     assert backend._unload_waiters == 0 and not backend._cancel_event.is_set()
     assert backend._loading is not None
 
 
 def test_a_foreign_account_cannot_cancel_a_pending_cpu_load(backend):
-    # No GPU claim and no published resident: the invocation record is the only owner there is.
     _pending_invocation(backend, ALICE)
     with pytest.raises(account_access.GpuBusyForAnotherAccountError):
         backend.unload(expected_account = BOB)
@@ -189,7 +170,6 @@ def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
     with backend._load_cancel_lock:
         backend._unload_waiters += 1
         backend._unload_fence_clear.clear()
-    # Exactly the gap: no teardown is reserved yet, so this stays set the whole time.
     assert backend._teardown_drained.is_set()
 
     polls = {"n": 0}
@@ -217,16 +197,12 @@ def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
 
 
 def test_stop_cancels_a_queued_generation_while_an_eject_waits_for_the_lock(backend):
-    """An eject raises the load fence when it is ACCEPTED and reserves the teardown only once
-    construction releases _lock. Through that window the same counter denies a queued generation
-    admission, so Stop had to be able to reach it: it answered False instead, and the request it
-    could not cancel went on to run once the eject finished."""
+    """Stop must cancel a queued generation while an eject waits for the lock; the fence denies it."""
     queued = threading.Event()
     backend._queued_generate_cancels.add(queued)
     with backend._load_cancel_lock:
         backend._unload_waiters += 1
         backend._unload_fence_clear.clear()
-    # Exactly the pre-reservation window: neither of the old predicates is true yet.
     assert not backend._teardown_waiters and not backend._transition_owns_slot
 
     assert backend.cancel_generate() is True
@@ -257,7 +233,6 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
     # Not loading_repo_ids: release_if, keep-warm and the auto-switch read that as ownership.
     assert backend.loading_repo_ids() == ()
 
-    # What _run_load's finally does when the load thread returns.
     with backend._load_cancel_lock:
         backend._draining_repos.pop(cancelled_token, None)
     assert backend.draining_repo_ids() == ()

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -237,6 +238,7 @@ function PermissionsSection() {
   );
   const [setupOpen, setSetupOpen] = useState(false);
   const levelDescriptionId = useId();
+  const pillId = useId();
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
 
@@ -301,12 +303,13 @@ function PermissionsSection() {
                   void pickSandboxLevel(level, setSandboxLevel, () => setSetupOpen(true));
                 }}
                 className={cn(
-                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
                   selected
-                    ? "hub-tab-toggle-pill cursor-default text-foreground"
+                    ? "cursor-default text-foreground"
                     : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
                 )}
               >
+                {selected && <SegmentedPill group={`${pillId}-level`} />}
                 {t(SANDBOX_LEVEL_TEXT[level].name)}
               </button>
             );

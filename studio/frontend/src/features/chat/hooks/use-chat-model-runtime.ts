@@ -16,6 +16,13 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { evictedSlotsFrom, resyncEvicted, toastEvicted } from "@/lib/evicted-toast";
+import {
+  isMultiModelRefusal,
+  MULTI_MODEL_REFUSAL_TITLE,
+  refusalHeadersOf,
+} from "@/lib/multi-model-refusal";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isBackendDownForDesktopUpdate,
@@ -120,6 +127,7 @@ import {
   resolvePreserveThinkingOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  syncKeepModelsLoaded,
   takeEffortDisplacedByPin,
   useChatRuntimeStore,
   type LoadingModelPick,
@@ -380,6 +388,9 @@ const LORA_SUFFIX_RE = /_(\d{9,})$/;
 
 const CLI_LOAD_POLL_IDLE_MS = 60_000;
 const CLI_LOAD_POLL_MAX_MS = 600_000;
+const CLI_LOAD_POLL_FAST_MS = 5_000;
+const CLI_LOAD_POLL_FAST_INTERVAL_MS = 500;
+const CLI_LOAD_POLL_IDLE_INTERVAL_MS = 2_000;
 
 async function waitForServerModel(signal?: AbortSignal): Promise<void> {
   const started = Date.now();
@@ -421,7 +432,15 @@ async function waitForServerModel(signal?: AbortSignal): Promise<void> {
     const elapsed = Date.now() - started;
     if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
     if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Runs for a minute per chat open with nothing loaded: fast first, then slow for an idle page.
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        sawLoad || elapsed < CLI_LOAD_POLL_FAST_MS
+          ? CLI_LOAD_POLL_FAST_INTERVAL_MS
+          : CLI_LOAD_POLL_IDLE_INTERVAL_MS,
+      ),
+    );
   }
 }
 
@@ -669,12 +688,13 @@ function unloadKeptModel(keptId: string): Promise<boolean> {
   );
 }
 
-async function syncInferenceStatusToStore(options?: {
+export async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
   preserveIdleUnloaded?: boolean;
   /** A TTS load owns the chat slot even though Chat did not start the load. */
   externalChatSlotLoad?: boolean;
+  quiet?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const downWhenIssued = isBackendDownForDesktopUpdate();
@@ -718,6 +738,7 @@ async function syncInferenceStatusToStore(options?: {
 
     if (signal?.aborted || superseded()) return;
 
+    syncKeepModelsLoaded(statusRes.multi_model_mode);
     setModels(listRes.models.map(toChatModelRow));
     publishLoadedModels(
       statusRes.serving ?? [],
@@ -804,7 +825,7 @@ async function syncInferenceStatusToStore(options?: {
       });
       // A known prior resident or a definitive speech-only owner both prove the
       // persisted Chat pick is stale. Do not clear for a Chat load that this tab
-      // started. TTS is different because it owns this same slot.
+      // started. A TTS load without Keep multiple models loaded takes this same slot.
       if (
         (wasResident || isSpeechOnlyStatus(statusRes)) &&
         selectedCheckpoint &&
@@ -814,7 +835,7 @@ async function syncInferenceStatusToStore(options?: {
         if (wasResident) {
           toast.info(`${wasResident} is no longer loaded`, {
             description:
-              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+              "The server released it, as loading an image, video or audio model does, or its process stopped. Pick it again to keep chatting.",
           });
         }
         // Drop the pick too, as a server-side unload does: the name alone reads as "this is my model"
@@ -826,6 +847,7 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a toast about a read
     // whose answer would have been discarded. The LoRA inventory settles from its own request.
     if (signal?.aborted || superseded()) return;
+    if (options?.quiet) return;
     // The update screen already reports the backend it stopped.
     if (isSilencedDesktopUpdateFailure(error, downWhenIssued)) return;
     const message =
@@ -2095,6 +2117,12 @@ export function useChatModelRuntime() {
           const previousMlxInt8Prefill = rollbackConfig
             ? (rollbackConfig.mlxInt8Prefill ?? false)
             : useChatRuntimeStore.getState().mlxInt8Prefill;
+          const previousMlxPleOffload = rollbackConfig
+            ? (rollbackConfig.mlxPleOffload ?? null)
+            : useChatRuntimeStore.getState().mlxPleOffload;
+          const previousMlxExpertOffload = rollbackConfig
+            ? (rollbackConfig.mlxExpertOffload ?? null)
+            : useChatRuntimeStore.getState().mlxExpertOffload;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do: the Hub rejects an invalid
             // Authorization header with 401 even for a public repo, so sending the raw stored token here would
@@ -2197,6 +2225,12 @@ export function useChatModelRuntime() {
           let loadMlxInt8Prefill = pendingLoadConfig
             ? (pendingLoadConfig.mlxInt8Prefill ?? false)
             : stateBeforeUnload.mlxInt8Prefill;
+          let loadMlxPleOffload = pendingLoadConfig
+            ? (pendingLoadConfig.mlxPleOffload ?? null)
+            : stateBeforeUnload.mlxPleOffload;
+          let loadMlxExpertOffload = pendingLoadConfig
+            ? (pendingLoadConfig.mlxExpertOffload ?? null)
+            : stateBeforeUnload.mlxExpertOffload;
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
           // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
@@ -2705,6 +2739,8 @@ export function useChatModelRuntime() {
               };
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
+              loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
+              loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
@@ -2809,6 +2845,8 @@ export function useChatModelRuntime() {
               cache_type_kv: loadKvCacheDtype,
               mlx_kv_quant: loadMlxKvQuant ?? null,
               mlx_int8_prefill: loadMlxInt8Prefill,
+              mlx_ple_offload: loadMlxPleOffload,
+              mlx_expert_offload: loadMlxExpertOffload,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               ...(targetIsMlx ? { spec_draft_model: loadSpecDraftModel } : {}),
@@ -2846,15 +2884,9 @@ export function useChatModelRuntime() {
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
             offloadCounts = offloadCountsFrom(loadResponse);
-            if (loadResponse.evicted?.length) {
-              toast.info(
-                `Unloaded ${loadResponse.evicted.join(", ")} to make room`,
-                {
-                  description:
-                    "Select it again to load it back.",
-                },
-              );
-            }
+            const evictedSlots = evictedSlotsFrom(loadResponse);
+            toastEvicted(evictedSlots);
+            resyncEvicted(evictedSlots, "chat");
 
             // If cancelled while loading, do not show the model as active: it is being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -3212,6 +3244,8 @@ export function useChatModelRuntime() {
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
                   mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   mlx_int8_prefill: rollbackState.loadedMlxInt8PrefillRequested,
+                  mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
+                  mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -3321,6 +3355,8 @@ export function useChatModelRuntime() {
                   // nParallel above.
                   mlxKvQuant: previousMlxKvQuant,
                   mlxInt8Prefill: previousMlxInt8Prefill,
+                  mlxPleOffload: previousMlxPleOffload,
+                  mlxExpertOffload: previousMlxExpertOffload,
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),
@@ -3751,16 +3787,18 @@ export function useChatModelRuntime() {
                   runnerLogPath,
                 )
               : undefined;
+            // Refused by Model memory: the backend's sentence is the explanation, settings the fix.
+            const refusal = isMultiModelRefusal(null, refusalHeadersOf(err), message);
+            const title = refusal ? MULTI_MODEL_REFUSAL_TITLE : summary;
+            const description = refusal ? message : detail || undefined;
+            const action = refusal ? modelMemorySettingsAction() : logsAction;
             if (loadToastDismissedRef.current) {
-              toast.error(summary, {
-                description: detail || undefined,
-                action: logsAction,
-              });
+              toast.error(title, { description, action });
             } else {
-              toast.error(summary, {
+              toast.error(title, {
                 id: toastId,
-                description: detail || undefined,
-                action: logsAction,
+                description,
+                action,
                 cancel: undefined,
                 classNames: undefined,
                 closeButton: true,

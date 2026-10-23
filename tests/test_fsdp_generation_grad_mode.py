@@ -91,3 +91,29 @@ def test_fsdp2_under_inference_mode_is_the_reported_failure(no_launcher, tmp_pat
     """Negative control: what the helper returned before unsloth#3551."""
     with pytest.raises(RuntimeError, match = "[Ii]nference tensor"):
         _fsdp2_generate_then_train(tmp_path, lambda model: torch.inference_mode())
+
+
+@pytest.mark.parametrize(
+    "value, inference",
+    [("true", False), ("1", False), ("false", True), ("", True)],
+)
+def test_deepspeed_launch_scores_under_no_grad(no_launcher, value, inference):
+    """ZeRO-3 keeps gathered persistent params: inference-mode gathers poison backward."""
+    no_launcher.setenv("ACCELERATE_USE_DEEPSPEED", value)
+    assert _mode_inside(torch.nn.Linear(2, 2)) == (inference, False)
+
+
+def test_zero3_partitioned_model_scores_under_no_grad(no_launcher):
+    no_launcher.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
+    model = torch.nn.Linear(2, 2)
+    model.weight.ds_id = 0
+    assert _mode_inside(model) == (False, False)
+
+
+def test_deepspeed_accelerator_state_scores_under_no_grad(no_launcher):
+    state = pytest.importorskip("accelerate.state")
+    no_launcher.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
+    no_launcher.setattr(
+        state.AcceleratorState, "_shared_state", {"distributed_type": "DistributedType.DEEPSPEED"}
+    )
+    assert _mode_inside(torch.nn.Linear(2, 2)) == (False, False)

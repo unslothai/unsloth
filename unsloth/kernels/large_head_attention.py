@@ -8,7 +8,6 @@
 # non-decreasing down the rows (causal, packed, right padding, sliding window).
 # UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched.
 
-import functools
 import os
 import sys
 
@@ -707,9 +706,18 @@ def large_head_attention(
     return out.transpose(1, 2)
 
 
-@functools.lru_cache(maxsize = 1)
+# Read once, like a cache, but dynamo reads (and guards on) this list instead of tracing through an
+# lru_cache wrapper, which warns and re-reads the environment, so compiled code agrees with eager.
+_ENABLED = [None]
+
+
 def _enabled():
-    return os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    if _ENABLED[0] is None:
+        _ENABLED[0] = os.environ.get("UNSLOTH_HD512_ATTENTION", "1") != "0"
+    return _ENABLED[0]
+
+
+_enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
 
 
 def _shapes_qualify(query, key, value):
@@ -757,8 +765,11 @@ def _self_check(device, dtype):
         # A local generator: torch.manual_seed would reseed every CUDA device's RNG.
         gen = torch.Generator(device = device)
         gen.manual_seed(0)
-        # Inference tensors cannot record autograd, even under enable_grad.
-        with torch.inference_mode(False), torch.enable_grad():
+        # Inference tensors cannot record autograd, even under enable_grad. A first call inside a
+        # non-reentrant checkpoint (DDP / FSDP2, Gemma-4 E-series) would pack the check's tensors
+        # into the layer's checkpoint and recompute the layer mid-forward (CheckpointError).
+        hooks = torch.autograd.graph.saved_tensors_hooks(lambda t: t.detach(), lambda t: t)
+        with torch.inference_mode(False), torch.enable_grad(), hooks:
             q, k, v, g = [
                 torch.randn(shape, device = device, dtype = dtype, generator = gen)
                 for shape in ((1, 4, 80, 512), (1, 2, 80, 512), (1, 2, 80, 512), (1, 80, 4, 512))
@@ -775,6 +786,8 @@ def _self_check(device, dtype):
                 is_causal = True,
             ).transpose(1, 2)
             ref_grads = torch.autograd.grad(ref, (qf, kf, vf), g.float())
+        # Compared detached: autograd ops on `out` here would also be saved into that checkpoint.
+        out, ref = out.detach(), ref.detach()
         passed = all(
             torch.isfinite(a).all().item()
             and ((a.float() - b).abs().max() <= 0.05 * b.abs().max() + 0.02).item()
@@ -865,13 +878,10 @@ def _make_router(original):
             if attention_mask is None:
                 causal = is_causal if is_causal is not None else getattr(module, "is_causal", True)
                 intervals = _dense_intervals(B, S, bool(causal), query.device)
-            elif (
-                not compiling
-                and not (torch.is_tensor(attention_mask) and attention_mask.is_inference())
-                and _SELF_CHECK.get((str(query.device), query.dtype), True)
-            ):
+            elif not compiling and _SELF_CHECK.get((str(query.device), query.dtype), True):
                 # Reading a mask's structure needs a host sync; compiled graphs keep SDPA. Inference
-                # masks cannot cache the verdict across layers, so they keep SDPA too.
+                # masks cannot cache the verdict, so they are rescanned per layer: one sync each, only
+                # at prefill (decode never qualifies), cheaper than SDPA's repeated KV heads and mask.
                 intervals = intervals_from_mask(attention_mask, B, S)
             if compiling:
                 checked = _SELF_CHECK.get((str(query.device), query.dtype), False)
@@ -931,13 +941,22 @@ def patch_large_head_attention(model = None):
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())
         if not any(isinstance(d, int) and d in _SUPPORTED_HEAD_DIMS for d in head_dims):
             return False
+        # Forced float32 (zoo's Gemma-4 patch) runs attention in float32 on raw SDPA, never through
+        # this router: installing would only self check and autotune fp16 at load for nothing.
+        if getattr(model, "_unsloth_forced_float32", False) is True:
+            return False
         # Compiled graphs only read the cached verdict, so check before any tracing.
         try:
-            targets = {
-                (p.device, p.dtype)
-                for p in model.parameters()
-                if p.is_cuda and p.dtype in (torch.float16, torch.bfloat16)
-            }
+            targets = set()
+            for p in model.parameters():
+                if not p.is_cuda:
+                    continue
+                # bnb 4-bit weights are packed into uint8 or a float quant storage dtype that can
+                # differ from the compute dtype, which is on the quant state.
+                quant_state = getattr(p, "quant_state", None)
+                dtype = getattr(quant_state, "dtype", None) if quant_state is not None else p.dtype
+                if dtype in (torch.float16, torch.bfloat16):
+                    targets.add((p.device, dtype))
         except Exception:
             targets = set()
         passed = [_self_check(device, dtype) for device, dtype in targets]

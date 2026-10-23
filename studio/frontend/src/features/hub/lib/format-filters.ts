@@ -17,7 +17,8 @@ export type FormatFilterValue =
   | "gguf"
   | "checkpoint"
   | "mlx"
-  | "npu";
+  | "npu"
+  | "unsloth";
 
 export function matchesFormat(
   modelFormat: boolean | FormatFilterModelFormat | null | undefined,
@@ -37,6 +38,8 @@ export function matchesFormat(
   if (formatFilter === "mlx") return normalized === "mlx";
   // NPU models come from Lemonade's catalog, never from a Hub repo or the disk scan.
   if (formatFilter === "npu") return false;
+  // Where a model came from, not its format: the On Device list checks the row's source.
+  if (formatFilter === "unsloth") return false;
   return normalized === "safetensors" || normalized === "checkpoint";
 }
 
@@ -97,6 +100,17 @@ export function matchesRecommended(
   if (result.isGguf) return true;
   const format = checkpointQuantFormat(result);
   return format !== null && checkpointQuantFormats.includes(format);
+}
+
+/** Recommended for an image / video model: also full-precision checkpoints, since diffusers repos are the main way to run them. */
+export function matchesRecommendedDiffusion(
+  result: { id: string; isGguf: boolean; quantMethod?: string },
+  checkpointQuantFormats: readonly string[],
+): boolean {
+  return (
+    matchesRecommended(result, checkpointQuantFormats) ||
+    checkpointQuantFormat(result) === null
+  );
 }
 
 // Recommended browsing lists every GGUF but only checkpoints with more than this many likes.

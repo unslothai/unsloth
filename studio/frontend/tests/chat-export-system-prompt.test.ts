@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import {
   codexLocalToolRoundId,
@@ -21,6 +21,7 @@ import {
 } from "../src/features/chat/utils/conversation-markdown.ts";
 import {
   buildNamedConversationsMarkdown,
+  conversationExportBasename,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
@@ -172,6 +173,7 @@ function loadExporters(
     renderConversationBlocks,
     buildConversationMarkdown,
     buildNamedConversationsMarkdown,
+    conversationExportBasename,
     createConversationMarkdownBuilder,
     createConversationMarkdownExporter,
     CONVERSATION_MARKDOWN_MIME_TYPE,

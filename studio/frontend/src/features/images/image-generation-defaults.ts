@@ -14,12 +14,27 @@ const MODEL_DEFAULTS: Array<{
   { match: "z-image-turbo", steps: 8, guidance: 0 },
   // Krea 2 Raw is the undistilled base, so it must precede the distilled Krea key below.
   { match: "krea-2-raw", steps: 52, guidance: 3.5 },
+  // The same Raw checkpoint as GGUFs name it (Krea-2-Base-*, krea2_raw-*).
+  { match: "krea-2-base", steps: 52, guidance: 3.5 },
+  { match: "krea2-raw", steps: 52, guidance: 3.5 },
+  { match: "krea2-base", steps: 52, guidance: 3.5 },
   { match: "krea-2", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   // Kontext and the Krea dev finetune must precede generic FLUX.1.
   { match: "kontext", steps: 20, guidance: 2.5 },
   { match: "flux.1-krea", steps: 20, guidance: 3.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
+  // FLUX.3 Image Klein (ComfyUI templates, the BFL reference): base 50 steps at CFG 3.5, distilled 16 steps without CFG. Base first.
+  // Every alias the backend registers for the two families, and the canonical family names (an opaque path
+  // resolves through the explicit family).
+  { match: "flux.3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux-3-image-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux3-image-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux.3-klein", steps: 16, guidance: 1 },
+  { match: "flux-3-image-klein", steps: 16, guidance: 1 },
+  { match: "flux3-image-klein", steps: 16, guidance: 1 },
+  { match: "flux3-klein", steps: 16, guidance: 1 },
   // Klein base is undistilled. The generic key below covers both distilled sizes.
   { match: "flux.2-klein-base", steps: 20, guidance: 5 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
@@ -53,6 +68,17 @@ const MODEL_DEFAULTS: Array<{
   { match: "sdxl", steps: 25, guidance: 7 },
 ];
 
+// The Steps slider's usual top, and the request's (DiffusionGenerateRequest.steps is 1-100).
+export const STEPS_SLIDER_MAX = 50;
+export const STEPS_REQUEST_MAX = 100;
+
+/** Steps slider top: 50, widened to twice the model's default (Krea-2-raw ships 52) and to the
+ *  current value (an import or restore), never past what the request accepts. */
+export function stepsSliderMax(modelDefault: number, current: number): number {
+  const wanted = Math.max(STEPS_SLIDER_MAX, modelDefault * 2, current);
+  return Math.min(STEPS_REQUEST_MAX, Number.isFinite(wanted) ? Math.ceil(wanted) : STEPS_SLIDER_MAX);
+}
+
 export function defaultsFor(repoId: string): {
   steps: number;
   guidance: number;
@@ -69,9 +95,18 @@ export function defaultsFor(repoId: string): {
     : DEFAULT_GEN;
 }
 
-/** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. */
-export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
-  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
+// Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base
+// files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
+const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);
+
+/** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. A GGUF
+ * filename that names a model outranks its repo, as on the backend: one repo can hold several checkpoints
+ * (realrebelai/KREA-2_GGUFs ships BASE/Krea-2-Base-* beside TURBO/Krea-2-Turbo-*). */
+export function defaultsKeyFor(repoId: string, familyOverride: unknown, ggufFilename?: string | null): string {
+  const family = explicitFamily(familyOverride);
+  if (family && FAMILY_NAMES_THE_VARIANT.has(family)) return family;
+  if (ggufFilename && defaultsFor(ggufFilename) !== DEFAULT_GEN) return ggufFilename;
+  return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (family ?? repoId);
 }
 
 /** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. */
@@ -100,8 +135,13 @@ export function residentDefaultsKey(
   repoId: string,
   baseRepo: string | null | undefined,
   resolvedFamily: { value?: unknown; source?: "auto" | "explicit" } | null | undefined,
+  ggufFilename?: string | null,
 ): string {
-  return defaultsKeyFor(baseRepo ?? repoId, resolvedFamily?.source === "explicit" ? resolvedFamily.value : null);
+  return defaultsKeyFor(
+    baseRepo ?? repoId,
+    resolvedFamily?.source === "explicit" ? resolvedFamily.value : null,
+    ggufFilename,
+  );
 }
 
 // The canvas every family is tuned for, and what an unrecognised model gets.

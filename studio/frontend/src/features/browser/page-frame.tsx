@@ -3,8 +3,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
-import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
+import { type AnnotateEvent, type FrameMessage, parseFrameMessage, userActionGate } from "./frame-message";
 import { pageRequests } from "./page-requests";
+import { type ScrollPosition, useBrowserStore } from "./store";
 import {
   onPageStorageClear,
   onPageStorageWrite,
@@ -24,6 +25,7 @@ export type FrameCommand =
   | { command: "find"; query: string }
   | { command: "findStep"; delta: -1 | 1 }
   | { command: "snapshot" }
+  | { command: "go"; delta: -1 | 1 }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
   | { command: "clearStorage" }
@@ -106,15 +108,6 @@ export function sendFrameCommand(tabId: string, command: FrameCommand): boolean 
   return true;
 }
 
-// Messages that open tabs or apps, or run shortcuts. Pages can post anything, so check them here.
-const isUserAction = (message: FrameMessage) =>
-  (message.type === "navigate" && message.newTab === true) ||
-  message.type === "external" ||
-  message.type === "shortcut";
-
-// Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
-const USER_ACTION_INTERVAL_MS = 1000;
-
 /** Recent user activation in the focused frame; without the API, focus opens a tab but never the system browser. */
 function userActive(frame: HTMLIFrameElement, message: FrameMessage): boolean {
   if (document.activeElement !== frame) return false;
@@ -134,11 +127,13 @@ export function PageFrame({
   tabId,
   zoom = 1,
   muted = false,
+  scroll,
   onMessage,
 }: {
   tabId: string;
   zoom?: number;
   muted?: boolean;
+  scroll?: ScrollPosition;
   html: string;
   url: string | null;
   base: string | null;
@@ -166,7 +161,7 @@ export function PageFrame({
     // A page loads and leaves once; repeats are spam.
     let loaded = false;
     let left = false;
-    let lastUserAction = Number.NEGATIVE_INFINITY;
+    const userAction = userActionGate();
     // The page's requests to its own site, answered through the shell, which relays to the page.
     const requests = pageRequests(
       requestForPage,
@@ -214,13 +209,9 @@ export function PageFrame({
           );
         return;
       }
-      if (isUserAction(message)) {
-        if (!userActive(frame, message)) return;
-        // Shortcuts too: a script can queue many before the first one moves focus off the page.
-        const now = performance.now();
-        if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return;
-        lastUserAction = now;
-      }
+      if (message.type === "typed" && left) return;
+      message = userAction(message, userActive(frame, message), performance.now());
+      if (!message) return;
       if (message.type === "loaded") {
         if (loaded) message = { type: "title", title: message.title };
         loaded = true;
@@ -229,6 +220,11 @@ export function PageFrame({
         left = true;
         // An unrequested redirect replaces this page, as browsers keep it off Back.
         if (message.type === "navigate" && !userActive(frame, message)) message = { ...message, replace: true };
+      } else if (message.type === "back" || message.type === "forward") {
+        // At the tab's first or last page nothing moves and the frame stays, so it has not left.
+        const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabIdRef.current);
+        if (left || !tab?.history[tab.index + (message.type === "back" ? -1 : 1)]) return;
+        left = true;
       }
       onMessageRef.current(message);
     };
@@ -257,6 +253,7 @@ export function PageFrame({
       stopClearing();
       stopSyncing();
       requests.stop();
+      onMessageRef.current({ type: "typed", reset: true });
     };
   }, [origin]);
 
@@ -291,6 +288,7 @@ export function PageFrame({
       title={title}
       src={browserFrameUrl(loadId)}
       sandbox="allow-scripts allow-forms"
+      allow="clipboard-write"
       allowFullScreen
       referrerPolicy="no-referrer"
       className="size-full border-0 bg-white"
@@ -308,6 +306,7 @@ export function PageFrame({
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,
+            scroll: scroll ?? null,
             storage: origin ? readPageStorage(origin, tabId) : null,
           },
           "*",

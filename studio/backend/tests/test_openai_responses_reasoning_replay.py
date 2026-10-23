@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reasoning items have to survive a local tool hop on /v1/responses.
-
-OpenAI's function-calling guide is explicit for manually managed history: "any
-reasoning items returned in model responses with tool calls must also be passed
-back with tool call outputs". The Unsloth tool loop rebuilds the conversation
-between turns by hand, so the provider has to hand the items out on the terminal
-chunk and take them back on the next request. The openai_codex client already
-does exactly this round trip for the same endpoint; this is the generic path
-catching up.
-
-Order is part of the contract, not a preference: a reasoning item with nothing
-after it is a 400 ("Item 'rs_...' of type 'reasoning' was provided without its
-required following item").
-"""
+"""Reasoning items must be replayed in order, since a reasoning item with nothing after it is a 400."""
 
 import asyncio
 import json
@@ -104,11 +91,7 @@ def _terminal_delta(lines):
 
 
 def test_a_tool_call_turn_hands_its_reasoning_items_to_the_caller(monkeypatch):
-    """Without this the loop has nothing to replay.
-
-    The SSE translation keeps only the summary prose (as ``<think>`` text) and
-    drops the rs_ id, so the item can never be reconstructed downstream.
-    """
+    """A tool-call turn must hand its reasoning items to the caller, or the loop has nothing to replay."""
     captured: dict = {}
     lines = _run(_client(monkeypatch, captured), [{"role": "user", "content": "search"}])
 
@@ -119,11 +102,7 @@ def test_a_tool_call_turn_hands_its_reasoning_items_to_the_caller(monkeypatch):
 
 
 def test_a_plain_prose_turn_hands_back_nothing(monkeypatch):
-    """Reasoning only has to round-trip across a tool call.
-
-    A prose turn that shipped them would grow every following request body and
-    buy nothing: the model is trained to produce its best answer without them.
-    """
+    """Reasoning round-trips only across a tool call; a prose turn would only grow later bodies."""
     captured: dict = {}
     stream = _sse(
         (
@@ -181,8 +160,7 @@ def test_the_follow_up_turn_replays_reasoning_before_its_function_call(monkeypat
     reasoning = items[1]
     assert reasoning["id"] == "rs_1"
     assert reasoning["encrypted_content"] == "enc_blob"
-    # Responses rejects `status` on an input item, and the recorded copy carries
-    # one, so the replay has to be re-sanitized rather than passed through.
+    # Responses rejects `status` on an input item, so the replay is re-sanitized.
     assert "status" not in reasoning
 
 
@@ -223,11 +201,7 @@ def test_assistant_text_still_precedes_the_function_call(monkeypatch):
 
 
 def test_reasoning_is_dropped_when_the_turn_had_only_server_builtins(monkeypatch):
-    """A dropped builtin card leaves no following item.
-
-    A trailing reasoning item is a hard 400, which is a worse outcome than the
-    lost thought it was meant to preserve.
-    """
+    """A trailing reasoning item is a hard 400, so reasoning is dropped when only server builtins ran."""
     captured: dict = {}
     _run(
         _client(monkeypatch, captured),

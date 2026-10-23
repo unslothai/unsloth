@@ -46,7 +46,6 @@ cryptography>=42.0.0; sys_platform != "win32" or platform_machine != "ARM64"
 # Windows on ARM: 46.0.7 has no win_arm64 wheel and its sdist needs Rust. Matches
 # constraints.txt, which a plain pip install of the extra never reaches.
 cryptography>=42.0.0,<=46.0.3; sys_platform == "win32" and platform_machine == "ARM64"
-boto3>=1.34.0                    # optional: S3 dataset loading
 httpx>=0.27.0
 fastmcp>=3.0.2
 # Local image generation (Images page): diffusers' GGUFQuantizationConfig needs

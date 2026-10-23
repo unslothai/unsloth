@@ -7,10 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 import base64
+import hashlib
 import importlib.util
 import ipaddress
 import os
 import shlex
+import sqlite3
 import sys
 import threading
 import time
@@ -33,6 +35,8 @@ from models.auth import (
 )
 from models.users import Token
 from auth import storage, hashing, policy
+from loggers import get_logger
+from storage import sqlite_gate
 from utils.account_context import OWNER_ACCOUNT_ID
 from auth.authentication import (
     authenticated_via_desktop_jwt,
@@ -43,11 +47,13 @@ from auth.authentication import (
     get_current_subject,
     get_current_subject_allow_password_change,
     is_keyless,
+    new_refresh_token_value,
     refresh_access_token,
     security,
 )
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 def _account_id_of(username: str) -> "str | None":
@@ -274,23 +280,30 @@ def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
     if _trust_forwarded_for():
+        # Rightmost entry only: the trusted proxy appends the client it saw, and everything left of
+        # it is the caller's own text, so keying on it would let each guess pick a fresh bucket.
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            # First entry is the originating client.
-            normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
+            normalized = _normalize_forwarded_addr(xff.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
         fwd = request.headers.get("forwarded", "")
         if fwd:
-            # First element only; multi-element headers can't fork buckets.
-            normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
+            normalized = _forwarded_for_from_element(fwd.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
     return (request.client.host if request.client else None) or "_unknown"
 
 
+_MAX_BUCKET_USERNAME_CHARS = 256
+
+
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
-    return (_client_ip(request), (username or "").casefold())
+    name = (username or "").casefold()
+    # Bound the memory each bucket key holds; real usernames are far shorter and keep their own key.
+    if len(name) > _MAX_BUCKET_USERNAME_CHARS:
+        name = "\x00long:" + hashlib.sha256(name.encode("utf-8", "surrogatepass")).hexdigest()
+    return (_client_ip(request), name)
 
 
 def _unknown_user_key(request: Request | None) -> tuple[str, str]:
@@ -594,6 +607,9 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
     # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
     _clear_login_bucket(key)
+    # Shell-owned backends never use the seeded password; terminal-started ones keep the web autofill.
+    if getattr(request.app.state, "desktop_owned", False):
+        request.app.state.bootstrap_password = None
 
     from auth.policy import installation_is_multi_user
 
@@ -613,30 +629,37 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     )
 
 
+# Sync def: rotation is one transaction, so a busy auth.db wait must not freeze the event loop.
 @router.post("/refresh", response_model = Token)
-async def refresh(payload: RefreshTokenRequest) -> Token:
+def refresh(payload: RefreshTokenRequest) -> Token:
     """Exchange a refresh token for a new access+refresh pair (single-use)."""
-    consumed = storage.consume_refresh_token(payload.refresh_token)
-    if consumed is None:
+    new_refresh_token, new_expires_at = new_refresh_token_value()
+    try:
+        rotated = storage.rotate_refresh_token(
+            payload.refresh_token, new_refresh_token, new_expires_at
+        )
+    except sqlite3.OperationalError as exc:
+        if not sqlite_gate.is_busy_error(exc):
+            raise
+        logger.warning("Token refresh deferred: auth.db is busy (%s)", exc)
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = "Unsloth Studio is busy. Try again in a moment.",
+            headers = {"Retry-After": "2"},
+        )
+    if rotated is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
-    username, is_desktop, jwt_secret = consumed
-    account = storage.get_account(username)
-    if is_desktop:
-        is_desktop = account is not None and account.is_owner
-    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
-    new_refresh_token = create_refresh_token(
-        subject = username, desktop = is_desktop, secret = jwt_secret
-    )
-
     return Token(
-        access_token = new_access_token,
+        access_token = create_access_token(
+            subject = rotated.username, desktop = rotated.is_desktop, secret = rotated.jwt_secret
+        ),
         refresh_token = new_refresh_token,
         token_type = "bearer",
-        must_change_password = False if is_desktop else storage.requires_password_change(username),
-        account_id = account.account_id if account is not None else None,
+        must_change_password = rotated.must_change_password,
+        account_id = rotated.account_id,
     )
 
 

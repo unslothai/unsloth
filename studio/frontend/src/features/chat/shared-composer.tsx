@@ -82,6 +82,7 @@ import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   CHAT_IMAGE_ACCEPT,
+  getChatImageSizeError,
   isChatImageFile,
   normalizeChatImage,
 } from "./image-normalize";
@@ -230,6 +231,8 @@ import {
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   codeToolsOn,
+  localImagePillCount,
+  localImageTool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -280,8 +283,6 @@ export interface CompareHandle {
   /** Returns a promise that resolves when the current or next run finishes. */
   waitForRunEnd: () => Promise<void>;
 }
-
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
 function isNativeComposing(event: Event) {
@@ -1012,9 +1013,20 @@ export function SharedComposer({
   // Gemini rejects codeExecution alongside image modalities. Search is blocked on older Gemini image
   // ids but allowed on Gemini 3 image models, so only Code is disabled unconditionally there.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
-  const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
+  // The image or video model loaded in Unsloth, reached through generate_image / generate_video.
+  const localImageToolHere = useChatRuntimeStore((s) =>
+    localImageTool({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const localImagePills = useChatRuntimeStore((s) =>
+    localImagePillCount({ ...s, supportsBuiltinImageGeneration }),
+  );
+  const imageDisabled =
+    !modelLoaded || !(supportsBuiltinImageGeneration || localImageToolHere);
   const imageModeDisablesCode =
-    isExternalGemini && imageToolsEnabled && !imageDisabled;
+    isExternalGemini &&
+    imageToolsEnabled &&
+    modelLoaded &&
+    supportsBuiltinImageGeneration;
   // Image-tier Gemini models always reject codeExecution and reject web_search on older ids, so gate
   // strictly on provider builtin support: local `supportsTools` must not re-enable a pill the
   // Gemini backend silently drops.
@@ -1046,9 +1058,10 @@ export function SharedComposer({
   const codeDisabled =
     (modelLoaded && (isGeminiImageTier || !canRunCode)) ||
     imageModeDisablesCode;
-  // Images pill lights only on OpenAI cloud Responses-API models and the Gemini Nano Banana
-  // family. No local tool runtime fallback.
-  const showImagePill = supportsBuiltinImageGeneration;
+  // Images pill: the provider's own image generation on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family, else the image or video model loaded in Unsloth when the chat
+  // model calls Unsloth tools.
+  const showImagePill = supportsBuiltinImageGeneration || localImageToolHere;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
@@ -1060,7 +1073,8 @@ export function SharedComposer({
   const isMobile = useIsMobile();
   const pillCount =
     4 +
-    (showImagePill ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    localImagePills +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
@@ -1304,9 +1318,13 @@ export function SharedComposer({
           continue;
         }
         if (!isChatImageFile(file)) continue;
-        if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
+          continue;
+        }
+        const sizeError = getChatImageSizeError(file);
+        if (sizeError) {
+          toast.error(sizeError);
           continue;
         }
         let image: File;
@@ -1369,11 +1387,9 @@ export function SharedComposer({
             // Classify before the check, so a pasted audio-only 3GP is not read
             // as unsupported on its extension alone.
             const files = await classifiedAttachmentFiles(pasted);
-            // Let addFiles report audio size errors.
+            // Let addFiles report audio and image size errors.
             const supported = files.some(
-              (file) =>
-                isAudioAttachmentFile(file) ||
-                (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
+              (file) => isAudioAttachmentFile(file) || isChatImageFile(file),
             );
             if (!supported) throw new Error("Unsupported compare attachment");
             await addFilesUntracked(files);
@@ -1997,6 +2013,8 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
+          mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
+          mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           ...(targetIsMlx ? { spec_draft_model: ownConfig.specDraftModel ?? null } : {}),
@@ -2539,6 +2557,10 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
+  useShortcut("stopGeneration", stop, {
+    enabled: chatActive && busy,
+    claims: () => isSurfaceInForeground(COMPOSER_INPUT_SELECTOR),
+  });
 
   const runPromptList = useCallback(
     (items: string[]) => {

@@ -101,7 +101,7 @@ export function LyricsEditor({
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         aria-describedby={describedBy}
-        className="min-h-36 font-normal"
+        className="min-h-36 font-normal rounded-lg"
       />
     </div>
   );

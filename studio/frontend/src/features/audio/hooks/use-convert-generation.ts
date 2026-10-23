@@ -4,6 +4,7 @@
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioApiError, runAudio } from "../api";
+import { reportAudioFailure } from "../audio-failure-actions";
 import {
   type AudioOptionValues,
   audioOptionLabel,
@@ -419,6 +420,7 @@ export function useConvertGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
+        reportAudioFailure(error);
         // Only the expired-upload 404: a deleted clip or voice says otherwise and leaves uploads alone.
         const expiredRole =
           error instanceof AudioApiError && error.status === 404

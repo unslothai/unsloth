@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -18,10 +19,12 @@ import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 import uuid
-from typing import Iterator, Optional, Tuple
+from typing import Iterator, NamedTuple, Optional, Tuple
 
 from storage import sqlite_gate
 from utils.paths import auth_db_path, ensure_dir
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
@@ -264,10 +267,12 @@ def credential_generation_guard(username: str, expect_gen: Optional[str]) -> Ite
 
 _auth_schema_ready: set[tuple[str, int, int, int]] = set()
 
+_BUSY_TIMEOUT_MS = 5000
 
-def get_connection() -> sqlite3.Connection:
+
+def get_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
     ensure_dir(DB_PATH.parent)
-    conn = sqlite_gate.connect(DB_PATH)
+    conn = sqlite_gate.connect(DB_PATH, check_same_thread = check_same_thread)
     # sqlite3.connect would create the DB 0644 under a 022 umask, exposing identity secrets and password hashes.
     for _path, _mode in ((DB_PATH.parent, 0o700), (DB_PATH, 0o600)):
         try:
@@ -278,10 +283,12 @@ def get_connection() -> sqlite3.Connection:
     # Set busy_timeout before journal_mode=WAL: switching journal mode needs a lock and would otherwise
     # raise SQLITE_BUSY.
     try:
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_MS)}")
         conn.execute("PRAGMA journal_mode=WAL")
     except sqlite3.Error:
         pass
+    # Per connection, so before the schema-cache return below.
+    sqlite_gate.apply_wal_synchronous(conn)
     file_stat = DB_PATH.stat()
     schema_key = (
         str(DB_PATH),
@@ -385,6 +392,49 @@ _ACCOUNT_COLUMNS = (
 
 
 _owner_id_repaired: set[str] = set()
+
+
+# Without a keeper each close is the last WAL participant and checkpoints under sqlite_gate's
+# process-wide lock. Lifespan-only, never lazy: tests swap and unlink auth.db.
+_wal_keeper_lock = threading.Lock()
+_wal_keeper: Optional[tuple[str, sqlite3.Connection]] = None
+
+
+def _close_keeper(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except Exception as exc:
+        logger.warning("Could not close the auth.db WAL keeper: %s", exc)
+
+
+def open_wal_keeper() -> bool:
+    """Hold auth.db's WAL open for the server's lifetime, replacing any earlier keeper."""
+    global _wal_keeper
+    with _wal_keeper_lock:
+        if _wal_keeper is not None:
+            _close_keeper(_wal_keeper[1])
+            _wal_keeper = None
+        conn = get_connection(check_same_thread = False)
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        except (sqlite3.Error, TypeError, IndexError) as exc:
+            _close_keeper(conn)
+            logger.warning("Could not read auth.db journal mode: %s", exc)
+            return False
+        if not isinstance(mode, str) or mode.lower() != "wal":
+            _close_keeper(conn)
+            logger.info("auth.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
+            return False
+        _wal_keeper = (str(DB_PATH.resolve()), conn)
+        return True
+
+
+def close_wal_keeper() -> None:
+    global _wal_keeper
+    with _wal_keeper_lock:
+        if _wal_keeper is not None:
+            _close_keeper(_wal_keeper[1])
+            _wal_keeper = None
 
 
 def _repair_owner_account_id(conn: sqlite3.Connection) -> None:
@@ -1458,42 +1508,113 @@ def save_refresh_token(
         conn.close()
 
 
+def _take_refresh_token(conn: sqlite3.Connection, token: str, now: str):
+    """Inside the caller's BEGIN IMMEDIATE: purge expired rows, then delete-and-return the token's
+    row. Returns ``(row, user)`` (the auth_user row) when the token is live and its credential
+    generation still matches, else None; the delete stands either way."""
+    conn.execute(
+        "DELETE FROM refresh_tokens WHERE expires_at < ?",
+        (now,),
+    )
+    row = conn.execute(
+        f"""
+        DELETE FROM refresh_tokens
+        WHERE token_hash {_FENCED_HASH_SQL} AND expires_at >= ?
+        RETURNING username, is_desktop, secret_gen
+        """,
+        (*_hash_candidates(_hash_token(token)), now),
+    ).fetchone()
+    if row is None:
+        return None
+    user = conn.execute(
+        f"""
+        SELECT {_SECRET_SQL} AS jwt_secret, role, account_id, must_change_password
+        FROM auth_user WHERE username = ?
+        """,
+        (row["username"],),
+    ).fetchone()
+    if user is None:
+        return None
+    secret = user["jwt_secret"]
+    if row["secret_gen"] is not None and row["secret_gen"] != credential_generation(secret):
+        return None
+    return row, user
+
+
 def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
     """Atomically validate-and-delete a refresh token for single-use rotation. DELETE RETURNING fuses
     validate and delete into one statement so two concurrent refresh requests cannot both consume
     the same token. Returns ``(username, is_desktop, jwt_secret)``; the caller must mint the
     replacement tokens against that secret so a rotation landing mid-refresh cannot issue a
     post-rotation session from a pre-rotation token."""
-    token_hash = _hash_token(token)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
         # One transaction with the delete: an unstamped legacy row has no generation, so a later read could
         # hand a reset's new secret to an older token.
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "DELETE FROM refresh_tokens WHERE expires_at < ?",
-            (now,),
-        )
-        cur = conn.execute(
-            f"""
-            DELETE FROM refresh_tokens
-            WHERE token_hash {_FENCED_HASH_SQL} AND expires_at >= ?
-            RETURNING username, is_desktop, secret_gen
-            """,
-            (*_hash_candidates(token_hash), now),
-        )
-        row = cur.fetchone()
-        if row is None:
+        taken = _take_refresh_token(conn, token, now)
+        conn.commit()
+        if taken is None:
+            return None
+        row, user = taken
+        return row["username"], bool(row["is_desktop"]), user["jwt_secret"]
+    finally:
+        conn.close()
+
+
+class RotatedRefresh(NamedTuple):
+    username: str
+    is_desktop: bool
+    jwt_secret: str
+    account_id: Optional[str]
+    must_change_password: bool
+
+
+def rotate_refresh_token(
+    token: str, new_token: str, new_expires_at: str
+) -> Optional[RotatedRefresh]:
+    """Consume ``token`` and store ``new_token`` in its place, in one transaction. If anything fails
+    before the commit, including a busy auth.db, the old token is still valid, so a retry can
+    succeed instead of logging the user out. None means the old token was invalid or expired."""
+    from utils.account_context import ROLE_OWNER
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        taken = _take_refresh_token(conn, token, now)
+        if taken is None:
             conn.commit()
             return None
-        secret = _current_secret(conn, row["username"])
+        row, user = taken
+        username = row["username"]
+        is_desktop = bool(row["is_desktop"]) and user["role"] == ROLE_OWNER
+        secret = user["jwt_secret"]
+        conn.execute(
+            """
+            INSERT INTO refresh_tokens (token_hash, username, expires_at, is_desktop, secret_gen)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                _fenced_hash(_hash_token(new_token), username),
+                username,
+                new_expires_at,
+                int(is_desktop),
+                credential_generation(secret),
+            ),
+        )
         conn.commit()
-        if secret is None:
-            return None
-        if row["secret_gen"] is not None and row["secret_gen"] != credential_generation(secret):
-            return None
-        return row["username"], bool(row["is_desktop"]), secret
+        return RotatedRefresh(
+            username = username,
+            is_desktop = is_desktop,
+            jwt_secret = secret,
+            account_id = user["account_id"],
+            must_change_password = False if is_desktop else bool(user["must_change_password"]),
+        )
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -1861,7 +1982,13 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
     conn = get_connection()
     try:
         if touch:
-            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                if not sqlite_gate.is_busy_error(exc):
+                    raise
+                # last_used_at is informational: a busy auth.db must not fail the request.
+                touch = False
         cur = conn.execute(
             f"""
             SELECT k.id, k.username, k.name, k.is_active, k.expires_at,

@@ -109,6 +109,18 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
     return host == "localhost" or _is_loopback_ip(host)
 
 
+# Hop headers a proxy adds without naming the client (Apache's X-Forwarded-Server, an nginx block that
+# only sets X-Forwarded-Proto). Kept apart because Colab's tolerated-header check walks the tuple above.
+_PROXY_HOP_HEADERS = ("via", "x-forwarded-port", "x-forwarded-proto", "x-forwarded-server")
+
+
+def names_a_forwarded_client(request) -> bool:
+    """Whether a proxy or tunnel marked this request as relayed."""
+    return any(
+        request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS + _PROXY_HOP_HEADERS
+    )
+
+
 def is_direct_local_request(request) -> bool:
     """A direct loopback connection to a loopback Host: not relayed by a proxy or tunnel, not DNS rebinding."""
     client = request.client

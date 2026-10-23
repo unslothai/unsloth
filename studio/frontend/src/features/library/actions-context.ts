@@ -13,6 +13,7 @@ export interface LibraryActions {
   openItem: (item: LibraryItem) => void;
   openFolder: (folderId: string) => void;
   chatAbout: (target: LibraryTarget) => void;
+  editImage: (item: LibraryItem) => void;
   toggleFavorite: (item: LibraryItem) => void;
   download: (item: LibraryItem) => void;
   rename: (target: LibraryTarget) => void;

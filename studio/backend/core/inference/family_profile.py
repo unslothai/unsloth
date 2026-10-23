@@ -70,6 +70,10 @@ class FamilyProfile:
     # int8 name tokens left dense on top of the generic M = 1 tokens (``_int_mm`` needs M > 16, or a measured quality
     # lever). Baked into published int8 artifacts.
     int8_exclude_tokens: tuple[str, ...] = ()
+    # Name tokens left dense for EVERY transformer-quant scheme (int8 / fp8 / mxfp8 / nvfp4), on top of the int8
+    # tokens above. For layers whose quantisation error is measured to dominate the image delta regardless of the
+    # scheme (FLUX.3: per-token modulations, the 20480-wide text projection, the text-stream per-mode blocks).
+    quant_exclude_tokens: tuple[str, ...] = ()
     # int8 name tokens whose small-M Linears get activation rows PADDED to the ``_int_mm`` floor instead of excluded.
     int8_pad_tokens: tuple[str, ...] = ()
     int8_convrot: Optional[ConvRotSpec] = None

@@ -33,11 +33,11 @@ import {
   Download01Icon,
   FavouriteIcon,
   InternetIcon,
+  LayerIcon,
   LayersLogoIcon,
-  LibraryIcon,
+  LibrariesIcon,
   LicenseIcon,
   PackageIcon,
-  RamMemoryIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
@@ -237,7 +237,7 @@ function BaseModelSearchChip({
   const content = (
     <>
       <HugeiconsIcon
-        icon={LayersLogoIcon}
+        icon={LayerIcon}
         strokeWidth={1.75}
         className="size-3.5 shrink-0 text-muted-foreground"
       />
@@ -337,11 +337,11 @@ function ModelStatusChips({
           >
             This model may not be supported yet.
             {unslothSupport.reason && (
-              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+              <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
                 {unslothSupport.reason}
               </span>
             )}
-            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
               Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
@@ -363,7 +363,7 @@ function ModelStatusChips({
             it from the chat model picker and choose vLLM as the Inference
             engine in its run settings.
             {unslothSupport.reason && (
-              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+              <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
                 {unslothSupport.reason}
               </span>
             )}
@@ -384,7 +384,7 @@ function ModelStatusChips({
           >
             This device has no supported GPU or usable MLX, so only GGUF models
             can run here.
-            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
               Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
@@ -403,7 +403,7 @@ function ModelStatusChips({
             className="tooltip-compact max-w-xs"
           >
             Estimated 4-bit memory load is around {vramInfo.est} GB.
-            <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
               {vramDetail}
             </span>
           </TooltipContent>
@@ -417,7 +417,6 @@ export type ModelInspectorRuntime = {
   isActive: boolean;
   activeGgufVariant: string | null;
   isLoadingThisModel: boolean;
-  minMemory: string | null;
   vramInfo: {
     est: number;
     status: "fits" | "tight" | "exceeds";
@@ -462,7 +461,6 @@ export const ModelInspector = memo(function ModelInspector({
     isActive,
     activeGgufVariant,
     isLoadingThisModel,
-    minMemory,
     vramInfo,
     gpuGb,
     gpuCount,
@@ -573,7 +571,7 @@ export const ModelInspector = memo(function ModelInspector({
     model.downloadsAllTime != null ? (
       <>
         Downloads (30 days)
-        <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+        <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
           {formatCompact(model.downloadsAllTime)} all time
         </span>
       </>
@@ -829,13 +827,10 @@ export const ModelInspector = memo(function ModelInspector({
             <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
           )}
           {libraryLabel && (
-            <StatRow label="Library" value={libraryLabel} icon={LibraryIcon} />
-          )}
-          {!isDataset && (
             <StatRow
-              label="Memory"
-              value={minMemory ?? "N/A"}
-              icon={RamMemoryIcon}
+              label="Library"
+              value={libraryLabel}
+              icon={LibrariesIcon}
             />
           )}
           {isDataset && datasetSize?.numRows != null && (

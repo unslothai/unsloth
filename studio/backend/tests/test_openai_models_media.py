@@ -240,11 +240,7 @@ def test_ambiguous_same_token_media_builds_are_not_both_loaded(monkeypatch):
 
 
 def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch):
-    """A standalone GGUF loads with its PARENT directory as the model path.
-
-    Comparing the public id or the catalog's own file path reports the resident model as
-    unloaded and then adds a second entry named after the directory.
-    """
+    """A standalone GGUF is resident under its parent directory, so match by load path or it shows twice."""
     pick = MediaModelPick("z-image", "/srv/models", "z-image-Q4_K_M.gguf", "gguf")
     resident = {
         "text-to-image": {
@@ -260,6 +256,126 @@ def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch
     assert [m["id"] for m in data] == ["z-image"]
     assert data[0]["loaded"] is True and data[0]["quant"] == "Q4_K_M"
     assert "/srv/" not in json.dumps(data)
+
+
+def test_media_index_keeps_same_quant_custom_builds(tmp_path, monkeypatch):
+    names = ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image:q4_k_m"].gguf_filename == names[0]
+    assert picks["local-image:beta-q4_k_m"].gguf_filename == names[1]
+
+    marked = mmi._mark_ambiguous_builds(picks)
+    beta = marked["local-image:beta-q4_k_m"]
+    assert beta.ambiguous
+    assert mmi.satisfied_by(
+        {
+            "loaded": True,
+            "repo_id": str(tmp_path),
+            "gguf_variant": "Q4_K_M",
+            "gguf_filename": names[1],
+            "model_kind": "gguf",
+        },
+        "local-image:beta-q4_k_m",
+        beta,
+    )
+
+
+def test_media_index_keeps_the_legacy_fallback_quant_alias(tmp_path, monkeypatch):
+    filename = "flux1-dev-fp16.gguf"
+    (tmp_path / filename).write_bytes(b"x")
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image:flux1-dev-fp16"].gguf_filename == filename
+    assert picks["local-image:fp16"].gguf_filename == filename
+
+
+def test_legacy_media_alias_does_not_replace_a_current_exact_key(tmp_path, monkeypatch):
+    legacy = "flux1-dev-fp16.gguf"
+    exact = "fp16.gguf"
+    for filename in (legacy, exact):
+        (tmp_path / filename).write_bytes(b"x")
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image:flux1-dev-fp16"].gguf_filename == legacy
+    assert picks["local-image:fp16"].gguf_filename == exact
+
+
+def test_media_bare_id_matches_variantless_local_file_ranking(tmp_path, monkeypatch):
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-Q4_K_M-00001-of-00002.gguf"
+    (tmp_path / alpha).write_bytes(b"x" * 100)
+    (tmp_path / beta).write_bytes(b"x" * 60)
+    (tmp_path / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image"].gguf_filename == alpha
+
+
+def test_a_larger_sibling_build_does_not_override_the_preferred_media_quant(tmp_path, monkeypatch):
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 50)
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 120)
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image"].gguf_filename == "model-Q4_K_M.gguf"
+
+
+def test_a_media_build_stem_survives_its_sibling_removal(tmp_path, monkeypatch):
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+    assert picks["local-image:beta-q4_k_m"].gguf_filename == "beta-Q4_K_M.gguf"
+
+    (tmp_path / "alpha-Q4_K_M.gguf").unlink()
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image:beta-q4_k_m"].gguf_filename == "beta-Q4_K_M.gguf"
+
+
+def test_quant_directory_siblings_share_the_media_default_scope(tmp_path, monkeypatch):
+    quant_dir = tmp_path / "Q4_K_M"
+    quant_dir.mkdir()
+    alpha = "Q4_K_M/alpha-Q4_K_M.gguf"
+    beta = "Q4_K_M/beta-Q4_K_M.gguf"
+    (tmp_path / alpha).write_bytes(b"x" * 100)
+    (tmp_path / beta).write_bytes(b"x" * 120)
+    info = _Info("local-image", "Local Image", path = str(tmp_path), task = "text-to-image")
+    monkeypatch.setattr(mmi, "_loader_can_open", lambda *_args: True)
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_gguf_model", lambda *_args: str(tmp_path / beta)
+    )
+
+    picks = {}
+    assert mmi._add_gguf_picks(picks, info, (info.id,), tmp_path, tmp_path)
+
+    assert picks["local-image"].gguf_filename == beta
 
 
 def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
@@ -303,7 +419,6 @@ def test_the_media_scan_is_reused_across_requests_in_one_catalog_window(monkeypa
         asyncio.run(inf._openai_catalog_objects())
     assert calls == list(inf._MEDIA_MODEL_TASKS), calls
 
-    # A replaced catalog scan rebuilds it.
     inf._CATALOG_CACHE["at"] = 5678.0
     asyncio.run(inf._openai_catalog_objects())
     assert calls == list(inf._MEDIA_MODEL_TASKS) * 2, calls
@@ -334,12 +449,7 @@ def test_concurrent_media_requests_share_one_catalog_rebuild(monkeypatch):
 
 
 def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
-    """The index already drops partial pulls, unopenable paths and ambiguous builds.
-
-    Listing anything it rejects advertises an id the generation route answers with
-    model_not_found, so an empty index must advertise nothing -- even while a model the
-    index does not know is resident.
-    """
+    """Only ids the media resolver accepts may be listed, or the route answers model_not_found."""
     resident = {
         "text-to-image": {
             "loaded": True,
@@ -534,16 +644,10 @@ def test_concurrent_custom_stt_requests_share_one_inventory_scan(monkeypatch):
 
 
 def test_a_whisper_id_cached_only_for_whisper_cpp_is_not_advertised(monkeypatch):
-    """/v1/audio/transcriptions never selects the GGML engine on its own.
-
-    _stt_engine_for_model forces only the mtmd ids, so a curated Whisper id resolves to
-    Transformers; advertising one that exists only in the whisper.cpp cache sends the
-    caller at an absent Transformers snapshot, which answers 409.
-    """
+    """/v1/audio/transcriptions never picks the GGML engine itself; a whisper.cpp-only id would 409 here."""
     from core.inference import stt_ggml_sidecar
 
     _stt(monkeypatch, downloaded = ())
-    # Resident on the GGML sidecar, and cached there, yet still not OpenAI-servable.
     monkeypatch.setattr(
         stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None
     )
@@ -711,10 +815,7 @@ def test_resident_audio_models_carry_task_and_workflows(monkeypatch, info, task,
 
 
 def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
-    """Only what /v1/audio/speech can actually serve is tagged text-to-speech.
-
-    whisper (ASR) and audio_vlm (Gemma 3n chat) carry an _audio_type but that route
-    400s on both, and csm is transformers-only, so none may advertise the task."""
+    """Only what /v1/audio/speech can serve gets the text-to-speech tag; whisper and csm must not."""
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
     for audio_type in ("whisper", "audio_vlm", "csm"):
         gguf = type(
@@ -747,7 +848,6 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
         (entry,) = inf._openai_model_objects()
         assert "task" not in entry, f"{audio_type} advertised as {entry.get('task')}"
 
-    # A transformers TTS codec still is tagged.
     unsloth = type(
         "_Tts",
         (_FakeUnsloth,),
@@ -760,7 +860,6 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     (entry,) = inf._openai_model_objects()
     assert entry["task"] == "text-to-speech"
 
-    # the mlx worker rejects audio generation even when its model metadata is tts.
     unsloth.models["unsloth/csm-1b"]["is_mlx"] = True
     (entry,) = inf._openai_model_objects()
     assert "task" not in entry

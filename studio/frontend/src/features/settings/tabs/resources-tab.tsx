@@ -245,6 +245,10 @@ interface GpuTorchMismatch {
   reason?: string;
   torch_version?: string | null;
   physical_count?: number;
+  /** An AMD device node this account cannot open, and the command that opens it. */
+  permission_hint?: string | null;
+  /** The closed node fully explains a ROCm wheel, so the reinstall advice is wrong. */
+  permission_hint_only?: boolean;
 }
 
 /** /api/system's `gpu.driver_warning`: a Windows AMD driver with the idle-eviction bug
@@ -288,6 +292,7 @@ export function ResourcesTab() {
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const storageSectionRef = useRef<HTMLElement | null>(null);
+  const modelMemoryRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
     (s) => s.consumeScrollTarget,
@@ -334,13 +339,20 @@ export function ResourcesTab() {
   }, []);
 
   useEffect(() => {
-    if (scrollTarget !== "resources-caches") return;
+    const target = scrollTarget;
+    const sectionRef =
+      target === "resources-caches"
+        ? storageSectionRef
+        : target === "resources-model-memory"
+          ? modelMemoryRef
+          : null;
+    if (!target || !sectionRef) return;
     const frame = window.requestAnimationFrame(() => {
-      storageSectionRef.current?.scrollIntoView({
+      sectionRef.current?.scrollIntoView({
         block: "start",
         behavior: "smooth",
       });
-      consumeScrollTarget("resources-caches");
+      consumeScrollTarget(target);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
@@ -512,13 +524,14 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  const unifiedPool = metrics.vramShared > 0 && metrics.vramDedicated === 0;
   const vramCapacityLabel =
-    metrics.vramShared > 0
+    metrics.vramShared > 0 && !unifiedPool
       ? t("settings.resources.environment.vramWithShared", {
           vram: formatGiB(metrics.vramDedicated),
           shared: formatGiB(metrics.vramShared),
         })
-      : formatGiB(metrics.vramTotal);
+      : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu rather than displayedGpu: this describes the TRAINING view of the host,
@@ -538,14 +551,16 @@ export function ResourcesTab() {
       ? rawDriverWarning
       : null;
   // A CPU-only wheel is fixed by reinstalling torch, a dead runtime by the driver.
-  const gpuMismatchMessage = gpuMismatch
-    ? t(
-        gpuMismatch.reason === "torch_cpu_build"
-          ? "settings.resources.gpu.mismatchCpuBuild"
-          : "settings.resources.gpu.mismatchUnavailable",
-        { version: gpuMismatch.torch_version ?? unknownLabel },
-      )
-    : null;
+  const gpuPermissionHint = gpuMismatch?.permission_hint ?? null;
+  const gpuMismatchMessage =
+    gpuMismatch && !(gpuPermissionHint && gpuMismatch.permission_hint_only)
+      ? t(
+          gpuMismatch.reason === "torch_cpu_build"
+            ? "settings.resources.gpu.mismatchCpuBuild"
+            : "settings.resources.gpu.mismatchUnavailable",
+          { version: gpuMismatch.torch_version ?? unknownLabel },
+        )
+      : null;
 
   return (
     <div className="settings-page">
@@ -672,11 +687,15 @@ export function ResourcesTab() {
                 : hasGpu
                   ? memoryDisplay.sharedOnly
                     ? t("settings.resources.gpu.sharedWithSystemRam")
-                    : metrics.vramUsageKnown
-                      ? t("settings.resources.liveMonitor.free", {
-                          value: formatGiB(metrics.vramFree),
+                    : unifiedPool && memoryDisplay.unifiedAvailableGb !== null
+                      ? t("settings.resources.gpu.estimatedAvailable", {
+                          value: formatGiB(memoryDisplay.unifiedAvailableGb),
                         })
-                      : unknownLabel
+                      : metrics.vramUsageKnown
+                        ? t("settings.resources.liveMonitor.free", {
+                            value: formatGiB(metrics.vramFree),
+                          })
+                        : unknownLabel
                   : gpuMismatch
                     ? t("settings.resources.liveMonitor.gpuUnusableDetail")
                     : backendLabel
@@ -686,7 +705,9 @@ export function ResourcesTab() {
               !memoryDisplay.sharedOnly &&
               memoryDisplay.sharedDevices.length > 0
                 ? `${t("settings.resources.gpu.sharedWithSystemRam")}\n${t("settings.resources.gpu.estimatedAvailable", { value: memoryDisplay.sharedAvailableGb === null ? unknownLabel : formatGiB(memoryDisplay.sharedAvailableGb) })}`
-                : undefined
+                : unifiedPool && !memoryDisplay.sharedOnly
+                  ? t("settings.resources.gpu.sharedWithSystemRam")
+                  : undefined
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -807,9 +828,16 @@ export function ResourcesTab() {
             selectable: the rows below are what a model can be loaded onto. */}
         {gpuMismatch ? (
           <div className="flex flex-col gap-2 border-b border-border/60 py-3">
-            <p className="text-sm text-amber-600 dark:text-amber-400">
-              {gpuMismatchMessage}
-            </p>
+            {gpuMismatchMessage && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                {gpuMismatchMessage}
+              </p>
+            )}
+            {gpuPermissionHint && (
+              <p className="select-text text-sm text-amber-600 dark:text-amber-400">
+                {gpuPermissionHint}
+              </p>
+            )}
             {physicalDevices.map((device, index) => (
               <div
                 key={`${device.vendor ?? "gpu"}-${device.index ?? index}-${device.name ?? ""}`}
@@ -1032,7 +1060,7 @@ export function ResourcesTab() {
       <LlamaBackendSection />
       <InferenceEnginesSection />
 
-      <ModelMemorySection />
+      <ModelMemorySection ref={modelMemoryRef} />
 
       <SettingsSection
         ref={storageSectionRef}

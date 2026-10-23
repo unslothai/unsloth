@@ -119,7 +119,8 @@ def fill_fsdp2_mixed_precision(accelerator):
         return policy
     if (
         policy.param_dtype != compute
-        or policy.reduce_dtype != compute
+        # torch 2.6 stores reduce_dtype None when it equals param_dtype; both reduce in compute.
+        or policy.reduce_dtype not in (None, compute)
         or getattr(policy, "output_dtype", None) not in (None, compute)
     ):
         return policy

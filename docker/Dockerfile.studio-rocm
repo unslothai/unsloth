@@ -86,6 +86,7 @@ ARG UNSLOTH_NOTEBOOKS_REF=main
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
     UNSLOTH_STUDIO_DOCUMENTS_HOME=/opt/unsloth-studio/documents \
+    UNSLOTH_STUDIO_SKILLS_HOME=/opt/unsloth-studio/skills \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     JUPYTER_PORT=8888 \
     UNSLOTH_STUDIO_PORT=8000 \

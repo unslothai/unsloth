@@ -1,40 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A quantized V cache is priced with flash attention on, because llama.cpp will
-not run it any other way.
-
-``flash_attn = False`` used to be passed unconditionally as the conservative arm. It is
-conservative for a *choice*; for a quantized V cache it is not one. llama.cpp turns
-flash attention on itself --
-
-    enabling flash_attn since it is required for quantized V cache
-
--- and aborts without it, which ``_tensor_quant_kv_unsupported_binary`` documents as
-"V cache quantization requires flash_attn". The False arm sets
-``bpe_v = max(bpe_k, f16)``, charging the entire quantized saving on the V axis back
-and reporting a launch that cannot happen.
-
-Measured against llama-server b10632 (commit ``11cd98842``), Qwen3-0.6B-Q4_K_M,
-identical on the CPU and Vulkan builds:
-
-    ctx    -ctk/-ctv   reserved before   allocated     after
-    4096   q8_0            343 MiB        238 MiB     238 MiB
-    4096   q4_0            287 MiB        126 MiB     126 MiB
-    32768  q8_0           2744 MiB       1904 MiB    1904 MiB
-    32768  q4_0           2296 MiB       1008 MiB    1008 MiB
-
-The tests below do not need a binary: they assert the arithmetic identity that
-produced those numbers, which is that BOTH axes shrink with the cache type, not just
-K. A regression puts the f16 V back and the ratio jumps.
-"""
+"""A quantized V cache is always priced with flash attention on, since llama.cpp forces it."""
 
 import sys
 import types as _types
 from pathlib import Path
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Same block, same reasons, as tests/test_memory_estimate.py.
+# stub heavy deps before importing; same block as tests/test_memory_estimate.py
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -59,8 +32,7 @@ import routes.inference as ri  # noqa: E402
 from models.inference import EstimateMemoryRequest  # noqa: E402
 from core.inference.llama_cpp import _kv_bytes_per_elem  # noqa: E402
 
-# Reuse the GGUF blob builder rather than copying it, for the reason its first
-# borrower gives: a second copy of the writer would drift from the parser.
+# reuse the GGUF blob builder: a second copy of the writer would drift from the parser
 _kv_spec = _ilu.spec_from_file_location(
     "_kv_cache_estimation_for_flash_attn_parity",
     Path(__file__).resolve().parent / "test_kv_cache_estimation.py",
@@ -69,7 +41,7 @@ _kv_mod = _ilu.module_from_spec(_kv_spec)
 _kv_spec.loader.exec_module(_kv_mod)
 _make_gguf_bytes = _kv_mod._make_gguf_bytes
 
-# Qwen3-0.6B's real shape, so the ratios below are the ones that were measured.
+# Qwen3-0.6B's real shape, so the ratios below match the measured ones
 _QWEN3_FIELDS = {
     "context_length": 40960,
     "block_count": 28,
@@ -119,9 +91,7 @@ def ragged_swa_gguf(tmp_path):
 
 @pytest.fixture
 def qwen3_shaped_gguf(tmp_path):
-    # general.architecture goes in FIRST. The reader takes it before it knows which
-    # prefix the rest of the keys carry, so a blob that writes it last parses as a
-    # header with no dimensions and every figure below silently becomes zero.
+    # general.architecture must go FIRST: the reader needs it to know the key prefix
     fields = {"general.architecture": "qwen3"}
     fields.update({f"qwen3.{k}": v for k, v in _QWEN3_FIELDS.items()})
     path = tmp_path / "qwen3-shaped.gguf"
@@ -225,19 +195,8 @@ def test_a_quantized_v_in_the_extra_arguments_is_read_the_same_way(qwen3_shaped_
     )
 
 
-# The round that followed: four placement inputs the estimate was reading wrong.
-# Each of these fails on the parent commit.
-
-
 def test_a_cpu_only_manual_launch_is_not_charged_for_a_pinned_card(monkeypatch, qwen3_shaped_gguf):
-    """Manual with zero layers is a CPU-only launch, and the loader drops the split
-    flags for it. Charging the pinned card count added per-device pipeline overhead
-    and replicated the context-linear compute term for buffers no card allocates:
-    measured on a two-card pin, 1039 -> 2105 MiB at 4k and 1417 -> 5129 MiB at 262k.
-
-    Driven through the route, because the defect was in what the route HANDS the
-    device count, not in the device count itself. Asserting the two helpers in
-    isolation passes on the unfixed tree."""
+    """A zero-layer manual launch is CPU-only and must not be charged for pinned cards."""
     one = ri._gguf_runtime_bytes(
         qwen3_shaped_gguf, 32768, None, 4, "f16", False, None, None, n_devices = 1
     )
@@ -297,8 +256,7 @@ def test_an_inherited_gpu_layer_count_is_read_in_auto(monkeypatch, qwen3_shaped_
     half = ri._gguf_offloaded_layer_fraction("auto", None, 27, None)
     assert 0.0 < half < 1.0, f"a partial inherited count priced {half}"
 
-    # -1 and auto are llama.cpp's own default, so they leave the fitter free to choose
-    # and are not an override.
+    # -1 and auto are llama.cpp's own default, so they are not an override
     for auto_value in ("-1", "auto", ""):
         monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", auto_value)
         assert ri._gguf_offloaded_layer_fraction("auto", None, 27, None) == 1.0
@@ -316,23 +274,17 @@ def test_an_explicit_ngl_in_the_extras_still_beats_the_inherited_count(
 def test_pass_through_adapters_are_charged_and_follow_the_base_placement(
     tmp_path, qwen3_shaped_gguf
 ):
-    """llama.cpp loads every --lora / --control-vector into resident tensors on top of
-    the base model, on the base tensor's buffer type. The files term prices only the
-    target and its companions, so without this an adapter load was a fit on the base
-    model's size alone."""
+    """Each --lora or --control-vector adapter is resident, so its bytes must be charged too."""
     from core.inference.llama_cpp import _sidecar_adapter_bytes
 
     lora = tmp_path / "adapter.gguf"
     size = 7 * 1024 * 1024
     lora.write_bytes(b"\0" * size)
     assert _sidecar_adapter_bytes(["--lora", str(lora)]) == size
-    # A named file that cannot be stat'd is the "engaged but unsized" case.
     assert _sidecar_adapter_bytes(["--lora", str(tmp_path / "missing.gguf")]) is None
-    # And no adapters is zero, not None, so the marker stays off for every ordinary load.
     assert _sidecar_adapter_bytes([]) == 0
 
-    # The helper pre-dates this; what is new is that the panel asks it. Driven through
-    # the breakdown so the test fails on a tree where the term is computed and dropped.
+    # driven through the breakdown so a computed-but-dropped term fails
     config = SimpleNamespace(
         identifier = "local",
         gguf_file = qwen3_shaped_gguf,
@@ -413,15 +365,7 @@ def test_grok_is_priced_without_flash_attention(monkeypatch, qwen3_shaped_gguf):
 
 
 def test_the_admission_estimate_keeps_the_no_flash_reserve(monkeypatch, ragged_swa_gguf):
-    """``_estimate_gguf_kv_gb`` feeds the active-training admission guard, and ``load_model``
-    holds the reading down through ``_reserved_flash_attn_state`` where a flash-attention-off
-    respawn cannot be re-placed. Resolving only the plan here admitted a load against the
-    smaller cache that the same placement then reserves the larger one for, so the respawn
-    could take VRAM the guard never admitted and take a training run with it.
-
-    A ragged-SWA shape with an f16 cache: a quantized V forces flash attention on, and an
-    equal-width f16 cache does not move with the state, so on either of those the control
-    below could not fail."""
+    """The admission estimate keeps the no-flash reserve, or a respawn can take training VRAM."""
     monkeypatch.delenv("LLAMA_ARG_FLASH_ATTN", raising = False)
     monkeypatch.delenv("LLAMA_ARG_FIT", raising = False)
     monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS", raising = False)
@@ -444,27 +388,21 @@ def test_the_admission_estimate_keeps_the_no_flash_reserve(monkeypatch, ragged_s
 
     managed = kv()
     priced_off = kv(["--flash-attn", "off"])
-    # The control: the two readings really do differ on this shape, or nothing below holds.
+    # control: the two readings must differ on this shape, or nothing below holds
     assert priced_off > managed
 
-    # A user's own --fit off, and the environment spelling of it: both take away the
-    # re-placement, so both keep the conservative reserve.
     assert kv(["--fit", "off"]) == priced_off
     monkeypatch.setenv("LLAMA_ARG_FIT", "off")
     assert kv() == priced_off
     monkeypatch.delenv("LLAMA_ARG_FIT")
 
-    # A fixed layer count is the other fitter-proof placement.
     assert kv(["-ngl", "99"]) == priced_off
 
-    # An ordinary managed placement keeps the launch price: the fitter re-places the
-    # respawn, so reserving for it would refuse contexts that fit.
+    # the fitter re-places the respawn, so reserving for it would refuse contexts that fit
     assert kv() == managed
 
-    # Tensor mode is exempt, because llama.cpp has no flash-attention-off respawn there.
+    # llama.cpp has no flash-attention-off respawn in tensor mode
     assert kv(["--fit", "off"], tensor_parallel = True) == managed
 
-    # And the panel is untouched: its total is what the launch uses, and an existing pin
-    # holds it placement-independent (test_memory_estimate's extras -ngl case).
     assert panel(["--fit", "off"]) == panel()
     assert panel(["-ngl", "99"]) == panel()

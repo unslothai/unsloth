@@ -380,7 +380,7 @@ def ensure_library(
                     if cancel_event is not None and cancel_event.is_set():
                         return None, _CANCELLED
                     if time.monotonic() >= deadline:
-                        return None, "another Studio process is installing cuDNN"
+                        return None, "another Unsloth process is installing cuDNN"
         try:
             found = _verified_library(dest, runtime)
             if found:
@@ -418,7 +418,7 @@ def _install_locked(
         free = None
     if free is not None and free < _MIN_FREE_BYTES:
         return _Refused(
-            f"needs {_MIN_FREE_BYTES >> 30} GiB free beside the Studio home, {free / 2**30:.1f} GiB free"
+            f"needs {_MIN_FREE_BYTES >> 30} GiB free beside the Unsloth home, {free / 2**30:.1f} GiB free"
         )
     uv = _uv_executable()
     config = _installer_config(uv)

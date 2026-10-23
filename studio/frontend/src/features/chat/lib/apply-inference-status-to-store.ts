@@ -45,6 +45,7 @@ import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
 import { engineLaunchFieldsFrom } from "./engine-launch-fields";
+import { mlxOffloadStateFrom } from "./mlx-runtime-state";
 import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
@@ -243,6 +244,9 @@ export function applyActiveModelStatusToStore(
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
+  const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
+  const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
+  const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // The chat's own level when the model this replaces was running a per-model pin's: the clamp
   // narrows the chat's level to this model's ladder, and a pin is one model's, not the chat's.
@@ -571,22 +575,38 @@ export function applyActiveModelStatusToStore(
       status.vision_disabled_by_user !== undefined && {
         loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
-    // Hydration only, so a steady poll never rewrites settings the store owns. Width, verdict
-    // and request move together; a late reply can overwrite a newer one.
+    // Like kvCacheDtype: baselines and verdict follow a same-model reload, each control only while clean.
     ...(seedLoadParams &&
-      hydratingExistingModel &&
       status.mlx_kv_quant_requested !== undefined &&
       (status.is_mlx === true
         ? {
-            mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-            loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+            loadedMlxKvQuantRequested: incomingMlxKvQuant,
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-            mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
-            loadedMlxInt8PrefillRequested:
-              status.mlx_int8_prefill_requested === true,
+            loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
+            ...incomingMlxOffload,
+            ...((hydratingExistingModel ||
+              (prevState.mlxPleOffload ?? null) ===
+                (prevState.loadedMlxPleOffloadRequested ?? null)) && {
+              mlxPleOffload: incomingMlxOffload.loadedMlxPleOffloadRequested,
+            }),
+            ...((hydratingExistingModel ||
+              (prevState.mlxExpertOffload ?? null) ===
+                (prevState.loadedMlxExpertOffloadRequested ?? null)) && {
+              mlxExpertOffload: incomingMlxOffload.loadedMlxExpertOffloadRequested,
+            }),
+            ...((hydratingExistingModel ||
+              (prevState.mlxKvQuant ?? null) ===
+                (prevState.loadedMlxKvQuantRequested ?? null)) && {
+              mlxKvQuant: incomingMlxKvQuant,
+            }),
+            ...((hydratingExistingModel ||
+              prevState.mlxInt8Prefill ===
+                prevState.loadedMlxInt8PrefillRequested) && {
+              mlxInt8Prefill: incomingMlxInt8Prefill,
+            }),
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
@@ -595,27 +615,8 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
+            ...incomingMlxOffload,
           })),
-    // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
-    // over an earlier edit would discard it.
-    ...(seedLoadParams &&
-      !hydratingExistingModel &&
-      status.is_mlx === true &&
-      status.mlx_kv_quant_requested !== undefined &&
-      prevState.mlxKvQuant === null &&
-      prevState.loadedMlxKvQuantRequested === null &&
-      prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null &&
-      !prevState.mlxInt8Prefill && {
-        mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
-        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
-        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-        mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
-        loadedMlxInt8PrefillRequested:
-          status.mlx_int8_prefill_requested === true,
-      }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {

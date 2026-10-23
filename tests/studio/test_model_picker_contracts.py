@@ -426,13 +426,20 @@ def test_diffusion_capability_labeled_image_video_gen():
         "features/hub/lib/view-models.ts",
     ):
         assert "Image to text" not in _read(rel), rel
-    assert '{ value: "diffusion", label: "Image/video gen" }' in _read(
-        "features/hub/lib/model-type-filter.ts"
-    )
     # The Hub filter splits the capability into its two generator kinds (#13749).
     hub = _read("features/hub/lib/view-models.ts")
     assert '{ value: "image-gen", label: "Image gen" }' in hub
     assert '{ value: "video-gen", label: "Video gen" }' in hub
+    # The badge on a model carries the same two names.
+    assert '"Video gen" : "Image gen"' in _read("features/hub/lib/model-capabilities.ts")
+    # Since #14083 the On Device list takes Discover's picks and matcher instead of
+    # keeping its own option list, so the names above are the only ones it shows.
+    # Should it grow its own list again, the diffusion entry must still name generators.
+    on_device = _read("features/hub/lib/model-type-filter.ts")
+    if 'value: "diffusion"' in on_device:
+        assert '{ value: "diffusion", label: "Image/video gen" }' in on_device
+    else:
+        assert "matchesHubCapability" in on_device
 
 
 def test_active_model_config_round_trips_gpu_fields():
@@ -731,7 +738,7 @@ def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
 
     tabs = _read("features/model-picker/components/model-selector/pill-tabs.tsx")
     assert 'fit ? "min-w-0 shrink" : "min-w-0 flex-1"' in tabs
-    assert '<span className="min-w-0 truncate">{tab.label}</span>' in tabs
+    assert '<span data-pill-tab-label className="min-w-0 truncate">' in tabs
 
     selector = _read("features/model-picker/components/model-selector.tsx")
     assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
@@ -1214,9 +1221,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "update(contextPinPatch(value, pinsContextLength))" in page
     # "Anything not GGUF" would relabel CUDA; the platform decides.
     assert (
-        "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
+        "isServedByMlx(\n    target.isGguf,\n    platformDeviceType,\n    platformChatOnlyReason,\n  )"
         in page
     )
+    assert "const targetIsMlx = servedByMlx;" in page
     # Both props are optional, so dropping either still typechecks.
     assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
@@ -1415,7 +1423,8 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     before = src.split("<Checkbox id={rememberId}", 1)[0]
-    footer = before.rsplit("<div", 2)[1]
+    # Footer is the third <div back: the status line sits in the Remember column.
+    footer = before.rsplit("<div", 3)[1]
     assert "flex-wrap" not in footer, footer[:200]
     assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
 
@@ -2543,8 +2552,8 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
-        "{ syncModelOverride(" in src
+        "if ( saved && (remember || forgets) && (target.apiLoadable ?? target.isGguf) && "
+        "!nativePathToken ) { syncModelOverride(" in src
     )
     assert "const saved = remember ? savePerModelConfig(" in src
 
@@ -2554,7 +2563,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken) { syncModelOverride(" in page
+    assert "&& !nativePathToken ) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page

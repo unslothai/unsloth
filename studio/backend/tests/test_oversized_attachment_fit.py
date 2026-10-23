@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from core.inference import checkpoint, llama_cpp
 from core.inference.context_window import evicted_messages, fit_oversized_attachments
 
@@ -138,6 +140,29 @@ def test_the_compaction_fit_serves_the_turn_instead_of_refusing_it(monkeypatch):
 
     assert "of 2000 lines are above" in fitted[-1]["content"]
     assert truncation is None or truncation.get("fits") is not False
+
+
+@pytest.mark.parametrize("checkpoint_boundary", [True, False])
+def test_a_recount_cuts_an_oversized_attachment_before_replaying_the_boundary(checkpoint_boundary):
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "What does line 1000 say?\n" + note() + FILE},
+    ]
+
+    fitted, truncation = llama_cpp._fit_context(
+        messages,
+        context_length = 2048,
+        max_tokens = 512,
+        count_tokens = count,
+        sticky_dropped = 2,
+        sticky_is_checkpoint = checkpoint_boundary,
+        replay_only = True,
+    )
+
+    assert "of 2000 lines are above" in fitted[-1]["content"]
+    assert truncation["prompt_tokens_after"] == count(fitted) <= 2048 - 512
 
 
 def _follow_up(first = None):

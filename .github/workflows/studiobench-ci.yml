@@ -164,12 +164,18 @@ jobs:
     timeout-minutes: 30
     env:
       STUDIO_PORT: '18902'
+      # The llama.cpp prebuilt this job installs can be one release behind by the time the session runs
+      # (a release published mid-job), and Studio then puts an "update available" card in the bottom-right
+      # overlay rail, over the controls the scene clicks. Seen on #13986 and #14000: both installed b11669 a
+      # minute before b11681 was published and timed out on a click the card intercepted. The session
+      # measures chat, not update UI, so update checks stay off.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -379,7 +385,7 @@ jobs:
       # debugging this job wants and the last thing a step log preserves.
       - name: Upload the payload and the Unsloth log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: studiobench-ci-payload
           path: |

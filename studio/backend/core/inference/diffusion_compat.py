@@ -656,6 +656,119 @@ def assert_flux2_pick_compatible(
         raise ValueError(reason)
 
 
+def _flux3_pipeline_index(
+    repo_id: str, token: Optional[str], allow_network: bool
+) -> Optional[dict]:
+    """A FLUX.3 pipeline's ``modular_model_index.json``: the local folder's, the cached copy, or (when allowed) a
+    fetch of that one small file. None on anything unreadable."""
+    import json
+
+    from .diffusion_flux3 import FLUX3_INDEX
+
+    try:
+        root = Path(repo_id).expanduser()
+        if root.is_dir():
+            return json.loads((root / FLUX3_INDEX).read_text(encoding = "utf-8-sig"))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        # The gated vendor repo's manifest is read from its byte-identical unsloth mirror (pure table lookup), so a
+        # load that fetches everything from the mirror does not also probe, and 401 on, the vendor repo.
+        from core.inference.diffusion_families import prefer_ungated_mirror
+
+        source = prefer_ungated_mirror(repo_id, token, files = (FLUX3_INDEX,))
+        local = _local_gguf_path(repo_id, FLUX3_INDEX)
+        if local is None and source != repo_id:
+            local = _local_gguf_path(source, FLUX3_INDEX)
+        if local is None and allow_network:
+            from huggingface_hub import hf_hub_download
+            from utils.hf_cache_settings import active_hf_hub_cache
+            local = hf_hub_download(
+                source, FLUX3_INDEX, token = token, cache_dir = active_hf_hub_cache()
+            )
+        if local is None:
+            return None
+        payload = json.loads(Path(local).read_text(encoding = "utf-8-sig"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001 -- offline, gated or odd: the loader's own check still runs
+        return None
+
+
+def _flux3_pick_tensor_names(
+    repo_id: str, filename: str, token: Optional[str], allow_network: bool
+) -> tuple[Optional[list[str]], bool]:
+    """Tensor names of a FLUX.3 single file / GGUF pick without reading a weight, and whether it declares ComfyUI
+    quantization: the file on disk, else a GGUF header range read or the safetensors header from the Hub. None
+    names on anything unreadable."""
+    from .diffusion_families import (
+        _checkpoint_comfy_declared,
+        _checkpoint_tensor_names,
+        flux3_comfy_declared,
+        gguf_tensor_names_from_header,
+    )
+
+    local = _local_gguf_path(repo_id, filename)
+    if local is not None:
+        return _checkpoint_tensor_names(local), _checkpoint_comfy_declared(local)
+    if not allow_network:
+        return None, False
+    try:
+        if filename.lower().endswith(".gguf"):
+            return gguf_tensor_names_from_header(
+                _shared_gguf_header(repo_id, filename, token, None)
+            ), False
+        from huggingface_hub import HfApi
+
+        meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
+        names = list(meta.tensors)
+        return names, flux3_comfy_declared(names, getattr(meta, "metadata", None))
+    except Exception:  # noqa: BLE001 -- offline, gated or odd: the loader's own check still runs
+        return None, False
+
+
+def flux3_pick_mismatch(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> Optional[str]:
+    """Why a FLUX.3 pick cannot load under ``fam``, or None when nothing is known to be wrong: a single file /
+    GGUF of the other variant (or a BFL quantized package) from its tensor names, a full pipeline of the other
+    variant from its manifest. Headers and the manifest only; None on anything unreadable."""
+    name = str(getattr(fam, "name", ""))
+    if not name.startswith("flux.3"):
+        return None
+    if not gguf_filename:
+        from .diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
+        declared = flux3_index_family(
+            _flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network)
+        )
+        return flux3_family_blocks_mismatch(name, declared, repo_id)
+    from .diffusion_families import flux3_variant_mismatch_reason
+
+    names, comfy_declared = _flux3_pick_tensor_names(
+        repo_id, gguf_filename, normalize_token(hf_token), allow_network
+    )
+    return flux3_variant_mismatch_reason(
+        name, Path(str(gguf_filename)).name, names, comfy_declared = comfy_declared
+    )
+
+
+def assert_flux3_pick_compatible(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> None:
+    """Refuse a FLUX.3 pick of the other variant before anything is downloaded or unloaded
+    (``flux3_pick_mismatch``). The loader's own checks run after the resident pipeline is gone."""
+    reason = flux3_pick_mismatch(fam, repo_id, gguf_filename, hf_token, allow_network)
+    if reason is not None:
+        raise ValueError(reason)
+
+
 def _reset_inner_dim_cache() -> None:
     """Drop the memoised header probes. Tests only."""
     with _CACHE_LOCK:

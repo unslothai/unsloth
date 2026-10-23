@@ -68,6 +68,10 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),
     "flux.2-klein": (7.8, 8.0, 0.2),
+    # FLUX.3 Image Klein: 5.55B DiT (11.1 GB bf16) + Qwen3-VL-4B (8.9 GB) + the FLUX.2 VAE (stored fp32, 0.17 GB
+    # bf16). From the black-forest-labs/flux-3-image-klein component folders; the base shares the architecture.
+    "flux.3-klein": (11.1, 8.9, 0.2),
+    "flux.3-klein-base": (11.1, 8.9, 0.2),
     "flux.2-dev": (64.5, 48.0, 0.4),
     "qwen-image": (40.9, 16.6, 0.3),
     "qwen-image-edit": (40.9, 16.6, 0.3),
@@ -166,6 +170,27 @@ def resident_bytes_from_declared(
         + extra_bf16_bytes
     )
     return int(dtype_resident * dtype_scale) + prequant_bytes
+
+
+def companion_bytes_from_declared(
+    base_repo: Optional[str],
+    declared_files: Any,
+    *,
+    dtype_scale: float = 1.0,
+) -> Optional[int]:
+    """Non-denoiser (text encoder, VAE) share of ``resident_bytes_from_declared``; None when none declared."""
+    _denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
+        _base_key(base_repo) if base_repo else "", (1.0, 1.0)
+    )
+    # An SDXL-style UNet is a denoiser too.
+    companions = sum(
+        max(0, int(size or 0))
+        for path, size in (declared_files or ())
+        if not str(path).startswith(DENOISER_SUBFOLDERS + ("unet/",))
+    )
+    if companions <= 0:
+        return None
+    return int(int(companions / max(companion_factor, 0.01)) * max(1.0, float(dtype_scale or 1.0)))
 
 
 def _base_key(base_repo: Optional[str]) -> str:

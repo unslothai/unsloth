@@ -36,7 +36,15 @@ def _active_req_root(tmp_path_factory):
     main = root / "diffusers-main.txt"
     text = main.read_text(encoding = "utf-8")
     main.write_text(text.replace("\n# diffusers @ git+", "\ndiffusers @ git+"), encoding = "utf-8")
-    _ACTIVE_REQ_ROOT[:] = [root]
+    # Release-mode tests run on a copy with the commit line commented out, whichever state ships.
+    inactive = tmp_path_factory.mktemp("inactive_main") / "requirements"
+    shutil.copytree(REQ_ROOT, inactive)
+    off = inactive / "diffusers-main.txt"
+    off.write_text(
+        off.read_text(encoding = "utf-8").replace("\ndiffusers @ git+", "\n# diffusers @ git+"),
+        encoding = "utf-8",
+    )
+    _ACTIVE_REQ_ROOT[:] = [root, inactive]
     yield root
 
 
@@ -132,26 +140,57 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
     assert source.index(call) > source.rindex('req = REQ_ROOT / "diffusers-pin.txt"')
 
 
-def test_the_shipped_main_build_is_commented_out_but_keeps_its_commit():
-    """0.41.0 is on PyPI: nothing installs from git, and re-enabling is one uncomment away."""
-    assert _requirements(MAIN_FILE) == []
+def test_the_shipped_main_build_is_active_with_a_digest():
+    """FLUX.3 Klein (huggingface/diffusers#15046, merged 2026-10-15) is in no release, so the pinned build ships active."""
+    lines = _requirements(MAIN_FILE)
+    assert len(lines) == 1 and re.fullmatch(
+        r"diffusers @ git\+https://\S+@[0-9a-f]{40}", lines[0]
+    ), lines
     text = MAIN_FILE.read_text(encoding = "utf-8")
-    assert re.search(r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", text, re.M), text
-    assert re.search(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)
-    module = _probe_module("install_python_stack_probe_shipped", active = False)
+    assert len(re.findall(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)) == 1
+    module = _probe_module("install_python_stack_probe_shipped", shipped = True)
+    assert module._diffusers_main_active() is True
+
+
+def test_the_flux3_pin_is_main_with_the_merged_flux3_support():
+    """huggingface/diffusers#15046 merged on 2026-10-15 (7ecb1e1b4); the pin is main at d42ebf9c (2026-10-16, the
+    prompt upsampler block #15058), which carries it, with that commit's archive digest, not the PR branch head."""
+    text = MAIN_FILE.read_text(encoding = "utf-8")
+    (line,) = _requirements(MAIN_FILE)
+    assert line.endswith("@d42ebf9c6e0b46103b74283f5324357a67acaa04"), line
+    assert "ec288418a5efa32e9fd49eb7b193babce920a106" not in line
+    assert re.search(
+        r"^# archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f$",
+        text,
+        re.M,
+    )
+
+
+def test_the_release_mode_copy_is_commented_out_but_keeps_its_commit():
+    """Release mode (the state after a pin retires) is one comment away, and the probes read it as off."""
+    off = _ACTIVE_REQ_ROOT[1] / "diffusers-main.txt"
+    assert _requirements(off) == []
+    assert re.search(
+        r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", off.read_text(encoding = "utf-8"), re.M
+    )
+    module = _probe_module("install_python_stack_probe_inactive", active = False)
     assert module._diffusers_main_active() is False
     assert module._diffusers_main_resident() is False
     assert module._diffusers_main_supersedes_release() is False
 
 
-def _probe_module(name: str, active: bool = True):
+def _probe_module(
+    name: str,
+    active: bool = True,
+    shipped: bool = False,
+):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(name, STACK)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    if active:
-        module.REQ_ROOT = _ACTIVE_REQ_ROOT[0]
+    if not shipped:
+        module.REQ_ROOT = _ACTIVE_REQ_ROOT[0] if active else _ACTIVE_REQ_ROOT[1]
     return module
 
 
@@ -589,14 +628,17 @@ def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
     assert attempted and attempted[0].name == "diffusers-main.txt"
 
 
-def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
-    """diffusers-pin.txt still names 0.36.0 below 3.10, so 3.9 is a supported install, and main
-    declares requires-python >= 3.10. Unmarked, pip clones the repository and only then rejects
+@pytest.mark.parametrize("old_python", [(3, 9, 21), (3, 10, 14)])
+def test_python_below_311_does_not_clone_a_build_it_can_never_install(monkeypatch, old_python):
+    """diffusers-pin.txt covers 3.9 (0.36.0) and 3.10 (0.41.0), and main declares requires-python
+    >= 3.11 (huggingface/diffusers#15030). Unmarked, pip clones the repository and only then rejects
     it, and since the build can never become resident that clone repeats on every update."""
     module = _probe_module("install_python_stack_probe8")
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(
-        module, "pip_install_try", lambda *a, **k: pytest.fail("cloned main on python 3.9")
+        module,
+        "pip_install_try",
+        lambda *a, **k: pytest.fail(f"cloned main on python {old_python}"),
     )
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
@@ -604,17 +646,17 @@ def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
     class _V(tuple):
         pass
 
-    monkeypatch.setattr(module.sys, "version_info", _V((3, 9, 21)))
+    monkeypatch.setattr(module.sys, "version_info", _V(old_python))
     progressed: list = []
     monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
     module._diffusers_main_step()
-    assert len(progressed) == 1 and "python 3.10" in progressed[0], progressed
+    assert len(progressed) == 1 and "python 3.11" in progressed[0], progressed
 
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
     assert not (module._diffusers_main_requested() and module._diffusers_main_resident())
 
     attempted: list = []
-    monkeypatch.setattr(module.sys, "version_info", _V((3, 10, 0)))
+    monkeypatch.setattr(module.sys, "version_info", _V((3, 11, 0)))
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]

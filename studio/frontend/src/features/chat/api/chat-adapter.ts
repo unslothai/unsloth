@@ -132,10 +132,13 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context-usage";
+import { contextUsageReasoningKey } from "../utils/context-usage-reasoning";
 import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
+import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
@@ -152,7 +155,7 @@ import {
 } from "../utils/deep-research-handoff";
 import {
   consumeQueuedChatRunSettings,
-  shouldPersistResolvedQueuedModel,
+  shouldPersistRunModel,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import {
@@ -244,7 +247,10 @@ import {
   beginServerModelWait,
   statusPollSignal,
 } from "../lib/server-model-wait";
-import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
+import {
+  syncInferenceStatusToStore,
+  syncModelCapabilities,
+} from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
@@ -284,6 +290,7 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -411,6 +418,7 @@ import {
 } from "./chat-api";
 import {
   type AgentsMdRecord,
+  agentsMdEditCount,
   composeChatInstructions,
   EMPTY_AGENTS_MD,
 } from "../utils/agents-md";
@@ -447,10 +455,22 @@ import {
 } from "./chat-generation-api";
 import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
 import {
+  evictedSlotsFrom,
+  resyncEvicted,
+  toastEvicted,
+} from "@/lib/evicted-toast";
+import {
   type OffloadCounts,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
+
+/** Say what an automatic chat load unloaded to make room, e.g. the speech model read aloud uses. */
+function reportEvicted(loadResp: unknown): void {
+  const slots = evictedSlotsFrom(loadResp);
+  toastEvicted(slots);
+  resyncEvicted(slots, "chat");
+}
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -2226,7 +2246,9 @@ export async function buildLocalTokenCountHistory(
 
 /** The reasoning fields a completion would send: llama-server falls back to load-time
  *  --chat-template-kwargs only for omitted keys, so sending none misreports the mode. */
-export function buildLocalTokenCountReasoning(): Record<string, unknown> {
+export function buildLocalTokenCountReasoning(
+  state = useChatRuntimeStore.getState(),
+): Record<string, unknown> {
   const {
     supportsReasoning,
     reasoningStyle,
@@ -2235,7 +2257,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
     reasoningEffortLevels,
     supportsPreserveThinking,
     preserveThinking,
-  } = useChatRuntimeStore.getState();
+  } = state;
   // Same clamp the request build applies: a level the loaded template does not offer is dropped by the backend.
   const localReasoningEffort = clampReasoningEffortToLevels(
     reasoningEffort,
@@ -2289,7 +2311,21 @@ export async function buildLocalTokenCountExtras(
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
   // The completion always sends thread_id; the server dates a thread's prompt from it.
-  const threadField = threadId ? { thread_id: threadId } : {};
+  const threadField = {
+    ...(threadId ? { thread_id: threadId } : {}),
+    max_tokens: state.params.maxTokens,
+    ...ggufCompactionRequestFields({
+      isGguf: isServedByLlamaCpp({
+        loadedIsGguf: state.loadedIsGguf,
+        activeGgufVariant: state.activeGgufVariant,
+        activeNativePathToken: state.activeNativePathToken,
+        checkpoint: state.params.checkpoint,
+      }),
+      isMlx: state.loadedIsMlx === true,
+      isManagedEngine: state.loadedEngine === "vllm",
+      autoCompactEnabled: state.autoCompactEnabled,
+    }),
+  };
   if (!supportsTools) {
     return {
       enable_tools: false,
@@ -2313,6 +2349,7 @@ export async function buildLocalTokenCountExtras(
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
@@ -2320,6 +2357,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
@@ -2352,6 +2390,7 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -2366,12 +2405,12 @@ export async function buildLocalTokenCountExtras(
           rag_scope: {
             ...(ragEnabled && ragSource.type === "kb"
               ? { kb_id: ragSource.kbId }
-              : {
-                  ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
-                  ...(projectRagEnabled && ragProjectId
-                    ? { project_id: ragProjectId }
-                    : {}),
-                }),
+              : ragEnabled && threadId
+                ? { thread_id: threadId }
+                : {}),
+            ...(projectRagEnabled && ragProjectId
+              ? { project_id: ragProjectId }
+              : {}),
             // An unpersisted New Chat has neither id, and {} is falsy in Python, so the count alone would
             // drop the tool and its nudge.
             default_top_k: ragTopK,
@@ -2436,19 +2475,20 @@ async function resolveProjectInstructions(projectId: string | null): Promise<str
 const AGENTS_MD_TTL_MS = 2_000;
 const agentsMdByProject = new Map<
   string,
-  { at: number; value: Promise<AgentsMdRecord> }
+  { at: number; edits: number; value: Promise<AgentsMdRecord> }
 >();
 
 /** The AGENTS.md text for a request; a failed read sends what it would without the file. */
 function resolveAgentsMd(projectId: string | null): Promise<AgentsMdRecord> {
   const key = projectId ?? "";
   const now = Date.now();
+  const edits = agentsMdEditCount();
   const hit = agentsMdByProject.get(key);
-  if (hit && now - hit.at < AGENTS_MD_TTL_MS) {
+  if (hit && hit.edits === edits && now - hit.at < AGENTS_MD_TTL_MS) {
     return hit.value;
   }
   const value = getChatAgentsMd(projectId).catch(() => EMPTY_AGENTS_MD);
-  agentsMdByProject.set(key, { at: now, value });
+  agentsMdByProject.set(key, { at: now, edits, value });
   return value;
 }
 
@@ -2737,6 +2777,15 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxKvQuantNote",
   "mlxInt8Prefill",
   "loadedMlxInt8PrefillRequested",
+  "mlxPleOffload",
+  "mlxExpertOffload",
+  "loadedMlxPleOffloadRequested",
+  "loadedMlxExpertOffloadRequested",
+  "loadedMlxPleOffload",
+  "loadedMlxExpertOffload",
+  "mlxPleOffloadReason",
+  "mlxExpertOffloadReason",
+  "loadedMlxOffloadDiskBytes",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -3807,6 +3856,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
       model_path: modelPath,
+      // Keep a speech model loaded for read aloud when Keep multiple models loaded allows it.
+      alongside: true,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
       load_in_4bit: config.loadIn4bit !== false,
@@ -3817,6 +3868,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
+      mlx_ple_offload: config.mlxPleOffload ?? null,
+      mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       ...mlxDrafter,
@@ -3853,6 +3906,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       noteLoadFailure(failureLabel, error);
       throw error;
     });
+    reportEvicted(loadResp);
     // Do not apply this load to the visible runtime once its queue was cancelled; still await
     // /load so the lifecycle stays serialized.
     options?.abortSignal?.throwIfAborted();
@@ -4279,6 +4333,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       options?.abortSignal?.throwIfAborted();
       const loadResp = await loadModel({
         model_path: DEFAULT_CHAT_MODEL_REPO,
+        alongside: true,
         hf_token: hfToken,
         // Model default under both modes: Auto layers + no pin means resolveFitMaxSeqLength returns 0.
         max_seq_length: 0,
@@ -4299,6 +4354,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
       });
+      reportEvicted(loadResp);
       options?.abortSignal?.throwIfAborted();
       applyAutoLoadRuntimeState(options, () => {
         saveSpeculativeType(specSettings.speculativeType);
@@ -4612,26 +4668,25 @@ export function createOpenAIStreamAdapter(
         releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
       const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const persistResolvedQueuedModel = async (
+      const persistRunModel = async (
         modelId: string,
         modelGgufVariant: string | null,
       ) => {
-        if (
-          !queuedRunSettings ||
-          queuedRunSettings.params.checkpoint ||
-          !resolvedThreadId ||
-          !modelId
-        ) {
+        if (!resolvedThreadId || !modelId) {
           return;
         }
-        const storedThread = await readThreadRecord?.();
-        if (!shouldPersistResolvedQueuedModel(storedThread)) {
-          return;
+        try {
+          const storedThread = await readThreadRecord?.();
+          if (!shouldPersistRunModel(storedThread, modelId, modelGgufVariant)) {
+            return;
+          }
+          await updateStoredChatThread(resolvedThreadId, {
+            modelId,
+            modelGgufVariant,
+          });
+        } catch {
+          // Only what the chat offers back on reopen.
         }
-        await updateStoredChatThread(resolvedThreadId, {
-          modelId,
-          modelGgufVariant,
-        });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -4747,10 +4802,6 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistResolvedQueuedModel(
-          params.checkpoint,
-          runtime.activeGgufVariant,
-        );
         const selectedCheckpoint = params.checkpoint.trim();
         const researchExternalSelection =
           parseExternalModelId(selectedCheckpoint);
@@ -4826,26 +4877,20 @@ export function createOpenAIStreamAdapter(
         if (transitionSignal.aborted) return;
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
-            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
-              ? {
-                  kb_id: runtime.ragSource.kbId,
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
-              : {
-                  ...(runtime.ragEnabled
+            ? {
+                ...(runtime.ragEnabled && runtime.ragSource.type === "kb"
+                  ? { kb_id: runtime.ragSource.kbId }
+                  : runtime.ragEnabled
                     ? { thread_id: resolvedThreadId }
                     : {}),
-                  ...(projectRagEnabled && researchProjectId
-                    ? { project_id: researchProjectId }
-                    : {}),
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
+                ...(projectRagEnabled && researchProjectId
+                  ? { project_id: researchProjectId }
+                  : {}),
+                default_top_k: runtime.ragTopK,
+                mode: runtime.ragMode,
+                autoinject: runtime.ragAutoInject,
+                autoinject_min_score: runtime.ragAutoInjectMinScore,
+              }
             : undefined;
 
         const threadKey = resolvedThreadId;
@@ -4861,6 +4906,7 @@ export function createOpenAIStreamAdapter(
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, {
           owner: researchServerCancel,
         });
@@ -4916,6 +4962,7 @@ export function createOpenAIStreamAdapter(
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
             },
+            ...tabCloseRunFields(runtime.keepRunningWhenTabClosed),
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
@@ -5132,10 +5179,6 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistResolvedQueuedModel(
-        params.checkpoint,
-        runtime.activeGgufVariant,
-      );
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,
@@ -5218,10 +5261,9 @@ export function createOpenAIStreamAdapter(
         externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
-      const imageGenerationEnabledForThisTurn = Boolean(
+      const hostedImageGenerationForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
-          imageToolsEnabled &&
           providerSupportsBuiltinImageGeneration(
             externalProvider.providerType,
             externalSelection.modelId,
@@ -5229,6 +5271,16 @@ export function createOpenAIStreamAdapter(
             externalProvider.apiType,
           ),
       );
+      const imageGenerationEnabledForThisTurn =
+        imageToolsEnabled && hostedImageGenerationForThisTurn;
+      // Otherwise the Images pill renders on the image or video model loaded in Unsloth.
+      const localMediaTools = localMediaToolsForTurn({
+        imageToolsEnabled,
+        supportsBuiltinImageGeneration: hostedImageGenerationForThisTurn,
+        supportsTools: supportsStudioToolsForThisTurn,
+        localImageModelReady: runtime.localImageModelReady,
+        localVideoModelReady: runtime.localVideoModelReady,
+      });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
         externalProvider?.providerType === "gemini" &&
@@ -5774,6 +5826,7 @@ export function createOpenAIStreamAdapter(
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
@@ -5861,6 +5914,8 @@ export function createOpenAIStreamAdapter(
       // Flagged local/external so the model-swap gate counts only the chats a reload ends; the
       // backend excludes external runs from active_generations for the same reason.
       releaseCurrentPreStreamRun();
+      // Past every gate that refuses the send, and not awaited: only what reopening the chat offers.
+      void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
       runtime.setThreadRunning(threadKey, true, {
         local: !isExternalRequest,
         owner: serverCancel,
@@ -6450,6 +6505,14 @@ export function createOpenAIStreamAdapter(
               : {}
             : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
         : {};
+      const contextReasoningKey = isExternalRequest
+        ? undefined
+        : contextUsageReasoningKey({
+            ...localReasoningFields,
+            ...(runtime.supportsPreserveThinking
+              ? { preserve_thinking: runtime.preserveThinking }
+              : {}),
+          });
       // Decided before the continuation yield below, which an abort during load saves as is.
       // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
@@ -6526,10 +6589,15 @@ export function createOpenAIStreamAdapter(
       // the bar after a switch to B. A first turn is adopted onto an id mid-run and autosave moves
       // activeThreadId with it, so read the adopted key, or the bar stays blank for life.
       const publishContextUsage = (
-        usage: NonNullable<
+        reported: NonNullable<
           ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
         >,
       ) => {
+        const usage = {
+          ...reported,
+          modelId: params.checkpoint,
+          ...(contextReasoningKey ? { reasoningKey: contextReasoningKey } : {}),
+        };
         const usageKey = liveThreadKey(serverCancel);
         const usageThreadKey = usageKey === "__default" ? null : usageKey;
         const store = useChatRuntimeStore.getState();
@@ -6667,7 +6735,8 @@ export function createOpenAIStreamAdapter(
               hostedCodeToolsForThisTurn.length > 0 ||
               (supportsStudioToolsForThisTurn &&
                 studioLocalCodeTools.length > 0),
-            images: imageGenerationEnabledForThisTurn,
+            images:
+              imageGenerationEnabledForThisTurn || localMediaTools.length > 0,
             mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
               supportsStudioToolsForThisTurn &&
@@ -6856,6 +6925,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6869,6 +6939,7 @@ export function createOpenAIStreamAdapter(
                       ...skillTools,
                       ...studioLocalCodeTools,
                       ...browserTools,
+                      ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6913,14 +6984,12 @@ export function createOpenAIStreamAdapter(
                           rag_scope: {
                             ...(ragEnabled && ragSource.type === "kb"
                               ? { kb_id: ragSource.kbId }
-                              : {
-                                  ...(ragEnabled && resolvedThreadId
-                                    ? { thread_id: resolvedThreadId }
-                                    : {}),
-                                  ...(projectRagEnabled && ragProjectId
-                                    ? { project_id: ragProjectId }
-                                    : {}),
-                                }),
+                              : ragEnabled && resolvedThreadId
+                                ? { thread_id: resolvedThreadId }
+                                : {}),
+                            ...(projectRagEnabled && ragProjectId
+                              ? { project_id: ragProjectId }
+                              : {}),
                             default_top_k: ragTopK,
                             mode: ragMode,
                             autoinject: resolveAutoInject(
@@ -7091,6 +7160,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -7105,6 +7175,7 @@ export function createOpenAIStreamAdapter(
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...browserTools,
+                    ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
@@ -7114,14 +7185,12 @@ export function createOpenAIStreamAdapter(
                         rag_scope: {
                           ...(ragEnabled && ragSource.type === "kb"
                             ? { kb_id: ragSource.kbId }
-                            : {
-                                ...(ragEnabled && resolvedThreadId
-                                  ? { thread_id: resolvedThreadId }
-                                  : {}),
-                                ...(projectRagEnabled && ragProjectId
-                                  ? { project_id: ragProjectId }
-                                  : {}),
-                              }),
+                            : ragEnabled && resolvedThreadId
+                              ? { thread_id: resolvedThreadId }
+                              : {}),
+                          ...(projectRagEnabled && ragProjectId
+                            ? { project_id: ragProjectId }
+                            : {}),
                           default_top_k: ragTopK,
                           mode: ragMode,
                           autoinject: resolveAutoInject(
@@ -7216,6 +7285,9 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        ...tabCloseRunFields(
+                          runtime.keepRunningWhenTabClosed,
+                        ),
                       },
                       runSignal,
                     );
@@ -7595,7 +7667,7 @@ export function createOpenAIStreamAdapter(
                         body: JSON.stringify({
                           action_id: raw.id,
                           session_id: typeof raw.session_id === "string" ? raw.session_id : "",
-                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Unsloth." },
                         }),
                       }).catch(() => undefined);
                     },
@@ -8995,6 +9067,11 @@ export function createOpenAIStreamAdapter(
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,
+                    ...(contextReasoningKey ? { reasoningKey: contextReasoningKey } : {}),
+                    ...contextUsageMarkers([
+                      ...threadBranchRecords(rawMessages),
+                      { id: "", role: "assistant", content: finalContent },
+                    ]),
                   }
                 : undefined,
               responseDetails: buildResponseDetails(finishedAt),
@@ -9125,6 +9202,10 @@ export function createOpenAIStreamAdapter(
             toast.error("Generation failed", {
               description: msg || "Unknown error",
             });
+          }
+          // Only a status read shows a killed worker's model is gone; quiet, the failure has its toast.
+          if (!isExternalRequest) {
+            void syncInferenceStatusToStore({ includeLoras: false, quiet: true });
           }
         }
         // An explicit Stop is an abort too, but it must persist its reason instead of

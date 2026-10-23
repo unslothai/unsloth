@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
   Tooltip,
@@ -13,16 +14,11 @@ import {
   formatRelativeShort,
 } from "@/features/hub/lib/format";
 import {
-  MODEL_TYPE_FILTER_OPTIONS,
-  type ModelTypeFilter,
-} from "@/features/hub/lib/model-type-filter";
-import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
 import { cn, formatCompact } from "@/lib/utils";
 import {
-  ArrowUpDownIcon,
   Download01Icon,
   FavouriteIcon,
   LayoutTwoColumnIcon,
@@ -34,9 +30,8 @@ import {
 } from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, memo, useMemo } from "react";
+import { type ReactNode, memo, useId, useMemo } from "react";
 import type { DiscoverRow } from "../types";
-import { HubOptionMenu } from "./hub-option-menu";
 import {
   DOWNLOADING_DOT_CLASS,
   buildRowStatusTooltip,
@@ -64,11 +59,13 @@ export type AllModelsView = "two" | "split";
 
 function ViewToggleButton({
   active,
+  pillId,
   label,
   icon,
   onClick,
 }: {
   active: boolean;
+  pillId: string;
   label: string;
   icon: IconSvgElement;
   onClick: () => void;
@@ -82,12 +79,13 @@ function ViewToggleButton({
           aria-label={label}
           onClick={onClick}
           className={cn(
-            "relative z-10 inline-flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors",
+            "relative inline-flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors",
             active
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
+          {active && <SegmentedPill group={pillId} />}
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
         </button>
       </TooltipTrigger>
@@ -98,73 +96,7 @@ function ViewToggleButton({
   );
 }
 
-export type InventorySort = "recent" | "name" | "size";
-
-const INVENTORY_SORTS: { value: InventorySort; label: string }[] = [
-  { value: "recent", label: "Recent" },
-  { value: "name", label: "Name" },
-  { value: "size", label: "Size" },
-];
-
-// Sort picker as a compact dropdown pill so it sits beside the view-mode tabs.
-export function InventorySortControl({
-  value,
-  onChange,
-}: {
-  value: InventorySort;
-  onChange: (value: InventorySort) => void;
-}) {
-  const selected = INVENTORY_SORTS.find((option) => option.value === value);
-  return (
-    <HubOptionMenu<InventorySort>
-      value={value}
-      options={INVENTORY_SORTS}
-      onValueChange={onChange}
-      ariaLabel="Sort downloads"
-      align="end"
-      title={selected?.label}
-      // Capped and shrinkable so a long label truncates instead of wrapping
-      // the "On device" heading beside these pills in the narrow split pane.
-      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
-      triggerContent={
-        <span className="flex min-w-0 items-center gap-1">
-          <HugeiconsIcon
-            icon={ArrowUpDownIcon}
-            strokeWidth={1.75}
-            className="size-3.5 shrink-0 text-muted-foreground"
-          />
-          <span className="truncate">{selected?.label ?? value}</span>
-        </span>
-      }
-    />
-  );
-}
-
-// Model-type filter pill (Text / Vision / Embedding / …) beside the sort pill.
-export function InventoryTypeFilterControl({
-  value,
-  onChange,
-}: {
-  value: ModelTypeFilter;
-  onChange: (value: ModelTypeFilter) => void;
-}) {
-  const selected = MODEL_TYPE_FILTER_OPTIONS.find(
-    (option) => option.value === value,
-  );
-  return (
-    <HubOptionMenu<ModelTypeFilter>
-      value={value}
-      options={MODEL_TYPE_FILTER_OPTIONS}
-      onValueChange={onChange}
-      ariaLabel="Filter by model type"
-      align="end"
-      title={selected?.label}
-      // Capped and shrinkable so a long label ("Speech to text") truncates
-      // instead of wrapping the "On device" heading beside these pills.
-      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
-    />
-  );
-}
+export type InventorySort = "recent" | "name" | "size" | "format";
 
 export function HubListHeader({
   title,
@@ -187,6 +119,7 @@ export function HubListHeader({
   isRefreshing?: boolean;
   actions?: ReactNode;
 }) {
+  const viewPillId = useId();
   const accessibleLabel =
     count && count > 0 ? `${title} (${count.toLocaleString()})` : undefined;
 
@@ -254,20 +187,15 @@ export function HubListHeader({
               className="hub-tab-toggle relative inline-flex h-8 shrink-0 items-center rounded-full"
               aria-label="Results layout"
             >
-              <span
-                aria-hidden="true"
-                className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-8 rounded-full transition-transform duration-200 ease-out"
-                style={{
-                  transform: `translateX(${view === "split" ? 100 : 0}%)`,
-                }}
-              />
               <ViewToggleButton
+                pillId={viewPillId}
                 active={view === "two"}
                 label="Two columns"
                 icon={LayoutTwoColumnIcon}
                 onClick={() => onViewChange("two")}
               />
               <ViewToggleButton
+                pillId={viewPillId}
                 active={view === "split"}
                 label="Split view"
                 icon={ViewSidebarLeftIcon}

@@ -12,13 +12,16 @@ import { cn } from "@/lib/utils";
 // the preset API accepts them because the generation contract does too.
 export const NEGATIVE_PROMPT_MAX_LENGTH = 20_000;
 
+// Prompt boxes: smaller radius, scrollbar inset from the corners.
+export const PROMPT_BOX_CLASS = "image-prompt-box rounded-lg";
+
 export function NegativePromptField({
   value,
   onChange,
   open,
   onOpenChange,
   hint,
-  textareaClassName,
+  textareaClassName = PROMPT_BOX_CLASS,
 }: {
   value: string;
   onChange: (value: string) => void;

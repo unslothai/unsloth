@@ -62,6 +62,16 @@ def test_accelerates_auto_policy_reduces_in_fp32(dtype, name):
     assert acc.state.fsdp_plugin.mixed_precision_policy is policy
 
 
+@pytest.mark.parametrize("dtype,name", [(torch.float16, "fp16"), (torch.bfloat16, "bf16")])
+def test_torch_26_normalized_auto_policy_still_reduces_in_fp32(dtype, name):
+    # torch 2.6 MixedPrecisionPolicy.__post_init__ stores reduce_dtype None when it equals param_dtype.
+    auto = MixedPrecisionPolicy(param_dtype = dtype, reduce_dtype = dtype, output_dtype = dtype)
+    object.__setattr__(auto, "reduce_dtype", None)
+    policy = fsdp2.fill_fsdp2_mixed_precision(_accelerator(auto, name))
+    assert policy.reduce_dtype == torch.float32
+    assert policy.output_dtype is None
+
+
 def test_a_policy_the_user_wrote_is_left_alone():
     user = MixedPrecisionPolicy(param_dtype = torch.float16, reduce_dtype = torch.float16)
     acc = _accelerator(user, "bf16", auto = False)

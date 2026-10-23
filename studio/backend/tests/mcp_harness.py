@@ -12,9 +12,10 @@ import inspect
 import json
 import secrets
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qsl
 
 import pytest
@@ -353,6 +354,14 @@ def run_export_job(monkeypatch: Any, studio: FastAPI, args: dict) -> tuple[dict,
             if job["structuredContent"]["status"] != "running" or time.monotonic() > deadline:
                 return started, job
             time.sleep(0.02)
+
+
+@contextmanager
+def session(monkeypatch: Any, studio: FastAPI) -> Iterator[Callable[..., dict]]:
+    """One served MCP server for several calls, so a background job one call starts is still there for the next."""
+    from mcp_server import create_studio_mcp
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
+        yield lambda name, args = None: call_tool(http, name, args)
 
 
 def route_studio(

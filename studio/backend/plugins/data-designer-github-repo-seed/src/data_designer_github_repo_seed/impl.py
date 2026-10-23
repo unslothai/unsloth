@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -58,7 +57,10 @@ class GitHubRepoSeedReader(SeedReader[GitHubRepoSeedSource]):
         return lazy.duckdb.connect()
 
     def get_dataset_uri(self) -> str:
-        out_dir = Path(tempfile.gettempdir()) / "studio-github-repo-seed"
+        from utils.paths.private_tmp import private_tmp_dir
+
+        # Private: a token-backed scrape can hold a private repo's issues and PRs.
+        out_dir = private_tmp_dir("studio-github-repo-seed")
         cfg = ScrapeConfig(
             repos = list(self.source.repos),
             token = self.source.token,

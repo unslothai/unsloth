@@ -191,11 +191,10 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
-                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-ui-11 text-white/70"
+                    className="text-ui-11 text-(--tooltip-muted)"
                   />
                 </span>
               </li>
@@ -430,11 +429,11 @@ export function buildRowStatusTooltip({
           This {resourceLabel} may not be supported yet.
         </span>
         {unsupportedReason && (
-          <span className="mt-0.5 block text-white/75">
+          <span className="mt-0.5 block text-(--tooltip-muted)">
             {unsupportedReason}
           </span>
         )}
-        <span className="mt-0.5 block text-white/75">
+        <span className="mt-0.5 block text-(--tooltip-muted)">
           Still downloadable to your Hugging Face cache.
         </span>
       </TooltipLegendRow>,

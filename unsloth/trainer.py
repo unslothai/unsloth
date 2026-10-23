@@ -1712,6 +1712,18 @@ def _route_unknown_trainer_kwargs(
     return to_config, to_trainer
 
 
+def _config_family(config_class):
+    # Plus the pristine TRL config it displaced: rebuilding one re-raises GRPOConfig's post-init checks.
+    family = [config_class]
+    cls = config_class
+    while (
+        "_unsloth_patched_rl_config" in cls.__dict__ or cls.__name__.startswith("Unsloth")
+    ) and cls.__bases__:
+        cls = cls.__bases__[0]
+        family.append(cls)
+    return tuple(family)
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
@@ -1777,6 +1789,12 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # trigger the mutually-exclusive param checks (trl grpo_config.py#L499-L502).
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
+            elif not isinstance(training_args, _config_family(config_class)):
+                # Plain TrainingArguments: trl rebuilds via to_dict(), dropping setattr'd kwargs, so rebuild here as trl does.
+                dict_args = training_args.to_dict()
+                dict_args["hub_token"] = training_args.hub_token
+                dict_args.pop("push_to_hub_token", None)
+                config = config_class(**{**dict_args, **additional_config_kwargs})
             else:
                 # Every trl config subclasses TrainingArguments, so this is the branch real calls take and
                 # config_dict was going nowhere: set the moved values on the caller's config rather than rebuild it.

@@ -267,7 +267,7 @@ class GgufVariantsResponse(BaseModel):
 
 
 LocalModelSource = Literal[
-    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom", "unsloth"
 ]
 
 

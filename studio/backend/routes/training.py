@@ -100,6 +100,7 @@ from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import (
     canonical_model_repo_id,
     hf_dns_dead,
@@ -1259,6 +1260,9 @@ def _reject_untrainable_model_request(
                         "training_remote_model_not_decision",
                         f"{request.model_name} is not a decision model (Laya or Clef).",
                     )
+                if _is_decision_checkpoint(request) and managed_account():
+                    # A Hub decision adapter loads its base as well: authorize it like any adapter.
+                    _authorize_adapter_base(request.model_name, hf_token)
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
                 raise _training_start_error(
@@ -1293,9 +1297,27 @@ def _reject_untrainable_model_request(
                 "needs joint_head.safetensors and joint_head_config.json beside config.json "
                 "(or LoRA adapters).",
             )
+        if managed_account() and _has_adapter_metadata(folder):
+            # FastDecisionModel loads the adapter's base: check and pin it like any adapter.
+            from core.export.decision import DecisionExportError, adapter_base
+
+            try:
+                adapter_base(folder)
+            except DecisionExportError as exc:
+                raise _training_start_error(400, "training_decision_adapter_base", str(exc))
+            base = _authorize_adapter_base(str(folder), hf_token)
+            # The worker re-reads the pin at the model root, so pin only a root adapter.
+            pin = None if request.model_subfolder else base or ""
+            return _ModelPreflightResult(model_name, model_local_path, None, adapter_base_pin = pin)
         return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
+        if managed_account() and _has_adapter_metadata(path):
+            # The loader still follows adapter_config.json to its base, so check and pin it.
+            adapter_base = _authorize_adapter_base(str(path), hf_token)
+            return _ModelPreflightResult(
+                model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base or ""
+            )
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _has_adapter_metadata(path) or (
         model_format == "adapter" and _has_local_adapter_weights(path)
@@ -1398,7 +1420,7 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
     if not is_owner_context():
         raise HTTPException(
             status_code = 403,
-            detail = "Only the Studio owner can fine-tune decision models, since only the "
+            detail = "Only the Unsloth owner can fine-tune decision models, since only the "
             "owner's fine-tunes can be served by the Decision API.",
         )
     if sys.version_info < (3, 10):
@@ -2025,14 +2047,15 @@ async def start_training(
                 detail = ("A transformers installation is in progress. Retry when it completes."),
             )
 
-        # S3 dataset loading needs the optional boto3 dependency.
+        # Install the optional SDK outside the event loop on the first S3 request.
         if request.s3_config is not None and not request.resume_from_checkpoint:
             from core.training.s3_dataset import boto3_available
+            from utils.s3_runtime import S3DependencyUnavailable, ensure_boto3
             if not boto3_available():
-                raise HTTPException(
-                    status_code = 501,
-                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
-                )
+                try:
+                    await asyncio.to_thread(ensure_boto3)
+                except S3DependencyUnavailable as exc:
+                    raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
@@ -2353,7 +2376,8 @@ async def start_training(
             "require_exact_dataset_resource": resume_requires_exact_dataset,
             "require_validated_model_snapshot": cached_model_pin is not None,
             "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
-            "trust_remote_code": request.trust_remote_code,
+            # A managed account never forwards remote code to the worker.
+            "trust_remote_code": request.trust_remote_code and not managed_remote_code_refused(),
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
             "gpu_ids": request.gpu_ids,
@@ -2436,6 +2460,8 @@ async def start_training(
 
                 # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the diffusers backend
                 # reports unloaded while the native engine still holds state.
+                # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+                gpu_arbiter.release_mask_segmenter("training start")
                 diffusion = get_active_diffusion_engine()
                 if getattr(diffusion, "runs_off_torch_device", False) is True:
                     logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -2446,6 +2472,8 @@ async def start_training(
                         )
                     diffusion.unload()
                     gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+            except gpu_arbiter.SegmenterStillRunningError:
+                raise
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
@@ -2501,6 +2529,7 @@ async def start_training(
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        from core.inference.gpu_arbiter import SegmenterStillRunningError
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
@@ -2517,6 +2546,7 @@ async def start_training(
                 SidecarSwapInProgress,
                 ExactResumeResourcesUnavailable,
                 ManagedEngineStillRunning,
+                SegmenterStillRunningError,
             ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
@@ -2574,7 +2604,11 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
-        except (ExactResumeResourcesUnavailable, ManagedEngineStillRunning) as exc:
+        except (
+            ExactResumeResourcesUnavailable,
+            ManagedEngineStillRunning,
+            SegmenterStillRunningError,
+        ) as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
@@ -2846,6 +2880,9 @@ def _build_training_status(
             "total_steps": getattr(progress, "total_steps", 0),
             "loss": getattr(progress, "loss", None),
             "learning_rate": getattr(progress, "learning_rate", None),
+            "elapsed_seconds": getattr(progress, "elapsed_seconds", None),
+            # A stopped run keeps its last ETA; only a live run has time remaining.
+            "eta_seconds": getattr(progress, "eta_seconds", None) if is_active else None,
             "output_dir": getattr(backend, "_output_dir", None) or None,
             "drafter": getattr(progress, "drafter", None),
             "model_download_repo_id": (
@@ -3475,6 +3512,8 @@ def _free_gpu_for_diffusion_training() -> None:
 
         # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
         # holds the GPU, so unloading only the singleton is a no-op.
+        # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+        gpu_arbiter.release_mask_segmenter("diffusion training start")
         diffusion = get_active_diffusion_engine()
         if getattr(diffusion, "runs_off_torch_device", False) is True:
             logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -3483,6 +3522,8 @@ def _free_gpu_for_diffusion_training() -> None:
                 logger.info("Unloading resident Images pipeline to free GPU memory for training")
             diffusion.unload()
             gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+    except gpu_arbiter.SegmenterStillRunningError:
+        raise  # a RuntimeError: the start route answers 409
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
@@ -3568,6 +3609,11 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
     from utils.paths import datasets_root
 
     value = str(raw or "").strip()
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before dataset resolution touches the disk: a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(value) and managed_account():
+        raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
     if value and "\x00" not in value:
         p = Path(value)
         # A single component that is not "..", so joining under datasets_root() cannot escape it.
@@ -4398,7 +4444,7 @@ async def upload_diffusion_dataset(
     if cleaned.casefold() in _reserved_diffusion_dataset_names():
         raise HTTPException(
             status_code = 400,
-            detail = f"'{cleaned}' is reserved for Studio's internal dataset storage.",
+            detail = f"'{cleaned}' is reserved for Unsloth's internal dataset storage.",
         )
     folder = _resolve_dataset_folder(name, must_exist = False)
     # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here

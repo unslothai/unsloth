@@ -26,14 +26,10 @@ import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
-  type ScanFolderInfo,
-  addScanFolder,
   deleteFineTunedModel,
   listGgufVariants,
   listRecommendedFolders,
-  listScanFolders,
   listLoras,
-  removeScanFolder,
   revealFineTunedModel,
 } from "@/features/chat";
 import {
@@ -87,6 +83,11 @@ import {
   HubFailureHint,
   useHubAvailability,
   useOnlineStatus,
+  type ScanFolderInfo,
+  addScanFolderToStore,
+  folderDisplayName,
+  removeScanFolderFromStore,
+  useScanFolders,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
@@ -120,6 +121,7 @@ import {
   ggufVariantFitSizeBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
+import { formatGiB } from "@/lib/memory/format";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -143,6 +145,7 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -164,6 +167,7 @@ import {
 } from "react";
 import {
   audioCppHubPath,
+  audioCppModelFor,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
@@ -497,10 +501,24 @@ function ListLabel({
         divider ? "mt-3 border-t border-border pt-3" : "pt-3",
       )}
     >
-      <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-        {icon}
-        {children}
-      </span>
+      {onToggle ? (
+        // The chevron stays the keyboard control, so the label is not a second tab stop.
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          {icon}
+          {children}
+        </button>
+      ) : (
+        <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+          {icon}
+          {children}
+        </span>
+      )}
       {(action || onToggle) && (
         <div className="flex items-center gap-0.5">
           {action}
@@ -588,6 +606,34 @@ const CAPABILITY_BADGES: {
 const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
   null,
 );
+
+/** `GpuInfo.unifiedLoadBudgetGb` of the inventory GGUF chat loads into: non-null only on an Apple
+ *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
+const UnifiedLoadBudget = createContext<number | null>(null);
+
+/** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
+ *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
+function loadsOnAudioCpp(repoId: string): boolean {
+  return audioCppModelFor(repoId) !== null || isAudioCppFolderId(repoId);
+}
+
+function PickerScopes({
+  capabilityScope,
+  unifiedLoadBudgetGb,
+  children,
+}: {
+  capabilityScope: readonly (keyof ModelCapabilities)[] | null;
+  unifiedLoadBudgetGb: number | null;
+  children: ReactNode;
+}) {
+  return (
+    <CapabilityScope.Provider value={capabilityScope}>
+      <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
+        {children}
+      </UnifiedLoadBudget.Provider>
+    </CapabilityScope.Provider>
+  );
+}
 
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every column after it lined up.
 const MAX_CAPABILITY_BADGES = 3;
@@ -833,7 +879,18 @@ function VramBadge({
   status?: GgufFitClass | VramFitStatus | null;
   revealOnHover?: boolean;
 }) {
-  const verdict = status ? VRAM_VERDICT[status] : null;
+  const t = useT();
+  const unifiedLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const verdict =
+    status === "marginal" && unifiedLoadBudgetGb !== null
+      ? {
+          label: t("picker.unifiedTightFit"),
+          tone: AMBER,
+          hint: t("picker.unifiedTightFitHint"),
+        }
+      : status
+        ? VRAM_VERDICT[status]
+        : null;
   if (!verdict) return null;
   return (
     <Tooltip delayDuration={0}>
@@ -1226,10 +1283,10 @@ function ModelRow({
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
         ? vramBudget
           ? curatedBudgetText(vramEst, gpuGb, vramBudget)
-          : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
+          : `Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`
         : vramStatus === "tight" || vramStatus === "marginal"
-          ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
-          : `~${vramEst}GB VRAM`
+          ? `~${formatGiB(vramEst)} VRAM (tight fit on ${formatGiB(gpuGb)})`
+          : `~${formatGiB(vramEst)} VRAM`
       : null;
 
   const { owner, name } = splitRepoLabel(label);
@@ -1946,6 +2003,10 @@ function GgufVariantExpander({
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   const capabilityScope = useContext(CapabilityScope);
+  // Diffusion loads never read it; keeping it out stops memory drift from re-planning downloads.
+  const chatLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const unifiedLoadBudgetGb =
+    diffusionLoad || loadsOnAudioCpp(repoId) ? null : chatLoadBudgetGb;
   const visionInScope =
     capabilityScope === null || capabilityScope.includes("vision");
   const showVision = hasVision === true && visionInScope;
@@ -2114,6 +2175,7 @@ function GgufVariantExpander({
         systemRamGb: systemRamGb ?? 0,
         budgetFraction,
         gpuCount,
+        unifiedLoadBudgetGb,
       });
     },
     [
@@ -2122,6 +2184,7 @@ function GgufVariantExpander({
       gpuGb,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
       diffusionLoad,
       hostPooledMemory,
       gpuCount,
@@ -2797,7 +2860,6 @@ let _cachedModelsCache: CachedModelRepo[] = [];
 let _lmStudioCache: LocalModelInfo[] = [];
 let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
-let _scanFoldersCache: ScanFolderInfo[] = [];
 
 /** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or custom-folder model)
  * is known. Reads the module caches, which persist across popover mounts, so the selector can
@@ -3054,7 +3116,7 @@ export function HubModelPicker({
   onBrowseHub,
   onConfigureConnection,
   onModelsChange,
-  onConfigure,
+  onConfigure: onConfigureProp,
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
@@ -3066,6 +3128,7 @@ export function HubModelPicker({
   opaqueKind,
   npu,
   rowFilter,
+  moreModels,
 }: {
   models: ModelOption[];
   /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
@@ -3106,6 +3169,11 @@ export function HubModelPicker({
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
   rowFilter?: ModelPickerRowFilter;
+  /** A second Recommended group under its own ListLabel; rows reuse the recommended renderer. */
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -3132,6 +3200,8 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  // Run settings is the chat load form, which the Images and Video pages never read.
+  const onConfigure = diffusionLoad ? undefined : onConfigureProp;
   const audioTaskPicker = taskFilterHasAudio(task);
   // What the backend actually holds, not the dropdown highlight: an image or video load evicts
   // the chat model and leaves the pick untouched, so rows kept a "Loaded" badge with nothing
@@ -3148,6 +3218,14 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
+  // The loader frees the resident model before reading free memory, so only the ceiling holds then.
+  // Not chatModelLoaded: it counts a remote API model, which frees nothing. Keep-loaded mode may
+  // leave the resident beside the new load, so the live budget stays in force there.
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const loadFreesResident =
+    !keepModelsLoaded &&
+    typeof residentCheckpoint === "string" &&
+    residentCheckpoint !== "";
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufVariant =
@@ -3263,11 +3341,11 @@ export function HubModelPicker({
   // hasGgufSuffix is the fallback rather than conflating unknown with known-not-GGUF.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const model of models) {
+    for (const model of [...models, ...(moreModels?.models ?? [])]) {
       if (model.isGguf) ids.add(model.id.toLowerCase());
     }
     return ids;
-  }, [models]);
+  }, [models, moreModels]);
   // Both listings contribute GGUF hints so a tag-only GGUF still expands variants instead of loading as a checkpoint.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
@@ -3441,12 +3519,16 @@ export function HubModelPicker({
     () =>
       new Set(
         task && catalog
-          ? models
-              .filter((model) => artifactForRepoId(model.id, catalog) !== null)
-              .map((model) => model.id.trim().toLowerCase())
+          ? [
+              ...models.filter(
+                (model) => artifactForRepoId(model.id, catalog) !== null,
+              ),
+              // Catalog rows the seed lacks, so a downloaded new folder still lists On Device.
+              ...(moreModels?.models ?? []),
+            ].map((model) => model.id.trim().toLowerCase())
           : [],
       ),
-    [catalog, models, task],
+    [catalog, models, moreModels, task],
   );
   const pickerInventory = useChatPickerInventory({
     enabled: true,
@@ -3522,8 +3604,7 @@ export function HubModelPicker({
     setUpdateConflictKey(null);
   }, [updateConflictKey]);
 
-  const [scanFolders, setScanFolders] =
-    useState<ScanFolderInfo[]>(_scanFoldersCache);
+  const { folders: scanFolders } = useScanFolders();
   const [folderInput, setFolderInput] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
@@ -3535,15 +3616,8 @@ export function HubModelPicker({
     void pickerInventory.refreshInventory();
   }, [pickerInventory.refreshInventory]);
 
-  const refreshScanFolders = useCallback(() => {
-    listScanFolders()
-      .then((v) => {
-        _scanFoldersCache = v;
-        setScanFolders(v);
-      })
-      .catch(() => {});
-  }, []);
-
+  // The store's mutations bump the inventory version, which refetches every inventory reader
+  // (this picker's included); a forced refresh on top would scan twice.
   const handleAddFolder = useCallback(
     async (overridePath?: string) => {
       // An explicit path lets the folder browser submit in the same tick it calls `setFolderInput`;
@@ -3556,20 +3630,15 @@ export function HubModelPicker({
       // From the folder browser's "Use this folder": the typed-input panel is closed, so surface failures via toast.
       const fromBrowser = overridePath !== undefined;
       try {
-        const created = await addScanFolder(trimmed);
-        // Backend returns the existing row for duplicates, so dedupe.
-        const next = _scanFoldersCache.some(
-          (f) => f.id === created.id || f.path === created.path,
-        )
-          ? _scanFoldersCache
-          : [..._scanFoldersCache, created];
-        _scanFoldersCache = next;
-        setScanFolders(next);
+        const { folder, alreadyAdded } = await addScanFolderToStore(trimmed);
         setFolderInput("");
         setShowFolderInput(false);
-        refreshLocalModelsList();
+        if (alreadyAdded) {
+          toast.info("Already in your folders", {
+            description: folderDisplayName(folder.path),
+          });
+        }
         onFoldersChange?.();
-        void refreshScanFolders();
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to add folder";
         setFolderError(message);
@@ -3580,13 +3649,7 @@ export function HubModelPicker({
         setFolderLoading(false);
       }
     },
-    [
-      folderInput,
-      folderLoading,
-      refreshScanFolders,
-      refreshLocalModelsList,
-      onFoldersChange,
-    ],
+    [folderInput, folderLoading, onFoldersChange],
   );
 
   const isOwner = useIsAccountOwner();
@@ -3602,22 +3665,30 @@ export function HubModelPicker({
   }, [handleAddFolder, isOwner]);
 
   const handleRemoveFolder = useCallback(
-    async (id: number) => {
+    async (folder: ScanFolderInfo) => {
       try {
-        await removeScanFolder(id);
-        // Optimistic: drop it immediately.
-        const next = _scanFoldersCache.filter((f) => f.id !== id);
-        _scanFoldersCache = next;
-        setScanFolders(next);
-        refreshScanFolders();
-        refreshLocalModelsList();
+        await removeScanFolderFromStore(folder.id);
         onFoldersChange?.();
+        toast.success("Folder removed", {
+          description: folderDisplayName(folder.path),
+          action: {
+            label: "Undo",
+            onClick: () => {
+              addScanFolderToStore(folder.path, Boolean(folder.recursive))
+                .then(() => onFoldersChange?.())
+                .catch((e) =>
+                  toast.error("Couldn't restore folder", {
+                    description: e instanceof Error ? e.message : undefined,
+                  }),
+                );
+            },
+          },
+        });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Failed to remove folder");
-        refreshScanFolders();
       }
     },
-    [refreshScanFolders, refreshLocalModelsList, onFoldersChange],
+    [onFoldersChange],
   );
 
   const refreshCachedLists = useCallback(() => {
@@ -3659,11 +3730,10 @@ export function HubModelPicker({
   );
 
   useEffect(() => {
-    refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
-  }, [refreshScanFolders]);
+  }, []);
 
   useEffect(() => {
     if (!shouldRefreshPickerInventoryOnMount(cachedReadyAtMount.current)) {
@@ -4067,6 +4137,9 @@ export function HubModelPicker({
       pinnedFamilies: catalog
         ?.filter((g) => g.pinToTop)
         .map((g) => g.canonicalId.toLowerCase()),
+      pinnedTogether: catalog
+        ?.filter((g) => g.pinToTop && g.pinRowsTogether)
+        .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
@@ -4110,6 +4183,57 @@ export function HubModelPicker({
     chatSupportedCheckpointQuant,
   ]);
 
+  const moreById = useMemo(
+    () =>
+      new Map(
+        (moreModels?.models ?? []).map((model) => [model.id.toLowerCase(), model]),
+      ),
+    [moreModels],
+  );
+  // The "More" group: page-filtered by the caller, then the row, format and fit filters the
+  // recommended rows above use, with no repeats.
+  const moreRows = useMemo<HfModelResult[]>(() => {
+    const above = new Set(recommendedRows.map((r) => r.id.toLowerCase()));
+    const source = loadScopedGpu(inferenceGpu, Boolean(task));
+    return (moreModels?.models ?? [])
+      .filter((model) => !above.has(model.id.toLowerCase()))
+      .filter((model) => !rowFilter || rowFilter({ id: model.id }))
+      .filter((model) => !isHiddenModelId(model.id))
+      .filter((model) =>
+        matchesFormatFilter(model.id, model.isGguf ?? true, formatFilter),
+      )
+      .map((model) => ({
+        id: model.id,
+        downloads: 0,
+        likes: 0,
+        isGguf: model.isGguf ?? true,
+        estimatedSizeBytes: model.sizeBytes ?? undefined,
+      }))
+      .filter(
+        (row) =>
+          !fitOnDeviceOnly ||
+          cachedIdFor(row.id) !== null ||
+          hfModelFitsDevice(row, source, {
+            budgetFraction,
+            mediaLoad: diffusionLoad,
+            hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+            gpuCount: source.deviceCount,
+          }),
+      );
+  }, [
+    moreModels,
+    recommendedRows,
+    rowFilter,
+    formatFilter,
+    fitOnDeviceOnly,
+    cachedIdFor,
+    inferenceGpu,
+    gpu,
+    task,
+    budgetFraction,
+    diffusionLoad,
+  ]);
+
   // Per-row meta and VRAM badge from the recommended listing's own metadata, with the curated
   // seeds behind it: a listing row wins, and a curated row it never returns keeps its chip.
   const recommendedMeta = useMemo(() => {
@@ -4129,6 +4253,7 @@ export function HubModelPicker({
     const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
+      repoId: string,
     ): GgufFitClass | VramFitStatus | null => {
       const anyBudget =
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
@@ -4152,6 +4277,11 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
+            unifiedLoadBudgetGb: loadsOnAudioCpp(repoId)
+              ? null
+              : loadFreesResident
+                ? budget.unifiedLoadCeilingGb
+                : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
@@ -4173,6 +4303,7 @@ export function HubModelPicker({
       ...recommendedSearch.results,
       ...catalogSeedRows,
       ...communityBrowse.results,
+      ...moreRows,
     ]) {
       if (map.has(r.id)) continue;
       const isG = isKnownGgufRepo(r.id);
@@ -4209,7 +4340,7 @@ export function HubModelPicker({
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
           // to the device the load LANDS on: unscoped, a downloaded media parent read as safe while
           // every variant inside it read as oom.
-          status: ggufRowFit(sizeBytes, rowInferenceGpu),
+          status: ggufRowFit(sizeBytes, rowInferenceGpu, r.id),
           // The figure the verdict was reached with, not the raw file size: classifyGgufFit scores
           // weights plus activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit" beside
           // "~20GB VRAM". The media rule scores the raw size and keeps it.
@@ -4248,12 +4379,14 @@ export function HubModelPicker({
     recommendedSearch.results,
     communityBrowse.results,
     catalogSeedRows,
+    moreRows,
     catalog,
     catalogFit,
     task,
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    loadFreesResident,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -5377,13 +5510,17 @@ export function HubModelPicker({
     return (
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
-      searchableRecommendedIds(catalogSeedIds, recommendedIds)
+      dedupe([
+        ...searchableRecommendedIds(catalogSeedIds, recommendedIds),
+        ...moreRows.map((r) => r.id),
+      ])
         // What the row shows, plus the vendor id a mirror row answers to.
         .filter((id) =>
           pickerSearchMatches(
             id,
             aliasesOf(id),
-            catalog ? curatedRow(id).name : null,
+            moreById.get(id.toLowerCase())?.name ??
+              (catalog ? curatedRow(id).name : null),
             q,
           ),
         )
@@ -5397,13 +5534,20 @@ export function HubModelPicker({
             !fitOnDeviceOnly ||
             cachedIdFor(id) !== null ||
             runsCheckpointQuant({ id }) ||
-            searchRowFits({ id }),
+            // A More row's catalog size, as browse judged it: its id alone may be unsizable.
+            searchRowFits({
+              id,
+              estimatedSizeBytes:
+                moreById.get(id.toLowerCase())?.sizeBytes ?? undefined,
+            }),
         )
     );
   }, [
     showHfSection,
     debouncedQuery,
     catalogSeedIds,
+    moreRows,
+    moreById,
     recommendedIds,
     aliasesOf,
     catalog,
@@ -5772,8 +5916,9 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
+      // The More group renders right after the recommended rows, so it continues the same order.
       keys.push(
-        ...recommendedRows
+        ...[...recommendedRows, ...moreRows]
           .filter((r) => !loadedRowIds.has(r.id.toLowerCase()))
           .map((r) => makeModelOptionKey("recommended", r.id)),
       );
@@ -5802,6 +5947,7 @@ export function HubModelPicker({
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
+    moreRows,
     section,
     showHfSection,
     sortedLocalDir,
@@ -7228,7 +7374,14 @@ export function HubModelPicker({
     (!showHfSection || npuBrowseRows.length > 0);
 
   return (
-    <CapabilityScope.Provider value={capabilityScope}>
+    <PickerScopes
+      capabilityScope={capabilityScope}
+      unifiedLoadBudgetGb={
+        (loadFreesResident
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null
+      }
+    >
       <div className="relative space-y-2">
         {/* A small right inset shortens the search bar so Search Hub lands on the last dropdown's right edge. */}
         <div
@@ -7724,7 +7877,7 @@ export function HubModelPicker({
                           icon={Folder02Icon}
                           className="size-3.5"
                         />
-                        Custom Folders
+                        Custom folders
                       </button>
                       <div className="flex items-center gap-0.5">
                         <button
@@ -7818,7 +7971,7 @@ export function HubModelPicker({
                             </div>
                             <button
                               type="button"
-                              onClick={() => handleRemoveFolder(f.id)}
+                              onClick={() => void handleRemoveFolder(f)}
                               aria-label={`Remove folder ${f.path}`}
                               className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                             >
@@ -8388,7 +8541,8 @@ export function HubModelPicker({
                     {showNpuBrowse ? (
                       <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
                     ) : null}
-                    {recommendedRows.length === 0 &&
+                    {/* Catalog rows already listed below stand in for a pending or failed Hub list. */}
+                    {recommendedRows.length + moreRows.length === 0 &&
                     recommendedEmpty === "loading" ? (
                       <div className="flex items-center gap-2 px-5 py-3">
                         <Spinner className="size-3 text-muted-foreground" />
@@ -8396,33 +8550,53 @@ export function HubModelPicker({
                           Loading models…
                         </span>
                       </div>
-                    ) : recommendedRows.length === 0 &&
+                    ) : recommendedRows.length + moreRows.length === 0 &&
                       recommendedEmpty === "failed" ? (
                       <HubFailureHint
                         message={recommendedSearch.error}
                         onRetry={recommendedSearch.retry}
                       />
-                    ) : recommendedRows.length === 0 ? (
+                    ) : recommendedRows.length + moreRows.length === 0 ? (
                       <div className="px-2.5 py-2 text-xs text-muted-foreground">
                         No models found.
                       </div>
                     ) : (
-                      recommendedRows.map((r) => {
+                      [...recommendedRows, ...moreRows].map((r, index) => {
                         const id = r.id;
-                        if (loadedRowIds.has(id.toLowerCase())) return null;
+                        const more = moreById.get(id.toLowerCase());
+                        const moreLabel =
+                          index === recommendedRows.length && moreModels ? (
+                            <ListLabel key="more-models" divider>
+                              {moreModels.label}
+                            </ListLabel>
+                          ) : null;
+                        if (loadedRowIds.has(id.toLowerCase())) return moreLabel;
                         const info = recommendedMeta.get(id);
                         const isG = isKnownGgufRepo(id);
                         const optionKey = makeModelOptionKey("recommended", id);
                         return (
                           <div key={id}>
+                            {moreLabel}
                             {renderHubModelRow(
                               id,
                               <ModelRow
-                                label={curatedRow(id).name}
+                                label={more?.name ?? curatedRow(id).name}
                                 tags={curatedRow(id).tags}
                                 hubUrl={hubRepoUrl(id)}
+                                tooltipText={
+                                  more?.description ? (
+                                    <>
+                                      <span className="block break-words">
+                                        {more.name}
+                                      </span>
+                                      <span className="block text-ui-10 mt-1">
+                                        {more.description}
+                                      </span>
+                                    </>
+                                  ) : undefined
+                                }
                                 alignMeta="hub"
-                                showSize={hubRowsShowSize}
+                                showSize={hubRowsShowSize || Boolean(more)}
                                 // Without the owner a community row reads as an unsloth upload.
                                 hideOwner={isUnslothOwned(id)}
                                 downloaded={cachedIdFor(id) !== null}
@@ -8536,7 +8710,10 @@ export function HubModelPicker({
                           {renderHubModelRow(
                             id,
                             <ModelRow
-                              label={curatedRow(id).name}
+                              label={
+                                moreById.get(id.toLowerCase())?.name ??
+                                curatedRow(id).name
+                              }
                               tags={curatedRow(id).tags}
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
@@ -8842,7 +9019,7 @@ export function HubModelPicker({
           reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
-    </CapabilityScope.Provider>
+    </PickerScopes>
   );
 }
 

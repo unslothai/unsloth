@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -97,6 +98,29 @@ def test_the_quick_starts_keep_the_workspace():
     assert len(shells) == 2 and all(
         "-v unsloth-workspace-rocm:/workspace " in b for b in shells
     ), shells
+
+
+def _docker_runs(text: str) -> list[list[str]]:
+    joined = re.sub(r"\\\n", " ", text)
+    runs = []
+    for line in joined.splitlines():
+        for part in line.split("&&"):
+            part = part.strip()
+            if part.startswith("docker run"):
+                runs.append(shlex.split(part))
+    return runs
+
+
+def test_every_studio_run_keeps_the_studio_volume():
+    studio_images = {"unsloth/unsloth", "unsloth/unsloth:latest", "unsloth/unsloth:studio"}
+    checked = 0
+    for doc in (HUB_README, REPO_README):
+        for argv in _docker_runs(doc.read_text(encoding = "utf-8")):
+            if not studio_images.intersection(argv):
+                continue
+            checked += 1
+            assert "unsloth-studio:/opt/unsloth-studio" in argv, f"{doc.name}: {' '.join(argv)}"
+    assert checked >= 3
 
 
 def _docker_sections(text: str) -> list[str]:

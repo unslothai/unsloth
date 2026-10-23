@@ -280,7 +280,7 @@ export function StemMixer({
                   />
                 </Button>
                 <Slider
-                  className="panel-slider w-[calc(88px*var(--ui-space-scale,1))] px-1"
+                  className="w-[calc(88px*var(--ui-space-scale,1))] px-1"
                   min={0}
                   max={100}
                   step={1}

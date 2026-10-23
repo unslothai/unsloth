@@ -36,8 +36,11 @@ from .llama import (
     apply_logit_transforms,
     resolve_logit_scaling,
     resolve_logit_transforms,
+    fake_quantize_lm_head_inputs,
+    lm_head_needs_forward,
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
+    _run_backbone,
     unsloth_fsdp_unshard,
 )
 from transformers.models.mistral.modeling_mistral import (
@@ -287,7 +290,8 @@ def MistralForCausalLM_fast_forward(
             attention_mask = attention_mask,
         )
     else:
-        outputs = self.model(
+        outputs = _run_backbone(
+            self,
             input_ids = input_ids,
             causal_mask = causal_mask,
             attention_mask = attention_mask,
@@ -338,7 +342,9 @@ def MistralForCausalLM_fast_forward(
     elif num_logits_to_keep != 0:
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
     else:
-        RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+        RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1" or (
+            lm_head_needs_forward(self.lm_head)
+        )
         # Below 1024 normal Unsloth uses less VRAM.
         if bsz * q_len <= 1024 and not RETURN_LOGITS:
             # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
@@ -358,6 +364,10 @@ def MistralForCausalLM_fast_forward(
             labels = mask_packed_boundary_labels(
                 labels,
                 kwargs.get("packed_seq_lengths"),
+            )
+
+            hidden_states, lm_head = fake_quantize_lm_head_inputs(
+                self.lm_head, hidden_states, lm_head
             )
 
             loss = unsloth_fused_ce_loss(
