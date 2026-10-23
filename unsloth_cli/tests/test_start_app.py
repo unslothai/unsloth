@@ -389,6 +389,8 @@ def test_openclaw_app_updates_selected_config_only(studio, monkeypatch, tmp_path
     elif selector == "profile":
         monkeypatch.setenv("OPENCLAW_PROFILE", "work")
         selected = studio["home"] / ".openclaw-work" / "openclaw.json"
+        monkeypatch.setenv("OPENCLAW_STATE_DIR", str(selected.parent))
+        monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(selected))
     else:
         selected = tmp_path / "selected" / "openclaw.json"
         if selector in ("config", "both"):
@@ -427,6 +429,21 @@ def test_openclaw_app_expands_tilde_against_selected_home(studio, monkeypatch, t
     monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "selected-home"))
     monkeypatch.setenv("OPENCLAW_CONFIG_PATH", "~/custom.json")
     assert start._openclaw_app_target().path == tmp_path / "selected-home" / "custom.json"
+
+
+def test_openclaw_profile_environment_alone_keeps_default_config(studio, monkeypatch):
+    monkeypatch.setenv("OPENCLAW_PROFILE", "work")
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text('{"marker": "active"}\n')
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(config.read_text())
+    assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
+    assert data["marker"] == "active"
+    assert not (studio["home"] / ".openclaw-work").exists()
 
 
 def test_openclaw_app_creates_no_allowlist(studio):

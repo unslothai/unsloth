@@ -6822,14 +6822,8 @@ def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
         if override := os.environ.get("OPENCLAW_STATE_DIR", "").strip():
             state = user_path(override)
         else:
-            profile = os.environ.get("OPENCLAW_PROFILE", "").strip()
-            suffix = (
-                f"-{profile}"
-                if profile.lower() != "default"
-                and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", profile)
-                else ""
-            )
-            state = home / f".openclaw{suffix}"
+            # OpenClaw's --profile sets the path overrides; OPENCLAW_PROFILE alone does not.
+            state = home / ".openclaw"
         path = state / "openclaw.json"
     updates = functools.partial(_openclaw_app_updates, max_tokens = max_tokens)
     return _AppTarget("openclaw", "OpenClaw app", path, updates)
