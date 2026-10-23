@@ -69,7 +69,13 @@ export interface MemoryEstimate {
   /** Those tables are streamed from disk (llama.cpp's default), so they are not in
    *  `weightsBytes` or `totalBytes`. */
   lookupTableOnDisk?: boolean;
+  /** MLX: share of the PLE tables / routed experts read from disk, priced in `weightsBytes`. */
+  mlxPleOffload: number | null;
+  mlxExpertOffload: number | null;
+  mlxOffloadable: MlxOffloadablePart[];
 }
+
+export type MlxOffloadablePart = "ple" | "experts";
 
 /** The load settings that move the estimate. Mirrors the fields /load takes. */
 export interface MemoryEstimateRequest {
@@ -81,6 +87,8 @@ export interface MemoryEstimateRequest {
   cacheTypeKv?: string | null;
   maxSeqLength?: number | null;
   mlxKvQuant?: string | null;
+  mlxPleOffload?: "off" | number | null;
+  mlxExpertOffload?: "off" | number | null;
   nParallel?: number | null;
   nBatch?: number | null;
   nUbatch?: number | null;
@@ -124,6 +132,9 @@ const UNAVAILABLE: MemoryEstimate = {
   layerCount: null,
   gpuLayers: null,
   moeOffloadUnmodelled: false,
+  mlxPleOffload: null,
+  mlxExpertOffload: null,
+  mlxOffloadable: [],
 };
 
 interface ApiEstimateResponse {
@@ -154,6 +165,7 @@ interface ApiEstimateResponse {
   moe_offload_unmodelled: boolean;
   lookup_table_bytes?: number;
   lookup_table_on_disk?: boolean;
+  mlx_offload?: { ple?: unknown; experts?: unknown; offloadable?: unknown } | null;
 }
 
 function estimateRequestBody(
@@ -169,6 +181,8 @@ function estimateRequestBody(
     cache_type_kv: payload.cacheTypeKv ?? null,
     max_seq_length: payload.maxSeqLength ?? null,
     mlx_kv_quant: payload.mlxKvQuant ?? null,
+    mlx_ple_offload: payload.mlxPleOffload ?? null,
+    mlx_expert_offload: payload.mlxExpertOffload ?? null,
     n_parallel: payload.nParallel ?? null,
     n_batch: payload.nBatch ?? null,
     n_ubatch: payload.nUbatch ?? null,
@@ -216,6 +230,18 @@ function nullableCount(value: unknown): number | null {
  *  coerced: `Boolean("false")` is true, and these decide what the row claims. */
 function flag(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function offloadFraction(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1
+    ? value
+    : null;
+}
+
+function offloadableParts(value: unknown): MlxOffloadablePart[] {
+  return Array.isArray(value)
+    ? value.filter((part): part is MlxOffloadablePart => part === "ple" || part === "experts")
+    : [];
 }
 
 const ESTIMATE_REASONS: readonly MemoryEstimateReason[] = [
@@ -276,6 +302,9 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     moeOffloadUnmodelled: flag(body.moe_offload_unmodelled, false),
     lookupTableBytes: finiteBytes(body.lookup_table_bytes, 0),
     lookupTableOnDisk: flag(body.lookup_table_on_disk, false),
+    mlxPleOffload: offloadFraction(body.mlx_offload?.ple),
+    mlxExpertOffload: offloadFraction(body.mlx_offload?.experts),
+    mlxOffloadable: offloadableParts(body.mlx_offload?.offloadable),
   };
 }
 

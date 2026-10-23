@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
@@ -113,6 +114,7 @@ import {
   type ModelMemorySource,
   useModelMemory,
 } from "@/hooks/use-model-memory";
+import type { GpuInfo } from "@/hooks/use-gpu-info";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -122,6 +124,7 @@ import {
   ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
+import { formatGiB } from "@/lib/memory/format";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -145,10 +148,10 @@ import {
   Settings02Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -166,6 +169,7 @@ import {
 } from "react";
 import {
   audioCppHubPath,
+  audioCppModelFor,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
@@ -528,9 +532,9 @@ function ListLabel({
               className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
-                <ChevronRightIcon className="size-3" />
+                <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
               ) : (
-                <ChevronDownIcon className="size-3" />
+                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
               )}
             </button>
           )}
@@ -604,6 +608,34 @@ const CAPABILITY_BADGES: {
 const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
   null,
 );
+
+/** `GpuInfo.unifiedLoadBudgetGb` of the inventory GGUF chat loads into: non-null only on an Apple
+ *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
+const UnifiedLoadBudget = createContext<number | null>(null);
+
+/** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
+ *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
+function loadsOnAudioCpp(repoId: string): boolean {
+  return audioCppModelFor(repoId) !== null || isAudioCppFolderId(repoId);
+}
+
+function PickerScopes({
+  capabilityScope,
+  unifiedLoadBudgetGb,
+  children,
+}: {
+  capabilityScope: readonly (keyof ModelCapabilities)[] | null;
+  unifiedLoadBudgetGb: number | null;
+  children: ReactNode;
+}) {
+  return (
+    <CapabilityScope.Provider value={capabilityScope}>
+      <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
+        {children}
+      </UnifiedLoadBudget.Provider>
+    </CapabilityScope.Provider>
+  );
+}
 
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every column after it lined up.
 const MAX_CAPABILITY_BADGES = 3;
@@ -846,6 +878,19 @@ function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
   );
 }
 
+/** A checkpoint (non-GGUF) row's verdict. A CPU backend chats with GGUF only, so a checkpoint
+ *  cannot run there at any size; elsewhere no GPU means nothing to judge it against. */
+function checkpointFit(
+  estGb: number,
+  gpu: Pick<GpuInfo, "available" | "backend" | "budgetKnown" | "memoryTotalGb">,
+  chat: boolean,
+): VramFitStatus | null {
+  if (chat && gpu.budgetKnown && gpu.backend === "cpu") return "exceeds";
+  return estGb > 0 && gpu.available
+    ? checkVramFit(estGb, gpu.memoryTotalGb)
+    : null;
+}
+
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
 function VramBadge({
   status,
@@ -855,7 +900,18 @@ function VramBadge({
   status?: GgufFitClass | VramFitStatus | null;
   revealOnHover?: boolean;
 }) {
-  const verdict = status ? VRAM_VERDICT[status] : null;
+  const t = useT();
+  const unifiedLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const verdict =
+    status === "marginal" && unifiedLoadBudgetGb !== null
+      ? {
+          label: t("picker.unifiedTightFit"),
+          tone: AMBER,
+          hint: t("picker.unifiedTightFitHint"),
+        }
+      : status
+        ? VRAM_VERDICT[status]
+        : null;
   if (!verdict) return null;
   return (
     <Tooltip delayDuration={0}>
@@ -1156,9 +1212,9 @@ function ConnectedGroupHeading({
           className={HEADING_ACTION_CLASS}
         >
           {collapsed ? (
-            <ChevronRightIcon className="size-3" />
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
           ) : (
-            <ChevronDownIcon className="size-3" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
           )}
         </button>
       </div>
@@ -1239,6 +1295,8 @@ function ModelRow({
   className?: string;
 }) {
   const exceeds = isOverBudget(vramStatus);
+  // With no GPU every load runs from RAM: `ram` keeps its warning but is not an overage to dim.
+  const dimmed = exceeds && !(vramStatus === "ram" && !(gpuGb && gpuGb > 0));
   const showVramTooltip =
     vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
   const vramTooltipText =
@@ -1248,10 +1306,10 @@ function ModelRow({
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
         ? vramBudget
           ? curatedBudgetText(vramEst, gpuGb, vramBudget)
-          : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
+          : `Needs ~${formatGiB(vramEst)} memory (GPU: ${formatGiB(gpuGb)})`
         : vramStatus === "tight" || vramStatus === "marginal"
-          ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
-          : `~${vramEst}GB VRAM`
+          ? `~${formatGiB(vramEst)} VRAM (tight fit on ${formatGiB(gpuGb)})`
+          : `~${formatGiB(vramEst)} VRAM`
       : null;
 
   const { owner, name } = splitRepoLabel(label);
@@ -1399,9 +1457,9 @@ function ModelRow({
           "flex w-full items-center",
           alignMeta === "device" ? DEVICE_META_GAP : "gap-1",
           // Over budget reads as a dimmed row, which scans; hover restores it. The selected row keeps full weight.
-          exceeds &&
+          dimmed &&
             !selected &&
-            "opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+            "opacity-55 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-50",
         )}
       >
         <span className="flex min-w-0 flex-1 items-baseline">
@@ -1968,6 +2026,10 @@ function GgufVariantExpander({
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   const capabilityScope = useContext(CapabilityScope);
+  // Diffusion loads never read it; keeping it out stops memory drift from re-planning downloads.
+  const chatLoadBudgetGb = useContext(UnifiedLoadBudget);
+  const unifiedLoadBudgetGb =
+    diffusionLoad || loadsOnAudioCpp(repoId) ? null : chatLoadBudgetGb;
   const visionInScope =
     capabilityScope === null || capabilityScope.includes("vision");
   const showVision = hasVision === true && visionInScope;
@@ -2136,6 +2198,7 @@ function GgufVariantExpander({
         systemRamGb: systemRamGb ?? 0,
         budgetFraction,
         gpuCount,
+        unifiedLoadBudgetGb,
       });
     },
     [
@@ -2144,6 +2207,7 @@ function GgufVariantExpander({
       gpuGb,
       systemRamGb,
       budgetFraction,
+      unifiedLoadBudgetGb,
       diffusionLoad,
       hostPooledMemory,
       gpuCount,
@@ -3177,6 +3241,14 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
+  // The loader frees the resident model before reading free memory, so only the ceiling holds then.
+  // Not chatModelLoaded: it counts a remote API model, which frees nothing. Keep-loaded mode may
+  // leave the resident beside the new load, so the live budget stays in force there.
+  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const loadFreesResident =
+    !keepModelsLoaded &&
+    typeof residentCheckpoint === "string" &&
+    residentCheckpoint !== "";
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const storeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufVariant =
@@ -3240,6 +3312,7 @@ export function HubModelPicker({
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
+    hideEmptyUploads: true,
     accessToken,
     // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
     // offline-local behavior. Search rows render only with a query (showHfSection); browse reads
@@ -3254,6 +3327,7 @@ export function HubModelPicker({
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
+    hideEmptyUploads: true,
     accessToken,
     enabled: online && section === "recommended",
   });
@@ -3275,6 +3349,7 @@ export function HubModelPicker({
     sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
+    hideEmptyUploads: true,
     accessToken,
     enabled: communityDiscoveryEnabled && debouncedQuery.trim().length > 0,
   });
@@ -3284,6 +3359,7 @@ export function HubModelPicker({
     sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
+    hideEmptyUploads: true,
     accessToken,
     enabled: communityRecommendedEnabled && debouncedQuery.trim().length === 0,
   });
@@ -4204,6 +4280,7 @@ export function HubModelPicker({
     const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
+      repoId: string,
     ): GgufFitClass | VramFitStatus | null => {
       const anyBudget =
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
@@ -4227,6 +4304,11 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
             gpuCount: budget.deviceCount,
+            unifiedLoadBudgetGb: loadsOnAudioCpp(repoId)
+              ? null
+              : loadFreesResident
+                ? budget.unifiedLoadCeilingGb
+                : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
@@ -4285,7 +4367,7 @@ export function HubModelPicker({
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
           // to the device the load LANDS on: unscoped, a downloaded media parent read as safe while
           // every variant inside it read as oom.
-          status: ggufRowFit(sizeBytes, rowInferenceGpu),
+          status: ggufRowFit(sizeBytes, rowInferenceGpu, r.id),
           // The figure the verdict was reached with, not the raw file size: classifyGgufFit scores
           // weights plus activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit" beside
           // "~20GB VRAM". The media rule scores the raw size and keeps it.
@@ -4313,9 +4395,7 @@ export function HubModelPicker({
       const est = r.totalParams
         ? estimateLoadingVram(r.totalParams, "qlora")
         : 0;
-      const status =
-        est > 0 && gpu.available ? checkVramFit(est, gpu.memoryTotalGb) : null;
-      map.set(r.id, { meta, status, est });
+      map.set(r.id, { meta, status: checkpointFit(est, gpu, !task), est });
     }
     return map;
   }, [
@@ -4331,6 +4411,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    loadFreesResident,
   ]);
 
   // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
@@ -5942,16 +6023,13 @@ export function HubModelPicker({
       const detail = r.totalParams ? formatCompact(r.totalParams) : null;
       if (r.totalParams) {
         const est = estimateLoadingVram(r.totalParams, "qlora");
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
-        map.set(r.id, { est, status, detail });
+        map.set(r.id, { est, status: checkpointFit(est, gpu, !task), detail });
       } else {
         map.set(r.id, { est: 0, status: null, detail });
       }
     }
     return map;
-  }, [results, gpu]);
+  }, [results, gpu, task]);
 
   const recommendedVramMap = useMemo(() => {
     const map = new Map<
@@ -5985,11 +6063,8 @@ export function HubModelPicker({
       }
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
-        const status = gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
         const detail = formatCompact(totalParams);
-        map.set(id, { est, status, detail });
+        map.set(id, { est, status: checkpointFit(est, gpu, !task), detail });
       }
     }
     return map;
@@ -7319,7 +7394,14 @@ export function HubModelPicker({
     (!showHfSection || npuBrowseRows.length > 0);
 
   return (
-    <CapabilityScope.Provider value={capabilityScope}>
+    <PickerScopes
+      capabilityScope={capabilityScope}
+      unifiedLoadBudgetGb={
+        (loadFreesResident
+          ? inferenceGpu.unifiedLoadCeilingGb
+          : inferenceGpu.unifiedLoadBudgetGb) ?? null
+      }
+    >
       <div className="relative space-y-2">
         {/* A small right inset shortens the search bar so Search Hub lands on the last dropdown's right edge. */}
         <div
@@ -7773,9 +7855,9 @@ export function HubModelPicker({
                           className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {fineTunedCollapsed ? (
-                            <ChevronRightIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                           ) : (
-                            <ChevronDownIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
                           )}
                         </button>
                       </div>
@@ -7870,9 +7952,9 @@ export function HubModelPicker({
                           className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {customFoldersCollapsed ? (
-                            <ChevronRightIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                           ) : (
-                            <ChevronDownIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
                           )}
                         </button>
                       </div>
@@ -8957,7 +9039,7 @@ export function HubModelPicker({
           reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
-    </CapabilityScope.Provider>
+    </PickerScopes>
   );
 }
 

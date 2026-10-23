@@ -30,7 +30,7 @@ export function ComposerDraftPreview({ text }: { text: string }) {
   return (
     <section
       aria-label={t("composerSettings.preview")}
-      className="mb-3 min-w-0 rounded-xl border border-border/60 bg-muted/20 p-3 text-sm"
+      className="mb-3 min-w-0 rounded-lg border border-border/60 bg-muted/20 p-3 text-sm"
     >
       {/* Scroller inset by the section's padding: a scrollbar flush with a rounded
           edge squares the corners on its side. See ScrollPane. */}

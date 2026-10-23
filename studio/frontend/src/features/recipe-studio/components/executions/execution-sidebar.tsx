@@ -37,7 +37,7 @@ export function ExecutionSidebar({
       </div>
       <div className="h-[calc(100%-45px)] space-y-2 overflow-auto p-2">
         {executions.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/60 p-3 text-xs text-muted-foreground">
+          <div className="rounded-lg border border-dashed border-border/60 p-3 text-xs text-muted-foreground">
             No runs yet.
           </div>
         ) : (
@@ -53,9 +53,9 @@ export function ExecutionSidebar({
                 type="button"
                 onClick={() => onSelectExecution(execution.id)}
                 className={cn(
-                  "w-full rounded-xl corner-squircle border border-r-2 border-border/60 bg-card/60 p-3 text-left transition-colors",
+                  "w-full rounded-lg corner-squircle border border-r-2 border-border/60 bg-card/60 p-3 text-left transition-colors",
                   selectedExecutionId === execution.id
-                    ? "border-ring-strong bg-primary/[0.045]"
+                    ? "border-ring-strong bg-wash-5"
                     : "hover:bg-muted/25",
                   statusRightBorder(execution.status),
                 )}

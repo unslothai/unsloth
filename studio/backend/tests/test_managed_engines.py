@@ -1149,8 +1149,14 @@ def test_memory_budget_uses_selected_gpu_and_reserves_headroom(monkeypatch):
     assert commands[0][commands[0].index("--id") + 1] == "1"
     # vLLM TorchAO weights overrun the reservation in sampler warmup, so keep 6 GiB more free.
     assert engine_adapters.gpu_memory_fraction([1], 512 + 6144) == 0.395
-    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.5)
-    assert engine_adapters.gpu_memory_fraction([1]) == 0.5
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 24000")
+    )
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.85)
+    assert engine_adapters.gpu_memory_fraction([1]) == 0.85
+    # A GGUF-only low budget must not shrink an engine that cannot offload to the CPU.
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.3)
+    assert engine_adapters.gpu_memory_fraction([1]) == engine_adapters.MANAGED_ENGINE_BUDGET_FLOOR
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "24576, 256")
     )

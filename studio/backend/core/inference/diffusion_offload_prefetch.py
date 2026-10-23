@@ -12,12 +12,14 @@ group uploads on the compute stream): queued earlier they hold that upload back 
 
 Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
 freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
+Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
 Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
 """
 
 from __future__ import annotations
 
 import os
+from collections import deque
 from typing import Any, Optional
 
 ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
@@ -321,6 +323,9 @@ class GroupPrefetcher:
         self.ready: dict = {}
         self.inflight_bytes = 0
         self.peak_inflight_bytes = 0
+        self.staged: deque = deque()
+        self.staged_bytes = 0
+        self.peak_staged_bytes = 0
         self.order: list = []
         self.seen: list = []
         self.pos = 0
@@ -396,13 +401,20 @@ class GroupPrefetcher:
         cpu = group.cpu_param_dict
         stream = group.stream
         where = self.slot_of.get(id(group)) if slot else None
+        tensors = _group_tensors(group)
+        pinned = [cpu[t].is_pinned() for t in tensors]
+        staged = 0
+        if not all(pinned) and not getattr(self, "capturing", False):
+            from .diffusion_memory import _storage_nbytes
+            staged = sum(sum(_storage_nbytes(cpu[t])) for t, p in zip(tensors, pinned) if not p)
+            self._bound_staging(staged)
         with torch.cuda.stream(stream):
             # made on the copy stream: a block the compute stream freed but has not finished reading is never handed
             # to these copies (the allocator orders reuse per stream)
             buffers = self._views_for(group, where) if where is not None else None
-            for i, t in enumerate(_group_tensors(group)):
+            for i, t in enumerate(tensors):
                 src = cpu[t]
-                if not src.is_pinned():
+                if not pinned[i]:
                     if getattr(self, "capturing", False):
                         # a graph would replay this copy from a temporary pinned buffer reused after the call
                         raise RuntimeError("a streamed group's host copy is not pinned")
@@ -427,8 +439,29 @@ class GroupPrefetcher:
         self.ready[gid] = ready
         self.inflight_bytes += self.nbytes.get(gid, 0)
         self.peak_inflight_bytes = max(self.peak_inflight_bytes, self.inflight_bytes)
+        if staged:
+            self._staging().append((ready, staged))
+            self.staged_bytes += staged
+            self.peak_staged_bytes = max(getattr(self, "peak_staged_bytes", 0), self.staged_bytes)
         self.stats["copies"] += 1
         return True
+
+    def _staging(self) -> deque:
+        # lazy: prefetchers built without __init__ (tests) still stage
+        if "staged" not in self.__dict__:
+            self.staged, self.staged_bytes = deque(), 0
+        return self.staged
+
+    def _bound_staging(self, nbytes: int) -> None:
+        """Drop landed copies (no wait), then wait on the oldest until ``nbytes`` fits; each is queued, so waits end."""
+        staged = self._staging()
+        while staged and staged[0][0].query():
+            self.staged_bytes -= staged.popleft()[1]
+        while staged and self.staged_bytes + int(nbytes) > self.window:
+            event, n = staged.popleft()
+            event.synchronize()
+            self.staged_bytes -= n
+            self.stats["staging_waits"] = self.stats.get("staging_waits", 0) + 1
 
     def onload(self, group: Any) -> None:
         gid = id(group)
@@ -620,9 +653,7 @@ class GroupPrefetcher:
         self._drop_ring()
 
     def _drop_ring(self) -> None:
-        import torch
-
-        from .diffusion_cuda_graph import hold_off_capture
+        from .diffusion_cuda_graph import flush_now_locked, hold_off_capture
         with hold_off_capture() as safe:
             if not safe:
                 # Another thread is recording: its capture prohibits these syncs and frees. Retry after a later forward.
@@ -630,16 +661,9 @@ class GroupPrefetcher:
                 return
             self._drop_slots_at_end = False
             self.disable_slots()
-            try:
-                import gc
-
-                gc.collect()  # a declined step graph's recordings, whose pool is flushed below with the ring
-                clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
-                if callable(clear):
-                    clear()  # and the workspace cuBLAS made for their capture stream
-                torch.cuda.empty_cache()  # the ring's segments go back to the device, not just to the cache
-            except Exception:  # noqa: BLE001
-                pass
+            # The ring's segments go back to the device, not just to the cache, with a declined step graph's
+            # recordings (their pool, and the workspace cuBLAS made for their capture stream): acknowledged as flushed.
+            flush_now_locked(clear_cublas = True)
 
     def disable_slots(self) -> None:
         """Drop the ring. Only between forwards: every streamed group is back on the host by then."""
@@ -718,6 +742,8 @@ class GroupPrefetcher:
         self.active = self.on_order = self.pending = self.capturing = False
         self.ready.clear()
         self.inflight_bytes = 0
+        self._staging().clear()  # nothing is staged under capture; the synchronize below lands the rest
+        self.staged_bytes = 0
         try:
             torch.cuda.synchronize(self.device)
         except Exception:  # noqa: BLE001 - the copies below are what matters

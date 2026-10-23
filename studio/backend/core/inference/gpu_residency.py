@@ -87,6 +87,16 @@ def media_held_mib() -> dict[int, int]:
         return {}
 
 
+def media_owner_held_mib(owner: str) -> Optional[int]:
+    """MiB admitted for one resident media owner across its GPUs, or None when unpriced. Never raises."""
+    try:
+        need = _media_records().get(owner)
+        total = sum(int(mib) for mib in need.values()) if need else 0
+        return total or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def media_unallocated_mib() -> dict[int, int]:
     """{physical GPU id: MiB} of the media price live free VRAM still shows as free: an idle resident's generation
     headroom, or all of a resident still loading. Never raises."""
@@ -210,7 +220,7 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         resolve_model_kind,
     )
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-    from core.inference.diffusion_engine_router import predict_engine
+    from core.inference.diffusion_engine_router import has_active_loras, predict_engine
     from core.inference.diffusion_families import (
         detect_family_for_pick,
         local_pipeline_components_are_complete,
@@ -234,7 +244,13 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     fam = detect_family_for_pick(repo, name, request.family_override)
     if (
         fam is None
-        or predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal, gguf_filename = name)
+        or predict_engine(
+            fam,
+            model_kind = kind,
+            gpu_ordinal = gpu_ordinal,
+            gguf_filename = name,
+            with_loras = has_active_loras(getattr(request, "loras", None)),
+        )
         != ENGINE_DIFFUSERS
     ):
         return None

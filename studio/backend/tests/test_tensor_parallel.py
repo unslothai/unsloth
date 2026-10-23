@@ -1107,7 +1107,8 @@ def test_fit_context_follows_the_user_vram_budget(monkeypatch):
     monkeypatch.setattr(vb, "_cached_setting", lambda _key: 1.0)
     fit_max = _fit()
 
-    monkeypatch.setattr(vb, "_cached_setting", lambda _key: vb.VRAM_FRACTION_MIN)
+    # 0.80, not VRAM_FRACTION_MIN: at 0.10 the 8 GiB weights alone exceed the budget, which hands the load to the offload path.
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: 0.80)
     fit_min = _fit()
 
     assert fit_max > fit_default, "claiming the whole card must buy context back"

@@ -300,7 +300,7 @@ export function AboutTab() {
               variant="outline"
               size="sm"
               onClick={() => setShutdownOpen(true)}
-              className="text-destructive hover:text-destructive hover:border-destructive/60"
+              className="text-destructive hover:text-destructive"
             >
               <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1.5" />
               {t("settings.about.shutDown")}

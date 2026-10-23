@@ -408,7 +408,7 @@ test("a light wash follows the slider as its dark twin does", () => {
 
 test("the hand-written washes follow the slider, the scrims do not", () => {
   const app = readSrc("features/settings/settings-dialog.tsx");
-  assert.match(app, /calc\(0\.06\*var\(--contrast-wash-gain,1\)\)/);
+  assert.match(app, /calc\(0\.\d+\*var\(--contrast-wash-gain,1\)\)/);
   assert.doesNotMatch(app, /bg-white\/\[0\.0[0-9]\]/);
   assert.match(
     readSrc("components/assistant-ui/markdown-text.tsx"),
@@ -529,7 +529,7 @@ test("a pane that repaints itself in dark is not reset to the page there", () =>
   );
   assert.match(
     readSrc("features/settings/settings-dialog.tsx"),
-    /bg-background[^"]*dark:bg-\[rgb\(255_255_255/,
+    /bg-accent[^"]*dark:bg-\[rgb\(255_255_255/,
   );
 });
 

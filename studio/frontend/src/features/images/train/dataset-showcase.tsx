@@ -82,7 +82,7 @@ function ShowcaseTile({
           <button
             type="button"
             onClick={onBrowse}
-            className="size-full overflow-hidden rounded-[8px] bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="size-full overflow-hidden rounded-md bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {url ? (
               <img
@@ -106,7 +106,7 @@ function ShowcaseTile({
             onClick={remove}
             disabled={deleting}
             aria-label={`Remove ${filename}`}
-            className="absolute right-0.5 top-0.5 flex size-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground opacity-0 any-pointer-coarse:opacity-100 shadow-sm ring-1 ring-border backdrop-blur-sm transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/thumb:opacity-100"
+            className="absolute right-0.5 top-0.5 flex size-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground opacity-0 any-pointer-coarse:opacity-100 shadow-sm backdrop-blur-sm transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/thumb:opacity-100"
           >
             {deleting ? (
               <Spinner className="size-2.5" />
@@ -200,7 +200,7 @@ export function DatasetShowcase({
               <button
                 type="button"
                 onClick={onBrowse}
-                className="flex size-14 shrink-0 flex-col items-center justify-center rounded-[8px] bg-muted text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex size-14 shrink-0 flex-col items-center justify-center rounded-md bg-muted text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="text-sm font-medium">+{remaining}</span>
                 <span className="text-ui-9">more</span>
