@@ -12,9 +12,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Slider } from "@/components/ui/slider";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   Download01Icon,
   HeadphonesIcon,
   PauseIcon,
@@ -182,7 +182,7 @@ export function StemMixer({
                 />
                 Send to
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   strokeWidth={1.75}
                   data-icon="inline-end"
                 />
@@ -256,7 +256,7 @@ export function StemMixer({
                   size="icon-xs"
                   aria-label={`Solo ${stem.label}`}
                   aria-pressed={level.solo}
-                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-foreground aria-pressed:text-background"
+                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-action aria-pressed:text-background"
                   onClick={() =>
                     dispatch({ type: "toggleSolo", role: stem.role })
                   }
@@ -269,7 +269,7 @@ export function StemMixer({
                   size="icon-xs"
                   aria-label={`Mute ${stem.label}`}
                   aria-pressed={level.muted}
-                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-foreground aria-pressed:text-background"
+                  className="size-[calc(24px*var(--ui-space-scale,1))] text-muted-foreground aria-pressed:bg-action aria-pressed:text-background"
                   onClick={() =>
                     dispatch({ type: "toggleMute", role: stem.role })
                   }

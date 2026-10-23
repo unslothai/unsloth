@@ -218,7 +218,7 @@ export function OpenAICodexConnect({
       <div className="flex flex-wrap gap-2">
         {!connected ? (
           <>
-            <Button type="button" size="sm" disabled={busy} onClick={() => void start("browser")}>
+            <Button variant="dark" type="button" size="sm" disabled={busy} onClick={() => void start("browser")}>
               {authStatus === "reauthorization_required" ? "Reconnect in browser" : "Connect in browser"}
             </Button>
             <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void start("device")}>Use device code</Button>

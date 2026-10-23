@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
@@ -150,7 +151,6 @@ import { useT } from "@/i18n";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   type Dispatch,
   type KeyboardEvent,
@@ -531,9 +531,9 @@ function ListLabel({
               className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
-                <ChevronRightIcon className="size-3" />
+                <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
               ) : (
-                <ChevronDownIcon className="size-3" />
+                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
               )}
             </button>
           )}
@@ -1205,9 +1205,9 @@ function ConnectedGroupHeading({
           className={HEADING_ACTION_CLASS}
         >
           {collapsed ? (
-            <ChevronRightIcon className="size-3" />
+            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
           ) : (
-            <ChevronDownIcon className="size-3" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
           )}
         </button>
       </div>
@@ -7847,9 +7847,9 @@ export function HubModelPicker({
                           className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {fineTunedCollapsed ? (
-                            <ChevronRightIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                           ) : (
-                            <ChevronDownIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
                           )}
                         </button>
                       </div>
@@ -7944,9 +7944,9 @@ export function HubModelPicker({
                           className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {customFoldersCollapsed ? (
-                            <ChevronRightIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
                           ) : (
-                            <ChevronDownIcon className="size-3" />
+                            <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
                           )}
                         </button>
                       </div>

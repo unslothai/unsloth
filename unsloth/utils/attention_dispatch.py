@@ -88,7 +88,7 @@ if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
 
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and only its
 # fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there; below sm_100
-# cutlass handles fp32 natively. Read once from device 0.
+# cutlass handles fp32 natively. Device 0 only: _xformers_rejects_fp32 reads Q's card.
 _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
@@ -130,6 +130,18 @@ def _visible_capabilities():
 # Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
 # device-0 verdict is wrong for layers a device_map places on another card.
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
+# Read at import so a traced call only indexes a tuple.
+_XFORMERS_FP32_UNSUPPORTED_BY_INDEX = tuple(c[0] >= 10 for c in _visible_capabilities())
+
+
+def _xformers_rejects_fp32(device) -> bool:
+    """sm_100+ CUDA only: CPU tensors on a B200 host must not inherit device 0's answer."""
+    if getattr(device, "type", None) != "cuda":
+        return False
+    index = getattr(device, "index", None)
+    if index is not None and index < len(_XFORMERS_FP32_UNSUPPORTED_BY_INDEX):
+        return _XFORMERS_FP32_UNSUPPORTED_BY_INDEX[index]
+    return _XFORMERS_FP32_UNSUPPORTED
 
 
 # Lazy so import never opens a CUDA context on another rank's card (torchrun sees every GPU).
@@ -769,6 +781,24 @@ def select_attention_backend(use_varlen: bool = False, dropout_p: float = 0.0) -
     return SDPA
 
 
+def _packed_fp32_prefers_xformers(config, context, Q: Tensor, K: Tensor, V: Tensor) -> bool:
+    """Torch varlen takes fp16 / bf16 only, so packed fp32 would run SDPA per segment (#14158)."""
+    if not (HAS_XFORMERS and _NATIVE_BEATS_XFORMERS and _SDPA_PACKED_SEGMENTS):
+        return False
+    if context.seq_info is None or context.attention_mask is not None or not Q.is_cuda:
+        return False
+    if torch.float32 not in (Q.dtype, K.dtype, V.dtype):
+        return False
+    if (config.sdpa_kwargs or {}).get("dropout_p") or _ring_attention_active():
+        return False
+    # xformers' flash backward is non-deterministic, and sm_100+ (downcast to it) lacks head_dim > 256.
+    if torch.are_deterministic_algorithms_enabled():
+        return False
+    if Q.shape[-1] > 256 and _xformers_rejects_fp32(Q.device):
+        return False
+    return True
+
+
 def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     """PrefixGrouper shared-prefix segment table resolver for the arch attention forwards.
 
@@ -865,7 +895,9 @@ def _run_attention(
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
         backend = FLASH_DENSE if HAS_FLASH_ATTENTION else SDPA
-    xformers_fp32_unsupported = _XFORMERS_FP32_UNSUPPORTED
+    xformers_fp32_unsupported = _xformers_rejects_fp32(Q.device)
+    if backend == SDPA and _packed_fp32_prefers_xformers(config, context, Q, K, V):
+        backend = XFORMERS
     if _DEVICE_BACKENDS is not None and backend != SDPA:
         device_backend = _backend_for_device(backend, Q.device, Q.dtype)
         if device_backend != backend and _configured_softcap(config):
@@ -875,9 +907,6 @@ def _run_attention(
                 "Ampere or newer GPUs, e.g. with CUDA_VISIBLE_DEVICES."
             )
         backend = device_backend
-        index = Q.device.index
-        if Q.device.type == "cuda" and index is not None and index < len(_DEVICE_BACKENDS):
-            xformers_fp32_unsupported = _DEVICE_BACKENDS[index][2]
 
     # Flash/xFormers do not support arbitrary attn masks, so with a padding mask present (left-padded
     # generation) fall back to SDPA.
