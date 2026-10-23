@@ -73,7 +73,7 @@ def _require_int8tensor(module):
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
-    # these tests pin the stock rotation bit for bit; the unlisted-arch rotq_h16 dispatch has its own (test_diffusion_convrot_unlisted.py)
+    # pins the stock rotation; rotq_h16 dispatch: test_diffusion_convrot_unlisted.py
     monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED", "0")
     monkeypatch.setattr(fused, "_RQ_DEVICES", frozenset())
     yield

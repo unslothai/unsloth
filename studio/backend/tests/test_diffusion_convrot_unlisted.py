@@ -177,7 +177,7 @@ def test_arm_rotated_follows_the_gate(monkeypatch):
     assert not f8.arm_rotated(3) and f8._RQ_DEVICES == frozenset()
 
 
-# ---- CUDA ----
+# CUDA
 
 
 def _act(m, k, seed):
