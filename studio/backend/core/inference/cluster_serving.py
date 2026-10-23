@@ -1110,7 +1110,8 @@ def _paired_announcement(node_id: str, fp: str) -> bool:
 
 DISCOVERY_SETTLE_S = 6.5
 _LISTENER_STARTED = 0.0
-_UNVERIFIED: set = set()
+# node_id -> when its verification first failed: the wait runs from then, not from the listener start.
+_UNVERIFIED: Dict[str, float] = {}
 
 
 def _sightings() -> Dict[str, Any]:
@@ -1131,7 +1132,8 @@ def discovery_settle_s() -> float:
     """How long to wait before planning."""
     if not _UNVERIFIED or _LISTENER is None:
         return 0.0
-    return max(0.0, DISCOVERY_SETTLE_S - (time.monotonic() - _LISTENER_STARTED))
+    since = max(_LISTENER_STARTED, max(_UNVERIFIED.values()))
+    return min(DISCOVERY_SETTLE_S, max(0.0, DISCOVERY_SETTLE_S - (time.monotonic() - since)))
 
 
 def _sighting_candidates(node_id: str) -> List[Any]:
@@ -1277,7 +1279,8 @@ def _link_nodes(verify: bool = True) -> List[Node]:
     workers = _paired_workers()
     # Before the early return: removing the LAST worker must still cut its session.
     _drop_stale_relays({p.node_id for p in workers}, wait = verify)
-    _UNVERIFIED.intersection_update({p.node_id for p in workers})
+    for node_id in set(_UNVERIFIED) - {p.node_id for p in workers}:
+        _UNVERIFIED.pop(node_id, None)
     if not workers:
         return []
     from studio.cluster_link import AGENT_PORT_DEFAULT
@@ -1305,9 +1308,9 @@ def _link_nodes(verify: bool = True) -> List[Node]:
         if verify:
             verified = _first_verified(relays, peer.node_id, candidates)
             if verified is None:
-                _UNVERIFIED.add(peer.node_id)
+                _UNVERIFIED.setdefault(peer.node_id, time.monotonic())
             else:
-                _UNVERIFIED.discard(peer.node_id)
+                _UNVERIFIED.pop(peer.node_id, None)
         host, port = (verified[0], verified[1]) if verified else candidates[0]
         try:
             with _LINKS_LOCK:
