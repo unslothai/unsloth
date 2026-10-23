@@ -806,7 +806,7 @@ export function DebuggingTab() {
             ref={frameRef}
             style={paneHeight === null ? undefined : { height: paneHeight }}
             className={cn(
-              "flex rounded-lg border border-border/60 bg-muted/20 py-1 pr-0.5 pl-1 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              "flex rounded-lg border border-border/60 bg-muted/20 py-1 pr-0 pl-1 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
               paneHeight === null && "h-[min(26rem,45vh)]",
             )}
           >
@@ -838,7 +838,7 @@ export function DebuggingTab() {
                 onClick={() => setWrap((previous) => !previous)}
                 data-testid="debug-log-wrap"
                 className={cn(
-                  "absolute top-1.5 right-5 size-7 bg-background/80 shadow-sm backdrop-blur-sm hover:bg-background [&_svg]:size-3.5",
+                  "absolute top-1.5 right-3.5 size-7 bg-background/80 shadow-sm backdrop-blur-sm hover:bg-background [&_svg]:size-3.5",
                   wrap ? "text-foreground" : "text-muted-foreground",
                 )}
               >
