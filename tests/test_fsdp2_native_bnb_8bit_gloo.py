@@ -73,15 +73,15 @@ def _grads(step, device = "cpu"):
 
 def _set_grads(model, grads):
     from torch.distributed.tensor import DTensor, distribute_tensor
-
     for name, p in model.named_parameters():
         full = grads[name]
-        p.grad = distribute_tensor(full, p.device_mesh, p.placements) if isinstance(p, DTensor) else full
+        p.grad = (
+            distribute_tensor(full, p.device_mesh, p.placements) if isinstance(p, DTensor) else full
+        )
 
 
 def _locals(model):
     from torch.distributed.tensor import DTensor
-
     return {
         n: (p._local_tensor if isinstance(p, DTensor) else p).detach().clone()
         for n, p in model.named_parameters()
@@ -96,7 +96,11 @@ def _raw(optimizer, model):
     return out
 
 
-def _case_unit(rank, tmp, device = "cpu"):
+def _case_unit(
+    rank,
+    tmp,
+    device = "cpu",
+):
     import bitsandbytes as bnb
     from torch.distributed.device_mesh import init_device_mesh
 
@@ -126,8 +130,12 @@ def _case_unit(rank, tmp, device = "cpu"):
     ref_opt = bnb.optim.AdamW8bit(ref_groups, lr = 1e-2, weight_decay = 0.01)
 
     # One GPU: bitsandbytes over the full tensors (different quantization blocks).
-    single = {n: torch.nn.Parameter(getattr(model, n).full_tensor().clone()) if n in _SHAPES else
-              torch.nn.Parameter(getattr(model, n).detach().clone()) for n in local0}
+    single = {
+        n: torch.nn.Parameter(getattr(model, n).full_tensor().clone())
+        if n in _SHAPES
+        else torch.nn.Parameter(getattr(model, n).detach().clone())
+        for n in local0
+    }
     single_opt = bnb.optim.AdamW8bit(
         [
             {"params": [single[n] for n in ("w", "b", "row")]},
@@ -140,8 +148,10 @@ def _case_unit(rank, tmp, device = "cpu"):
     def _step(step):
         grads = _grads(step, device)
         _set_grads(model, grads)
-        local_grads = {n: (p.grad._local_tensor if hasattr(p.grad, "_local_tensor") else p.grad)
-                       for n, p in model.named_parameters()}
+        local_grads = {
+            n: (p.grad._local_tensor if hasattr(p.grad, "_local_tensor") else p.grad)
+            for n, p in model.named_parameters()
+        }
         for n, p in ref.items():
             p.grad = local_grads[n].clone()
         for n, p in single.items():
@@ -158,13 +168,12 @@ def _case_unit(rank, tmp, device = "cpu"):
                 opt.param_groups[0]["lr"] = 2e-3
         _step(step)
     now = _locals(model)
-    res["vs_shard_bnb"] = max(
-        (now[n] - ref[n].detach()).abs().max().item() for n in ref
-    )
+    res["vs_shard_bnb"] = max((now[n] - ref[n].detach()).abs().max().item() for n in ref)
     res["moved"] = min((now[n] - local0[n]).abs().max().item() for n in ref)
     res["dtypes"] = {
         n: str(optimizer.state[getattr(model, n)].get("state1", torch.empty(0)).dtype)
-        if "state1" in optimizer.state[getattr(model, n)] else "none"
+        if "state1" in optimizer.state[getattr(model, n)]
+        else "none"
         for n in local0
     }
     res["steps"] = {n: optimizer.state[getattr(model, n)]["step"] for n in local0}
@@ -213,14 +222,26 @@ def _case_unit(rank, tmp, device = "cpu"):
     res["after_reload_step_diff"] = max((a[n] - b[n]).abs().max().item() for n in a if a[n].numel())
 
     # A torch AdamW checkpoint (exp_avg / exp_avg_sq, tensor step) maps onto the bitsandbytes keys.
-    as_torch = {"state": {n: {"exp_avg": torch.zeros(2), "exp_avg_sq": torch.ones(2),
-                              "step": torch.tensor(3.0)} for n in ("w",)}, "param_groups": []}
+    as_torch = {
+        "state": {
+            n: {"exp_avg": torch.zeros(2), "exp_avg_sq": torch.ones(2), "step": torch.tensor(3.0)}
+            for n in ("w",)
+        },
+        "param_groups": [],
+    }
     rename_optimizer_state_for(optimizer, as_torch)
-    res["renamed"] = sorted(as_torch["state"]["w"]) + [type(as_torch["state"]["w"]["step"]).__name__]
+    res["renamed"] = sorted(as_torch["state"]["w"]) + [
+        type(as_torch["state"]["w"]["step"]).__name__
+    ]
     return res
 
 
-def _trainer_case(native, tmp, resume_from = None, max_steps = 4):
+def _trainer_case(
+    native,
+    tmp,
+    resume_from = None,
+    max_steps = 4,
+):
     from datasets import Dataset
     from transformers import Trainer, TrainingArguments
 
@@ -276,7 +297,9 @@ def _case_trainer(rank, tmp):
     ckpt = os.path.join(tmp, "out", "checkpoint-2")
     res["ckpt"] = os.path.isfile(os.path.join(ckpt, "optimizer.pt"))
     if rank == 0 and res["ckpt"]:
-        saved = torch.load(os.path.join(ckpt, "optimizer.pt"), map_location = "cpu", weights_only = True)
+        saved = torch.load(
+            os.path.join(ckpt, "optimizer.pt"), map_location = "cpu", weights_only = True
+        )
         any_state = next(iter(saved["state"].values()))
         res["saved_keys"] = sorted(any_state)
         step = any_state["step"]
@@ -322,7 +345,11 @@ def _worker(rank, world, port, out, case, tmp):
             pass
 
 
-def _run(case, tmp_path, timeout = 300):
+def _run(
+    case,
+    tmp_path,
+    timeout = 300,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -340,7 +367,9 @@ def _run(case, tmp_path, timeout = 300):
             if time.time() > deadline:
                 for p in procs.processes:
                     p.kill()
-                pytest.fail(f"{case}: the ranks did not finish within {timeout} s (hung collective)")
+                pytest.fail(
+                    f"{case}: the ranks did not finish within {timeout} s (hung collective)"
+                )
     except mp.ProcessExitedException as exc:
         pytest.fail(f"{case}: a rank died ({exc})")
     results = {}
@@ -367,9 +396,14 @@ def test_local_shard_bnb_matches_shard_bnb_and_reloads_exactly(tmp_path):
         assert r["steps"] == {n: 3 for n in r["steps"]}, r
         assert r["full_keys"] == ["state1", "state2", "step"], r
         assert r["full_dtype"] == "torch.float32", r
-        assert r["full_shapes"] == {"w": [96, 64], "b": [96], "row": [1, 5000],
-                                    "odd": [3, 1000], "mis": [5, 1000],
-                                    "rep": [4096]}, r
+        assert r["full_shapes"] == {
+            "w": [96, 64],
+            "b": [96],
+            "row": [1, 5000],
+            "odd": [3, 1000],
+            "mis": [5, 1000],
+            "rep": [4096],
+        }, r
         assert r["reload_mismatch"] == [], (rank, r["reload_mismatch"])
         assert r["lr_after_reload"] == [2e-3, 5e-3], r
         assert r["after_reload_step_diff"] == 0.0, (rank, r)

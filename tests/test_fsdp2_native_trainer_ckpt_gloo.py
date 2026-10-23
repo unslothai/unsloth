@@ -342,7 +342,9 @@ def test_bnb_optimizers_switch_to_torch(optim, target, monkeypatch):
     assert {str(o.value) for o in _BITSANDBYTES_OPTIMIZERS} <= known
 
 
-@pytest.mark.parametrize("optim", ["adamw_8bit", "adamw_bnb_8bit", "paged_adamw_8bit", "paged_adamw_32bit"])
+@pytest.mark.parametrize(
+    "optim", ["adamw_8bit", "adamw_bnb_8bit", "paged_adamw_8bit", "paged_adamw_32bit"]
+)
 def test_bnb_adam_is_kept_for_local_shards(optim):
     pytest.importorskip("bitsandbytes")
     native = _load_native()

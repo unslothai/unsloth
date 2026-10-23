@@ -2745,7 +2745,6 @@ def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
     cls = optimizer_cls_and_kwargs[0]
     if _is_bnb_optimizer_class(cls) and _bnb_local_shards_available():
         from .fsdp2_bnb_optim import supports_local_shards
-
         if supports_local_shards(cls):
             return  # Trainer.create_optimizer builds it; the native hook makes it step local shards
     if _is_bnb_optimizer_class(cls):

@@ -288,9 +288,7 @@ class _LocalShardMixin:
     def load_state_dict(self, state_dict, *args, **kwargs):
         """Inverse of state_dict(); also reads exp_avg / exp_avg_sq (a torch Adam checkpoint)."""
         saved_groups = state_dict["param_groups"]
-        torch.optim.Optimizer.load_state_dict(
-            self, {"state": {}, "param_groups": saved_groups}
-        )
+        torch.optim.Optimizer.load_state_dict(self, {"state": {}, "param_groups": saved_groups})
         slots = [
             (group, p, gindex, pindex)
             for gindex, group in enumerate(self.param_groups)
