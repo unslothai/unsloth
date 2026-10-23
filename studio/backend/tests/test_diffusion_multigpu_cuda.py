@@ -274,8 +274,7 @@ def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica():
 
 
 class _PrefixKVDit(torch.nn.Module):
-    """Qwen-Image-2.1's prefix KV cache shape: a cache object holding a list of per-layer K/V holders, filled by the
-    step-0 prefill (``extract``) and concatenated with each later step's own keys (``cached``)."""
+    """Qwen-Image-2.1 prefix KV cache shape: a list of per-layer K/V holders."""
 
     def __init__(self):
         super().__init__()

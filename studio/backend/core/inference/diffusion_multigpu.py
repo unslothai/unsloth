@@ -1887,9 +1887,7 @@ def _holds_opaque_tensors(obj: Any, depth: int = 0) -> bool:
     return False
 
 
-# A prefix-KV cache handed to the denoiser as ``kv_cache`` (Qwen-Image-2.1's ``QwenImage21KVCache``): filled by the
-# step-0 prefill (``kv_cache_mode="extract"``), only read by later steps (``"cached"``). The prefill always runs on the
-# primary; a cached odd branch runs on the replica against the replica's own copy of the cache, made once per cache.
+# Prefix-KV cache (Qwen-Image-2.1): step-0 prefill ("extract") runs on the primary; "cached" odd branches use a replica copy.
 _KV_KWARG = "kv_cache"
 _KV_MODE_KWARG = "kv_cache_mode"
 
@@ -1937,7 +1935,7 @@ def _walk_cache(
 
 
 def _cache_tensors(cache: Any) -> Optional[list]:
-    """The tensors a mirrorable cache object holds (in a fixed order), None when it cannot be mirrored."""
+    """Tensors held by a mirrorable cache, in fixed order; None if not mirrorable."""
     torch = _torch()
     if cache is None or isinstance(cache, (torch.Tensor, list, tuple, dict, *_PLAIN_TYPES)):
         return None
@@ -1950,7 +1948,6 @@ def _cache_tensors(cache: Any) -> Optional[list]:
 
 
 def _prefix_kv_mode(kwargs: Any) -> Optional[str]:
-    """``"extract"`` / ``"cached"`` for a call carrying a mirrorable prefix-KV cache, else None."""
     if not isinstance(kwargs, dict) or kwargs.get(_KV_KWARG) is None:
         return None
     mode = kwargs.get(_KV_MODE_KWARG)
@@ -1960,13 +1957,11 @@ def _prefix_kv_mode(kwargs: Any) -> Optional[str]:
 
 
 def _is_prefill(kwargs: Any) -> bool:
-    """A prefix-KV prefill (``kv_cache_mode="extract"``): it writes a cache the pipeline reads back (or returns one, as
-    FLUX.2 does), so it always runs on the primary, whatever the cache object looks like."""
+    """A prefill writes (or returns, FLUX.2) the cache the pipeline reads back: always on the primary."""
     return isinstance(kwargs, dict) and kwargs.get(_KV_MODE_KWARG) == "extract"
 
 
 def _without_prefix_kv(args: tuple, kwargs: dict) -> tuple:
-    """The call minus a cached-mode prefix-KV cache the replica gets its own copy of."""
     if _prefix_kv_mode(kwargs) != "cached":
         return args, kwargs
     return args, {k: v for k, v in kwargs.items() if k != _KV_KWARG}
@@ -2414,7 +2409,6 @@ class CfgParallelRouter:
     def describe(self) -> dict[str, Any]:
         return {
             "secondary": str(self.secondary),
-            # False once the router fell back to one card (``disabled_reason`` says why)
             "armed": self.disabled_reason is None,
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
@@ -2553,8 +2547,7 @@ class CfgParallelRouter:
                 if self.branch == 1 and not prefill:
                     self._record_template(args, kwargs, latent)
             elif prefill:
-                # The prefill writes the step-0 K/V into the pipeline's cache object: it stays on the primary (that
-                # cache is the one the pipeline reads back), and the replica copies the filled cache once.
+                # prefill fills the pipeline's own cache: keep on the primary, the replica copies it once
                 self._drop_pending()
                 self.template = None
             elif self.cfg_seen and self._refused_this_capture():
@@ -2909,8 +2902,7 @@ class CfgParallelRouter:
             return walk(obj)
 
     def _kv_mirror(self, cache: Any) -> Any:
-        """The replica's own copy of a filled prefix-KV cache: copied once per cache (one per prompt and render), then
-        reused by every later step while the source still holds the same K/V tensors."""
+        """Replica copy of a filled prefix-KV cache, reused while the source holds the same K/V tensors."""
         held = _cache_tensors(cache) or []
         entry = self.kv_mirrors.get(id(cache))
         if (
