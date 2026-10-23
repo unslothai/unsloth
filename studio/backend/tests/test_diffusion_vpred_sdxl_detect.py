@@ -882,5 +882,5 @@ def test_concurrent_marker_records_keep_every_entry(hub_cache, monkeypatch):
     release.set()
     a.join(5)
     b.join(5)
-    record = json.loads(sampler._marks_record_path().read_text())
+    record = json.loads(sampler._marks_record_path().read_text(encoding = "utf-8"))
     assert {sampler._marks_key(NOOB, "a" * 40), sampler._marks_key(NOOB, "b" * 40)} <= set(record)

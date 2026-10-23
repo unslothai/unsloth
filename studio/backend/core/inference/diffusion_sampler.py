@@ -263,7 +263,7 @@ def _recorded_marks(repo_id: str, commit: Optional[str]) -> list[dict[str, Any]]
     if not commit or path is None:
         return []
     try:
-        hit = json.loads(path.read_text()).get(_marks_key(repo_id, commit))
+        hit = json.loads(path.read_text(encoding = "utf-8")).get(_marks_key(repo_id, commit))
     except Exception:  # noqa: BLE001 - absent / unreadable record: nothing recorded
         return []
     if not isinstance(hit, list) or not all(_well_formed_marks(m) for m in hit):
@@ -300,7 +300,7 @@ def _record_marks(repo_id: str, commit: Optional[str], markers: list[list[str]])
         # One read / evict / write under a cross-process lock, so concurrent probes never drop entries.
         with lock:
             try:
-                record = json.loads(path.read_text())
+                record = json.loads(path.read_text(encoding = "utf-8"))
                 if not isinstance(record, dict):
                     record = {}
             except Exception:  # noqa: BLE001 - absent / corrupt: start over
@@ -310,7 +310,7 @@ def _record_marks(repo_id: str, commit: Optional[str], markers: list[list[str]])
             while len(record) >= _MAX_RECORDED_MARKS:
                 record.pop(next(iter(record)))
             record[key] = [{"markers": sorted(m)} for m in markers]
-            tmp.write_text(json.dumps(record))
+            tmp.write_text(json.dumps(record), encoding = "utf-8")
             os.replace(tmp, path)
     except Exception:  # noqa: BLE001 - read-only cache / lock timeout: the next offline load lacks the markers
         try:
