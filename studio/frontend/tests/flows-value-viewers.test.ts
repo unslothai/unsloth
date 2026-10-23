@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
@@ -197,4 +198,12 @@ test("numbers stored as text sort by value, not character by character", () => {
     sortRows(rows, "n", false).map((r) => r.n),
     ["1.10", "1.9", "2", "10"],
   );
+});
+
+test("delta cells are not coloured as good or bad: the table does not know which direction is better", () => {
+  const src = readFileSync(
+    new URL("../src/features/flows/editor/value-viewers-full.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.equal(/role === "delta"/.test(src), false);
 });

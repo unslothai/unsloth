@@ -69,11 +69,6 @@ async function fullTable(table: TableValue): Promise<TableValue | null> {
   }
 }
 
-function deltaClass(value: unknown): string {
-  if (typeof value !== "number" || value === 0) return "";
-  return value > 0 ? "text-emerald-300" : "text-red-300";
-}
-
 export function TableViewer({
   value,
 }: { value: StructuredValue }): ReactElement | null {
@@ -154,7 +149,7 @@ export function TableViewer({
                     key={column.id}
                     className={`whitespace-nowrap px-2 py-0.5 text-zinc-200 ${
                       column.type === "number" ? "text-right font-mono" : ""
-                    } ${column.role === "delta" ? deltaClass(row[column.id]) : ""}`}
+                    }`}
                   >
                     {formatCell(row[column.id])}
                   </td>

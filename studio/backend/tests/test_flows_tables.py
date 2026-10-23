@@ -297,3 +297,10 @@ def test_chart_numeric_x_stored_as_text_plots_as_numbers():
 
 def test_column_name_lists_ignore_surrounding_spaces():
     assert T._strings(["score ", " tps"]) == ["score", "tps"]
+
+
+def test_compare_matches_numeric_keys_stored_as_text():
+    head = T.make_table([{"ctx": 4096, "tps": 12.0}])
+    base = T.make_table([{"ctx": "4096", "tps": 10.0}])
+    out = T.compare(head, base, ["ctx"], "tps")
+    assert out["rows"][0]["delta"] == 2.0

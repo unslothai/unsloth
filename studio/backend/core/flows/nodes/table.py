@@ -248,9 +248,22 @@ def compare(
                 "The two tables were measured with different settings "
                 f"({', '.join(differ)}); turn on 'Allow different settings' to compare anyway"
             )
+        # 4096 in one table and "4096" in the other are the same key when the column is numeric.
+        numeric = {
+            c["id"] for t in (table, baseline) for c in t["columns"] if c.get("type") == "number"
+        }
+
+        def key_of(row: dict) -> tuple:
+            return tuple(
+                _number(row.get(c))
+                if c in numeric and _number(row.get(c)) is not None
+                else row.get(c)
+                for c in key
+            )
+
         base_rows: dict[tuple, dict] = {}
         for r in baseline["rows"]:
-            k = tuple(r.get(c) for c in key)
+            k = key_of(r)
             if k in base_rows:
                 raise FlowNodeError(
                     f"The baseline has more than one row for {', '.join(key)} = {k!r}; "
@@ -259,7 +272,7 @@ def compare(
             base_rows[k] = r
 
         def base_of(row: dict) -> Optional[dict]:
-            return base_rows.get(tuple(row.get(k) for k in key))
+            return base_rows.get(key_of(row))
 
     else:
         if baseline_key in (None, ""):
