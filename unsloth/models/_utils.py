@@ -9272,8 +9272,7 @@ class _AutoCheckpointSkip:
         return None
 
     def _model_pre_hook(self, module, args):
-        # Inside torch.compile the memory queries and the plan's hook / flag edits break fullgraph
-        # and dynamic tracing: a compiled model keeps every layer checkpointed.
+        # Planning under torch.compile breaks fullgraph/dynamic tracing; compiled models stay fully checkpointed.
         if torch.compiler.is_compiling():
             return
         if not module.training or not torch.is_grad_enabled():

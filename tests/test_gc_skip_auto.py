@@ -609,12 +609,10 @@ def test_counts_apply_only_to_checkpointable_layers():
 @pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 @pytest.mark.parametrize("mode", ["fullgraph", "dynamic"])
 def test_auto_planner_stays_out_of_compiled_regions(mode):
-    # TrainingArguments(torch_compile = True) compiles the whole model (Unsloth: dynamic = True);
-    # the cold planner's memory queries and plan must not run inside the traced region.
+    # TrainingArguments(torch_compile = True) compiles the whole model; the planner must stay out of it.
     from torch._dynamo.utils import counters
 
     class Wrapped(torch.nn.Module):
-        # Decoder + head only: keeps a patched CausalLM forward (fused losses) out of the graph.
         def __init__(self, base):
             super().__init__()
             self.base = base
@@ -646,7 +644,6 @@ def test_auto_planner_stays_out_of_compiled_regions(mode):
             compiled(ids).backward()
             model.zero_grad(set_to_none = True)
         assert sum(counters["graph_break"].values()) == 0, dict(counters["graph_break"])
-        # Never planned under compile: every layer stays checkpointed.
         assert planner.started is None and planner.kept is None
         assert _checkpointed(base) == [True] * 4
     finally:
