@@ -45,6 +45,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useEffect,
   useId,
@@ -907,6 +909,34 @@ export function UsageExamples({
       ? "javascript"
       : "python";
 
+  const exampleBoxRef = useRef<HTMLDivElement>(null);
+  const [exampleHeight, setExampleHeight] = useState<number | null>(null);
+  const startExampleResize = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    const scroller = exampleBoxRef.current?.querySelector("section");
+    if (!scroller || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = scroller.getBoundingClientRect().height;
+    const move = (e: PointerEvent) => {
+      // 96px floor matches min-h-24.
+      setExampleHeight(
+        Math.max(96, Math.round(startHeight + e.clientY - startY)),
+      );
+    };
+    const stop = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", stop);
+      handle.removeEventListener("pointercancel", stop);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", stop);
+    handle.addEventListener("pointercancel", stop);
+  };
+
   const handleCopy = async () => {
     if (await copyToClipboard(snippets[lang])) {
       setCopied(true);
@@ -1101,13 +1131,20 @@ export function UsageExamples({
             className={cn("size-3.5", copied && "text-control-accent")}
           />
         </button>
-        {/* The scroller itself is drag-resizable. A height, not a max-height, since
-            resize cannot grow past max-height (HighlightedCode's own max-h-96). */}
-        {/* The language label adds nothing next to the Language picker. */}
+        {/* The language label adds nothing next to the Language picker. HighlightedCode's
+            max-h-96 is lifted so a drag can grow the box past it. */}
         <div
+          ref={exampleBoxRef}
+          style={
+            exampleHeight === null
+              ? undefined
+              : ({ "--example-h": `${exampleHeight}px` } as CSSProperties)
+          }
           className={cn(
-            "[&>section]:max-h-none [&>section]:min-h-24 [&>section]:resize-y [&>section::-webkit-resizer]:bg-transparent [&_[data-streamdown=code-block-header]]:hidden",
-            tall && "[&>section]:h-46",
+            "[&>section]:max-h-none [&>section]:min-h-24 [&_[data-streamdown=code-block-header]]:hidden",
+            exampleHeight === null
+              ? tall && "[&>section]:h-46"
+              : "[&>section]:h-(--example-h)",
           )}
         >
           <HighlightedCode
@@ -1118,21 +1155,24 @@ export function UsageExamples({
             redactFromReload={Boolean(apiKey)}
           />
         </div>
-        {/* Drawn over the native resize handle, which is easy to miss; clicks pass through.
-            Inset past the rounded corner's curve so the lines never cross the border. */}
-        <svg
+        {/* Our own handle, not CSS resize: the native grabber can't be hidden without custom
+            scrollbars and the rounded corner clips it into a stray arc. Inset past the curve.
+            Mouse-only, like the native one; the keyboard still scrolls the region. */}
+        <span
           aria-hidden="true"
-          viewBox="0 0 10 10"
-          className="pointer-events-none absolute right-2.5 bottom-2.5 size-2.5 text-muted-foreground/60"
+          onPointerDown={startExampleResize}
+          className="absolute right-1 bottom-1 flex size-5 cursor-ns-resize touch-none items-center justify-center text-muted-foreground/60 transition-colors hover:text-muted-foreground"
         >
-          <path
-            d="M9 3 3 9M9 6.5 6.5 9"
-            stroke="currentColor"
-            strokeWidth="1.25"
-            strokeLinecap="round"
-            fill="none"
-          />
-        </svg>
+          <svg viewBox="0 0 10 10" className="size-2.5">
+            <path
+              d="M9 3 3 9M9 6.5 6.5 9"
+              stroke="currentColor"
+              strokeWidth="1.25"
+              strokeLinecap="round"
+              fill="none"
+            />
+          </svg>
+        </span>
       </div>
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
         <div className="flex h-5 items-center justify-between gap-3">

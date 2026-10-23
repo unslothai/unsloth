@@ -52,17 +52,15 @@ test("the usage example starts short, drags taller, and its copy button is icon-
   const src = readSrc("features/settings/components/usage-examples.tsx");
   assert.match(src, /const START_LINES = 8;/);
   assert.match(src, /snippets\[lang\]\.split\("\\n"\)\.length > START_LINES/);
-  // resize cannot grow past max-height, so the cap is lifted and a height set instead.
+  // the cap is lifted so a drag can grow it; a height is set, from the drag once there is one
   assert.match(
     src,
-    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:resize-y [^"]*\[&_\[data-streamdown=code-block-header\]\]:hidden",\s*tall && "\[&>section\]:h-46"/,
+    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*exampleHeight === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
   );
-  // a visible grip over the native handle, which must not swallow the drag, inset
-  // past the 17.6px corner curve (0.29r at 45 degrees) so it never crosses the border
-  assert.match(
-    src,
-    /className="pointer-events-none absolute right-2\.5 bottom-2\.5 size-2\.5/,
-  );
+  // our own handle: CSS resize draws a native grabber the rounded corner clips into an arc
+  assert.doesNotMatch(src, /resize-y|webkit-resizer/);
+  assert.match(src, /onPointerDown=\{startExampleResize\}/);
+  assert.match(src, /setPointerCapture\(event\.pointerId\)/);
   assert.doesNotMatch(src, /exampleExpand|exampleCollapse|setExpanded/);
   assert.doesNotMatch(src, /t\("settings\.apiKeys\.copy"\)/);
 });
