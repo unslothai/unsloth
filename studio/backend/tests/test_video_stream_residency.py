@@ -30,14 +30,16 @@ def _applies(**kw):
     return vr.applies(family, **args)
 
 
-def test_applies_only_to_block_streamed_single_dit_wan_on_cuda(monkeypatch):
+def test_applies_only_to_block_streamed_single_dit_wan_and_hunyuanvideo_on_cuda(monkeypatch):
     assert _applies()
     # streaming (an encoder too large for the card) streams the same block-level denoiser groups
     assert _applies(offload_policy = "streaming")
     assert _applies(device = "cuda")
     assert not _applies(family = "wan2.2-t2v-a14b", is_moe = True)
     assert not _applies(family = "ltx-2")
-    assert not _applies(family = "hunyuanvideo-1.5")
+    assert _applies(family = "hunyuanvideo-1.5")
+    assert _applies(family = "hunyuanvideo-1.5-720p", offload_policy = "streaming")
+    assert not _applies(family = "minimax-h3")
     assert not _applies(offload_policy = "none")
     assert not _applies(offload_policy = "model")
     assert not _applies(device = "cpu")
