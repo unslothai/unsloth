@@ -1723,7 +1723,7 @@ def _copy_module(module: Any, device: Any) -> Any:
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache"})
+_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:

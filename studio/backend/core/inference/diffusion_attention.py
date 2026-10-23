@@ -39,6 +39,7 @@ import functools
 import os
 import re
 import threading
+import weakref
 from typing import Any, Optional
 
 ATTN_AUTO = "auto"
@@ -2063,6 +2064,9 @@ _ROCM_FLASH_HOOKS_ATTR = "_unsloth_rocm_flash_hooks"
 # On the pipe: every DiT the hooks went on, whatever attribute holds it (a MiniMax-H3 view hooks transformer_ref, which
 # _attention_dits does not enumerate). Reset, report and the memory guard iterate this.
 _ROCM_FLASH_DITS_ATTR = "_unsloth_rocm_flash_dits"
+# On a hooked DiT: its live CFG replicas (weak, so a dropped or rebuilt replica is not kept alive), whose per-run state
+# begin_attention_run resets with the source's.
+_ROCM_FLASH_REPLICAS_ATTR = "_unsloth_rocm_flash_replicas"
 
 
 def _rocm_flash_dits(pipe: Any) -> list:
@@ -2180,6 +2184,14 @@ def track_rocm_flash_replica(source: Any, replica: Any, device: Any) -> None:
     except Exception:  # noqa: BLE001
         return
     _hook_rocm_flash_dit(replica)
+    try:  # the replica outlives a generation: its deferred buckets must be retried at the next one as the source's are
+        replicas = getattr(source, _ROCM_FLASH_REPLICAS_ATTR, None)
+        if not isinstance(replicas, weakref.WeakSet):
+            replicas = weakref.WeakSet()
+            setattr(source, _ROCM_FLASH_REPLICAS_ATTR, replicas)
+        replicas.add(replica)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _untrack_rocm_flash_calls(pipe: Any) -> None:
@@ -2250,13 +2262,15 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
 def begin_attention_run(state: Any) -> None:
     """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone, and
     this run's DiTs retry buckets whose probe could not run."""
-    for dit in _rocm_flash_dits(getattr(state, "pipe", None)):
-        if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
-            try:
-                setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
-                setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
-            except Exception:  # noqa: BLE001
-                pass
+    for source in _rocm_flash_dits(getattr(state, "pipe", None)):
+        replicas = getattr(source, _ROCM_FLASH_REPLICAS_ATTR, None)
+        for dit in [source, *(list(replicas) if isinstance(replicas, weakref.WeakSet) else ())]:
+            if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
+                try:
+                    setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
+                    setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def report_attention_run(state: Any) -> None:

@@ -1333,6 +1333,23 @@ def test_deferral_belongs_to_its_dit_not_to_other_generations(monkeypatch):
     assert timed == [4096, 32768] and ran[-1] == "flash"
 
 
+def test_cfg_replica_retries_its_deferred_bucket_at_the_next_generation(monkeypatch):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 60.0})
+    replica = _Dit()
+    att.track_rocm_flash_replica(dit, replica, "cpu")
+    pipe = types.SimpleNamespace(transformer = dit)
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: False)
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    replica.run(guarded, [(40000, None)])
+    assert timed == [4096] and ran == ["native"]
+    assert len(getattr(replica, att.ROCM_FLASH_DEFERRED_ATTR)) == 1
+    # Room on the replica card at the next generation: the same (kept) replica times the bucket again.
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True)
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    replica.run(guarded, [(40000, None)])
+    assert timed == [4096, 32768] and ran[-1] == "flash"
+
+
 def test_a_moved_sdpa_baseline_drops_the_in_memory_verdicts(monkeypatch):
     baseline = ["sdpafem,aotriton-exp1"]
     monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: baseline[0])
@@ -2025,6 +2042,10 @@ def test_cfg_replica_keeps_the_rocm_flash_gate_on_its_worker_thread(monkeypatch)
         worker.close()
     assert float(out.flatten()[0]) == -1.0 and timed == [4096, 8192]
     assert getattr(att._ROCM_FLASH_LOCAL, "gate", None) is None
+    # a rebuilt replica (weights changed) is tracked too; the copy carries no replica set of its own
+    again = mg.build_replica(dit, "cpu")
+    assert att._ROCM_FLASH_REPLICAS_ATTR not in again.__dict__
+    assert set(getattr(dit, att._ROCM_FLASH_REPLICAS_ATTR)) == {replica, again}
     # on another card the gate is that card's, so its buckets are timed there
     copy = torch.nn.Module()
     att.track_rocm_flash_replica(dit, copy, "cuda:1")
