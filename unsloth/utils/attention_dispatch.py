@@ -99,11 +99,16 @@ def scaled_dot_product_attention(*args, **kwargs):
     return F.scaled_dot_product_attention(*args, **kwargs)
 
 
+def _avoids_cudnn(Q, training):
+    """Training calls on SM100 run without cuDNN attention (_training_sdpa); probes must match."""
+    return bool(training) and Q.is_cuda and Q.device.index in _NO_CUDNN_TRAINING
+
+
 def _training_sdpa(*args, **kwargs):
     """SDPA for a training forward (AttentionContext.training, passed in, no global state: these
     calls run traced). On SM100 SDPA picks cuDNN attention, which builds a plan for every new
     sequence length (~150 ms each), and training batches change length every step."""
-    if args and args[0].is_cuda and args[0].device.index in _NO_CUDNN_TRAINING:
+    if args and _avoids_cudnn(args[0], True):
         with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
             return scaled_dot_product_attention(*args, **kwargs)
     return scaled_dot_product_attention(*args, **kwargs)
@@ -404,7 +409,7 @@ def _sdpa_gqa_choices(
 _SDPA_NO_BACKEND = -2
 
 
-def _sdpa_gqa_state(
+def _sdpa_gqa_state_now(
     device,
     dtype,
     head_dim,
@@ -454,6 +459,15 @@ def _sdpa_gqa_state(
     return not (gqa == math and mha not in (math, -1))
 
 
+def _sdpa_gqa_state(*args, no_cudnn = False):
+    """_sdpa_gqa_state_now; no_cudnn probes under the kernels the call runs with (_training_sdpa,
+    _rerouted_sdpa), whose enabled flags are part of the probe's cache key."""
+    if no_cudnn:
+        with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+            return _sdpa_gqa_state_now(*args)
+    return _sdpa_gqa_state_now(*args)
+
+
 _sdpa_gqa_state = _constant_probe(_sdpa_gqa_state)
 
 
@@ -464,8 +478,10 @@ def _sdpa_takes_gqa(
     has_mask: bool,
     V: Optional[Tensor] = None,
     dropout_p = 0.0,
+    no_cudnn = False,
 ) -> bool:
-    """Whether to pass enable_gqa (True) or expand K/V (False) for this SDPA call."""
+    """Whether to pass enable_gqa (True) or expand K/V (False) for this SDPA call. no_cudnn: the
+    call runs without cuDNN attention (SM100 training, xformers stand-in), so the probe does too."""
     if not SDPA_HAS_GQA:
         return False
     if not Q.is_cuda:
@@ -478,7 +494,7 @@ def _sdpa_takes_gqa(
     single_key = True if K.shape[-2] == 1 else False
     is_causal = True if is_causal else False
     has_mask = True if has_mask else False
-    return _sdpa_gqa_state(
+    args = (
         str(Q.device),
         Q.dtype,
         Q.shape[-1],
@@ -491,6 +507,9 @@ def _sdpa_takes_gqa(
         single_query,
         single_key,
     )
+    if no_cudnn:
+        return _sdpa_gqa_state(*args, no_cudnn = True)
+    return _sdpa_gqa_state(*args)
 
 
 def _torch_varlen_beats_segments(
@@ -635,7 +654,14 @@ def _sdpa_packed_segments(
         Q_run = split(Q)
         # Probe the run's own tensors: a one-token run has different eligibility than the row.
         gqa = n_groups != 1 and _sdpa_takes_gqa(
-            Q_run, split(K), kwargs["is_causal"], windowed, split(V), kwargs.get("dropout_p", 0.0)
+            Q_run,
+            split(K),
+            kwargs["is_causal"],
+            windowed,
+            split(V),
+            kwargs.get("dropout_p", 0.0),
+            # Passed only when set: callers and tests wrap the probe with the old signature.
+            **({"no_cudnn": True} if _avoids_cudnn(Q_run, training) else {}),
         )
         if gqa:
             kwargs["enable_gqa"] = True
@@ -1323,6 +1349,11 @@ def _run_attention(
             kwargs.get("attn_mask") is not None,
             V,
             kwargs.get("dropout_p", 0.0),
+            **(
+                {"no_cudnn": True}
+                if xformers_rerouted or _avoids_cudnn(Q, context.training)
+                else {}
+            ),
         ):
             use_sdpa_gqa = False
 
