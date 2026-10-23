@@ -357,7 +357,7 @@ export function reduce(
     case "set":
       return { ...s, vars: { ...s.vars, ...a.vars } };
     case "load":
-      if (a.state?.v !== STORY_SAVE_VERSION) return s;
+      if (!saveFits(m, a.state)) return s;
       return { ...a.state, rev: s.rev + 1 };
     case "addScene": {
       if (
@@ -435,6 +435,16 @@ export function nextSceneIds(
   for (const r of scene.random ?? []) ids.add(r.goto);
   if (scene.next) ids.add(scene.next);
   return [...ids].filter((id) => sceneOf(m, s, id));
+}
+
+/** A save made for this story: right version, and its scene still exists (a re-roll can rename scenes). */
+export function saveFits(
+  m: StoryManifest,
+  state: StoryState | null | undefined,
+): boolean {
+  if (state?.v !== STORY_SAVE_VERSION) return false;
+  if (state.status === "ended" || state.status === "generating") return true;
+  return Boolean(sceneOf(m, state, state.sceneId));
 }
 
 export function currentLine(m: StoryManifest, s: StoryState): StoryLine | null {

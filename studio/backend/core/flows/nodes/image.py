@@ -260,6 +260,8 @@ def sprite_sheet(frames: list[bytes], size: int, columns: int) -> tuple[bytes, d
 
     columns = max(1, min(columns, len(frames)))
     rows = (len(frames) + columns - 1) // columns
+    # Like Compose Grid: many big frames shrink so the sheet stays under MAX_GRID_SIDE.
+    size = max(8, min(size, MAX_GRID_SIDE // max(columns, rows)))
     sheet = Image.new("RGBA", (columns * size, rows * size), (0, 0, 0, 0))
     for i, data in enumerate(frames):
         sheet.alpha_composite(

@@ -47,6 +47,7 @@ import {
   interpolate,
   nextSceneIds,
   reduce,
+  saveFits,
   sceneOf,
   visibleChoices,
 } from "./reducer";
@@ -635,6 +636,10 @@ export function StoryPlayer({
     try {
       const rec = await api.loadSession(flowId, slot);
       if (!rec) return;
+      if (!saveFits(manifest, rec.state as StoryState)) {
+        showToast("That save is from an earlier version of this story");
+        return;
+      }
       dispatch({ type: "load", state: rec.state as StoryState });
       setStarted(true);
       setPanel(null);

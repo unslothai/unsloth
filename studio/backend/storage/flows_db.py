@@ -305,28 +305,26 @@ def node_results(run_id: str) -> dict[str, dict]:
         conn.close()
 
 
-def latest_node_outputs(flow_id: str, limit_runs: int = 20) -> dict[str, dict]:
-    """For each node, the newest successful output across the flow's recent runs."""
+def latest_node_outputs(flow_id: str) -> dict[str, dict]:
+    """For each node, its newest successful output in any of the flow's runs (a side branch run keeps the rest)."""
     conn = get_connection()
     try:
         rows = conn.execute(
             """
-            SELECT r.node_id, r.status, r.outputs_json
-            FROM flow_node_results r JOIN flow_runs f ON f.id = r.run_id
-            WHERE f.flow_id = ? AND r.status IN ('done', 'cached') AND r.outputs_json IS NOT NULL
-              AND f.id IN (SELECT id FROM flow_runs WHERE flow_id = ? ORDER BY created_at DESC LIMIT ?)
-            ORDER BY f.created_at DESC, r.updated_at DESC
+            SELECT node_id, status, outputs_json FROM (
+                SELECT r.node_id, r.status, r.outputs_json, ROW_NUMBER() OVER (
+                    PARTITION BY r.node_id ORDER BY f.created_at DESC, r.updated_at DESC
+                ) AS newest
+                FROM flow_node_results r JOIN flow_runs f ON f.id = r.run_id
+                WHERE f.flow_id = ? AND r.status IN ('done', 'cached') AND r.outputs_json IS NOT NULL
+            ) WHERE newest = 1
             """,
-            (flow_id, flow_id, limit_runs),
+            (flow_id,),
         ).fetchall()
-        found: dict[str, dict] = {}
-        for r in rows:
-            if r["node_id"] not in found:
-                found[r["node_id"]] = {
-                    "status": r["status"],
-                    "outputs": json.loads(r["outputs_json"]),
-                }
-        return found
+        return {
+            r["node_id"]: {"status": r["status"], "outputs": json.loads(r["outputs_json"])}
+            for r in rows
+        }
     finally:
         conn.close()
 

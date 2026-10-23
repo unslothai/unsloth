@@ -323,3 +323,19 @@ def test_reconnecting_to_a_run_a_restart_interrupted_ends(client):
     )
     assert events and events[-1]["type"] == "snapshot"
     assert events[-1]["data"]["run"]["status"] == "interrupted"
+
+
+def test_many_side_runs_keep_the_older_outputs(client):
+    d = doc(
+        [node("a", "input.text", value = "story"), node("b", "input.text", value = "side")],
+        id = "flow1",
+    )
+    client.post("/api/flows", json = {"doc": d})
+    _wait_terminal(client, client.post("/api/flows/flow1/runs", json = {}).json()["run_id"])
+    for _ in range(22):
+        run_id = client.post("/api/flows/flow1/runs", json = {"target_nodes": ["b"]}).json()["run_id"]
+        _wait_terminal(client, run_id)
+    # After a restart only the stored history is left.
+    engine_mod.ENGINE.runs.clear()
+    latest = client.get("/api/flows/flow1/latest-outputs").json()["nodes"]
+    assert latest["a"]["outputs"] == {"text": "story"}

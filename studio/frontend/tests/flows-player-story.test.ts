@@ -304,3 +304,11 @@ test("a re-roll rebuilds only the story or world, never a side branch", async ()
   } as never;
   assert.deepEqual(rerollTargets(doc), ["gen"]);
 });
+
+test("a save whose scene no longer exists is refused", () => {
+  const s = R.initialState(picnic);
+  assert.equal(R.saveFits(picnic, s), true);
+  const stale = { ...s, sceneId: "a_scene_from_before_the_reroll" };
+  assert.equal(R.saveFits(picnic, stale), false);
+  assert.equal(R.reduce(picnic, s, { type: "load", state: stale }), s);
+});

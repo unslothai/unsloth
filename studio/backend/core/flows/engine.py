@@ -1075,7 +1075,8 @@ class FlowEngine:
                     nid, {"fraction": i / max(1, len(items)), "step": i, "total": len(items)}
                 )
                 gathered.append(await one(i, item))
-        results = [r for r in gathered if r is not SKIPPED and r is not None]
+        # Only skipped iterations drop out: a body may legitimately produce null.
+        results = [] if collect is None else [r for r in gathered if r is not SKIPPED]
         if rs.cancelled:
             env.values[nid] = SKIPPED
             rs.set_status(nid, "cancelled")

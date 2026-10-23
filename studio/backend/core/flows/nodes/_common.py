@@ -568,6 +568,15 @@ def _decode_data_url(value: str) -> bytes:
     return base64.b64decode(payload or value)
 
 
+def _visible(png: bytes, min_fraction: float = 0.01) -> bool:
+    """Whether at least ``min_fraction`` of a cutout's pixels are opaque enough to see."""
+    from PIL import Image
+
+    alpha = Image.open(io.BytesIO(png)).convert("RGBA").getchannel("A")
+    seen = sum(alpha.point(lambda v: 255 if v > 127 else 0).histogram()[255:])
+    return seen >= min_fraction * alpha.size[0] * alpha.size[1]
+
+
 def _trim(im: Any) -> Any:
     bbox = im.getchannel("A").getbbox()
     if bbox:
@@ -629,6 +638,7 @@ async def remove_background(
     from PIL import Image
 
     data, mime = await media_bytes(ctx, image)
+    cutout: Optional[bytes] = None
     try:
         answer = await ctx.call(
             "POST",
@@ -652,13 +662,27 @@ async def remove_background(
             return out.getvalue(), mask_out.getvalue()
 
         cutout, mask_png = await asyncio.to_thread(cut)
+        if not await asyncio.to_thread(_visible, cutout):
+            # An empty mask would leave an invisible character.
+            ctx.log(
+                f"The segmenter found no {subject}; removing the border colour instead", "warning"
+            )
+            cutout = None
     except FlowNodeError as exc:
         if exc.status not in (409, 501, 404, None):
             raise
         ctx.log(f"Segmentation unavailable ({exc}); removing the border colour instead", "warning")
+    if cutout is None:
 
         def keyed() -> tuple[bytes, bytes]:
             cut_png, mask_png = chroma_key(data)
+            if not _visible(cut_png):
+                # Nothing survived the key either: keep the whole picture rather than nothing.
+                im = Image.open(io.BytesIO(data)).convert("RGBA")
+                out, mask_out = io.BytesIO(), io.BytesIO()
+                im.save(out, "PNG")
+                Image.new("L", im.size, 255).save(mask_out, "PNG")
+                return out.getvalue(), mask_out.getvalue()
             if trim:
                 im = Image.open(io.BytesIO(cut_png))
                 out = io.BytesIO()

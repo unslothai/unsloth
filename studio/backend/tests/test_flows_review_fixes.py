@@ -493,3 +493,113 @@ def test_a_maximum_size_grid_stays_bounded():
         cell = 2048,
     )
     assert max(Image.open(io.BytesIO(out)).size) <= MAX_GRID_SIDE
+
+
+def test_an_empty_segmentation_mask_never_leaves_an_invisible_character(monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+
+    from core.flows.nodes import _common
+
+    # A character on a plain background, and a segmenter that finds nothing.
+    im = Image.new("RGB", (64, 96), (240, 240, 240))
+    for x in range(20, 44):
+        for y in range(20, 80):
+            im.putpixel((x, y), (180, 60, 40))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    black = io.BytesIO()
+    Image.new("L", (64, 96), 0).save(black, "PNG")
+
+    async def fake_bytes(ctx, media):
+        return buf.getvalue(), "image/png"
+
+    monkeypatch.setattr(_common, "media_bytes", fake_bytes)
+
+    class Ctx:
+        saved = []
+        logs = []
+
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **kw,
+        ):
+            return {"mask": "data:image/png;base64," + base64.b64encode(black.getvalue()).decode()}
+
+        def log(
+            self,
+            message,
+            level = "info",
+        ):
+            self.logs.append(level)
+
+        async def save_asset(
+            self,
+            data,
+            mime,
+            kind = "image",
+            extra = None,
+        ):
+            self.saved.append(data)
+            return {"kind": "image", "ref": f"sha256:{len(self.saved)}"}
+
+    ctx = Ctx()
+    asyncio.run(
+        _common.remove_background(ctx, {"kind": "image", "ref": "image:1"}, "the character")
+    )
+    assert _common._visible(ctx.saved[0])
+    assert "warning" in ctx.logs
+
+
+def test_a_maximum_size_sprite_sheet_stays_bounded():
+    import io
+
+    from PIL import Image
+
+    from core.flows.nodes.image import MAX_GRID_SIDE, sprite_sheet
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (16, 16), (200, 10, 10, 255)).save(buf, "PNG")
+    png, meta = sprite_sheet([buf.getvalue()] * 256, 1024, 16)
+    assert max(Image.open(io.BytesIO(png)).size) <= MAX_GRID_SIDE
+    assert meta["frame_width"] * meta["columns"] <= MAX_GRID_SIDE
+
+
+@run_async
+async def test_for_each_keeps_null_results_in_place():
+    async def passthrough(ctx):
+        return {"value": ctx.inputs.get("value")}
+
+    eng = _engine(
+        {
+            **BASE,
+            "input.list": lambda ctx: _ret({"items": ["a", None, "c"]}),
+            "json.passthrough": passthrough,
+        }
+    )
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each"),
+            node("t", "text.template", group = "fe"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("t", "text", "fe", "collect"),
+        ],
+    )
+
+    async def maybe_null(ctx):
+        values = ctx.inputs.get("values") or []
+        return {"text": None if values == [None] else "x"}
+
+    eng.handlers["text.template"] = maybe_null
+    rs = await _run(eng, d)
+    assert rs.status == "completed", rs.error
+    assert len(rs.nodes["fe"].outputs["results"]) == 3
