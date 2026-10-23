@@ -401,14 +401,19 @@ export const BUDGET = {
   // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +146 B transfer (6,925,639 ->
   // 6,926,187 B raw, 2,086,290 -> 2,086,436 B transfer against 0ee5cfc58, Node 24, 98 chunks), where main
   // was already over the line above. Set to the merged build plus about 200 B.
+  // macOS Desktop stray key text guard (#14815), eager in main.tsx: +278 B raw / +114 B transfer
+  // (6,925,639 -> 6,925,917 B raw, 2,086,290 -> 2,086,404 B transfer against 14e0178e0, Node 24, chunk count
+  // unchanged at 98). Raised by +278 B raw / +129 B transfer so main's margin stays where it was.
+  // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +298 B transfer (6,925,028 ->
+  // 6,926,117 B raw, 2,086,327 -> 2,086,625 B transfer against 394aff8545, Node 26, 99 chunks). Raised by that.
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
   // eager providers-api chunk, not new code. Raised by that.
-  // Merged with main at 00b97e087 the build measures 6,926,391 B raw / 2,086,517 B transfer (Node 24).
+  // Merged with main at 55785e150 the build measures 6,928,266 B raw / 2,087,362 B transfer (Node 24).
   // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
-  transferBytes: 2_086_717,
-  rawBytes: 6_926_891,
+  transferBytes: 2_087_562,
+  rawBytes: 6_928_766,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

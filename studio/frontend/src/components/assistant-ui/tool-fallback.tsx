@@ -62,6 +62,7 @@ import {
 import {
   isToolCallCancelled,
   isToolCallRunning,
+  plainBrowserResult,
   toolArgText,
   toolFallbackLabel,
 } from "./tool-arg-text";
@@ -503,7 +504,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     ? created.text
     : widget?.images?.length
       ? { text: widget.text, images: widget.images }
-      : (widget?.text ?? result);
+      : toolName.startsWith("browser_")
+        ? plainBrowserResult(result)
+        : (widget?.text ?? result);
 
   // Open while it waits on Allow / Deny, so what is being approved is readable.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
