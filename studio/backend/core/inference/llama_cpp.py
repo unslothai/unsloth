@@ -1005,6 +1005,17 @@ _LOOPBACK_REACHABLE_BIND_IPS = frozenset(
 )
 
 
+def _socket_owner_is_always_named() -> bool:
+    """Windows' connection tables carry every socket's owning pid, so an unnamed one there is a
+    psutil quirk rather than another user's listener (#15022)."""
+    return sys.platform == "win32"
+
+
+# Left in the startup output when /health answered from a listener we could not attribute to
+# our child, so the failure is not reported as a bad GGUF or low memory.
+_PORT_OWNER_REFUSED_MARKER = "llama-server port ownership check refused the listener"
+
+
 def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
     level = _LOG_LEVEL_TOKEN_RE.match(line)
     if level is not None:
@@ -19801,7 +19812,11 @@ class LlamaCppBackend:
         _find_free_port releases the port before llama-server binds it, so another local user could
         answer /health and receive every prompt plus the per-launch key. Their socket shows no pid
         on Linux/macOS, so our own (readable) tree not listening counts as foreign. Unreadable
-        ownership keeps today's behaviour."""
+        ownership keeps today's behaviour.
+
+        Windows names every socket's owner, but psutil can describe a live listener there as
+        status NONE and/or pid 0 (#15022), so only a listener attributed to a real foreign pid
+        refuses on Windows."""
         port = getattr(self, "_port", None)
         pid = getattr(process, "pid", None)
         if not isinstance(pid, int) or not isinstance(port, int):
@@ -19823,13 +19838,24 @@ class LlamaCppBackend:
         except Exception:  # noqa: BLE001 -- access denied / platform quirk
             return True
 
+        windows = _socket_owner_is_always_named()
+
         def _listens(conn) -> bool:
             laddr = getattr(conn, "laddr", None)
-            return (
+            if not (
                 bool(laddr)
                 and getattr(laddr, "port", None) == port
                 and getattr(laddr, "ip", None) in _LOOPBACK_REACHABLE_BIND_IPS
-                and conn.status == psutil.CONN_LISTEN
+            ):
+                return False
+            if conn.status == psutil.CONN_LISTEN:
+                return True
+            # Windows can report the live listener as NONE: a TCP socket with no peer still is one.
+            return (
+                windows
+                and conn.status == psutil.CONN_NONE
+                and not getattr(conn, "raddr", None)
+                and getattr(conn, "type", socket.SOCK_STREAM) == socket.SOCK_STREAM
             )
 
         tree_readable = True
@@ -19847,7 +19873,8 @@ class LlamaCppBackend:
         try:
             # Scan every listener: a foreign one listed before ours must not refuse our start.
             for conn in psutil.net_connections(kind = "inet"):
-                if not _listens(conn) or conn.pid is None:
+                # pid 0 is the System Idle Process on Windows: psutil's other "unknown owner".
+                if not _listens(conn) or conn.pid is None or (windows and conn.pid == 0):
                     continue
                 if conn.pid in tree_pids or _has_ancestor(conn.pid, pid):
                     return True
@@ -19862,7 +19889,7 @@ class LlamaCppBackend:
                 pid,
             )
             return False
-        if tree_readable:
+        if tree_readable and not windows:
             logger.error(
                 "llama-server port %s answered /health but our child %s is not listening on it; "
                 "refusing to use it",
@@ -23268,7 +23295,16 @@ class LlamaCppBackend:
         """
         lowered = (output or "").lower()
 
-        # First: every branch below advises reinstall, memory or administrator,
+        # A healthy server we stopped ourselves: its output holds no failure to classify.
+        if _PORT_OWNER_REFUSED_MARKER.lower() in lowered:
+            return (
+                "llama-server started and answered on its local port, but Studio could not "
+                "confirm that the listener on that port belongs to the server it launched, so it "
+                "stopped the server. The model file and memory are not the problem; the backend "
+                "log names the port and the process that held it."
+            )
+
+        # Then: every branch below advises reinstall, memory or administrator,
         # none of which lift a refusal to load a file that is present.
         blocked = code_integrity_block_reason(returncode) or code_integrity_block_reason(output)
         if blocked is not None:
@@ -38949,6 +38985,7 @@ class LlamaCppBackend:
                         self._health_wait_cancelled = True
                         return False
                     if not self._health_listener_is_ours(process):
+                        self._stdout_lines.append(_PORT_OWNER_REFUSED_MARKER)
                         return False
                     return True
             except (
