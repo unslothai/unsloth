@@ -235,6 +235,10 @@ class RunState:
                     **event,
                     "data": {k: v for k, v in event["data"].items() if k != "preview"},
                 }
+            elif type_ == "node.partial":
+                # A partial often repeats everything so far (rows collected), so storing each copy grows the table
+                # quadratically. Store the position only; live clients and the run snapshot carry the value.
+                stored = {**event, "data": {k: v for k, v in event["data"].items() if k != "value"}}
             try:
                 flows_db.append_event(self.id, self.seq, stored)
             except Exception:

@@ -612,6 +612,9 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
 class GpuLeaseHeldError(GpuBusyForAnotherAccountError):
     """An operation (a benchmark, an eval) holds the GPU for a measurement; routes answer 409 ``gpu_leased``."""
 
+    # A training start that meets a lease at its teardown aborts instead of freeing the GPU anyway.
+    blocks_training = True
+
     def __init__(self, label: str, remaining_s: float):
         self.label = label
         self.remaining_s = max(0.0, remaining_s)
