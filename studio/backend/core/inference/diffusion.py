@@ -282,6 +282,7 @@ from .diffusion_attention import (
     begin_attention_run,
     report_attention_run,
     select_attention_backend,
+    _dit_head_dims,
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
@@ -2656,7 +2657,7 @@ def _quadratic_attention(
         except Exception:  # noqa: BLE001
             return False
     try:
-        if not sdpa_math_only(target):
+        if not sdpa_math_only(target, _dit_head_dims(pipe)):
             return False
     except Exception:  # noqa: BLE001 - a broken probe must never block a generation
         return False

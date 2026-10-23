@@ -55,6 +55,7 @@ from .diffusion_attention import (
     attention_status_reason,
     install_hunyuan_attention_trim,
     sdpa_math_only,
+    _dit_head_dims,
     begin_attention_run,
     report_attention_run,
     select_attention_backend,
@@ -3888,7 +3889,9 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         if (
             _is_out_of_memory(exc)
             and request_shape.get("attention_backend") is None
-            and sdpa_math_only(_probe_target(request_shape))
+            and sdpa_math_only(
+                _probe_target(request_shape), request_shape.get("attention_head_dims")
+            )
         ):
             logger.error("video.generate_failed_request: %s", SDPA_MATH_ONLY_MESSAGE)
     except Exception:  # noqa: BLE001 - diagnostics never mask the real failure
@@ -3921,7 +3924,9 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
             if (
                 request_shape is not None
                 and request_shape.get("attention_backend") is None
-                and sdpa_math_only(_probe_target(request_shape))
+                and sdpa_math_only(
+                    _probe_target(request_shape), request_shape.get("attention_head_dims")
+                )
             ):
                 return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
             return (
@@ -12029,6 +12034,7 @@ class VideoBackend:
                     "dtype": state.dtype,
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
+                    "attention_head_dims": sorted(_dit_head_dims(state.pipe)),
                 }
                 self._last_request_shape = request_shape
 

@@ -11110,7 +11110,7 @@ def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
 def test_quadratic_attention_follows_the_engaged_backend(monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     assert dmod._quadratic_attention(object()) is True
     assert dmod._quadratic_attention(object(), None) is True
     assert dmod._quadratic_attention(object(), "native") is True
@@ -11124,7 +11124,7 @@ def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_til
     from core.inference import diffusion as dmod
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
-    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target, *_: True)
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
     with pytest.raises(ValueError, match = "2048x2048"):
