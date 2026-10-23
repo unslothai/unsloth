@@ -537,6 +537,40 @@ def _case_amsgrad(native, dist, rank, tmp):
     return res
 
 
+def _case_reshard(native, dist, rank, tmp, phase):
+    """Save with one world size, resume with another: the weights (sharded read) and the
+    optimizer_dcp directory both come back equal to the saver's full state."""
+    cfg = native.FSDP2Config(param_dtype = torch.float32)
+    calls = _spy(native)
+    ckpt = os.path.join(tmp, "ckpt")
+    ref = os.path.join(tmp, "ref.pt")
+    model = native.shard_model(_model(1 if phase == "save" else 2), cfg)
+    opt = torch.optim.AdamW(model.parameters(), lr = 1e-2, foreach = False)
+    if phase == "save":
+        for step in (1, 2):
+            _step(model, opt, step, rank)
+        state = native.native_full_state_dict(model)
+        if rank == 0:
+            model.save_pretrained(ckpt, state_dict = state, safe_serialization = True)
+        native.native_save_optimizer_sharded(model, opt, os.path.join(ckpt, "optimizer_dcp"))
+        full = {"model": _full_model(model), "optim": _full_optim(model, opt)}
+        if rank == 0:
+            torch.save(full, ref)
+        dist.barrier()
+        return {"world": dist.get_world_size()}
+    native.native_load_model_checkpoint(model, ckpt)
+    native.native_load_optimizer(model, opt, os.path.join(ckpt, "optimizer_dcp"))
+    want = torch.load(ref, weights_only = False)
+    res = {
+        "world": dist.get_world_size(),
+        "calls": calls,
+        "model_diff": _diff_models(want["model"], _full_model(model)),
+        "optim_diff": _diff_optims(want["optim"], _full_optim(model, opt)),
+    }
+    res["loss"] = _step(model, opt, 3, rank).item()  # the restored state steps
+    return res
+
+
 _SHORT_TIMEOUT_CASES = ("amsgrad",)
 
 
@@ -555,6 +589,8 @@ def _worker(rank, world, port, out, case, tmp):
             res = _case_diverge(native, dist, rank, tmp, case[len("diverge_") :])
         elif case == "amsgrad":
             res = _case_amsgrad(native, dist, rank, tmp)
+        elif case.startswith("reshard_"):
+            res = _case_reshard(native, dist, rank, tmp, case[len("reshard_") :])
         else:
             res = _case_roundtrip(
                 native, dist, rank, tmp, tied = case == "tied", shard_files = case == "index"
@@ -574,6 +610,7 @@ def _run(
     case,
     tmp,
     timeout = 900,
+    world = 2,
 ):
     import queue
 
@@ -582,7 +619,9 @@ def _run(
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
     port = _free_port()
-    procs = [ctx.Process(target = _worker, args = (r, 2, port, out, case, tmp)) for r in range(2)]
+    procs = [
+        ctx.Process(target = _worker, args = (r, world, port, out, case, tmp)) for r in range(world)
+    ]
     for p in procs:
         p.start()
     results = {}
@@ -597,7 +636,9 @@ def _run(
             p.join(timeout = 60)
             if p.is_alive():
                 p.kill()
-    assert sorted(results) == [0, 1], f"{case}: ranks did not report within {timeout} s: {results}"
+    assert sorted(results) == list(range(world)), (
+        f"{case}: ranks did not report within {timeout} s: {results}"
+    )
     for rank, r in results.items():
         print("DCP_RESUME", case, rank, {k: v for k, v in r.items() if k != "crash"})
         assert "crash" not in r, r["crash"]
@@ -686,3 +727,17 @@ def test_sharded_optimizer_restores_amsgrad_state(tmp_path):
         assert "new_error" not in r, r
         assert r["loss"][0] == r["loss"][1], r
         assert r["after_diff"] == [] and r["optim_diff"] == [], r
+
+
+@pytest.mark.parametrize("save_world, load_world", [(2, 3), (3, 2)])
+def test_sharded_resume_on_another_world_size(save_world, load_world, tmp_path):
+    pytest.importorskip("transformers")
+    if not _hf_reader_available():
+        pytest.skip("torch < 2.9: no HuggingFaceStorageReader(path, thread_count)")
+    _run("reshard_save", str(tmp_path), world = save_world)
+    results = _run("reshard_load", str(tmp_path), world = load_world)
+    for rank, r in results.items():
+        assert r["world"] == load_world, r
+        assert r["calls"] and isinstance(r["calls"][0], int) and r["calls"][0] > 0, r  # sharded read
+        assert r["model_diff"] == [], r["model_diff"]
+        assert r["optim_diff"] == [], r["optim_diff"]
