@@ -4,6 +4,7 @@
 """One torch.compile region per decoder layer for training (stock forward: attention, MLP or MoE,
 norms, LoRA, NF4). UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it off."""
 
+import contextlib
 import functools
 import os
 import sys
@@ -612,6 +613,10 @@ def _nf4_in_blocks():
         from ..kernels import bnb_override as O
     except Exception:
         return
+    try:
+        from ..kernels.fast_lora import _MLP_OUTPUT_UNUSED
+    except Exception:
+        _MLP_OUTPUT_UNUSED = [False]
     if not O._TRACE or O._LINEAR == "0":
         return  # torch < 2.11 miscompiles the traced backward; "0" = the user's opt-out
     Linear4bit = bnb.nn.Linear4bit
@@ -645,6 +650,16 @@ def _nf4_in_blocks():
                 and not (quant_state.dtype is torch.float32 and rows < 8)
             ):
                 dtype = quant_state.dtype
+                if (
+                    _MLP_OUTPUT_UNUSED[0]
+                    and getattr(self, "_unsloth_output_unused", False)
+                    and x.requires_grad
+                    and torch.is_grad_enabled()
+                ):
+                    # Recompute of a down_proj nobody reads (kernels/fast_lora.py): _NF4Linear's backward only.
+                    return O._apply(O._NF4LinearOutputUnused, x.to(dtype), weight, quant_state).to(
+                        x.dtype
+                    )
                 bias = None if self.bias is None else self.bias.to(dtype)
                 return O._linear(x.to(dtype), weight, quant_state, bias).to(x.dtype)
         return current(self, x, *args, **kwargs)
@@ -698,12 +713,22 @@ def _wrap(cls, compile_options):
     # a failure is also the starting mode for later layers of the same kind.
     state = {"reported": set(), "start": {}}
 
+    def mlp_output_unused_for(self):
+        if self.__dict__.get("_unsloth_no_mlp_skip", False):
+            return None
+        return getattr(original, "_unsloth_mlp_output_unused", None) or getattr(
+            type(self), "_unsloth_mlp_output_unused", None
+        )
+
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
         try:
-            return compiled(self, hidden_states, *args, **kwargs)
+            # Decided here, outside the graph: inside a compiled block the forward cannot see the recompute.
+            mlp_output_unused = mlp_output_unused_for(self)
+            with mlp_output_unused(self) if mlp_output_unused else contextlib.nullcontext():
+                return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
@@ -759,6 +784,20 @@ def _wrap(cls, compile_options):
             devices = [hidden_states.device.index] if hidden_states.is_cuda else []
             with torch.random.fork_rng(devices = devices), torch.enable_grad():
                 forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                trial = getattr(mlp_output_unused_for(self), "trial", None)
+                if (
+                    trial is not None
+                    and getattr(self, "gradient_checkpointing", False)
+                    and self.__dict__["_unsloth_block_mode"] != _OFF
+                ):
+                    # The recompute graph too: compiled lazily in a recompute, it kept that input and its grad.
+                    try:
+                        with trial():
+                            forward(self, hidden_states.detach().requires_grad_(), *args, **kwargs)
+                    except torch.OutOfMemoryError:
+                        raise
+                    except Exception:
+                        self.__dict__["_unsloth_no_mlp_skip"] = True
             mode = self.__dict__["_unsloth_block_mode"]
             if mode == _OFF:
                 return original(self, hidden_states, *args, **kwargs)
