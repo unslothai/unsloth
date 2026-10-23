@@ -313,6 +313,8 @@ except Exception:  # noqa: BLE001 - a broken shim must never break user code
 # modules the host lacks (no stdlib or installed-package shadowing, no .pth execution); submodules then
 # resolve through the package's own __path__. Metadata is answered only for an exact distribution name
 # (importlib.metadata.version("pkg")), never for the name-less scan that plugin discovery uses.
+# A PEP 420 namespace package (google, azure, ...) recomputes its __path__ from sys.path alone, so a
+# submodule the host's portion lacks is looked up in the folder's portion of that namespace, again last.
 class _HostPackagesFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
@@ -325,11 +327,25 @@ class _HostPackagesFinder:
         path = None,
         target = None,
     ):
-        if path is not None or "." in name or name in self._skip:
-            return None
         import importlib.machinery
 
-        return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+        if "." not in name:
+            if path is not None or name in self._skip:
+                return None
+            return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+        parent, _, _ = name.rpartition(".")
+        spec = getattr(sys.modules.get(parent), "__spec__", None)
+        # Only namespace packages: a regular package's submodules come from its own __path__ alone.
+        if (
+            spec is None
+            or spec.submodule_search_locations is None
+            or spec.origin not in (None, "namespace")
+        ):
+            return None
+        portion = os.path.join(self._folder, *parent.split("."))
+        if not os.path.isdir(portion):
+            return None
+        return importlib.machinery.PathFinder.find_spec(name, [portion])
 
     def find_distributions(self, context = None):
         name = getattr(context, "name", None)

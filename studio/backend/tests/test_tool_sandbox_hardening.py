@@ -163,6 +163,35 @@ def test_an_approved_script_still_imports_chat_installed_packages(tmp_path, monk
 
 
 @_POSIX
+def test_an_approved_script_imports_chat_portions_of_host_namespace_packages(tmp_path, monkeypatch):
+    """A PEP 420 namespace the host already provides still reaches the portion the chat installed."""
+    workdir = _planted_workdir(tmp_path)
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    host = tmp_path / "host"
+    for root, owner in ((host, "host"), (packages, "chat")):
+        (root / "chatns" / "inner").mkdir(parents = True)
+        (root / "chatns" / f"{owner}_mod.py").write_text(f"V = '{owner}'\n", encoding = "utf-8")
+        (root / "chatns" / "inner" / f"{owner}_leaf.py").write_text(
+            f"V = '{owner}-leaf'\n", encoding = "utf-8"
+        )
+        (root / "chatns" / "shared.py").write_text(f"V = '{owner}-shared'\n", encoding = "utf-8")
+    (packages / "chatns" / "chatreg").mkdir()
+    (packages / "chatns" / "chatreg" / "__init__.py").write_text("V = 'reg'\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        f"import sys; sys.path.insert(0, {str(host)!r})\n"
+        "import chatns.host_mod, chatns.chat_mod, chatns.shared, chatns.chatreg\n"
+        "import chatns.inner.host_leaf, chatns.inner.chat_leaf\n"
+        "print('NS', chatns.host_mod.V, chatns.chat_mod.V, chatns.shared.V, chatns.chatreg.V,"
+        " chatns.inner.host_leaf.V, chatns.inner.chat_leaf.V)\n"
+        f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+    )
+    out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
+    # The host's own portion still wins for a name both provide.
+    assert "NS host chat host-shared reg host-leaf chat-leaf" in out, out
+
+
+@_POSIX
 def test_approved_calls_import_chat_helpers_without_shadowing_the_stdlib(tmp_path, monkeypatch):
     workdir = _planted_workdir(tmp_path)
     (workdir / "helper.py").write_text("VALUE = 'from-chat-folder'\n", encoding = "utf-8")
