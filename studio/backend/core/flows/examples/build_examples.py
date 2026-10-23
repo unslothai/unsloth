@@ -1365,6 +1365,143 @@ def sticker_pack() -> B:
     return b
 
 
+RIVAL = {"repo": "unsloth/gemma-3-4b-it-GGUF", "variant": "Q4_K_M"}
+
+
+def model_arena() -> B:
+    b = B(
+        "model-arena",
+        "Model Arena",
+        "pipeline",
+        "Two local chat models answer the same prompts, a judge scores every answer, and the scores land in a "
+        "table and a bar chart with each model's lead over the other.",
+        tags = ["evaluation", "compare", "table", "chart", "for each"],
+        seed = 41,
+    ).need("chat")
+    b.doc["requirements"]["models"].append(
+        {
+            "ref": "rival",
+            "kind": "chat",
+            "note": "The second contestant; any chat model works.",
+            "optional": False,
+            **RIVAL,
+        }
+    )
+    b.n(
+        "prompts",
+        "input.list",
+        0,
+        1,
+        items = [
+            "Explain why the sky is blue to a ten year old.",
+            "Write a haiku about debugging at 3am.",
+            "Give three tips for a first marathon.",
+        ],
+    )
+    b.n("each", "logic.for_each", 1, 1, group = "arena_loop", max_items = 8)
+    b.e("prompts.items", "each.items")
+    for nid, row, label, model in (("a", 0.5, "Qwen3 4B", CHAT), ("b", 1.5, "Gemma 3 4B", RIVAL)):
+        b.n(
+            nid,
+            "llm.generate",
+            2,
+            row,
+            group = "arena_loop",
+            label = label,
+            model = model,
+            temperature = 0.3,
+            max_tokens = 400,
+        )
+        b.e("each.item", f"{nid}.prompt")
+    b.n(
+        "pair",
+        "text.template",
+        3,
+        1,
+        group = "arena_loop",
+        template = "PROMPT: {{values.0}}\nQwen3 4B: {{values.1}}\nGemma 3 4B: {{values.2}}",
+    )
+    b.e("each.item", "pair.values")
+    b.e("a.text", "pair.values")
+    b.e("b.text", "pair.values")
+    b.e("pair.text", "each.collect")
+    b.group("arena_loop", "For each prompt", (1, 0.2, 3, 2.2), "#22c55e")
+    b.n(
+        "judge",
+        "llm.generate",
+        4.4,
+        1,
+        label = "Judge",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 1200,
+        system = "You are a strict, fair judge of chat answers.",
+        prompt = "Score each model's answer to each prompt from 1 to 10 for helpfulness and accuracy:\n{{context}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string"},
+                            "model": {"type": "string", "enum": ["Qwen3 4B", "Gemma 3 4B"]},
+                            "score": {"type": "number"},
+                        },
+                        "required": ["prompt", "model", "score"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    )
+    b.e("each.results", "judge.context")
+    b.n("rows", "json.get", 5.4, 1, path = "rows")
+    b.e("judge.json", "rows.json")
+    b.n("scores", "table.concat", 6.4, 1, label = "Every score")
+    b.e("rows.value", "scores.tables")
+    b.n(
+        "avg",
+        "table.aggregate",
+        7.4,
+        1,
+        label = "Mean per model",
+        group_by = ["model"],
+        metrics = ["score"],
+        stat = "mean",
+    )
+    b.e("scores.table", "avg.table")
+    b.n(
+        "lead",
+        "table.compare",
+        8.4,
+        0.4,
+        label = "Lead over Qwen3",
+        key = ["model"],
+        metric = "score",
+        baseline_row = "Qwen3 4B",
+    )
+    b.e("avg.table", "lead.table")
+    b.n("bars", "table.chart", 8.4, 1.6, type = "bar", x = "model", y = ["score"])
+    b.e("avg.table", "bars.table")
+    b.n("show_scores", "output.preview", 7.4, 2.2, label = "Every score")
+    b.e("scores.table", "show_scores.value")
+    b.n("show_lead", "output.preview", 9.4, 0.4)
+    b.e("lead.table", "show_lead.value")
+    b.n("show_chart", "output.preview", 9.4, 1.6)
+    b.e("bars.chart", "show_chart.value")
+    b.note(
+        "tip",
+        "Swap either contestant's model or add prompts to the list, then Run.",
+        0,
+        2.2,
+        1.6,
+        0.6,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1513,7 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    model_arena,
 )
 
 
