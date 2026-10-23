@@ -603,3 +603,8 @@ async def test_for_each_keeps_null_results_in_place():
     rs = await _run(eng, d)
     assert rs.status == "completed", rs.error
     assert len(rs.nodes["fe"].outputs["results"]) == 3
+
+
+def test_captions_never_draw_missing_glyphs():
+    from core.flows.nodes.image import _ASCII_PUNCT
+    assert "first \u2014 even\u2026".translate(_ASCII_PUNCT) == "first - even..."

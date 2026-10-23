@@ -869,7 +869,7 @@ def comic_strip() -> B:
         label = "Draw panel",
         model = IMAGE,
         size = "1024x1024",
-        style = "comic book panel, bold ink lines, flat bright colors, expressive",
+        style = "comic book panel, bold ink lines, flat bright colors, expressive, no text, no lettering, no speech bubbles",
         seed = 9,
     )
     b.group("panels_loop", "For each panel", (3.2, 1.2, 2.2, 1.6), "#ec4899")

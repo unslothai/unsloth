@@ -162,6 +162,8 @@ def _font(size: int) -> Any:
 
 
 MAX_GRID_SIDE = 6144
+# Pillow's built-in caption font has no dashes or ellipsis; they would draw as empty boxes.
+_ASCII_PUNCT = str.maketrans({"\u2014": "-", "\u2013": "-", "\u2026": "..."})
 
 
 def compose_grid(
@@ -201,7 +203,9 @@ def compose_grid(
         y = gap + (i // columns) * (cell + gap)
         panel = fit(_open(data), cell, cell, "cover")
         page.alpha_composite(panel, (x, y))
-        text = captions[i].strip() if i < len(captions) and captions[i] else ""
+        text = (
+            captions[i].strip().translate(_ASCII_PUNCT) if i < len(captions) and captions[i] else ""
+        )
         if not text or caption_style == "none":
             continue
         draw = ImageDraw.Draw(page)

@@ -22,7 +22,7 @@ import { runFlow } from "./run-controller";
 
 function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
-    return <span className="text-zinc-600">—</span>;
+    return <span className="text-zinc-600">-</span>;
   if (isMediaValue(value)) {
     return (
       <MediaThumb media={value} className="w-full rounded-md object-contain" />
