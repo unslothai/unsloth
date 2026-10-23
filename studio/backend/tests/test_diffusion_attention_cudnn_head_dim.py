@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""cuDNN attention is only pinned when the torch/cuDNN build has a kernel for every DiT head_dim.
-
-Ideogram 4 (head_dim 256) under any speed profile raised "No available kernel" on torch 2.11-2.13, whose cuDNN
-serves head_dim <= 128, while torch 2.14 runs it. Probe stubbed except the last test."""
+"""Pin cuDNN only if it has a kernel for every head_dim; head_dim 256 fails on torch 2.11-2.13."""
 
 from __future__ import annotations
 

@@ -38,7 +38,7 @@ import os
 import re
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import lru_cache
 from typing import Any, Callable, Iterator, Optional
 
@@ -161,6 +161,20 @@ def cudnn_benchmark_scope(value: bool) -> Iterator[None]:
             cudnn.benchmark = (
                 _cudnn_bench_scopes[-1][1] if _cudnn_bench_scopes else bool(_cudnn_bench_base)
             )
+
+
+def family_render_cudnn_scope(family: Any, device: Any) -> Any:
+    """Hold ``cudnn.benchmark`` off for a render of a family that opts out of it. The flag is process-wide, so a
+    co-resident or earlier load can have left it on, leaving the VAE convs on a per-process pick."""
+    if getattr(family, "cudnn_benchmark", True) or not str(device or "").startswith("cuda"):
+        return nullcontext()
+    try:
+        import torch
+        if getattr(getattr(torch, "backends", None), "cudnn", None) is None:
+            return nullcontext()
+    except Exception:  # noqa: BLE001 - no torch: nothing to hold
+        return nullcontext()
+    return cudnn_benchmark_scope(False)
 
 
 def snapshot_backend_flags() -> Optional[dict]:

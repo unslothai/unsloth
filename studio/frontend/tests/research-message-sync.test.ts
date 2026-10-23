@@ -36,8 +36,7 @@ function drifted(record: MessageRecord, patch: object): MessageRecord {
 }
 
 test("the client's drifted copy of a research report is replaced by the stored one", () => {
-  // The live run object and serverRevision only exist client-side, so sending them back reads
-  // as an edit to a server-managed message and the backend 409s the whole payload.
+  // Sending client-only run fields back reads as an edit and the backend 409s the payload.
   const records = [
     STORED_PROMPT,
     drifted(STORED_REPORT, {
@@ -55,7 +54,6 @@ test("the client's drifted copy of a research report is replaced by the stored o
 });
 
 test("the research prompt is protected as the parent of the report", () => {
-  // The prompt carries no metadata of its own; the backend still refuses to let it change.
   const records = [
     drifted(STORED_PROMPT, { createdAt: 999, metadata: { model: "local" } }),
     STORED_REPORT,
@@ -102,8 +100,7 @@ test("research ownership is detected from any of the backend's link keys", () =>
 });
 
 test("a relinked research prompt keeps the client's parent, not the pruned one", () => {
-  // Deleting the message a research prompt hung off relinks it to the grandparent; echoing the
-  // stored parentId would persist a link to the row the same pruning sync then deletes.
+  // Echoing the stored parentId would link to a row the same sync deletes.
   const stored = [
     {
       id: "user-0",

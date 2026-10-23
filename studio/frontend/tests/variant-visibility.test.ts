@@ -10,8 +10,6 @@ import {
   visibleGgufVariants,
 } from "../src/features/model-picker/components/model-selector/variant-visibility.ts";
 
-/** A repo holding one complete quant, one torn download, and one quant that
- *  only exists on the Hub. */
 const COMPLETE = { quant: "Q4_K_M", downloaded: true, partial: false };
 const TORN = { quant: "Q8_0", downloaded: false, partial: true };
 const REMOTE_ONLY = { quant: "F16", downloaded: false, partial: false };
@@ -25,7 +23,6 @@ test("On Device with the setting off lists what is on disk", () => {
     onDevice: true,
     showAll: false,
   });
-  // The torn quant stays: it occupies space and needs a resume.
   assert.deepEqual(quants(shown), ["Q4_K_M", "Q8_0"]);
 });
 
@@ -63,7 +60,6 @@ test("a repo with nothing on disk lists nothing", () => {
 });
 
 test("variants missing the flags count as not on disk", () => {
-  // A backend that reports neither flag, as the older ones do.
   const unflagged: { quant: string; downloaded?: boolean; partial?: boolean } =
     { quant: "Q2_K" };
   const shown = visibleGgufVariants([unflagged], {
@@ -74,8 +70,6 @@ test("variants missing the flags count as not on disk", () => {
 });
 
 test("auto-expansion waits for the sole-quant probe", () => {
-  // Every row would otherwise open an expander, and its remote listing,
-  // moments before collapsing into a single row.
   assert.equal(
     shouldMountVariantExpander({
       expanded: true,
@@ -124,15 +118,12 @@ test("a collapsed row never mounts an expander", () => {
 });
 
 test("clicking a row held back by its probe opens it", () => {
-  // Auto-expand is on, so the row is not in the collapsed set, but its
-  // pending probe means it renders nothing.
   const next = toggleAutoExpandedRow(
     { collapsed: new Set(), reopened: new Set() },
     { repoId: "unsloth/Qwen3-8B-GGUF", showing: false },
   );
   assert.deepEqual([...next.collapsed], []);
   assert.deepEqual([...next.reopened], ["unsloth/Qwen3-8B-GGUF"]);
-  // Reopened rows stop following the preference, so the wait no longer applies.
   assert.equal(
     shouldMountVariantExpander({
       expanded: true,

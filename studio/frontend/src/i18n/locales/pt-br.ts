@@ -118,6 +118,7 @@ export const ptBR = {
     reload: "Recarregar",
     more: "Mais",
     addressPlaceholder: "Pesquise ou digite um URL",
+    local: "Local",
     suggested: "Sugestões",
     suggestedMenu: {
       open: "Abrir",
@@ -468,6 +469,8 @@ export const ptBR = {
       downloadFailed: "Não foi possível baixar {name}",
       notMarked: "{name} foi salvo, mas não pôde ser marcado como baixado da internet, então seu sistema não avisará antes de abri-lo.",
       blocked: "Este endereço não pode ser aberto no painel do navegador. Ele só abre sites públicos.",
+      blockedLocal: "Este endereço local não pode ser aberto aqui. Digite-o na barra de endereços para abri-lo.",
+      studioAddress: "Este é o endereço do próprio Unsloth, por isso não pode ser aberto no painel do navegador.",
       clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites.",
       clearDataDescription: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",
       clearDataFailed: "Não foi possível limpar os dados de sites. Tente novamente.",
@@ -623,6 +626,8 @@ export const ptBR = {
       "Este chat não aparecerá no seu histórico e não será salvo. Ele desaparece quando você sair.",
   },
   picker: {
+    unifiedTightFit: "Ajuste apertado",
+    unifiedTightFitHint: "Pode carregar com um contexto menor ou rodar mais devagar neste Mac.",
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
     retry: "Tentar novamente",
@@ -1995,6 +2000,18 @@ export const ptBR = {
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
       },
+      fullInstall: {
+        label: "Tipo de instalação",
+        description:
+          "Somente chat (GGUF). A instalação completa adiciona treinamento, exportação, vídeo, modelos safetensors e mais recursos de geração de imagens.",
+        action: "Atualizar para a instalação completa",
+        confirmTitle: "Atualizar para a instalação completa?",
+        confirmDescription:
+          "Esta instalação somente chat executa modelos GGUF. A instalação completa adiciona o PyTorch para a GPU desta máquina, o que habilita treinamento, exportação, vídeo, modelos safetensors e mais recursos de geração de imagens. Ela baixa vários gigabytes (pelo menos 5 GB de espaço em disco) e reinicia o servidor. As conversas, os modelos e as configurações são mantidos. Isso pode levar alguns minutos.",
+        confirmAction: "Atualizar",
+        keywords:
+          "full install upgrade tipo de instalação instalação completa atualizar somente chat chat only gguf add training treinamento treinar train fine-tune pytorch torch exportação vídeo geração de imagens safetensors",
+      },
       repairInstall: {
         label: "Reparar a instalação",
         description:
@@ -2003,6 +2020,8 @@ export const ptBR = {
         confirmTitle: "Reparar esta instalação?",
         confirmDescription:
           "Para o servidor e executa o instalador novamente, que reinstala o PyTorch para a GPU desta máquina. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
+        confirmDescriptionChatOnly:
+          "Para o servidor e executa o instalador novamente. Esta é uma instalação somente chat, então o instalador também a atualiza para a instalação completa com o PyTorch, vários gigabytes no total. As conversas e as configurações são mantidas. Isso pode levar alguns minutos.",
         confirmAction: "Reparar agora",
       },
       resetPreferences: {
@@ -2726,6 +2745,10 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
+      showReplyTimes: "Horário das respostas",
+      showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
+      showReplyTimesKeywords:
+        "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       modelDisclaimer: "Mostrar aviso do modelo",
@@ -3133,6 +3156,7 @@ export const ptBR = {
       relativeNever: "nunca",
       relativeJustNow: "agora mesmo",
       expired: "expirado",
+      expiredStatus: "Expirado",
       today: "hoje",
       created: "Criado {value}",
       used: "Usado {value}",
@@ -4711,5 +4735,42 @@ export const ptBR = {
     cantRun: "Não foi possível executar",
     failed: "Erro {status}",
     invalidJson: "O corpo da solicitação não é um JSON válido.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Modelos carregados",
+      countOne: "{count} modelo carregado",
+      countMany: "{count} modelos carregados",
+      pillLabel: "{count}. Mostrar detalhes ou arrastar para mover",
+      dragToMove: "Arraste para mover",
+      dragHandleLabel: "Mover os modelos carregados. As setas do teclado o deslocam um pouco.",
+      collapse: "Recolher",
+      collapseLabel: "Recolher os modelos carregados",
+      close: "Fechar",
+      closeLabel: "Fechar os modelos carregados",
+      backOnNextLoad: "Volta no próximo carregamento de modelo",
+      ejectToFree: "Ejetar para liberar memória",
+      ejectLabel: "Ejetar {model}",
+      openTarget: "Abrir {target}",
+      rowLabel: "{model}. Abrir {target}",
+      loading: "Carregando",
+      ejecting: "Ejetando",
+      stillInMemory: "Ainda na memória",
+      alsoServing: "Também em serviço",
+      noneLoaded: "Nenhum modelo carregado",
+      noneLoadedDetail: "Os modelos que você carregar aparecerão aqui.",
+      otherAccount: "Em uso por outra conta",
+      otherAccountDetail: "A memória está ocupada por um modelo que você não pode ver",
+      toastStillResident: "\"{model}\" foi carregado durante a ejeção, então ainda está usando memória. Ejete novamente para liberá-la.",
+      toastUnverified: "Foi solicitado descarregar {model}, mas o runtime não confirmou. Verifique o card em instantes.",
+      toastAlreadyFree: "{model} não estava mais carregado.",
+      toastReplaced: "{model} não está mais carregado. \"{resident}\" ocupou o lugar e foi deixado como está.",
+      toastEjected: "{model} ejetado",
+      toastFailed: "Falha ao ejetar {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Mover o monitor ao vivo. As setas do teclado o deslocam um pouco; clique duplo o redefine.",
+      reconnecting: "Reconectando...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
