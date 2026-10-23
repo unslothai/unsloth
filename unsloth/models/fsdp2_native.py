@@ -1160,10 +1160,25 @@ _FLOAT8 = tuple(
 )
 
 
+def _is_torchao_weight(t):
+    """A torchao tensor subclass weight (load_in_fp8's Float8Tensor, other torchao quantized tensors). It
+    reports the high precision dtype (bfloat16), not float8, and implements only the ops its linear needs:
+    fully_shard's sharding (aten.new_zeros) and DDP's flattening broadcast (reshape to [-1]) fail on it."""
+    return any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__)
+
+
 def _float8_params(model):
     """FP8 weights: FSDP2's mixed precision would cast them to the gather dtype (a floating dtype), dropping
-    the scale semantics. Frozen ones stay replicated in float8; trainable ones are refused."""
-    found = [(n, p) for n, p in model.named_parameters() if p.dtype in _FLOAT8]
+    the scale semantics, and a torchao Float8Tensor (load_in_fp8) cannot be sharded at all. Frozen ones stay
+    replicated (every rank loads the same weights); trainable ones are refused."""
+    found = [
+        (n, p)
+        for n, p in model.named_parameters()
+        # torchao's Float8 training weights (torchao.float8, enable_fsdp_float8_all_gather) implement
+        # FSDP2's all-gather hooks, so fully_shard keeps them.
+        if p.dtype in _FLOAT8
+        or (_is_torchao_weight(p) and not type(p).__module__.startswith("torchao.float8"))
+    ]
     trainable = [n for n, p in found if p.requires_grad]
     if trainable:
         raise NotImplementedError(
@@ -1173,7 +1188,7 @@ def _float8_params(model):
     if found:
         _print_rank0(
             f"Unsloth: native FSDP2 keeps {len(found)} frozen float8 weights replicated (FSDP2 would cast them "
-            "to the gather dtype)."
+            "to the gather dtype, or cannot shard torchao's Float8Tensor)."
         )
     return {p for _, p in found}
 
@@ -1507,7 +1522,9 @@ def native_clip_grad_norm_(
     norm_type = 2.0,
 ):
     """Global gradient norm over DTensor (sharded) and plain gradients; clips in place and returns a
-    plain float32 tensor (the same value on every rank)."""
+    plain tensor (the same value on every rank), matching torch.nn.utils.clip_grad_norm_ dtypes.
+    Shard norms are gathered and combined by vector_norm, not summed as p-th powers: a float16
+    power sum overflows from a norm of 256 where one GPU's vector_norm does not."""
     import torch.distributed as dist
 
     try:
@@ -1527,7 +1544,10 @@ def native_clip_grad_norm_(
     for p in params:
         g = p.grad
         if isinstance(g, DTensor):
-            local = g.to_local()
+            # to_local() adds an autograd op per call.
+            local = getattr(g, "_local_tensor", None)
+            if local is None:
+                local = g.to_local()
             dims = tuple(i for i, pl in enumerate(g.placements) if pl.is_shard())
             groups.setdefault((g.device_mesh, dims), []).append(local)
             sharded.append(local)
@@ -1544,61 +1564,56 @@ def native_clip_grad_norm_(
     p = norm_type
 
     def _per_tensor(grads):
-        """One float64 norm per tensor (torch.linalg.vector_norm semantics); an empty local shard
-        (uneven sharding: dim 0 smaller than the world) is the identity of the combine. 0 for p >= 0;
-        +inf for every negative p (its p-th power is 0, and -inf takes the min), where vector_norm
-        itself refuses an empty tensor."""
-        if not grads:
-            return torch.zeros(0, device = device, dtype = torch.float64)
-        empty = math.inf if p < 0 else 0.0
-        live = [g.detach() for g in grads if g.numel()]
-        try:
-            norms = list(torch._foreach_norm(live, p)) if live else []
-        except Exception:
-            norms = [torch.linalg.vector_norm(g, p) for g in live]
-        it = iter(norms)
-        return torch.stack(
-            [
-                next(it).double().to(device)
-                if g.numel()
-                else torch.tensor(empty, device = device, dtype = torch.float64)
-                for g in grads
-            ]
-        )
+        """Per-tensor norms in each gradient's dtype, one 1-D tensor per dtype. An empty local shard
+        gets the combine identity (0, or +inf for p < 0); vector_norm refuses empty tensors."""
+        by_dtype = {}
+        for i, g in enumerate(grads):
+            by_dtype.setdefault(g.dtype, []).append(i)
+        chunks = []
+        for dtype, idx in by_dtype.items():
+            live = [k for k, i in enumerate(idx) if grads[i].numel()]
+            norms = []
+            if live:
+                tensors = [grads[idx[k]].detach() for k in live]
+                try:
+                    norms = list(torch._foreach_norm(tensors, p))
+                except Exception:
+                    norms = [torch.linalg.vector_norm(g, p) for g in tensors]
+                if len({n.device for n in norms}) > 1:
+                    norms = [n.to(device) for n in norms]
+            if len(live) == len(idx):
+                values = torch.stack(norms).to(device)
+            else:
+                # complex grads give real norms; every rank must gather the same dtype.
+                norm_dtype = dtype.to_real() if dtype.is_complex else dtype
+                values = torch.full(
+                    (len(idx),), math.inf if p < 0 else 0.0, device = device, dtype = norm_dtype
+                )
+                if live:
+                    values[torch.tensor(live, device = device)] = torch.stack(norms).to(device)
+            chunks.append(values)
+        return chunks
 
-    # torch.nn.utils.clip_grad_norm_ is vector_norm(stack(per-tensor norms), p): for p = 0 the number
-    # of tensors with a nonzero element, for +-inf the max / min, else the p-th root of the sum of
-    # p-th powers. A sharded tensor's norm combines over ranks first (counts and powers add up).
-    replicated_norms = _per_tensor(replicated)
+    def _over_shards(chunks, mesh, dims):
+        """Full-tensor norms from local shard norms (all-gather per shard dim, then vector_norm)."""
+        out = []
+        for values in chunks:
+            rows = values.unsqueeze(0)
+            if initialized:
+                for dim in dims:
+                    group = mesh.get_group(dim)
+                    parts = [torch.empty_like(rows) for _ in range(dist.get_world_size(group))]
+                    dist.all_gather(parts, rows, group = group)
+                    rows = torch.cat(parts, dim = 0)
+            out.append(torch.linalg.vector_norm(rows, p, dim = 0))
+        return out
 
-    def _over_shards(value, op, mesh, dims):
-        if initialized:
-            for dim in dims:
-                dist.all_reduce(value, op = op, group = mesh.get_group(dim))
-        return value
-
-    if p == 0:
-        total = (replicated_norms > 0).sum().double()
-        for (mesh, dims), grads in groups.items():
-            counts = _over_shards(_per_tensor(grads), dist.ReduceOp.SUM, mesh, dims)
-            total = total + (counts > 0).sum().double()
-    elif p in (math.inf, -math.inf):
-        pick, op = (torch.max, dist.ReduceOp.MAX) if p > 0 else (torch.min, dist.ReduceOp.MIN)
-        total = torch.tensor(0.0 if p > 0 else math.inf, device = device, dtype = torch.float64)
-        parts = [pick(replicated_norms)] if replicated_norms.numel() else []
-        for (mesh, dims), grads in groups.items():
-            parts.append(_over_shards(pick(_per_tensor(grads)), op, mesh, dims))
-        if parts:
-            total = pick(torch.stack(parts))
-    else:
-        total = replicated_norms.pow(p).sum()
-        for (mesh, dims), grads in groups.items():
-            powers = _per_tensor(grads).pow(p).sum()
-            total = total + _over_shards(powers, dist.ReduceOp.SUM, mesh, dims)
-        total = total.pow(1.0 / p)
+    norms = _per_tensor(replicated)
+    for (mesh, dims), grads in groups.items():
+        norms.extend(_over_shards(_per_tensor(grads), mesh, dims))
+    total = torch.linalg.vector_norm(torch.cat(norms), p)
     clip_coef = float(max_norm) / (total + 1e-6)
-    clip_coef = torch.clamp(clip_coef, max = 1.0).float()
-    total = total.float()
+    clip_coef = torch.clamp(clip_coef, max = 1.0)
     grads = sharded + replicated
     if grads:
         by_device = {}
@@ -2494,9 +2509,12 @@ def _scaler_for_native(trainer):
             super().unscale_(optimizer)
             if not self.is_enabled():
                 return
+            # The all-reduce SUMS found_inf: it is the number of ranks that overflowed. Fused
+            # optimizers skip the step only on found_inf == 1 (and subtract it from their step
+            # counts), so 2+ ranks overflowing stepped on inf / NaN gradients. Clamp to 0 / 1.
             state = self._per_optimizer_states[id(optimizer)]
             state["found_inf_per_device"] = {
-                d: t.reshape(()) for d, t in state["found_inf_per_device"].items()
+                d: t.clamp(max = 1.0).reshape(()) for d, t in state["found_inf_per_device"].items()
             }
 
     kwargs = {}

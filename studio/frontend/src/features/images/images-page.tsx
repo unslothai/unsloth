@@ -23,7 +23,6 @@ import {
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Refresh01Icon,
   Delete02Icon,
   DiceFaces03Icon,
   Download01Icon,
@@ -33,6 +32,8 @@ import {
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
+  PlusSignIcon,
+  Refresh01Icon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -181,7 +182,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
-import { ChevronDown, Recycle } from "lucide-react";
+import { Recycle } from "lucide-react";
 import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
 import {
   ASPECT_RATIOS,
@@ -267,6 +268,21 @@ import { LocalizedEditCanvas } from "./localized-edit-canvas";
 import type { AppliedMask } from "./lib/mask-from-text";
 import { applyMaskToLayer } from "./mask-apply";
 import { MaskFromTextPanel } from "./mask-from-text-panel";
+import { DetailerField, useDetailerSegmenter } from "./detailer-field";
+import {
+  detailerAvailable,
+  detailerNotApplied,
+  detailerEngagesNegative,
+  detailerErrors,
+  detailerModelCapable,
+  detailerRecordOf,
+  detailerRequestField,
+  detailerSummary,
+  readDetailerOptions,
+  restoredDetailer,
+  saveDetailerOptions,
+  type DetailerOptions,
+} from "./lib/detailer";
 
 import {
   type ControlNetSpecInput,
@@ -1466,6 +1482,9 @@ function RecipePopover({
             <RecipeRow key={label} label={label} value={value} />
           ))}
           {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
+          {detailerSummary(detailerRecordOf(image.detailer)) ? (
+            <RecipeRow label="Detailer" value={detailerSummary(detailerRecordOf(image.detailer)) ?? ""} />
+          ) : null}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
@@ -2284,12 +2303,6 @@ export function ImagesPage({
   // A connection runs none of the local engine's Hires fix / model upscalers (the route refuses both).
   const hiresCapability = !external && status?.loaded ? (status.hires ?? null) : null;
   const upscaleModels = !external && status?.loaded ? status.upscale_models : undefined;
-  // Hires CFG can turn CFG on for the refine pass alone; that pass then reads the negative prompt.
-  const negativeEngaged =
-    negativeCapable &&
-    (negativeMinGuidance === null ||
-      effectiveGuidance > negativeMinGuidance ||
-      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance));
   const livePreviewUnavailable =
     !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
@@ -2324,6 +2337,23 @@ export function ImagesPage({
     [samplerModelKey],
   );
   const embeddingsEnabled = !external && status?.loaded === true && !!status.textual_inversion;
+  // Detailer (face fix): off by default; its options persist, the switch does not.
+  const [detailerOn, setDetailerOn] = useState(false);
+  const [detailerOptions, setDetailerOptionsState] = useState<DetailerOptions>(readDetailerOptions);
+  const setDetailerOptions = useCallback((next: DetailerOptions) => {
+    setDetailerOptionsState(next);
+    saveDetailerOptions(next);
+  }, []);
+  const detailerCapable = detailerModelCapable(status, Boolean(external));
+  const detailerSegmenter = useDetailerSegmenter(detailerCapable, loadedModelKey(status) ?? "");
+  const detailerReady = detailerAvailable(status, Boolean(external), detailerSegmenter);
+  // Hires CFG or the Detailer's CFG can turn CFG on for that pass alone; it then reads the negative prompt.
+  const negativeEngaged =
+    negativeCapable &&
+    (negativeMinGuidance === null ||
+      effectiveGuidance > negativeMinGuidance ||
+      hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance) ||
+      detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance));
   const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
     if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
     else setPrompt((p) => withEmbeddingTrigger(p, trigger));
@@ -2918,6 +2948,9 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
+    const detail = restoredDetailer(image);
+    setDetailerOn(detail.enabled);
+    if (detail.enabled) setDetailerOptions({ ...readDetailerOptions(), ...detail.options });
     const maskOptions = restoredInpaintMaskOptions(image);
     if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
     if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
@@ -2972,13 +3005,15 @@ export function ImagesPage({
     const notApplied = [
       ...(literal ? [literal] : []),
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
+      // Restored into the hidden control, which Generate omits: say so, as an import does.
+      ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status, detailerReady]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3105,6 +3140,8 @@ export function ImagesPage({
         ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
+      // Restored into the hidden control when this model cannot inpaint or SAM 3 is missing: say so.
+      notApplied.unshift(...detailerNotApplied(Boolean(settings.detailer), detailerReady));
       if (tiMatch) {
         const { installed, missing } = tiMatch;
         const resolved = new Map<string, string | null>([
@@ -3166,7 +3203,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, detailerReady],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -5065,7 +5102,7 @@ export function ImagesPage({
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           Add image {numberOf(referenceImages.length)}
         </Button>
       )}
@@ -5469,6 +5506,7 @@ export function ImagesPage({
             ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
+            ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
             loras: (() => {
@@ -5526,6 +5564,13 @@ export function ImagesPage({
           if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
         }
         res.images.forEach((image) => void ensureSrc(image));
+        const detailFailed = detailerErrors(res.images);
+        if (detailFailed.length > 0) {
+          toast.warning("The Detailer did not run on this image", {
+            id: "images-detailer-error",
+            description: detailFailed.join("; "),
+          });
+        }
         compare?.onImages(i, res.images);
         setGenDone(i + 1);
       }
@@ -5577,7 +5622,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -6470,7 +6515,7 @@ export function ImagesPage({
                             // mouse focus anyway (index.css blanks it).
                             "rounded-full px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             on
-                              ? "bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"
+                              ? "bg-wash-15 text-foreground hover:bg-wash-20 dark:bg-wash-25 dark:hover:bg-wash-30"
                               : "bg-muted text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
                           )}
                         >
@@ -6678,6 +6723,7 @@ export function ImagesPage({
                           setPrompt((p) => withLocalizedHint(p, localizedMode, localizedColors))
                         }
                       >
+                        <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                         Add region wording
                       </Button>
                     </div>
@@ -6910,7 +6956,7 @@ export function ImagesPage({
                           ]);
                         }}
                       >
-                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                         Add LoRA
                       </Button>
                     )}
@@ -7089,6 +7135,13 @@ export function ImagesPage({
               enabled={embeddingsEnabled}
               onInsert={insertEmbedding}
             />
+            <DetailerField
+              available={detailerReady}
+              enabled={detailerOn}
+              onEnabledChange={setDetailerOn}
+              options={detailerOptions}
+              onOptionsChange={setDetailerOptions}
+            />
             {!external && (
               <>
                 <Field
@@ -7169,7 +7222,7 @@ export function ImagesPage({
               </Button>
             ) : (
               <>
-                <Button
+                <Button variant="dark"
                   className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
@@ -7470,7 +7523,7 @@ export function ImagesPage({
               {/* In-progress generation: a placeholder tile at the front so past images stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (

@@ -267,7 +267,7 @@ function FinishedNotice({ finished, onDone }: { finished: FinishedDownload; onDo
             <button
               type="button"
               onClick={run(open)}
-              className="h-8 cursor-pointer rounded-full bg-foreground px-3.5 text-ui-13 text-background transition-opacity hover:opacity-85"
+              className="h-8 cursor-pointer rounded-full bg-action px-3.5 text-ui-13 text-background transition-opacity hover:opacity-85"
             >
               {t("browser.downloads.open")}
             </button>

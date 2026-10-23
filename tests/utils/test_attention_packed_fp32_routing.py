@@ -5,6 +5,7 @@
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 ad = pytest.importorskip("unsloth.utils.attention_dispatch")
 
@@ -190,7 +191,7 @@ def _reference(Q, K, V, lengths):
     return torch.cat(out, dim = 2).transpose(1, 2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
 def test_packed_fp32_cuda_parity(monkeypatch):
     if not ad.HAS_XFORMERS:
         pytest.skip("needs xformers")

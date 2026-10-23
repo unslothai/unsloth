@@ -34,6 +34,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
@@ -409,6 +410,23 @@ def _sd_cpp_default_threads(cpu: Optional[int]) -> Optional[int]:
     return cpu if cpu <= 4 else cpu // 2
 
 
+def _allowed_cpus() -> Optional[int]:
+    """CPUs in this process's affinity mask, or None when unreadable."""
+    try:
+        return len(os.sched_getaffinity(0)) or None
+    except (AttributeError, OSError):
+        return None
+
+
+def _cpus_restricted(cpu: Optional[int]) -> bool:
+    """True when a cpuset / taskset or a cgroup quota leaves this process fewer CPUs than the host has."""
+    if not cpu:
+        return False
+    allowed = _allowed_cpus()
+    limit = _cgroup_cpu_limit()
+    return (allowed is not None and allowed < cpu) or (limit is not None and limit < cpu)
+
+
 def _explicit_threads() -> Optional[int]:
     """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux) the thread count above whenever it differs from what
     sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix count half
@@ -423,9 +441,16 @@ def _explicit_threads() -> Optional[int]:
     if performance_cores:
         return performance_cores
     if sys.platform.startswith("linux"):
+        cpu = os.cpu_count()
         threads = _default_threads()
-        if threads != _sd_cpp_default_threads(os.cpu_count()):
-            return threads
+        sd_default = _sd_cpp_default_threads(cpu)
+        if threads == sd_default:
+            return None
+        # Fewer threads than sd.cpp's all-CPU default at 4 CPUs or fewer, only because of SMT: the extra siblings
+        # measured faster (2 vCPU / 1 core, 4 vCPU / 2 cores), so keep sd.cpp's count unless something restricts us.
+        if sd_default is not None and threads < sd_default and not _cpus_restricted(cpu):
+            return None
+        return threads
     return None
 
 
@@ -729,6 +754,63 @@ def torch_cuda_compute_capability(
     worker.start()
     worker.join(TORCH_CC_TIMEOUT_S if timeout_s is None else timeout_s)
     return result[0] if result else None
+
+
+def _torch_cuda_capabilities(
+    ordinal: Optional[int], *, timeout_s: Optional[float] = None
+) -> list[tuple[int, int]]:
+    """Capability of ``ordinal`` (None = every visible card); a stalled driver call reads as unknown, not a hang."""
+    import threading
+
+    result: list = []
+    worker = threading.Thread(
+        target = lambda: result.append(_read_torch_cuda_capabilities(ordinal)),
+        daemon = True,
+        name = "sd-cpp-torch-ccs",
+    )
+    worker.start()
+    worker.join(TORCH_CC_TIMEOUT_S if timeout_s is None else timeout_s)
+    return result[0] if result else []
+
+
+def _read_torch_cuda_capabilities(ordinal: Optional[int]) -> list[tuple[int, int]]:
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return []
+        cards = [int(ordinal)] if ordinal is not None else list(range(torch.cuda.device_count()))
+        return [tuple(int(v) for v in torch.cuda.get_device_capability(i)) for i in cards]
+    except Exception:  # noqa: BLE001 -- unknown keeps the build's default
+        return []
+
+
+def _sd_cpp_quant_cublas_env(
+    ordinal: Optional[int], weight_types: Optional[frozenset[str]]
+) -> dict[str, str]:
+    if not weight_types or not weight_types <= sd_cpp_args_mod.QUANT_CUBLAS_WEIGHT_TYPES:
+        return {}
+    return sd_cpp_args_mod.quant_cublas_env(
+        _torch_cuda_capabilities(ordinal), weight_types = weight_types
+    )
+
+
+def _sd_cpp_spawn_env(
+    off_torch: Any,
+    device: str,
+    ordinal: Optional[int],
+    offload: "tuple[str, ...] | list[str]",
+    pinned: "tuple[str, ...] | list[str]",
+    weight_types: Any,
+) -> Optional[dict[str, str]]:
+    """The child env for the FINAL placement and argv. The ordinal counts only when the argv carries its pin;
+    without one sd.cpp picks its own default card, so every visible card must qualify."""
+    if off_torch is not None:
+        return off_torch.child_env()
+    if device != "cuda":
+        return None
+    pin_applied = len(pinned) > len(offload)
+    return _sd_cpp_quant_cublas_env(ordinal if pin_applied else None, weight_types()) or None
 
 
 def _torch_cuda_compute_capability(ordinal: Optional[int]) -> Optional[tuple[int, int]]:
@@ -3233,6 +3315,7 @@ class SdCppDiffusionBackend:
             )
         return upgraded
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,
@@ -3593,6 +3676,11 @@ class SdCppDiffusionBackend:
 
             device, offload = _placement(*_running())
             spawn_env = off_torch.child_env() if off_torch is not None else None
+
+            @functools.lru_cache(maxsize = 1)
+            def _diffusion_weight_types() -> Optional[frozenset[str]]:
+                return sd_cpp_args_mod.gguf_quantized_weight_types(paths.get("diffusion_model"))
+
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are
@@ -3716,12 +3804,21 @@ class SdCppDiffusionBackend:
                     # install that later overwrites the executable underneath the live server.
                     started_ok = False
                     try:
+                        server_offload = _offload_with_device_pin_impl(
+                            offload, server_binary, _ordinal()
+                        )
+                        spawn_env = _sd_cpp_spawn_env(
+                            off_torch,
+                            device,
+                            _ordinal(),
+                            offload,
+                            server_offload,
+                            _diffusion_weight_types,
+                        )
                         server.start(
                             files,
                             vae_format = fam.sd_cpp_vae_format,
-                            offload = _offload_with_device_pin_impl(
-                                offload, server_binary, _ordinal()
-                            ),
+                            offload = server_offload,
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
@@ -3799,6 +3896,15 @@ class SdCppDiffusionBackend:
                         server_binary if mode == "server" else getattr(engine, "binary", None),
                         _ordinal(),
                     )
+                )
+                # Recomputed for what is committed: a deferred install or the one-shot fallback can move placement.
+                spawn_env = _sd_cpp_spawn_env(
+                    off_torch,
+                    device,
+                    _ordinal(),
+                    offload,
+                    committed_offload_flags,
+                    _diffusion_weight_types,
                 )
                 state = _SdState(
                     repo_id = repo_id,
@@ -4399,6 +4505,7 @@ class SdCppDiffusionBackend:
             and workflow in (None, "reference")
         )
 
+    @holds_inference
     def generate(
         self,
         *,

@@ -20,7 +20,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 from urllib.parse import quote, urljoin, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -97,7 +97,7 @@ _HIDDEN_RESPONSE_HEADERS = frozenset(
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
 _BASE_TAG_RE = re.compile(r"<base\b" + _TAG_BODY, re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
-_META_TAG_RE = re.compile(r"<meta\b" + _TAG_BODY, re.IGNORECASE)
+_BASE_OR_META_TAG_RE = re.compile(r"<(?:base|meta)\b" + _TAG_BODY, re.IGNORECASE)
 _HTTP_EQUIV_RE = re.compile(r"""\bhttp-equiv\s*=\s*["']?([\w-]+)""", re.IGNORECASE)
 _CONTENT_ATTR_RE = re.compile(
     r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]{1,4096}))""", re.IGNORECASE
@@ -116,13 +116,24 @@ _MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGN
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 # Text, not markup: comments, raw-text/RCDATA/noscript/template content, and other tags' attribute values.
 _INERT_START_RE = re.compile(
-    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
+    # A tag-name end, not \b: <title-bar> and <template-card> are custom elements, not raw-text ones.
+    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)(?=[\s/>])"
     + _TAG_BODY
-    + r"|<[a-z][^\s/>]*"
+    # The body takes the name too: a separate overlapping name pattern made unclosed "<abbb..." quadratic.
+    + r"|<[a-z]"
     + _TAG_BODY,
     re.IGNORECASE,
 )
-_TEMPLATE_TAG_RE = re.compile(r"<(/)?template(?=[\s/>])", re.IGNORECASE)
+_TEMPLATE_CLOSE_RE = re.compile(r"</template(?=[\s/>])", re.IGNORECASE)
+# Inside a template: close, nested open, comment/raw-text, or any whole tag (so "<script>" in an attribute is not one).
+_TEMPLATE_SCAN_RE = re.compile(
+    r"<!--|</template(?=[\s/>])"
+    r"|<(template|script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)(?=[\s/>])"
+    + _TAG_BODY
+    + r"|</?[a-z]"
+    + _TAG_BODY,
+    re.IGNORECASE,
+)
 _CLOSING_TAG_RES = {
     name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
     for name in (
@@ -1674,27 +1685,52 @@ def _join(base: str, href: str) -> Optional[str]:
         return None
 
 
+def _live_tags(page: str) -> Callable[["re.Match[str]"], bool]:
+    """Whether a tag match is markup the parser acts on, not text inside a comment, script,
+    textarea, noscript or template (``_inert_spans``), where a browser leaves it inert."""
+    spans: list[tuple[int, int]] = []
+    starts: list[int] = []
+    scanned = False
+
+    def live(match: "re.Match[str]") -> bool:
+        nonlocal scanned
+        # Lazy: most pages have no <base> or refresh/CSP meta.
+        if not scanned:
+            spans.extend(_inert_spans(page, tags = False))
+            starts.extend(begin for begin, _ in spans)
+            scanned = True
+        at = bisect.bisect_right(starts, match.start()) - 1
+        return at < 0 or match.start() >= spans[at][1]
+
+    return live
+
+
 def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dict]]:
     """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed; ``base_url``
     is None when the page declares no base."""
     base_url = None
-    for tag in _BASE_TAG_RE.findall(page):
-        href = _attr(_ATTR_HREF_RE.search(tag))
+    live = _live_tags(page)
+    for match in _BASE_TAG_RE.finditer(page):
+        if not live(match):
+            continue
+        href = _attr(_ATTR_HREF_RE.search(match.group(0)))
         # href="" is a base too, frozen at the document's URL (HTML: the base element).
         if href is not None:
             base_url = _join(url, href) or url
             break
-    page = _BASE_TAG_RE.sub("", page)
-
     refresh = None
 
-    def strip_meta(match: "re.Match[str]") -> str:
+    def strip(match: "re.Match[str]") -> str:
         nonlocal refresh
         tag = match.group(0)
+        if tag[1:5].lower() == "base":
+            return "" if live(match) else tag
         equiv = _HTTP_EQUIV_RE.search(tag)
         if not equiv:
             return tag
         name = equiv.group(1).lower()
+        if name in ("content-security-policy", "refresh") and not live(match):
+            return tag
         # The page's CSP doesn't fit the sandbox; a refresh would navigate the frame.
         if name == "content-security-policy":
             return ""
@@ -1708,7 +1744,7 @@ def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dic
             return ""
         return tag
 
-    return _META_TAG_RE.sub(strip_meta, page), base_url, refresh
+    return _BASE_OR_META_TAG_RE.sub(strip, page), base_url, refresh
 
 
 # unsloth.ai's Cloudflare skips its bot challenge for requests carrying this. Only its own hosts get
@@ -1830,25 +1866,39 @@ def _fetch_module(
     return code
 
 
-def _inert_spans(page: str) -> list[tuple[int, int]]:
-    """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does."""
+def _comment_end(page: str, start: int) -> int:
+    """End of the comment whose text starts at ``start`` (after "<!--"), or -1 if unclosed. The
+    tokenizer also ends one at "<!-->", "<!--->" and "--!>" (WHATWG HTML 13.2.5.43-52)."""
+    if page.startswith(">", start):
+        return start + 1
+    if page.startswith("->", start):
+        return start + 2
+    close = page.find("--", start)
+    while close >= 0:
+        if page.startswith(">", close + 2):
+            return close + 3
+        if page.startswith("!>", close + 2):
+            return close + 4
+        close = page.find("--", close + 1)
+    return -1
+
+
+def _inert_spans(page: str, tags: bool = True) -> list[tuple[int, int]]:
+    """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does.
+    ``tags``: count every tag's own span too (its attributes are text, not markup)."""
     spans: list[tuple[int, int]] = []
     at = 0
     while match := _INERT_START_RE.search(page, at):
         if match.group(0).startswith("<!--"):
-            close = page.find("-->", match.end())
-            end = len(page) if close < 0 else close + 3
+            end = _comment_end(page, match.end())
+            end = len(page) if end < 0 else end
             spans.append((match.start(), end))
         elif match.group(1) is None:
             end = match.end()
-            spans.append((match.start(), end))
+            if tags:
+                spans.append((match.start(), end))
         elif match.group(1).lower() == "template":
-            depth, close = 1, None
-            for tag in _TEMPLATE_TAG_RE.finditer(page, match.end()):
-                depth += -1 if tag.group(1) else 1
-                if depth == 0:
-                    close = tag
-                    break
+            close = _template_close(page, match.end())
             end = close.end() if close else len(page)
             spans.append((match.end(), close.start() if close else len(page)))
         else:
@@ -1860,6 +1910,39 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
             spans.append((match.end(), close.start() if close else len(page)))
         at = max(end, match.end())
     return spans
+
+
+def _template_close(page: str, start: int) -> "Optional[re.Match[str]]":
+    """The ``</template`` closing the template whose content starts at ``start``, or None. A
+    ``<template>`` written inside a comment or a script string is text, not a nested template."""
+    depth = 1
+    at = start
+    while match := _TEMPLATE_SCAN_RE.search(page, at):
+        text = match.group(0)
+        name = (match.group(1) or "").lower()
+        if text.startswith("<!--"):
+            at = _comment_end(page, match.end())
+            if at < 0:
+                return None
+        # Not a prefix test: the ordinary-tag branch also matches </template-card>.
+        elif _TEMPLATE_CLOSE_RE.match(page, match.start()):
+            depth -= 1
+            if depth == 0:
+                return match
+            at = match.end()
+        elif name == "template":
+            depth += 1
+            at = match.end()
+        elif not name:
+            at = match.end()
+        elif name == "plaintext":
+            return None
+        else:
+            close = _CLOSING_TAG_RES[name].search(page, match.end())
+            if not close:
+                return None
+            at = close.end()
+    return None
 
 
 def _open_tag(script: str) -> str:
@@ -1983,9 +2066,9 @@ def _build_response(
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
     """build the panel response in the fetch pool to keep large pages off the event loop."""
-    looks_html = not content_type and body[:512].lstrip().lower().startswith(
-        (b"<!doctype html", b"<html")
-    )
+    looks_html = not content_type and body[:512].removeprefix(
+        codecs.BOM_UTF8
+    ).lstrip().lower().startswith((b"<!doctype html", b"<html"))
     is_html = content_type in _HTML_TYPES or looks_html
     if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
         # log the host only because page URLs can carry sign-in tokens.
@@ -2026,6 +2109,14 @@ def _build_response(
     textual = content_type.startswith("text/") or content_type.endswith(
         ("json", "xml", "javascript")
     )
+    if textual and codec is None:
+        # Labelled UTF-8 below, so decode as a browser would (BOM, else UTF-8, else windows-1252).
+        codec = next((bom_codec for bom, bom_codec in _BOMS if body.startswith(bom)), None)
+        if codec is None:
+            try:
+                body.decode("utf-8")
+            except UnicodeDecodeError:
+                codec = "cp1252"
     if textual and codec and codec != "utf-8":
         # transcode text to UTF-8 to match the response label.
         try:
