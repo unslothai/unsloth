@@ -306,6 +306,7 @@ try:
 except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
 
+
 # Approved host calls keep chat-installed packages importable, including Python started by Terminal.
 # Served by a last-resort finder, not sys.path: a folder on sys.path also exposes its *.dist-info to
 # importlib.metadata, so entry-point plugin autoload (pytest11 and the like) would import chat-planted code

@@ -138,9 +138,7 @@ def test_an_approved_script_still_imports_chat_installed_packages(tmp_path, monk
     workdir = _planted_workdir(tmp_path)
     packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
     (packages / "chatlib").mkdir()
-    (packages / "chatlib" / "__init__.py").write_text(
-        "from .sub import X\n", encoding = "utf-8"
-    )
+    (packages / "chatlib" / "__init__.py").write_text("from .sub import X\n", encoding = "utf-8")
     (packages / "chatlib" / "sub.py").write_text("X = 'chatlib-sub'\n", encoding = "utf-8")
     info = packages / "chatlib-2.0.dist-info"
     info.mkdir()
