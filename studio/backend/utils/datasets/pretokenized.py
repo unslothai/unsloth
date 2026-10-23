@@ -26,6 +26,8 @@ def _mask_error(name):
     return ValueError(
         f"Pre-tokenized dataset: '{name}' must have the same length as 'input_ids' in every row."
     )
+
+
 _SAMPLE_ROWS = 20
 
 
@@ -112,7 +114,6 @@ def prepare_pretokenized_dataset(
         return dataset
 
     if table is None:
-
         masks = _checked_masks(columns)
 
         def _truncate(batch):
