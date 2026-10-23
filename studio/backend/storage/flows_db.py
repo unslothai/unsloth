@@ -338,7 +338,10 @@ def node_output_history(
 
     Outputs hold media refs, never bytes, so the history costs no storage of its own."""
     conn = get_connection()
+    seen: set[str] = set()
+    entries: list[dict] = []
     try:
+        # Rows stream newest first until ``limit`` distinct outputs are found: cached reruns repeat one output many times.
         rows = conn.execute(
             """
             SELECT r.run_id, r.status, r.outputs_json, r.updated_at
@@ -346,28 +349,24 @@ def node_output_history(
             WHERE f.flow_id = ? AND r.node_id = ? AND r.status IN ('done', 'cached')
                 AND r.outputs_json IS NOT NULL
             ORDER BY f.created_at DESC, f.rowid DESC, r.updated_at DESC
-            LIMIT 500
             """,
             (flow_id, node_id),
-        ).fetchall()
+        )
+        for r in rows:
+            if r["outputs_json"] in seen:
+                continue
+            seen.add(r["outputs_json"])
+            entries.append(
+                {
+                    "run_id": r["run_id"],
+                    "updated_at": r["updated_at"],
+                    "outputs": json.loads(r["outputs_json"]),
+                }
+            )
+            if len(entries) >= limit:
+                break
     finally:
         conn.close()
-    seen: set[str] = set()
-    entries: list[dict] = []
-    for r in rows:
-        # A cached rerun stores the same outputs again; one entry each.
-        if r["outputs_json"] in seen:
-            continue
-        seen.add(r["outputs_json"])
-        entries.append(
-            {
-                "run_id": r["run_id"],
-                "updated_at": r["updated_at"],
-                "outputs": json.loads(r["outputs_json"]),
-            }
-        )
-        if len(entries) >= limit:
-            break
     return entries
 
 

@@ -31,7 +31,11 @@ function sample(): Doc {
       ...node("sel", "input.select", [0, 100]),
       params: { options: ["a", "b"], value: "b" },
     },
-    { ...node("inner", "input.text", [0, 300]), group: "g1" },
+    node("loop", "logic.for_each", [0, 500]),
+    { ...node("inner", "input.text", [0, 300]), group: "loop" },
+    { ...node("lout", "output.preview", [0, 460]), group: "loop" },
+    { ...node("framed", "input.text", [0, 250]), group: "frame1" },
+    { ...node("fout", "output.result", [0, 450]), group: "frame1" },
     { ...node("off", "input.text", [0, 350]), disabled: true },
   ]);
   return d;
@@ -46,6 +50,7 @@ test("an app form lists the flow's inputs in canvas order", () => {
       ["sel", "node", "select"],
       ["n", "node", "number"],
       ["pic", "node", "image"],
+      ["framed", "node", "textarea"],
     ],
   );
   assert.equal(fields[0].initial, "otters");
@@ -74,7 +79,7 @@ test("form values fill input blocks and Flow Inputs without touching the flow", 
   );
   assert.deepEqual(
     appOutputs(d as never).map((n) => n.id),
-    ["out"],
+    ["out", "fout"],
   );
 });
 
@@ -111,6 +116,42 @@ test("run events fold into progress, results and errors", () => {
   assert.equal(s.done, 2);
   assert.deepEqual(s.results, { out: "hi" });
   assert.deepEqual(s.errors, ["boom", "1 step(s) failed"]);
+});
+
+test("a JSON field sends the parsed value, and a terminal snapshot ends the run", () => {
+  const d = doc([]);
+  (d as { params?: unknown[] }).params = [
+    { id: "config", type: "json", default: { name: "a" } },
+  ];
+  const fields = appFields(d as never);
+  assert.deepEqual(
+    applyAppValues(d as never, fields, { config: '{"name": "b"}' }).params,
+    { config: { name: "b" } },
+  );
+  assert.deepEqual(
+    applyAppValues(d as never, fields, { config: "{not json" }).params,
+    { config: "{not json" },
+  );
+  const s = foldAppEvents(
+    { status: "running", done: 1, total: 3, results: {}, errors: [] },
+    [
+      {
+        seq: 9,
+        run_id: "r",
+        type: "snapshot",
+        node_id: null,
+        ts: 0,
+        data: {
+          run: { status: "interrupted", error: "Studio restarted" },
+          nodes: { out: { outputs: { value: "kept" } } },
+        },
+      },
+    ] as never,
+    new Set(["out"]),
+  );
+  assert.equal(s.status, "interrupted");
+  assert.deepEqual(s.results, { out: "kept" });
+  assert.deepEqual(s.errors, ["Studio restarted"]);
 });
 
 test("history cells preview media first, and pins only go with nodes still in the flow", () => {

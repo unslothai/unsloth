@@ -188,6 +188,8 @@ class RunState:
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
     gpu_ops: int = 0
+    # A Run Flow child counts its GPU steps against the run that called it.
+    gpu_parent: Optional["RunState"] = field(default = None, repr = False)
     cancel_hooks: dict[str, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
     node_tasks: dict[str, asyncio.Task] = field(default_factory = dict)
     _last_progress: dict[str, float] = field(default_factory = dict)
@@ -540,8 +542,11 @@ class NodeContextImpl:
         return self._rs.caller
 
     def count_gpu_op(self) -> None:
-        self._rs.gpu_ops += 1
-        if self._rs.gpu_ops > MAX_GPU_OPS_PER_RUN:
+        rs = self._rs
+        while rs.gpu_parent is not None:
+            rs = rs.gpu_parent
+        rs.gpu_ops += 1
+        if rs.gpu_ops > MAX_GPU_OPS_PER_RUN:
             raise FlowNodeError(f"This run passed the limit of {MAX_GPU_OPS_PER_RUN} GPU steps")
 
 
@@ -724,6 +729,7 @@ class FlowEngine:
             persist = False,
             app = parent.app,
             cancel_event = parent.cancel_event,
+            gpu_parent = parent,
         )
         child.hf_token = parent.hf_token
         child.caller = parent.caller
@@ -977,6 +983,11 @@ class FlowEngine:
         _bind_params(spec, params, inputs)
         seed = self._seed(rs, nid, params, inputs, iteration)
         forced = nid in set(rs.options.get("force_nodes") or [])
+        pinned = (rs.options.get("pinned") or {}).get(nid)
+        if isinstance(pinned, dict) and iteration is None and not forced:
+            # The editor pinned an earlier output of this node: downstream gets it as if it were cached.
+            self._finish(rs, nid, env, dict(pinned), "cached", iteration, message = "Pinned")
+            return
         baked = (rs.doc.get("baked") or {}).get(nid)
         if (
             baked
@@ -986,11 +997,6 @@ class FlowEngine:
             and not rs.options.get("ignore_baked")
         ):
             self._finish(rs, nid, env, dict(baked), "cached", iteration, message = "Baked")
-            return
-        pinned = (rs.options.get("pinned") or {}).get(nid)
-        if isinstance(pinned, dict) and iteration is None and not forced:
-            # The editor pinned an earlier output of this node: downstream gets it as if it were cached.
-            self._finish(rs, nid, env, dict(pinned), "cached", iteration, message = "Pinned")
             return
 
         if spec["type"] == FOR_EACH:

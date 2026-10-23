@@ -16,9 +16,11 @@ import { MediaThumb } from "./media";
 export function NodeHistory({
   nodeId,
   onView,
+  canPin = true,
 }: {
   nodeId: string;
   onView: (outputs: Record<string, unknown> | null) => void;
+  canPin?: boolean;
 }) {
   const flowId = useDocStore((s) => s.flowId);
   const runStatus = useRuntimeStore((s) => s.runStatus);
@@ -32,12 +34,18 @@ export function NodeHistory({
     if (!open || !flowId) return;
     let alive = true;
     void nodeHistory(flowId, nodeId)
-      .then((res) => alive && setEntries(res.entries))
+      .then((res) => {
+        if (!alive) return;
+        // A new run shifts the indexes, so the viewed entry would point at a different output.
+        setEntries(res.entries);
+        setViewing(null);
+        onView(null);
+      })
       .catch(() => alive && setEntries([]));
     return () => {
       alive = false;
     };
-  }, [open, flowId, nodeId, runStatus]);
+  }, [open, flowId, nodeId, runStatus, onView]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a different node starts with nothing viewed
   useEffect(() => {
@@ -123,7 +131,12 @@ export function NodeHistory({
           })}
         </div>
       )}
-      {open && viewing !== null && entries?.[viewing] && (
+      {open && viewing !== null && entries?.[viewing] && !canPin && (
+        <span className="text-[11px] text-zinc-500">
+          Blocks inside a For Each run every item, so they cannot be pinned.
+        </span>
+      )}
+      {open && viewing !== null && entries?.[viewing] && canPin && (
         <div className="flex gap-2">
           <button
             type="button"

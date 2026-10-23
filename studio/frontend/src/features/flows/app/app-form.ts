@@ -52,6 +52,30 @@ function byCanvas(a: FlowNode, b: FlowNode): number {
   return a.pos[1] - b.pos[1] || a.pos[0] - b.pos[0];
 }
 
+/** Nodes inside a For Each body; mirrors _members in core/flows/compiler.py (a plain frame is not a loop). */
+export function loopMembers(nodes: FlowNode[]): Set<string> {
+  const loops = new Set<string>();
+  for (const node of nodes) {
+    if (node.type !== "logic.for_each") continue;
+    loops.add(node.id);
+    if (node.group) loops.add(node.group);
+  }
+  const members = new Set<string>();
+  for (const node of nodes) {
+    if (!node.group || !loops.has(node.group)) continue;
+    const ownFrame =
+      node.type === "logic.for_each" &&
+      !nodes.some(
+        (n) =>
+          n.id !== node.id &&
+          n.type === "logic.for_each" &&
+          (n.id === node.group || n.group === node.group),
+      );
+    if (!ownFrame) members.add(node.id);
+  }
+  return members;
+}
+
 export function appFields(doc: FlowDocument): AppField[] {
   const fields: AppField[] = [];
   const seen = new Set<string>();
@@ -65,7 +89,10 @@ export function appFields(doc: FlowDocument): AppField[] {
       initial: param.default ?? "",
     });
   }
-  const nodes = doc.nodes.filter((n) => !n.disabled && !n.group).sort(byCanvas);
+  const inLoop = loopMembers(doc.nodes);
+  const nodes = doc.nodes
+    .filter((n) => !n.disabled && !inLoop.has(n.id))
+    .sort(byCanvas);
   for (const node of nodes) {
     if (node.type === "input.param") {
       const name = String(node.params.name ?? "").trim();
@@ -109,8 +136,15 @@ export function applyAppValues(
   const nodeValues = new Map<string, unknown>();
   for (const field of fields) {
     if (!(field.key in values)) continue;
-    if (field.target === "param") params[field.key] = values[field.key];
-    else nodeValues.set(field.key, values[field.key]);
+    let value = values[field.key];
+    // The JSON box edits text; a Flow Input of type json is not coerced server-side, so send the parsed value.
+    if (field.kind === "json" && typeof value === "string") {
+      try {
+        value = JSON.parse(value);
+      } catch {}
+    }
+    if (field.target === "param") params[field.key] = value;
+    else nodeValues.set(field.key, value);
   }
   const nodes = doc.nodes.map((node) => {
     if (!nodeValues.has(node.id)) return node;
@@ -126,11 +160,12 @@ export function applyAppValues(
 
 /** Output blocks shown as the app's results, in canvas order. */
 export function appOutputs(doc: FlowDocument): FlowNode[] {
+  const inLoop = loopMembers(doc.nodes);
   return doc.nodes
     .filter(
       (n) =>
         !n.disabled &&
-        !n.group &&
+        !inLoop.has(n.id) &&
         (n.type === "output.preview" || n.type === "output.result"),
     )
     .sort(byCanvas);
@@ -173,6 +208,33 @@ export function foldAppEvents(
         ...next,
         results: { ...next.results, [event.node_id]: outputs.value },
       };
+    } else if (event.type === "snapshot") {
+      // A run reconciled after a restart ends with a terminal snapshot and no run.* event.
+      const run = (data.run ?? {}) as { status?: string; error?: unknown };
+      const nodes = (data.nodes ?? {}) as Record<
+        string,
+        { outputs?: Record<string, unknown> | null }
+      >;
+      const results = { ...next.results };
+      for (const id of outputIds) {
+        const outputs = nodes[id]?.outputs;
+        if (outputs && "value" in outputs) results[id] = outputs.value;
+      }
+      next = { ...next, results };
+      if (
+        run.status &&
+        ["completed", "failed", "cancelled", "interrupted"].includes(run.status)
+      ) {
+        const error = typeof run.error === "string" ? run.error : null;
+        next = {
+          ...next,
+          status: run.status,
+          errors:
+            error && !next.errors.includes(error)
+              ? [...next.errors, error]
+              : next.errors,
+        };
+      }
     } else if (event.type.startsWith("run.") && event.type !== "run.queued") {
       const ended = event.type.slice(4);
       if (["completed", "failed", "cancelled", "interrupted"].includes(ended)) {

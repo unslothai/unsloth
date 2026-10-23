@@ -183,3 +183,92 @@ def test_run_flow_is_in_the_catalog_and_never_cached():
     s = SPECS_BY_TYPE["flow.call"]
     assert s["lane"] == "cpu" and not s["cacheable"]
     assert _ret  # helper import kept for parity with the engine tests
+
+
+def test_an_exact_id_wins_over_another_blocks_label():
+    d = doc(
+        [
+            {**node("a", "input.text", value = "x"), "label": "b"},
+            node("b", "input.text", value = "y"),
+        ]
+    )
+    filled, _ = apply_input_values(d, {"b": "set"})
+    by_id = {n["id"]: n for n in filled["nodes"]}
+    assert by_id["b"]["params"]["value"] == "set"
+    assert by_id["a"]["params"]["value"] == "x"
+
+
+@run_async
+async def test_a_pin_wins_over_a_baked_output():
+    eng = _engine(BASE)
+    d = doc(
+        [node("a", "input.text", value = "x"), node("out", "output.result", name = "r")],
+        [edge("a", "text", "out", "value")],
+    )
+    d["baked"] = {"a": {"text": "baked"}}
+    rs = await _run(eng, d, pinned = {"a": {"text": "pinned!"}})
+    assert rs.outputs["r"] == "pinned!"
+
+
+def test_history_finds_distinct_outputs_behind_many_repeats():
+    for i in range(3):
+        flows_db.create_run(f"old{i}", "hist", {})
+        flows_db.save_node_result(f"old{i}", "a", "done", {"text": f"old{i}"}, None)
+    conn = flows_db.get_connection()
+    with conn:
+        conn.executemany(
+            "INSERT INTO flow_runs (id, flow_id, status, options_json, created_at) VALUES (?, 'hist', 'completed', '{}', ?)",
+            [(f"rep{i}", 10**15 + i) for i in range(600)],
+        )
+        conn.executemany(
+            "INSERT INTO flow_node_results (run_id, node_id, status, outputs_json, updated_at) VALUES (?, 'a', 'cached', ?, 0)",
+            [(f"rep{i}", '{"text": "same"}') for i in range(600)],
+        )
+    conn.close()
+    texts = [e["outputs"]["text"] for e in flows_db.node_output_history("hist", "a")]
+    assert texts[0] == "same" and sorted(texts[1:]) == ["old0", "old1", "old2"]
+
+
+@run_async
+async def test_called_flows_share_the_callers_gpu_step_limit(monkeypatch):
+    from core.flows import engine as engine_mod
+    from core.flows.specs import SPECS_BY_TYPE, out, spec
+
+    async def gpu_text(ctx):
+        return {"text": "g"}
+
+    monkeypatch.setitem(
+        SPECS_BY_TYPE,
+        "gpu.text",
+        spec(
+            "gpu.text",
+            "GPU",
+            "text",
+            "test",
+            outputs = [out("text", "text")],
+            lane = "gpu",
+            cacheable = False,
+        ),
+    )
+    d = doc(
+        [node("g", "gpu.text"), node("out", "output.result", name = "answer")],
+        [edge("g", "text", "out", "value")],
+    )
+    d["id"] = "gpuchild"
+    flows_db.save_flow(parse_document(d)[0])
+    parent = doc(
+        [
+            node("c1", "flow.call", flow_id = "gpuchild", values = {}),
+            node("c2", "flow.call", flow_id = "gpuchild", values = {}),
+            node("o1", "output.result", name = "one"),
+            node("o2", "output.result", name = "two"),
+        ],
+        [edge("c1", "outputs", "o1", "value"), edge("c2", "outputs", "o2", "value")],
+        id = "parent",
+    )
+    eng = _engine(_handlers(**{"gpu.text": gpu_text}))
+    rs = await _run(eng, parent)
+    assert rs.status == "completed", rs.error
+    monkeypatch.setattr(engine_mod, "MAX_GPU_OPS_PER_RUN", 1)
+    rs = await _run(eng, parent)
+    assert rs.status == "failed"

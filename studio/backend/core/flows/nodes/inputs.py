@@ -141,12 +141,12 @@ def apply_input_values(doc: dict, values: dict) -> tuple[dict, dict]:
         for n in doc.get("nodes") or []
         if n.get("type") == "input.param"
     }
-    by_key: dict[str, dict] = {}
-    for node in doc.get("nodes") or []:
-        if node.get("type") in INPUT_VALUE_PARAM:
-            by_key.setdefault(str(node.get("id")), node)
-            if node.get("label"):
-                by_key.setdefault(str(node["label"]).strip().casefold(), node)
+    inputs = [n for n in doc.get("nodes") or [] if n.get("type") in INPUT_VALUE_PARAM]
+    # Exact ids first, so a label that happens to equal another block's id never takes its value.
+    by_key: dict[str, dict] = {str(n.get("id")): n for n in inputs}
+    for node in inputs:
+        if node.get("label"):
+            by_key.setdefault(str(node["label"]).strip().casefold(), node)
     for key, value in values.items():
         key = str(key)
         if key in names:

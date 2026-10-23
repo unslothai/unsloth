@@ -3,6 +3,7 @@
 
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useCallback, useState } from "react";
+import { loopMembers } from "../app/app-form";
 import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
@@ -53,6 +54,10 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
 function InspectorImpl() {
   const nodeId = useUiStore((s) => s.inspectorNodeId);
   const node = useDocStore((s) => (nodeId ? s.graph.nodes[nodeId] : undefined));
+  // The engine applies a pin only outside For Each bodies.
+  const inLoop = useDocStore(
+    (s) => !!nodeId && loopMembers(Object.values(s.graph.nodes)).has(nodeId),
+  );
   const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
   const [viewed, setViewed] = useState<Record<string, unknown> | null>(null);
   const color =
@@ -242,7 +247,7 @@ function InspectorImpl() {
             )}
           </section>
         )}
-        <NodeHistory nodeId={node.id} onView={setViewed} />
+        <NodeHistory nodeId={node.id} onView={setViewed} canPin={!inLoop} />
       </div>
     </aside>
   );
