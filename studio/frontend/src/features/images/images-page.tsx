@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { isRetiredCopySnapshot, readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { isRetiredCopySnapshot, readImageModel, redirectRetiredImagePick, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -3394,6 +3394,8 @@ export function ImagesPage({
         const evicted = pendingEvicted.current;
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
+        // An incomplete retired-copy snapshot loaded as the base it copies: Reapply and the recall name that base now.
+        if (lastLoad.current) lastLoad.current = retiredSnapshotAsLoaded(lastLoad.current, loaded);
         if (lastLoad.current && matchesRememberedModel(lastLoad.current, loaded)) {
           const remembered = withEngagedFamily(lastLoad.current, loaded);
           rememberImageModel(remembered);

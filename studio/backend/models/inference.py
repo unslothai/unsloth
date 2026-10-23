@@ -4898,8 +4898,9 @@ class DiffusionLoadRequest(BaseModel):
             ):
                 self.model_path, self.display_repo_id = base, None
                 self.gguf_filename, self.model_kind = None, "pipeline"
+        # A companion base serves a single file, which supplies the transformer: its folder needs only the config.
         if retired_full_copy_base(self.base_repo) is not None and not retired_copy_loads_from_disk(
-            self.base_repo
+            self.base_repo, companion = True
         ):
             self.base_repo = retired_full_copy_base(self.base_repo)
         return self

@@ -195,3 +195,34 @@ def test_a_copy_not_on_disk_loads_through_its_base(offline_hub):
         ).model_path
         == _BASE
     )
+
+
+@pytest.mark.parametrize("by_id", [False, True])
+def test_a_root_transformer_pick_needs_only_the_transformer_config(tmp_path, offline_hub, by_id):
+    """The root model.safetensors supplies the transformer, so a copy without transformer/ weights (config only) is a
+    complete single-file assembly and stays on the copy; its pipeline pick, which opens those weights, still does not."""
+    snapshot = str(_snapshot(tmp_path, complete = False))
+    source = _COPY if by_id else snapshot
+    request = DiffusionLoadRequest(
+        model_path = source,
+        display_repo_id = None if by_id else _COPY,
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+    )
+    assert (request.model_path, request.gguf_filename, request.base_repo) == (
+        source,
+        "model.safetensors",
+        source,
+    )
+    assert df.retired_copy_loads_from_disk(source, "model.safetensors")
+    assert not df.retired_copy_loads_from_disk(source)
+
+
+def test_the_copy_named_by_id_needs_its_main_ref(tmp_path, offline_hub):
+    """A load by id resolves refs/main, so a lone commit-pinned snapshot with no main ref cannot serve it offline."""
+    snapshot = _snapshot(tmp_path)
+    (snapshot.parent.parent / "refs" / "main").unlink()
+    assert not df.retired_copy_loads_from_disk(_COPY)
+    assert DiffusionLoadRequest(model_path = _COPY).model_path == _BASE
+    # Its path still loads from disk: a snapshot path needs no ref.
+    assert df.retired_copy_loads_from_disk(str(snapshot))

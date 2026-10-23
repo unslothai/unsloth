@@ -44,6 +44,22 @@ export function isRetiredCopySnapshot(pick: { repoId: string; displayRepoId?: st
   );
 }
 
+/** The pick a retired copy's snapshot load resolved to, once the status names it. An incomplete snapshot loads through
+ * the base it copies (the backend redirects it), so the status reports that base: Reapply and the remembered model
+ * have to name it too, or the load never matches and the previous model stays remembered. Else the pick as given. */
+export function retiredSnapshotAsLoaded<T extends RememberedImageModel & { displayRepoId?: string; baseRepo?: string }>(
+  pick: T,
+  status: Parameters<typeof matchesRememberedModel>[1],
+): T {
+  if (!isRetiredCopySnapshot(pick) || matchesRememberedModel(pick, status)) return pick;
+  const display = (pick.displayRepoId ?? "").trim().toLowerCase();
+  const copy = RETIRED_FULL_COPIES[display] ? display : retiredSnapshotRepo(pick.repoId);
+  // A redirect loads another checkpoint, whose base the backend infers (handleLoad drops it the same way).
+  const { baseRepo: _baseRepo, ...rest } = pick;
+  const asBase = redirectRetiredImagePick({ ...rest, repoId: copy } as T);
+  return asBase.repoId !== copy && matchesRememberedModel(asBase, status) ? asBase : pick;
+}
+
 export function redirectRetiredImagePick<
   T extends {
     repoId: string;

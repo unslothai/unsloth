@@ -9,6 +9,7 @@ import {
   readImageModel,
   redirectRetiredImagePick,
   rememberImageModel,
+  retiredSnapshotAsLoaded,
 } from "../src/features/images/image-model-recall.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
@@ -114,4 +115,34 @@ test("a retired copy's snapshot is planned before it loads, since only the backe
   assert.match(body, /retiredSnapshot\s*\? diffusionStagingEntries\(plan\.entries, repoId, \{ filename: opts\.filename \}\)/);
   // The source check that sends a local pick straight to the load comes after the retired-snapshot override.
   assert.ok(body.indexOf("if (retiredSnapshot) source") < body.indexOf('if (source !== "hub" && !downloadOnly)'));
+});
+
+test("a retired copy's snapshot that loaded through its base is remembered as that base", () => {
+  // Incomplete on disk, the backend loads the base it copies, and the status names that base: the snapshot pick never
+  // matches it, so the selection would not replace the remembered model and Reapply would still name the snapshot.
+  const snapshot = "/hf/hub/models--unsloth--flux-3-image-klein/snapshots/abc";
+  const base = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein", model_kind: "pipeline" };
+  const pipeline = { repoId: snapshot, kind: "pipeline" as const, displayRepoId: "unsloth/flux-3-image-klein" };
+  const resolved = retiredSnapshotAsLoaded(pipeline, base);
+  assert.deepEqual(resolved, { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" });
+  assert.equal(matchesRememberedModel(resolved, base), true);
+  // Its root transformer pick, and a snapshot path remembered alone, resolve the same way.
+  const rootTransformer = { repoId: snapshot, kind: "single_file" as const, filename: "model.safetensors", baseRepo: snapshot };
+  assert.deepEqual(retiredSnapshotAsLoaded(rootTransformer, base), {
+    repoId: "black-forest-labs/flux-3-image-klein",
+    kind: "pipeline",
+  });
+  // A complete snapshot loaded as itself, and a status naming something else, keep the pick as it was.
+  const asItself = { loaded: true, repo_id: snapshot, model_kind: "pipeline" };
+  assert.equal(retiredSnapshotAsLoaded(pipeline, asItself), pipeline);
+  const other = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein-base", model_kind: "pipeline" };
+  assert.equal(retiredSnapshotAsLoaded(pipeline, other), pipeline);
+  const unrelated = { repoId: "/models/sdxl", kind: "pipeline" as const };
+  assert.equal(retiredSnapshotAsLoaded(unrelated, base), unrelated);
+
+  // The ready poll reconciles the Reapply target before it decides what to remember.
+  const page = readSrc("features/images/images-page.tsx");
+  const ready = page.slice(page.indexOf('toast.success("Model loaded"'));
+  const reconcile = ready.indexOf("lastLoad.current = retiredSnapshotAsLoaded(lastLoad.current, loaded)");
+  assert.ok(reconcile > 0 && reconcile < ready.indexOf("matchesRememberedModel(lastLoad.current, loaded)"));
 });
