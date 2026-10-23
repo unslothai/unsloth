@@ -165,3 +165,13 @@ test("a followed run (reload, second tab) shows live figures and clears them on 
   assert.match(provider, /if \("_generationProgress" in chunk\) \{\s*if \(caughtUp\(update\.run\)\)/);
   assert.match(provider, /\} finally \{\s*useChatRuntimeStore\.getState\(\)\.clearLiveGenerationForThread\(threadId\);/);
 });
+
+test("a background load cannot drop the visible model's loaded placement", () => {
+  // setCheckpoint clears loadedPlacement when the visible model is restored, so the snapshot must carry it back.
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const keys = adapter.slice(
+    adapter.indexOf("const VISIBLE_MODEL_RUNTIME_KEYS = ["),
+    adapter.indexOf("] as const satisfies"),
+  );
+  assert.match(keys, /"loadedPlacement"/);
+});

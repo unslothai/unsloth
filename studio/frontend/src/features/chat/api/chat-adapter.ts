@@ -2793,6 +2793,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "speculativeType",
   "loadedSpeculativeType",
   "specFallbackReason",
+  "loadedPlacement",
   "specDraftNMax",
   "loadedSpecDraftNMax",
   "specDraftModel",
