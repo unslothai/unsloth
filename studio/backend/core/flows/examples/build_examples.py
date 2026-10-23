@@ -20,6 +20,8 @@ TTS = {"repo": "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", "variant": None}
 
 CLONE = {"repo": "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF", "variant": None}
 MUSIC = {"repo": "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", "variant": None}
+RIVAL = {"repo": "unsloth/gemma-3-4b-it-GGUF", "variant": "Q4_K_M"}
+COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/"
 REQ = {
     "chat": {
         "ref": "writer",
@@ -249,6 +251,21 @@ def sloth_moon() -> B:
         b.n(cid, "story.character", 2, 4 + i, name = name, look = look, color = color, side = side)
         b.e(f"art_{cid}.image", f"cut_{cid}.image")
         b.e(f"cut_{cid}.image", f"{cid}.portrait")
+    b.n(
+        "faces_mo",
+        "story.expressions",
+        1,
+        3.2,
+        label = "Mo's expressions",
+        model = IMAGE,
+        name = "Mo",
+        look = chars[0][2],
+        style = style,
+        expressions = ["worried", "happy"],
+        seed = 200,
+    )
+    b.e("art_mo.image", "faces_mo.portrait")
+    b.e("faces_mo.expressions", "mo.expressions")
     scenes = [
         (
             "porch",
@@ -286,7 +303,7 @@ def sloth_moon() -> B:
             -2,
             "Fog Hollow",
             "a hollow filled with thick silver fog, faint shapes of trees, mysterious",
-            "Narrator: Fog swallowed the path.\nPip: I... can't see my own glow.\nMo: Then I'll carry you. Slowly. Very slowly.",
+            "[scene with fade]\nNarrator: Fog swallowed the path.\nPip: I... can't see my own glow.\nMo: Then I'll carry you. Slowly. Very slowly.",
         ),
         (
             "dance",
@@ -304,7 +321,7 @@ def sloth_moon() -> B:
             "Mirror Lake",
             "a perfectly still lake reflecting the stars, reeds, a small wooden dock",
             "Narrator: At the lake, the water was so still it looked like a second sky.\n"
-            "Mo: Look! The moon is in the water!\nOttoline: Or is it?",
+            "Mo (happy): Look! The moon is in the water!\nOttoline: Or is it?",
         ),
     ]
     for sid, col, row, title, bg, lines in scenes:
@@ -382,7 +399,7 @@ def sloth_moon() -> B:
         title = "The Moon Comes Home",
         kind = "good",
         text = "Narrator: The moon, who had only felt forgotten, rose back into the sky.\n"
-        "Mo: Goodnight, moon. We'll watch you every night.",
+        "Mo (happy): Goodnight, moon. We'll watch you every night.",
     )
     b.n(
         "end_secret",
@@ -1997,6 +2014,281 @@ def long_form_writer() -> B:
     return b
 
 
+def notebook_template(
+    id: str,
+    name: str,
+    notebook: str,
+    description: str,
+    *,
+    dataset: str,
+    tune: dict[str, Any],
+    export: Optional[dict[str, Any]],
+    ask: Optional[str] = None,
+    tags: list[str],
+) -> B:
+    """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
+    b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
+    b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
+    b.n("tune", "train.finetune", 1, 1, **{"training_type": "lora", **tune})
+    b.e("data.dataset", "tune.dataset")
+    b.n("metrics", "output.preview", 2, 0)
+    b.e("tune.metrics", "metrics.value")
+    if ask:
+        b.n("ask", "input.text", 1, 2.2, value = ask)
+        b.n("test", "train.chat_checkpoint", 2, 1, max_tokens = 300)
+        b.e("tune.checkpoint", "test.checkpoint")
+        b.e("ask.text", "test.prompt")
+        b.n("answer", "output.preview", 3, 1)
+        b.e("test.text", "answer.value")
+    if export:
+        b.n("export", "train.export", 3 if ask else 2, 2.2 if ask else 1, **export)
+        b.e("tune.checkpoint", "export.checkpoint")
+    b.note(
+        "n1",
+        f"Based on the Unsloth notebook {notebook}: {COLAB_NB}{notebook}. Training needs a GPU and stops chat "
+        "models while it runs.",
+        0,
+        -0.2,
+        1.8,
+        0.9,
+    )
+    return b
+
+
+def text_sft() -> B:
+    return notebook_template(
+        "notebook-text-sft",
+        "Notebook: Llama 3.1 Alpaca fine-tune",
+        "Llama3.1_(8B)-Alpaca.ipynb",
+        "The Llama 3.1 (8B) Alpaca notebook as a flow: LoRA fine-tune on Alpaca, ask the result a question, export to GGUF.",
+        dataset = "unsloth/alpaca-cleaned",
+        tune = {
+            "base_model": "unsloth/Llama-3.1-8B",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "format_type": "alpaca",
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        ask = "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8",
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["sft"],
+    )
+
+
+def vision_sft() -> B:
+    return notebook_template(
+        "notebook-vision-sft",
+        "Notebook: Qwen2.5-VL LaTeX OCR fine-tune",
+        "Qwen2.5_VL_(7B)-Vision.ipynb",
+        "The Qwen2.5-VL (7B) vision notebook as a flow: teach the model to write LaTeX from images of equations, then save the adapter.",
+        dataset = "unsloth/LaTeX_OCR",
+        tune = {
+            "base_model": "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
+            "task": "vision",
+            "max_steps": 30,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["vision"],
+    )
+
+
+def tts_sft() -> B:
+    return notebook_template(
+        "notebook-tts-sft",
+        "Notebook: Orpheus TTS voice fine-tune",
+        "Orpheus_(3B)-TTS.ipynb",
+        "The Orpheus (3B) TTS notebook as a flow: fine-tune a voice on a speech dataset, then save the adapter.",
+        dataset = "Etherll/kaira",
+        tune = {
+            "base_model": "unsloth/orpheus-3b-0.1-ft",
+            # The notebook trains a 16-bit LoRA.
+            "load_in_4bit": False,
+            "task": "audio",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 64,
+            "lora_alpha": 64,
+            "max_seq_length": 2048,
+            "batch_size": 1,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["audio", "tts"],
+    )
+
+
+def embedding_sft() -> B:
+    return notebook_template(
+        "notebook-embedding",
+        "Notebook: EmbeddingGemma retrieval fine-tune",
+        "EmbeddingGemma_(300M).ipynb",
+        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
+        "retrieval, then export to GGUF.",
+        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
+        # so this uses a 40 MB set of the same question and passage shape.
+        dataset = "sentence-transformers/natural-questions",
+        tune = {
+            "base_model": "unsloth/embeddinggemma-300m",
+            "task": "embedding",
+            "max_steps": 30,
+            "learning_rate": 0.00002,
+            "lora_r": 32,
+            "lora_alpha": 64,
+            "max_seq_length": 1024,
+            "batch_size": 64,
+            "gradient_accumulation_steps": 2,
+            "dataset_slice_end": 19999,
+        },
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["embedding"],
+    )
+
+
+def model_arena() -> B:
+    b = B(
+        "model-arena",
+        "Model Arena",
+        "pipeline",
+        "Two local chat models answer the same prompts, a judge scores every answer, and the scores land in a "
+        "table and a bar chart with each model's lead over the other.",
+        tags = ["evaluation", "compare", "table", "chart", "for each"],
+        seed = 41,
+    ).need("chat")
+    b.doc["requirements"]["models"].append(
+        {
+            "ref": "rival",
+            "kind": "chat",
+            "note": "The second contestant; any chat model works.",
+            "optional": False,
+            **RIVAL,
+        }
+    )
+    b.n(
+        "prompts",
+        "input.list",
+        0,
+        1,
+        items = [
+            "Explain why the sky is blue to a ten year old.",
+            "Write a haiku about debugging at 3am.",
+            "Give three tips for a first marathon.",
+        ],
+    )
+    b.n("each", "logic.for_each", 1, 1, group = "arena_loop", max_items = 8)
+    b.e("prompts.items", "each.items")
+    for nid, row, label, model in (("a", 0.5, "Qwen3 4B", CHAT), ("b", 1.5, "Gemma 3 4B", RIVAL)):
+        b.n(
+            nid,
+            "llm.generate",
+            2,
+            row,
+            group = "arena_loop",
+            label = label,
+            model = model,
+            temperature = 0.3,
+            max_tokens = 400,
+        )
+        b.e("each.item", f"{nid}.prompt")
+    b.n(
+        "pair",
+        "text.template",
+        3,
+        1,
+        group = "arena_loop",
+        template = "PROMPT: {{values.0}}\nQwen3 4B: {{values.1}}\nGemma 3 4B: {{values.2}}",
+    )
+    b.e("each.item", "pair.values")
+    b.e("a.text", "pair.values")
+    b.e("b.text", "pair.values")
+    b.e("pair.text", "each.collect")
+    b.group("arena_loop", "For each prompt", (1, 0.2, 3, 2.2), "#22c55e")
+    b.n(
+        "judge",
+        "llm.generate",
+        4.4,
+        1,
+        label = "Judge",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 1200,
+        system = "You are a strict, fair judge of chat answers.",
+        prompt = "Score each model's answer to each prompt from 1 to 10 for helpfulness and accuracy:\n{{context}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string"},
+                            "model": {"type": "string", "enum": ["Qwen3 4B", "Gemma 3 4B"]},
+                            "score": {"type": "number"},
+                        },
+                        "required": ["prompt", "model", "score"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    )
+    b.e("each.results", "judge.context")
+    b.n("rows", "json.get", 5.4, 1, path = "rows")
+    b.e("judge.json", "rows.json")
+    b.n("scores", "table.concat", 6.4, 1, label = "Every score")
+    b.e("rows.value", "scores.tables")
+    b.n(
+        "avg",
+        "table.aggregate",
+        7.4,
+        1,
+        label = "Mean per model",
+        group_by = ["model"],
+        metrics = ["score"],
+        stat = "mean",
+    )
+    b.e("scores.table", "avg.table")
+    b.n(
+        "lead",
+        "table.compare",
+        8.4,
+        0.4,
+        label = "Lead over Qwen3",
+        key = ["model"],
+        metric = "score",
+        baseline_row = "Qwen3 4B",
+    )
+    b.e("avg.table", "lead.table")
+    b.n("bars", "table.chart", 8.4, 1.6, type = "bar", x = "model", y = ["score"])
+    b.e("avg.table", "bars.table")
+    b.n("show_scores", "output.preview", 7.4, 2.2, label = "Every score")
+    b.e("scores.table", "show_scores.value")
+    b.n("show_lead", "output.preview", 9.4, 0.4)
+    b.e("lead.table", "show_lead.value")
+    b.n("show_chart", "output.preview", 9.4, 1.6)
+    b.e("bars.chart", "show_chart.value")
+    b.note(
+        "tip",
+        "Swap either contestant's model or add prompts to the list, then Run.",
+        0,
+        2.2,
+        1.6,
+        0.6,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -2020,6 +2312,11 @@ BUILDERS = (
     product_listing,
     song_maker,
     long_form_writer,
+    text_sft,
+    vision_sft,
+    tts_sft,
+    embedding_sft,
+    model_arena,
 )
 
 

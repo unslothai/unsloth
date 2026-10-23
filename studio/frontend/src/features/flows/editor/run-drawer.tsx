@@ -11,6 +11,7 @@ import { useUiStore } from "../stores/ui-store";
 import type { MediaValue } from "../types";
 import { ArrowDown01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
+import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 const RUN_STATUS_STYLE: Record<string, string> = {
   queued: "bg-zinc-700 text-zinc-200",
@@ -161,21 +162,41 @@ function Outputs() {
       })
       .slice(0, 120);
   }, [runtimeNodes]);
-  if (!media.length)
+  const structured = useMemo(() => {
+    const items: { key: string; label: string; value: unknown }[] = [];
+    for (const [id, rt] of Object.entries(runtimeNodes)) {
+      for (const [port, value] of Object.entries(rt.outputs ?? {})) {
+        if (isStructuredValue(value))
+          items.push({ key: `${id}:${port}`, label: `${id} / ${port}`, value });
+      }
+    }
+    return items.slice(0, 12);
+  }, [runtimeNodes]);
+  if (!media.length && !structured.length)
     return (
       <p className="px-4 py-6 text-center text-[12px] text-zinc-500">
-        Images, audio and video from the run appear here.
+        Images, audio, video, tables and charts from the run appear here.
       </p>
     );
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-2 p-3">
-      {media.map((item) => (
-        <MediaThumb
-          key={item.key}
-          media={item.media}
-          className="aspect-square w-full rounded-md object-cover"
-        />
+    <div className="flex flex-col gap-3 p-3">
+      {structured.map((item) => (
+        <section key={item.key} className="flex flex-col gap-1">
+          <h4 className="font-mono text-[11px] text-zinc-500">{item.label}</h4>
+          <StructuredOutput value={item.value} />
+        </section>
       ))}
+      {media.length ? (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-2">
+          {media.map((item) => (
+            <MediaThumb
+              key={item.key}
+              media={item.media}
+              className="aspect-square w-full rounded-md object-cover"
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
