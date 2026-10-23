@@ -106,17 +106,49 @@ def float8_training_filter(
     return module_filter_fn
 
 
+def _probe_dtype_pairs(recipe):
+    """(mat1, mat2) fp8 dtypes of the GEMMs torchao runs for this recipe / config: forward input x weight,
+    backward grad_output x weight and grad_output x input. torchao picks the platform types (e4m3fnuz /
+    e5m2fnuz on MI300), so they are read from the config, never assumed."""
+    config = recipe
+    if isinstance(recipe, str):
+        from torchao.float8 import Float8LinearConfig
+
+        config = Float8LinearConfig.from_recipe_name(recipe)
+
+    def target(cast, default):
+        dtype = getattr(cast, "target_dtype", None)
+        return dtype if isinstance(dtype, torch.dtype) else default
+
+    def cast(name, default):
+        return target(getattr(config, name, None), default)
+
+    x = cast("cast_config_input", torch.float8_e4m3fn)
+    w = cast("cast_config_weight", torch.float8_e4m3fn)
+    g = cast("cast_config_grad_output", torch.float8_e5m2)
+    w_gi = cast("cast_config_weight_for_grad_input", w)
+    g_gw = cast("cast_config_grad_output_for_grad_weight", g)
+    x_gw = cast("cast_config_input_for_grad_weight", x)
+    pairs = []
+    for pair in ((x, w), (g, w_gi), (g_gw, x_gw)):
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs
+
+
 def _probe_float8_gemm(device, recipe):
-    """One tiny torch._scaled_mm of the recipe's scaling, so an unsupported GPU / torch refuses here, not mid-training."""
-    a = torch.ones(16, 32, device = device).to(torch.float8_e4m3fn)
-    b = torch.ones(16, 32, device = device).to(torch.float8_e4m3fn).t()
-    if recipe == "tensorwise":
+    """Tiny torch._scaled_mm calls with the recipe's scaling and fp8 dtypes, so an unsupported GPU / torch refuses here, not mid-training."""
+    scaling = _recipe_scaling(recipe)
+    if scaling == "tensorwise":
         sa = torch.ones((), device = device)
         sb = torch.ones((), device = device)
     else:
         sa = torch.ones(16, 1, device = device)
         sb = torch.ones(1, 16, device = device)
-    torch._scaled_mm(a, b, scale_a = sa, scale_b = sb, out_dtype = torch.bfloat16)
+    for dtype_a, dtype_b in _probe_dtype_pairs(recipe):
+        a = torch.ones(16, 32, device = device).to(dtype_a)
+        b = torch.ones(16, 32, device = device).to(dtype_b).t()
+        torch._scaled_mm(a, b, scale_a = sa, scale_b = sb, out_dtype = torch.bfloat16)
 
 
 def _recipe_scaling(recipe):
@@ -181,7 +213,7 @@ def _check_hardware(device, recipe):
             )
     probe_recipe = _recipe_scaling(recipe)
     try:
-        _probe_float8_gemm(device, probe_recipe)
+        _probe_float8_gemm(device, recipe)
     except Exception as e:
         raise RuntimeError(
             f"Unsloth: float8_training ({probe_recipe} scaling) is not supported by torch {torch.__version__} on "
