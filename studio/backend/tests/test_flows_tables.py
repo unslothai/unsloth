@@ -310,3 +310,12 @@ def test_chart_treats_text_and_number_x_as_one_coordinate():
     t = T.make_table([{"ctx": 4096, "tps": 10}, {"ctx": "4096", "tps": 12}])
     with pytest.raises(FlowNodeError, match = "Aggregate"):
         T.chart(t, "ctx", ["tps"], kind = "line", group = None, error = None)
+
+
+@run_async
+async def test_compare_handler_mean_reads_the_generated_delta_column():
+    head = T.make_table([{"k": "a", "delta": 5.0}, {"k": "b", "delta": 9.0}])
+    base = T.make_table([{"k": "a", "delta": 4.0}, {"k": "b", "delta": 6.0}])
+    ctx = Ctx(inputs = {"table": head, "baseline": base}, params = {"key": ["k"], "metric": "delta"})
+    out = await load_handlers()["table.compare"](ctx)
+    assert out["delta"] == pytest.approx(2.0)

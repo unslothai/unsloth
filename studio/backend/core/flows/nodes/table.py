@@ -446,7 +446,9 @@ async def table_compare(ctx: NodeContext) -> dict:
         stderr = str(ctx.params.get("stderr") or "").strip() or None,
         allow_mismatch = bool(ctx.params.get("allow_mismatch")),
     )
-    deltas = [r["delta"] for r in out["rows"] if r.get("delta") is not None]
+    # A metric or key named "delta" pushes the generated column to "delta_2": read it by role.
+    col = next((c["id"] for c in out["columns"] if c.get("role") == "delta"), "delta")
+    deltas = [r[col] for r in out["rows"] if _number(r.get(col)) is not None]
     return {
         "table": await finish_table(ctx, out),
         "delta": statistics.fmean(deltas) if deltas else None,
