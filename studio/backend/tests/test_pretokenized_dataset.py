@@ -389,6 +389,53 @@ def test_mlx_training_prepares_a_pretokenized_eval_split_whatever_the_train_form
             assert "dataset_final_format" not in names
 
 
+def test_cuda_training_prepares_each_split_by_its_own_format():
+    # A text train split with a pre-tokenized eval split still trims the eval padding, and a text eval split beside a
+    # pre-tokenized train split is left alone (it has no input_ids to prepare).
+    import ast
+
+    tree = ast.parse(
+        (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+            encoding = "utf-8"
+        )
+    )
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "prepare_pretokenized_dataset"
+        and getattr(node.args[0], "id", None) == "eval_dataset"
+    )
+    guards, node = set(), call
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, ast.If):
+            guards |= {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+    assert "eval_pretokenized" in guards
+    assert not guards & {"pretokenized_mode", "dataset_final_format"}
+    fn = node = call
+    while not isinstance(fn, ast.FunctionDef):
+        fn = parents[fn]
+    flag = next(
+        a
+        for a in ast.walk(fn)
+        if isinstance(a, ast.Assign) and getattr(a.targets[0], "id", None) == "eval_pretokenized"
+    )
+    assert "eval_final_format" in {n.id for n in ast.walk(flag.value) if isinstance(n, ast.Name)}
+    # The separately formatted eval split records its own resolved format for the training step to read.
+    recorded = [
+        a
+        for a in ast.walk(tree)
+        if isinstance(a, ast.Assign)
+        and isinstance(a.targets[0], ast.Subscript)
+        and getattr(a.targets[0].slice, "value", None) == "eval_final_format"
+    ]
+    assert any(
+        "eval_info" in {n.id for n in ast.walk(a.value) if isinstance(n, ast.Name)} for a in recorded
+    )
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 def test_prepare_trims_boolean_masks_like_integer_masks(streaming):
     rows = {
