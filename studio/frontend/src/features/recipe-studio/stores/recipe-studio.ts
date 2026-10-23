@@ -32,8 +32,15 @@ import { applyRecipeConnection, isValidRecipeConnection } from "../utils/graph";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
 import {
   type SuperCard,
+  SUPER_CARD_NODE_TYPE,
+  type SuperCardNodeData,
+  applySuperCardView,
   combineSelection,
+  estimateSuperCardHeight,
+  layoutSuperCardMembers,
+  moveSuperCard,
   pruneSuperCards,
+  ungroupCollides,
   ungroupCard,
 } from "../utils/graph/super-cards";
 import {
@@ -224,32 +231,126 @@ function buildAddedNodeState(
   };
 }
 
-function placeSuperCardsAtMembers(
-  superCards: Record<string, SuperCard>,
-  nodes: RecipeNode[],
-): Record<string, SuperCard> {
-  const positions = new Map(nodes.map((node) => [node.id, node.position]));
-  return Object.fromEntries(
-    Object.values(superCards).map((card) => {
-      const points = card.nodeIds.flatMap((id) => {
-        const point = positions.get(id);
-        return point ? [point] : [];
-      });
-      if (points.length === 0) {
-        return [card.id, card];
-      }
-      return [
-        card.id,
-        {
-          ...card,
-          position: {
-            x: Math.min(...points.map((point) => point.x)),
-            y: Math.min(...points.map((point) => point.y)),
-          },
-        },
-      ];
+// Auto layout over what the canvas shows: inside a card only its members, at
+// the root each card as one block, with its members carried along by the same
+// offset so they come back beside the card on ungroup.
+function layoutRecipeState(
+  state: RecipeStudioState,
+): Pick<
+  RecipeStudioState,
+  "nodes" | "edges" | "superCards" | "auxNodePositions"
+> {
+  const isTopBottom = state.layoutDirection === "TB";
+  const openCard = state.openSuperCardId
+    ? state.superCards[state.openSuperCardId]
+    : null;
+  if (openCard) {
+    const laid =
+      layoutSuperCardMembers(
+        openCard,
+        state.nodes,
+        state.edges,
+        state.configs,
+        state.layoutDirection,
+        true,
+      ) ?? state.nodes;
+    return {
+      nodes: applyLayoutDirectionToNodes(
+        laid,
+        state.configs,
+        state.layoutDirection,
+      ),
+      edges: state.edges,
+      superCards: state.superCards,
+      auxNodePositions: state.auxNodePositions,
+    };
+  }
+  const displayGraph = applySuperCardView({
+    graph: deriveDisplayGraph({
+      nodes: state.nodes,
+      edges: state.edges,
+      configs: state.configs,
+      layoutDirection: state.layoutDirection,
+      auxNodePositions: {},
+      llmAuxVisibility: state.llmAuxVisibility,
     }),
+    superCards: state.superCards,
+    openSuperCardId: null,
+    selectedSuperCardIds: new Set(),
+    configs: state.configs,
+    edges: state.edges,
+    layoutDirection: state.layoutDirection,
+  });
+  const { nodes } = getLayoutedElements(
+    displayGraph.nodes.map((node) =>
+      node.type === SUPER_CARD_NODE_TYPE
+        ? {
+            ...node,
+            height: estimateSuperCardHeight(
+              node.data as unknown as SuperCardNodeData,
+            ),
+          }
+        : node,
+    ),
+    displayGraph.edges,
+    {
+      direction: state.layoutDirection,
+      nodesep: isTopBottom ? 120 : 80,
+      ranksep: isTopBottom ? 140 : 80,
+      configs: state.configs,
+    },
   );
+  const layoutedPositions = new Map(
+    nodes.map((node) => [node.id, node.position] as const),
+  );
+  const superCards: Record<string, SuperCard> = {};
+  const memberOffsets = new Map<string, XYPosition>();
+  for (const card of Object.values(state.superCards)) {
+    const position = layoutedPositions.get(card.id) ?? card.position;
+    const offset = {
+      x: position.x - card.position.x,
+      y: position.y - card.position.y,
+    };
+    for (const id of card.nodeIds) {
+      memberOffsets.set(id, offset);
+    }
+    superCards[card.id] = { ...card, position };
+  }
+  const nextNodes = state.nodes.map((node) => {
+    const offset = memberOffsets.get(node.id);
+    if (offset) {
+      return {
+        ...node,
+        position: {
+          x: node.position.x + offset.x,
+          y: node.position.y + offset.y,
+        },
+      };
+    }
+    const position = layoutedPositions.get(node.id);
+    return position ? { ...node, position } : node;
+  });
+  const centeredNodes = centerModelInfraNodes(
+    nextNodes,
+    state.edges,
+    state.configs,
+    state.layoutDirection,
+  );
+  return {
+    auxNodePositions: {},
+    superCards,
+    edges: optimizeModelInfraEdgeHandles(
+      state.edges,
+      centeredNodes,
+      state.configs,
+      state.layoutDirection,
+    ),
+    nodes: applyLayoutDirectionToNodes(
+      centeredNodes,
+      state.configs,
+      state.layoutDirection,
+    ),
+  };
 }
 
 function getAddedNodeContext(
@@ -401,63 +502,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       };
     }),
   applyLayout: () =>
-    set((state) => {
-      if (state.executionLocked) {
-        return state;
-      }
-      const isTopBottom = state.layoutDirection === "TB";
-
-      const displayGraph = deriveDisplayGraph({
-        nodes: state.nodes,
-        edges: state.edges,
-        configs: state.configs,
-        layoutDirection: state.layoutDirection,
-        auxNodePositions: {},
-        llmAuxVisibility: state.llmAuxVisibility,
-      });
-      const { nodes } = getLayoutedElements(
-        displayGraph.nodes,
-        displayGraph.edges,
-        {
-          direction: state.layoutDirection,
-          nodesep: isTopBottom ? 120 : 80,
-          ranksep: isTopBottom ? 140 : 80,
-          configs: state.configs,
-        },
-      );
-      const layoutedPositions = new Map(
-        nodes.map((node) => [node.id, node.position] as const),
-      );
-      const nextNodes = state.nodes.map((node) => {
-        const position = layoutedPositions.get(node.id);
-        if (!position) {
-          return node;
-        }
-        return { ...node, position };
-      });
-      const centeredNodes = centerModelInfraNodes(
-        nextNodes,
-        state.edges,
-        state.configs,
-        state.layoutDirection,
-      );
-      const optimizedEdges = optimizeModelInfraEdgeHandles(
-        state.edges,
-        centeredNodes,
-        state.configs,
-        state.layoutDirection,
-      );
-      return {
-        auxNodePositions: {},
-        superCards: placeSuperCardsAtMembers(state.superCards, centeredNodes),
-        edges: optimizedEdges,
-        nodes: applyLayoutDirectionToNodes(
-          centeredNodes,
-          state.configs,
-          state.layoutDirection,
-        ),
-      };
-    }),
+    set((state) => (state.executionLocked ? state : layoutRecipeState(state))),
   setLlmAuxVisibility: (id, visible) =>
     set((state) => {
       if (state.llmAuxVisibility[id] === visible) {
@@ -837,9 +882,19 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     }),
   ungroupSuperCard: (id) =>
     set((state) => {
+      const card = state.superCards[id];
       const update = state.executionLocked ? null : ungroupCard(state, id);
-      if (!update) {
+      if (!(card && update)) {
         return state;
+      }
+      const next = { ...state, ...update };
+      // Members that come back on top of other blocks get a fresh layout.
+      if (ungroupCollides(card, next.nodes, state.superCards)) {
+        return {
+          ...update,
+          ...layoutRecipeState(next),
+          fitViewTick: state.fitViewTick + 1,
+        };
       }
       return {
         ...update,
@@ -855,10 +910,20 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       if (nextId === state.openSuperCardId) {
         return state;
       }
+      const laidOut =
+        nextId && !state.executionLocked
+          ? layoutSuperCardMembers(
+              state.superCards[nextId],
+              state.nodes,
+              state.edges,
+              state.configs,
+              state.layoutDirection,
+            )
+          : null;
       return {
         openSuperCardId: nextId,
         selectedSuperCardIds: [],
-        nodes: state.nodes.map((node) =>
+        nodes: (laidOut ?? state.nodes).map((node) =>
           node.selected ? { ...node, selected: false } : node,
         ),
         fitViewTick: state.fitViewTick + 1,
@@ -873,18 +938,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       return { superCards: { ...state.superCards, [id]: { ...card, title } } };
     }),
   setSuperCardPosition: (id, position) =>
-    set((state) => {
-      const card = state.superCards[id];
-      if (
-        !card ||
-        (card.position.x === position.x && card.position.y === position.y)
-      ) {
-        return state;
-      }
-      return {
-        superCards: { ...state.superCards, [id]: { ...card, position } },
-      };
-    }),
+    set((state) => moveSuperCard(state, id, position) ?? state),
   setSelectedSuperCardIds: (ids) =>
     set((state) =>
       ids.length === state.selectedSuperCardIds.length &&

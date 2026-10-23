@@ -8,17 +8,20 @@ import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { importRecipePayload } = await import(
-  "../src/features/recipe-studio/utils/import/importer.ts"
-);
-const { buildRecipePayload } = await import(
-  "../src/features/recipe-studio/utils/payload/build-payload.ts"
-);
+const { importRecipePayload } =
+  await import("../src/features/recipe-studio/utils/import/importer.ts");
+const { buildRecipePayload } =
+  await import("../src/features/recipe-studio/utils/payload/build-payload.ts");
 const {
   applySuperCardView,
   combineSelection,
   createSuperCard,
   getCombinableSelection,
+  layoutSuperCardMembers,
+  membersOverlap,
+  moveSuperCard,
+  ungroupCollides,
+  superCardFocusIds,
   superCardInputHandle,
   superCardOutputHandle,
   pruneSuperCards,
@@ -26,7 +29,8 @@ const {
   ungroupCard,
 } = await import("../src/features/recipe-studio/utils/graph/super-cards.ts");
 
-type SuperCardState = import("../src/features/recipe-studio/utils/graph/super-cards.ts").SuperCardState;
+type SuperCardState =
+  import("../src/features/recipe-studio/utils/graph/super-cards.ts").SuperCardState;
 
 const CONVERSATION = readSrc(
   "features/data-recipes/learning-recipes/conversation.json",
@@ -108,7 +112,12 @@ test("super cards round-trip through recipe JSON export and import", () => {
     GROUPED,
   );
   assert.deepEqual(
-    JSON.parse(JSON.stringify(build(reimported.snapshot, reimported.snapshot.superCards ?? {}).payload)),
+    JSON.parse(
+      JSON.stringify(
+        build(reimported.snapshot, reimported.snapshot.superCards ?? {})
+          .payload,
+      ),
+    ),
     JSON.parse(exported),
   );
 });
@@ -207,7 +216,7 @@ test("combine then ungroup puts the nodes back unchanged", () => {
   const strip = (nodes: typeof before) =>
     nodes.map(({ selected: _selected, ...node }) => node);
   assert.deepEqual(strip(state.nodes), strip(before));
-  assert.ok(state.nodes.every((node) => node.selected === grouped.has(node.id)));
+  assert.ok(state.nodes.every((node) => !node.selected));
 });
 
 test("one nesting level: grouped nodes can't join a second card", () => {
@@ -238,7 +247,9 @@ test("one nesting level: grouped nodes can't join a second card", () => {
 test("removing a grouped node drops it from its card", () => {
   const { snapshot, superCards, card } = groupedSnapshot();
   const remaining = new Set(
-    snapshot.nodes.map((node) => node.id).filter((id) => id !== card.nodeIds[0]),
+    snapshot.nodes
+      .map((node) => node.id)
+      .filter((id) => id !== card.nodeIds[0]),
   );
   assert.deepEqual(
     pruneSuperCards(superCards, remaining)[card.id]?.nodeIds,
@@ -248,4 +259,149 @@ test("removing a grouped node drops it from its card", () => {
     [...remaining].filter((id) => !card.nodeIds.includes(id)),
   );
   assert.deepEqual(pruneSuperCards(superCards, emptied), {});
+});
+
+test("after combine the view frames the card and the blocks it wires to", () => {
+  const { snapshot, superCards, card } = groupedSnapshot();
+  const members = new Set(card.nodeIds);
+  const neighbours = new Set<string>();
+  for (const edge of snapshot.edges) {
+    if (members.has(edge.source) !== members.has(edge.target)) {
+      neighbours.add(members.has(edge.source) ? edge.target : edge.source);
+    }
+  }
+  const focus = superCardFocusIds(card.id, superCards, snapshot.edges);
+  assert.equal(focus[0], card.id);
+  assert.deepEqual(new Set(focus.slice(1)), neighbours);
+  assert.ok(focus.every((id) => !members.has(id)));
+});
+
+test("opening a card lays out its members only when they overlap", () => {
+  const { snapshot, card } = groupedSnapshot();
+  const members = new Set(card.nodeIds);
+  const sized = snapshot.nodes.map((node) => ({
+    ...node,
+    width: 400,
+    height: 120,
+  }));
+  const spread = sized.map((node, index) => ({
+    ...node,
+    position: { x: 0, y: index * 300 },
+  }));
+  assert.equal(
+    layoutSuperCardMembers(
+      card,
+      spread,
+      snapshot.edges,
+      snapshot.configs,
+      "LR",
+    ),
+    null,
+  );
+
+  const stacked = sized.map((node) =>
+    members.has(node.id) ? { ...node, position: { x: 500, y: 700 } } : node,
+  );
+  assert.ok(membersOverlap(stacked.filter((node) => members.has(node.id))));
+  const laid = layoutSuperCardMembers(
+    card,
+    stacked,
+    snapshot.edges,
+    snapshot.configs,
+    "LR",
+  );
+  assert.ok(laid);
+  const laidMembers = laid.filter((node) => members.has(node.id));
+  assert.equal(membersOverlap(laidMembers), false);
+  assert.equal(Math.min(...laidMembers.map((node) => node.position.x)), 500);
+  assert.equal(Math.min(...laidMembers.map((node) => node.position.y)), 700);
+  for (const node of laid) {
+    if (!members.has(node.id)) {
+      assert.deepEqual(
+        node.position,
+        sized.find((item) => item.id === node.id)?.position,
+      );
+    }
+  }
+});
+
+test("the super card keeps inputs on the left and outputs on the right in both layouts", () => {
+  const source = readSrc(
+    "features/recipe-studio/components/recipe-graph-super-card-node.tsx",
+  );
+  assert.match(source, /input \? Position\.Left : Position\.Right/);
+  assert.doesNotMatch(source, /Position\.(Top|Bottom)/);
+  assert.doesNotMatch(source, /layoutDirection/);
+});
+
+function sizedNodes(positions: Record<string, { x: number; y: number }>) {
+  const snapshot = loadSnapshot();
+  const nodes = snapshot.nodes.map((node) => ({
+    ...node,
+    width: 400,
+    height: 120,
+    position: positions[snapshot.configs[node.id].name] ?? node.position,
+  }));
+  return { snapshot, nodes };
+}
+
+test("a new card lands clear of the blocks still on the canvas", () => {
+  const snapshot = loadSnapshot();
+  const names = Object.values(snapshot.configs).map((config) => config.name);
+  const positions = Object.fromEntries(
+    names.map((name, index) => [name, { x: 2000, y: index * 400 }]),
+  );
+  Object.assign(positions, {
+    domain: { x: 0, y: 400 },
+    topic: { x: 500, y: 0 },
+    conversation_length: { x: 500, y: 400 },
+    user_goal: { x: 0, y: 0 },
+  });
+  const { nodes } = sizedNodes(positions);
+  const created = createSuperCard({}, nodes, idsByName(snapshot, GROUPED));
+  assert.ok(created);
+  // The members' corner (0, 0) is taken by user_goal, so the card moves on to
+  // the first member spot that is free.
+  assert.deepEqual(created.card.position, { x: 500, y: 0 });
+});
+
+test("dragging a card carries its members, and ungroup reports a collision", () => {
+  const { snapshot, superCards, card } = groupedSnapshot();
+  const members = new Set(card.nodeIds);
+  const moved = moveSuperCard({ nodes: snapshot.nodes, superCards }, card.id, {
+    x: card.position.x + 300,
+    y: card.position.y - 40,
+  });
+  assert.ok(moved);
+  for (const node of moved.nodes) {
+    const before = snapshot.nodes.find((item) => item.id === node.id);
+    assert.ok(before);
+    const expected = members.has(node.id)
+      ? { x: before.position.x + 300, y: before.position.y - 40 }
+      : before.position;
+    assert.deepEqual(node.position, expected);
+  }
+
+  const outsider = snapshot.nodes.find((node) => !members.has(node.id));
+  assert.ok(outsider);
+  const memberNode = snapshot.nodes.find((node) => members.has(node.id));
+  assert.ok(memberNode);
+  const spread = snapshot.nodes.map((node, index) => ({
+    ...node,
+    width: 400,
+    height: 120,
+    position: { x: 0, y: index * 400 },
+  }));
+  assert.equal(ungroupCollides(card, spread, superCards), false);
+  const crowded = spread.map((node) =>
+    node.id === outsider.id
+      ? {
+          ...node,
+          position:
+            spread.find((item) => item.id === memberNode.id)?.position ??
+            node.position,
+        }
+      : node,
+  );
+  assert.equal(ungroupCollides(card, crowded, superCards), true);
 });

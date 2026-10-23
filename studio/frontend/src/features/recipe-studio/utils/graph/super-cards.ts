@@ -6,7 +6,10 @@ import type {
   RecipeExecutionRecord,
   RecipeExecutionStatus,
 } from "../../execution-types";
+import { DEFAULT_NODE_HEIGHT, DEFAULT_NODE_WIDTH } from "../../constants";
 import type { LayoutDirection, NodeConfig, RecipeNode } from "../../types";
+import { getLayoutedElements } from "../layout";
+import { readNodeHeight, readNodeWidth } from "../rf-node-dimensions";
 
 // A super card is a view over the flat graph: members stay real nodes in the
 // store, so the run payload never sees the grouping.
@@ -53,7 +56,8 @@ export type UiSuperCard = {
 };
 
 export const SUPER_CARD_NODE_TYPE = "super";
-export const SUPER_CARD_WIDTH = 340;
+export const SUPER_CARD_WIDTH = 360;
+const SUPER_CARD_HEIGHT_ESTIMATE = 380;
 
 const COLUMN_KINDS: ReadonlySet<NodeConfig["kind"]> = new Set([
   "sampler",
@@ -103,6 +107,97 @@ function nextSuperCardId(superCards: Record<string, SuperCard>): string {
   return `sc${max + 1}`;
 }
 
+type Rect = { x: number; y: number; width: number; height: number };
+
+const MEMBER_GAP = 16;
+
+function memberRect(node: RecipeNode): Rect {
+  return {
+    x: node.position.x,
+    y: node.position.y,
+    width: readNodeWidth(node) ?? DEFAULT_NODE_WIDTH,
+    height: readNodeHeight(node) ?? DEFAULT_NODE_HEIGHT,
+  };
+}
+
+function superCardRect(card: SuperCard): Rect {
+  return {
+    ...card.position,
+    width: SUPER_CARD_WIDTH,
+    height: SUPER_CARD_HEIGHT_ESTIMATE,
+  };
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return (
+    a.x < b.x + b.width + MEMBER_GAP &&
+    b.x < a.x + a.width + MEMBER_GAP &&
+    a.y < b.y + b.height + MEMBER_GAP &&
+    b.y < a.y + a.height + MEMBER_GAP
+  );
+}
+
+export function membersOverlap(nodes: RecipeNode[]): boolean {
+  const rects = nodes.map(memberRect);
+  return rects.some((a, i) =>
+    rects.slice(i + 1).some((b) => rectsOverlap(a, b)),
+  );
+}
+
+// Members are hidden once grouped, so their spots are free: take the first
+// one where the card clears every block still on the canvas.
+function placeSuperCard(members: RecipeNode[], others: Rect[]): XYPosition {
+  const corner = {
+    x: Math.min(...members.map((node) => node.position.x)),
+    y: Math.min(...members.map((node) => node.position.y)),
+  };
+  const candidates = [
+    corner,
+    ...[...members]
+      .sort(
+        (a, b) => a.position.y - b.position.y || a.position.x - b.position.x,
+      )
+      .map((node) => node.position),
+  ];
+  const free = candidates.find((point) => {
+    const rect = {
+      ...point,
+      width: SUPER_CARD_WIDTH,
+      height: SUPER_CARD_HEIGHT_ESTIMATE,
+    };
+    return others.every((other) => !rectsOverlap(rect, other));
+  });
+  return { ...(free ?? corner) };
+}
+
+// True when ungrouped members would land on a block or card still showing.
+export function ungroupCollides(
+  card: SuperCard,
+  nodes: RecipeNode[],
+  superCards: Record<string, SuperCard>,
+): boolean {
+  const members = new Set(card.nodeIds);
+  const owner = buildSuperCardMembership(superCards);
+  const memberRects = nodes
+    .filter((node) => members.has(node.id))
+    .map(memberRect);
+  const others = [
+    ...nodes
+      .filter((node) => !(members.has(node.id) || owner.has(node.id)))
+      .map(memberRect),
+    ...Object.values(superCards)
+      .filter((other) => other.id !== card.id)
+      .map(superCardRect),
+  ];
+  return memberRects.some((a) => others.some((b) => rectsOverlap(a, b)));
+}
+
+export function estimateSuperCardHeight(data: SuperCardNodeData): number {
+  const ports = Math.max(data.inputs.length, data.outputs.length, 1);
+  const produceRows = Math.ceil(Math.min(data.produces.length, 5) / 2);
+  return 64 + 32 + ports * 30 + 24 + produceRows * 34 + 32 + 56;
+}
+
 export function createSuperCard(
   superCards: Record<string, SuperCard>,
   nodes: RecipeNode[],
@@ -116,14 +211,18 @@ export function createSuperCard(
     return null;
   }
   const id = nextSuperCardId(superCards);
+  const memberIds = new Set(members.map((node) => node.id));
+  const others = [
+    ...nodes
+      .filter((node) => !(memberIds.has(node.id) || owner.has(node.id)))
+      .map(memberRect),
+    ...Object.values(superCards).map(superCardRect),
+  ];
   const card: SuperCard = {
     id,
     title: `Super card ${id.slice(2)}`,
     nodeIds: members.map((node) => node.id),
-    position: {
-      x: Math.min(...members.map((node) => node.position.x)),
-      y: Math.min(...members.map((node) => node.position.y)),
-    },
+    position: placeSuperCard(members, others),
   };
   return { superCards: { ...superCards, [id]: card }, card };
 }
@@ -158,8 +257,37 @@ export function combineSelection(
   };
 }
 
-// Members were never moved or edited, so ungrouping only drops the card and
-// selects what comes back.
+// Members ride along with a dragged card so ungroup brings them back beside it.
+export function moveSuperCard(
+  state: Pick<SuperCardState, "nodes" | "superCards">,
+  id: string,
+  position: XYPosition,
+): Pick<SuperCardState, "nodes" | "superCards"> | null {
+  const card = state.superCards[id];
+  if (
+    !card ||
+    (card.position.x === position.x && card.position.y === position.y)
+  ) {
+    return null;
+  }
+  const dx = position.x - card.position.x;
+  const dy = position.y - card.position.y;
+  const members = new Set(card.nodeIds);
+  return {
+    superCards: { ...state.superCards, [id]: { ...card, position } },
+    nodes: state.nodes.map((node) =>
+      members.has(node.id)
+        ? {
+            ...node,
+            position: { x: node.position.x + dx, y: node.position.y + dy },
+          }
+        : node,
+    ),
+  };
+}
+
+// Members were never edited, so ungrouping only drops the card. Nothing is
+// left selected, so the Combine action doesn't pop straight back up.
 export function ungroupCard(
   state: SuperCardState,
   id: string,
@@ -168,7 +296,6 @@ export function ungroupCard(
   if (!card) {
     return null;
   }
-  const members = new Set(card.nodeIds);
   return {
     superCards: removeSuperCard(state.superCards, id),
     openSuperCardId:
@@ -177,9 +304,7 @@ export function ungroupCard(
       (cardId) => cardId !== id,
     ),
     nodes: state.nodes.map((node) =>
-      members.has(node.id) === Boolean(node.selected)
-        ? node
-        : { ...node, selected: members.has(node.id) },
+      node.selected ? { ...node, selected: false } : node,
     ),
   };
 }
@@ -285,6 +410,74 @@ export function summarizeLastRun(
     totalColumns: columns.length,
     finishedAt: latest.finishedAt,
   };
+}
+
+// The card plus whatever it wires to, as shown on the root canvas.
+export function superCardFocusIds(
+  cardId: string,
+  superCards: Record<string, SuperCard>,
+  edges: Edge[],
+): string[] {
+  const card = superCards[cardId];
+  if (!card) {
+    return [];
+  }
+  const owner = buildSuperCardMembership(superCards);
+  const members = new Set(card.nodeIds);
+  const ids = new Set([cardId]);
+  for (const edge of edges) {
+    const sourceIn = members.has(edge.source);
+    if (sourceIn === members.has(edge.target)) {
+      continue;
+    }
+    const other = sourceIn ? edge.target : edge.source;
+    ids.add(owner.get(other) ?? other);
+  }
+  return [...ids];
+}
+
+// Auto layout for the inside view: only runs when members would overlap, and
+// keeps the group anchored where it was so the root canvas doesn't jump.
+export function layoutSuperCardMembers(
+  card: SuperCard,
+  nodes: RecipeNode[],
+  edges: Edge[],
+  configs: Record<string, NodeConfig>,
+  direction: LayoutDirection,
+  force = false,
+): RecipeNode[] | null {
+  const members = new Set(card.nodeIds);
+  const memberNodes = nodes.filter((node) => members.has(node.id));
+  if (memberNodes.length < 2 || !(force || membersOverlap(memberNodes))) {
+    return null;
+  }
+  const topBottom = direction === "TB";
+  const laid = getLayoutedElements(
+    memberNodes,
+    edges.filter(
+      (edge) => members.has(edge.source) && members.has(edge.target),
+    ),
+    {
+      direction,
+      nodesep: topBottom ? 120 : 80,
+      ranksep: topBottom ? 140 : 80,
+      configs,
+    },
+  ).nodes;
+  const minOf = (list: RecipeNode[], axis: "x" | "y") =>
+    Math.min(...list.map((node) => node.position[axis]));
+  const dx = minOf(memberNodes, "x") - minOf(laid, "x");
+  const dy = minOf(memberNodes, "y") - minOf(laid, "y");
+  const positions = new Map(
+    laid.map((node) => [
+      node.id,
+      { x: node.position.x + dx, y: node.position.y + dy },
+    ]),
+  );
+  return nodes.map((node) => {
+    const position = positions.get(node.id);
+    return position ? { ...node, position } : node;
+  });
 }
 
 function isAuxOf(nodeId: string, memberIds: Set<string>): boolean {
