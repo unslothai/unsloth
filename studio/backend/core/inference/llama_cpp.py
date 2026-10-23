@@ -13688,6 +13688,11 @@ class LlamaCppBackend:
             return "disabled by UNSLOTH_DISABLE_DC_P2P=1"
         if os.environ.get("UNSLOTH_FORCE_DC_P2P") == "1":
             return None
+        snapshot = getattr(cls, "_MIG_DEVICE_SNAPSHOT", None)
+        if snapshot is not None and snapshot[:2] == (
+            os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")
+        ):
+            return "MIG device UUIDs cannot be verified by the physical-card NVLink matrix"
 
         def _pcie(reason: str) -> str:
             """Append the IOMMU diagnosis to a veto that implies a PCIe peer path.
@@ -14091,6 +14096,18 @@ class LlamaCppBackend:
     def _cuda_compute_caps() -> dict:
         """Physical id -> SM (90 for sm_90) via nvidia-smi, honoring
         CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
+        snapshot = getattr(LlamaCppBackend, "_MIG_DEVICE_SNAPSHOT", None)
+        if snapshot is not None and snapshot[:2] == (
+            os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")
+        ):
+            caps = {}
+            for row in snapshot[2]:
+                try:
+                    major, minor = row.get("compute_cap", "").split(".")
+                    caps[int(row["index"])] = int(major) * 10 + int(minor)
+                except (TypeError, ValueError):
+                    pass
+            return caps
         try:
             from utils.hardware import gpu_query
 
@@ -15422,6 +15439,12 @@ class LlamaCppBackend:
         or unresolvable UUID mask the ids cannot be mapped back to, where a numeric pin would
         be re-read against the whole host (a card the parent hid, or the whole MIG card)."""
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        snapshot = getattr(LlamaCppBackend, "_MIG_DEVICE_SNAPSHOT", None)
+        if snapshot is not None and snapshot[:2] == (
+            cvd, os.environ.get("CUDA_DEVICE_ORDER")
+        ):
+            from utils.hardware import mig
+            return mig.visibility_for(snapshot[2], gpu_indices)
         if (
             LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False
             and cvd is not None
@@ -15614,6 +15637,21 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+        from utils.hardware import mig
+
+        mig_rows = mig.visible_devices(fresh = True, listing = True)
+        LlamaCppBackend._MIG_DEVICE_SNAPSHOT = None
+        if mig_rows is not None:
+            # These are CUDA device IDs, never physical card IDs. Keep unknown
+            # memory as zero instead of silently deleting an enumerated device.
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+            LlamaCppBackend._MIG_DEVICE_SNAPSHOT = (
+                os.environ.get("CUDA_VISIBLE_DEVICES"),
+                os.environ.get("CUDA_DEVICE_ORDER"), mig_rows,
+            )
+            gpus = sorted((int(r["index"]), int(r.get("memory_free_mib") or 0),
+                           int(r.get("memory_total_mib") or 0)) for r in mig_rows)
+            return LlamaCppBackend._cuda_sm_gate_keep(binary, gpus) if for_llama_server else gpus
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         unsized_ids: list[int] = []
         mig_card_rows: list[tuple[int, int, int]] = []
