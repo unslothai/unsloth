@@ -4971,6 +4971,11 @@ class UnslothTrainer:
                     dataset["dataset"], max_seq_length = max_seq, vocab_size = vocab_size
                 )
             if eval_pretokenized:
+                # TRL packs eval by `packing` unless eval_packing says otherwise, and packing keeps only input_ids,
+                # so a pre-tokenized eval split beside a packed text train split would lose its labels.
+                if config_args.get("packing"):
+                    logger.info("Pre-tokenized eval dataset: eval sequence packing turned off\n")
+                    config_args["eval_packing"] = False
                 eval_dataset = prepare_pretokenized_dataset(
                     eval_dataset, max_seq_length = max_seq, vocab_size = vocab_size
                 )

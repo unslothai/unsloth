@@ -510,3 +510,96 @@ def test_trl_collator_never_attends_or_trains_masked_padding():
         ]
         assert attended == real
         assert [x for x in batch["labels"][r].tolist() if x != -100] == real
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "rows, column",
+    [
+        ({"input_ids": [[1, 2], [3, 4]], "attention_mask": [[1, 1], [None, 1]]}, "attention_mask"),
+        ({"input_ids": [[1, 2], [3, 4]], "labels": [[-100, 2], [None, 4]]}, "labels"),
+    ],
+)
+def test_prepare_refuses_null_values_in_token_columns(rows, column, streaming):
+    # Arrow's any / min_max skip nulls, so [None, 1] used to pass as an all-ones mask and TRL attended the hole.
+    ds = Dataset.from_dict(rows)
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    with pytest.raises(ValueError, match = rf"row 1 .*null.*'{column}'"):
+        list(prepare_pretokenized_dataset(ds, max_seq_length = 8))
+
+
+def test_mlx_vocab_size_reads_the_input_embedding_table():
+    from types import SimpleNamespace as NS
+
+    from core.training.worker import _mlx_vocab_size
+
+    weight = NS(shape = (32, 8))
+    assert _mlx_vocab_size(NS(model = NS(embed_tokens = NS(weight = weight)))) == 32
+    # QuantizedEmbedding packs its weight, so the stored row count wins over the packed shape.
+    quant = NS(num_embeddings = 64, weight = NS(shape = (64, 1)))
+    assert _mlx_vocab_size(NS(model = NS(embed_tokens = quant))) == 64
+    vlm = NS(language_model = NS(model = NS(embed_tokens = NS(weight = weight))))
+    assert _mlx_vocab_size(vlm) == 32
+    lora = NS(embedding = NS(weight = weight))
+    assert _mlx_vocab_size(NS(model = NS(embed_tokens = lora))) == 32
+    assert _mlx_vocab_size(NS()) is None
+
+
+def test_mlx_training_passes_the_model_vocab_size_to_both_splits():
+    # Without it an out-of-range label reaches the MLX loss, where indexing the vocabulary fails mid-run.
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_mlx_training"
+    )
+    calls = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "prepare_pretokenized_dataset"
+    ]
+    assert len(calls) == 2
+    for call in calls:
+        vocab = next(k.value for k in call.keywords if k.arg == "vocab_size")
+        assert isinstance(vocab, ast.Call) and vocab.func.id == "_mlx_vocab_size"
+        assert [a.id for a in vocab.args] == ["model"]
+
+
+def test_cuda_training_turns_eval_packing_off_for_a_pretokenized_eval_split():
+    # TRL packs eval by `packing` unless eval_packing overrides it, and packing drops the eval split's labels.
+    import ast
+
+    tree = ast.parse(
+        (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+            encoding = "utf-8"
+        )
+    )
+    guard = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "eval_pretokenized"
+    )
+    assigned = [
+        a
+        for a in ast.walk(guard)
+        if isinstance(a, ast.Assign)
+        and isinstance(a.targets[0], ast.Subscript)
+        and getattr(a.targets[0].value, "id", None) == "config_args"
+        and getattr(a.targets[0].slice, "value", None) == "eval_packing"
+    ]
+    assert assigned and all(a.value.value is False for a in assigned)
+
+
+def test_eval_packing_is_a_field_on_every_supported_trl():
+    # eval_packing exists from TRL 0.22.2 (the floor) on, so setting it never breaks SFTConfig construction.
+    from trl import SFTConfig
+
+    assert "eval_packing" in SFTConfig.__dataclass_fields__

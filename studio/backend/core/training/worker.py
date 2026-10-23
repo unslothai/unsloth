@@ -2453,6 +2453,31 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
         )
 
 
+def _mlx_vocab_size(model):
+    """Rows of the MLX model's input embedding table (the CUDA path reads get_input_embeddings().num_embeddings), so
+    a pre-tokenized id or label past it is refused before the loss indexes it. None when it cannot be found, which
+    skips only the range check."""
+    for owner in (model, getattr(model, "language_model", None)):
+        if owner is None:
+            continue
+        for embed in (
+            getattr(getattr(owner, "model", None), "embed_tokens", None),
+            getattr(owner, "embed_tokens", None),
+        ):
+            # A LoRA-wrapped embedding keeps the table on its inner module.
+            for layer in (embed, getattr(embed, "embedding", None), getattr(embed, "base_layer", None)):
+                if layer is None:
+                    continue
+                # QuantizedEmbedding packs its weight, so its row count is the stored num_embeddings.
+                rows = getattr(layer, "num_embeddings", None)
+                shape = getattr(getattr(layer, "weight", None), "shape", None)
+                if rows is None and shape:
+                    rows = shape[0]
+                if isinstance(rows, int) and not isinstance(rows, bool) and rows > 0:
+                    return rows
+    return None
+
+
 def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
     """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
     Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
@@ -3609,11 +3634,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if dataset_final_format == "pretokenized":
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
 
-        dataset = prepare_pretokenized_dataset(dataset, max_seq_length = None)
+        dataset = prepare_pretokenized_dataset(
+            dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model)
+        )
     if eval_dataset is not None and eval_final_format == "pretokenized":
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
 
-        eval_dataset = prepare_pretokenized_dataset(eval_dataset, max_seq_length = None)
+        eval_dataset = prepare_pretokenized_dataset(
+            eval_dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model)
+        )
 
     requested_max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)

@@ -81,6 +81,13 @@ def _raise_bad_mask_values(row_index):
     )
 
 
+def _raise_null_values(column, row_index):
+    raise ValueError(
+        f"Pre-tokenized dataset: row {row_index} has a missing (null) value inside '{column}'. "
+        "Every position must hold an integer."
+    )
+
+
 def _raise_length_mismatch(column):
     raise ValueError(
         f"Pre-tokenized dataset: '{column}' must have the same length as 'input_ids' in every row."
@@ -94,6 +101,13 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
 
     ids = table.column("input_ids")
     lengths = pc.list_value_length(ids)
+    # Arrow reductions (any, all, min_max) skip nulls, so a mask such as [None, 1] or a label hole would pass every
+    # check below and reach the trainer; refuse null elements in every token column first.
+    for column in _TOKEN_COLUMNS:
+        if column in table.column_names and pc.list_flatten(table.column(column)).null_count:
+            values = table.column(column).combine_chunks()
+            holes = pc.is_null(pc.list_flatten(values))
+            _raise_null_values(column, pc.filter(pc.list_parent_indices(values), holes)[0].as_py())
     needs_trimming = False
     if "attention_mask" in table.column_names:
         flat_mask = pc.list_flatten(table.column("attention_mask"))
@@ -178,6 +192,9 @@ def prepare_pretokenized_dataset(
         def _prepare(batch, indices):
             out = {c: list(batch[c]) for c in columns}
             for i, row_index in enumerate(indices):
+                for c in columns:
+                    if out[c][i] is not None and None in out[c][i]:
+                        _raise_null_values(c, row_index)
                 labels = out["labels"][i] if "labels" in out else None
                 if labels is not None and len(labels) != len(out["input_ids"][i]):
                     _raise_length_mismatch("labels")
