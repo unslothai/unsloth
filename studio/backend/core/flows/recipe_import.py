@@ -15,13 +15,36 @@ import copy
 import re
 from typing import Any
 
+import jinja2
+from jinja2 import meta, nodes
+
 RECIPE_GRAPH_VERSION = 1
 COLUMN_TYPE = "recipe.column"
-# Jinja references like {{ topic }} or {{ topic.field }} name the columns a prompt reads.
-# Every {{ ... }} and {% ... %} block; any name inside one can be a column (`{{ a + b }}`, `{% if x %}`).
+# Fallback for a template Jinja cannot parse: any name inside a {{ ... }} or {% ... %} block can be a column.
 _JINJA_BLOCK = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 _GRID = (320, 180)
+_ENV = jinja2.Environment()
+
+
+def _template_names(text: str) -> list[str]:
+    """Names a template reads from its context, in first-mention order; attributes, filters and loop variables are not."""
+    try:
+        tree = _ENV.parse(text)
+    except jinja2.TemplateSyntaxError:
+        names = []
+        for block in _JINJA_BLOCK.finditer(text):
+            body = block.group(1) if block.group(1) is not None else block.group(2)
+            for token in _NAME.findall(body):
+                names.extend((token, *token.split("-")))
+        return names
+    free = meta.find_undeclared_variables(tree)
+    names = [n.name for n in tree.find_all(nodes.Name) if n.name in free]
+    # Hyphenated column names are kept whole too, in case a prompt means the column and not a subtraction.
+    for block in _JINJA_BLOCK.finditer(text):
+        body = block.group(1) if block.group(1) is not None else block.group(2)
+        names.extend(t for t in _NAME.findall(body) if "-" in t)
+    return names
 
 
 def _recipe_parts(payload: Any) -> tuple[dict, dict, dict]:
@@ -39,26 +62,29 @@ def _recipe_parts(payload: Any) -> tuple[dict, dict, dict]:
 def column_references(column: dict, names: set[str]) -> list[str]:
     """The other columns this column reads, in first-mention order."""
     seen: list[str] = []
-    for key in ("prompt", "system_prompt", "expr"):
-        text = column.get(key)
+    texts = [column.get(key) for key in ("prompt", "system_prompt", "expr")]
+    params = column.get("params")
+    conditional = column.get("conditional_params")
+    nested = [params] + (list(conditional.values()) if isinstance(conditional, dict) else [])
+    # A conditional sampler's rules are Jinja expressions over other columns, as Data Designer reads them.
+    for rule in conditional if isinstance(conditional, dict) else ():
+        if isinstance(rule, str):
+            texts.append(rule if "{{" in rule or "{%" in rule else "{{ " + rule + " }}")
+    for text in texts:
         if isinstance(text, str):
-            for block in _JINJA_BLOCK.finditer(text):
-                body = block.group(1) if block.group(1) is not None else block.group(2)
-                # Hyphenated column names are kept whole; `a-b` also counts its parts in case it is a subtraction.
-                for token in _NAME.findall(body):
-                    for name in (token, *token.split("-")):
-                        if name in names and name not in seen and name != column.get("name"):
-                            seen.append(name)
+            for name in _template_names(text):
+                if name in names and name not in seen and name != column.get("name"):
+                    seen.append(name)
     for name in column.get("target_columns") or []:
         if isinstance(name, str) and name in names and name not in seen:
             seen.append(name)
-    params = column.get("params")
-    if isinstance(params, dict):
-        # A subcategory sampler reads its parent category; a timedelta sampler reads its datetime column.
-        for key in ("category", "reference_column_name"):
-            parent = params.get(key)
-            if isinstance(parent, str) and parent in names and parent not in seen:
-                seen.append(parent)
+    for sub in nested:
+        if isinstance(sub, dict):
+            # A subcategory sampler reads its parent category; a timedelta sampler reads its datetime column.
+            for key in ("category", "reference_column_name"):
+                parent = sub.get(key)
+                if isinstance(parent, str) and parent in names and parent not in seen:
+                    seen.append(parent)
     return seen
 
 

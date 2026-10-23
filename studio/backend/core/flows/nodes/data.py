@@ -50,10 +50,17 @@ def declarative_recipe(payload: Any) -> dict:
     recipe = json.loads(json.dumps(recipe))
     for key in _REFUSED_KEYS:
         recipe.pop(key, None)
+    from core.training.account_jobs import managed_account
+
+    # `api_key_env` only names a variable; Studio reads it for the owner only, as on the Data Recipes page.
+    secrets = (
+        ("api_key", "extra_headers", "api_key_env")
+        if managed_account()
+        else ("api_key", "extra_headers")
+    )
     for provider in recipe.get("model_providers") or []:
         if isinstance(provider, dict):
-            # `api_key_env` only names a variable; Studio reads it for non-managed accounts, as on the Data Recipes page.
-            for secret in ("api_key", "extra_headers"):
+            for secret in secrets:
                 provider.pop(secret, None)
     for column in recipe.get("columns") or []:
         if isinstance(column, dict):
@@ -160,6 +167,14 @@ async def seed_config(ctx: NodeContext, dataset: dict, current: Any) -> dict:
     source = dataset.get("source")
     ref = dataset.get("ref")
     if source == "hf":
+        from core.training.account_jobs import managed_account
+
+        if managed_account():
+            raise FlowNodeError(
+                "A Hub seed needs your own Hugging Face token; set the seed in the recipe on the Data Recipes page"
+            )
+        if "/" not in str(ref):
+            raise FlowNodeError(f"A recipe seed needs the full Hub name, like owner/{ref}")
         inspected = await ctx.call(
             "POST",
             f"{RECIPES}/seed/inspect",

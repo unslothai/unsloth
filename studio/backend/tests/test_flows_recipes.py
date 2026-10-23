@@ -243,3 +243,56 @@ def test_every_column_an_expression_reads_is_a_dependency():
     }
     with pytest.raises(RecipeCompileError, match = "loop"):
         compile_recipe(import_recipe(loop))
+
+
+def test_a_managed_account_never_sends_a_provider_env_name(monkeypatch):
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: True)
+    body = data.declarative_recipe(
+        {"columns": [], "model_providers": [{"name": "openai", "api_key_env": "OPENAI_API_KEY"}]}
+    )
+    assert body["model_providers"] == [{"name": "openai"}]
+
+
+def test_a_hub_seed_fails_early_when_the_job_would_refuse_it(monkeypatch):
+    seed = {"kind": "dataset", "source": "hf", "ref": "imdb"}
+    ctx = _Ctx(_recipe_routes(["job1"], {}), inputs = {"seed": seed})
+    with pytest.raises(FlowNodeError, match = "owner/imdb"):
+        asyncio.run(data.seed_config(ctx, seed, None))
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: True)
+    with pytest.raises(FlowNodeError, match = "Hugging Face token"):
+        asyncio.run(data.seed_config(ctx, {**seed, "ref": "org/data"}, None))
+    assert not ctx.calls
+
+
+def test_attributes_filters_and_loop_names_are_not_columns():
+    cols = {"topic", "field", "lower", "rows", "r"}
+    column = {
+        "name": "x",
+        "prompt": "{{ topic.field | lower }} {% for r in rows %}{{ r }}{% endfor %}",
+    }
+    assert column_references(column, cols) == ["topic", "rows"]
+
+
+def test_a_conditional_sampler_reads_its_rule_columns():
+    sampler = {
+        "name": "plan",
+        "column_type": "sampler",
+        "sampler_type": "subcategory",
+        "params": {"category": "tier", "values": {}},
+        "conditional_params": {"region == 'US'": {"category": "zone", "values": {}}},
+    }
+    assert column_references(sampler, {"tier", "region", "zone"}) == ["region", "tier", "zone"]
+    loop = {
+        "recipe": {
+            "columns": [
+                {
+                    **sampler,
+                    "params": {"values": ["a"]},
+                    "conditional_params": {"age > 3": {"values": ["b"]}},
+                },
+                {"name": "age", "column_type": "expression", "expr": "{{ plan }}"},
+            ]
+        }
+    }
+    with pytest.raises(RecipeCompileError):
+        compile_recipe(import_recipe(loop))
