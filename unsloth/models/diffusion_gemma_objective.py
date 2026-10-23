@@ -95,9 +95,7 @@ def _forward_with_prefix_cache(model, model_kwargs, text_config, prefix_indices)
             ),
         )
 
-    # DataParallel scatters tensors but hands every replica the same Python objects, so a cache built here
-    # would carry the full batch's indices into each replica and collect K/V from all of them. Pass the
-    # indices as a tensor instead and build one cache per replica from its own slice.
+    # DataParallel scatters tensors but shares Python objects: pass the indices as a tensor, build a cache per replica.
     def build_cache(module, args, kwargs):
         indices = kwargs.pop(_PREFIX_INDICES_KWARG, None)
         if indices is not None:
@@ -106,8 +104,7 @@ def _forward_with_prefix_cache(model, model_kwargs, text_config, prefix_indices)
             )
         return args, kwargs
 
-    # A replica's cache holds only its own rows and cannot be gathered back (DynamicCache rebuilds from
-    # the zipped per-replica layers and fails), and the loss never reads it, so it stays in the replica.
+    # DataParallel cannot gather DynamicCache outputs, and the loss never reads them.
     def drop_cache(module, args, output):
         if isinstance(output, dict) and any(isinstance(v, Cache) for v in output.values()):
             output = type(output)(**{k: v for k, v in output.items() if not isinstance(v, Cache)})
