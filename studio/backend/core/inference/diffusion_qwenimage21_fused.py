@@ -15,6 +15,7 @@ import os
 import threading
 import types
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 Q21_CONVROT_FUSED_ENV = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED"
 _PREPARE = "_qwenimage21_prepare_qkv"
@@ -40,7 +41,7 @@ def arch_ok(device: Any = None) -> bool:
     try:
         import torch
 
-        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return False
         dev = torch.device(device) if device is not None else None
         if dev is None or dev.type != "cuda":
@@ -99,7 +100,9 @@ def _qkv_intact(attn: Any) -> Any:
 def _make_prepare(stock: Any, mod: Any) -> Any:
     import torch
 
-    from .diffusion_int8_fused import int8_linear
+    from .diffusion_int8_fused import ensure_intmm_module, int8_linear
+
+    ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
 
     def _qwenimage21_prepare_qkv(
         attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice

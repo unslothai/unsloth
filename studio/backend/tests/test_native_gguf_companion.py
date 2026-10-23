@@ -406,7 +406,6 @@ def test_reload_dedup_reloads_for_ordinary_load_when_root_drafter_appears(tmp_pa
     backend._mtp_draft_path = str(companion)
 
     request = LoadRequest(model_path = str(weight))
-    # No root drafter yet: both routes dedupe.
     assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
     assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
 
@@ -475,7 +474,6 @@ def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatc
     monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
     backend = LlamaCppBackend()
     backend._is_local_model = True
-    # "outputs/gemma" no longer exists, so is_local_path would call it a repo id.
     assert _loaded_is_local_model(backend, False, "outputs/gemma")
 
     stale = LlamaCppBackend()
@@ -504,7 +502,6 @@ def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
     def _usable(candidate: str) -> bool:
         return _native_gguf_companion_usable(candidate, str(weight), mtp_search_root = str(tmp_path))
 
-    # Preferred by size, but it resolves out of the permitted directory.
     assert not _usable(detect_mtp_file(str(weight), str(tmp_path), skip_root = True))
     assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True, accept = _usable) == str(
         larger.resolve()

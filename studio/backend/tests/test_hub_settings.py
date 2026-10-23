@@ -373,7 +373,6 @@ def test_the_owner_is_told_once_and_the_automatic_source_is_kept(client, store, 
     claim = studio_db.compare_and_set_app_setting
 
     def endpoint_saved_meanwhile(*args, **kwargs):
-        # Another tab saves an endpoint between this claim's read and its insert.
         store[hub_settings.HF_ENDPOINT_KEY] = MIRROR
         return claim(*args, **kwargs)
 
@@ -695,7 +694,7 @@ def test_live_switch_does_not_abort_a_streaming_download(store, monkeypatch):
     threading.Thread(target = server.serve_forever, daemon = True).start()
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
     for name in ("NO_PROXY", "no_proxy"):
-        monkeypatch.setenv(name, "127.0.0.1")  # the test server itself is reachable
+        monkeypatch.setenv(name, "127.0.0.1")
     monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://localhost:1234")
     out = {}
 

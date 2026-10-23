@@ -190,7 +190,7 @@ function SongInputs({
                 ? "Genre, mood, instruments and tempo…"
                 : "Genre, mood, instruments, voice and tempo…"
             }
-            className="min-h-16"
+            className="min-h-16 rounded-lg"
           />
         </Field>
         <ExamplesOrHint
@@ -316,7 +316,7 @@ function SfxInputs({
             disabled={disabled}
             onChange={(event) => patch("sfx", { prompt: event.target.value })}
             placeholder="What you want to hear, and where…"
-            className="min-h-16"
+            className="min-h-16 rounded-lg"
           />
         </Field>
         <ExamplesOrHint

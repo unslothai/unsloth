@@ -41,13 +41,11 @@ test("every isolated composer stop square keeps its size-3 glyph", () => {
   assert.equal(stops.length, 6);
 });
 
-// Browser geometry is checked by tests/studio/playwright_composer_icons.py.
 test("neither composer action glyph carries a device-pixel nudge", () => {
   for (const rule of COMPOSER_GLYPH_RULES) {
     const body = css.match(rule)?.[1];
     if (body !== undefined) assert.doesNotMatch(body, TRANSLATE);
   }
-  // The retired class must not return at a call site.
   for (const source of componentSources) {
     assert.doesNotMatch(source, RETIRED_CANCEL_CLASS);
   }

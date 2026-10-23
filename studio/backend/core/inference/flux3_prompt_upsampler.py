@@ -897,27 +897,34 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
 
 _VULKAN_ROWS_TTL_S = 120.0
 _vulkan_rows_memo: dict = {}
+# One probe at a time: concurrent prefetches read the answer the first one cached.
+_vulkan_rows_lock = threading.Lock()
 
 
-def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
-    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer."""
+def _vulkan_rows(
+    binary: str,
+    retry_empty: bool = False,
+    throttle_retry: bool = False,
+) -> list:
+    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer. With
+    ``throttle_retry`` (a speculative prefetch) an empty answer that already was a retry stands until the window ends."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     try:
         key = (binary, os.path.getmtime(binary))
     except OSError:
         key = (binary, None)
-    hit = _vulkan_rows_memo.get(key)
-    if (
-        hit is not None
-        and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
-        and (hit[0] or not retry_empty)
-    ):
-        return hit[0]
-    rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
-    _vulkan_rows_memo.clear()
-    _vulkan_rows_memo[key] = (rows, time.monotonic())
-    return rows
+    with _vulkan_rows_lock:
+        hit = _vulkan_rows_memo.get(key)
+        live = hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
+        # Only a speculative prefetch is throttled: a real launch always asks again.
+        if live and (hit[0] or not retry_empty or (throttle_retry and len(hit) > 2 and hit[2])):
+            return hit[0]
+        rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
+        _vulkan_rows_memo.clear()
+        # (rows, probed at, this probe retried a live empty answer)
+        _vulkan_rows_memo[key] = (rows, time.monotonic(), live)
+        return rows
 
 
 def _user_device_pick(binary: Optional[str] = None) -> bool:
@@ -966,7 +973,9 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
     def _work() -> None:
         try:
             # An empty answer (cached or fresh) is retried once, as the launch it stands in for did.
-            rows = _vulkan_rows(binary, retry_empty = True) or _vulkan_rows(binary, retry_empty = True)
+            rows = _vulkan_rows(binary, retry_empty = True, throttle_retry = True) or _vulkan_rows(
+                binary, retry_empty = True, throttle_retry = True
+            )
             # One row on one torch card launches unpinned, so it needs no card lookup.
             if rows and (len(rows) > 1 or torch.cuda.device_count() > 1):
                 ordinal = _resident_cuda_ordinal()
@@ -1037,14 +1046,29 @@ def _vulkan_card_name(ordinal: int, torch) -> tuple:
     return name, names[:ordinal].count(name)
 
 
+# Vendor by positive evidence: older NVIDIA drivers name Vulkan devices "Tesla T4" or "GeForce GTX 1080 Ti".
+_VULKAN_VENDOR_RES = (
+    ("nvidia", re.compile(r"\b(?:nvidia|geforce|quadro|tesla|titan|rtx)\b")),
+    ("amd", re.compile(r"\b(?:amd|radeon|radv|instinct|firepro)\b")),
+    ("intel", re.compile(r"\b(?:intel|arc|iris|uhd)\b")),
+    ("software", re.compile(r"\b(?:llvmpipe|lavapipe|swiftshader)\b")),
+)
+
+
+def _vulkan_row_vendor(row_name: str) -> Optional[str]:
+    """``nvidia`` / ``amd`` / ``intel`` / ``software`` when the Vulkan row names one, else None (unknown)."""
+    name = str(row_name or "").lower()
+    return next((vendor for vendor, pattern in _VULKAN_VENDOR_RES if pattern.search(name)), None)
+
+
 def _vulkan_row_is_another_vendor(row_name: str, torch) -> bool:
-    """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row naming neither is another card."""
+    """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row is another card only when it names
+    another vendor. A row naming no vendor at all is not evidence either way."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    name = str(row_name or "").lower()
-    if LlamaCppBackend._torch_is_rocm(torch):
-        return not any(tag in name for tag in ("amd", "radeon", "instinct"))
-    return "nvidia" not in name
+    vendor = _vulkan_row_vendor(row_name)
+    expected = "amd" if LlamaCppBackend._torch_is_rocm(torch) else "nvidia"
+    return vendor is not None and vendor != expected
 
 
 def _vulkan_device_args(
@@ -1310,12 +1334,49 @@ class PromptUpsamplerSidecar:
         self._load_cancel.clear()
         with self._lock:
             self._loading = True
+        slot = None
         try:
+            # Offloaded layers size themselves to the free memory read at spawn: a render denoising meanwhile (another
+            # request's) has not reached its peak yet, so the start waits for the generation slot, as a warm start
+            # holds it. Called ahead of the request's own render, never inside one.
+            slot = self._wait_for_render_slot()
             self._spawn_server(binary, model, mmproj)
         finally:
+            if slot is not None:
+                slot.release()
             with self._lock:
                 self._loading = False
                 self._starting_process = None
+
+    def _wait_for_render_slot(self) -> Any:
+        """The active image engine's generation lock, acquired, or None where the start would not offload (training,
+        nobody on the GPU, a CPU-only host) or the engine cannot be read. Waited for cancellably: a Stop, training
+        start or handover sets ``_load_cancel``."""
+        from core.inference.stt_sidecar import _training_active
+
+        if _training_active() or _gpu_unowned():
+            return None
+        if _accelerator_memory_mib(_resident_cuda_ordinal())[2] == "cpu":
+            return None
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            engine = get_active_diffusion_engine()
+            lock = getattr(engine, "_generate_lock", None)
+        except Exception:  # noqa: BLE001 -- unreadable: start as before rather than fail the enhancement
+            return None
+        if lock is None:
+            return None
+        while not lock.acquire(timeout = 0.2):
+            if self._load_cancel.is_set():
+                raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if self._load_cancel.is_set():
+            lock.release()
+            raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if _engine_loading(engine) or not _image_model_owns_gpu():
+            # The model this caption is for is leaving: the run goes as typed (or retries with the new model).
+            lock.release()
+            raise UpsamplerUnavailableError("The image model is being replaced.")
+        return lock
 
     def _spawn_server(self, binary: str, model: str, mmproj: Optional[str]) -> None:
         from core.inference.stt_mtmd_sidecar import (

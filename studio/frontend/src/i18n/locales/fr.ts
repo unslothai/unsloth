@@ -118,6 +118,7 @@ export const fr = {
     reload: "Actualiser",
     more: "Plus",
     addressPlaceholder: "Rechercher ou saisir une URL",
+    local: "Local",
     suggested: "Suggestions",
     suggestedMenu: {
       open: "Ouvrir",
@@ -468,6 +469,8 @@ export const fr = {
       downloadFailed: "Impossible de télécharger {name}",
       notMarked: "{name} a été enregistré mais n'a pas pu être marqué comme téléchargé depuis Internet ; votre système n'avertira donc pas avant de l'ouvrir.",
       blocked: "Cette adresse ne peut pas s'ouvrir dans le panneau du navigateur. Il n'ouvre que les sites web publics.",
+      blockedLocal: "Cette adresse locale ne peut pas s'ouvrir ici. Saisissez-la dans la barre d'adresse pour l'ouvrir.",
+      studioAddress: "C'est l'adresse d'Unsloth lui-même, elle ne peut donc pas s'ouvrir dans le panneau du navigateur.",
       clearDataSettingDescription: "Effacer l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites.",
       clearDataDescription: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
       clearDataFailed: "Impossible d'effacer les données des sites. Réessayez.",
@@ -623,6 +626,8 @@ export const fr = {
       "Ce chat n’apparaîtra pas dans votre historique et n’est pas enregistré. Il disparaît quand vous le quittez.",
   },
   picker: {
+    unifiedTightFit: "Juste",
+    unifiedTightFitHint: "Peut se charger avec un contexte plus court ou être plus lent sur ce Mac.",
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
     retry: "Réessayer",
@@ -1090,6 +1095,10 @@ export const fr = {
       alternateSlot: "Raccourci alternatif",
       browserReserved:
         "Votre navigateur peut réserver cette combinaison. Elle fonctionne dans l’application de bureau.",
+      metaUnsupported: "La touche Windows ne peut pas être utilisée dans les raccourcis.",
+      altGraphUnsupported: "Les combinaisons AltGr ne peuvent pas servir de raccourcis.",
+      desktopOnly: "Application de bureau uniquement",
+      builtInKey: "Intégré : {key}",
       actions: {
         findInPage: {
           label: "Rechercher dans la page",
@@ -1290,6 +1299,10 @@ export const fr = {
         steerMessage: {
           label: "Réorienter la réponse",
           description: "Arrêter la réponse en cours et envoyer le brouillon ensuite",
+        },
+        stopGeneration: {
+          label: "Arrêter la génération",
+          description: "Arrêter la réponse en cours",
         },
         cycleReasoningEffort: {
           label: "Faire défiler l’effort de raisonnement",
@@ -1827,20 +1840,14 @@ export const fr = {
       },
       notifications: {
         sectionTitle: "Notifications",
-        showLlamaUpdates: "Notifications de mise à jour de llama.cpp",
-        showLlamaUpdatesDescription:
-          "Notifier lorsqu'une nouvelle version de llama.cpp est disponible pour exécuter de nouveaux modèles. Désactivez si vous ne faites que de l'entraînement.",
-        showLoadedModels: "Indicateur des modèles chargés",
-        showLoadedModelsDescription:
-          "Affiche une petite carte en bas à droite listant tous les modèles actuellement en mémoire (chat, voix, image, vidéo), avec un bouton pour éjecter chacun d'eux.",
-        showAudioCppUpdates: "Notifications de mise à jour d'audio.cpp",
-        showAudioCppUpdatesDescription:
-          "Notifier lorsque le moteur audio.cpp doit être mis à jour pour les pages Audio. Désactivez si vous n'utilisez jamais Audio.",
-        showUnslothUpdates: "Notifications de mise à jour d'Unsloth",
-        showUnslothUpdatesDescription:
-          "Prévenir lorsqu'une version plus récente d'Unsloth est disponible à l'installation.",
+        showLoadedModels: "Carte des modèles chargés",
+        showLoadedModelsDescription: "Une carte dans le coin avec chaque modèle chargé, à décharger en un clic.",
+        updateReminders: "Rappels de mise à jour",
+        updateRemindersDescription: "À quelle fréquence proposer une nouvelle version quand elle est prête.",
+        llamaHint: "Modèles de chat et GGUF",
+        audioHint: "Voix, musique et transcription",
         frequency: {
-          always: "Toujours",
+          always: "Dès que disponible",
           daily: "Une fois par jour",
           weekly: "Une fois par semaine",
           biweekly: "Toutes les deux semaines",
@@ -2004,6 +2011,18 @@ export const fr = {
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
       },
+      fullInstall: {
+        label: "Type d'installation",
+        description:
+          "Chat uniquement (GGUF). L'installation complète ajoute l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images.",
+        action: "Passer à l'installation complète",
+        confirmTitle: "Passer à l'installation complète ?",
+        confirmDescription:
+          "Cette installation Chat uniquement exécute des modèles GGUF. L'installation complète ajoute PyTorch pour le GPU de cette machine, ce qui active l'entraînement, l'export, la vidéo, les modèles safetensors et des fonctionnalités supplémentaires de génération d'images. Elle télécharge plusieurs gigaoctets (au moins 5 Go d'espace disque) et redémarre le serveur. Les discussions, les modèles et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmAction: "Mettre à niveau",
+        keywords:
+          "full install upgrade type d'installation installation complète mise à niveau chat uniquement chat only gguf add training entraînement entraîner train fine-tune pytorch torch export vidéo génération d'images safetensors",
+      },
       repairInstall: {
         label: "Réparer l'installation",
         description:
@@ -2012,6 +2031,8 @@ export const fr = {
         confirmTitle: "Réparer cette installation ?",
         confirmDescription:
           "Arrête le serveur et relance le programme d'installation, qui réinstalle PyTorch pour le GPU de cette machine. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmDescriptionChatOnly:
+          "Arrête le serveur et relance le programme d'installation. Cette installation est en mode Chat uniquement, donc le programme d'installation la fait aussi passer à l'installation complète avec PyTorch, plusieurs gigaoctets au total. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Réparer maintenant",
       },
       resetPreferences: {
@@ -2093,9 +2114,9 @@ export const fr = {
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
         activityDescription: {
-          daily: "{total} au cours des {weeks} dernières",
-          weekly: "Semaine record {total} · {weeks} dernières",
-          cumulative: "{total} cumulés sur les {weeks} dernières",
+          daily: "{total} depuis le {since}",
+          weekly: "Semaine la plus active {total} · depuis le {since}",
+          cumulative: "{total} au total depuis le {since}",
         },
         mode: {
           daily: "Quotidienne",
@@ -2104,8 +2125,9 @@ export const fr = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Semaine du {date} · {tokens}",
-        chartToggle: "Graphique",
-        chartToggleHint: "Afficher Hebdomadaire et Cumulée sous forme de graphique avec axes légendés",
+        emptyDayTooltip: "{date} · Aucune activité",
+        apiRequests: "{count} via l'API",
+        cumulativeTooltip: "Jusqu'à la semaine du {date} · {tokens} au total",
         less: "Moins",
         more: "Plus",
         insightsTitle: "Analyse de l'activité",
@@ -2742,6 +2764,10 @@ export const fr = {
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
+      showReplyTimes: "Heure des réponses",
+      showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
+      showReplyTimesKeywords:
+        "horodatage heure date quand terminé réponse message timestamp time clock date reply",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
@@ -3159,6 +3185,7 @@ export const fr = {
       relativeNever: "jamais",
       relativeJustNow: "à l'instant",
       expired: "expiré",
+      expiredStatus: "Expiré",
       today: "aujourd'hui",
       created: "Créé {value}",
       used: "Utilisé {value}",
@@ -3187,6 +3214,14 @@ export const fr = {
         autoSwitchOff:
           "Le modèle ne se charge par son nom que si le changement automatique de modèle est activé. Activez-le, ou chargez d'abord le modèle sur sa page Audio.",
         useViaApi: "Utiliser via l'API",
+      },
+      mediaApi: {
+        title: "API image et vidéo",
+        description: "Générez des images et des vidéos depuis votre propre code avec les points de terminaison compatibles OpenAI.",
+        images: "Images",
+        video: "Vidéo",
+        placeholderModel: "Le modèle affiché est un exemple. Chargez un modèle sur la page Images ou Vidéo et ouvrez ceci depuis son bouton API pour le renseigner.",
+        autoSwitchOff: "Le changement automatique de média est désactivé : les requêtes utilisent le modèle chargé par la page, quel que soit celui qu'elles nomment.",
       },
       decisionApi: {
         title: "API de décision",
@@ -3268,6 +3303,24 @@ export const fr = {
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
       audioCppVersion: "Version d'audio.cpp",
+      whisperCppVersion: "Version de whisper.cpp",
+      engines: {
+        title: "Moteurs",
+        description: "Les environnements d'exécution qu'Unsloth utilise pour faire tourner les modèles. Les mises à jour s'installent en arrière-plan, sans redémarrage.",
+        updatesLabel: "Mises à jour des moteurs",
+        notInstalled: "Non installé",
+        available: "{version} disponible",
+        upToDate: "À jour",
+        updatesAvailable: "Mises à jour disponibles",
+        checking: "Recherche de mises à jour...",
+        checkFailed: "Impossible de rechercher les mises à jour. Réessayez plus tard.",
+        unsupported: "Les moteurs de cette installation sont gérés en dehors d'Unsloth.",
+        checkForUpdates: "Rechercher des mises à jour",
+        update: "Mettre à jour",
+        updating: "Mise à jour...",
+        updated: "Moteurs mis à jour.",
+        updateFailed: "Échec de la mise à jour : {error}",
+      },
       hardware: "Matériel",
       gpu: "GPU",
       gpuIntegrated: "intégrée",
@@ -3355,6 +3408,9 @@ export const fr = {
         docsUpdating: "Mise à jour",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4731,5 +4787,42 @@ export const fr = {
     cantRun: "Impossible d'exécuter",
     failed: "Erreur {status}",
     invalidJson: "Le corps de la requête n'est pas un JSON valide.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Modèles chargés",
+      countOne: "{count} modèle chargé",
+      countMany: "{count} modèles chargés",
+      pillLabel: "{count}. Afficher les détails ou faire glisser pour déplacer",
+      dragToMove: "Faire glisser pour déplacer",
+      dragHandleLabel: "Déplacer les modèles chargés. Les touches fléchées le déplacent légèrement.",
+      collapse: "Réduire",
+      collapseLabel: "Réduire les modèles chargés",
+      close: "Fermer",
+      closeLabel: "Fermer les modèles chargés",
+      backOnNextLoad: "Réapparaît au prochain chargement de modèle",
+      ejectToFree: "Éjecter pour libérer la mémoire",
+      ejectLabel: "Éjecter {model}",
+      openTarget: "Ouvrir {target}",
+      rowLabel: "{model}. Ouvrir {target}",
+      loading: "Chargement",
+      ejecting: "Éjection",
+      stillInMemory: "Toujours en mémoire",
+      alsoServing: "Sert aussi",
+      noneLoaded: "Aucun modèle chargé",
+      noneLoadedDetail: "Les modèles que vous chargez s’afficheront ici.",
+      otherAccount: "Utilisé par un autre compte",
+      otherAccountDetail: "La mémoire est occupée par un modèle que vous ne pouvez pas voir",
+      toastStillResident: "« {model} » a été chargé pendant l’éjection et utilise donc toujours de la mémoire. Éjectez-le à nouveau pour la libérer.",
+      toastUnverified: "Le déchargement de {model} a été demandé, mais l’environnement d’exécution ne l’a pas confirmé. Vérifiez la carte dans un instant.",
+      toastAlreadyFree: "{model} n’était plus chargé.",
+      toastReplaced: "{model} n’est plus chargé. « {resident} » a pris sa place et n’a pas été modifié.",
+      toastEjected: "{model} éjecté",
+      toastFailed: "Impossible d’éjecter {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Déplacer le moniteur en direct. Les touches fléchées le déplacent légèrement, un double-clic le réinitialise.",
+      reconnecting: "Reconnexion...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -1779,6 +1779,118 @@ def test_warm_declines_beside_a_render_and_holds_the_slot_while_it_starts(warmab
     sidecar._cancel_idle_locked()
 
 
+@pytest.fixture
+def cold_render(monkeypatch):
+    """A GPU host with the image model resident; returns (engine, sidecar, spawned) where spawned records whether
+    the engine's generation slot was held at each spawn."""
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import gpu_arbiter, stt_sidecar
+
+    class _Engine:
+        def __init__(self):
+            self._generate_lock = threading.Lock()
+            self._loading = None
+
+    engine = _Engine()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: engine)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.DIFFUSION)
+    monkeypatch.setattr(stt_sidecar, "_training_active", lambda: False)
+    monkeypatch.setattr(pup, "_accelerator_memory_mib", lambda ordinal = None: (20000, 24000, "cuda"))
+    monkeypatch.setattr(pup, "_post_chat", lambda *a, **k: "caption")
+    sidecar = pup.PromptUpsamplerSidecar(keep_alive_seconds = 0)
+    spawned = []
+
+    def spawn(binary, model, mmproj):
+        spawned.append(engine._generate_lock.locked())
+        sidecar._process = type("P", (), {"poll": lambda self: None})()
+        sidecar._port, sidecar._key, sidecar._gpu_layers = 1, (binary, model, mmproj), 32
+
+    monkeypatch.setattr(sidecar, "_spawn_server", spawn)
+    return engine, sidecar, spawned
+
+
+def _generate_in_thread(sidecar, **kwargs):
+    out = {}
+
+    def run():
+        try:
+            out["text"] = sidecar.generate({}, binary = "b", model = "m", mmproj = None, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = exc
+
+    worker = threading.Thread(target = run, daemon = True)
+    worker.start()
+    return worker, out
+
+
+def test_a_cold_start_waits_for_a_render_in_flight(cold_render):
+    """Another request denoising holds the slot: the cold start (which sizes its offload to free memory) waits for
+    it, holds the slot while the server comes up, and leaves it free for this request's own render."""
+    engine, sidecar, spawned = cold_render
+    engine._generate_lock.acquire()
+    worker, out = _generate_in_thread(sidecar)
+    time.sleep(0.6)
+    assert spawned == [] and worker.is_alive()
+    engine._generate_lock.release()
+    worker.join(5)
+    assert out == {"text": "caption"} and spawned == [True]
+    assert not engine._generate_lock.locked()
+    # Warm: no start, so no wait beside a render.
+    engine._generate_lock.acquire()
+    try:
+        assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+    finally:
+        engine._generate_lock.release()
+    assert spawned == [True]
+
+
+def test_a_stop_while_a_cold_start_waits_for_the_slot_cancels_it(cold_render):
+    engine, sidecar, spawned = cold_render
+    engine._generate_lock.acquire()
+    try:
+        stop = threading.Event()
+        worker, out = _generate_in_thread(sidecar, cancel_event = stop)
+        time.sleep(0.4)
+        stop.set()
+        worker.join(5)
+        assert isinstance(out.get("error"), pup.UpsamplerCancelledError) and spawned == []
+        assert not sidecar.is_loading()
+    finally:
+        engine._generate_lock.release()
+
+
+def test_a_cold_start_after_the_slot_for_a_leaving_model_is_unavailable(cold_render):
+    engine, sidecar, spawned = cold_render
+    engine._loading = type("L", (), {"error": None})()
+    with pytest.raises(pup.UpsamplerUnavailableError):
+        sidecar.generate({}, binary = "b", model = "m", mmproj = None)
+    assert spawned == [] and not engine._generate_lock.locked()
+
+
+@pytest.mark.parametrize("why", ["cpu", "training", "unowned", "engine"])
+def test_a_cold_start_that_cannot_offload_does_not_wait_for_a_render(cold_render, monkeypatch, why):
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference import gpu_arbiter, stt_sidecar
+
+    engine, sidecar, spawned = cold_render
+    if why == "cpu":
+        monkeypatch.setattr(
+            pup, "_accelerator_memory_mib", lambda ordinal = None: (None, None, "cpu")
+        )
+    elif why == "training":
+        monkeypatch.setattr(stt_sidecar, "_training_active", lambda: True)
+    elif why == "unowned":
+        monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    else:
+        monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: 1 / 0)
+    engine._generate_lock.acquire()
+    try:
+        assert sidecar.generate({}, binary = "b", model = "m", mmproj = None) == "caption"
+    finally:
+        engine._generate_lock.release()
+    assert spawned == [True]
+
+
 def test_render_slot_is_never_taken_beside_a_render_or_a_load(monkeypatch):
     import core.inference.diffusion_engine_router as engine_router
 
@@ -2135,7 +2247,7 @@ def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
         llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
     )
     monkeypatch.setattr(
-        pup, "_vulkan_rows", lambda b, retry_empty = False: order.append("probe") or []
+        pup, "_vulkan_rows", lambda b, retry_empty = False, **_kw: order.append("probe") or []
     )
     sidecar.warm(binary = "b", model = model, mmproj = None)
     # An empty answer is retried once, still before the slot.
@@ -2655,6 +2767,86 @@ def test_a_lone_vulkan_device_of_another_vendor_declines_the_warm_start(
     state["rows"] = [{"index": 0, "name": "NVIDIA GeForce RTX 4090"}]
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
     sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize(
+    "name", ["Tesla T4", "Quadro RTX 8000", "GeForce GTX 1080 Ti", "NVIDIA GeForce RTX 4090"]
+)
+def test_an_nvidia_vulkan_row_without_the_vendor_name_warm_starts(
+    spawn_argv, warmable, monkeypatch, name
+):
+    # Older NVIDIA drivers name the Vulkan device "Tesla T4": that is the image model's card, not another vendor's.
+    import torch
+
+    state, _run = spawn_argv
+    sidecar, _launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    state["names"] = [name]
+    state["ordinal"] = 0
+    state["rows"] = [{"index": 0, "name": name}]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize(
+    "rocm, card, row, other",
+    [
+        (False, "Tesla T4", "AMD Radeon Graphics (RADV RAPHAEL)", True),
+        (False, "NVIDIA GeForce RTX 4090", "Intel(R) Arc(tm) A770 Graphics (DG2)", True),
+        (False, "NVIDIA GeForce RTX 4090", "llvmpipe (LLVM 17.0.6, 256 bits)", True),
+        (True, "AMD Radeon RX 7900 XTX", "NVIDIA GeForce RTX 3060", True),
+        (True, "AMD Radeon RX 7900 XTX", "AMD Radeon RX 7900 XTX (RADV NAVI31)", False),
+        (False, "Tesla T4", "Tesla T4", False),
+        # A generic card name never outweighs a row that names another vendor.
+        (False, "NVIDIA Graphics Device", "Intel(R) Graphics", True),
+        (False, "GeForce GTX 1080 Ti", "NVIDIA GeForce GTX 1080 Ti", False),
+        (False, "NVIDIA A100-SXM4-40GB", "Virtual GPU 0", False),
+        (True, "AMD Radeon RX 7900 XTX", "Virtual GPU 0", False),
+    ],
+)
+def test_another_vendor_needs_positive_evidence(monkeypatch, rocm, card, row, other):
+    # Only a row naming a different vendor is another card; an unknown name is not evidence either way.
+    from core.inference import llama_cpp
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda t = None: rocm)
+    )
+    assert pup._vulkan_row_is_another_vendor(row, object()) is other
+
+
+def test_repeated_prefetches_retry_an_empty_probe_once_per_window(monkeypatch):
+    # The retry stands for the window: two prefetches cost one probe and one retry, not two each.
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    pup._prefetch_vulkan_rows("b")
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b", "b"]
+    # A new window probes (and may retry) again.
+    monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 0.0)
+    pup._prefetch_vulkan_rows("b")
+    assert len(calls) == 4
+
+
+def test_a_real_launch_reprobes_after_throttled_prefetches(monkeypatch):
+    # Prefetches stop retrying for the window, a launch does not: a device that came up since is found.
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    pup._prefetch_vulkan_rows("b")
+    pup._prefetch_vulkan_rows("b")
+    assert calls == ["b", "b"]
+    pup._vulkan_rows("b", retry_empty = True)
+    assert len(calls) == 3
+
+
+def test_concurrent_prefetches_share_one_probe(monkeypatch):
+    calls, _looked_up = _prefetch_host(monkeypatch, 2, [])
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    threads = [threading.Thread(target = pup._prefetch_vulkan_rows, args = ("b",)) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert calls == ["b", "b"]
 
 
 def test_maintenance_never_joins_an_unstarted_probe(monkeypatch):

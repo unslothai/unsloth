@@ -19,6 +19,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { EngineVersionsSection } from "../components/engine-versions-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -170,13 +171,9 @@ export function AboutTab() {
         </p>
       </header>
 
-      {/* llama.cpp and audio.cpp rows live in the shared version section so they sit with
-          the Unsloth/Package rows; the props keep them About-only (General passes none). */}
-      <StudioVersionSection
-        llamaCppVersion={hw.llamaCpp}
-        audioCppVersion={hw.audioCpp}
-        desktopAppVersion={desktopAppVersion}
-      />
+      <StudioVersionSection desktopAppVersion={desktopAppVersion} />
+
+      <EngineVersionsSection />
 
       <div ref={updateSectionRef} className="scroll-mt-5">
         <SettingsSection title={t("settings.about.updates")}>
