@@ -121,8 +121,13 @@ def prompt_length_varies(transformer: Any) -> bool:
     return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
 
 
-# What the compile arms (FLUX.1 and Z-Image are classified above but not armed here).
+# What the compile arms. int8 / fp8 FLUX.1 and Z-Image (torchao weights compile with automatic dynamic) recompiled on
+# new text lengths: FLUX.1 both blocks on the first prompt past 256 T5 tokens and again on the first new resolution (31 s
+# and 60 s on a loaded B200); Z-Image's shared block on the caption, image and unified lengths (12 recompiles in the
+# first render) and again on the first longer prompt. Armed, the first compile covers every text length and image size.
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
+    "FluxTransformer2DModel": _FLUX1_SOURCES,
+    "ZImageTransformer2DModel": _ZIMAGE_SOURCES,
     "Flux3Transformer2DModel": _FLUX3_SOURCES,
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
@@ -174,10 +179,31 @@ def unbacked_supported() -> bool:
     return callable(getattr(builder, "is_unbacked_source", None))
 
 
+def _torchao_float8_weights(transformer: Any) -> bool:
+    """Whether a torchao float8 tensor holds any of ``transformer``'s weights (wrapped in a plain Parameter or not)."""
+    try:
+        from .diffusion_speed import torchao_weight_tensors
+        for t in torchao_weight_tensors(transformer):
+            if "float8" in type(t).__name__.lower():
+                return True
+            # torchao < 0.12: AffineQuantizedTensor + Float8Layout
+            layout = getattr(t, "_layout", None)
+            if layout is not None and "float8" in type(layout).__name__.lower():
+                return True
+    except Exception:  # noqa: BLE001 - unreadable: keep the family's choice
+        return False
+    return False
+
+
 def unbacked_sources_for(transformer: Any) -> tuple[str, ...]:
     if not unbacked_supported():
         return ()
-    return _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    unbacked = _FAMILY_UNBACKED.get(type(transformer).__name__, ())
+    if unbacked and _torchao_float8_weights(transformer):
+        # torchao float8 activation quant guards on the row count (``_get_reduction_params``): an unbacked
+        # ``temb`` is a data-dependent error and the compile falls back to eager. Backed costs one respecialise.
+        return ()
+    return unbacked
 
 
 def sources_for(transformer: Any) -> tuple[str, ...]:

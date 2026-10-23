@@ -78,6 +78,7 @@ _GOOD_VERSIONS = {
     "piexif": "1.1.3",
     "platformdirs": "4.3.8",
     "toml": "0.10.2",
+    "pillow": "12.3.0",
 }
 
 
@@ -201,8 +202,8 @@ def test_default_keeps_sd_cpp_where_sd_cpp_is_chosen_today(monkeypatch):
     [
         ("sdxl", "sdxl-Q4_0.gguf", "gguf", "no MLX implementation"),
         ("qwen-image", "qwen-image-Q4_0.gguf", "gguf", "no MLX implementation"),
-        ("z-image", "z-image-turbo-Q4_K_M.gguf", "gguf", "Q4_K_M"),
-        ("z-image", "z-image-turbo-Q6_K.gguf", "gguf", "Q6_K"),
+        ("z-image", "z-image-turbo-Q3_K_M.gguf", "gguf", "Q3_K_M"),
+        ("z-image", "z-image-turbo-Q2_K.gguf", "gguf", "Q2_K"),
         ("z-image", "z-image-turbo-UD-Q4_K_XL.gguf", "gguf", "not convertible"),
         ("z-image", None, "gguf", "unknown"),
         ("z-image", None, "pipeline", "GGUF picks only"),
@@ -287,6 +288,7 @@ def test_missing_runtime_falls_back(monkeypatch, mlx, mflux, needle):
         ({"mlx": None}, "mlx>=0.32.0,<0.33.0 (found none)"),
         ({"toml": None}, "toml>=0.10.2,<1 (found none)"),
         ({"platformdirs": "5.0.0"}, "platformdirs>=4,<5 (found 5.0.0)"),
+        ({"pillow": "13.0.0"}, "pillow>=12.3.0,<13 (found 13.0.0)"),
     ],
 )
 def test_an_incompatible_installed_runtime_falls_back(monkeypatch, versions, needle):
@@ -315,15 +317,15 @@ def test_refusal_falls_through_to_sd_cpp_when_that_is_todays_choice(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
     monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: "/usr/bin/sd-cli")
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "v0"))
-    gguf = "z-image-turbo-Q4_K_M.gguf"
+    gguf = "z-image-turbo-Q3_K_M.gguf"
     assert _predict(gguf = gguf) == _select(gguf = gguf) == ENGINE_SD_CPP
-    assert "Q4_K_M" in (r.annotate_status({})["mlx_fallback_reason"] or "")
+    assert "Q3_K_M" in (r.annotate_status({})["mlx_fallback_reason"] or "")
 
 
 def test_a_later_default_selection_clears_the_mlx_reason(monkeypatch):
     _apple(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
-    _select(gguf = "z-image-turbo-Q4_K_M.gguf")
+    _select(gguf = "z-image-turbo-Q3_K_M.gguf")
     assert r.annotate_status({})["mlx_fallback_reason"]
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX")
     _select()
@@ -335,7 +337,9 @@ def test_a_later_default_selection_clears_the_mlx_reason(monkeypatch):
 
 @pytest.mark.parametrize("env", [None, "0", "auto", "1"])
 @pytest.mark.parametrize("backend", ["mps", "cpu", "cuda"])
-@pytest.mark.parametrize("gguf", [_Q4, "z-image-turbo-Q4_K_M.gguf", None])
+@pytest.mark.parametrize(
+    "gguf", [_Q4, "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-Q3_K_M.gguf", None]
+)
 @pytest.mark.parametrize("fam", ["z-image", "flux.1"])
 def test_predict_matches_selection(monkeypatch, env, backend, gguf, fam):
     _host(monkeypatch)
@@ -346,7 +350,8 @@ def test_predict_matches_selection(monkeypatch, env, backend, gguf, fam):
     predicted = _predict(fam, gguf)
     r._active_engine_name = ENGINE_DIFFUSERS
     assert _select(fam, gguf) == predicted
-    expect_mlx = env == "1" and backend != "cuda" and gguf == _Q4 and fam == "z-image"
+    convertible = gguf in (_Q4, "z-image-turbo-Q4_K_M.gguf")
+    expect_mlx = env == "1" and backend != "cuda" and convertible and fam == "z-image"
     assert (predicted == ENGINE_MLX) is expect_mlx
 
 
