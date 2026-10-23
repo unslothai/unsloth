@@ -392,18 +392,52 @@ def test_native_speed_flags_drop_conv_direct_on_vulkan_and_rocm(monkeypatch):
     for accel in ("vulkan", "rocm", "ROCm"):
         assert native_speed_flags("default", [], accel) == fa_only
         assert native_speed_flags("max", [], accel) == fa_only
-    for accel in ("cuda", "cpu", None):
+    for accel in ("cpu", None):
         assert native_speed_flags("default", [], accel) == full
+    # CUDA: sd.cpp's auto flash attention already covers every module, so only conv-direct is sent.
+    assert native_speed_flags("default", [], "cuda") == ["--diffusion-conv-direct"]
     assert (
         native_speed_flags("default", ["--backend", "diffusion=Vulkan0,te=cpu"], "cuda") == fa_only
     )
     assert native_speed_flags("default", ["--backend", "diffusion=ROCm1"], None) == fa_only
-    assert native_speed_flags("default", ["--backend", "diffusion=CUDA0"], "vulkan") == full
+    assert native_speed_flags("default", ["--backend", "diffusion=CUDA0"], "vulkan") == [
+        "--diffusion-conv-direct"
+    ]
     assert native_speed_flags("default", ["--backend", "diffusion=cpu"], "vulkan") == full
     monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "1")
     assert native_speed_flags("default", [], "vulkan") == full
     monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "0")
-    assert native_speed_flags("default", [], "cuda") == fa_only
+    assert native_speed_flags("default", [], "cuda") == []
+    assert native_speed_flags("default", [], "vulkan") == fa_only
+
+
+def test_native_speed_on_cuda_keeps_flash_attention_on_text_encoder_and_vae(monkeypatch):
+    # The pinned sd.cpp spells --diffusion-fa as --flash-attn off,diffusion=on: on CUDA it would switch flash
+    # attention OFF for the text encoder and VAE, which sd.cpp's own auto turns on ("on (CUDA MMA)").
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    monkeypatch.setattr(_sd_cpp_args_module, "_runs_on_apple_metal", lambda *_a, **_k: False)
+    for mode in ("default", "max"):
+        assert "--diffusion-fa" not in native_speed_flags(mode, [], "cuda")
+        assert "--diffusion-fa" not in native_speed_flags(mode, ["--backend", "CUDA1"], None)
+    files = SdCppModelFiles(diffusion_model = "/m/dit.gguf")
+    kw = dict(host = "127.0.0.1", port = 1, native_speed = "default")
+    server = build_sd_cpp_server_command("sd-server", files, accelerator = "cuda", **kw)
+    assert "--diffusion-fa" not in server and "--diffusion-conv-direct" in server
+    # An explicit user choice still reaches sd.cpp (extra_args are appended last).
+    explicit = build_sd_cpp_server_command(
+        "sd-server", files, accelerator = "cuda", extra_args = ["--diffusion-fa"], **kw
+    )
+    assert explicit.count("--diffusion-fa") == 1
+    # Offload still forces it (memory policy, not a speed profile).
+    offloaded = build_sd_cpp_server_command(
+        "sd-server", files, accelerator = "cuda", offload = offload_flags("group"), **kw
+    )
+    assert offloaded.count("--diffusion-fa") == 1
+    # The diffusion model pinned to the CPU or Vulkan on a CUDA build keeps the old flag.
+    for pin in ("diffusion=cpu", "diffusion=Vulkan0"):
+        assert "--diffusion-fa" in native_speed_flags("default", ["--backend", pin], "cuda")
+    for accel in ("vulkan", "rocm", "metal", "cpu", None):
+        assert "--diffusion-fa" in native_speed_flags("default", [], accel)
 
 
 def test_server_command_carries_accelerator(monkeypatch):

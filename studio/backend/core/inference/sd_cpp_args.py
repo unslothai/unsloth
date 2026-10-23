@@ -140,7 +140,8 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only,
+# CUDA gets conv-direct only (sd.cpp's auto flash attention already covers every module there).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -159,10 +160,29 @@ def native_speed_flags(
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
+        fa = (
+            []
+            if _auto_flash_attn_covers_all(backend_args or (), accelerator)
+            else ["--diffusion-fa"]
+        )
         if not conv_direct_wanted(backend_args or (), accelerator):
-            return ["--diffusion-fa"]
-        return ["--diffusion-fa", "--diffusion-conv-direct"]
+            return fa
+        return [*fa, "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+def _auto_flash_attn_covers_all(
+    backend_args: Sequence[str] = (), accelerator: Optional[str] = None
+) -> bool:
+    """True when the diffusion model runs on CUDA, where the pinned sd.cpp's own default (``--flash-attn auto``)
+    already turns flash attention on for every module (probe: "on (CUDA MMA)"). There ``--diffusion-fa`` adds nothing
+    for the denoiser and, since it now means ``--flash-attn off,diffusion=on``, turns it OFF for the text encoder and
+    VAE, which is slower and changes the pixels. Other backends keep ``--diffusion-fa``: their auto decision is a
+    timing probe (non-deterministic on a loaded host), and the MiniMax-H3 VAE decodes slower with it on Vulkan."""
+    args = list(backend_args)
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    name = (target or accelerator or "").strip().lower().rstrip("0123456789")
+    return name == "cuda"
 
 
 # Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
