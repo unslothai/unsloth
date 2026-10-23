@@ -1418,9 +1418,7 @@ def test_the_setup_oom_retry_frees_what_the_failed_setup_allocated(monkeypatch):
     assert policy == dm.OFFLOAD_GROUP and dm.applied_plan(pipe, plan).estimates["setup_oom_retry"]
     assert alive_at_retry == [False]
     assert scratch_refs[0]() is None
-    assert (
-        getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR, None) is None
-    )  # cleared once the retry took over
+    assert getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR, None) is None  # cleared once the retry took over
 
 
 def test_a_stored_setup_failure_keeps_its_kind_but_not_its_traceback():
