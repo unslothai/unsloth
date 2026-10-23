@@ -104,9 +104,9 @@ test("the page names Unsloth, keeps the access card and links to API keys", () =
   assert.equal(en.settings.mcp.title, "Unsloth MCP");
   assert.match(TAB, /data-settings-label=\{t\("settings\.mcp\.title"\)\}/);
   assert.match(TAB, /className="text-xl font-semibold font-heading"/);
-  assert.ok(
-    TAB.indexOf("<McpAccessSection />") < TAB.indexOf("<McpToolsSection />"),
-  );
+  const access = TAB.indexOf("<McpAccessSection");
+  const tools = TAB.indexOf("<McpToolsSection");
+  assert.ok(access >= 0 && tools >= 0 && access < tools);
   assert.match(TAB, /setActiveTab\("api-keys"\)/);
   assert.match(TAB, /t\("settings\.mcp\.createKey"\)/);
 });
