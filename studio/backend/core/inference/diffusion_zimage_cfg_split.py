@@ -28,8 +28,9 @@ Studio arms it ``compiled_only``: a render splits only while the denoiser runs c
 checked per render since a deferred compile can engage after the load. An eager denoiser has no graph to keep, and
 there the two serial calls cost more than one batched guided call (B200, eager, random weights: ~2x at 256px,
 ~1.3-1.5x at 512px, parity at 1024px). An eager guided call that runs out of memory batched retries as the two
-calls (half the activations) for the rest of that render. Graphs are read from the denoiser too: an img2img / inpaint
-pipeline built by ``from_pipe`` shares the transformer and its graph wrapper but not the root pipe's handles.
+calls (half the activations) for the rest of that render. An active CFG-parallel router keeps the split eager too:
+its replica runs the guidance-off half concurrently, and it cannot pair one batched call. Graphs are read from the
+denoiser too: an img2img / inpaint pipeline built by ``from_pipe`` shares the transformer and its graph wrapper but not the root pipe's handles.
 """
 
 from __future__ import annotations
@@ -221,7 +222,10 @@ def _make_call(orig_call: Any) -> Any:
             if stats is not None:
                 stats["batched"] += 1
             return orig_call(self, *args, **kwargs)
-        if slots.get(_EAGER_ATTR) and not slots.get(_OOM_ATTR):
+        router = slots.get("_unsloth_cfg_router")
+        routed = router is not None and slots.get("forward") is router
+        # A CFG-parallel router needs the halves even eager: it cannot pair one batched call.
+        if slots.get(_EAGER_ATTR) and not slots.get(_OOM_ATTR) and not routed:
             # Eager: one batched call is faster; two calls at half the activations only when it does not fit.
             try:
                 return orig_call(self, *args, **kwargs)
@@ -235,9 +239,8 @@ def _make_call(orig_call: Any) -> Any:
             if stats is not None:
                 stats["oom_split"] = stats.get("oom_split", 0) + 1
         cond, uncond, kw = parts
-        router = slots.get("_unsloth_cfg_router")
         pair = None
-        if router is not None and slots.get("forward") is router:
+        if routed:
             pair = router.run_pair(lambda: orig_call(self, *cond, **kw), uncond, dict(kw))
         if pair is not None:
             out_cond, out_uncond = pair
