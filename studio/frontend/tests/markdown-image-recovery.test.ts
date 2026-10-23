@@ -12,6 +12,7 @@ function renderer(
   backendPathUrl = (url: string) => url,
   desktopSignedMediaPath = (_url: string): string | null => null,
   sandboxState: Record<string, unknown> = { status: "idle" },
+  protectedBackendPath = (_url: string): string | null => null,
 ) {
   const source = readSrc("components/assistant-ui/markdown-text.tsx");
   const parsed = ts.createSourceFile(
@@ -66,6 +67,7 @@ function renderer(
     markdownSandboxImageSrc: () => null,
     backendPathUrl,
     desktopSignedMediaPath,
+    protectedBackendPath,
     useSandboxImage: () => ({ state: sandboxState }),
     HugeiconsIcon: "icon",
     Download01Icon: "download",
@@ -125,4 +127,15 @@ test("on Desktop a signed media image renders from its fetched blob", () => {
     { status: "loaded", url: "blob:media", blob: {} },
   );
   assert.equal(render({ src }).src, "blob:media");
+});
+
+test("an unsigned backend image renders from the session fetch, not a bare src that 401s", () => {
+  const src = "/api/inference/images/gallery/img-1/file";
+  const render = renderer(
+    (url) => url,
+    () => null,
+    { status: "loaded", url: "blob:gallery", blob: {} },
+    (url) => url,
+  );
+  assert.equal(render({ src }).src, "blob:gallery");
 });

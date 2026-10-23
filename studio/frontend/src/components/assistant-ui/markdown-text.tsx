@@ -240,7 +240,9 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
     ? (markdownSandboxImageSrc(src, {
         threadId: remoteId ?? activeThreadId ?? undefined,
         projectId,
-      }) ?? desktopSignedMediaPath(src))
+      }) ??
+      desktopSignedMediaPath(src) ??
+      protectedBackendPath(src))
     : null;
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
