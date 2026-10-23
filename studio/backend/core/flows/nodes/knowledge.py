@@ -60,7 +60,8 @@ async def load_document(ctx: NodeContext) -> dict:
 
 
 async def _knowledge_base(ctx: NodeContext, create: bool) -> tuple[str, str]:
-    name = str(ctx.params.get("knowledge_base") or "").strip()
+    # The route keeps at most 200 characters, so look up and create the same truncated name.
+    name = str(ctx.params.get("knowledge_base") or "").strip()[:200].strip()
     if not name:
         raise FlowNodeError("Name the knowledge base")
     listed = await ctx.call("GET", f"{RAG}/knowledge-bases")
@@ -73,10 +74,10 @@ async def _knowledge_base(ctx: NodeContext, create: bool) -> tuple[str, str]:
             return str(row["id"]), str(row["name"])
     if not create:
         raise FlowNodeError(f"No knowledge base named {name!r}; add a document to it first")
-    made = await ctx.call("POST", f"{RAG}/knowledge-bases", json = {"name": name[:200]})
+    made = await ctx.call("POST", f"{RAG}/knowledge-bases", json = {"name": name})
     if not isinstance(made, dict) or not made.get("id"):
         raise FlowNodeError("Unsloth Studio did not create the knowledge base")
-    return str(made["id"]), name
+    return str(made["id"]), str(made.get("name") or name)
 
 
 @handler("kb.add")

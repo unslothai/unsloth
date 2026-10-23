@@ -28,11 +28,17 @@ def _items(ctx: NodeContext, port: str = "items") -> list:
     return value
 
 
-def _eval(ctx: NodeContext, expr: Any, item: Any, index: int) -> Any:
+def _eval(
+    ctx: NodeContext,
+    expr: Any,
+    item: Any,
+    index: int,
+    rng: Any = None,
+) -> Any:
     variables = dict(ctx.flow_params or {})
     variables.update({"item": item, "index": index})
     try:
-        return eval_expr(expr, variables, random.Random(ctx.seed + index))
+        return eval_expr(expr, variables, rng or random.Random(ctx.seed + index))
     except ExprError as exc:
         raise FlowNodeError(f"Expression error on item {index}: {exc}") from None
 
@@ -55,8 +61,10 @@ def _edit(ctx: NodeContext, fields: dict, keep_only: bool, item: Any, index: int
     base: dict = {} if keep_only or not isinstance(item, dict) else json.loads(json.dumps(item))
     if not isinstance(item, dict) and not keep_only and item is not None:
         base["value"] = item
+    # One generator per item, so two random fields draw in turn instead of repeating the same first draw.
+    rng = random.Random(ctx.seed + index)
     for name, expr in fields.items():
-        _set_path(base, name, _eval(ctx, expr, item, index))
+        _set_path(base, name, _eval(ctx, expr, item, index, rng))
     return base
 
 
@@ -154,6 +162,8 @@ async def merge_data(ctx: NodeContext) -> dict:
         if isinstance(a, dict) and isinstance(b, dict):
             return {"value": {**a, **b}}
         if isinstance(a, list) and isinstance(b, list):
+            if max(len(a), len(b)) > MAX_ITEMS:
+                raise FlowNodeError(f"Each side takes at most {MAX_ITEMS} items")
             # Item by item, like n8n's "combine by position"; the longer list keeps its extra items.
             pairs = []
             for i in range(max(len(a), len(b))):
@@ -173,25 +183,30 @@ async def merge_data(ctx: NodeContext) -> dict:
         if len(left) > MAX_ITEMS or len(right) > MAX_ITEMS:
             raise FlowNodeError(f"Each side takes at most {MAX_ITEMS} items")
         keep = ctx.params.get("keep_unmatched", True)
-        index: dict[str, dict] = {}
+        # Every right row per key: an order joined with its line items keeps all of them.
+        index: dict[str, list[dict]] = {}
         for row in right:
             if isinstance(row, dict) and key in row:
-                index.setdefault(json.dumps(row[key], sort_keys = True, default = str), row)
+                index.setdefault(json.dumps(row[key], sort_keys = True, default = str), []).append(row)
         used: set[str] = set()
         out = []
         for row in left:
             if not isinstance(row, dict):
                 continue
             k = json.dumps(row.get(key), sort_keys = True, default = str)
-            match = index.get(k) if key in row else None
-            if match is not None:
+            matches = index.get(k) if key in row else None
+            if matches:
                 used.add(k)
-                out.append({**row, **match})
+                out.extend({**row, **match} for match in matches)
             elif keep:
                 out.append(row)
+            if len(out) > MAX_ITEMS:
+                raise FlowNodeError(f"The join made more than {MAX_ITEMS} items")
         if keep:
-            for k, row in index.items():
+            for k, rows in index.items():
                 if k not in used:
-                    out.append(row)
+                    out.extend(rows)
+        if len(out) > MAX_ITEMS:
+            raise FlowNodeError(f"The join made more than {MAX_ITEMS} items")
         return {"value": out}
     raise FlowNodeError(f"Unknown merge mode {mode!r}")

@@ -121,6 +121,34 @@ def test_merge_modes():
     assert merge(left, right, mode = "by_key", key = "id", keep_unmatched = False) == [
         {"id": 2, "x": "b", "y": "B"}
     ]
+    # One order, two line items: both lines survive the join.
+    lines = [{"id": 2, "sku": "x"}, {"id": 2, "sku": "y"}]
+    assert merge([{"id": 2, "who": "A"}], lines, mode = "by_key", key = "id") == [
+        {"id": 2, "who": "A", "sku": "x"},
+        {"id": 2, "who": "A", "sku": "y"},
+    ]
+    with pytest.raises(FlowNodeError, match = "at most"):
+        merge(list(range(transform.MAX_ITEMS + 1)), [1], mode = "combine")
+
+
+def test_edit_fields_draws_successive_random_values():
+    dice = {"op": "rand"}
+    ctx = FakeCtx("json.set", params = {"fields": {"a": dice, "b": dice}}, inputs = {"value": {}})
+    out = run(transform.edit_fields(ctx))["value"]
+    assert out["a"] != out["b"]
+
+
+def test_a_long_knowledge_base_name_is_found_again(monkeypatch):
+    monkeypatch.setattr(knowledge, "POLL_S", 0)
+    long_name = "n" * 250
+    ctx = _Rag("kb.add", params = {"knowledge_base": long_name}, inputs = {"file": _pdf_value()})
+    assert run(knowledge.add_to_knowledge_base(ctx))["knowledge_base"] == "n" * 200
+    again = _Rag(
+        "kb.search", kbs = ctx.kbs, params = {"knowledge_base": long_name}, inputs = {"query": "q"}
+    )
+    assert [c for c in again.calls] == [] and run(knowledge._knowledge_base(again, create = False))[
+        0
+    ] == "kb2"
 
 
 def test_split_default_is_unchanged_and_chunks_overlap():
