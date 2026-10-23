@@ -8,10 +8,13 @@ import pytest
 
 from core.flows import compiler
 from core.flows.examples.build_examples import build
+from core.flows.nodes import transform
 from core.flows.schema import FlowDocument
 from core.flows.specs import SPECS_BY_TYPE
 from core.flows.story import compile_story_report, walk_check
 from core.flows.world import normalize_world, resolve_world_report
+
+from .flows_player_fakes import FakeCtx, run
 
 BUILT = {d["id"]: d for d in build()}
 IDS = sorted(BUILT)
@@ -22,7 +25,7 @@ def _example(name: str) -> dict:
 
 
 def test_the_example_count():
-    assert len(BUILT) == 25
+    assert len(BUILT) == 35
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -87,6 +90,18 @@ def test_pocket_village_plays_after_a_run():
     assert w["entry_points"] == {"npc_reply": "reply"}
 
 
+def test_smallville_lite_is_a_simulated_village():
+    w, warnings = resolve_world_report(_example("smallville-lite"))
+    assert not warnings
+    assert w["entry_points"] == {"npc_reply": "reply", "npc_plan": "plan", "npc_chat": "chat"}
+    assert len(w["npcs"]) == 6 and len(w["simulation"]["places"]) == 5
+    isabella = w["npcs"][0]
+    assert "Valentine's Day party at Hobbs Cafe" in isabella["seed_memories"][0]["text"]
+    assert isabella["seed_memories"][0]["importance"] == 8
+    assert w["vars"] == {"party_attendance": 0}
+    assert "Park et al. 2023" in _example("smallville-lite")["notes"][0]["text"]
+
+
 @pytest.mark.parametrize("name", ["lantern-picnic", "sloth-moon"])
 def test_frontend_story_fixtures_are_fresh(name):
     doc = _example(name)
@@ -102,3 +117,38 @@ def test_frontend_story_fixtures_are_fresh(name):
     assert (
         json.loads(fixture.read_text(encoding = "utf-8")) == compile_story(doc, {})
     ), 'refresh the fixture: json.dumps(compile_story(example), separators=(",", ":")) -> studio/frontend/tests/fixtures'
+
+
+def test_contact_cleanup_list_blocks_clean_the_rows():
+    params = {n["id"]: n["params"] for n in _example("contact-cleanup")["nodes"]}
+    rows = [
+        {"name": "Ana Lima", "email": "ANA@example.com", "company": "Acme"},
+        {"name": "ben ortiz", "email": "ben@example.org", "company": ""},
+        {"name": "Ana Lima", "email": "ana@example.com", "company": "Acme Inc"},
+        {"name": "Chris Wu", "email": "", "company": "Globex"},
+    ]
+    kept = run(
+        transform.filter_list(
+            FakeCtx("list.filter", params = params["has_email"], inputs = {"items": rows})
+        )
+    )
+    assert [r["name"] for r in kept["dropped"]] == ["Chris Wu"]
+    tidy = run(
+        transform.edit_fields(
+            FakeCtx("json.set", params = params["tidy"], inputs = {"value": kept["items"]})
+        )
+    )
+    unique = run(
+        transform.dedupe_list(
+            FakeCtx("list.dedupe", params = params["unique"], inputs = {"items": tidy["value"]})
+        )
+    )
+    out = run(
+        transform.sort_list(
+            FakeCtx("list.sort", params = params["sorted"], inputs = {"items": unique["items"]})
+        )
+    )
+    assert [(r["name"], r["email"], r["company"]) for r in out["items"]] == [
+        ("Ana Lima", "ana@example.com", "Acme"),
+        ("ben ortiz", "ben@example.org", "unknown"),
+    ]

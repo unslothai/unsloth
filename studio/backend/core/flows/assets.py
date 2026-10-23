@@ -31,10 +31,32 @@ MIME_EXT = {
     "video/mp4": "mp4",
     "video/webm": "webm",
     "application/json": "json",
+    "application/pdf": "pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/plain": "txt",
+    "text/markdown": "md",
+    "text/html": "html",
 }
 EXT_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "gif": "image/gif",
             "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg", "flac": "audio/flac",
-            "m4a": "audio/mp4", "mp4": "video/mp4", "webm": "video/webm", "json": "application/json"}  # fmt: skip
+            "m4a": "audio/mp4", "mp4": "video/mp4", "webm": "video/webm", "json": "application/json",
+            "pdf": "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "txt": "text/plain", "md": "text/markdown", "html": "text/html"}  # fmt: skip
+# Documents a Load Document block reads. Text types are only taken when the uploader says so (they have no magic
+# bytes), and are always served back as plain text so an HTML file never renders on Studio's origin.
+DOCUMENT_MIMES = frozenset(
+    (
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+        "text/markdown",
+        "text/html",
+    )
+)
+TEXT_MIMES = ("text/plain", "text/markdown", "text/html")
+NAME_MIME = {"txt": "text/plain", "md": "text/markdown", "markdown": "text/markdown", "html": "text/html",
+             "htm": "text/html"}  # fmt: skip
 
 
 def assets_dir() -> Path:
@@ -71,6 +93,10 @@ def sniff_mime(data: bytes) -> Optional[str]:
         )
     if head[:4] == b"\x1aE\xdf\xa3":
         return "video/webm"
+    if head.startswith(b"%PDF-"):
+        return "application/pdf"
+    if head[:4] == b"PK\x03\x04" and b"word/document.xml" in data:
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return None
 
 
@@ -84,7 +110,29 @@ def _mp4_audio_only(data: bytes) -> bool:
     return b"soun" in kinds and b"vide" not in kinds
 
 
+def sniff_text(data: bytes, hint: Optional[str]) -> Optional[str]:
+    """``hint`` (a text type the uploader named) when ``data`` really is UTF-8 text, else None."""
+    if hint not in TEXT_MIMES or b"\x00" in data:
+        return None
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return hint
+
+
+def text_hint(mime: Optional[str], name: Optional[str]) -> Optional[str]:
+    """The text type an upload names, from its mime or else its file extension."""
+    base = (mime or "").split(";", 1)[0].strip().lower()
+    if base in TEXT_MIMES:
+        return base
+    ext = (name or "").rsplit(".", 1)[-1].lower() if "." in (name or "") else ""
+    return NAME_MIME.get(ext)
+
+
 def kind_of(mime: str) -> str:
+    if mime in DOCUMENT_MIMES:
+        return "document"
     return mime.split("/", 1)[0] if mime.split("/", 1)[0] in ("image", "audio", "video") else "file"
 
 
@@ -110,13 +158,14 @@ def path_for(digest: str) -> Optional[Path]:
 
 def store(data: bytes, mime: Optional[str] = None) -> tuple[str, str]:
     """Write ``data`` once; returns (sha256 hex, mime). The mime is sniffed, never trusted from the caller."""
-    sniffed = sniff_mime(data)
+    sniffed = sniff_mime(data) or sniff_text(data, mime)
     if sniffed is None:
         if mime == "application/json":
             sniffed = mime
         else:
             raise ValueError(
-                "Unsupported asset type: only PNG, JPEG, WebP, GIF, WAV, MP3, OGG, FLAC, MP4 and WebM"
+                "Unsupported asset type: only PNG, JPEG, WebP, GIF, WAV, MP3, OGG, FLAC, MP4, WebM, PDF, DOCX "
+                "and text"
             )
     digest = hashlib.sha256(data).hexdigest()
     target = assets_dir() / f"{digest}.{MIME_EXT[sniffed]}"
