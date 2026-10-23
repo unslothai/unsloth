@@ -627,5 +627,9 @@ def test_export_drops_signed_url_credentials_and_approvals_bind_the_full_digest(
         "&X-Amz-Credential=&X-Amz-Signature=&X-Goog-Signature=&x-amz-security-token="
         "&response-content-type=text%2Fcsv"
     )
+    encoded = scrub({"url": "https://api.example/?api%5Fkey=S1&x-amz-security%2dtoken=S2&q=1"})[
+        "url"
+    ]
+    assert encoded == "https://api.example/?api%5Fkey=&x-amz-security%2dtoken=&q=1"
     # A truncated digest would let a crafted program collide with an approved one.
     assert len(capabilities.code_hash("print(1)")) == len("sha256:") + 64

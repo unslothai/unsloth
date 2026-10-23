@@ -20,6 +20,7 @@ import re
 import stat
 import zipfile
 from typing import Any, Awaitable, Callable
+from urllib.parse import unquote_plus
 
 from core.flows import assets as asset_store
 from core.flows import schema
@@ -90,11 +91,13 @@ _SIGNED_QUERY = re.compile(r"(^|[_-]|%2d|%5f)(signature|credential|security[_-]?
 
 def _blank_query(match: "re.Match") -> str:
     name = match.group(2)
-    # Signed URLs carry live credentials in X-Amz-Signature, X-Goog-Signature, X-Amz-Credential and the like.
+    # Servers decode the name, so api%5Fkey is api_key. Signed URLs carry live credentials in X-Amz-Signature,
+    # X-Goog-Signature, X-Amz-Credential and the like.
+    plain = unquote_plus(name)
     if (
-        _SECRET_KEY.search(name)
-        or _SIGNED_QUERY.search(name)
-        or name.lower() in ("key", "sig", "signature", "code")
+        _SECRET_KEY.search(plain)
+        or _SIGNED_QUERY.search(plain)
+        or plain.lower() in ("key", "sig", "signature", "code")
     ):
         return f"{match.group(1)}{name}="
     return match.group(0)
