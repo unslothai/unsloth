@@ -367,6 +367,10 @@ export function StoryPlayer({
 
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const requested = useRef<Set<string>>(new Set());
+  // Lines that arrived while the reader was mid-scene; the next visit to that scene plays them.
+  const heldLines = useRef<Map<string, NonNullable<StoryScene["lines"]>>>(
+    new Map(),
+  );
   const artEntry = manifest.entry_points?.scene_art;
   const nextEntry = manifest.entry_points?.next_scene;
   // Load the writer's chat model on the title screen, so the first generated scene does not wait for it.
@@ -499,7 +503,11 @@ export function StoryPlayer({
     }
     if (scene.generate_lines && nextEntry) {
       const key = `${rev}:lines:${scene.id}`;
-      if (!requested.current.has(key)) {
+      const held = heldLines.current.get(key);
+      if (held) {
+        heldLines.current.delete(key);
+        dispatch({ type: "setLines", sceneId: scene.id, lines: held, rev });
+      } else if (!requested.current.has(key)) {
         requested.current.add(key);
         const snapshot = stateRef.current;
         const brief = [
@@ -528,7 +536,16 @@ export function StoryPlayer({
           )
           .then((res) => {
             const written = res.outputs.scene as StoryScene | undefined;
-            if (written?.lines?.length)
+            const now = stateRef.current;
+            if (
+              written?.lines?.length &&
+              now.rev === rev &&
+              now.sceneId === scene.id &&
+              now.status === "reading" &&
+              now.line > 0
+            )
+              heldLines.current.set(key, written.lines);
+            else if (written?.lines?.length)
               dispatch({
                 type: "setLines",
                 sceneId: scene.id,
@@ -749,6 +766,7 @@ export function StoryPlayer({
 
   const restart = () => {
     requested.current.clear();
+    heldLines.current.clear();
     dispatch({ type: "start", seed: state.seed });
     setPanel(null);
     setStarted(true);

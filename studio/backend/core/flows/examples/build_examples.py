@@ -1095,7 +1095,7 @@ def storyboard() -> B:
         group = "shot_loop",
         label = "Animate",
         model = VIDEO,
-        size = "832x480",
+        size = "1280x704",
         seconds = 4,
     )
     b.group("shot_loop", "For each shot", (3, 0.2, 3, 1.8), "#ef4444")
@@ -1449,7 +1449,7 @@ def animate_photo() -> B:
         label = "Motion",
         value = "Slow camera push in, hair and leaves move gently in the wind, soft natural light",
     )
-    b.n("clip", "video.generate", 1, 1, model = VIDEO, size = "832x480", seconds = 4)
+    b.n("clip", "video.generate", 1, 1, model = VIDEO, size = "1280x704", seconds = 4)
     b.e("photo.image", "clip.first_frame")
     b.e("motion.text", "clip.prompt")
     b.n("show", "output.preview", 2, 1)
@@ -1458,7 +1458,7 @@ def animate_photo() -> B:
     b.e("clip.video", "save.value")
     b.note(
         "n1",
-        "Pick a photo, then Run. Pick 480x832 for a portrait photo. Describe motion and camera, not the scene.",
+        "Pick a photo, then Run. Pick 704x1280 for a portrait photo. Describe motion and camera, not the scene.",
         0,
         3,
     )
@@ -1571,6 +1571,7 @@ def translate_and_dub() -> B:
     b.n("dub", "audio.speak", 3, 1, label = "Speak in your voice", model = CLONE)
     b.e("translate.text", "dub.text")
     b.e("recording.audio", "dub.reference")
+    b.e("words.text", "dub.reference_text")
     b.n("show", "output.preview", 4, 1)
     b.e("dub.audio", "show.value")
     b.n("text", "output.preview", 3, 2.2, label = "Translation")

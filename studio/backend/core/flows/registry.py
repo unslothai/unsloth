@@ -137,6 +137,7 @@ class NodeContext(Protocol):
         voice: str = "",
         instructions: str = "",
         reference: Optional[dict] = None,
+        reference_text: str = "",
         seed: Optional[int] = None,
     ) -> dict: ...
 
