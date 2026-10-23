@@ -2583,7 +2583,10 @@ def _untiled_after_release(
         # a freed MiB raises the budget by at most a MiB: streaming every group would still leave it tiled
         return verdict, None
     try:
-        if _vae_on_other_card(decode_pipe if decode_pipe is not None else pipe, guard_target) is not None:
+        if (
+            _vae_on_other_card(decode_pipe if decode_pipe is not None else pipe, guard_target)
+            is not None
+        ):
             return verdict, None
     except Exception:  # noqa: BLE001 - unreadable split: the primary's card decodes
         pass
@@ -2605,7 +2608,10 @@ def _untiled_after_release(
             restore = _chain_restores(step, restore)
             try:
                 again = raise_on_image_activation_shortfall(
-                    **{**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
+                    **{
+                        **guard_kwargs,
+                        "device_memory": reclaimable_snapshot_device_memory(guard_target),
+                    }
                 )
             except Exception:  # noqa: BLE001 - a refusal or a broken probe: keep the tiled plan
                 break

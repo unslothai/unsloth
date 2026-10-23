@@ -156,7 +156,9 @@ def test_generate_calls_the_release_before_tiling():
 
 def _priced(free: int) -> ImageActivationVerdict:
     # untiled: 6952 MiB of activations + the 2048 MiB fixed overhead = the 9000 MiB the stub guard wants
-    return ImageActivationVerdict(ACTIVATION_TILE, needed_mib = 6952, tiled_needed_mib = 2952, budget_mib = free)
+    return ImageActivationVerdict(
+        ACTIVATION_TILE, needed_mib = 6952, tiled_needed_mib = 2952, budget_mib = free
+    )
 
 
 def test_a_priced_verdict_streams_only_the_shortfall(card):
