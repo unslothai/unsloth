@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** What the results poll needs, kept apart from the Tasks page so the startup bundle carries no
- *  more than this. Only type imports, so the tests load it directly. */
 
 import type { InterpolationValues, TranslationKey } from "@/i18n";
 import type { FinishedScheduledTaskRun, ScheduledTaskActivity } from "./api";
@@ -12,35 +10,25 @@ export const SCHEDULED_TASKS_CHANGED_EVENT = "unsloth-scheduled-tasks-changed";
 /** Runs finished: a loaded Tasks page re-reads its list to show them. */
 export const SCHEDULED_TASK_RUNS_FINISHED_EVENT = "unsloth-scheduled-task-runs-finished";
 
-/** Where the results poll keeps each account's record, the account's name appended. Listed in
- *  `ACCOUNT_KEYED_PREFIXES`, so switching accounts leaves it for when this one signs in again. */
+/** Per-account results-poll record key; in `ACCOUNT_KEYED_PREFIXES`, so it survives account switches. */
 export const SEEN_KEY_PREFIX = "unsloth_scheduled_tasks_seen:";
-/** Where each account's unseen-run markers are kept, the same way. */
 export const UNSEEN_KEY_PREFIX = "unsloth_scheduled_tasks_unseen:";
 
 export const ACTIVE_POLL_MS = 2_000;
 export const IDLE_POLL_MS = 5 * 60_000;
 // Every hidden tab polling every 2 s through a long CPU run adds up; their notifications can wait.
 export const HIDDEN_POLL_MS = 30_000;
-// Each write of the shared record fires a storage event in every other tab.
 const SEEN_SAVE_STEP_MS = 60_000;
-// Past the due time, so the run has been claimed by the time the poll asks.
 const DUE_SLACK_MS = 3_000;
-/** How far behind the server's present announcing resumes at most: runs that finished longer ago,
- *  while Studio was closed or the computer asleep, are not announced. */
+/** Runs that finished further behind the server's present than this are not announced. */
 export const CATCH_UP_MS = 24 * 60 * 60_000;
-// A run committed just after the server read its clock finished before the time it reported, so
-// each poll asks from a minute earlier and skips the runs it has already announced.
+// A run committed just after the server read its clock predates that time: poll from a minute earlier, skip seen ids.
 const CURSOR_SLACK_MS = 60_000;
-// A whole answer's worth (the server's page size), so every run that can come back, from the slack
-// window or a page boundary, is still on the list.
+// The server's page size, so every run the slack window or a page boundary returns stays listed.
 const SEEN_IDS_LIMIT = 200;
-// Answers one poll reads before announcing; a longer backlog carries on at the next poll.
 const PAGES_PER_POLL = 10;
 
-/** How long until the results poll should look again: quickly while a run is going or results are
- *  still to be read, just after the next one is due, and otherwise every few minutes for tasks made
- *  in another tab. */
+/** Delay before the next results poll: short while runs are active or unread, else just after the next due time. */
 export function nextPollDelay(activity: {
   now: number;
   activeRuns: number;
@@ -53,12 +41,10 @@ export function nextPollDelay(activity: {
   return Math.min(IDLE_POLL_MS, Math.max(ACTIVE_POLL_MS, untilDue));
 }
 
-/** `nextPollDelay` for a tab that may be hidden: showing it again polls at once anyway. */
 export function pollDelayFor(delay: number, hidden: boolean): number {
   return hidden ? Math.max(delay, HIDDEN_POLL_MS) : delay;
 }
 
-/** A cursor left a little behind only makes the next poll re-read runs it skips by id. */
 export function shouldSaveSeen(
   stored: SeenRuns | null,
   record: SeenRuns,
@@ -67,8 +53,7 @@ export function shouldSaveSeen(
   return claimed > 0 || stored === null || record.since - stored.since >= SEEN_SAVE_STEP_MS;
 }
 
-/** What the results poll has announced, kept across launches so a reopened Studio reports the
- *  runs that finished while it was closed. */
+/** What the results poll has announced, persisted so a reopened Studio reports runs finished while closed. */
 export interface SeenRuns {
   /** Server time from which finished runs are still to be announced. */
   since: number;
@@ -76,9 +61,7 @@ export interface SeenRuns {
   ids: string[];
 }
 
-/** The stored record to resume from. Without one, announcing starts from the server's present and
- *  covers only what finishes from then on. How far behind it is, the first answer from the server
- *  says (see `collectFinishedRuns`): this browser's clock plays no part. */
+/** The stored record to resume from; the server's first answer, not this clock, decides how far behind it is. */
 export function readSeenRuns(stored: string | null): SeenRuns | null {
   let value: unknown;
   try {
@@ -96,9 +79,7 @@ export function readSeenRuns(stored: string | null): SeenRuns | null {
   };
 }
 
-/** The record after one answer from the server, having announced `announced`. A full answer stops
- *  at its last run, where the next one picks up. Otherwise the record moves to the server's present
- *  even when nothing finished, so it is never too old to resume from. */
+/** The record after one server answer: a full answer stops at its last run, else it moves to the server's present. */
 export function advanceSeenRuns(
   seen: SeenRuns | null,
   answer: Pick<ScheduledTaskActivity, "now" | "runs" | "more">,
@@ -115,10 +96,7 @@ export function advanceSeenRuns(
   };
 }
 
-/** Which of `fresh` this tab announces, and the record the account's tabs share once it has. Another
- *  tab may have announced some of them already, and they stay quiet here: the ones `shared` lists,
- *  and any that finished before its cursor, which the tab that moved it there claimed (the list
- *  keeps only the latest, so a long backlog outgrows it). */
+/** Which of `fresh` this tab announces (skipping ones another tab claimed), and the shared record after. */
 export function claimAnnouncements<T extends { id: string; finishedAt: number | null }>(
   shared: SeenRuns | null,
   cursor: SeenRuns,
@@ -138,13 +116,7 @@ export function claimAnnouncements<T extends { id: string; finishedAt: number | 
   };
 }
 
-/** The runs finished since `seen` that it has not announced, read an answer at a time, with the
- *  record moved past them. `last` is the final answer, which paces the next poll.
- *
- *  A record further behind the server's present than the catch-up window (Studio closed for days,
- *  or the computer asleep) resumes from that window instead, so a run that finished just before is
- *  still announced and older ones are not. Measured on the server's clock alone, by its first answer:
- *  a browser clock that disagrees with it, or was corrected meanwhile, cannot move the cursor. */
+/** Unannounced runs since `seen`, read page by page; a record older than the catch-up window resumes from it (server clock only). */
 export async function collectFinishedRuns(
   seen: SeenRuns | null,
   fetchAnswer: (since: number | null) => Promise<ScheduledTaskActivity>,
@@ -170,15 +142,13 @@ export async function collectFinishedRuns(
   }
 }
 
-/** The finished runs worth announcing: one that succeeded but whose chat is already gone (deleted,
- *  say, from another tab) has nothing to open, and it did not fail either. */
+/** Finished runs worth announcing: a succeeded run whose chat is already gone is skipped. */
 export function runsToAnnounce<T extends { status: string; threadId: string | null }>(
   runs: readonly T[],
 ): T[] {
   return runs.filter((run) => run.status !== "succeeded" || run.threadId !== null);
 }
 
-/** Of the runs announced, those their tasks want a toast and a system notification for. */
 export function runsToNotify<T extends { status: string; taskNotify: string }>(
   runs: readonly T[],
 ): T[] {
@@ -187,15 +157,12 @@ export function runsToNotify<T extends { status: string; taskNotify: string }>(
   );
 }
 
-/** A run that stopped only because its task's model was not loaded, and is waiting for a yes. Not
- *  `model_busy`: that task already switches by itself and was skipped while Unsloth was in use, so
- *  it is reported like any other skipped run instead of asking. */
+/** A run that stopped because its model was not loaded and awaits a yes (not `model_busy`, which reports as skipped). */
 export function asksToLoadModel(run: { errorCode: string | null; taskModel?: string | null }): boolean {
   return run.errorCode === "model_not_loaded" && Boolean(run.taskModel);
 }
 
-/** Of the runs announced, those that ask to load their task's model: one per task, the newest.
- *  They ask whatever the task's Notifications say, since only an answer lets the task run. */
+/** Runs asking to load their task's model, newest per task, regardless of the task's Notifications. */
 export function runsAskingToLoad<
   T extends { taskId: string; errorCode: string | null; taskModel?: string | null },
 >(runs: readonly T[]): T[] {
@@ -206,7 +173,6 @@ export function runsAskingToLoad<
 
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
-// The backend's error codes; anything else carries its own text.
 const ERROR_KEYS: Record<string, TranslationKey> = {
   no_model: "scheduledTasks.errors.noModel",
   model_not_loaded: "scheduledTasks.errors.modelNotLoaded",

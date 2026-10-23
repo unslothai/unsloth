@@ -1,23 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Finished runs the user has not looked at yet: a dot on the sidebar's Scheduled row until the
- *  page is opened, and one on each task until its chat is opened (or, for a failed run, the task
- *  is touched). In the startup bundle, beside the results poll that fills it. */
+/** Unseen finished runs: dots on the Scheduled sidebar row and on each task until opened. */
 
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT, getAuthToken } from "@/features/auth";
 import { browserAccountKey } from "@/lib/account-transition";
 import { UNSEEN_KEY_PREFIX } from "./results";
 
-/** The signed-in account's record, or none while signed out. Each account keeps its own, by id,
- *  so signing out or into another account does not count as having looked. */
+/** The signed-in account's record (by id), or none while signed out. */
 function storageKey(): string | null {
   return getAuthToken() ? UNSEEN_KEY_PREFIX + browserAccountKey() : null;
 }
 
 interface Stored {
-  /** Task id -> the chat its finished run made, or null for a failed run. */
   tasks: Record<string, string | null>;
   page: boolean;
 }
@@ -25,14 +21,12 @@ interface Stored {
 interface UnseenState extends Stored {
   markFinished: (runs: { taskId: string; threadId: string | null }[], onPage: boolean) => void;
   clearTask: (taskId: string) => void;
-  /** The chat a run made was opened, from anywhere. */
   clearThread: (threadId: string) => void;
   clearPage: () => void;
 }
 
 const NOTHING_UNSEEN: Stored = { tasks: {}, page: false };
 
-/** The account's stored record, or null when there is none to read: signed out, or no storage. */
 function stored(): Stored | null {
   const key = storageKey();
   if (key === null) return null;
@@ -57,17 +51,13 @@ function save({ tasks, page }: Stored): void {
   try {
     localStorage.setItem(key, JSON.stringify({ tasks, page }));
   } catch {
-    // Without storage the dots last until the next launch.
   }
 }
 
 export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
-  // Each change starts from the stored record, not this tab's copy, which another tab of the
-  // account may have changed since: written back, a stale copy would bring back markers that tab
-  // cleared, or drop ones it added. Without storage the copy is all there is.
+  // Start each change from the stored record: another tab may have changed it, and a stale copy would undo that.
   const change = (apply: (current: Stored) => Stored | null) => {
     const current = stored() ?? { tasks: get().tasks, page: get().page };
-    // Nothing to change (every thread switch asks): no new state, so no re-render.
     const next = apply(current);
     if (next === null) return;
     set(next);
@@ -101,14 +91,12 @@ export const useUnseenScheduledRuns = create<UnseenState>()((set, get) => {
 });
 
 if (typeof window !== "undefined") {
-  // Signing out hides the markers but keeps them for the account; signing in shows its own.
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     useUnseenScheduledRuns.setState({ tasks: {}, page: false });
   });
   window.addEventListener(AUTH_SESSION_STORED_EVENT, () => {
     useUnseenScheduledRuns.setState(load());
   });
-  // Another tab of the account marked or cleared something: show it here too.
   window.addEventListener("storage", (event) => {
     if (event.key?.startsWith(UNSEEN_KEY_PREFIX) && event.key === storageKey()) {
       useUnseenScheduledRuns.setState(load());

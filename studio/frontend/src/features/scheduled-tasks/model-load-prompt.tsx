@@ -18,7 +18,6 @@ import { toast } from "@/lib/toast";
 import type { FinishedScheduledTaskRun } from "./api";
 import { useScheduledTasksStore } from "./store";
 
-/** A model id is a repo or a path on disk; its last segment is the name people know. */
 function modelName(model: string): string {
   return model.split(/[\\/]/).filter(Boolean).pop() ?? model;
 }

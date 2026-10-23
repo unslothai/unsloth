@@ -520,8 +520,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Null on every earlier row, which then numbers from its whole title.
     if "fork_title_base" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_title_base TEXT")
-    # The scheduled task whose run made this chat. Kept after the task is deleted: the chat is
-    # still one a task wrote.
+    # The task whose run made this chat; kept after the task is deleted.
     if "scheduled_task_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN scheduled_task_id TEXT")
     # Last rename, move or (un)archive. Null until then.
@@ -859,9 +858,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
         " ON data_recipe_executions(recipe_id, created_at)"
     )
-    # next_run_at is NULL when nothing is left to run: a paused task, or a one-time task that ran.
-    # notify is which finished runs the app announces: all, failures or none. named is 0 for a task
-    # whose title was taken from its instructions, so an edit can keep it following them.
+    # next_run_at NULL = nothing left to run; notify = all|failures|none; named=0 = title follows the instructions.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -2969,9 +2966,7 @@ def _active_chat_generation_run_ids(
 
 
 def delete_chat_threads_in(conn: sqlite3.Connection, ids: list[str]) -> tuple[list[str], list[str]]:
-    """Delete chats inside the caller's write transaction, so the deletion commits or rolls back
-    with whatever else that transaction records. Returns the ids of the research and chat runs
-    still active in them."""
+    """Delete chats in the caller's write transaction; returns the still-active research and chat run ids."""
     _ensure_chat_attachment_inventory_current(conn)
     thread_ids = set(ids)
     active_research_run_ids = _active_research_run_ids(conn, thread_ids)
@@ -2990,8 +2985,7 @@ def delete_chat_threads_in(conn: sqlite3.Connection, ids: list[str]) -> tuple[li
 
 
 def delete_scheduled_run_messages_in(conn: sqlite3.Connection, thread_id: str, run_id: str) -> None:
-    """Delete what one scheduled run appended to a chat it keeps, inside the caller's transaction,
-    relinking anything written after it to the message before it."""
+    """Delete one scheduled run's messages from a kept chat in the caller's transaction, relinking later ones."""
     ids = {
         str(row["id"])
         for row in conn.execute(
@@ -3687,8 +3681,7 @@ def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str
 
 
 def _scheduled_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
-    """Messages a scheduled task's run wrote. A task that keeps one chat appends to it on the
-    server, which a tab opened earlier never sees."""
+    """Messages a scheduled run wrote; a kept chat is appended on the server, which an earlier-opened tab never sees."""
     row = conn.execute(
         "SELECT scheduled_task_id FROM chat_threads WHERE id = ?", (thread_id,)
     ).fetchone()

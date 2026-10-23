@@ -19,7 +19,6 @@ from storage.studio_db import (
 
 # Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
-# Finished runs kept per task, newest first. The chats they made are kept regardless.
 RUN_HISTORY_LIMIT = 20
 
 _ACTIVE = "('queued', 'running')"
@@ -49,16 +48,14 @@ def now_ms() -> int:
 
 
 def chat_id_for_run(run_id: str) -> str:
-    """The id of the chat a run writes. Derived from the run, so a chat whose run never settled
-    (Studio stopped in between) can be found and removed without the run having recorded it."""
+    """The run's chat id, derived from the run so an unsettled run's chat can still be found."""
     return str(uuid.uuid5(_RUN_CHAT_NAMESPACE, run_id))
 
 
 def discard_run_output_in(
     conn: sqlite3.Connection, run_id: str, kept_chat_id: Optional[str]
 ) -> None:
-    """Remove what a run that did not succeed wrote, in the caller's transaction: the chat it
-    made, or its exchange in the chat its task keeps (``kept_chat_id``)."""
+    """Remove what a failed run wrote, in the caller's transaction: its chat, or its exchange in ``kept_chat_id``."""
     if kept_chat_id:
         delete_scheduled_run_messages_in(conn, kept_chat_id, run_id)
     delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
@@ -94,7 +91,6 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "newChatEachRun": bool(row["new_chat_each_run"]),
         "archiveSuccessful": bool(row["archive_successful"]),
         "projectId": row["project_id"],
-        # The chat runs add to while newChatEachRun is off; set by the run that started it.
         "chatThreadId": row["chat_thread_id"],
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
@@ -153,7 +149,6 @@ def _get_task(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
 def list_tasks() -> list[dict]:
     conn = get_connection()
     try:
-        # One snapshot for the tasks and their last runs.
         conn.execute("BEGIN")
         rows = conn.execute(
             "SELECT * FROM scheduled_tasks ORDER BY created_at DESC, rowid DESC"
@@ -226,12 +221,7 @@ def update_task(
     changes: dict,
     reschedule: Optional[Callable[[dict], Optional[int]]] = None,
 ) -> Optional[dict]:
-    """Apply ``changes``. When they change when the task runs, ``reschedule`` sees the updated task
-    and returns its next run time; resending the values it already has changes nothing.
-
-    Both happen in one transaction, so a run claimed meanwhile cannot be scheduled from a stale
-    copy. Whatever ``reschedule`` raises rolls the update back.
-    """
+    """Apply ``changes``; ``reschedule`` returns the next run time in the same transaction (raising rolls back)."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -293,9 +283,7 @@ def set_chat_thread(task_id: str, thread_id: str) -> None:
 
 
 def delete_task(task_id: str) -> bool:
-    """Delete a task and its run history. Chats its finished runs made are left alone; the one a
-    run still under way may be writing goes in the same transaction, and stays gone if that run's
-    save lands later."""
+    """Delete a task and its run history; finished runs' chats stay, an in-progress run's chat goes too."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -318,10 +306,7 @@ def delete_task(task_id: str) -> bool:
 
 
 def request_run(task_id: str, allow_model_load: bool = False) -> Optional[dict]:
-    """Queue a run now, outside the schedule. None when the task does not exist.
-
-    ``allow_model_load`` lets this run alone load the task's model if it is not loaded.
-    """
+    """Queue a run now, outside the schedule. None when the task does not exist."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -366,13 +351,7 @@ def _has_claimable(conn: sqlite3.Connection, now: int) -> bool:
 def claim_next(
     now: int, worker_id: str, next_run_after: Callable[[dict, int], Optional[int]]
 ) -> Optional[tuple[dict, dict]]:
-    """Start the next run: a queued Run now first, then the most overdue scheduled task.
-
-    A scheduled claim moves the task on to its next run time in the same transaction, so each
-    occurrence runs once however the run itself ends. Occurrences missed while Studio was closed
-    collapse into this one run: ``next_run_after`` is asked for the first run after now.
-    Returns ``(task, run)``, or None when nothing is due.
-    """
+    """Claim the next run (queued Run now first, then most overdue); missed occurrences collapse into one."""
     conn = get_connection()
     try:
         # Read-only first, so an idle poll never takes the writer lock.
@@ -407,8 +386,7 @@ def claim_next(
             try:
                 following = next_run_after(task, max(now, task["nextRunAt"]))
             except Exception:
-                # A schedule that no longer resolves (a time zone dropped from tzdata) runs this
-                # once and then waits for an edit, rather than firing on every poll.
+                # A schedule that no longer resolves runs once, then waits for an edit instead of firing every poll.
                 following = None
             run_id = str(uuid.uuid4())
             conn.execute(
@@ -440,10 +418,7 @@ def claim_next(
 
 
 def release_claim(run_id: str, worker_id: str, claimed_next_run_at: Optional[int]) -> bool:
-    """Undo a claim that will not be run (Studio began shutting down as it was made): a Run now goes
-    back to the queue, and a scheduled run is dropped and its task due again at the occurrence it
-    took, unless the task has been rescheduled or paused since (``claimed_next_run_at`` is the
-    next run the claim gave it). False when the run is no longer this worker's to give back."""
+    """Undo a claim that will not run; False when the run is no longer this worker's to give back."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -545,11 +520,7 @@ def finish_run(
     error: Optional[str] = None,
     discard_chat: bool = False,
 ) -> bool:
-    """Settle a run this worker owns, and trim its task's history. False when the run is gone.
-
-    ``discard_chat`` removes the chat the run may have written in the same transaction, for a run
-    that does not succeed: no crash between the two can leave that chat behind a failed run.
-    """
+    """Settle a run this worker owns and trim history; ``discard_chat`` removes a failed run's chat atomically."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -590,12 +561,7 @@ def finish_run(
 
 
 def recover_stale_runs(stale_before: int) -> int:
-    """Fail runs whose heartbeat stopped before ``stale_before``: Studio quit or crashed mid-run,
-    or the worker could not settle the run, which would otherwise hold its task as running.
-
-    A run still being heartbeated is being worked on and is left alone. The scheduler sweeps only
-    between its own runs, so none of its runs is in progress then.
-    """
+    """Fail runs whose heartbeat stopped before ``stale_before`` (Studio quit or crashed mid-run)."""
     stale = "status = 'running' AND COALESCE(heartbeat_at, started_at, created_at) < ?"
     conn = get_connection()
     try:
@@ -620,12 +586,9 @@ def recover_stale_runs(stale_before: int) -> int:
             " WHERE id = ?",
             [(now_ms(), run_id) for run_id in run_ids],
         )
-        # One that stopped after writing its chat but before settling left the chat behind, and a
-        # failed run has none. Deleted in this transaction, so no crash can record the run as failed
-        # and keep its chat, and a save still under way cannot bring it back.
+        # Delete its chat in this transaction, so a failed run never keeps one and a late save cannot restore it.
         for row in rows:
             discard_run_output_in(conn, row["id"], row["chat_thread_id"])
-        # As finish_run does: a task whose runs keep ending this way must not pile them up.
         for task_id in {row["task_id"] for row in rows}:
             _trim_history(conn, task_id)
         conn.commit()
@@ -650,23 +613,15 @@ def list_runs(task_id: str, limit: int = RUN_HISTORY_LIMIT) -> list[dict]:
         conn.close()
 
 
-# Finished runs per answer. Scheduled runs alone fit, at most one a day per task, but Run now has
-# no such bound, so a client pages through the rest (see ``more``).
+# Finished runs per answer; Run now is unbounded, so clients page via ``more``.
 ACTIVITY_LIMIT = 200
 
 
 def activity(since: Optional[int]) -> dict:
-    """What a client watching for results needs: runs finished at or after ``since`` (oldest
-    first, each with its task's title and which runs it announces), how many are queued or
-    running, and the next run time.
-
-    At most ACTIVITY_LIMIT runs; ``more`` says there are others, which a call from the last
-    run's ``finishedAt`` returns (repeating any that finished in that same millisecond).
-    """
+    """Runs finished since ``since`` (oldest first, at most ACTIVITY_LIMIT, ``more`` pages), active count, next run."""
     conn = get_connection()
     try:
-        # One snapshot: a run that settles between two separate reads would be in neither, not
-        # finished in the first and no longer active in the second.
+        # One snapshot, so a run settling between two reads is not missed by both.
         conn.execute("BEGIN")
         runs: list[dict] = []
         more = False

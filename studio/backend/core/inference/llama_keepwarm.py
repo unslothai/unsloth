@@ -238,8 +238,7 @@ def _is_idle(ttl_seconds: float) -> bool:
 
 
 def idle_for(seconds: float) -> bool:
-    """Nothing in flight or waiting, and nobody's inference request or model load for ``seconds``:
-    work that is nobody's request (a scheduled task) may swap the loaded model."""
+    """No in-flight, pending or attended (non-scheduled) activity for ``seconds``."""
     with _lock:
         return _inflight == 0 and _pending == 0 and (time.monotonic() - _last_attended) >= seconds
 
@@ -257,8 +256,7 @@ def inference_in_flight() -> bool:
 
 @contextlib.contextmanager
 def unattended_activity():
-    """Mark the inference and loads made inside as Unsloth's own, for idle_for(). The mark follows
-    the context into to_thread() and the tasks created in it."""
+    """Mark inference and loads inside as Unsloth's own for idle_for(); follows into to_thread() and child tasks."""
     token = _unattended.set(True)
     try:
         yield
@@ -513,10 +511,7 @@ def untrack_admitted_inference(scope) -> None:
 
 
 def end_in_process_request(scope, answered: bool) -> None:
-    """For a request produced in-process (a scheduled task's run), what LlamaKeepWarmMiddleware does
-    when an HTTP one ends, as this one never passes through it: an answer from the local model
-    adopts it for Unsloth, and the admitted-inference count it took is given back, or preview
-    loads stay refused as busy. Idempotent."""
+    """LlamaKeepWarmMiddleware's end-of-request bookkeeping for an in-process request. Idempotent."""
     if answered and isinstance(scope, dict) and scope.get(_ADMITTED_SCOPE_KEY):
         _claim_non_preview_slot()
     untrack_admitted_inference(scope)
@@ -882,8 +877,7 @@ def _loaded_identity(backend):
 
 
 def loaded_identity():
-    """What a reload needs to bring back the loaded GGUF exactly (path, quant, the advertised id
-    its saved launch settings are keyed by), or None when none is loaded."""
+    """The loaded GGUF's reload identity (path, quant, advertised id), or None when none is loaded."""
     from routes.inference import get_llama_cpp_backend
     return _loaded_identity(get_llama_cpp_backend())
 

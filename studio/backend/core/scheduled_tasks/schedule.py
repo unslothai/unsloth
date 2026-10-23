@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""When a scheduled task runs next.
-
-A schedule is a wall-clock time in the task's IANA time zone, so a daily 09:00 task stays at 09:00
-across daylight saving changes. A time the clocks skip runs that far past the change (02:30 on a
-spring-forward night runs at 03:30), and a time that happens twice runs once, the first time.
-"""
+"""When a task runs next: wall clock in its IANA zone; a skipped time runs past the gap, a repeated one once."""
 
 from __future__ import annotations
 
@@ -120,7 +115,6 @@ def _next_after(schedule: Schedule, zone: ZoneInfo, after: datetime) -> Optional
     today = after.astimezone(zone).date()
     if isinstance(schedule, MonthlySchedule):
         year, month = today.year, today.month
-        # This month's run if it is still ahead, otherwise next month's, which always is.
         for _ in range(2):
             last_day = calendar.monthrange(year, month)[1]
             candidate = _utc(date(year, month, min(schedule.day, last_day)), clock, zone)

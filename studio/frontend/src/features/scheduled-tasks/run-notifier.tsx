@@ -33,14 +33,12 @@ import { useUnseenScheduledRuns } from "./unseen";
 
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
 const INDIVIDUAL_TOASTS = 2;
-// Loaded when a task first asks, so the question costs the startup bundle nothing.
 const ModelLoadPrompt = lazy(() => import("./model-load-prompt"));
 const RECHECK_MS = 500;
-// Held by one of an account's tabs while it claims what to announce, the account's name appended.
+// Lock one tab holds while claiming what to announce (account name appended).
 const ANNOUNCE_LOCK_PREFIX = "unsloth-scheduled-task-results:";
 
-/** The signed-in account the record belongs to: another account's cursor would pass over this
- *  one's results. By id, so an account made later under a deleted one's name starts afresh. */
+/** The signed-in account the record belongs to, by id so a recreated name starts afresh. */
 function currentAccount(): string {
   return browserAccountKey();
 }
@@ -57,12 +55,10 @@ function saveSeen(account: string, seen: SeenRuns): void {
   try {
     localStorage.setItem(SEEN_KEY_PREFIX + account, JSON.stringify(seen));
   } catch {
-    // Without storage the next launch only announces runs from then on.
   }
 }
 
-/** `claim` with no other tab of this browser holding the same lock, where the browser has locks
- *  (secure contexts). Elsewhere two tabs polling at once may both announce a run. */
+/** `claim` under a Web Lock where available (secure contexts); elsewhere two tabs may both announce. */
 async function exclusively<T>(name: string, claim: () => T): Promise<T> {
   const locks = (navigator as Navigator & { locks?: LockManager }).locks;
   if (!locks) return claim();
@@ -73,7 +69,6 @@ async function exclusively<T>(name: string, claim: () => T): Promise<T> {
       return claim();
     });
   } catch (error) {
-    // A browser that refuses the lock itself (a sandboxed page, say) still announces.
     if (claimed) throw error;
     return claim();
   }
@@ -116,16 +111,12 @@ function notifySystem(runs: FinishedScheduledTaskRun[]): void {
       notification.close();
     };
   } catch {
-    // Some browsers only allow notifications from a service worker.
   }
 }
 
-/** Watches for scheduled task results while Studio is open: brings the new chats into the
- *  sidebar, marks them unread, and says so with a toast, plus a system notification when the
- *  window is in the background. Renders nothing. */
+/** Watches for scheduled results: refreshes Recents, marks chats unread, toasts and notifies. Renders nothing. */
 export function ScheduledTaskRunNotifier() {
   const navigate = useNavigate();
-  // Runs waiting for a yes to load their task's model, asked one at a time.
   const [asking, setAsking] = useState<FinishedScheduledTaskRun[]>([]);
   const navigateRef = useRef(navigate);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -144,10 +135,8 @@ export function ScheduledTaskRunNotifier() {
   useEffect(() => {
     let disposed = false;
     let polling = false;
-    // A change made while a poll is in flight, whose answer may predate it.
     let recheckAfterPoll = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    // Whose record `seen` is; loaded on the first poll of each account.
     let account: string | null = null;
     let seen: SeenRuns | null = null;
 
@@ -155,7 +144,6 @@ export function ScheduledTaskRunNotifier() {
       void navigateRef.current({ to: "/chat", search: { thread: threadId } });
     const openTasks = () => void navigateRef.current({ to: "/tasks" });
 
-    // In every tab: the new chats in Recents, and a loaded Scheduled page up to date.
     const refreshFor = (finished: FinishedScheduledTaskRun[]) => {
       if (finished.some((run) => run.status === "succeeded" && run.threadId)) {
         notifyChatHistoryUpdated();
@@ -163,10 +151,7 @@ export function ScheduledTaskRunNotifier() {
       window.dispatchEvent(new Event(SCHEDULED_TASK_RUNS_FINISHED_EVENT));
     };
 
-    // In the one tab that claimed them: the chats marked unread, the unseen dots (which reach
-    // the account's other tabs through storage), and, for the runs their tasks want to hear of,
-    // the toasts and a system notification. A tab that lost the claim marks nothing, so it cannot
-    // bring back a dot the user cleared meanwhile by opening the chat in the faster tab.
+    // Only the claiming tab marks unread and notifies, so it cannot revive a dot cleared in a faster tab.
     const announce = (claimed: FinishedScheduledTaskRun[]) => {
       const runs = runsToAnnounce(claimed);
       if (runs.length === 0) return;
@@ -188,7 +173,6 @@ export function ScheduledTaskRunNotifier() {
           ...asks,
         ]);
       }
-      // The question stands in for their toast.
       const notified = runsToNotify(runs.filter((run) => !asksToLoadModel(run)));
       if (notified.length === 0) return;
       if (notified.length > INDIVIDUAL_TOASTS) {
@@ -224,7 +208,6 @@ export function ScheduledTaskRunNotifier() {
 
     const poll = async () => {
       if (disposed || polling) return;
-      // Signed out, or still signing in: the request would only bounce to the login page.
       if (!hasSettledAuthSession()) {
         schedule(IDLE_POLL_MS);
         return;
@@ -238,10 +221,7 @@ export function ScheduledTaskRunNotifier() {
       polling = true;
       try {
         const result = await collectFinishedRuns(seen, getScheduledTaskActivity);
-        // One tab announces a run: the claim reads and writes the record the account's tabs share,
-        // under their lock, and nothing can sign out between its check and its write.
         const mine = await exclusively(ANNOUNCE_LOCK_PREFIX + owner, () => {
-          // Signed out or into another account meanwhile: the answer was the previous account's.
           if (disposed || getAuthSessionEpoch() !== epoch || currentAccount() !== owner) return null;
           const stored = loadSeen(owner);
           const claim = claimAnnouncements(stored, result.seen, result.fresh);
@@ -276,7 +256,6 @@ export function ScheduledTaskRunNotifier() {
       if (document.visibilityState === "visible") recheck();
     };
     window.addEventListener(SCHEDULED_TASKS_CHANGED_EVENT, recheck);
-    // A sign-in hears what finished for that account now, not after the idle poll.
     window.addEventListener(AUTH_SESSION_STORED_EVENT, recheck);
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", onVisible);

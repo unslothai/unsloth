@@ -79,8 +79,7 @@ const NOTIFY_LABELS: Record<TaskNotify, TranslationKey> = {
 const NOTIFY_CHOICES: readonly TaskNotify[] = ["all", "failures", "none"];
 const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, index) => index + 1);
 
-/** Results arrive while the user is elsewhere, so ask once, from the click that saves a task that
- *  notifies: browsers only show the prompt during a user gesture. */
+/** Ask for notification permission from the save click: browsers prompt only during a user gesture. */
 function askToNotify(): void {
   if (isTauri) {
     void primeNativeNotificationPermission();
@@ -91,7 +90,6 @@ function askToNotify(): void {
   }
 }
 
-// One line of a card: the label on the left, its control on the right.
 function Row({
   id,
   label,
@@ -129,12 +127,10 @@ function Row({
 // Dark mode separates by fill, not outline: a white wash on the card surface, no borders or dividers.
 const CARD =
   "flex flex-col divide-y divide-border overflow-hidden rounded-[20px] border border-border dark:divide-y-0 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
-// Controls sit flush in their row and read as its value, like a settings list.
 const BARE_SELECT =
   "h-9 w-auto gap-1.5 border-none bg-transparent px-2 text-ui-15 text-muted-foreground shadow-none hover:text-foreground focus-visible:ring-1 dark:bg-transparent dark:hover:bg-transparent";
 const BARE_INPUT =
   "h-9 w-auto border-none bg-transparent px-2 text-right text-ui-15 text-muted-foreground shadow-none focus-visible:ring-1 dark:bg-transparent";
-// A long list (days of the month, times of day) scrolls rather than filling the window.
 // Its scroll buttons paint the base popover colour, which shows as bands on the lifted dark menu.
 const LONG_LIST =
   "max-h-[min(--spacing(72),var(--radix-select-content-available-height))] [&_[data-slot^=select-scroll]]:bg-transparent";
@@ -151,8 +147,7 @@ const RELATIVE_LABELS: Partial<Record<TaskReasoningEffort, TranslationKey>> = {
 const ALL_EFFORTS: readonly TaskReasoningEffort[] = ["off", "lowest", "highest"];
 const CONNECTION_LEVELS: readonly TaskReasoningEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
-/** A connection's level as the Chat composer names it (formatReasoningEffortLabel), so a task's
- *  menu reads like Chat's for the same model. */
+/** A connection's level as the Chat composer names it (formatReasoningEffortLabel). */
 function levelLabel(level: TaskReasoningEffort, modelId: string | undefined): string {
   if (level === "max") return "Max";
   if (level === "xhigh") {
@@ -164,20 +159,18 @@ function levelLabel(level: TaskReasoningEffort, modelId: string | undefined): st
   return level.charAt(0).toUpperCase() + level.slice(1);
 }
 
-/** The loaded model's thinking, as Chat reads it. */
 type LoadedReasoning = { supportsReasoning: boolean; reasoningStyle: string; reasoningAlwaysOn: boolean };
 
 type ConnectionChoice = { id: string; modelId: string; provider: ExternalProviderConfig };
 
-/** What a task can run on: models on this device and models of connected providers, never one
- *  that would have to be downloaded first. */
+/** Models a task can run on: local and connected providers, never one needing a download. */
 function useModelChoices(current: string | null) {
   const inventory = useDeviceInventorySources(["localModels", "cachedGguf"]);
   const providers = useExternalProvidersStore((state) => state.providers);
   const connectionsEnabled = useExternalProvidersStore((state) => state.connectionsEnabled);
   return useMemo(() => {
     const local = chatLocalModelOptions(inventory.localModels.rows).map(({ id, name }) => ({ id, name }));
-    // Model hub downloads. GGUF only: a run switches back afterwards only to a GGUF.
+    // GGUF only: a run switches back afterwards only to a GGUF.
     for (const repo of inventory.cachedGguf.rows) {
       if (!local.some((option) => option.id === repo.repo_id)) {
         local.push({ id: repo.repo_id, name: repo.repo_id });
@@ -200,9 +193,7 @@ function useModelChoices(current: string | null) {
   }, [inventory.localModels.rows, inventory.cachedGguf.rows, providers, connectionsEnabled, current]);
 }
 
-/** The efforts the task's model takes: a connection's from its capabilities, the loaded model's
- *  from what Chat read off it, and all of them for a model not loaded, which a run resolves once it
- *  is. Empty: the model has no thinking to set. */
+/** Efforts the task's model takes; all of them for an unloaded model (a run resolves it), empty when none. */
 function effortChoices(
   connection: ConnectionChoice | undefined,
   loaded: LoadedReasoning | null,
@@ -210,7 +201,6 @@ function effortChoices(
   if (!connection) {
     if (!loaded) return ALL_EFFORTS;
     if (!loaded.supportsReasoning) return [];
-    // An effort ladder alone (gpt-oss) or always-on thinking has no off.
     return loaded.reasoningAlwaysOn || loaded.reasoningStyle === "reasoning_effort"
       ? ["lowest", "highest"]
       : ALL_EFFORTS;
@@ -223,14 +213,12 @@ function effortChoices(
     reasoningConfig: provider.reasoningConfig,
   });
   if (!externalReasoningTakesEffort(caps)) return [];
-  // Known up front, so the connection's own levels, weakest first, rather than relative ends.
   const levels = CONNECTION_LEVELS.filter((level) =>
     (caps.reasoningEffortLevels as readonly string[]).includes(level),
   );
   return caps.supportsReasoningOff ? ["off", ...levels] : levels;
 }
 
-/** Creates a task, or edits `task`. Mounted while open, so each opening starts from the task. */
 export function TaskDialog({
   task,
   onClose,
@@ -267,22 +255,18 @@ export function TaskDialog({
   const supportsReasoning = useChatRuntimeStore((state) => state.supportsReasoning);
   const reasoningStyle = useChatRuntimeStore((state) => state.reasoningStyle);
   const reasoningAlwaysOn = useChatRuntimeStore((state) => state.reasoningAlwaysOn);
-  // Only while Chat has a model loaded and the task runs on it; otherwise the run resolves it.
   const loadedReasoning =
     checkpoint && !models.connection && (model === null || model === checkpoint)
       ? { supportsReasoning, reasoningStyle, reasoningAlwaysOn }
       : null;
   const efforts = effortChoices(models.connection, loadedReasoning);
-  // A model that cannot take the chosen effort runs at its default instead.
   const effort = chosenEffort !== null && efforts.includes(chosenEffort) ? chosenEffort : null;
-  // Open when it holds something other than the defaults, so an edit shows what was chosen.
   const [advanced, setAdvanced] = useState(
     () =>
       task !== null &&
       (task.notify !== "all" || !task.newChatEachRun || task.archiveSuccessful || task.projectId !== null),
   );
   const [busy, setBusy] = useState(false);
-  // An edit keeps the zone the task was made in; a new task takes this browser's.
   const timezone = task?.timezone ?? browserTimeZone();
   const valid = prompt.trim() !== "" && scheduleFormComplete(form);
   const named = title.trim() !== "";
@@ -353,7 +337,6 @@ export function TaskDialog({
     >
       <DialogContent
         className="corner-squircle dialog-soft-surface gap-4 sm:max-w-xl"
-        // The instructions, not the optional name above them, with the caret after their text.
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           const field = promptRef.current;
@@ -373,7 +356,6 @@ export function TaskDialog({
           </DialogTitle>
           <DialogDescription className="sr-only">{t("scheduledTasks.description")}</DialogDescription>
         </DialogHeader>
-        {/* The name and the instructions are separate fields, so each gets its own card. */}
         <div className="flex flex-col gap-2">
           <div className={CARD}>
             <Input
@@ -454,7 +436,6 @@ export function TaskDialog({
               </SelectContent>
             </Select>
           </Row>
-          {/* Loading replaces the model in Chat, so a run asks first unless this is on. */}
           {model !== null && !models.connection && (
             <Row
               id={`${ids}-allow-load`}
@@ -589,7 +570,6 @@ export function TaskDialog({
               onValueChange={(value) => patchForm({ time: value })}
               disabled={busy}
             >
-              {/* The time with its zone, "9:00 AM PT", and the zone's full name on hover. */}
               <SelectTrigger id={`${ids}-time`} title={timezone} className={BARE_SELECT}>
                 <SelectValue>
                   {`${formatClock(form.time, locale)} ${zoneLabel(timezone, locale, now.getTime())}`}
@@ -654,7 +634,6 @@ export function TaskDialog({
                   className="mr-2"
                 />
               </Row>
-              {/* A single ongoing chat is one the user files and keeps themselves. */}
               {newChatEachRun && (
                 <>
                   <Row id={`${ids}-archive`} label={t("scheduledTasks.form.archiveSuccessful")}>

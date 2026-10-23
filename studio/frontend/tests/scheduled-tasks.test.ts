@@ -58,7 +58,6 @@ function plain(summary: ScheduleSummary): ScheduleSummary {
 }
 
 test("a new task runs every day at 09:00, and a one-time one starts tomorrow", () => {
-  // Wednesday 14 October 2026, in the test machine's own zone.
   assert.deepEqual(defaultScheduleForm(new Date(2026, 9, 14, 16, 30)), {
     repeat: "daily",
     time: "09:00",
@@ -66,7 +65,6 @@ test("a new task runs every day at 09:00, and a one-time one starts tomorrow", (
     days: [3],
     dayOfMonth: 14,
   });
-  // The last day of a year rolls over into the next one.
   assert.equal(defaultScheduleForm(new Date(2026, 11, 31, 12)).date, "2027-01-01");
 });
 
@@ -105,7 +103,6 @@ test("an incomplete form cannot be saved", () => {
   assert.equal(scheduleFormComplete({ ...form, repeat: "once", date: "" }), false);
   assert.equal(scheduleFormComplete({ ...form, repeat: "weekly", days: [] }), false);
   assert.equal(scheduleFormComplete({ ...form, repeat: "monthly", dayOfMonth: 32 }), false);
-  // Daily ignores the fields it does not use.
   assert.equal(scheduleFormComplete({ ...form, days: [], date: "" }), true);
 });
 
@@ -148,7 +145,6 @@ test("schedules are described in the user's locale", () => {
     summarizeSchedule({ kind: "weekly", time: "09:00", days: [1, 2, 3, 4, 5] }, "en-US").key,
     "weekdays",
   );
-  // Every day of the week is every day.
   assert.equal(
     summarizeSchedule({ kind: "weekly", time: "09:00", days: [1, 2, 3, 4, 5, 6, 7] }, "en-US").key,
     "daily",
@@ -197,11 +193,9 @@ test("the results poll looks quickly while a run is going and again just after o
   assert.equal(nextPollDelay({ now: 0, activeRuns: 1, nextRunAt: null }), ACTIVE_POLL_MS);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: null }), IDLE_POLL_MS);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 60_000 }), 63_000);
-  // Due in a second: asks again just after, once the run has been claimed.
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 1_000 }), 4_000);
   assert.equal(nextPollDelay({ now: 10_000, activeRuns: 0, nextRunAt: 0 }), ACTIVE_POLL_MS);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: 3_600_000 }), IDLE_POLL_MS);
-  // Results still to be read: the next page comes soon.
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: null, more: true }), ACTIVE_POLL_MS);
 });
 
@@ -234,9 +228,7 @@ test("a saved record reads back as it was saved, with no clock of this browser's
   assert.equal(readSeenRuns("not json"), null);
   assert.equal(readSeenRuns(JSON.stringify({ ids: [] })), null);
   assert.equal(readSeenRuns(stored("5000")), null);
-  // Junk ids are dropped rather than failing the whole record.
   assert.deepEqual(readSeenRuns(stored(5_000, ["a", 7, null, "b"])), { since: 5_000, ids: ["a", "b"] });
-  // One saved with the browser time it was written at reads the same, that time unused.
   assert.deepEqual(readSeenRuns(JSON.stringify({ since: 5_000, ids: [], savedAt: 1 })), { since: 5_000, ids: [] });
   const seen = { since: 5_000, ids: ["a"] };
   assert.deepEqual(readSeenRuns(JSON.stringify(seen)), seen);
@@ -252,12 +244,10 @@ test("a record further behind the server than the catch-up window resumes from t
     const after = runs.filter((run) => since !== null && (run.finishedAt ?? 0) >= since);
     return { now, runs: after, more: false, activeRuns: 0, nextRunAt: null };
   };
-  // Three days behind the server's present: the window decides where to resume.
   const resumed = await collectFinishedRuns({ since: now - 3 * CATCH_UP_MS, ids: [] }, fetchAnswer);
   assert.deepEqual(asked, [now - 3 * CATCH_UP_MS, oldest]);
   assert.deepEqual(resumed.fresh.map((run) => run.id), ["recent"]);
   assert.equal(resumed.seen.since, now - 60_000);
-  // Within the window the record is the cursor, wherever this browser's clock stands.
   asked.length = 0;
   const kept = await collectFinishedRuns({ since: oldest - 1 + 60_000, ids: [] }, fetchAnswer);
   assert.deepEqual(asked, [oldest - 1 + 60_000]);
@@ -270,7 +260,6 @@ test("the record moves on every poll, a minute behind the server, and remembers 
   assert.deepEqual(first, { since: 540_000, ids: [] });
   const second = advanceSeenRuns(first, answer(900_000), ["run-1"]);
   assert.deepEqual(second, { since: 840_000, ids: ["run-1"] });
-  // A poll answered by a server clock behind the record never moves it back.
   assert.equal(advanceSeenRuns(second, answer(700_000), []).since, 840_000);
   const many = Array.from({ length: 260 }, (_, index) => `run-${index}`);
   const capped = advanceSeenRuns(second, answer(900_000), many).ids;
@@ -301,7 +290,6 @@ function finished(id: string, finishedAt: number): ScheduledTasksApi.FinishedSch
 test("results past one answer are read a page at a time and announced once", async () => {
   const runs = [finished("a", 1_000), finished("b", 2_000), finished("c", 3_000)];
   const asked: (number | null)[] = [];
-  // Two runs a page, and `since` is inclusive, so the next page repeats the boundary run.
   const fetchAnswer = async (since: number | null) => {
     asked.push(since);
     const after = runs.filter((run) => since !== null && (run.finishedAt ?? 0) >= since);
@@ -333,16 +321,12 @@ test("a task's toasts cover every run, only its failures, or none", () => {
 
 test("of an account's tabs, the first to claim a run announces it, and the record keeps the furthest cursor", () => {
   const fresh = [finished("a", 3_000), finished("b", 3_500)];
-  // Another tab claimed "a", and its cursor is just past it.
   const { mine, record } = claimAnnouncements({ since: 3_200, ids: ["a"] }, { since: 4_000, ids: ["a", "b"] }, fresh);
   assert.deepEqual(mine.map((run) => run.id), ["b"]);
   assert.deepEqual(record, { since: 4_000, ids: ["a", "b"] });
-  // One that caught up on a long backlog moved the cursor past runs its list has since let go of.
   const late = claimAnnouncements({ since: 3_200, ids: [] }, { since: 4_000, ids: [] }, fresh);
   assert.deepEqual(late.mine.map((run) => run.id), ["b"]);
-  // The record never falls back to a slower tab's cursor.
   assert.equal(claimAnnouncements({ since: 5_000, ids: [] }, { since: 4_000, ids: [] }, fresh).record.since, 5_000);
-  // With no record yet, everything new is this tab's.
   const first = claimAnnouncements(null, { since: 4_000, ids: [] }, fresh);
   assert.deepEqual(first.mine.map((run) => run.id), ["a", "b"]);
   assert.deepEqual(first.record, { since: 4_000, ids: ["a", "b"] });
@@ -357,7 +341,6 @@ test("a backlog longer than one poll reads is picked up again shortly", async ()
   const { fresh, seen, last } = await collectFinishedRuns(null, endless);
   assert.equal(pages, 10);
   assert.equal(fresh.length, 10);
-  // Up to the last run read, not the server's present, so nothing after it is skipped.
   assert.equal(seen.since, 10);
   assert.equal(nextPollDelay(last), ACTIVE_POLL_MS);
 });
@@ -411,7 +394,6 @@ test("the client reaches every scheduled task route", async () => {
       : Response.json(path === "/api/scheduled-tasks" && !init?.method ? { tasks: [], now: 7 } : {}),
   );
   const schedule: TaskSchedule = { kind: "daily", time: "09:00" };
-  // The server's clock comes with the list, for timing refreshes by.
   assert.deepEqual(await c.api.listScheduledTasks(), { tasks: [], now: 7 });
   await c.api.createScheduledTask({
     title: "Brief",
@@ -477,9 +459,7 @@ test("a task change reaches the account's other tabs, and a deletion has Recents
     await store.useScheduledTasksStore.getState().remove("t1");
     const first = stored.get(store.SCHEDULED_TASKS_WRITTEN_KEY);
     assert.ok(first);
-    // A run that finished just before the deletion kept its chat, which no result will announce.
     assert.equal(historyRefreshes, 1);
-    // A new value each time, so other tabs hear every change, not just the first.
     await store.useScheduledTasksStore.getState().remove("t2");
     assert.notEqual(stored.get(store.SCHEDULED_TASKS_WRITTEN_KEY), first);
   } finally {
@@ -508,22 +488,17 @@ test("times are offered every quarter hour, keeping a saved one that falls betwe
 
 test("a time's zone is named as briefly as the locale allows", () => {
   const at = Date.UTC(2026, 9, 17, 12);
-  // An abbreviation for the zone itself holds across daylight saving.
   assert.equal(zoneLabel("America/Los_Angeles", "en-US", at), "PT");
   assert.equal(zoneLabel("Europe/Berlin", "de", at), "MEZ");
-  // Failing one, the offset, not a phrase like "Türkiye Time".
   assert.equal(zoneLabel("Europe/Istanbul", "en-US", at), "GMT+3");
   assert.equal(zoneLabel("UTC", "en-US", at), "UTC");
-  // A zone the browser does not know is written out.
   assert.equal(zoneLabel("Nowhere/Special", "en-US", at), "Nowhere/Special");
 });
 
 test("the Scheduled page looks again just after the next run is due, and measures again when that is far off", () => {
   const now = 1_000_000;
   assert.deepEqual(waitForDue(now + 60_000, now), { delay: 62_000, due: true });
-  // Already due: soon, but not in a busy loop.
   assert.deepEqual(waitForDue(now - 60_000, now), { delay: 1_000, due: true });
-  // A month out is further than a timer can wait: it measures again in an hour.
   assert.deepEqual(waitForDue(now + 30 * 24 * 60 * 60_000, now), { delay: 60 * 60_000, due: false });
 });
 
@@ -549,9 +524,7 @@ test("a run whose model was not loaded asks once per task, whatever its notifica
     run("a", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
     run("b", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
     run("c", "task-2", "no_model", null),
-    // Set to switch by itself, skipped while Unsloth was in use: reported, never asked.
     run("e", "task-4", "model_busy", "unsloth/gemma-3-GGUF"),
-    // Nothing to load: the model was cleared from the task meanwhile.
     run("d", "task-3", "model_not_loaded", null),
   ]);
   assert.deepEqual(

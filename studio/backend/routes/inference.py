@@ -10415,9 +10415,7 @@ _ALLOW_MODEL_SWITCH_SCOPE_KEY = "unsloth.allow_model_switch"
 
 
 def allow_model_switch_for_request(scope) -> None:
-    """Let one in-process request load the downloaded model it names with auto-switch off: a
-    scheduled task whose owner allowed it to load its model. A scope key, not a header, so no
-    HTTP client can set it; every other switch guard still applies."""
+    """Let one in-process request load its named model with auto-switch off; a scope key, so no HTTP client can set it."""
     if isinstance(scope, dict):
         scope[_ALLOW_MODEL_SWITCH_SCOPE_KEY] = True
 
@@ -10431,8 +10429,7 @@ _NO_AUTO_DOWNLOAD_SCOPE_KEY = "unsloth.no_auto_download"
 
 
 def disable_auto_download_for_request(scope) -> None:
-    """Keep an unattended in-process request (a scheduled task's run) from starting a download
-    when auto-download is on: a model gone from disk fails the run instead."""
+    """Stop an in-process scheduled run from auto-downloading; a model gone from disk fails the run."""
     if isinstance(scope, dict):
         scope[_NO_AUTO_DOWNLOAD_SCOPE_KEY] = True
 

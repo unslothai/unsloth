@@ -30,17 +30,11 @@ def _not_blank(value: str) -> str:
 
 Title = Annotated[str, Field(max_length = 120), AfterValidator(_not_blank)]
 Prompt = Annotated[str, Field(max_length = 20_000), AfterValidator(_not_blank)]
-# IANA name from the browser (Intl), so a task keeps its wall-clock time across DST.
 TimeZoneName = Annotated[str, Field(max_length = 64)]
-# Which finished runs the app announces with a toast and a system notification. Every run still
-# brings its chat into Recents, marked unread.
+# Which finished runs get a toast and system notification; every run's chat still shows unread in Recents.
 Notify = Literal["all", "failures", "none"]
-# A local model id, or a connection's "external::<provider id>::<model>". Null answers on whatever
-# is loaded in Chat.
 TaskModel = Annotated[str, Field(max_length = 512), AfterValidator(_not_blank)]
-# Lowest and highest are relative, for a local model whose levels are known only once it loads: a
-# run resolves them. A connection's levels are known up front, so its task names one. Null leaves
-# reasoning to the model's default.
+# lowest/highest are relative and resolved per run (local levels are known only once loaded); null = model default.
 ReasoningEffort = Literal[
     "off", "lowest", "highest", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
@@ -58,15 +52,12 @@ class ScheduledTaskCreate(BaseModel):
     timezone: TimeZoneName
     enabled: bool = True
     notify: Notify = "all"
-    # False when the title was taken from the instructions rather than typed.
     named: bool = True
     model: Optional[TaskModel] = None
     reasoningEffort: Optional[ReasoningEffort] = None
-    # Whether a run may load `model` when it is not loaded, without asking each time.
     allowModelLoad: bool = False
     # Off: every run adds to one ongoing chat, which sees the runs before it.
     newChatEachRun: bool = True
-    # These two apply to a new chat per run only.
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
 
@@ -92,7 +83,6 @@ class ScheduledTaskUpdate(BaseModel):
 class RunNowRequest(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
-    # This run alone may load the task's model: the user said yes to it once.
     loadModel: bool = False
 
 
@@ -105,11 +95,9 @@ class ScheduledTaskRun(BaseModel):
     createdAt: int
     startedAt: Optional[int] = None
     finishedAt: Optional[int] = None
-    # The chat the answer went to; null once that chat is deleted.
     threadId: Optional[str] = None
     model: Optional[str] = None
-    # no_model, model_not_loaded, model_load_failed, connection_unavailable, timeout, cancelled,
-    # interrupted or empty; otherwise `error` says what happened.
+    # no_model, model_not_loaded, model_load_failed, connection_unavailable, timeout, cancelled, interrupted or empty.
     errorCode: Optional[str] = None
     error: Optional[str] = None
 
@@ -117,7 +105,6 @@ class ScheduledTaskRun(BaseModel):
 class FinishedScheduledTaskRun(ScheduledTaskRun):
     taskTitle: str
     taskNotify: Notify
-    # What a model_not_loaded run asks to load.
     taskModel: Optional[str] = None
 
 
@@ -136,7 +123,6 @@ class ScheduledTask(BaseModel):
     newChatEachRun: bool = True
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
-    # paused: switched off; completed: a one-time task that has run; active: anything else.
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
     createdAt: int
@@ -146,15 +132,13 @@ class ScheduledTask(BaseModel):
 
 class ScheduledTaskList(BaseModel):
     tasks: list[ScheduledTask]
-    # The server's clock, which nextRunAt and the run times are on: a client times its refreshes
-    # from it rather than from its own.
+    # Server clock (nextRunAt and run times use it); clients time refreshes from it.
     now: int
 
 
 class ScheduledTaskActivity(BaseModel):
     now: int
     runs: list[FinishedScheduledTaskRun]
-    # More runs finished after these: ask again from the last one's finishedAt.
     more: bool = False
     activeRuns: int
     nextRunAt: Optional[int] = None
@@ -168,16 +152,13 @@ def _response(task: dict) -> dict:
 
 
 def _existing_project(project_id: Optional[str]) -> Optional[str]:
-    """Refuses a project this account does not have; a run checks again, as it can be deleted."""
     from storage import studio_db
-
     if project_id is not None and studio_db.get_chat_project(project_id) is None:
         raise HTTPException(status_code = 400, detail = "Project not found")
     return project_id
 
 
 def _next_run(task: dict, now: int) -> Optional[int]:
-    """The run time to store: refuses a schedule with no run left, and holds none while paused."""
     try:
         following = next_run_for(task, now)
     except InvalidSchedule as exc:
@@ -188,8 +169,7 @@ def _next_run(task: dict, now: int) -> Optional[int]:
 
 
 def _require_ui_session(via_api_key: bool) -> None:
-    """Tasks run later as the account, may load models and spend a connection's saved key: only a
-    signed-in user sets them up, never an API key or a keyless caller."""
+    """Tasks run as the account and may load models or spend saved keys: signed-in users only, never API keys."""
     if via_api_key:
         raise HTTPException(
             status_code = 403,
@@ -282,8 +262,7 @@ def update_scheduled_task(
     if changes.get("projectId") is not None:
         _existing_project(changes["projectId"])
     now = db.now_ms()
-    # Called only when the schedule, time zone or enabled flag actually changes: a rename, or a
-    # resent value, keeps an overdue run due.
+    # Only on schedule, time zone or enabled changes: a rename or resent value keeps an overdue run due.
     updated = db.update_task(task_id, changes, lambda task: _next_run(task, now))
     if updated is None:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND)

@@ -40,13 +40,9 @@ export const ACCOUNT_CHROME_KEYS = new Set([
 export const ACCOUNT_CHROME_PREFIXES = [
   "unsloth_web_update_dismissed:",
 ] as const;
-/** Records named after the account they belong to, which only that account reads, kept so it
- * carries on where it left off when it signs in again. Bookkeeping only: never add content,
- * credentials or anything one account could learn about another from. */
+/** Per-account bookkeeping records kept across sign-ins; never content, credentials or cross-account data. */
 export const ACCOUNT_KEYED_PREFIXES = [
-  // The scheduled task results poll's cursor: a time and the run ids it has announced.
   "unsloth_scheduled_tasks_seen:",
-  // Its unseen-run markers: task ids, and the chats their latest runs made.
   "unsloth_scheduled_tasks_unseen:",
 ] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
@@ -81,8 +77,7 @@ export function browserAccountMarker(account: BrowserAccount | string): string {
     : username;
 }
 
-/** The browser's signed-in account as `owner`, or a managed account's id: never its username alone
- *  where the id is known, which a later account could take once this one is deleted. */
+/** The account as `owner` or a managed account's id, never a reusable username alone where the id is known. */
 export function browserAccountKey(
   storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
     ? null

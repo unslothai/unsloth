@@ -61,10 +61,8 @@ import { SCHEDULED_TASKS_WRITTEN_KEY, useScheduledTasksStore } from "./store";
 import { TaskDialog } from "./task-dialog";
 import { useUnseenScheduledRuns } from "./unseen";
 
-// How often the page looks again at a task that is due but not yet running.
 const OVERDUE_REFRESH_MS = 5_000;
 const OVERDUE_REFRESH_MAX_MS = 60_000;
-// Focus and visibilitychange both fire on returning to the tab: one read answers both.
 const REFOCUS_DEDUPE_MS = 1_000;
 
 const ROW_BUTTON =
@@ -85,7 +83,6 @@ function loadFilter(): TaskStatus[] {
     const saved: unknown = JSON.parse(localStorage.getItem(FILTER_KEY) ?? "null");
     if (Array.isArray(saved)) return STATUSES.filter((status) => saved.includes(status));
   } catch {
-    // Unreadable storage shows every task.
   }
   return STATUSES;
 }
@@ -94,11 +91,9 @@ function saveFilter(shown: TaskStatus[]): void {
   try {
     localStorage.setItem(FILTER_KEY, JSON.stringify(shown));
   } catch {
-    // Without storage the filter resets on the next visit.
   }
 }
 
-// Soonest next run first; paused and then completed tasks follow, most recently changed first.
 function compareTasks(a: ScheduledTask, b: ScheduledTask): number {
   const rank = STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status);
   if (rank !== 0) return rank;
@@ -132,7 +127,6 @@ function clockText(schedule: TaskSchedule, locale: string): string {
   return formatClock(schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time, locale);
 }
 
-// Widths shared by the column header and each row, so the values sit under their headings.
 const REPEATS_COLUMN = "hidden w-36 shrink-0 truncate md:block";
 const TIME_COLUMN = "hidden w-24 shrink-0 truncate md:block";
 const NEXT_RUN_COLUMN = "hidden w-32 shrink-0 truncate md:block";
@@ -141,7 +135,6 @@ function errorText(error: unknown): string | undefined {
   return error instanceof Error ? error.message : undefined;
 }
 
-/** Ticks every half minute, so "2 hours ago" and "5 minutes ago" stay true while the page is open. */
 function useMinuteClock(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -185,14 +178,12 @@ function TaskRow({
     }
   }
 
-  // Always past tense: a run that finished this second, or by a server clock a little ahead,
-  // would otherwise read "in 0 sec.".
+  // Always past tense: a just-finished run (or a server clock slightly ahead) would read "in 0 sec.".
   const ago = (at: number) =>
     formatRelativeTime(locale, ...relativeTimeParts(Math.min(at, now - 1_000), now));
   const finishedAt = run?.finishedAt ?? null;
   const repeats = repeatsText(task.schedule, locale, t);
   const clock = clockText(task.schedule, locale);
-  // A paused or completed task has no next run: its status pill says why.
   const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale);
 
   return (
@@ -209,7 +200,6 @@ function TaskRow({
           >
             {task.title}
           </button>
-          {/* After the title, so titles stay in line whether or not a row has news. */}
           {unseen && (
             <span
               role="img"
@@ -223,7 +213,6 @@ function TaskRow({
             </span>
           )}
         </div>
-        {/* Below md the columns go, and their values line up here instead. */}
         <p className="truncate text-ui-13 text-muted-foreground md:hidden">
           {[repeats, clock, task.nextRunAt === null ? null : nextDay]
             .filter(Boolean)
@@ -254,7 +243,6 @@ function TaskRow({
             )}
           </p>
         ) : run?.status === "failed" && finishedAt !== null ? (
-          // One line like the rows beside it; the whole reason on hover.
           <p title={runErrorText(run, t)} className="truncate text-ui-13 text-destructive">
             {t("scheduledTasks.lastRunFailed", {
               when: ago(finishedAt),
@@ -280,7 +268,6 @@ function TaskRow({
             clearUnseen(task.id);
             void act(() => runNow(task.id), "runFailed");
           }}
-          // Shown on hover or keyboard focus; touch has no hover, so it stays there.
           className={cn(
             ROW_BUTTON,
             "opacity-0 group-hover/task-row:opacity-100 group-focus-within/task-row:opacity-100 [@media(pointer:coarse)]:opacity-100",
@@ -339,10 +326,8 @@ export function TasksPage() {
       remove: state.remove,
     })),
   );
-  // On the server's clock, as task and run times are.
   const serverOffset = useScheduledTasksStore((state) => state.serverOffset);
   const now = useMinuteClock() + serverOffset;
-  // undefined: closed; null: creating a new task.
   const [editing, setEditing] = useState<ScheduledTask | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<ScheduledTask | null>(null);
   const [shown, setShown] = useState<TaskStatus[]>(loadFilter);
@@ -367,8 +352,7 @@ export function TasksPage() {
     if (pageUnseen) clearPageUnseen();
   }, [pageUnseen, clearPageUnseen]);
 
-  // ?edit=<id>: open that task once the list has it, then drop the parameter so closing the
-  // dialog or reloading does not open it again.
+  // ?edit=<id>: open that task once listed, then drop the param so close/reload does not reopen it.
   const navigate = useNavigate();
   const { edit: editId, create } = useSearch({ strict: false });
   useEffect(() => {
@@ -394,9 +378,7 @@ export function TasksPage() {
 
   useEffect(() => {
     void refresh();
-    // Changes made elsewhere send this tab no event: another tab's are marked in storage, and one
-    // made from another browser or device shows once this window is looked at again (shown again,
-    // or focused while it stayed visible).
+    // Other tabs/devices send no event: re-read on storage marks, show and focus.
     const onStorage = (event: StorageEvent) => {
       if (event.key === SCHEDULED_TASKS_WRITTEN_KEY) void refresh();
     };
@@ -421,7 +403,6 @@ export function TasksPage() {
     };
   }, [refresh]);
 
-  // Re-read just after the next task is due, so its row turns to Running and its next run moves on.
   const soonest = useMemo(
     () =>
       tasks.reduce<number | null>(
@@ -438,14 +419,11 @@ export function TasksPage() {
     let timer: number | undefined;
     let again = OVERDUE_REFRESH_MS;
     const look = () => {
-      // A hidden tab reads again when it is shown.
       if (document.visibilityState !== "hidden") void refresh();
-      // Backing off while it stays due: only a claim moves its next run on, and a long run delays that.
       timer = window.setTimeout(look, again);
       again = Math.min(again * 2, OVERDUE_REFRESH_MAX_MS);
     };
     const wait = () => {
-      // Read, not subscribed to: the offset moves a little with every refresh.
       const serverNow = Date.now() + useScheduledTasksStore.getState().serverOffset;
       const next = waitForDue(soonest, serverNow);
       timer = window.setTimeout(next.due ? look : wait, next.delay);
@@ -473,7 +451,6 @@ export function TasksPage() {
         <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
           {t("scheduledTasks.title")}
         </h1>
-        {/* Same search pill as Projects. Below sm it wraps to its own row under the heading. */}
         <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
           <div className="relative min-w-0 flex-1 sm:max-w-sm">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
@@ -534,7 +511,6 @@ export function TasksPage() {
         </div>
       ) : (
         <div className="mt-10 flex flex-col">
-          {/* Column header: the filter sits over each row's menu, and a spacer over its Run now. */}
           <div className="flex items-center gap-4 px-5 pb-2 text-ui-14 font-medium text-muted-foreground">
             <h2 className="min-w-0 flex-1">{t("scheduledTasks.upcoming")}</h2>
             <span className={REPEATS_COLUMN}>{t("scheduledTasks.columns.repeats")}</span>

@@ -67,14 +67,10 @@ def client():
         yield test_client
 
 
-# ── When a task runs ─────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "schedule, zone, after, expected",
     [
         ({"kind": "daily", "time": "09:00"}, "UTC", "2026-10-14T08:59", "2026-10-14T09:00"),
-        # Strictly after: a run at 09:00 schedules tomorrow's, not itself again.
         ({"kind": "daily", "time": "09:00"}, "UTC", "2026-10-14T09:00", "2026-10-15T09:00"),
         # Wall-clock time in the task's zone: 09:00 in Istanbul is 06:00 UTC.
         (
@@ -83,21 +79,18 @@ def client():
             "2026-10-14T05:00",
             "2026-10-14T06:00",
         ),
-        # 2026-10-14 is a Wednesday: Monday/Friday next lands on Friday.
         (
             {"kind": "weekly", "time": "09:00", "days": [1, 5]},
             "UTC",
             "2026-10-14T12:00",
             "2026-10-16T09:00",
         ),
-        # A single weekday that already passed today comes round a week later.
         (
             {"kind": "weekly", "time": "09:00", "days": [3]},
             "UTC",
             "2026-10-14T12:00",
             "2026-10-21T09:00",
         ),
-        # The 31st runs on the last day of a shorter month, leap years included.
         (
             {"kind": "monthly", "time": "09:00", "day": 31},
             "UTC",
@@ -177,9 +170,6 @@ def test_weekdays_are_deduplicated_and_sorted():
     assert parse_schedule({"kind": "weekly", "time": "09:00", "days": [5, 1, 5]}).days == [1, 5]
 
 
-# ── Claiming runs ────────────────────────────────────────────────
-
-
 def test_a_claim_runs_an_occurrence_once_and_skips_the_ones_studio_missed():
     due = ms("2026-10-11T09:00:00+00:00")
     make_task(nextRunAt = due)
@@ -189,7 +179,6 @@ def test_a_claim_runs_an_occurrence_once_and_skips_the_ones_studio_missed():
 
     assert run["status"] == "running" and run["source"] == "schedule"
     assert run["scheduledFor"] == due
-    # Three missed mornings collapse into this run; the next one is tomorrow, not the 12th.
     assert task["nextRunAt"] == ms("2026-10-15T09:00:00+00:00")
     assert db.claim_next(now, "worker", next_run_for) is None
 
@@ -200,7 +189,6 @@ def test_a_due_task_waits_while_it_already_has_a_run():
     now = ms("2026-10-14T12:00:00+00:00")
     _task, manual = db.claim_next(now, "worker", next_run_for)
     assert manual["source"] == "manual"
-    # Due since 09:00, but the manual run is still going.
     assert db.claim_next(now, "worker", next_run_for) is None
     assert db.next_due_at() is None
     db.finish_run(manual["id"], "worker", status = "succeeded")
@@ -225,12 +213,10 @@ def test_paused_and_future_tasks_are_not_claimed():
 
 
 def test_runs_whose_heartbeat_stopped_are_failed_and_live_ones_kept():
-    # Staggered, so the most overdue is claimed first and each worker gets a known task.
     make_task(id = "unsettled", nextRunAt = ms("2026-10-14T08:00:00+00:00"))
     make_task(id = "crashed", nextRunAt = ms("2026-10-14T08:30:00+00:00"))
     make_task(id = "fresh", nextRunAt = ms("2026-10-14T08:45:00+00:00"))
     claim_at = ms("2026-10-14T12:00:00+00:00")
-    # The sweeping worker's own run whose result it could not record, then a stopped Studio's.
     db.claim_next(claim_at, "me", next_run_for)
     db.claim_next(claim_at, "crashed", next_run_for)
     db.claim_next(claim_at + 60_000, "alive", next_run_for)
@@ -247,10 +233,8 @@ def test_runs_whose_heartbeat_stopped_are_failed_and_live_ones_kept():
 def test_a_run_the_scheduler_could_not_settle_does_not_hold_its_task(monkeypatch):
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
     scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    # A one-time task, so nothing else falls due while the clock is moved on.
     make_task(schedule = {"kind": "once", "at": "2026-10-14T09:00"}, nextRunAt = db.now_ms() - DAY)
     assert scheduler._claim() is not None
-    # Never settled, as when finish_run fails: the run stays marked running.
     later = db.now_ms() + scheduler_module._STALE_RUN_MS + 1
     monkeypatch.setattr(db, "now_ms", lambda: later)
 
@@ -305,9 +289,6 @@ def test_a_run_whose_chat_is_already_gone_still_settles():
     assert db.get_task("task-1")["lastRun"]["threadId"] is None
 
 
-# ── Routes ───────────────────────────────────────────────────────
-
-
 def create(client, **overrides):
     body = {
         "title": "Morning brief",
@@ -323,7 +304,6 @@ def test_a_task_keeps_its_model_and_reasoning_until_cleared(client):
     connection = "external::conn-1::gpt-5-mini"
     task = create(client, model = connection, reasoningEffort = "highest").json()
     assert (task["model"], task["reasoningEffort"]) == (connection, "highest")
-    # A rename leaves them alone; an explicit null goes back to the loaded model and its default.
     renamed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"title": "Renamed"}).json()
     assert (renamed["model"], renamed["reasoningEffort"]) == (connection, "highest")
     cleared = client.patch(
@@ -340,7 +320,6 @@ def test_run_now_can_carry_a_one_time_permission_to_load_the_model(client):
     run = client.post(f"/api/scheduled-tasks/{task['id']}/run", json = {"loadModel": True})
     assert run.status_code == 202
     assert db.list_runs(task["id"])[0]["allowModelLoad"] is True
-    # Always allowing is the task's own setting, and survives an unrelated edit.
     allowed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"allowModelLoad": True})
     assert allowed.json()["allowModelLoad"] is True
     renamed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"title": "Renamed"})
@@ -364,7 +343,6 @@ def test_a_task_keeps_its_chat_options_and_refuses_a_missing_project(client):
     assert create(client, projectId = "nowhere").status_code == 400
     cleared = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"projectId": None}).json()
     assert cleared["projectId"] is None
-    # New tasks start a chat per run, as before this option existed.
     assert create(client).json()["newChatEachRun"] is True
 
 
@@ -382,7 +360,6 @@ def test_create_list_and_read(client, monkeypatch):
     assert "ownerSubject" not in task
     listed = client.get("/api/scheduled-tasks").json()
     assert listed["tasks"] == [task]
-    # The server's clock, for a client to time its refreshes by.
     assert listed["now"] == ms("2026-10-14T12:00:00+00:00")
     assert client.get(f"/api/scheduled-tasks/{task['id']}").json() == task
 
@@ -424,7 +401,6 @@ def test_pause_clears_the_next_run_and_resume_schedules_from_now(client, monkeyp
 
     now = ms("2026-10-20T12:00:00+00:00")
     resumed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"enabled": True}).json()
-    # Nothing replays for the days it was paused.
     assert resumed["status"] == "active"
     assert resumed["nextRunAt"] == ms("2026-10-21T09:00:00+00:00")
 
@@ -434,7 +410,6 @@ def test_a_rename_or_resent_timing_keeps_an_overdue_run_due(client):
     renamed = client.patch("/api/scheduled-tasks/task-1", json = {"title": "Evening brief"}).json()
     assert renamed["title"] == "Evening brief"
     assert renamed["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
-    # The values it already has, as a client saving a whole form sends them.
     resent = client.patch(
         "/api/scheduled-tasks/task-1",
         json = {"enabled": True, "schedule": {"kind": "daily", "time": "09:00"}, "timezone": "UTC"},
@@ -475,7 +450,6 @@ def test_a_database_from_before_notification_settings_gains_them():
         )
         studio_db._ensure_schema(conn)
         studio_db._ensure_schema(conn)
-        # Tasks made before either setting notify of every run and count as named.
         assert conn.execute("SELECT notify, named FROM scheduled_tasks").fetchall() == [("all", 1)]
     finally:
         conn.close()
@@ -533,7 +507,6 @@ def test_activity_lists_runs_finished_since_a_cursor(client):
     db.finish_run(run["id"], "worker", status = "failed", error_code = "no_model")
 
     later = client.get("/api/scheduled-tasks/runs", params = {"since": first["now"]}).json()
-    # With what its task announces, for the client to decide on a toast.
     assert [(r["taskTitle"], r["taskNotify"], r["errorCode"]) for r in later["runs"]] == [
         ("Morning brief", "failures", "no_model")
     ]
@@ -544,7 +517,6 @@ def test_activity_lists_runs_finished_since_a_cursor(client):
 
 def test_activity_pages_through_more_runs_than_one_answer_holds(client, monkeypatch):
     monkeypatch.setattr(db, "ACTIVITY_LIMIT", 2)
-    # A second apart, so no two runs share the page boundary's millisecond.
     clock = iter(range(1_000, 100_000, 1_000))
     monkeypatch.setattr(db, "now_ms", lambda: next(clock))
     make_task()
@@ -561,12 +533,8 @@ def test_activity_pages_through_more_runs_than_one_answer_holds(client, monkeypa
     rest = client.get(
         "/api/scheduled-tasks/runs", params = {"since": first["runs"][-1]["finishedAt"]}
     ).json()
-    # The boundary run comes again, then the one the first answer had no room for.
     assert [run["id"] for run in rest["runs"]] == finished[1:]
     assert rest["more"] is False
-
-
-# ── Running a task ───────────────────────────────────────────────
 
 
 def claim_manual_run(**task_overrides):
@@ -622,7 +590,6 @@ def test_a_run_saves_the_exchange_as_a_new_chat(monkeypatch):
     ]
     assert assistant["metadata"]["scheduledTask"] == {"taskId": task["id"], "runId": run["id"]}
     assert assistant["metadata"]["responseDetails"]["modelId"] == "gemma-3"
-    # The reasoning header's "Worked for", in whole seconds.
     duration = assistant["metadata"]["reasoningDuration"]
     assert isinstance(duration, int) and assistant["metadata"]["reasoningDurations"] == [duration]
 
@@ -641,7 +608,6 @@ def test_a_run_chat_is_marked_as_the_tasks_and_keeps_the_mark(monkeypatch):
     (row,) = [r for r in studio_db.list_chat_sidebar_rows()["rows"] if thread_id in r["threadIds"]]
     assert row["isScheduled"] is True
 
-    # The chat page writes the whole record back without the field: the mark stays.
     studio_db.upsert_chat_thread({**thread, "title": "Renamed", "scheduledTaskId": None})
     assert studio_db.get_chat_thread(thread_id)["scheduledTaskId"] == task["id"]
 
@@ -719,7 +685,6 @@ def test_a_task_deleted_before_its_claimed_run_starts_is_not_run(monkeypatch):
     task, run = claim_manual_run()
     asked = []
     monkeypatch.setattr(scheduler_module, "generate_answer", recording_generate(asked))
-    # After the claim, before the run is active: no cancel can reach it yet.
     db.delete_task(task["id"])
     scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
     scheduler.worker_id = "worker-under-test"
@@ -733,7 +698,6 @@ def test_a_run_claimed_for_an_account_disabled_since_is_not_run(monkeypatch):
     task, run = claim_manual_run()
     asked = []
     monkeypatch.setattr(scheduler_module, "generate_answer", recording_generate(asked))
-    # Disabled accounts are out of job_accounts().
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [])
     scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
     scheduler.worker_id = "worker-under-test"
@@ -746,7 +710,6 @@ def test_a_run_claimed_for_an_account_disabled_since_is_not_run(monkeypatch):
 
 def test_the_sweep_removes_the_chat_of_a_run_that_stopped_before_settling():
     task, run = claim_manual_run()
-    # Studio stopped after the chat was written, before the run settled.
     answer = Answer(content = "Written, never settled.", reasoning = "", model = "gemma-3")
     scheduler_module.save_chat(task, run, answer, 1_000, 2_000)
     assert len(studio_db.list_chat_threads()) == 1
@@ -771,8 +734,6 @@ def test_a_sweep_that_cannot_remove_a_chat_records_nothing(monkeypatch):
     with pytest.raises(sqlite3.OperationalError):
         db.recover_stale_runs(db.now_ms() + scheduler_module._STALE_RUN_MS + 1)
 
-    # One transaction: the run is not left failed with its chat still there, out of the sweep's
-    # reach, but found again, chat and all, by the next sweep.
     assert db.get_task(task["id"])["lastRun"]["status"] == "running"
     assert len(studio_db.list_chat_threads()) == 1
 
@@ -804,7 +765,6 @@ def test_a_run_that_fails_after_writing_its_chat_leaves_none_however_soon_studio
 
     monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Half saved."))
     monkeypatch.setattr(scheduler_module, "save_chat", save_then_fail)
-    # As if Studio stopped the moment the run was recorded: nothing after that removes the chat.
     monkeypatch.setattr(scheduler_module, "_discard_chat", lambda thread_id: None)
     monkeypatch.setattr(scheduler_module, "_discard_run_output", lambda run_id, kept: None)
     scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
@@ -830,7 +790,6 @@ def test_deleting_a_task_removes_only_the_chat_its_running_run_may_be_writing():
 
     assert db.delete_task(task["id"])
 
-    # In the deletion's own transaction, so no crash can leave it to a run that no longer exists.
     assert [thread["id"] for thread in studio_db.list_chat_threads()] == [kept]
 
 
@@ -850,7 +809,6 @@ def test_a_task_deleted_while_its_chat_is_saved_keeps_no_chat(monkeypatch):
 
     def save_then_delete(*args):
         thread_id = save_chat(*args)
-        # Past the existence check and the save, but before the run settles.
         db.delete_task(task["id"])
         return thread_id
 
@@ -914,7 +872,6 @@ def test_a_chat_whose_run_cannot_be_settled_is_removed(monkeypatch):
     scheduler.worker_id = "worker-under-test"
     asyncio.run(scheduler._execute(OWNER, task, run))
 
-    # No chat without a run recorded as succeeded; the stale-run sweep settles this one later.
     assert studio_db.list_chat_threads() == []
     assert db.get_task(task["id"])["lastRun"]["status"] == "running"
 
@@ -994,7 +951,6 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
 
     assert answer == Answer(content = "Dawn light.", reasoning = "Short.", model = "gemma-3")
     payload = producer.payload
-    # No model named: the loaded one answers and nothing is switched.
     assert "model" not in payload.model_fields_set
     assert payload.stream is False
     assert payload.tool_choice == "none" and payload.enabled_tools == []
@@ -1064,7 +1020,6 @@ def loaded_gguf(monkeypatch, **reasoning):
 @pytest.mark.parametrize(
     "reasoning, effort, expected",
     [
-        # An effort ladder: its own ends, not a fixed low and high.
         (
             {
                 "reasoning_style": "reasoning_effort",
@@ -1081,11 +1036,8 @@ def loaded_gguf(monkeypatch, **reasoning):
             "lowest",
             {"reasoning_effort": "minimal"},
         ),
-        # An empty list is the plain ladder.
         ({"reasoning_style": "reasoning_effort"}, "lowest", {"reasoning_effort": "low"}),
-        # gpt-oss style has no off: the model's default stands.
         ({"reasoning_style": "reasoning_effort"}, "off", {}),
-        # On/off only: both ends mean on.
         ({}, "lowest", {"enable_thinking": True}),
         ({}, "off", {"enable_thinking": False}),
         ({"reasoning_always_on": True}, "off", {}),
@@ -1097,7 +1049,6 @@ def loaded_gguf(monkeypatch, **reasoning):
             "highest",
             {"enable_thinking": True, "reasoning_effort": "max"},
         ),
-        # No thinking at all: nothing sent.
         ({"supports_reasoning": False}, "highest", {}),
     ],
 )
@@ -1108,7 +1059,6 @@ def test_thinking_effort_resolves_to_the_loaded_model(monkeypatch, reasoning, ef
 
 def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection(monkeypatch):
     loaded_gguf(monkeypatch, supports_reasoning = False)
-    # The run loads its model, whose levels are unknown before the request: the shared ends.
     assert scheduler_module._reasoning_fields("highest", False, on_loaded_model = False) == {
         "enable_thinking": True,
         "reasoning_effort": "high",
@@ -1144,7 +1094,6 @@ def test_a_chosen_model_that_is_not_loaded_fails_rather_than_switching(monkeypat
     assert failure.value.code == "model_not_loaded"
     assert producer.payload is None
 
-    # With auto-switch on, the request names it and the backend loads it.
     monkeypatch.setattr(openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: True)
     db.delete_task("task-1")
     producer = LoadsItsModel(monkeypatch, completion("Dawn light."))
@@ -1167,7 +1116,6 @@ def test_a_task_allowed_to_load_its_model_lets_only_its_own_request_switch(monke
         make_task(model = "unsloth/Qwen3-1.7B-GGUF", allowModelLoad = True),
     )
     assert producer.payload.model == "unsloth/Qwen3-1.7B-GGUF"
-    # The opt-in rides on this run's in-process request, where no client can put it.
     assert inference_routes._model_switch_allowed_for_request(producer.request)
 
 
@@ -1188,7 +1136,6 @@ def test_a_one_time_yes_lets_that_run_alone_load_the_model(monkeypatch):
     app = SimpleNamespace(state = SimpleNamespace())
     granted = {"id": "run-1", "allowModelLoad": True}
     asyncio.run(generate_answer(app, task, granted, threading.Event()))
-    # Switched back since.
     monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: False)
     with pytest.raises(RunFailed) as failure:
         asyncio.run(generate_answer(app, task, {"id": "run-2"}, threading.Event()))
@@ -1211,7 +1158,6 @@ def test_a_permitted_load_that_still_finds_no_model_says_the_load_failed(monkeyp
             producer,
             make_task(model = "unsloth/Qwen3-1.7B-GGUF", allowModelLoad = True),
         )
-    # Not "load a model in Chat": the run was let load one and could not.
     assert failure.value.code == "model_load_failed"
 
 
@@ -1309,7 +1255,6 @@ def test_a_scheduled_run_while_away_switches_back_to_the_earlier_model(monkeypat
     world.run(monkeypatch, {"id": "run-1", "source": "schedule"})
     assert world.unloaded == ["/models/qwen.gguf"]
     assert world.stashed == [SwapWorld.EARLIER]
-    # Brought back through the idle-reload path, so its saved launch settings come with it.
     assert world.reloads == [(inference_routes._RELOAD_ONLY_MODEL, True)]
     assert world.loaded == SwapWorld.EARLIER
 
@@ -1323,7 +1268,6 @@ def test_a_run_that_found_nothing_loaded_leaves_nothing_loaded(monkeypatch):
 
 def test_a_run_now_swaps_even_while_studio_is_in_use_and_still_switches_back(monkeypatch):
     world = SwapWorld(monkeypatch, idle = False)
-    # The user pressed Run now: they are there. Nothing restores while they are mid-request.
     world.run(monkeypatch, {"id": "run-1", "source": "manual"})
     assert world.loaded[2] == SwapWorld.TASK_MODEL and world.unloaded == []
     db.delete_task("task-1")
@@ -1398,7 +1342,6 @@ def test_back_to_back_runs_on_one_model_load_it_once_and_switch_back_once(monkey
     first = make_task(model = SwapWorld.TASK_MODEL, allowModelLoad = True)
     second = make_task(id = "task-2", model = SwapWorld.TASK_MODEL, allowModelLoad = True)
     run_held(world, monkeypatch, first, {"id": "run-1", "source": "schedule"}, holder)
-    # Left loaded for whatever runs next.
     assert world.loaded[2] == SwapWorld.TASK_MODEL and world.reloads == []
     run_held(world, monkeypatch, second, {"id": "run-2", "source": "schedule"}, holder)
     assert world.unloaded == [] and holder.pending.previous == SwapWorld.EARLIER
@@ -1450,7 +1393,6 @@ def test_switching_back_leaves_a_model_someone_used_since_the_swap(monkeypatch):
     holder = scheduler_module.SwapHolder()
     task = make_task(model = SwapWorld.TASK_MODEL, allowModelLoad = True)
     run_held(world, monkeypatch, task, {"id": "run-1", "source": "schedule"}, holder)
-    # Someone's own request ends on the task's model.
     keepwarm._note_start()
     keepwarm._note_end()
     asyncio.run(scheduler_module._restore_after_swap(holder.pending, None))
@@ -1467,7 +1409,6 @@ def test_studios_own_runs_do_not_count_as_someone_using_it(monkeypatch):
         keepwarm._note_start()
         keepwarm._note_end()
         keepwarm._note_activity()
-    # Still away: only the run was active, though it keeps the model warm.
     assert keepwarm.idle_for(300)
     assert time.monotonic() - keepwarm._last_active < 60
     keepwarm._note_start()
@@ -1479,7 +1420,6 @@ def test_studios_own_runs_do_not_count_as_someone_using_it(monkeypatch):
 def test_a_run_answered_by_another_model_than_its_own_fails(monkeypatch):
     from utils import openai_auto_switch_settings
 
-    # The task's model is gone from disk: the request falls through to the loaded model.
     monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: False)
     monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
     monkeypatch.setattr(
@@ -1516,7 +1456,6 @@ def test_a_run_never_starts_a_download(monkeypatch):
     model = "unsloth/Qwen3-1.7B-GGUF"
     asyncio.run(inference_routes._maybe_auto_download_model(model, producer.request))
     assert started == []
-    # The same call from an ordinary request would download.
     plain = Request({"type": "http", "headers": [], "path": "/"})
     asyncio.run(inference_routes._maybe_auto_download_model(model, plain))
     assert len(started) == 1
@@ -1530,7 +1469,6 @@ def test_a_scheduled_run_waits_for_a_reply_being_generated(monkeypatch):
     scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
     asyncio.run(scheduler._yield_to_inference(threading.Event()))
     assert next(busy, "done") == "done"
-    # Never past the bound.
     monkeypatch.setattr(keepwarm, "inference_in_flight", lambda: True)
     monkeypatch.setattr(scheduler_module, "_YIELD_SECONDS", 0.0)
     asyncio.run(scheduler._yield_to_inference(threading.Event()))
@@ -1554,7 +1492,6 @@ def test_only_a_signed_in_user_changes_tasks(client):
         kwargs = {} if body is None else {"json": body}
         response = getattr(client, method)(f"/api/scheduled-tasks{path}", **kwargs)
         assert response.status_code == 403, (method, path)
-    # Reading stays open, and nothing changed.
     listed = client.get("/api/scheduled-tasks").json()["tasks"]
     assert [entry["allowModelLoad"] for entry in listed] == [False]
     assert client.get("/api/scheduled-tasks/runs?since=0").status_code == 200
@@ -1631,11 +1568,9 @@ def test_without_a_new_chat_per_run_every_run_continues_one_chat():
     one = scheduler_module.save_chat(
         task, first, Answer("First answer.", "", "gemma-3"), 1_000, 2_000
     )
-    # The run that started it is the one the stale-run sweep would remove it with.
     assert one == db.chat_id_for_run(first["id"])
     task = db.get_task(task["id"])
     assert task["chatThreadId"] == one
-    # Those two options belong to a chat per run.
     assert studio_db.get_chat_thread(one)["archived"] is False
 
     assert scheduler_module.chat_history(one) == [
@@ -1649,7 +1584,6 @@ def test_without_a_new_chat_per_run_every_run_continues_one_chat():
     assert two == one
     messages = studio_db.list_chat_messages(one)
     assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
-    # Threaded after the earlier answer, so the chat reads as one conversation.
     assert messages[2]["parentId"] == messages[1]["id"]
     assert len(studio_db.list_chat_threads()) == 1
 
@@ -1731,8 +1665,6 @@ def test_a_run_gives_back_its_admission_and_adopts_the_model_only_once_answered(
         assert not answers
 
     assert producer.admitted == before + 1
-    # No middleware sees this request end, so the run gives the count back itself, or preview
-    # loads would stay refused as busy.
     assert llama_keepwarm.other_admitted_inference_count() == before
     assert claims == ([None] if answers else [])
 
@@ -1805,7 +1737,6 @@ def test_the_scheduler_runs_a_due_task_and_wakes_for_run_now(monkeypatch):
 
     assert answered == ["schedule", "manual"]
     assert len(studio_db.list_chat_threads()) == 2
-    # The overdue run moved the schedule on to the next 09:00 still ahead.
     assert db.get_task("task-1")["nextRunAt"] > db.now_ms()
 
 
@@ -1819,7 +1750,6 @@ def test_a_claim_given_back_is_due_again_or_queued_again():
     assert db.release_claim(run["id"], "worker", task["nextRunAt"])
     returned = db.get_task("task-1")
     assert (returned["nextRunAt"], returned["lastRun"]) == (due_at, None)
-    # Once given back it is no one's to give back again.
     assert not db.release_claim(run["id"], "worker", task["nextRunAt"])
 
     db.request_run("task-1")
@@ -1856,7 +1786,6 @@ def test_a_claim_made_as_shutdown_begins_is_given_back(monkeypatch):
 
     def claim_as_stop_begins(*args):
         claimed = claim_next(*args)
-        # stop() runs on the event loop while this thread commits; it cannot cancel the thread.
         scheduler._stopping = True
         return claimed
 
@@ -1877,7 +1806,6 @@ def test_the_loop_gives_back_a_claim_that_returns_after_shutdown_began(monkeypat
 
     def claim_then_stop():
         claimed = claim()
-        # The thread is done, and stop() begins before the loop picks the claim up.
         scheduler._stopping = True
         return claimed
 
@@ -1911,12 +1839,10 @@ def test_a_cancellation_raised_for_a_run_ends_the_run_not_the_scheduler(monkeypa
     ):
         calls.append(run["id"])
         if len(calls) == 1:
-            # What the model unload gate raises when the run's cancel event fires as it waits.
             raise asyncio.CancelledError()
         return Answer(content = "Done.", reasoning = "", model = "gemma-3")
 
     monkeypatch.setattr(scheduler_module, "generate_answer", fake_generate)
-    # Not due, so only the Run now requests below are claimed.
     make_task(nextRunAt = db.now_ms() + DAY)
     db.request_run("task-1")
 
@@ -1934,7 +1860,6 @@ def test_a_cancellation_raised_for_a_run_ends_the_run_not_the_scheduler(monkeypa
         try:
             first = await settled(1)
             assert (first["status"], first["errorCode"]) == ("failed", "cancelled")
-            # The loop is still there to run the next one.
             db.request_run("task-1")
             scheduler.wake()
             assert (await settled(2))["status"] == "succeeded"
@@ -1967,7 +1892,6 @@ def test_a_stale_snapshot_prune_keeps_a_scheduled_exchange_it_never_saw():
     _task, second = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
     scheduler_module.save_chat(task, second, Answer("Second.", "", "m"), 3_000, 4_000)
 
-    # A tab opened before the second run deletes the first answer from its own view.
     studio_db.sync_chat_messages(
         chat, [seen[0]], prune_missing = True, deleted_message_ids = [seen[1]["id"]]
     )
@@ -1978,7 +1902,6 @@ def test_a_stale_snapshot_prune_keeps_a_scheduled_exchange_it_never_saw():
         "Write a haiku about mornings.",
         "Second.",
     ]
-    # Relinked past the deleted answer, so the chat stays one chain.
     assert left[1]["parentId"] == seen[0]["id"]
 
 
@@ -2006,7 +1929,6 @@ def test_an_unsettled_ongoing_run_leaves_no_exchange_behind(ending):
     else:
         assert db.delete_task(task["id"])
 
-    # The earlier, settled exchange stays.
     assert [_message_text(m) for m in studio_db.list_chat_messages(chat)] == [
         "Write a haiku about mornings.",
         "First.",
@@ -2016,7 +1938,6 @@ def test_an_unsettled_ongoing_run_leaves_no_exchange_behind(ending):
 def test_ongoing_history_follows_the_branch_the_chat_shows():
     task, chat = ongoing_task_with_one_run()
     user, first = studio_db.list_chat_messages(chat)
-    # The user regenerated the first answer: a sibling of it, newer.
     studio_db.sync_chat_messages(
         chat,
         [
@@ -2067,7 +1988,6 @@ def test_a_carried_swap_restores_the_model_the_user_picked_since(monkeypatch):
     holder = scheduler_module.SwapHolder()
     first = make_task(model = SwapWorld.TASK_MODEL, allowModelLoad = True)
     run_held(world, monkeypatch, first, {"id": "run-1", "source": "schedule"}, holder)
-    # Between the runs the user loads another model, then walks away.
     picked = ("/models/llama.gguf", "Q8_0", "unsloth/Llama-3.2-3B-GGUF")
     world.loaded = picked
     second = make_task(id = "task-2", model = SwapWorld.TASK_MODEL, allowModelLoad = True)

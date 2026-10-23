@@ -9259,8 +9259,7 @@ function scheduledTaskIdOf(custom: unknown): string | null {
   return typeof source?.taskId === "string" ? source.taskId : null;
 }
 
-/** "Sent by scheduled task" over a prompt a task's run sent, opening that task to edit. The
- *  reply carries the same mark, so a prompt whose own was lost on a rewrite still finds it. */
+/** "Sent by scheduled task" over a task run's prompt; the reply carries the mark too, surviving rewrites. */
 const ScheduledTaskSource: FC = () => {
   const t = useT();
   const navigate = useNavigate();

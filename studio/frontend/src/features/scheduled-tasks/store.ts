@@ -16,8 +16,7 @@ import {
 } from "./api";
 import { SCHEDULED_TASKS_CHANGED_EVENT, SCHEDULED_TASK_RUNS_FINISHED_EVENT } from "./results";
 
-/** Written with every change, so the account's other tabs, which this tab's DOM events never
- *  reach, hear of it as a storage event and show it too. */
+/** Bumped on every change so other tabs get a storage event. */
 export const SCHEDULED_TASKS_WRITTEN_KEY = "unsloth_scheduled_tasks_written";
 
 function announceChange(): void {
@@ -26,13 +25,12 @@ function announceChange(): void {
   try {
     localStorage.setItem(SCHEDULED_TASKS_WRITTEN_KEY, `${Date.now()}.${Math.random()}`);
   } catch {
-    // Without storage, another tab shows the change when it next refreshes.
   }
 }
 
 interface ScheduledTasksState {
   tasks: ScheduledTask[];
-  /** The server's clock less this browser's, as of the last refresh: task times are the server's. */
+  /** The server's clock less this browser's, as of the last refresh. */
   serverOffset: number;
   status: "idle" | "loading" | "ready" | "error";
   error: string | null;
@@ -40,7 +38,6 @@ interface ScheduledTasksState {
   create: (input: ScheduledTaskInput) => Promise<ScheduledTask>;
   update: (id: string, patch: ScheduledTaskPatch) => Promise<ScheduledTask>;
   remove: (id: string) => Promise<void>;
-  /** `loadModel`: this run alone may load the task's model. */
   runNow: (id: string, loadModel?: boolean) => Promise<void>;
 }
 
@@ -53,8 +50,7 @@ function withTask(tasks: ScheduledTask[], task: ScheduledTask): ScheduledTask[] 
 }
 
 export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) => {
-  /** Applies a write's answer, unless the account changed while it was in flight. A refresh that
-   *  started before the write would bring back the old row, so it is dropped. */
+  /** Applies a write's answer unless the account changed; drops a refresh that started before the write. */
   async function write<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
     const epoch = getAuthSessionEpoch();
     const result = await request();
@@ -86,7 +82,6 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
       } catch (error) {
         if (generation !== refreshGeneration) return;
         set({
-          // A failed background refresh keeps the list on screen.
           status: get().status === "ready" ? "ready" : "error",
           error: error instanceof Error ? error.message : String(error),
         });
@@ -107,8 +102,7 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
         () => deleteScheduledTask(id),
         () => set((state) => ({ tasks: state.tasks.filter((task) => task.id !== id) })),
       );
-      // A run that finished just before keeps its chat, but its record went with the task, so the
-      // results poll will never report it: Recents has to look for that chat itself.
+      // Its chat survives but the run record went with the task, so the results poll never reports it.
       notifyChatHistoryUpdated();
     },
     runNow: async (id, loadModel = false) => {
@@ -124,12 +118,11 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
 });
 
 if (typeof window !== "undefined") {
-  // A finished run changes its task's last run, and a one-time task's status.
   window.addEventListener(SCHEDULED_TASK_RUNS_FINISHED_EVENT, () => {
     const { status, refresh } = useScheduledTasksStore.getState();
     if (status !== "idle") void refresh();
   });
-  // The store is module state, so a sign-out must drop it or the next account sees these tasks.
+  // Module state: a sign-out must drop it or the next account sees these tasks.
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     refreshGeneration += 1;
     useScheduledTasksStore.setState({ tasks: [], serverOffset: 0, status: "idle", error: null });

@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Scheduled task schedules: the form that edits one and the words that describe one. No imports,
- *  so the tests load it directly. */
 
-/** Mirrors core/scheduled_tasks/schedule.py. Times are wall-clock in the task's time zone; `days`
- *  are ISO weekdays, 1 Monday to 7 Sunday; a monthly `day` a month lacks runs on its last day. */
+/** Mirrors core/scheduled_tasks/schedule.py: wall clock in the task's zone, ISO weekdays, a missing monthly day runs on the last. */
 export type TaskSchedule =
   | { kind: "once"; at: string }
   | { kind: "daily"; time: string }
   | { kind: "weekly"; time: string; days: number[] }
   | { kind: "monthly"; time: string; day: number };
 
-/** What the form offers. Weekdays is a weekly schedule the form names for itself. */
 export type RepeatKind = "once" | "daily" | "weekdays" | "weekly" | "monthly";
 
 export const REPEAT_KINDS: readonly RepeatKind[] = [
@@ -28,9 +24,7 @@ const WORKDAYS = [1, 2, 3, 4, 5];
 
 export interface ScheduleForm {
   repeat: RepeatKind;
-  /** HH:MM, 24-hour. */
   time: string;
-  /** YYYY-MM-DD, for a one-time task. */
   date: string;
   days: number[];
   dayOfMonth: number;
@@ -55,8 +49,7 @@ function isWorkdays(days: readonly number[]): boolean {
   return days.length === WORKDAYS.length && WORKDAYS.every((day) => days.includes(day));
 }
 
-/** A new task: every day at 09:00, with the other kinds pre-filled from today so switching kind
- *  never lands on an empty field. A one-time task starts tomorrow, so 09:00 is still ahead. */
+/** A new task: daily 09:00, other kinds pre-filled from today; a one-time task starts tomorrow. */
 export function defaultScheduleForm(now: Date): ScheduleForm {
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
@@ -106,7 +99,6 @@ export function scheduleFromForm(form: ScheduleForm): TaskSchedule {
   }
 }
 
-/** Whether the form describes a schedule at all. Whether it is still ahead is the server's call. */
 export function scheduleFormComplete(form: ScheduleForm): boolean {
   if (!CLOCK.test(form.time)) return false;
   switch (form.repeat) {
@@ -121,7 +113,6 @@ export function scheduleFormComplete(form: ScheduleForm): boolean {
   }
 }
 
-// Every list row formats several values per render; building a formatter is the costly part.
 const formatters = new Map<string, Intl.DateTimeFormat | Intl.ListFormat | Intl.RelativeTimeFormat>();
 
 function dateFormat(locale: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
@@ -154,7 +145,6 @@ function relativeFormat(locale: string): Intl.RelativeTimeFormat {
   return format;
 }
 
-/** "9:00 AM" or "09:00", as the locale writes the time of day. */
 export function formatClock(time: string, locale: string): string {
   const [hour, minute] = time.split(":").map(Number);
   return dateFormat(locale, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(
@@ -162,8 +152,7 @@ export function formatClock(time: string, locale: string): string {
   );
 }
 
-/** The times the form offers, every quarter hour, plus `current` when it falls between them (a
- *  task saved at 09:07 keeps its time). */
+/** Quarter-hour times plus `current` when it falls between them. */
 export function timeChoices(current: string): string[] {
   const times = Array.from(
     { length: 96 },
@@ -172,8 +161,7 @@ export function timeChoices(current: string): string[] {
   return !CLOCK.test(current) || times.includes(current) ? times : [...times, current].sort();
 }
 
-/** A time zone as briefly as the locale names it beside a time: "PT", "MEZ", or failing a short
- *  name its offset at `at`, "GMT+3". */
+/** A time zone as briefly as the locale names it ("PT", "MEZ"), else its offset at `at` ("GMT+3"). */
 export function zoneLabel(timeZone: string, locale: string, at: number): string {
   const name = (style: "short" | "shortGeneric") => {
     try {
@@ -195,14 +183,12 @@ export function zoneLabel(timeZone: string, locale: string, at: number): string 
   return specific || timeZone;
 }
 
-/** An ISO weekday's name as the locale writes it. */
 export function weekdayName(day: number, locale: string, width: "short" | "long"): string {
   // 2024-01-01 was a Monday, so day d of that week is ISO weekday d.
   return dateFormat(locale, { weekday: width, timeZone: "UTC" }).format(Date.UTC(2024, 0, day));
 }
 
-/** Short weekday names joined as the locale lists things: "Mon, Wed, and Fri". The long list
- *  style, since the short one writes English as "Mon, Wed, & Fri". */
+/** Short weekday names via the long list style (the short style writes English as "Mon, Wed, & Fri"). */
 export function formatWeekdays(days: readonly number[], locale: string): string {
   return listFormat(locale, { style: "long", type: "conjunction" }).format(
     days.map((day) => weekdayName(day, locale, "short")),
@@ -227,7 +213,6 @@ export function sameSchedule(a: TaskSchedule, b: TaskSchedule): boolean {
   }
 }
 
-/** Which sentence describes a schedule, and what fills it in: the caller owns the wording. */
 export type ScheduleSummary =
   | { key: "once"; values: { date: string; time: string } }
   | { key: "daily" | "weekdays"; values: { time: string } }
@@ -256,8 +241,7 @@ export function summarizeSchedule(schedule: TaskSchedule, locale: string): Sched
   }
 }
 
-/** The list's Repeats column, the cadence alone: its time has a column of its own. The caller words
- *  the keyed ones; weekly is the days themselves, "Mon, Wed, Fri". */
+/** The Repeats column: the cadence alone; weekly is the days themselves. */
 export type RepeatsSummary =
   | { key: "once" | "daily" | "weekdays" }
   | { key: "weekly"; days: string }
@@ -282,7 +266,6 @@ export function summarizeRepeats(schedule: TaskSchedule, locale: string): Repeat
   }
 }
 
-/** The day of a run in the user's own zone: "Today", "Tomorrow", else "Thu, Oct 15". */
 export function formatRunDay(epochMs: number, now: number, locale: string): string {
   const dayStart = (at: number) => {
     const date = new Date(at);
@@ -297,7 +280,6 @@ export function formatRunDay(epochMs: number, now: number, locale: string): stri
   return dateFormat(locale, { weekday: "short", month: "short", day: "numeric" }).format(epochMs);
 }
 
-/** The largest whole unit for a distance in time, for Intl.RelativeTimeFormat. */
 export function relativeTimeParts(
   target: number,
   now: number,
@@ -315,21 +297,16 @@ export function relativeTimeParts(
   return [Math.round(days / 365), "year"];
 }
 
-// Past the due time, so the scheduler has claimed the run by the time the page looks.
 const DUE_SLACK_MS = 2_000;
-// The longest the page waits before measuring again: a timer cannot wait past about 24 days, and one
-// that waits through a sleeping computer fires late.
+// Cap the timer: it cannot wait past ~24 days, and one through a sleeping computer fires late.
 const LONGEST_WAIT_MS = 60 * 60_000;
 
-/** When the Scheduled page should look again for a task due at `due`, both on the server's clock:
- *  just after it is due, or, when that is further off than a timer should wait, after an hour, to
- *  measure again (`due` false). */
+/** When the Scheduled page should look again for a task due at `due` (server clock), capped to re-measure. */
 export function waitForDue(due: number, now: number): { delay: number; due: boolean } {
   const delay = Math.max(1_000, due - now + DUE_SLACK_MS);
   return delay > LONGEST_WAIT_MS ? { delay: LONGEST_WAIT_MS, due: false } : { delay, due: true };
 }
 
-/** The browser's IANA zone, saved with a task so it keeps its wall-clock time across DST. */
 export function browserTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

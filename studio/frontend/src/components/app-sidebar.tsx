@@ -1323,7 +1323,6 @@ export function AppSidebar() {
   // Route alone is not enough: a page can gate its tour behind a capability check, and an entry
   // that dispatches to nobody does nothing when clicked.
   const routeTourId = getTourId(pathname);
-  // A scheduled run finished while the user was on another page.
   const scheduledNotice =
     useUnseenScheduledRuns((state) => state.page) && pathname !== "/tasks";
   const tourAvailable = useTourAvailable(routeTourId);
@@ -3604,7 +3603,6 @@ export function AppSidebar() {
           closeMobileIfOpen();
         },
       },
-      // Same inline "+" as Projects: opens the new-task dialog on the Scheduled page.
       children: (
         <button
           type="button"
@@ -5537,7 +5535,6 @@ export function AppSidebar() {
       !isGenerating && !hasQueuedActivity && alreadyUnread;
     // A scheduled task's chat carries a clock in the same slot, once there is no news to show.
     const showScheduledMark = Boolean(item.isScheduled) && !showWorkSpinner && !hasUnreadActivity;
-    // The spinner, the unread dot and the scheduled clock say more, and share its spot.
     const showForkMark =
       Boolean(item.isFork) && !showWorkSpinner && !hasUnreadActivity && !showScheduledMark;
     const itemClass = cn(

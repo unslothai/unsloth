@@ -393,12 +393,7 @@ export const BUDGET = {
   // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
-  // Scheduled tasks (#13871): the results poll that announces finished runs on any page with its per-account
-  // record and API client, the unseen-run dots, the scheduled-chat marks in Recents and over its prompt, the
-  // sidebar's new-task "+", the model-load question queue (the question itself is lazy) and the English strings;
-  // the Scheduled page and its dialog are lazy. +17,637 B raw / +5,480 B transfer against main at d4f1ceb19
-  // (6,923,066 -> 6,940,703 B raw, 2,085,268 -> 2,090,748 B transfer, one machine and build, Node 24, 98
-  // chunks both). Raised by that growth so main's margin stays where it was.
+  // Scheduled tasks (#13871): +17,637 B raw / +5,480 B transfer vs main at d4f1ceb19 (page and dialog lazy).
   transferBytes: 2_090_498,
   rawBytes: 6_940_180,
 };
