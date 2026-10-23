@@ -307,7 +307,7 @@
 	--slider-thumb: #ffffff;
 	--slider-thumb-shadow: inset 0 0 0 1px #dbdbdb, 0 1.5px 2.5px -0.5px rgb(0 0 0 / 0.08);
 	--slider-track-height: calc(0.15625rem * var(--ui-space-scale, 1));
-	--slider-thumb-size: calc(1.25rem * var(--ui-space-scale, 1));
+	--slider-thumb-size: calc(1.125rem * var(--ui-space-scale, 1));
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
 	   copy/download, user action bar, delete button). One token drives
@@ -2439,12 +2439,25 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Reads as editable text, not a pill button: transparent until hover/focus. */
+	/* Run settings keep their neutral grey sliders; everywhere else fills with the accent. */
+	[data-tour="chat-settings"] {
+		--slider-fill: var(--panel-slider-fg);
+	}
+
+	/* Inline numeric input — used for slider values and Context Length.
+	   Designed to read as *editable text* rather than a pill button so
+	   it doesn't mirror the Select/dropdown components on the panel.
+	   Default: transparent box, no border, no ring; the component sets
+	   an inline width that hugs the value. Hover/focus: very light bg
+	   fade-in, just enough to read as interactive without competing
+	   with the slider row's quiet aesthetic. */
+	/* Wider right gutter: the value is right-aligned on the panel's own edge. */
+	/* Editing only deepens the fill: a focus ring outside the pill reads as the box growing. */
 	.panel-number-input {
-		@apply h-8 min-w-8 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
+		@apply h-7 min-w-7 shrink-0 rounded-full border-0 bg-transparent pl-2 pr-3 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(0_0_0_/_calc(0.07*var(--contrast-wash-gain,1)))] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
-		@apply hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))];
+		@apply hover:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] focus:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))];
 	}
 
 	/* These share one width, so left-aligned values line up on one edge. */
@@ -2460,8 +2473,7 @@ html[data-chat-font] .aui-root {
 
 	/* These controls suppress the ring, so keyboard focus would otherwise draw nothing. */
 	.panel-field:focus-visible,
-	.panel-select-trigger:focus-visible,
-	.panel-number-input:focus-visible {
+	.panel-select-trigger:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft) !important;
 	}
@@ -3117,7 +3129,13 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-plus {
-		@apply flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+		@apply relative flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-muted-foreground/15 disabled:cursor-not-allowed disabled:opacity-40;
+	}
+
+	/* The pills' hover label, kept off while the menu it opens is showing. */
+	.unsloth-composer-plus[data-pill-label]:not([data-state="open"]):hover::after {
+		content: attr(data-pill-label);
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-(--tooltip-fg) shadow-(--tooltip-shadow);
 	}
 
 	.unsloth-composer-plus[data-state="open"] {
@@ -4627,7 +4645,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 @supports (width: round(1.5px, 1px)) {
 	:root {
 		--slider-track-height: round(calc(0.15625rem * var(--ui-space-scale, 1)), var(--device-px, 1px));
-		--slider-thumb-size: round(calc(1.25rem * var(--ui-space-scale, 1)), 1px);
+		--slider-thumb-size: round(calc(1.125rem * var(--ui-space-scale, 1)), 1px);
 	}
 }
 

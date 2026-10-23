@@ -7,6 +7,7 @@ the Hub with the server's own token; the owner decodes as before."""
 from __future__ import annotations
 
 import io
+import os
 
 import pytest
 from fastapi import HTTPException
@@ -78,6 +79,35 @@ def test_managed_image_cell_naming_a_host_file_is_refused(outside_png):
     with pytest.raises(HTTPException) as exc:
         _check(name)
     assert 400 <= exc.value.status_code < 500
+
+
+def test_managed_chained_cell_whose_first_hop_reads_a_host_file_is_refused(outside_png):
+    # fsspec opens the first hop of `file://x::hf://...`; only archive hops read through.
+    # Windows: tmp_path (C:) and the checkout (D:) can sit on different drives, so relpath
+    # raises; the drive-letter form `file://C:/...::hf://...` exercises the same guard.
+    try:
+        first_hop = os.path.relpath(outside_png)
+    except ValueError:
+        first_hop = outside_png.as_posix()
+    path = f"file://{first_hop}::hf://datasets/a/b@main/c.png"
+    name = _upload([{"image": {"bytes": None, "path": path}, "text": "a cat"}])
+    with pytest.raises(HTTPException) as exc:
+        _check(name)
+    assert 400 <= exc.value.status_code < 500
+
+
+def test_managed_zip_member_of_own_archive_still_previews():
+    import zipfile
+
+    def own_zip():
+        path = storage_roots.dataset_uploads_root() / "own.zip"
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("in.png", _png((0, 0, 255)))
+        return f"zip://in.png::{path}"
+
+    name = _upload([{"image": {"bytes": None, "path": run_as(ALICE, own_zip)}, "text": "x"}])
+    assert _check(name).preview_samples[0]["image"]["type"] == "image"
 
 
 def test_managed_image_cell_with_embedded_bytes_still_previews():

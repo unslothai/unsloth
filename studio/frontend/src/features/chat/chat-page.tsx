@@ -232,7 +232,6 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
-  providerSupportsFastMode,
   reasoningFieldsAfterCatalogRefresh,
   resolveExternalReasoningEffort,
   subscribeModelCatalog,
@@ -4175,20 +4174,6 @@ export function ChatPage({
     { enabled: active, claims: chatUncovered },
   );
 
-  const fastModeSupported = providerSupportsFastMode(
-    activeExternalProviderType,
-    parseExternalModelId(inferenceCheckpoint)?.modelId ?? null,
-  );
-  useShortcut(
-    "toggleFastMode",
-    () => {
-      const state = useChatRuntimeStore.getState();
-      const next = !state.params.fastMode;
-      state.setParams({ ...state.params, fastMode: next });
-      toast.success(next ? "Fast mode on" : "Fast mode off");
-    },
-    { enabled: active && fastModeSupported, claims: chatUncovered },
-  );
   const { isMobile, pinned } = useSidebar();
   // The tour hold is never persisted, so a tour cannot rewrite the user's pin.
   const showSidebarForTour = holdSidebarPinned;
