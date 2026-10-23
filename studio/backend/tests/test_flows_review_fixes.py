@@ -3,6 +3,8 @@
 
 import asyncio
 
+import pytest
+
 from core.flows import engine as engine_mod
 from core.flows import package
 from core.flows.compiler import CompileError, compile_flow, parse_document
@@ -136,6 +138,44 @@ def test_finetune_trains_on_a_data_recipe_dataset(monkeypatch):
         raise AssertionError("training never started")
     uploaded = [c for c in ctx.calls if c[1] == "/api/hub/datasets/upload"][0][4]["file"][1]
     assert uploaded.decode().count("\n") == 2
+
+
+def test_finetune_waits_out_a_trainer_that_is_still_shutting_down(monkeypatch):
+    monkeypatch.setattr(training, "POLL_S", 0)
+    starts = []
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            starts.append(body)
+            if len(starts) < 3:
+                # The route's refusal names the run that is still active, not a new one.
+                return {"job_id": "old", "status": "error", "error": "Training already active"}
+            raise RuntimeError("started")
+        raise AssertionError(path)
+
+    ctx = _Ctx(routes)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.progress = lambda *a, **k: None
+    ctx.check_cancelled = lambda: None
+    try:
+        asyncio.run(training.finetune(ctx))
+    except RuntimeError as exc:
+        assert str(exc) == "started"
+    assert len(starts) == 3
+
+
+def test_finetune_reports_other_start_errors_instead_of_polling_another_job():
+    from core.flows.registry import FlowNodeError
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "old", "status": "error", "message": "No GPU memory", "error": "oom"}
+        raise AssertionError(path)
+
+    ctx = _Ctx(routes)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    with pytest.raises(FlowNodeError, match = "No GPU memory"):
+        asyncio.run(training.finetune(ctx))
 
 
 def test_edit_image_falls_back_when_the_family_has_no_instruction_editing():
