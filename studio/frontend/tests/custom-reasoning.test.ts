@@ -257,3 +257,80 @@ test("switching same-model connections never leaks the contract and server sync 
     globalThis.fetch = original;
   }
 });
+
+test("an effort ladder drives the menu and the wire, and malformed ladders fail closed", () => {
+  for (const style of ["reasoning_effort", "reasoning"] as const) {
+    const config = { enabled: true, style, effort_levels: ["xhigh", "high"] };
+    const normalized = reasoning.normalizeCustomReasoningConfig(config);
+    assert.deepEqual(normalized, { ...config, effort_levels: ["high", "xhigh"] });
+    assert.deepEqual(
+      [
+        ...caps.getExternalReasoningCapabilities("custom", "same-model", {
+          reasoningConfig: normalized,
+        }).reasoningEffortLevels,
+      ],
+      ["none", "high", "xhigh"],
+    );
+    for (const [effort, fields] of [
+      ["xhigh", { reasoning_effort: "xhigh" }],
+      ["high", { reasoning_effort: "high" }],
+      ["none", { reasoning_effort: "none" }],
+      // Off a ladder without medium: no level, so the endpoint's own default applies.
+      ["medium", {}],
+    ] as const) {
+      assert.deepEqual(
+        reasoning.customReasoningRequestFields(config, true, effort),
+        fields,
+      );
+    }
+    assert.deepEqual(
+      reasoning.customReasoningRequestFields(config, false, "xhigh"),
+      { reasoning_effort: "none" },
+    );
+    assert.deepEqual(
+      reasoning.customReasoningRequestFields(
+        { enabled: true, style, effort_levels: ["minimal", "low", "medium"] },
+        true,
+        "max",
+      ),
+      { reasoning_effort: "medium" },
+    );
+  }
+  for (const config of [
+    { enabled: true, style: "reasoning_effort", effort_levels: [] },
+    { enabled: true, style: "reasoning_effort", effort_levels: ["none"] },
+    { enabled: true, style: "reasoning_effort", effort_levels: ["ultra"] },
+    { enabled: true, style: "reasoning_effort", effort_levels: "high" },
+    { enabled: true, style: "thinking", effort_levels: ["high"] },
+  ]) {
+    assert.equal(reasoning.normalizeCustomReasoningConfig(config), undefined);
+    assert.deepEqual(
+      reasoning.customReasoningRequestFields(config, true, "high"),
+      {},
+    );
+  }
+});
+
+test("the opt-in rungs are Studio's effort scale without the Off row", () => {
+  assert.deepEqual(
+    [...reasoning.CUSTOM_REASONING_EFFORT_LEVELS],
+    ["minimal", "low", "medium", "high", "xhigh", "max"],
+  );
+});
+
+test("saving drops a default or inapplicable ladder so older rows keep their shape", () => {
+  const save = reasoning.customReasoningConfigForSave;
+  assert.equal(save(null), null);
+  assert.deepEqual(
+    save({ enabled: true, style: "reasoning", effort_levels: ["high", "low", "medium"] }),
+    { enabled: true, style: "reasoning" },
+  );
+  assert.deepEqual(
+    save({ enabled: true, style: "thinking", effort_levels: ["xhigh"] }),
+    { enabled: true, style: "thinking" },
+  );
+  assert.deepEqual(
+    save({ enabled: false, style: "reasoning_effort", effort_levels: ["max", "low"] }),
+    { enabled: false, style: "reasoning_effort", effort_levels: ["low", "max"] },
+  );
+});
