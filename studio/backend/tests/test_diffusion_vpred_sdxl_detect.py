@@ -404,7 +404,9 @@ def test_a_cache_only_prefetch_never_touches_the_hub(hub_cache, monkeypatch):
 def test_the_load_route_passes_user_initiated_to_the_prefetch():
     import ast
 
-    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(encoding = "utf-8")
+    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(source)
     route = next(
         n
