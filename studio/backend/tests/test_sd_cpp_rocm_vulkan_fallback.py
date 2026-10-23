@@ -1972,6 +1972,8 @@ def test_a_build_that_cannot_launch_at_all_is_counted(fake_settings, monkeypatch
     """0xC0000135 arrives as a large POSITIVE exit code, so the probe accepts it; a missing execute bit fails identically, so it is only counted."""
     from core.inference import sd_cpp_backend
 
+    # The runtime loads, so the failed launch is unexplained (a missing execute bit looks the same).
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
     sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")
     assert _recorded_strikes(fake_settings) == 1
@@ -2006,6 +2008,7 @@ def test_a_resident_server_does_not_cost_the_reload_its_native_engine(fake_setti
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
     monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
@@ -2047,6 +2050,7 @@ def test_the_router_counts_a_binary_it_rejects_for_not_launching(fake_settings, 
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
     monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
@@ -2977,6 +2981,7 @@ def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, mo
     from core.inference import diffusion_engine_router as router
     from core.inference import sd_cpp_backend
 
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: True)
     monkeypatch.setattr(router, "_install_allowed", lambda: True)
     monkeypatch.setattr(router, "ensure_sd_server_binary", lambda **_k: "/opt/sd/rocm/sd-server")
     monkeypatch.setattr(router, "ensure_sd_cpp_binary", lambda **_k: "/opt/sd/rocm/sd-cli")
