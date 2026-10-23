@@ -2557,7 +2557,6 @@ export function SharedComposer({
     },
     { enabled: chatActive },
   );
-  // Controlled so the chord can open it, gated like attachFiles above.
   const [plusOpen, setPlusOpen] = useState(false);
   const setPlusMenuOpen = (open: boolean) => {
     setPlusOpen(open);
@@ -2566,7 +2565,7 @@ export function SharedComposer({
   useShortcut(
     "openComposerMenu",
     () => {
-      // Open, the menu itself hides the composer from the gate, so closing skips it.
+      // The open menu inerts the composer, so closing skips the gate.
       if (plusOpen) return setPlusMenuOpen(false);
       if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
       setPlusMenuOpen(true);

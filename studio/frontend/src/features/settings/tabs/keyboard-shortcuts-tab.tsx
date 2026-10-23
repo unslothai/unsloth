@@ -100,8 +100,7 @@ export function KeyboardShortcutsTab() {
     if (!recording) return;
     const def = SHORTCUT_DEFS.find((entry) => entry.id === recording.id);
     const onKeyDown = (event: KeyboardEvent) => {
-      // Bare Tab is never a binding, so it stays the way out for rows that record bare Escape. Not
-      // prevented, so focus moves on and the box's blur ends recording.
+      // Bare Tab is the way out where Escape records; not prevented, so the box's blur ends recording.
       if (
         event.code === "Tab" &&
         !event.metaKey &&
@@ -183,8 +182,7 @@ export function KeyboardShortcutsTab() {
       if (binding.code === "Tab" && bare) return;
       event.preventDefault();
       event.stopPropagation();
-      // Escape backs out a step at a time, the chord first, then the mode, so the box never eats
-      // the dialog's own dismiss. Decline's bare Escape is found by name instead ("Esc").
+      // Escape clears the chord, then the mode, never the dialog; decline's bare Escape is found by name.
       if (binding.code === "Escape" && bare && !binding.shift) {
         if (keystroke) setKeystroke(null);
         else setByKeystroke(false);
@@ -302,7 +300,6 @@ export function KeyboardShortcutsTab() {
         onClick={() => startRecording(def, slot)}
         aria-label={`${t("settings.keyboardShortcuts.edit")}: ${label}, ${text}`}
         className={cn(
-          // ChatGPT's hover: a short pill with room either side, never narrower than it is tall.
           "inline-flex h-[calc(30px*var(--ui-space-scale,1))] min-w-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-[calc(11px*var(--ui-space-scale,1))] text-ui-13p5 tabular-nums text-muted-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           // A built-in key keeps working with the switch off; only assigned chords dim.
           parsed && !enabled && "opacity-50",
@@ -338,7 +335,6 @@ export function KeyboardShortcutsTab() {
     const inForce = SHORTCUT_SLOTS.map((slot) =>
       resolveBinding(overrides, def.id, slot),
     );
-    // Name the chord: a row can carry one the browser never passes beside one it does.
     const desktopOnly = isTauri
       ? ""
       : inForce
@@ -363,7 +359,6 @@ export function KeyboardShortcutsTab() {
       assignedBinding(overrides, def.id, "alternate") !== null ||
       (recording?.id === def.id && recording.slot === "alternate");
 
-    // While recording only a refused press has anything to say; the box's placeholder is the prompt.
     const note: ReactNode = isRecording ? (
       recordingError ? (
         <span className="text-destructive">{recordingError}</span>
@@ -389,7 +384,6 @@ export function KeyboardShortcutsTab() {
       >
         <div className="flex min-h-8 items-center gap-2.5">
           <Switch
-            // A touch under the default switch, sized with the row's smaller text.
             className="origin-left scale-[0.88]"
             checked={enabled}
             onCheckedChange={(on) => setEnabled(def.id, on)}
@@ -455,7 +449,7 @@ export function KeyboardShortcutsTab() {
 
   return (
     <div className="settings-page px-4">
-      {/* -mx-4 undoes the page's px-4: the heading sits where every other tab's does. */}
+      {/* -mx-4 undoes px-4 so the heading lines up with every other tab's. */}
       <header className="-mx-4 flex flex-col gap-1">
         <h1
           data-settings-label={t("settings.keyboardShortcuts.title")}
@@ -558,14 +552,12 @@ export function KeyboardShortcutsTab() {
         );
       })}
 
-      {/* Floats over the rows at the pane's foot; the strip itself is see-through and click-through.
-          -bottom-6 undoes the scroller's padding, which sticky otherwise insets by. */}
+      {/* Click-through strip; -bottom-6 undoes the scroller padding sticky would inset by. */}
       <div className="pointer-events-none sticky -bottom-6 z-10 -mb-6 mt-auto flex justify-end py-4">
         <Button
           type="button"
           variant="dark"
-          // Disabled is an opaque mix rather than faded, so rows never show through it. The dark: pair
-          // outranks the variant's own dark fill.
+          // Opaque disabled fill so rows never show through; dark: outranks the variant's own dark fill.
           className="pointer-events-auto h-[calc(42px*var(--ui-space-scale,1))] px-[calc(22px*var(--ui-space-scale,1))] text-ui-13 disabled:bg-[color-mix(in_oklab,var(--foreground)_34%,var(--background))] disabled:text-background disabled:opacity-100 dark:disabled:bg-[color-mix(in_oklab,var(--foreground)_42%,var(--background))] dark:disabled:text-background"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {

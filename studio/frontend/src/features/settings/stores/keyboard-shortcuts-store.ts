@@ -123,7 +123,6 @@ function withEntry(
   return next;
 }
 
-/** The chord assigned to one slot of `id`, whether or not the action is switched on. */
 export function assignedBinding(
   overrides: ShortcutOverrides,
   id: ShortcutId,
@@ -248,7 +247,7 @@ export function shortcutMatchingEvent<Id extends ShortcutId>(
 
 interface KeyboardShortcutsState {
   overrides: ShortcutOverrides;
-  /** Assign a serialized binding, e.g. "Mod+Shift+KeyO". Switches the action back on. */
+  /** Assign a serialized binding, e.g. "Mod+Shift+KeyO"; also switches the action back on. */
   setBinding: (id: ShortcutId, slot: ShortcutSlot, value: string) => void;
   setEnabled: (id: ShortcutId, enabled: boolean) => void;
   /** Leave the slot with no binding at all. */
