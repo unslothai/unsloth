@@ -5383,6 +5383,31 @@ def _agent_compacts_at(
     return window - opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))
 
 
+def _command_line_options(ctx, quote) -> Optional[list]:
+    """The options typed on this command line, minus --max-seq-length and the remembered --api-key."""
+    # Duck-typed: typer may vendor its own click, so isinstance / enum identity against ours fails.
+    if ctx is None:
+        return None
+    parts = []
+    for param in ctx.command.params:
+        if param.param_type_name != "option" or param.name in ("max_seq_length", "api_key"):
+            continue
+        if getattr(ctx.get_parameter_source(param.name), "name", None) != "COMMANDLINE":
+            continue
+        value = ctx.params.get(param.name)
+        if param.is_flag:
+            if value:
+                parts.append(param.opts[0])
+            elif param.secondary_opts:
+                parts.append(param.secondary_opts[0])
+            continue
+        for item in value if param.multiple else [value]:
+            if item is not None:
+                item = getattr(item, "value", item)
+                parts += [param.opts[0], quote(str(item))]
+    return parts
+
+
 def _check_agent_context(
     agent: str,
     name: str,
@@ -5393,6 +5418,7 @@ def _check_agent_context(
     refuse: bool = True,
     model: Optional[str] = None,
     gguf_variant: Optional[str] = None,
+    ctx = None,
 ) -> None:
     window = entry.get("context_length") or entry.get("max_context_length")
     if not window:
@@ -5423,11 +5449,15 @@ def _check_agent_context(
         hint = f"Its full context is {native:,} tokens, so pick a model with a longer one."
     else:
         quote = _powershell_quote if os.name == "nt" else shlex.quote
-        target = f" --model {quote(model)}" if model else ""
-        if gguf_variant:
-            target += f" --gguf-variant {quote(gguf_variant)}"
-        if max_tokens:
-            target += f" --max-tokens {int(max_tokens)}"
+        given = _command_line_options(ctx, quote)
+        if given is not None:
+            target = "".join(f" {part}" for part in given)
+        else:
+            target = f" --model {quote(model)}" if model else ""
+            if gguf_variant:
+                target += f" --gguf-variant {quote(gguf_variant)}"
+            if max_tokens:
+                target += f" --max-tokens {int(max_tokens)}"
         hint = (
             f"Run unsloth start {agent}{target} --max-seq-length {suggested} "
             "(a smaller quant if that does not fit in memory"
@@ -7081,6 +7111,7 @@ def claude(
             loaded = False,
             model = model,
             gguf_variant = gguf_variant,
+            ctx = ctx,
             refuse = refuse_small_context,
         )
     _require_agent_for_launch("claude", install_hint, launch)
@@ -7123,6 +7154,7 @@ def claude(
                 refuse = refuse_small_context,
                 model = model,
                 gguf_variant = gguf_variant,
+                ctx = ctx,
             )
     except BaseException:
         _shutdown_auto_served()
@@ -7501,6 +7533,7 @@ def opencode(
             loaded = False,
             model = model,
             gguf_variant = gguf_variant,
+            ctx = ctx,
             refuse = refuse_small_context,
         )
     _require_agent_for_launch(command_name, install_hint, launch and not app)
@@ -7547,6 +7580,7 @@ def opencode(
                 refuse = refuse_small_context,
                 model = model,
                 gguf_variant = gguf_variant,
+                ctx = ctx,
             )
         except BaseException:
             _shutdown_auto_served()

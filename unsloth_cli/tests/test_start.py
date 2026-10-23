@@ -7853,6 +7853,32 @@ def test_agent_context_check_does_not_resize_a_connection(fake_studio):
     assert "--max-seq-length 65536" not in result.output
 
 
+@pytest.mark.parametrize("agent", ["claude", "opencode"])
+def test_agent_context_retry_keeps_the_load_flags(fake_studio, launched, agent):
+    flags = ["--no-load-in-4bit", "--tensor-parallel", "--gpu-memory-mode", "manual"]
+    args = [
+        agent,
+        "--model",
+        "unsloth/other",
+        *flags,
+        "--api-key",
+        "sk-secret",
+        "--max-seq-length",
+        "8192",
+    ]
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 1, result.output
+    assert "sk-secret" not in result.output
+    line = next(l for l in result.output.splitlines() if "Run unsloth start" in l)
+    command = line[line.index("unsloth start") : line.index(" (a smaller quant")]
+    assert command.startswith(f"unsloth start {agent} --model unsloth/other ")
+    assert " ".join(flags) in command and "--max-seq-length 8192" not in command
+    retry = CliRunner().invoke(start.start_app, shlex.split(command)[2:])
+    assert retry.exit_code == 0, retry.output
+    load = [p for _, url, p in fake_studio if url.endswith("/api/inference/load")][-1]
+    assert load["load_in_4bit"] is False
+
+
 def test_opencode_context_retry_keeps_max_tokens(fake_studio, launched):
     target = "unsloth/other-GGUF"
     args = ["opencode", "--model", target, "--max-tokens", "1000", "--max-seq-length", "8192"]
