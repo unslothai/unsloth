@@ -585,6 +585,41 @@ _REMOTE_TTL_SECONDS = 300.0
 _REMOTE_TIMEOUT_SECONDS = 5.0
 _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
+# Endpoint -> monotonic time its connection failed (refused / timed out). Every shard of every lookup asks the same
+# host, so after one failure the rest are answered "unknown" (the local snapshot stands, as huggingface_hub does on
+# a failed HEAD) for the TTL, instead of each waiting out its own timeout.
+_UNREACHABLE: dict[str, float] = {}
+
+
+def _connection_failed(exc: BaseException) -> bool:
+    """A transport failure that says nothing about the repo: connect refused / reset, connect or read timeout. Not an
+    HTTP answer (gated, 404, 5xx, rate limit) and not a proxy error, which huggingface_hub raises instead of falling
+    back to the cache."""
+    try:
+        import httpx
+        if isinstance(exc, httpx.ProxyError):
+            return False
+        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+            return True
+    except ImportError:
+        pass
+    try:
+        import requests
+        if isinstance(exc, requests.exceptions.ProxyError):
+            return False
+        if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            return True
+    except ImportError:
+        pass
+    return isinstance(exc, (OSError, TimeoutError)) and not hasattr(exc, "response")
+
+
+def _endpoint() -> str:
+    try:
+        from huggingface_hub import constants
+        return str(constants.ENDPOINT)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
@@ -637,6 +672,11 @@ def _remote_etag(
         hit = _REMOTE_MEMO.get(memo)
     if hit is not None and time.monotonic() - hit[0] < _REMOTE_TTL_SECONDS:
         return hit[1]
+    endpoint = _endpoint()
+    with _lock:
+        down_at = _UNREACHABLE.get(endpoint)
+    if down_at is not None and time.monotonic() - down_at < _REMOTE_TTL_SECONDS:
+        return None  # the Hub did not answer moments ago: unanswerable, without another timeout
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
         from huggingface_hub.utils import EntryNotFoundError
@@ -656,9 +696,13 @@ def _remote_etag(
         value = str(etag) if etag else None  # already normalized (no quotes, no W/ prefix)
     except EntryNotFoundError:
         value = _GONE
-    except Exception:  # noqa: BLE001 - offline, gated without a token, rate limited: unanswerable
+    except Exception as exc:  # noqa: BLE001 - offline, gated without a token, rate limited: unanswerable
+        if _connection_failed(exc):
+            with _lock:
+                _UNREACHABLE[endpoint] = time.monotonic()
         return None
     with _lock:
+        _UNREACHABLE.pop(endpoint, None)
         _REMOTE_MEMO[memo] = (time.monotonic(), value)
     return value
 
