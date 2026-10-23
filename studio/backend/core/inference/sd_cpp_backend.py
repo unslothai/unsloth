@@ -4734,24 +4734,23 @@ class SdCppDiffusionBackend:
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
         seeds: list[int] = []
-        # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request's adapters cannot
-        # leak in); removed after.
         lora_payload: Optional[list[dict]] = None
-        lora_stage: Optional[Path] = None
-        if lora_resolved:
-            server_lora_dir = state.server.lora_dir
-            if server_lora_dir:
-                lora_stage = Path(server_lora_dir) / f"gen_{os.urandom(6).hex()}"
-                materialized = diffusion_lora.materialize_native_dir(
-                    lora_resolved, lora_stage, hardlink = True
-                )
-                lora_payload = [
-                    {
-                        "path": f"{lora_stage.name}/{Path(m.path).name}",
-                        "multiplier": float(m.weight),
-                    }
-                    for m in materialized
-                ]
+        lora_stages: list[Path] = []
+
+        def _stage_loras(server: Any) -> Optional[list[dict]]:
+            """The ``lora`` entries, staged into a per-request subdir of THIS server's lora-model-dir (so a prior
+            request's adapters cannot leak in); removed after."""
+            if not lora_resolved or not server.lora_dir:
+                return None
+            stage = Path(server.lora_dir) / f"gen_{os.urandom(6).hex()}"
+            lora_stages.append(stage)
+            materialized = diffusion_lora.materialize_native_dir(
+                lora_resolved, stage, hardlink = True
+            )
+            return [
+                {"path": f"{stage.name}/{Path(m.path).name}", "multiplier": float(m.weight)}
+                for m in materialized
+            ]
         # One deadline for the whole request, shared by its chunks: a batch is chunked only because the server caps
         # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
         # ends on time.
@@ -4785,6 +4784,7 @@ class SdCppDiffusionBackend:
             )
 
         try:
+            lora_payload = _stage_loras(state.server)
             hires_payload = _stage_hires(state.server)
             for offset in range(0, total, _MAX_SERVER_BATCH):
                 if cancel.is_set():
@@ -4833,6 +4833,12 @@ class SdCppDiffusionBackend:
                     with self._lock:
                         if self._state is not None and self._state.server is not None:
                             self._state = state
+                    if lora_payload is not None:
+                        # The replacement server has its own scratch dir: stage the LoRAs there again.
+                        lora_payload = _stage_loras(server)
+                        payload.pop("lora", None)
+                        if lora_payload:
+                            payload["lora"] = list(lora_payload)
                     if hires_plan is not None:
                         # The replacement server has its own scratch dir: stage the upscaler there again.
                         hires_payload = _stage_hires(server)
@@ -4859,8 +4865,8 @@ class SdCppDiffusionBackend:
                     (chunk_seed + i // max(1, per)) & ((1 << 63) - 1) for i in range(len(kept))
                 )
         finally:
-            if lora_stage is not None:
-                shutil.rmtree(lora_stage, ignore_errors = True)
+            for stage in lora_stages:
+                shutil.rmtree(stage, ignore_errors = True)
             for staged in hires_staged:
                 try:
                     staged.unlink()

@@ -2095,6 +2095,84 @@ def test_generate_server_stages_loras_inside_lora_dir(monkeypatch, tmp_path):
     assert not list(_P(lora_dir).glob("gen_*"))
 
 
+def _lora_source(monkeypatch, tmp_path):
+    from core.inference import diffusion_lora as dl
+
+    src = tmp_path / "hub" / "a.safetensors"
+    src.parent.mkdir()
+    src.write_bytes(b"adapter")
+    monkeypatch.setattr(dl, "supports_lora", lambda **k: True)
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **k: [dl.ResolvedLora("id1", "myalias", str(src), "safetensors", 0.7)],
+    )
+    return src
+
+
+def test_cpu_backend_restart_restages_loras_in_the_new_server_dir(monkeypatch, tmp_path):
+    # The replacement server has its own lora-model-dir: the retried chunk must name adapters staged there.
+    _lora_source(monkeypatch, tmp_path)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "mps")
+    seen = []
+
+    def _watch(server, lora_dir):
+        server.lora_dir = str(lora_dir)
+        lora_dir.mkdir()
+        real = server.img_gen
+
+        def img_gen(payload, **kw):
+            seen.append((lora_dir / payload["lora"][0]["path"]).is_file())
+            return real(payload, **kw)
+
+        server.img_gen = img_gen
+
+    def _factory(binary):
+        s = _FakeServer(binary)
+        _watch(s, tmp_path / f"srv{len(servers)}")
+        servers.append(s)
+        return s
+
+    _watch(servers[0], tmp_path / "srv0")
+    monkeypatch.setattr(bk, "SdCppServer", _factory)
+    servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
+    out = b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
+    assert len(out["images"]) == 1 and len(servers) == 2
+    assert seen == [True, True]
+    assert not list(tmp_path.glob("srv*/gen_*"))
+
+
+def test_generate_server_removes_a_partly_copied_lora_stage(monkeypatch, tmp_path):
+    # Cross-filesystem staging falls back to a copy; one failing partway must not leave the partial file behind.
+    import errno
+    import os as _os
+    import shutil as _shutil
+
+    _lora_source(monkeypatch, tmp_path)
+    lora_dir = tmp_path / "server_loras"
+    lora_dir.mkdir()
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    servers[0].lora_dir = str(lora_dir)
+
+    def _cross_device(*_a, **_k):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    def _partial_copy(src, dst, **_k):
+        with open(dst, "wb") as fh:
+            fh.write(b"ada")
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(_os, "link", _cross_device)
+    monkeypatch.setattr(_shutil, "copy2", _partial_copy)
+    with pytest.raises(OSError, match = "No space left"):
+        b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
+    assert not list(lora_dir.glob("gen_*"))
+
+
 def test_generate_rejects_loras_on_unsupported_family(monkeypatch):
     b = _loaded_backend(engine = _FakeEngine())
     _patch_lora(monkeypatch, [], supported = False)
