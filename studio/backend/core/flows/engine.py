@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 CPU_CONCURRENCY = 4
 PROGRESS_MIN_INTERVAL_S = 0.2
+# A streamed player answer is flushed this often, so its text reads as typed.
+INVOKE_FLUSH_S = 0.05
 CANCEL_GRACE_S = 10.0
 MEMORY_EVENTS = 4000
 FINISHED_RUNS_KEPT = 64
@@ -487,6 +489,7 @@ class FlowEngine:
     def __init__(self) -> None:
         self.runs: dict[str, RunState] = {}
         self._gpu_lock: Optional[asyncio.Lock] = None
+        self._warming: dict[tuple, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.handlers: Optional[dict] = None
         # Tests swap these in.
@@ -579,16 +582,11 @@ class FlowEngine:
         inputs: Optional[dict] = None,
         params: Optional[dict] = None,
         hf_token: Optional[str] = None,
+        events: Optional[asyncio.Queue] = None,
     ) -> dict:
-        """Run one entrypoint node (and what it needs, cache first) now and return its outputs."""
-        plan = compile_flow(doc)
-        spec = plan.specs.get(entry)
-        if spec is None or entry not in plan.executable:
-            raise FlowNodeError(f"No runnable node {entry!r} in this flow")
-        if not spec.get("entrypoint"):
-            raise FlowNodeError(f"{spec['title']} is not an entry point a player can call")
-        if plan.owner.get(entry):
-            raise FlowNodeError("An entry point cannot sit inside a For Each group")
+        """Run one entrypoint node (and what it needs, cache first) now and return its outputs.
+        ``events`` receives the run's events as they happen, text deltas included, for a streamed answer."""
+        plan, spec = self._entry(doc, entry)
         account = current_account()
         rs = RunState(
             id = "invoke-" + uuid.uuid4().hex,
@@ -613,17 +611,104 @@ class FlowEngine:
         token, key_id = await asyncio.to_thread(self.mint_key, account)
         rs.caller = flow_caller.make_caller(token, account, app, hf_token)
         rs.key_id = key_id
+        flusher = None
+        if events is not None:
+            rs.subscribers.add(events)
+            flusher = asyncio.create_task(self._flusher(rs, INVOKE_FLUSH_S))
         try:
             env = Env()
             await self._run_scope(
                 rs, [n for n in plan.order if n in need and plan.owner.get(n) is None], env
             )
+            if flusher is not None:
+                rs.flush()
             state = rs.node(entry)
             if state.status == "failed":
                 raise FlowNodeError(state.error or "The entry point failed")
             if state.status not in ("done", "cached"):
                 raise FlowNodeError(state.message or "The entry point did not run")
             return state.outputs or {}
+        finally:
+            if flusher is not None:
+                flusher.cancel()
+                rs.subscribers.discard(events)
+            await asyncio.to_thread(self.revoke_key, key_id)
+
+    def _entry(self, doc: dict, entry: str) -> tuple[Any, dict]:
+        plan = compile_flow(doc)
+        spec = plan.specs.get(entry)
+        if spec is None or entry not in plan.executable:
+            raise FlowNodeError(f"No runnable node {entry!r} in this flow")
+        if not spec.get("entrypoint"):
+            raise FlowNodeError(f"{spec['title']} is not an entry point a player can call")
+        if plan.owner.get(entry):
+            raise FlowNodeError("An entry point cannot sit inside a For Each group")
+        return plan, spec
+
+    async def warm(
+        self,
+        *,
+        app: Any,
+        flow_id: str,
+        doc: dict,
+        entry: str,
+        hf_token: Optional[str] = None,
+    ) -> bool:
+        """Load the model an entry point answers with, so a player's first call does not wait for it.
+        Calls for the same entry share one load; True once the model is resident (or the entry needs none)."""
+        plan, spec = self._entry(doc, entry)
+        model_kind = spec.get("model_kind")
+        if not model_kind:
+            return True
+        account = current_account()
+        key = (account.account_id, flow_id, entry)
+        task = self._warming.get(key)
+        if task is None or task.done():
+            node = next(n for n in doc.get("nodes") or [] if n.get("id") == entry)
+            params = param_values(spec, node)
+            task = asyncio.create_task(
+                self._warm(app, flow_id, doc, plan, entry, spec, params, account, hf_token)
+            )
+            self._warming[key] = task
+            task.add_done_callback(lambda t, k = key: self._warming.pop(k, None))
+        # A player leaving mid-load does not abort it: the next conversation still wants the model.
+        return await asyncio.shield(task)
+
+    async def _warm(
+        self,
+        app: Any,
+        flow_id: str,
+        doc: dict,
+        plan: Any,
+        entry: str,
+        spec: dict,
+        params: dict,
+        account: Any,
+        hf_token: Optional[str],
+    ) -> bool:
+        rs = RunState(
+            id = "warm-" + uuid.uuid4().hex,
+            flow_id = flow_id,
+            account = account,
+            doc = doc,
+            plan = plan,
+            options = {"params": {}},
+            persist = False,
+            app = app,
+        )
+        rs.hf_token = hf_token
+        token, key_id = await asyncio.to_thread(self.mint_key, account)
+        rs.caller = flow_caller.make_caller(token, account, app, hf_token)
+        rs.key_id = key_id
+        ctx = NodeContextImpl(self, rs, entry, spec, params, {}, 0)
+        try:
+            # Same lane as the entry point itself, so a warm-up never loads under another GPU step.
+            async with self.gpu_lock():
+                await ctx.ensure_model(spec["model_kind"], params.get("model"))
+            return True
+        except Exception as exc:
+            logger.info("flows: warming %s of %s did not load a model: %s", entry, flow_id, exc)
+            return False
         finally:
             await asyncio.to_thread(self.revoke_key, key_id)
 
@@ -683,9 +768,13 @@ class FlowEngine:
             )
             rs.emit(f"run.{rs.status}", data = {"outputs": rs.outputs, "error": rs.error})
 
-    async def _flusher(self, rs: RunState) -> None:
+    async def _flusher(
+        self,
+        rs: RunState,
+        interval: float = PROGRESS_MIN_INTERVAL_S,
+    ) -> None:
         while True:
-            await asyncio.sleep(PROGRESS_MIN_INTERVAL_S)
+            await asyncio.sleep(interval)
             rs.flush()
 
     async def _fire_cancel_hooks(self, rs: RunState) -> None:

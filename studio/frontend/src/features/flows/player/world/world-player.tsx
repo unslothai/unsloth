@@ -20,6 +20,7 @@ import type { MediaValue, WorldSpec } from "../../types";
 import { type PlayerApi, mediaObjectUrl } from "../player-api";
 import { PlayerKeyframes } from "../story/backdrop";
 import { useMediaUrl } from "../use-media-url";
+import { type LiveReply, appendReplyDelta } from "./live-reply";
 import type { Interactable, WorldArt, WorldGameHandle } from "./phaser-game";
 import { type TileKind, generateMap } from "./procgen";
 import {
@@ -291,7 +292,24 @@ export function WorldPlayer({
 
   const [draft, setDraft] = useState("");
   const [thinking, setThinking] = useState(false);
+  const [live, setLive] = useState<LiveReply | null>(null);
   const replyEntry = spec.entry_points?.npc_reply;
+  // Load the villagers' chat model while the intro shows, so the first conversation does not wait for it.
+  const [warmed, setWarmed] = useState(true);
+  useEffect(() => {
+    if (!replyEntry || !api.warm) return;
+    let alive = true;
+    setWarmed(false);
+    void api
+      .warm(flowId, replyEntry)
+      .catch(() => false)
+      .finally(() => {
+        if (alive) setWarmed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, flowId, replyEntry]);
   const talkNpc = talking ? npcById.get(talking) : undefined;
   const turns = talking ? (ws.talks[talking] ?? []) : [];
   const scroller = useRef<HTMLDivElement>(null);
@@ -300,7 +318,7 @@ export function WorldPlayer({
       top: scroller.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [turns.length, thinking]);
+  }, [turns.length, thinking, live?.text]);
 
   // Bumped on every load, so a reply to a conversation from before the load is dropped.
   const loads = useRef(0);
@@ -322,18 +340,30 @@ export function WorldPlayer({
     setThinking(true);
     const generation = loads.current;
     try {
-      const res = await api.invoke(flowId, replyEntry, {
-        state: {
-          world: spec,
-          npc_id: npcId,
-          history: (before.talks[npcId] ?? []).slice(0, -1),
-          player_message: text,
-          vars: before.vars,
-          inventory: before.inventory,
-          completed_quests: before.completedQuests,
+      const res = await api.invoke(
+        flowId,
+        replyEntry,
+        {
+          state: {
+            world: spec,
+            npc_id: npcId,
+            history: (before.talks[npcId] ?? []).slice(0, -1),
+            player_message: text,
+            vars: before.vars,
+            inventory: before.inventory,
+            completed_quests: before.completedQuests,
+          },
         },
-      });
+        {
+          // The line appears as it is written; items and quests apply once the whole reply is in.
+          onDelta: (piece) =>
+            setLive((l) =>
+              appendReplyDelta(l, npcId, generation, loads.current, piece),
+            ),
+        },
+      );
       if (generation !== loads.current) return;
+      setLive(null);
       const reply = res.outputs.reply as NpcReply | undefined;
       if (!reply?.text) throw new Error("No reply");
       const prior = wsRef.current;
@@ -345,6 +375,7 @@ export function WorldPlayer({
       for (const n of notes) toast(n);
     } catch (e) {
       if (generation !== loads.current) return;
+      setLive(null);
       setWs((s) =>
         addTurn(s, npcId, {
           role: "npc",
@@ -393,6 +424,7 @@ export function WorldPlayer({
     loads.current += 1;
     // The reply in flight belongs to the old game; let the loaded one talk at once.
     setThinking(false);
+    setLive(null);
     setWs(state);
     setTalking(null);
     setPanel(null);
@@ -652,7 +684,18 @@ export function WorldPlayer({
                     {t.text}
                   </div>
                 ))}
-                {thinking ? (
+                {thinking && live && live.npcId === talking ? (
+                  <div
+                    className="max-w-[85%] self-start rounded-2xl bg-white/10 px-3.5 py-2 text-sm leading-relaxed"
+                    data-testid="world-npc-streaming"
+                  >
+                    {live.text}
+                  </div>
+                ) : thinking && !warmed ? (
+                  <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm text-white/70">
+                    Waking up the villagers...
+                  </div>
+                ) : thinking ? (
                   <div className="self-start rounded-2xl bg-white/10 px-4 py-2 text-sm">
                     {[0, 1, 2].map((i) => (
                       <span
