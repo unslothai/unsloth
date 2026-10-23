@@ -47,10 +47,12 @@ function FieldInput({
   field,
   value,
   onChange,
+  onUploading,
 }: {
   field: AppField;
   value: unknown;
   onChange: (value: unknown) => void;
+  onUploading?: (busy: boolean) => void;
 }) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -125,6 +127,7 @@ function FieldInput({
               e.target.value = "";
               if (!file) return;
               setUploading(true);
+              onUploading?.(true);
               void uploadAsset(file)
                 .then(onChange)
                 .then(() => setUploadError(null))
@@ -133,7 +136,10 @@ function FieldInput({
                     error instanceof Error ? error.message : "Upload failed",
                   ),
                 )
-                .finally(() => setUploading(false));
+                .finally(() => {
+                  setUploading(false);
+                  onUploading?.(false);
+                });
             }}
           />
         </div>
@@ -189,6 +195,8 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
   const fields = useMemo(() => (doc ? appFields(doc) : []), [doc]);
   const outputs = useMemo(() => (doc ? appOutputs(doc) : []), [doc]);
   const running = run.status === "running" || run.status === "queued";
+  const [uploads, setUploads] = useState<Record<string, boolean>>({});
+  const uploadingAny = Object.values(uploads).some(Boolean);
 
   const start = useCallback(async () => {
     if (!doc) return;
@@ -273,6 +281,9 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
                   onChange={(value) =>
                     setValues((prev) => ({ ...prev, [field.key]: value }))
                   }
+                  onUploading={(busy) =>
+                    setUploads((prev) => ({ ...prev, [field.key]: busy }))
+                  }
                 />
               </label>
             ))}
@@ -294,9 +305,11 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
               type="button"
               className={`${BUTTON} bg-primary text-primary-foreground hover:bg-primary/90`}
               onClick={() => void start()}
+              // A run started mid-upload would use the field's previous media.
+              disabled={uploadingAny}
               data-testid="flows-app-run"
             >
-              Run
+              {uploadingAny ? "Uploading…" : "Run"}
             </button>
           )}
           {run.status !== "idle" && (
