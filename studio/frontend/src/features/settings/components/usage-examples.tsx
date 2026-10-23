@@ -37,6 +37,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
+  ArrowDown01Icon,
   ArrowRight01Icon,
   ArrowUpRight01Icon,
   BotIcon,
@@ -411,6 +412,8 @@ function buildSnippets(
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const MODEL_PLACEHOLDER = "YOUR_MODEL";
+// Lines that fit the collapsed (max-h-56) example box.
+const COLLAPSED_LINES = 8;
 // OpenAI SDKs require an api_key value even for keyless access.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
 // retry while /v1 has no model because downloads and loads do not update the store.
@@ -651,6 +654,7 @@ export function UsageExamples({
     return p.startsWith("win") || p.includes("windows");
   });
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
   const [agent, setAgent] = useState<string>(
@@ -890,6 +894,8 @@ export function UsageExamples({
     () => buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os),
     [base, key, toolsKey, model, os],
   );
+  // The basic curl example fits the collapsed box whole; longer ones get Show more.
+  const collapsible = snippets[lang].split("\n").length > COLLAPSED_LINES;
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
     () => buildAgentCommand(base, agentKey, os, agent),
@@ -1086,22 +1092,55 @@ export function UsageExamples({
         <button
           type="button"
           onClick={handleCopy}
-          className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          aria-label={t("settings.apiKeys.copySnippet")}
+          className="absolute top-1.5 right-1.5 z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-label={
+            copied
+              ? t("settings.apiKeys.copied")
+              : t("settings.apiKeys.copySnippet")
+          }
         >
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             className={cn("size-3.5", copied && "text-control-accent")}
           />
-          {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
         </button>
-        <HighlightedCode
-          key={snippets[lang]}
-          code={snippets[lang]}
-          language={shikiLang}
-          label={t("settings.apiKeys.usageExamples")}
-          redactFromReload={Boolean(apiKey)}
-        />
+        <div
+          className={cn(
+            // A mask, not an overlay, so the fade matches the box in both themes.
+            collapsible &&
+              !expanded &&
+              "max-h-56 overflow-hidden [mask-image:linear-gradient(to_bottom,black_75%,transparent)]",
+            // Expanded shows the whole example, past HighlightedCode's own max-h-96.
+            expanded && "[&>section]:max-h-none",
+          )}
+        >
+          <HighlightedCode
+            key={snippets[lang]}
+            code={snippets[lang]}
+            language={shikiLang}
+            label={t("settings.apiKeys.usageExamples")}
+            redactFromReload={Boolean(apiKey)}
+          />
+        </div>
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((open) => !open)}
+            aria-expanded={expanded}
+            className="flex w-full items-center justify-center gap-1 rounded-b-lg border-t border-border py-1.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:border-white/5"
+          >
+            {expanded
+              ? t("settings.apiKeys.exampleCollapse")
+              : t("settings.apiKeys.exampleExpand")}
+            <HugeiconsIcon
+              icon={ArrowDown01Icon}
+              className={cn(
+                "size-3 transition-transform",
+                expanded && "rotate-180",
+              )}
+            />
+          </button>
+        ) : null}
       </div>
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
         <div className="flex h-5 items-center justify-between gap-3">

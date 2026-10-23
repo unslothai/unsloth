@@ -3140,6 +3140,8 @@ export const hi = {
       codingAgentsHint:
         "इस सर्वर से कनेक्ट करके कोडिंग एजेंट चलाएँ। यह लोड किए गए मॉडल का उपयोग करता है। स्थानीय सर्वर अपने-आप API कुंजी बनाता है, जबकि रिमोट सर्वर उसे कमांड में शामिल करता है।",
       openAgentsTab: "एजेंट में खोलें",
+      exampleExpand: "और दिखाएं",
+      exampleCollapse: "कम दिखाएं",
       codingAgentsSwap: "claude को codex, openclaw, opencode, या hermes से बदलें।",
       relativeNever: "कभी नहीं",
       relativeJustNow: "अभी",

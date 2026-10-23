@@ -3104,6 +3104,8 @@ export const ja = {
       codingAgents: "コーディングエージェント",
       codingAgentsHint: "このサーバーに対してコーディングエージェントを起動します。読み込み済みのモデルを使用します。ローカルサーバーでは API キーが自動的に発行され、リモートサーバーではコマンドに含まれます。",
       openAgentsTab: "エージェントで開く",
+      exampleExpand: "さらに表示",
+      exampleCollapse: "表示を減らす",
       codingAgentsSwap: "claude を codex、openclaw、opencode、hermes に置き換えられます。",
       relativeNever: "なし",
       relativeJustNow: "たった今",

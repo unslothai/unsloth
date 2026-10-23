@@ -3178,6 +3178,8 @@ export const fr = {
       codingAgentsHint:
         "Lancez un agent de codage sur ce serveur. Il utilise le modèle chargé ; un serveur local génère automatiquement une clé API, un serveur distant l'inclut dans la commande.",
       openAgentsTab: "Ouvrir dans Agents",
+      exampleExpand: "Afficher plus",
+      exampleCollapse: "Afficher moins",
       codingAgentsSwap:
         "Remplacez claude par codex, openclaw, opencode ou hermes.",
       relativeNever: "jamais",

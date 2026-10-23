@@ -47,3 +47,14 @@ test("with no model loaded the example still renders, naming a placeholder", () 
   );
   assert.doesNotMatch(src, /\{snippets \? \(/);
 });
+
+test("the usage example collapses past eight lines and its copy button is icon-only", () => {
+  const src = readSrc("features/settings/components/usage-examples.tsx");
+  assert.match(src, /const COLLAPSED_LINES = 8;/);
+  assert.match(
+    src,
+    /snippets\[lang\]\.split\("\\n"\)\.length > COLLAPSED_LINES/,
+  );
+  assert.match(src, /expanded && "\[&>section\]:max-h-none"/);
+  assert.doesNotMatch(src, /t\("settings\.apiKeys\.copy"\)/);
+});

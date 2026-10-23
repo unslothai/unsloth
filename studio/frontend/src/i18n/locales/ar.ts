@@ -3131,6 +3131,8 @@ export const ar = {
       codingAgentsHint:
         "شغّل وكيل برمجة متصلًا بهذا الخادم. يستخدم الوكيل النموذج المُحمَّل؛ وينشئ الخادم المحلي مفتاح API تلقائيًا، بينما يضمّنه الخادم البعيد في الأمر.",
       openAgentsTab: "فتح في الوكلاء",
+      exampleExpand: "عرض المزيد",
+      exampleCollapse: "عرض أقل",
       codingAgentsSwap: "استبدل claude بـ codex أو openclaw أو opencode أو hermes.",
       relativeNever: "لا يوجد",
       relativeJustNow: "للتوّ",
