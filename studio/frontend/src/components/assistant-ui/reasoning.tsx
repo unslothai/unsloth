@@ -5,6 +5,7 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { CodeHighlightModeContext } from "@/components/assistant-ui/code-highlight-context";
 import {
   MarkdownText,
@@ -65,7 +66,6 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -246,7 +246,8 @@ function ReasoningTrigger({
           {foldedSummary}
         </span>
       ) : null}
-      <ChevronDownIcon
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
         data-slot="reasoning-trigger-chevron"
         className={cn(
           "aui-reasoning-trigger-chevron size-3.5 shrink-0",
@@ -611,7 +612,8 @@ function ReasoningTail({
           className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {expanded ? "Collapse thinking" : "Expand thinking"}
-          <ChevronDownIcon
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
             aria-hidden={true}
             className={cn(
               "size-3.5 shrink-0 transition-transform duration-200 ease-out",

@@ -10,6 +10,8 @@ export type ProfileStatsDay = {
   tokens: number;
   messages: number;
   chats: number;
+  /** Absent from older backends. */
+  apiRequests?: number;
 };
 
 export type ProfileStatsModel = {

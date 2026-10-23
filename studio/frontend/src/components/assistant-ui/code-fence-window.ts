@@ -32,18 +32,6 @@ export const OVERSCAN_VIEWPORTS = 1;
 // boundaries, the thrash that killed the earlier bidirectional gate.
 export const HYSTERESIS_VIEWPORTS = 0.5;
 
-// `offsetX`/`offsetY` are from the padding box, so only a scrollbar press lands at or past the
-// client size.
-export type PointerSpot = {
-  offsetX: number;
-  offsetY: number;
-  clientWidth: number;
-  clientHeight: number;
-};
-
-export const onScrollbar = (spot: PointerSpot): boolean =>
-  spot.offsetX >= spot.clientWidth || spot.offsetY >= spot.clientHeight;
-
 export type WindowGeometry = {
   lineCount: number;
   /** MEASURED from the rendered block, never assumed. */

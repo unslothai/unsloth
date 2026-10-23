@@ -179,7 +179,7 @@ export function HistoricalTrainingView({
 
   if (loading) {
     return (
-      <div className="rounded-xl border bg-card p-8 text-sm text-muted-foreground">
+      <div className="rounded-2xl border bg-card p-8 text-sm text-muted-foreground">
         {t("studio.history.loadingRun")}
       </div>
     );
@@ -187,7 +187,7 @@ export function HistoricalTrainingView({
 
   if (error || !detail) {
     return (
-      <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-8 text-sm text-red-500">
+      <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-8 text-sm text-red-500">
         {error ?? t("studio.history.runNotFound")}
       </div>
     );

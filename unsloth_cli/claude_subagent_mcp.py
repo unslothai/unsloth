@@ -190,8 +190,9 @@ def run_local_agent(
         else "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit",
         "--append-system-prompt",
         _SUBAGENT_PLAN_INSTRUCTIONS if read_only else _SUBAGENT_INSTRUCTIONS,
-        f"Task: {task}",
     ]
+    # The task goes over stdin: a non-npm .cmd shim runs argv through cmd.exe, where a quote and & in it run a command.
+    prompt: str | None = f"Task: {task}"
     bridged, wsl_names = _wsl_shim_env(command, local_env, _CLAUDE_ENV_UNSET)
     if wsl_names:
         from unsloth_cli.commands.start import _merge_wslenv
@@ -207,7 +208,7 @@ def run_local_agent(
     popen_kwargs: dict[str, Any] = {
         "cwd": os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
         "env": child_env,
-        "stdin": subprocess.DEVNULL,
+        "stdin": subprocess.PIPE,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
@@ -228,9 +229,11 @@ def run_local_agent(
     try:
         while True:
             try:
-                stdout, stderr = process.communicate(timeout = _CANCEL_POLL_SECONDS)
+                stdout, stderr = process.communicate(input = prompt, timeout = _CANCEL_POLL_SECONDS)
                 break
             except subprocess.TimeoutExpired:
+                # communicate() refuses input once started; the first call keeps writing it.
+                prompt = None
                 if cancel_event.is_set():
                     _stop_child(process)
                     raise RuntimeError("The local Claude agent was cancelled.")

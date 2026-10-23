@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 import base64
+import hashlib
 import importlib.util
 import ipaddress
 import os
@@ -279,23 +280,32 @@ def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
     if _trust_forwarded_for():
-        xff = request.headers.get("x-forwarded-for", "")
+        # Rightmost entry only: the trusted proxy appends the client it saw, and everything left of
+        # it is the caller's own text, so keying on it would let each guess pick a fresh bucket.
+        from utils.client_ip import header_fields
+
+        xff = header_fields(request.headers, "x-forwarded-for")
         if xff:
-            # First entry is the originating client.
-            normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
+            normalized = _normalize_forwarded_addr(xff.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
-        fwd = request.headers.get("forwarded", "")
+        fwd = header_fields(request.headers, "forwarded")
         if fwd:
-            # First element only; multi-element headers can't fork buckets.
-            normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
+            normalized = _forwarded_for_from_element(fwd.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
     return (request.client.host if request.client else None) or "_unknown"
 
 
+_MAX_BUCKET_USERNAME_CHARS = 256
+
+
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
-    return (_client_ip(request), (username or "").casefold())
+    name = (username or "").casefold()
+    # Bound the memory each bucket key holds; real usernames are far shorter and keep their own key.
+    if len(name) > _MAX_BUCKET_USERNAME_CHARS:
+        name = "\x00long:" + hashlib.sha256(name.encode("utf-8", "surrogatepass")).hexdigest()
+    return (_client_ip(request), name)
 
 
 def _unknown_user_key(request: Request | None) -> tuple[str, str]:
@@ -599,6 +609,9 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
     # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
     _clear_login_bucket(key)
+    # Shell-owned backends never use the seeded password; terminal-started ones keep the web autofill.
+    if getattr(request.app.state, "desktop_owned", False):
+        request.app.state.bootstrap_password = None
 
     from auth.policy import installation_is_multi_user
 
@@ -806,6 +819,7 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
         last_used_at = row.get("last_used_at"),
         expires_at = row.get("expires_at"),
         is_active = bool(row["is_active"]),
+        purpose = row.get("purpose"),
     )
 
 
@@ -852,6 +866,9 @@ async def create_api_key(
             expires_at = expires_at,
             expect_gen = generation,
             account_id = _key_account_scope(),
+            purpose = storage.UNSLOTH_START_API_KEY_PURPOSE
+            if payload.name == storage.UNSLOTH_START_API_KEY_NAME
+            else None,
         )
     except storage.CredentialRotated:
         raise HTTPException(

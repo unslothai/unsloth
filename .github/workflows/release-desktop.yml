@@ -557,7 +557,7 @@ jobs:
       # harden-runner v2.20.0; stay in audit until the macOS + Windows
       # codesign paths have been observed.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -592,7 +592,7 @@ jobs:
 
       # ── Node.js ──
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 24
 
@@ -992,7 +992,7 @@ jobs:
       - name: Build Linux bundles
         id: build_linux
         if: matrix.platform == 'ubuntu-22.04'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
@@ -1005,7 +1005,7 @@ jobs:
       - name: Build Linux ARM64 package
         id: build_linux_arm64
         if: matrix.platform == 'ubuntu-24.04-arm'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
@@ -1035,7 +1035,7 @@ jobs:
       - name: Build macOS app
         id: build_macos
         if: matrix.platform == 'macos-latest'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # The signing key is not password protected, and no secret of this name
@@ -1208,7 +1208,7 @@ jobs:
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # The signing key is not password protected, and no secret of this name
@@ -1591,7 +1591,7 @@ jobs:
       # forever -- an artefact silently missing the one document it exists to carry.
       - name: Preserve flagged Windows bundles
         if: failure() && matrix.platform == 'windows-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: flagged-windows-bundles-${{ matrix.artifact }}
           path: ${{ runner.temp }}/defender-scan/*
@@ -1662,7 +1662,7 @@ jobs:
       # hash, and a vendor round trip outlasts a week.
       - name: Preserve the Microsoft submission packet
         if: always() && matrix.platform == 'windows-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ms-submission-packet-${{ matrix.artifact }}
           path: ${{ runner.temp }}/ms-submission-packet.md
@@ -1755,7 +1755,7 @@ jobs:
           PY
 
       - name: Upload signed release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: desktop-release-${{ matrix.artifact }}
           path: ${{ runner.temp }}/desktop-release-assets/*
@@ -1789,7 +1789,7 @@ jobs:
 
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -1872,7 +1872,7 @@ jobs:
           done
 
       - name: Download signed release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: desktop-release-*
           path: ${{ runner.temp }}/desktop-release-assets
@@ -2305,7 +2305,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -2318,7 +2318,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Download published assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: desktop-release-*
           path: ${{ runner.temp }}/desktop-release-assets
@@ -2366,7 +2366,7 @@ jobs:
       # carries a token, so an upload step must add neither.
       - name: Preserve the VirusTotal summary and submission packet
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: virustotal-summary
           path: ${{ runner.temp }}/virustotal-summary.md

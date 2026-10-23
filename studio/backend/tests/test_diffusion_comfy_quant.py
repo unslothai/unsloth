@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for loading ComfyUI-format quantized single files (``diffusion_comfy_quant.py``).
-
-Detection and refusal read only the safetensors header, so they run on tiny synthetic files. The
-loader runs on CPU against a two-block stand-in transformer whose converter does what the real
-diffusers converters do to a ComfyUI checkpoint: split a fused qkv by rows and rename the rest. That
-is enough to prove the codes and scales land on the right diffusers weight unchanged, that the
-ConvRot rotation is installed on exactly those, and that what cannot be mapped is refused.
-"""
+"""ComfyUI quantised single-file loader; ConvRot must be installed on exactly the recorded layers."""
 
 from __future__ import annotations
 
 import json
+import sys
 import types
 
 import pytest
@@ -443,9 +437,14 @@ def test_fp8_layers_dequantize_with_their_scale(tmp_path, monkeypatch):
     tensors.update({f"{layer}.weight": codes, f"{layer}.scale_weight": scale.reshape(1)})
     tensors["scaled_fp8"] = torch.zeros(2, dtype = torch.float8_e4m3fn)
     path = _save(tmp_path / "legacy_fp8_scaled.safetensors", tensors)
-    model = _load(path)
+    model = _load(path, fp8_storage = False)
     assert torch.equal(model.blocks[0].to_out.weight, codes.float() * scale)
     assert model._unsloth_comfy_quant["dequantized"] == 1
+    stored = _load(path, fp8_storage = True)
+    assert stored._unsloth_comfy_quant["dequantized"] == 0
+    assert stored._unsloth_comfy_quant["fp8_stored"] == 1
+    assert torch.equal(stored.blocks[0].to_out.weight, codes.float() * scale)
+    assert torch.equal(stored.blocks[0].to_out.weight_q, codes.view(torch.uint8))
 
 
 def test_a_converter_that_mixes_columns_is_refused(comfy_file, monkeypatch):
@@ -591,7 +590,7 @@ def test_fp8_native_backend_keeps_codes_and_computes_the_dense_product(tmp_path,
 def test_fp8_without_a_runtime_dequantizes(tmp_path, monkeypatch):
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, tensors = _fp8_file(tmp_path)
-    model = _load_bf16(path, fp8_backend = None)
+    model = _load_bf16(path, fp8_backend = None, fp8_storage = False)
     assert model._unsloth_comfy_quant["fp8"] == 0
     assert model._unsloth_comfy_quant["dequantized"] == 6
     w = tensors["blocks.0.out.weight"].float() * tensors["blocks.0.out.weight_scale"]
@@ -601,11 +600,125 @@ def test_fp8_without_a_runtime_dequantizes(tmp_path, monkeypatch):
 def test_e5m2_and_non_bf16_pipelines_dequantize(tmp_path, monkeypatch):
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, _tensors = _fp8_file(tmp_path, fmt = "float8_e5m2")
-    assert _load_bf16(path, fp8_backend = "torchao")._unsloth_comfy_quant["fp8"] == 0
+    assert (
+        _load_bf16(path, fp8_backend = "torchao", fp8_storage = False)._unsloth_comfy_quant["fp8"] == 0
+    )
     path, _dense, _tensors = _fp8_file(tmp_path)
-    model = _load(path, fp8_backend = "torchao")  # float32 pipeline
+    model = _load(path, fp8_backend = "torchao", fp8_storage = False)  # float32 pipeline
     assert model._unsloth_comfy_quant["fp8"] == 0
     assert model._unsloth_comfy_quant["dequantized"] == 6
+
+
+def _linear_bytes(model) -> int:
+    """Bytes the model's Linear-shaped weights hold (dense ``weight`` or stored ``weight_q`` + ``weight_scale``)."""
+    total = 0
+    for name, tensor in model.state_dict().items():
+        if name.endswith((".weight", ".weight_q", ".weight_scale")) and not name.startswith(
+            "norm."
+        ):
+            total += tensor.numel() * tensor.element_size()
+    return total
+
+
+@pytest.mark.parametrize(
+    "fmt, dtype",
+    [
+        ("float8_e4m3fn", torch.bfloat16),
+        ("float8_e4m3fn", torch.float16),
+        ("float8_e4m3fn", torch.float32),
+        ("float8_e5m2", torch.bfloat16),
+    ],
+)
+@pytest.mark.parametrize("per_row", [False, True])
+def test_fp8_without_a_runtime_stays_fp8_and_matches_the_dequant_exactly(
+    tmp_path, monkeypatch, fmt, dtype, per_row
+):
+    """No fp8 GEMM: codes stay 1 byte per weight and outputs are bit-identical to the load-time dequant."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, tensors = _fp8_file(tmp_path, fmt = fmt, per_row = per_row)
+
+    def load(**kwargs):
+        return cq.load_comfy_quant_transformer(
+            _Tiny,
+            path,
+            cq.refuse_comfy_quant(path),
+            {"torch_dtype": dtype, "config": "base/repo", "subfolder": "transformer"},
+            family = "z-image",
+            int8_backend = None,
+            fp8_backend = None,
+            **kwargs,
+        )
+
+    widened = load(fp8_storage = False)
+    stored = load(fp8_storage = True)
+    assert widened._unsloth_comfy_quant["dequantized"] == 6
+    assert stored._unsloth_comfy_quant["dequantized"] == 0
+    assert stored._unsloth_comfy_quant["fp8_stored"] == 10
+    assert stored._unsloth_comfy_quant["fp8"] == 0  # storage is not an fp8 runtime
+    assert getattr(stored, "_unsloth_runtime_quant", None) is None
+    for b in range(2):
+        for leaf in ("to_q", "to_k", "to_v", "to_out"):
+            layer = getattr(stored.blocks[b], leaf)
+            assert layer.weight_q.dtype is torch.uint8 and layer.fp8_format == fmt
+            assert layer.weight_scale.view(torch.float32).shape == (DIM,)
+            assert torch.equal(layer.weight, getattr(widened.blocks[b], leaf).weight)
+    # half the bytes of a 16-bit dequant (a quarter of fp32), plus a 4-byte scale per row
+    rows = 2 * (4 * DIM + 2 * DIM)
+    assert _linear_bytes(stored) == rows * DIM + rows * 4
+    assert _linear_bytes(widened) == rows * DIM * torch.finfo(dtype).bits // 8
+    x = torch.randn(3, 7, DIM).to(dtype)
+    for b in range(2):
+        for leaf in ("to_q", "to_out"):
+            got = getattr(stored.blocks[b], leaf)(x)
+            want = getattr(widened.blocks[b], leaf)(x)
+            assert got.dtype is dtype and torch.equal(got, want)
+        got = stored.blocks[b].adaLN_modulation(x)
+        assert torch.equal(got, widened.blocks[b].adaLN_modulation(x))
+    # no plan to judge by (None): widen, unless the env opts in; the kill switch beats an explicit request
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    assert load()._unsloth_comfy_quant["dequantized"] == 6
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
+    assert load()._unsloth_comfy_quant["fp8_stored"] == 10
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert cq.fp8_storage_wanted(None, offload = True) is False
+
+
+def test_fp8_storage_follows_the_device_lora_and_kill_switch(monkeypatch):
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    cuda = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    assert cq.comfy_fp8_storage(cuda) is True
+    assert cq.comfy_fp8_storage(types.SimpleNamespace(device = "cpu")) is True
+    assert cq.comfy_fp8_storage(None) is True
+    # MPS has no float8 dtypes; a LoRA needs dense Linears to attach to
+    assert cq.comfy_fp8_storage(types.SimpleNamespace(device = "mps")) is False
+    assert cq.comfy_fp8_storage(cuda, lora = True) is False
+    for off in ("0", "off", "false"):
+        monkeypatch.setenv(cq.FP8_STORAGE_ENV, off)
+        assert cq.comfy_fp8_storage(cuda) is False
+
+
+def test_fp8_storage_keeps_fp32_modules_and_the_torchao_layers_apart(tmp_path, monkeypatch):
+    """Only layers the fp8 GEMM runtime skips are stored; fp32-kept Linears still widen to fp32."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, _tensors = _fp8_file(tmp_path)
+
+    class _Keep(_Tiny):
+        _keep_in_fp32_modules = ["adaLN_modulation"]
+
+    model = cq.load_comfy_quant_transformer(
+        _Keep,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.float16, "config": "base/repo", "subfolder": "transformer"},
+        family = "z-image",
+        int8_backend = None,
+        fp8_backend = None,
+        fp8_storage = True,
+    )
+    assert model._unsloth_comfy_quant["fp8_stored"] == 8
+    assert model._unsloth_comfy_quant["dequantized"] == 2
+    assert type(model.blocks[0].adaLN_modulation[0]) is nn.Linear
+    assert model.blocks[0].adaLN_modulation[0].weight.dtype is torch.float32
 
 
 @pytest.mark.parametrize(
@@ -843,3 +956,389 @@ def test_buffers_built_in_init_follow_the_compute_dtype(comfy_file):
     )
     assert model.freqs.dtype == torch.bfloat16
     assert model.blocks[0].to_q.weight_q.dtype == torch.int8
+
+
+def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monkeypatch):
+    """Stored fp8 Linears are not nn.Linear: a generation-time LoRA is refused by name."""
+    import threading
+
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, _tensors = _fp8_file(tmp_path)
+    model = _load_bf16(path, fp8_backend = None, fp8_storage = True)
+    assert cq.fp8_stored_layers(model) == 10
+    assert cq.fp8_stored_layers(_load_bf16(path, fp8_backend = None, fp8_storage = False)) == 0
+    assert cq.fp8_stored_layers(None) == 0
+    pipe = types.SimpleNamespace(transformer = model, _unsloth_loras = ())
+    state = types.SimpleNamespace(pipe = pipe, transformer_quant = None)
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    with pytest.raises(ValueError, match = "stored as fp8"):
+        DiffusionBackend._apply_loras(backend, state, [("some/lora", 1.0)], threading.Event())
+    DiffusionBackend._apply_loras(backend, state, [], threading.Event())
+
+
+def test_fp8_storage_default_rule_is_offload_or_host_ram(monkeypatch):
+    """Unset env stores only when widening would offload or crowd host RAM; ``1`` always; MPS and LoRA never."""
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    cuda = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    want = cq.fp8_storage_wanted
+    assert want(cuda) is False
+    assert want(cuda, offload = True) is True
+    reserve = cq.FP8_STORAGE_HOST_RESERVE_MIB
+    assert want(cuda, widened_mib = 24000, host_available_mib = 24000 + reserve + 1) is False
+    assert want(cuda, widened_mib = 24000, host_available_mib = 24000 + reserve - 1) is True
+    assert want(cuda, offload = True, lora = True) is False
+    assert want(types.SimpleNamespace(device = "mps"), offload = True) is False
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
+    assert want(cuda) is True
+
+
+def test_fp8_upcast_is_read_from_the_header_not_the_basename(tmp_path):
+    """A plain fp8 file named without 'fp8' still widens ~2x (and so can be stored); a bf16 one named 'fp8' does not."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion as d
+
+    fam = types.SimpleNamespace(single_file_is_pipeline = False)
+    plain = tmp_path / "krea2.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn)}, str(plain))
+    dense = tmp_path / "krea2_fp8.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.bfloat16)}, str(dense))
+    assert cq.header_has_fp8_weights(str(plain)) is True
+    assert cq.header_has_fp8_weights(str(dense)) is False
+    assert d._single_file_fp8_upcast(str(plain), fam) is True
+    assert d._single_file_fp8_upcast(str(dense), fam) is False
+    broken = tmp_path / "broken_fp8.safetensors"
+    broken.write_bytes(b"\x00" * 4)
+    assert cq.header_has_fp8_weights(str(broken)) is None
+    assert d._single_file_fp8_upcast(str(broken), fam) is True
+    assert (
+        d._single_file_fp8_upcast(str(plain), types.SimpleNamespace(single_file_is_pipeline = True))
+        is False
+    )
+
+
+def test_fnuz_fp8_headers_are_priced_widened_and_never_stored(tmp_path):
+    """FNUZ fp8 is seen by the header predicate and always priced widened."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion as d
+
+    fam = types.SimpleNamespace(single_file_is_pipeline = False)
+    fnuz = tmp_path / "krea2.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fnuz)}, str(fnuz))
+    ocp = tmp_path / "krea2_ocp.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn)}, str(ocp))
+    assert cq.header_has_fp8_weights(str(fnuz)) is True
+    assert d._single_file_fp8_upcast(str(fnuz), fam) is True
+    assert cq.header_has_fp8_weights(str(fnuz), fnuz_only = True) is True
+    assert cq.header_has_fp8_weights(str(ocp), fnuz_only = True) is False
+
+
+def _plan_harness(
+    monkeypatch,
+    tmp_path,
+    *,
+    fam,
+    resident_at,
+    fits_mib,
+    comfy_mib = None,
+):
+    """Run ``_plan_memory`` for a single file with a fake planner (resident iff the DiT fits ``fits_mib``)."""
+    from core.inference import diffusion as d
+    from core.inference import diffusion_memory as dm
+
+    path = tmp_path / "dit.safetensors"
+    if not path.exists():
+        path.write_bytes(b"\x00" * 16)
+    seen: list = []
+
+    def plan(**kwargs):
+        mib = kwargs["model_dense_mib"]
+        seen.append(mib)
+        return types.SimpleNamespace(resident = mib is not None and mib <= fits_mib)
+
+    monkeypatch.setattr(d, "plan_diffusion_memory", plan)
+    monkeypatch.setattr(d, "plan_keeps_transformer_resident", lambda p: p.resident)
+    monkeypatch.setattr(d, "comfy_fp8_storage", lambda target, lora = False: True)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 10**7)
+    monkeypatch.setattr(
+        d.DiffusionBackend, "_companion_cache_bytes", staticmethod(lambda *a, **k: 0)
+    )
+    monkeypatch.setattr(
+        d.DiffusionBackend, "_text_encoder_cache_bytes", staticmethod(lambda *a, **k: 0)
+    )
+    monkeypatch.setattr(d.DiffusionBackend, "_supplied_component_mib", lambda self, *a, **k: None)
+    if comfy_mib is not None:
+        monkeypatch.setattr(
+            d.DiffusionBackend, "_comfy_single_file_resident_mib", staticmethod(comfy_mib)
+        )
+    else:
+        monkeypatch.setattr(
+            d.DiffusionBackend,
+            "_comfy_single_file_resident_mib",
+            staticmethod(lambda *a, **k: None),
+        )
+    monkeypatch.setattr(d, "file_size_mib", lambda p: 1000)
+    monkeypatch.setattr(
+        d,
+        "estimate_safetensors_dense_mib",
+        lambda size, fp8_upcast = False: size * (2 if fp8_upcast else 1),
+    )
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+
+    backend = d.DiffusionBackend()
+    final = backend._plan_memory(
+        resolve_diffusion_device_target(),
+        str(resident_at or path),
+        "base/repo",
+        fam,
+        None,
+        False,
+        kind = "single_file",
+    )
+    return backend, final, seen, str(resident_at or path)
+
+
+def test_offloaded_plan_prices_fp8_with_the_offloaded_backend_and_picks_storage(
+    monkeypatch, tmp_path
+):
+    """Offload loses torchao fp8: the plan re-prices offloaded and picks storage."""
+    calls = []
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        calls.append((fp8_storage, offload))
+        if not offload:
+            return 1000  # torchao keeps the codes either way
+        return 1000 if fp8_storage else 2000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    # fits_mib below 1000: the plan offloads at every size
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 500, comfy_mib = comfy_mib
+    )
+    assert (False, True) in calls and (True, True) in calls
+    assert backend._fp8_storage_picks[path] is True
+    assert seen[-1] == 1000 and 2000 in seen
+    assert final.resident is False
+
+
+def test_offloaded_plan_without_storage_is_priced_widened(monkeypatch, tmp_path):
+    """No storage possible (LoRA / kill switch): the offloaded plan carries the widened size the loader builds."""
+    from core.inference import diffusion as d
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        return 2000 if offload and not fp8_storage else 1000
+
+    real_harness_storage = []
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_fp8_storage_off",
+        True,
+        raising = False,
+    )
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    orig_setattr = monkeypatch.setattr
+
+    def setattr_no_storage(target, name, value, *a, **k):
+        if target is d and name == "comfy_fp8_storage":
+            value = lambda target, lora = False: False  # noqa: E731
+        real_harness_storage.append(name)
+        return orig_setattr(target, name, value, *a, **k)
+
+    monkeypatch.setattr = setattr_no_storage
+    try:
+        backend, final, seen, path = _plan_harness(
+            monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 500, comfy_mib = comfy_mib
+        )
+    finally:
+        monkeypatch.setattr = orig_setattr
+    assert seen[-1] == 2000
+    assert backend._fp8_storage_picks[path] is False
+
+
+def test_a_resident_plan_keeps_the_resident_backend_price(monkeypatch, tmp_path):
+    """Resident torchao fp8: no offload re-price, no storage."""
+    calls = []
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        calls.append(offload)
+        return 1000 if not offload else 2000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 5000, comfy_mib = comfy_mib
+    )
+    assert True not in calls and seen == [1000]
+    assert backend._fp8_storage_picks[path] is False and final.resident is True
+
+
+def test_fnuz_krea2_file_is_not_planned_at_the_stored_size(monkeypatch, tmp_path):
+    """A Krea 2 FNUZ file widens under storage too, so the planner records no storage pick for it."""
+    from safetensors.torch import save_file
+
+    from core.inference.diffusion_krea2 import KREA2_FAMILY_NAME
+
+    fam = types.SimpleNamespace(name = KREA2_FAMILY_NAME, single_file_is_pipeline = False)
+    for dtype, picked in ((torch.float8_e4m3fnuz, False), (torch.float8_e4m3fn, True)):
+        path = tmp_path / f"krea2_{str(dtype).split('_')[-1]}.safetensors"
+        save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = dtype)}, str(path))
+        backend, final, seen, p = _plan_harness(
+            monkeypatch, tmp_path, fam = fam, resident_at = path, fits_mib = 500
+        )
+        assert backend._fp8_storage_picks[p] is picked, dtype
+        assert seen[-1] == (1000 if picked else 2000)
+
+
+def test_a_plan_priced_with_the_offload_only_backend_keeps_it_when_resident(monkeypatch, tmp_path):
+    """Int8 priced via the offload twin: the re-plan fits resident but the loader must still probe offloaded."""
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        return 1000 if offload else 2000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 1500, comfy_mib = comfy_mib
+    )
+    assert seen == [2000, 1000] and final.resident is True
+    assert backend._comfy_offload_for(final, path) is True
+    # Not priced offloaded: a resident plan probes resident.
+    backend._comfy_priced_offload[path] = False
+    assert backend._comfy_offload_for(final, path) is False
+
+
+def test_a_plan_repriced_larger_under_offload_does_not_force_the_offload_probe(
+    monkeypatch, tmp_path
+):
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        return 2000 if offload else 1000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 500, comfy_mib = comfy_mib
+    )
+    assert backend._comfy_priced_offload[path] is False
+    assert backend._comfy_offload_for(types.SimpleNamespace(resident = True), path) is False
+
+
+def test_fp8_stored_pricing_widens_keep_fp32_layers_as_the_loader_does(tmp_path):
+    """``_keep_in_fp32_modules`` linears are never priced at one byte, under either name."""
+    n = 1024
+    names = ("blocks.0.ffn", "condition_embedder.time_embedder.linear_1", "time_embedding.0")
+    tensors, layers = {}, {}
+    for name in names:
+        tensors[f"{name}.weight"] = torch.zeros(n, n, dtype = torch.float8_e4m3fn)
+        tensors[f"{name}.weight_scale"] = torch.tensor(1.0)
+        layers[name] = {"format": "float8_e4m3fn"}
+    path = _save(
+        tmp_path / "wan.safetensors",
+        tensors,
+        {cq.QUANT_METADATA_KEY: json.dumps({"layers": layers})},
+    )
+    scan = cq.scan_comfy_quant(path)
+    kw = dict(keep_int8 = False, keep_fp8 = False, fp8_stored = True)
+    one = n * n / 2**20  # MiB per layer per byte
+    plain = cq.comfy_resident_mib(path, scan, **kw)
+    assert plain == pytest.approx(3 * one, abs = 1)
+    keep = ("time_embedder", "scale_shift_table")
+    fp16 = cq.comfy_resident_mib(path, scan, **kw, keep_fp32 = keep, keep_fp32_bytes = 4)
+    assert fp16 == pytest.approx(one + 2 * 4 * one, abs = 1)
+    bf16 = cq.comfy_resident_mib(path, scan, **kw, keep_fp32 = keep)
+    assert bf16 == pytest.approx(one + 2 * 2 * one, abs = 1)
+    for name in names[1:]:
+        assert not cq.fp8_stored_by_header("float8_e4m3fn", (n, n), name, keep)
+    assert cq.fp8_stored_by_header("float8_e4m3fn", (n, n), names[0], keep)
+
+
+def _fake_diffusers(monkeypatch):
+    # CPU CI may run without diffusers (or with a stub): pin the two classes these tests read.
+    class WanTransformer3DModel:
+        _keep_in_fp32_modules = ["time_embedder", "scale_shift_table", "norm1", "norm2", "norm3"]
+
+    class FluxTransformer2DModel:
+        pass
+
+    fake = types.SimpleNamespace(
+        WanTransformer3DModel = WanTransformer3DModel, FluxTransformer2DModel = FluxTransformer2DModel
+    )
+    monkeypatch.setitem(sys.modules, "diffusers", fake)
+
+
+def test_real_wan_transformer_keeps_its_time_embedder_in_fp32():
+    try:
+        import diffusers
+        cls = getattr(diffusers, "WanTransformer3DModel", None)
+    except Exception:  # noqa: BLE001 -- no usable diffusers here
+        cls = None
+    if cls is None:
+        pytest.skip("this diffusers has no WanTransformer3DModel")
+    wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
+    assert "time_embedder" in cq.keep_fp32_modules_for(wan)
+
+
+def test_keep_fp32_modules_come_from_the_family_transformer(monkeypatch):
+    _fake_diffusers(monkeypatch)
+    wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
+    assert "time_embedder" in cq.keep_fp32_modules_for(wan)
+    assert cq.keep_fp32_modules_for(types.SimpleNamespace(transformer_class = "NoSuchModel")) == ()
+    assert cq.keep_fp32_modules_for(types.SimpleNamespace()) == ()
+
+
+def test_planner_prices_keep_fp32_layers_at_fp32_only_on_fp16(monkeypatch):
+    from core.inference import diffusion as d
+
+    _fake_diffusers(monkeypatch)
+
+    wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
+    fp16 = d._comfy_keep_fp32_pricing(wan, types.SimpleNamespace(dtype = torch.float16))
+    bf16 = d._comfy_keep_fp32_pricing(wan, types.SimpleNamespace(dtype = torch.bfloat16))
+    assert "time_embedder" in fp16["keep_fp32"] and fp16["keep_fp32_bytes"] == 4
+    assert bf16["keep_fp32_bytes"] is None
+    flux = types.SimpleNamespace(transformer_class = "FluxTransformer2DModel")
+    assert d._comfy_keep_fp32_pricing(flux, types.SimpleNamespace(dtype = torch.float16)) == {}

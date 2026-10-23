@@ -53,6 +53,52 @@ MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(butto
     };
 })"""
 
+# Applies one display case and measures it in the same evaluate, so a reload cannot reset the case
+# between the two and have the default layout recorded under the case's name.
+APPLY_AND_MEASURE = (
+    """async ({font, zoom, dark, direction}) => {
+    const root = document.documentElement;
+    root.style.setProperty('--ui-font-scale', String(font));
+    root.style.zoom = String(zoom);
+    root.classList.toggle('dark', dark);
+    root.dir = direction;
+    await new Promise(requestAnimationFrame);
+    return ("""
+    + MEASURE
+    + """)();
+}"""
+)
+
+CASE_ATTEMPTS = 3
+
+
+def measure_case(
+    page,
+    case: dict,
+    server = None,
+) -> list:
+    """Measures a case, re-running it on a fresh render when the page navigates away mid-case.
+
+    The vite dev page sometimes reloads itself on Windows runners after its buttons have rendered
+    (main job 119495424607, PR 14592 job 119703801606); the evaluate then loses its context."""
+    for attempt in range(1, CASE_ATTEMPTS + 1):
+        try:
+            return page.evaluate(APPLY_AND_MEASURE, case)
+        except Exception as exc:
+            if (
+                attempt == CASE_ATTEMPTS
+                or "execution context was destroyed" not in str(exc).lower()
+            ):
+                raise
+            tail = "\n".join(getattr(server, "vite_tail", []))
+            print(
+                f"page navigated during {case} (attempt {attempt}); re-measuring on the new render\n"
+                f"vite output:\n{tail}",
+                flush = True,
+            )
+            page.wait_for_load_state("domcontentloaded")
+            page.locator("button[data-case]").last.wait_for()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description = __doc__)
@@ -96,18 +142,7 @@ def main() -> None:
                                     dark = dark,
                                     direction = direction,
                                 )
-                                page.evaluate(
-                                    """async ({font, zoom, dark, direction}) => {
-                                    const root = document.documentElement;
-                                    root.style.setProperty('--ui-font-scale', String(font));
-                                    root.style.zoom = String(zoom);
-                                    root.classList.toggle('dark', dark);
-                                    root.dir = direction;
-                                    await new Promise(requestAnimationFrame);
-                                }""",
-                                    case,
-                                )
-                                measures = page.evaluate(MEASURE)
+                                measures = measure_case(page, case, server)
                                 assert len(measures) == 6, measures
                                 results.append(dict(case = case, measures = measures))
                                 for measure in measures:

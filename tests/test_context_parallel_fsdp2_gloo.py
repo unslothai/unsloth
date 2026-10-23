@@ -12,7 +12,6 @@ whole batch. The model is token-wise, so attention exchange is not exercised her
 from __future__ import annotations
 
 import os
-import socket
 import types
 
 import pytest
@@ -32,9 +31,8 @@ SEQ = 13
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 class Block(torch.nn.Module):
@@ -171,7 +169,7 @@ def _worker(rank, port, out_dir):
                 return loss.detach()
 
         trl.SFTTrainer = Trainer
-        cp.patch_sft_trainer()
+        cp.patch_sft_trainer(install_cp_methods = True)
         trainer = object.__new__(Trainer)
         trainer._context_parallel_manager = manager
 

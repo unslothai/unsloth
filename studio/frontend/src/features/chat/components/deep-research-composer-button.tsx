@@ -117,7 +117,7 @@ function DomainList({
       <div
         onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
         className={cn(
-          "flex min-h-9 cursor-text flex-wrap items-center gap-1 rounded-[18px] border border-border bg-background px-1.5 py-[3px] transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]",
+          "flex min-h-9 cursor-text flex-wrap items-center gap-1 rounded-xl border border-border bg-background px-1.5 py-[3px] transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]",
           error && "border-destructive ring-[3px] ring-destructive/20 dark:border-destructive/50",
         )}
       >
@@ -313,7 +313,7 @@ export function DeepResearchComposerButton({
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
-        className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))] text-primary/70"
+        className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))] text-foreground/70"
       />
     </button>
   );

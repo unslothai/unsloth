@@ -168,6 +168,20 @@ def test_llama_decode_scratch_only_on_layer_devices(monkeypatch):
     monkeypatch.setattr(llama, "DEVICE_TYPE_TORCH", "cpu")
     monkeypatch.setattr(llama, "per_layer_device", lambda layer: (torch.device("cpu"), 0))
     monkeypatch.setattr(llama, "fast_rms_layernorm_inference", lambda ln, X, **kw: X)
+
+    def add_norm(
+        ln,
+        X,
+        residual,
+        add = True,
+        **kw,
+    ):
+        if add:
+            X += residual
+        residual.copy_(X)
+        return X
+
+    monkeypatch.setattr(llama, "add_rms_layernorm_inference", add_norm)
     gates = []
 
     def attention(self, hidden_states, past_key_value, **kw):

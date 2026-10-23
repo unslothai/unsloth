@@ -24,6 +24,7 @@ from ..utils.attention_dispatch import (
     SDPA,
 )
 from .llama import (
+    _decode_rotary_seq_len,
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
     _gqa_decode_scores,
@@ -287,8 +288,14 @@ def FalconH1Attention_fast_forward_inference(
     Kn = Kn.transpose(1, 2)
 
     # Must happen 2 steps before hitting full on a short KV cache, or it errors.
-    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (once per step from the decode loop) covers explicit positions past the KV length.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    if rotary_seq_len is not None and rotary_seq_len > kv_seq_len:
+        self.rotary_emb.extend_rope_embedding(Vn, max(seq_len + 2, rotary_seq_len + 1))
+        cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index)
+    else:
+        self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
@@ -514,6 +521,12 @@ def _FalconH1_fast_forward_inference(
         else:
             attention_mask = None
 
+        # Once per step for every layer, never per layer (one host sync at most).
+        rotary_seq_len = _decode_rotary_seq_len(
+            getattr(getattr(self.model.layers[0], "self_attn", None), "rotary_emb", None),
+            seq_len + 1,
+            position_ids,
+        )
         next_decoder_cache = []
         block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
 
@@ -535,6 +548,7 @@ def _FalconH1_fast_forward_inference(
                 position_ids = position_ids,
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+                rotary_seq_len = rotary_seq_len,
             )
             attention_hidden_states = attention_hidden_states * decoder_layer.attn_out_multiplier
             mamba_hidden_states = decoder_layer.mamba(
