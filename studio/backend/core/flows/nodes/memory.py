@@ -412,7 +412,12 @@ def _plan_schema(places: list[str], chunks: int) -> dict:
 def clean_plan(raw: Any, places: list[str], chunks: int) -> list[dict]:
     """Keep well-formed entries in time order; a place outside the known list is dropped, not guessed."""
     plan = []
-    for entry in ((raw.get("plan") if isinstance(raw, dict) else None) or [])[:chunks]:
+    entries = raw.get("plan") if isinstance(raw, dict) else None
+    # Without structured output a local model may return one entry as a bare object.
+    entries = (
+        [entries] if isinstance(entries, dict) else entries if isinstance(entries, list) else []
+    )
+    for entry in entries[:chunks]:
         if not isinstance(entry, dict) or not str(entry.get("activity") or "").strip():
             continue
         start = str(entry.get("start") or "")

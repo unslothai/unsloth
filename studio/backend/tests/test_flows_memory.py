@@ -334,3 +334,9 @@ def test_reflect_takes_a_bare_question_and_a_single_insight_object():
     ]
     out = run(nodes.reflect(ctx))
     assert out["insights"] == ["The knee is hurt"]
+
+
+def test_a_plan_given_as_one_object_is_kept():
+    entry = {"start": "09:00", "minutes": 60, "activity": "Open the cafe", "place": ""}
+    assert len(nodes.clean_plan({"plan": entry}, [], 6)) == 1
+    assert nodes.clean_plan({"plan": "not a plan"}, [], 6) == []
