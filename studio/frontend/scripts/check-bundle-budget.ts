@@ -397,10 +397,10 @@ export const BUDGET = {
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
   // eager providers-api chunk, not new code. Raised by that.
-  // Merged with main at d436a92f2 the build measures 6,925,152 B raw / 2,086,022 B transfer (Node 24, 98 chunks).
+  // Merged with main at d436a92f2 the build measures 6,925,089 B raw / 2,085,994 B transfer (Node 24, 98 chunks).
   // Raised to that plus 500 B raw / 200 B transfer (CI builds measure about 100 B over local ones).
-  transferBytes: 2_086_222,
-  rawBytes: 6_925_652,
+  transferBytes: 2_086_194,
+  rawBytes: 6_925_589,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

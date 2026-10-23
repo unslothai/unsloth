@@ -100,8 +100,8 @@ test("the MCP tab is registered after Agents, lazy, owner-only and in the palett
   assert.equal(en.settings.tabs.mcp, "MCP");
 });
 
-test("the page names Unsloth Studio, keeps the access card and links to API keys", () => {
-  assert.equal(en.settings.mcp.title, "Unsloth Studio MCP");
+test("the page names Unsloth, keeps the access card and links to API keys", () => {
+  assert.equal(en.settings.mcp.title, "Unsloth MCP");
   assert.match(TAB, /data-settings-label=\{t\("settings\.mcp\.title"\)\}/);
   assert.match(TAB, /className="text-xl font-semibold font-heading"/);
   assert.ok(
@@ -192,9 +192,9 @@ test("no emerald and no unscaled lengths", () => {
   }
 });
 
-test("the English copy says Unsloth Studio, never Studio alone", () => {
+test("the English copy says Unsloth, never Studio", () => {
   for (const [key, value] of leaves(en.settings.mcp)) {
-    assert.doesNotMatch(value, /(?<!Unsloth )Studio/, key);
+    assert.doesNotMatch(value, /Studio/, key);
   }
 });
 

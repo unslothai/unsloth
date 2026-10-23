@@ -127,15 +127,15 @@ test("the setup snippet shows only while on, targets the usage examples' address
   );
   assert.equal(
     en.settings.apiKeys.mcp.exportKeyHint,
-    "Set {name} to an Unsloth Studio API key before you start the agent.",
+    "Set {name} to an Unsloth API key before you start the agent.",
   );
   assert.equal(
     en.settings.apiKeys.mcp.description,
-    "Let coding agents such as Claude Code and Codex use Unsloth Studio over MCP.",
+    "Let coding agents such as Claude Code and Codex use Unsloth over MCP.",
   );
   assert.equal(
     en.settings.apiKeys.mcp.enableDescription,
-    "Serves /mcp/ to requests that carry an Unsloth Studio API key.",
+    "Serves /mcp/ to requests that carry an Unsloth API key.",
   );
 });
 

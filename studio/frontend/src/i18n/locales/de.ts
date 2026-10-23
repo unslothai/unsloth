@@ -3142,22 +3142,22 @@ export const de = {
         "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
     },
     mcp: {
-      title: "Unsloth Studio MCP",
-      description: "Lass Coding-Agenten Unsloth Studio über MCP nutzen und wähle, welche Tools sie bekommen.",
+      title: "Unsloth MCP",
+      description: "Lass Coding-Agenten Unsloth über MCP nutzen und wähle, welche Tools sie bekommen.",
       keyHint: "Agenten melden sich mit einem Unsloth-Studio-API-Schlüssel an.",
       createKey: "API-Schlüssel erstellen",
       tools: {
         title: "Tools",
         description: "Agenten sehen ein deaktiviertes Tool nie, und Aufrufe dafür werden abgelehnt. Bereits verbundene Agenten sehen die Änderung, sobald sie sich neu verbinden.",
-        loadError: "Die Unsloth Studio MCP-Tools konnten nicht geladen werden.",
-        saveError: "Die Einstellung für das Unsloth Studio MCP-Tool konnte nicht gespeichert werden.",
+        loadError: "Die Unsloth MCP-Tools konnten nicht geladen werden.",
+        saveError: "Die Einstellung für das Unsloth MCP-Tool konnte nicht gespeichert werden.",
       },
       status: {
         on: "An",
         off: "Aus",
       },
       agentsRow: {
-        title: "Unsloth Studio MCP",
+        title: "Unsloth MCP",
         label: "Agentenzugriff",
         open: "MCP-Einstellungen öffnen",
       },
@@ -3327,7 +3327,7 @@ export const de = {
       },
       mcp: {
         title: "Agentenzugriff (MCP)",
-        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth Studio über MCP nutzen.",
+        description: "Lass Coding-Agenten wie Claude Code und Codex Unsloth über MCP nutzen.",
         enable: "Agentenverbindungen erlauben",
         enableDescription: "Stellt /mcp/ für Anfragen mit einem Unsloth-Studio-API-Schlüssel bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
