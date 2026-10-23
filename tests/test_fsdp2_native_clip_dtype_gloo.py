@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""native_clip_grad_norm_ follows torch.nn.utils.clip_grad_norm_ (what one GPU runs) in dtype and
-value, on a gloo CPU world of 2: Shard(0) DTensor gradients (uneven, one empty local shard) next to
-replicated plain ones, float32 / bfloat16 / float16 / mixed, norm types 0, 1, 2, inf, -inf, 3. The
-returned norm has torch's dtype, matches torch on the full gradients within the dtype's rounding,
-and the clipped gradients match too. A float16 sharded norm above 256 stays finite (a float16 sum
-of squares over ranks would overflow; one GPU's vector_norm does not)."""
+"""native_clip_grad_norm_ matches torch.nn.utils.clip_grad_norm_ in dtype and value on a 2-rank gloo
+world; a float16 sharded norm above 256 stays finite."""
 
 import multiprocessing
 import os
@@ -28,8 +24,7 @@ from test_fsdp2_native_units import _load_native  # noqa: E402
 from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 
 NORM_TYPES = (0.0, 1.0, 2.0, 3.0, math.inf, -math.inf)
-# dtype -> relative tolerance (fp32 ~ 1e-6 per op; 16-bit: the per-shard norm and the per-tensor
-# combine round once more than torch's single norm of the full tensor, a few ulp)
+# 16-bit: shard norm + combine round once more than torch's single norm
 CASES = {
     "float32": (torch.float32, 1e-5),
     "bfloat16": (torch.bfloat16, 2**-6),
@@ -169,7 +164,6 @@ def test_native_clip_follows_torch_dtype_and_value(results, case):
             if math.isfinite(v["want"]):
                 assert math.isclose(v["got"], v["want"], rel_tol = tol, abs_tol = 1e-6), (rank, k, v)
             assert v["grad_rel_diff"] <= 2 * tol, (rank, k, v)
-        # Both ranks return the same value.
     assert all(results[0][k] == results[1][k] for k in results[0] if k.startswith(case + "|"))
 
 

@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""native_clip_grad_norm_ batches the per-tensor norms (one foreach_norm, stack and all-gather per
-gradient dtype). On a gloo CPU world of 2, for norm types 0, 1, 2 and inf, the total norm and the
-clipped gradients equal the same computation done one tensor at a time (bitwise, or within one
-float32 rounding where a batched dim-0 vector_norm rounds a column differently), both with
-every local shard non-empty and with an empty local shard or mixed gradient dtypes."""
+"""Batched native_clip_grad_norm_ equals a one-tensor-at-a-time reference on a 2-rank gloo world
+(bitwise, or within one float32 rounding), incl. empty shards and mixed dtypes."""
 
 import multiprocessing
 import os
@@ -30,8 +27,7 @@ NORM_TYPES = (0.0, 1.0, 2.0, math.inf)
 
 
 class _Many(torch.nn.Module):
-    """Many small sharded Linears (the LoRA shape of the problem), optionally a 1-row one (empty
-    shard on rank 1) and a float16 one (a second gradient dtype)."""
+    """Many small sharded Linears, optionally a 1-row (empty shard) and a float16 one."""
 
     def __init__(
         self,
@@ -57,13 +53,10 @@ class _Many(torch.nn.Module):
 
 
 def _reference(native_dtensor, params, max_norm, p):
-    """The same computation one tensor at a time (torch.nn.utils.clip_grad_norm_ semantics): each
-    local norm in its gradient's dtype, a sharded tensor's norm = vector_norm over its ranks' local
-    norms (all-gathered in that dtype), total = vector_norm(stack(per-tensor norms)) in the promoted
-    dtype, coefficient in that dtype too."""
+    """The same computation one tensor at a time."""
     import torch.distributed as dist
 
-    norms = {}  # (sharded, dtype) -> norms; the summation order: plain then sharded, by dtype
+    norms = {}  # (sharded, dtype) -> norms; order: plain then sharded
     for q in params:
         g = q.grad
         sharded = isinstance(g, native_dtensor)
