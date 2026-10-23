@@ -349,6 +349,43 @@ def test_status_reports_busy_and_a_second_client_is_refused_at_once(make_link):
     assert status["reachable"] is False and status["type"] == "error"
 
 
+@pytest.mark.parametrize("mode", ["async", "threaded"])
+def test_the_relay_refuses_a_second_client_without_dialing_the_worker(make_link, monkeypatch, mode):
+    monkeypatch.setenv(_THREADED_ENV, str(int(mode == "threaded")))
+    link = make_link()
+    relay = link.relay._relays["w1"]
+    early = link.connect()  # admitted while idle, sends its first byte only once a session is live
+    assert _wait(lambda: len(relay.raw if mode == "threaded" else relay.conns) == 1)
+    first = link.ping(b"live")
+    dialed = link.agent.stats["connections"]
+    silent = link.connect()
+    assert _closed(silent, 3.0)  # refused at the door, not after the first-byte timeout
+    early.sendall(b"x")
+    assert _closed(early)  # refused at the claim
+    assert not link.relay._claim(relay)
+    assert link.agent.stats["connections"] == dialed and link.target.connections == 1
+    for sock in (first, silent, early):
+        sock.close()
+
+
+@pytest.mark.parametrize("mode", ["async", "threaded"])
+def test_the_agent_refuses_a_second_relay_session_while_one_is_live(make_link, monkeypatch, mode):
+    monkeypatch.setenv(_THREADED_ENV, str(int(mode == "threaded")))
+    link = make_link()
+    first = link.ping(b"live")
+    other = RelayManager(link.master, lambda pid: True)  # a second relay to the same worker
+    try:
+        host, port = other.ensure("w1", "127.0.0.1", link.agent.port).rsplit(":", 1)
+        second = socket.create_connection((host, int(port)), timeout = 10)
+        second.sendall(b"x")
+        assert _closed(second)
+        assert link.target.connections == 1 and link.target.open == 1
+        second.close()
+    finally:
+        other.stop()
+    first.close()
+
+
 def test_back_to_back_sessions_are_not_refused_as_busy(make_link):
     # The busy slot frees when the splice ends, so an immediate reconnect is served, not refused.
     link = make_link()

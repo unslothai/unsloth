@@ -111,7 +111,9 @@ def fakes(monkeypatch):
     class Listener:
         error = None
         start, stop = (lambda self: self), (lambda self: None)
-        __init__ = lambda self, accept = None: setattr(self, "accept", accept)
+        __init__ = lambda self, accept = None: setattr(self, "accept", accept) or setattr(
+            state, "accept", accept
+        )
         latest = lambda self: {n: v[0] for n, v in state.sightings.items() if v}
 
         def candidates(self, node_id):
@@ -363,6 +365,13 @@ LIST_CASES = {
     ),
     "names-cannot-write-control-sequences": (dict(name = "evil\x1b]52;c;QUJD\x07"), ["evil?]52;c;QUJD?"], ["\x1b", "\x07"], []),
 }  # fmt: skip
+
+
+def test_list_discovery_takes_a_paired_node_id_only_under_its_paired_fingerprint(fakes):
+    fakes.peers, fakes.errors = [worker_peer()], {HOME: "refused"}
+    assert invoke("cluster", "list").exit_code == 0
+    assert fakes.accept("node-aaaa1111", FP)
+    assert not fakes.accept("node-aaaa1111", SPOOF.fp) and not fakes.accept("node-other", FP)
 
 
 @pytest.mark.parametrize("case", LIST_CASES, ids = str)

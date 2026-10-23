@@ -250,6 +250,22 @@ async def test_one_token_pairs_exactly_one_worker(master_dir, tmp_path, concurre
     assert len(_workers()) == 1
 
 
+@_async
+async def test_a_spent_invitation_refuses_a_replayed_hello_before_any_challenge(
+    master_dir, tmp_path
+):
+    _, window, token = await _open()
+    assert (await _join(tmp_path / "w", token))["ok"]
+    await window.wait(5)
+    hello = dict(type = "pair_hello", v = pairing.PROTOCOL_VERSION, invite_id = window.invite_id)
+    reader = asyncio.StreamReader()
+    reader.feed_data(framing.encode(dict(hello, worker_nonce = "", name = "replay", csr_pem = "")))
+    reader.feed_eof()
+    with pytest.raises(pairing.PairingError, match = "window closed"):
+        await window._pair(reader, None)  # a connection accepted before the window closed
+    assert window._attempts == 1
+
+
 @pytest.mark.skipif(sys.version_info < (3, 10), reason = "the vendored truststore needs Python 3.10+")
 @pytest.mark.parametrize("side", ["worker", "master"])
 @_async
