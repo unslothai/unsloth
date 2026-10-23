@@ -494,6 +494,53 @@ def test_cfg_off_edit_request_reads_its_cfg_off_workflow_key(qwen_pipe):
     assert dm.measured_request_extra_mib(qwen_pipe, **kw, cfg = True) == 0
 
 
+def _seeded_edit_pipe(pipe):
+    """A phase-seeded load that reserved 7168 MiB from a 6051 MiB learned whole-render peak."""
+    pipe._unsloth_peak_expects_cfg = True
+    pipe._unsloth_peak_identity = (KEY["family"], KEY["quant"], "default")
+    pipe._unsloth_measured_reserve = (
+        7168,
+        "qwen-image-2.1",
+        "default",
+        None,
+        None,
+        6051,
+        1024 * 1024,
+        False,
+        True,
+        False,
+    )
+    return pipe
+
+
+def test_edit_workflow_peak_does_not_charge_the_condition_images_twice(qwen_pipe):
+    pipe = _seeded_edit_pipe(qwen_pipe)
+    kw = dict(
+        width = 1024,
+        height = 1024,
+        batch_size = 1,
+        cfg = False,
+        workflow = "edit",
+        condition_pixels = int(1024 * 1024 * 0.32),
+    )
+    # 7168 seed reserve + 3014 condition allowance - 7168 headroom: what main charges, store or no store
+    assert dm.measured_request_extra_mib(pipe, **kw) == 3014
+    # a learned edit peak (7800 x 1.15 -> 9216) already holds the condition images; it is an alternative to the seed
+    # estimate plus allowance (10182), not a base the allowance is added on top of (that gave 5062)
+    _record(7800, quant = KEY["quant"] + "|cfg:off|wf:edit")
+    assert dm.measured_request_extra_mib(pipe, **kw) == 3014
+
+
+def test_edit_workflow_peak_above_seed_plus_allowance_is_followed(qwen_pipe):
+    pipe = _seeded_edit_pipe(qwen_pipe)
+    kw = dict(width = 1024, height = 1024, batch_size = 1, cfg = False, workflow = "edit")
+    cond = int(1024 * 1024 * 0.32)
+    # 12000 x 1.15 rounded to 256 = 13824, past 7168 + 3014
+    _record(12000, quant = KEY["quant"] + "|cfg:off|wf:edit")
+    assert dm.measured_request_extra_mib(pipe, **kw, condition_pixels = cond) == 13824 - 7168
+    assert dm.measured_request_extra_mib(pipe, **kw, condition_pixels = 0) == 13824 - 7168
+
+
 def test_decode_headroom_does_not_credit_cuda_graph_pool_cache(monkeypatch):
     # a graph pool's free blocks sit inside reserved - allocated yet an ordinary VAE allocation cannot reuse them
     import core.inference.diffusion_cuda_graph as cg

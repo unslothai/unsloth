@@ -4534,6 +4534,13 @@ def measured_request_extra_mib(
                 need = max(need, stored)
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
+    cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
+    allowance = int(
+        8192 * cond / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT) * _MEASURED_PEAK_MARGIN
+    )
+    if need is not None:
+        # the seed / base estimate plus the condition-image allowance is one complete estimate
+        need += allowance
     if isinstance(identity, tuple) and len(identity) == 3:
         keyed = with_workflow(identity[1], workflow)
         if keyed != identity[1]:
@@ -4549,13 +4556,11 @@ def measured_request_extra_mib(
             if own is None:
                 own = measured_image_runtime_mib(family, speed_mode, quant = keyed, **sized)
             if own is not None:
+                # the learned workflow peak is the other complete estimate: it was measured with the condition images
+                # resident, so the allowance is not charged on top of it
                 need = own if need is None else max(need, own)
     if need is None:
         return 0
-    cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
-    need += int(
-        8192 * cond / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT) * _MEASURED_PEAK_MARGIN
-    )
     return max(0, int(need) - int(headroom))
 
 
