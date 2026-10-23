@@ -1151,9 +1151,7 @@ def install_environment() -> dict[str, str]:
     # retain an explicit interpreter store outside the image-owned app tree.
     app = os.environ.get("UNSLOTH_STUDIO_APP")
     python_home = env.get("UV_PYTHON_INSTALL_DIR")
-    if app and (
-        not python_home or Path(python_home).resolve().is_relative_to(Path(app).resolve())
-    ):
+    if app and (not python_home or Path(python_home).resolve().is_relative_to(Path(app).resolve())):
         env["UV_PYTHON_INSTALL_DIR"] = str(engine_root() / "python")
 
     recorded_cache = None
