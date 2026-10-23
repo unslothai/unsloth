@@ -2093,10 +2093,6 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
-  const anyChatWaiting = useMemo(
-    () => [...approvalWaitingThreadIds].some((id) => runningByThreadId[id]),
-    [approvalWaitingThreadIds, runningByThreadId],
-  );
   // Where "Return to Chat" lands: the newest running chat, not an empty New Chat draft (map
   // insertion order is start order). Compare rows resolve back to the pair id /chat expects.
   const runningTarget = useMemo(() => {
@@ -2118,6 +2114,17 @@ export function AppSidebar() {
       storeThreadId ??
       undefined
     : undefined;
+  // Chats parked on Allow / Deny, less the open one: its card is on screen, so it needs no mark.
+  const approvalWaitingElsewhere = useMemo(() => {
+    if (!activeThreadId) return approvalWaitingThreadIds;
+    const open = allChatItems.find((item) => item.id === activeThreadId);
+    const openIds = new Set(open ? getSidebarItemThreadIds(open) : [activeThreadId]);
+    return new Set([...approvalWaitingThreadIds].filter((id) => !openIds.has(id)));
+  }, [approvalWaitingThreadIds, activeThreadId, allChatItems]);
+  const anyChatWaiting = useMemo(
+    () => [...approvalWaitingElsewhere].some((id) => runningByThreadId[id]),
+    [approvalWaitingElsewhere, runningByThreadId],
+  );
   // A chat started from a section's header joins it when its first send gives it an id, which
   // lands in the store while the address still names the new chat. Leaving that chat first lets
   // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
@@ -5481,10 +5488,10 @@ export function AppSidebar() {
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
     // Parked on an Allow / Deny prompt: still a live run, so it keeps the spinner's slot, but the
-    // run is waiting on the user rather than working.
+    // run is waiting on the user rather than working. The open chat keeps its spinner.
     const awaitingApproval =
       isGenerating &&
-      threadIds.some((threadId) => approvalWaitingThreadIds.has(threadId));
+      threadIds.some((threadId) => approvalWaitingElsewhere.has(threadId));
     const alreadyUnread = threadIds.some((threadId) =>
       unreadThreadIds.has(threadId),
     );

@@ -197,7 +197,7 @@ test("the sidebar watches once and swaps the row spinner for the approval mark",
   );
   assert.match(
     sidebar,
-    /const awaitingApproval =\s*isGenerating &&\s*threadIds\.some\(\(threadId\) => approvalWaitingThreadIds\.has\(threadId\)\);/,
+    /const awaitingApproval =\s*isGenerating &&\s*threadIds\.some\(\(threadId\) => approvalWaitingElsewhere\.has\(threadId\)\);/,
   );
   // Inside the spinner's own anchor, so it takes the same column, padding and hover fade.
   const anchor = sidebar.indexOf("{showWorkSpinner ? (");
@@ -245,7 +245,7 @@ test("the New Chat item shows the mark instead of its spinner while a chat waits
   // Only chats still running count, as for the rows.
   assert.match(
     sidebar,
-    /const anyChatWaiting = useMemo\(\s*\(\) => \[\.\.\.approvalWaitingThreadIds\]\.some\(\(id\) => runningByThreadId\[id\]\),/,
+    /const anyChatWaiting = useMemo\(\s*\(\) => \[\.\.\.approvalWaitingElsewhere\]\.some\(\(id\) => runningByThreadId\[id\]\),/,
   );
   // Off the chat route, and on it when the collapsed rail hides the Recents rows.
   assert.match(
@@ -265,4 +265,22 @@ test("the New Chat item shows the mark instead of its spinner while a chat waits
     navItem,
     /\{waiting \? \(\s*<ApprovalMark\s+testId="nav-approval"\s+className="pointer-events-none absolute right-1 top-1 hidden size-2\.5 group-data-\[collapsible=icon\]:block"\s+\/>\s*\) : \(\s*spinner && \(\s*<Spinner className="pointer-events-none absolute right-1 top-1/,
   );
+});
+
+test("the open chat is left out of the waiting marks: its card is on screen", () => {
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const owner =
+    /const approvalWaitingElsewhere = useMemo\(\(\) => \{[\s\S]*?\n  \}, \[[^\]]*\]\);/.exec(sidebar)?.[0] ?? "";
+  assert.ok(owner, "approvalWaitingElsewhere not found");
+  // Only the chat route has an open chat; elsewhere every waiting chat is marked.
+  assert.match(owner, /if \(!activeThreadId\) return approvalWaitingThreadIds;/);
+  // A compare chat is open as its pair id while its panes wait under their own ids.
+  assert.match(owner, /const open = allChatItems\.find\(\(item\) => item\.id === activeThreadId\);/);
+  assert.match(owner, /new Set\(open \? getSidebarItemThreadIds\(open\) : \[activeThreadId\]\)/);
+  assert.match(owner, /\.filter\(\(id\) => !openIds\.has\(id\)\)/);
+  assert.match(owner, /\[approvalWaitingThreadIds, activeThreadId, allChatItems\]/);
+  // Defined after the open chat is known, and the only reader of the raw store besides it.
+  assert.ok(sidebar.indexOf("const activeThreadId = isChatRoute") < sidebar.indexOf("const approvalWaitingElsewhere"));
+  const readers = sidebar.match(/approvalWaitingThreadIds/g) ?? [];
+  assert.equal(readers.length, 4, "a reader skips the open-chat exclusion");
 });
