@@ -424,3 +424,120 @@ def test_progress_is_coalesced(monkeypatch):
     assert [e["data"]["fraction"] for e in rs.events] == [0.0]
     rs.flush()
     assert [e["data"]["fraction"] for e in rs.events] == [0.0, 0.2]
+
+
+@run_async
+async def test_a_timed_out_run_stops_its_node_tasks_and_fires_hooks(monkeypatch):
+    hooked, stopped = [], asyncio.Event()
+
+    async def stuck(ctx):
+        async def hook():
+            hooked.append(ctx.node_id)
+
+        ctx.on_cancel(hook)
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            stopped.set()
+            raise
+        return {"text": "late"}
+
+    monkeypatch.setattr(engine_mod, "MAX_RUN_SECONDS", 0.5)
+    eng = _engine({**BASE, "llm.generate": stuck})
+    d = doc(
+        [node("a", "input.text", value = "p"), node("g", "llm.generate")],
+        [edge("a", "text", "g", "prompt")],
+    )
+    rs = await _run(eng, d)
+    assert rs.status == "failed" and "time limit" in rs.error
+    assert hooked == ["g"]
+    assert stopped.is_set()
+    assert _status(rs, "g") == "cancelled"
+
+
+@run_async
+async def test_stop_reaches_every_parallel_iteration_still_running():
+    hooked, first_done, second_up = [], asyncio.Event(), asyncio.Event()
+
+    async def job(ctx):
+        item = ctx.inputs["values"][0]
+
+        async def hook():
+            hooked.append(item)
+
+        ctx.on_cancel(hook)
+        if item == "a":
+            await asyncio.wait_for(second_up.wait(), 10)
+            first_done.set()
+            return {"text": item}
+        second_up.set()
+        while not ctx.cancelled:
+            await asyncio.sleep(0.02)
+        ctx.check_cancelled()
+
+    eng = _engine(
+        {**BASE, "input.list": lambda ctx: _ret({"items": ["a", "b"]}), "text.template": job}
+    )
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each", parallel = True),
+            node("t", "text.template", group = "fe"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("t", "text", "fe", "collect"),
+        ],
+    )
+    parsed, errors = parse_document(d)
+    assert not errors, errors
+    rs = await eng.start_run(app = None, flow_id = d["id"], doc = parsed, options = {})
+    await asyncio.wait_for(first_done.wait(), 10)
+    await asyncio.sleep(0.05)
+    await eng.cancel(rs.id)
+    await asyncio.wait_for(rs.task, 20)
+    # The finished iteration's hook went with it; the running one still stopped its job.
+    assert hooked == ["b"]
+
+
+def test_an_imported_media_cover_shows_in_the_flow_list():
+    cover = {"kind": "image", "url": "/api/flows/assets/abc.png", "ref": "sha256:abc"}
+    flows_db.save_flow(
+        {**doc([node("a", "input.text")]), "id": "covered", "meta": {"cover": cover}}
+    )
+    summary = next(f for f in flows_db.list_flows() if f["id"] == "covered")
+    assert summary["cover"] == "/api/flows/assets/abc.png"
+
+
+@run_async
+async def test_forcing_a_for_each_reruns_its_body():
+    calls = []
+
+    async def counted(ctx):
+        calls.append(ctx.inputs["values"][0])
+        return {"text": str(ctx.inputs["values"][0]).upper()}
+
+    eng = _engine(
+        {**BASE, "input.list": lambda ctx: _ret({"items": ["a", "b"]}), "text.template": counted}
+    )
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each"),
+            node("t", "text.template", group = "fe"),
+            node("o", "output.result", name = "all"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("t", "text", "fe", "collect"),
+            edge("fe", "results", "o", "value"),
+        ],
+    )
+    await _run(eng, d)
+    await _run(eng, d)
+    assert calls == ["a", "b"]
+    rs = await _run(eng, d, force_nodes = ["fe"])
+    assert rs.status == "completed", rs.error
+    assert calls == ["a", "b", "a", "b"]

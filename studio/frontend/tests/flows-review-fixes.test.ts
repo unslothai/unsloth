@@ -111,3 +111,14 @@ test("a run snapshot's progress object becomes a fraction", async () => {
   assert.equal(progressFraction(null), null);
   assert.equal(progressFraction(0.5), 0.5);
 });
+
+test("a node added inside a frame joins it", () => {
+  const d = doc([{ ...node("fe", "logic.for_each"), group: "g1" }]);
+  d.groups = [{ id: "g1", label: "Loop", rect: [0, 0, 600, 300] }];
+  useDocStore.getState().load(d);
+  useDocStore.getState().addNode(node("inside", "text.template", [100, 100]));
+  useDocStore.getState().addNode(node("outside", "text.template", [900, 100]));
+  const nodes = useDocStore.getState().graph.nodes;
+  assert.equal(nodes.inside.group, "g1");
+  assert.equal(nodes.outside.group ?? null, null);
+});

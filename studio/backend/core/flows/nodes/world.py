@@ -9,6 +9,7 @@ import copy
 from typing import Any
 
 from core.flows.expr import seed_from
+from core.flows.nodes._common import JsonFieldStream
 from core.flows.registry import FlowNodeError, NodeContext, handler
 from core.flows.story import slug
 from core.flows.world import (
@@ -205,6 +206,14 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         system, prompt = npc_prompt(state, str(ctx.params.get("rules") or ""))
     except WorldError as exc:
         raise FlowNodeError(str(exc)) from exc
+    # The reply's text is streamed to the player as it is written; items and quests follow with the full answer.
+    spoken = JsonFieldStream("text")
+
+    def on_text(so_far: str) -> None:
+        piece = spoken.feed(so_far)
+        if piece:
+            ctx.text_delta("reply", piece)
+
     raw = await ctx.llm_json(
         model = ctx.params.get("model"),
         system = system,
@@ -213,6 +222,7 @@ async def world_npc_reply(ctx: NodeContext) -> dict:
         temperature = 0.8,
         max_tokens = int(ctx.params.get("max_tokens") or 200) + 120,
         seed = seed_from(ctx.seed, state.get("npc_id"), len(state.get("history") or [])),
+        on_text = on_text,
     )
     return {"reply": validate_npc_reply(raw, state)}
 

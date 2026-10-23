@@ -2443,6 +2443,11 @@ async def start_training(
         # Free VRAM for training: stop export, unload chat unless it can coexist.
         # A before_spawn hook, so it runs only after start_training's guards pass and never for a refused start.
         def _free_vram_for_training() -> None:
+            from core.inference import gpu_arbiter
+
+            # The guard at the top of start_training ran before the awaited preflights; a lease taken since then
+            # must still stop the teardown.
+            gpu_arbiter.raise_if_leased()
             try:
                 from core.export import get_export_backend
                 exp_backend = get_export_backend()
@@ -2534,7 +2539,7 @@ async def start_training(
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
-        from core.inference.gpu_arbiter import SegmenterStillRunningError
+        from core.inference.gpu_arbiter import GpuLeaseHeldError, SegmenterStillRunningError
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
@@ -2552,6 +2557,7 @@ async def start_training(
                 ExactResumeResourcesUnavailable,
                 ManagedEngineStillRunning,
                 SegmenterStillRunningError,
+                GpuLeaseHeldError,
             ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
@@ -2609,6 +2615,8 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
+        except GpuLeaseHeldError as exc:
+            raise exc.as_http_exception()
         except (
             ExactResumeResourcesUnavailable,
             ManagedEngineStillRunning,
@@ -3498,7 +3506,11 @@ def _free_gpu_for_diffusion_training() -> None:
     """Free GPU residents before the diffusion trainer spawns its own SDXL pipeline. The trainer
     subprocess loads a full SDXL pipeline; an export worker, a resident Images pipeline or loaded
     chat models would keep their VRAM and OOM the run. Mirrors the LLM start path's pre-spawn
-    cleanup. Best-effort: failing to free one resident never blocks the start."""
+    cleanup. Best-effort: failing to free one resident never blocks the start, but a GPU lease taken after the
+    route's first check does (a RuntimeError, so the route answers 409)."""
+    from core.inference import gpu_arbiter
+
+    gpu_arbiter.raise_if_leased()
     try:
         from core.export import get_export_backend
         exp_backend = get_export_backend()
