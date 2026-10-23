@@ -6392,7 +6392,12 @@ export function AppSidebar() {
                             active={row.active}
                             disabled={rowState.disabled}
                             dimmed={row.dimmed}
-                            tooltip={rowState.tooltip}
+                            // A menu item holds no button, but selecting it runs the same action.
+                            tooltip={
+                              row.tooltipAction && !rowState.pending
+                                ? `${rowState.tooltip} Click to install it.`
+                                : rowState.tooltip
+                            }
                             spinner={rowState.spinner}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}

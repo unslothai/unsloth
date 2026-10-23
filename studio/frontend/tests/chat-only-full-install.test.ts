@@ -120,6 +120,8 @@ test("the Train hint and the Export banner both carry an Install Training button
   // The inline row renders it, and a still-spinning row never offers it.
   assert.match(sidebar, /tooltipAction=\{rowState\.pending \? undefined : row\.tooltipAction\}/);
   assert.match(sidebar, /<Button size="xs" onClick=\{tooltipAction\.onClick\}>/);
+  // The More flyout renders no button, so its title keeps the click guidance.
+  assert.match(sidebar, /row\.tooltipAction && !rowState\.pending\s*\? `\$\{rowState\.tooltip\} Click to install it\.`/);
   // The nav provider disables hoverable tooltips; a tooltip with a button must opt back in.
   assert.match(sidebar, /interactiveTooltip=\{Boolean\(tooltip && tooltipAction\)\}/);
 
