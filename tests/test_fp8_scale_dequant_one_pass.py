@@ -192,7 +192,9 @@ def test_compiled_dequant_reads_no_device_capability(F, monkeypatch):
         raise AssertionError("device capability queried while tracing")
 
     monkeypatch.setattr(F, "_fp8_device_lacks_kernel", no_query)
-    monkeypatch.setattr(F, "_FP8_DEVICE_LACKS_KERNEL", (True,) * torch.cuda.device_count(), raising = False)
+    monkeypatch.setattr(
+        F, "_FP8_DEVICE_LACKS_KERNEL", (True,) * torch.cuda.device_count(), raising = False
+    )
     q, s = _weight(64, 128)
     out, ops = _compiled_graph_ops(lambda x, y: F.weight_dequant(x, y, torch.float16), q, s)
     assert any("fp8_scale_dequant" in op for op in ops), ops
