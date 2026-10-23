@@ -977,6 +977,7 @@ export const it = {
     },
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
+      intro: "Per cambiare una scorciatoia, seleziona la combinazione di tasti e poi digita i nuovi tasti",
       searchPlaceholder: "Cerca scorciatoie…",
       keystrokePlaceholder: "Premi una scorciatoia per cercare",
       searchByKeystrokes: "Cerca per combinazione",
@@ -984,22 +985,23 @@ export const it = {
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
-      recordingHint: "Premi la nuova combinazione, o Esc per annullare.",
       needsModifier: "Aggiungi ⌘, Ctrl o Alt. Un tasto singolo intercetterebbe la digitazione.",
       conflict: "Usata anche da un'altra scorciatoia",
       conflictShadowed: "Un'altra scorciatoia usa questa combinazione e viene eseguita al suo posto",
       edit: "Cambia scorciatoia",
-      clear: "Rimuovi scorciatoia",
       reset: "Ripristina il valore predefinito",
       resetAll: "Ripristina tutto",
-      primarySlot: "Scorciatoia",
-      alternateSlot: "Scorciatoia alternativa",
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       metaUnsupported: "Il tasto Windows non può essere usato nelle scorciatoie.",
       altGraphUnsupported: "Le combinazioni con AltGr non possono essere usate come scorciatoie.",
       desktopOnly: "Solo nell'app desktop",
-      builtInKey: "Integrato: {key}",
+      groups: {
+        composer: "Editor messaggi",
+        chat: "Chat",
+        navigation: "Navigazione",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Trova nella pagina",
@@ -1189,6 +1191,10 @@ export const it = {
           label: "Allega foto e file",
           description: "Aggiungi un allegato all’editor",
         },
+        openComposerMenu: {
+          label: "Apri menu +",
+          description: "Apri il menu + dell'editor con strumenti e allegati",
+        },
         sendMessage: {
           label: "Invia messaggio",
           description: "Invia il contenuto dell’editor",
@@ -1216,10 +1222,6 @@ export const it = {
         decreaseReasoningEffort: {
           label: "Riduci lo sforzo di ragionamento",
           description: "Abbassa di un livello lo sforzo di ragionamento",
-        },
-        toggleFastMode: {
-          label: "Attiva/disattiva la modalità Fast",
-          description: "Attiva o disattiva la modalità Fast",
         },
         renameChat: {
           label: "Rinomina chat",

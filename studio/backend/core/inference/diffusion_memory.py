@@ -21,6 +21,7 @@ import contextvars
 import functools
 import os
 import sys
+import threading
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 from .rocm_bf16 import is_rocm_torch
@@ -137,7 +138,8 @@ def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
         def _enable(*args: Any, **kwargs: Any) -> Any:
             # The re-enable after every call starts with pipe.to("cpu"), which would copy back the module run last.
             _offload_through_kept_hooks(pipe, CpuOffload, logger)
-            out = enable(*args, **kwargs)
+            with _keep_device_cache(pipe):
+                out = enable(*args, **kwargs)
             _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
             return out
 
@@ -305,8 +307,10 @@ def _pin_host_weights(
     host: dict,
     logger: Any = None,
     buffer_host: Optional[dict] = None,
+    layout: Optional[list] = None,
 ) -> int:
-    """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Each copy keeps its source strides."""
+    """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Each copy keeps its source strides.
+    ``layout`` (if given) receives ``(chunk, [(name, start, view), ...])`` per chunk for ``_upload_pinned_chunks``."""
     import torch
 
     mode = _pin_mode()
@@ -381,7 +385,7 @@ def _pin_host_weights(
                 else view.as_strided(src.shape, src.stride())
             )
             view.copy_(src)
-            placed.append((name, p, attr, view))
+            placed.append((name, p, attr, view, index, start))
     except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
         bufs.clear()
         placed.clear()
@@ -394,8 +398,11 @@ def _pin_host_weights(
                 exc,
             )
         return 0
+    members: list = [[] for _ in bufs]
     wrapped: dict = {}
-    for name, p, attr, view in placed:
+    for name, p, attr, view, index, start in placed:
+        # A torchao wrapper weight gets one entry per inner tensor, under the weight's name.
+        members[index].append((name, start, view))
         if name.startswith("\0"):
             name = name[1:]
             _set_buffer(module, name, view)
@@ -409,7 +416,211 @@ def _pin_host_weights(
         host[name] = view
     for name, p in wrapped.items():
         host[name] = p.data  # the kept host weight now reads the pinned inner tensors
+    if layout is not None:
+        layout[:] = [(buf, entries) for buf, entries in zip(bufs, members) if entries]
     return need
+
+
+OFFLOAD_FAST_UPLOAD_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_FAST_UPLOAD"
+
+
+def _on_device(module: Any) -> bool:
+    first = next(iter(module.parameters()), None)
+    return first is not None and first.device.type != "cpu"
+
+
+@contextlib.contextmanager
+def _keep_device_cache(pipe: Any):
+    """Skip the empty_cache inside diffusers' enable_model_cpu_offload (re-run after every call) once the
+    components onload through pinned chunks: the chunks freed by the last offload are reused by the next onload,
+    while an emptied cache makes every onload cudaMalloc again and every offload cudaFree."""
+    module = sys.modules.get("diffusers.pipelines.pipeline_utils")
+    original = getattr(module, "empty_device_cache", None) if module is not None else None
+    components = getattr(pipe, "components", None) or {}
+    engaged = _fast_upload_enabled() and any(
+        bool((getattr(m, "__dict__", {}).get(_KEEP_ATTR) or {}).get("pin_layout"))
+        for m in components.values()
+    )
+    if not engaged or not callable(original):
+        yield
+        return
+    # Process-global patch: overlapping enables share one count, and the last one out restores the real function.
+    with _cache_patch_lock:
+        if not _cache_patch:
+            _cache_patch.update(module = module, original = original, depth = 0)
+            module.empty_device_cache = _skip_empty_device_cache
+        _cache_patch["depth"] += 1
+    try:
+        yield
+    finally:
+        with _cache_patch_lock:
+            _cache_patch["depth"] -= 1
+            if _cache_patch["depth"] <= 0:
+                if _cache_patch["module"].empty_device_cache is _skip_empty_device_cache:
+                    _cache_patch["module"].empty_device_cache = _cache_patch["original"]
+                _cache_patch.clear()
+
+
+_cache_patch_lock = threading.Lock()
+_cache_patch: dict = {}
+
+
+def _skip_empty_device_cache(*args: Any, **kwargs: Any) -> None:
+    return None
+
+
+def _fast_upload_enabled() -> bool:
+    return (os.environ.get(OFFLOAD_FAST_UPLOAD_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _same_view(tensor: Any, view: Any) -> bool:
+    return (
+        tensor.device.type == "cpu"
+        and tensor.data_ptr() == view.data_ptr()
+        and tensor.dtype == view.dtype
+        and tensor.shape == view.shape
+        and tensor.stride() == view.stride()
+    )
+
+
+def _upload_pinned_chunks(
+    module: Any, layout: list, host: dict, owner: dict, buffer_host: dict, device: Any
+) -> int:
+    """Onload a module's pinned weights chunk by chunk: one device allocation and one non_blocking copy per pinned
+    chunk, then every weight is re-pointed at its slice. The stock ``module.to`` allocates every tensor on its own,
+    and with the device cache emptied between components each of those was a cudaMalloc (and a cudaFree on the way
+    out): under host load that ran at 57-120 MiB/s against a 50 GiB/s link. Chunks are near-uniform, so the next
+    component reuses the previous one's cached chunks. Same bytes, same strides, so outputs are bit-identical.
+    Weights no longer at their pinned host view (replaced, reassigned) are left for the stock copy. A torchao
+    wrapper weight (int8 / fp8) is rebuilt over its inner tensors' device slices with ``__tensor_unflatten__`` and
+    swapped in, as the stock ``_to_copy`` + ``Module.to`` do. Returns bytes."""
+    import torch
+
+    params = dict(module.named_parameters())
+    buffers = dict(_named_buffers(module))
+    copied = 0
+    moved: list = []
+    wrapped: dict = {}
+    for name, p in params.items():
+        kept = host.get(name)
+        inner = _wrapper_inner(kept) if kept is not None else None
+        if (
+            inner is None
+            or owner.get(name) is not p
+            or p.device.type != "cpu"
+            or type(p) is not type(kept)
+            or _tensor_ptr(p.data) != _tensor_ptr(kept)
+        ):
+            continue
+        wrapped[name] = dict(inner)
+    # (name, inner attr) -> device slice once uploaded
+    inner_dev: dict = {}
+
+    def _inner_attr(name: str, view: Any) -> Optional[str]:
+        for attr, t in (wrapped.get(name) or {}).items():
+            if _same_view(t, view):
+                return attr
+        return None
+
+    for _buf, entries in layout:
+        for name, _start, view in entries:
+            attr = _inner_attr(name, view)
+            if attr is not None:
+                inner_dev[(name, attr)] = None
+    # Only a wrapper with every inner tensor in the layout is rebuilt; the rest stay for the stock module.to.
+    whole = {
+        name for name, inner in wrapped.items() if all((name, attr) in inner_dev for attr in inner)
+    }
+    try:
+        for buf, entries in layout:
+            live = []
+            for name, start, view in entries:
+                # By address, not identity: ``p.data`` and the re-captured host map hand out fresh tensor objects.
+                if name.startswith("\0"):
+                    leaf = name[1:]
+                    b = buffers.get(leaf)
+                    if b is not None and buffer_host.get(leaf) is b and _same_view(b, view):
+                        live.append((name, start, view))
+                    continue
+                if name in wrapped:
+                    if name in whole and _inner_attr(name, view) is not None:
+                        live.append((name, start, view))
+                    continue
+                p = params.get(name)
+                kept = host.get(name)
+                if (
+                    p is not None
+                    and owner.get(name) is p
+                    and kept is not None
+                    and _wrapper_inner(kept) is None
+                    and _same_view(kept, view)
+                    and _same_view(p.data, view)
+                ):
+                    live.append((name, start, view))
+            if not live:
+                continue
+            # Pack live weights so skipped ones leave no allocated holes.
+            used, slots = 0, []
+            for name, start, view in sorted(live, key = lambda e: e[1]):
+                used = -(-used // _PIN_ALIGN) * _PIN_ALIGN
+                slots.append((name, start, view, used))
+                used += view.nbytes
+            dense = all(start == at for _, start, _, at in slots)
+            # Same stream as the forward that follows, so no sync: kernels queue behind the copy.
+            dev_buf = torch.empty(used, dtype = torch.uint8, device = device)
+            if not torch._has_compatible_shallow_copy_type(buf, dev_buf):
+                # e.g. meta: the stock move hands back new Parameters there instead of re-pointing them.
+                raise TypeError("device tensors cannot back host parameters")
+            if dense:
+                dev_buf.copy_(buf[:used], non_blocking = True)
+            else:
+                for _, start, view, at in slots:
+                    dev_buf[at : at + view.nbytes].copy_(
+                        buf[start : start + view.nbytes], non_blocking = True
+                    )
+            copied += used
+            for name, _, view, at in slots:
+                dev = dev_buf[at : at + view.nbytes].view(view.dtype)
+                dev = (
+                    dev.view(view.shape)
+                    if view.is_contiguous()
+                    else dev.as_strided(view.shape, view.stride())
+                )
+                if name.startswith("\0"):
+                    _set_buffer(module, name[1:], dev)
+                elif name in wrapped:
+                    inner_dev[(name, _inner_attr(name, view))] = dev
+                    continue
+                else:
+                    params[name].data = dev
+                moved.append((name, view))
+        for name in sorted(whole):
+            p, kept = params[name], host[name]
+            names, ctx = kept.__tensor_flatten__()
+            rebuilt = type(kept).__tensor_unflatten__(
+                {attr: inner_dev[(name, attr)] for attr in names}, ctx, kept.shape, kept.stride()
+            )
+            torch.utils.swap_tensors(p, torch.nn.Parameter(rebuilt, requires_grad = p.requires_grad))
+            moved.append((name, kept))
+    except Exception:
+        # Put every weight back on its host view; the stock per-tensor copy then runs (and raises a real OOM itself).
+        for name, view in moved:
+            try:
+                if name.startswith("\0"):
+                    _set_buffer(module, name[1:], view)
+                elif name in wrapped:
+                    _repoint(params[name], view)
+                else:
+                    params[name].data = view
+            except Exception:  # noqa: BLE001
+                pass
+        return 0
+    return copied
 
 
 def _named_buffers(module: Any) -> list:
@@ -530,17 +741,65 @@ def _wrap_cpu_offload_hook(
         if onload and not state.get("pin_tried"):
             # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
+            layout: list = []
             try:
-                pinned = _pin_host_weights(mod, host, logger, buffer_host = buffer_host)
+                pinned = _pin_host_weights(
+                    mod, host, logger, buffer_host = buffer_host, layout = layout
+                )
             except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
                 pinned = 0
+            if pinned:
+                state["pin_layout"] = layout
             if pinned and logger is not None:
                 logger.info(
                     "diffusion.memory: pinned %.1f GiB of %s host weights",
                     pinned / 2**30,
                     type(mod).__name__,
                 )
-        out = pre_forward(mod, *args, **kwargs)
+        layout = state.get("pin_layout") if onload and _fast_upload_enabled() else None
+        if layout and "to" in mod.__dict__:
+            # An instance-level mover is already installed (stable arena, pinned swap): defer to it.
+            layout = None
+        if not layout:
+            out = pre_forward(mod, *args, **kwargs)
+        else:
+            # Offload the previous component through its kept hook here, so the stock pre_forward finds it on the
+            # host and skips its empty_cache: the freed chunks stay in the caching allocator for this onload.
+            prev = getattr(hook, "prev_module_hook", None)
+            prev_model = getattr(prev, "model", None)
+            if (
+                prev_model is not None
+                and getattr(getattr(prev, "hook", None), _KEEP_ATTR, False)
+                and callable(getattr(prev, "offload", None))
+                and _on_device(prev_model)
+            ):
+                prev.offload()
+
+            # The stock pre_forward offloads the previous component, then calls module.to(device) only if the module
+            # is not there yet. Shadow that one call so the pinned chunks go up first; module.to then moves whatever
+            # the chunks did not cover (unpinned or replaced weights) exactly as before.
+            def _to(*to_args: Any, **to_kwargs: Any) -> Any:
+                mod.__dict__.pop("to", None)
+                import torch
+
+                target = to_args[0] if to_args else to_kwargs.get("device")
+                try:
+                    target = torch.device(target)
+                except Exception:  # noqa: BLE001 - not a plain device move: stock only
+                    target = None
+                if (
+                    target is not None
+                    and target.type != "cpu"
+                    and len(to_args) + len(to_kwargs) == 1
+                ):
+                    _upload_pinned_chunks(mod, layout, host, owner, buffer_host, target)
+                return mod.to(*to_args, **to_kwargs)
+
+            mod.__dict__["to"] = _to
+            try:
+                out = pre_forward(mod, *args, **kwargs)
+            finally:
+                mod.__dict__.pop("to", None)
         if onload:
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
@@ -2638,7 +2897,13 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
-_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
+# MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
+    "qwen-image-2.1": 1849,
+    "flux.1": 2666,
+    "z-image": 2666,
+    "moss-image": 2976,
+}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -2868,6 +3133,8 @@ def stream_window_pad_mib(pipe: Any) -> Optional[int]:
     for name, module in (getattr(pipe, "components", {}) or {}).items():
         if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
             continue
+        if module is None:
+            continue  # an empty slot (Wan2.2-TI2V-5B and Wan2.1 register transformer_2 = None)
         state = _streaming_state(module)
         if state is None:
             return None
@@ -2899,6 +3166,8 @@ def _streamed_group_window_mib(pipe: Any) -> int:
         largest = 0
         for name, module in (getattr(pipe, "components", {}) or {}).items():
             if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            if module is None:
                 continue
             for group in _offload_groups(module):
                 if getattr(group, "_unsloth_resident", False):
@@ -3920,10 +4189,8 @@ def install_encode_release(
             restore = release_resident_groups(
                 owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
             )
+            # No empty_cache: the allocator frees cached segments and retries on OOM; flushing per prompt cost a sync.
             pending.append(restore)
-            if restore is not None and torch.cuda.is_available():
-                # freed blocks sit in the default stream's pool; the encoder onloads on the copy stream
-                torch.cuda.empty_cache()
 
         def _after(module: Any, args: Any, output: Any) -> None:
             if not pending:
@@ -4004,11 +4271,10 @@ def measured_request_extra_mib(
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
-    # the dense tier seeds were measured on text-to-image: a reference the guard cannot size is not covered
-    tier_seeded = (
-        dense_mib is not None
-        and sized["dense_tier_seeds"]
-        and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+    # tier and phase seeds were measured on text-to-image: an unsized reference is not covered
+    tier_seeded = str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES and (
+        (dense_mib is not None and sized["dense_tier_seeds"])
+        or (dense_mib is None and sized["phase_seeds"])
     )
     if (unpriced_references and tier_seeded) or (
         (learned or need is None)
@@ -4131,6 +4397,7 @@ def apply_memory_plan(
         applied = _apply_group_offload(pipe, placement, logger, **group_kwargs)
         failure = getattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, None)
         if not applied and failure is not None and _is_oom(failure):
+            _set_group_offload_failure(pipe, None)  # the retry records its own failure, if any
             lowered = _retry_group_offload_lower(pipe, plan, placement, logger, failure)
             if lowered is not None:
                 applied = True
@@ -4224,8 +4491,20 @@ def apply_memory_plan(
 _GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
 
 
+class _GroupOffloadFailure(Exception):
+    """Type and message of a failed group offload setup. The live exception is not kept: its traceback holds the
+    failed frames, whose tensors would stay allocated through the very retry that needs the room."""
+
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__(f"{type(exc).__name__}: {exc}")
+        self.type_name = type(exc).__name__
+        self.oom = _is_oom(exc)
+
+
 def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
     """What made ``_apply_group_offload`` return False (it absorbs the exception so the caller can fall back)."""
+    if exc is not None and not isinstance(exc, _GroupOffloadFailure):
+        exc = _GroupOffloadFailure(exc)
     try:
         setattr(pipe, _GROUP_OFFLOAD_FAILURE_ATTR, exc)
     except Exception:  # noqa: BLE001
@@ -4233,6 +4512,8 @@ def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
 
 
 def _is_oom(exc: BaseException) -> bool:
+    if isinstance(exc, _GroupOffloadFailure):
+        return exc.oom
     from .diffusion_batched import is_oom_error
     return is_oom_error(exc)
 

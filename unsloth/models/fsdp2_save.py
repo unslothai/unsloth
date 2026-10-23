@@ -16,8 +16,10 @@ __all__ = [
 ]
 
 import contextlib
+import copy
 import datetime
 import functools
+import logging
 import os
 
 import torch
@@ -25,6 +27,9 @@ import torch
 # Writer flag of the gather in progress: a nested save (save_pretrained_merged -> save_pretrained,
 # or on a submodule) must neither gather again nor reshard what rank 0 swapped in.
 _ACTIVE = []
+# Per gather in progress: id of each packed 4-bit weight staged on the CPU -> the device it was
+# gathered on, where `merge_4bit_lora_layer_by_layer` merges it.
+_STAGED_4BIT = []
 
 
 def _fsdp_module_class():
@@ -130,6 +135,31 @@ def _gather_full(param, DTensor):
     return gathered.view(param.dtype)
 
 
+def _quant_state_on_cpu(quant_state, device = "cpu"):
+    """A copy of a bitsandbytes QuantState on `device` (the CPU by default). `QuantState.to` moves in
+    place (its nested state too), and the live one must stay where the sharded weight computes with it."""
+    if not hasattr(quant_state, "to"):
+        return quant_state
+    state = copy.copy(quant_state)
+    if getattr(state, "state2", None) is not None:
+        state.state2 = copy.copy(state.state2)
+    state.to(device)
+    return state
+
+
+def _restage_4bit(weight, device):
+    """The packed Params4bit `weight` on `device`, with its own copy of the QuantState there. Every
+    other attribute is carried over as is, which is what PEFT's 4-bit merge rebuilds the weight from."""
+    from bitsandbytes.nn import Params4bit
+
+    moved = torch.Tensor._make_subclass(Params4bit, weight.data.to(device), False)
+    moved.__dict__.update(weight.__dict__)
+    quant_state = getattr(weight, "quant_state", None)
+    if quant_state is not None:
+        moved.quant_state = _quant_state_on_cpu(quant_state, device)
+    return moved
+
+
 def _rebuild(param, full, module):
     """A full parameter that looks like the one FSDP2 sharded (Params4bit keeps its QuantState)."""
     quant_state = getattr(param, "quant_state", None)
@@ -172,13 +202,17 @@ def fsdp2_gathered(
     trainable_only = False,
     offload_to_cpu = True,
     include = None,
+    offload_4bit = False,
 ):
     """Yields None for a model FSDP2 does not shard (nothing happens). Otherwise every rank must
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
     not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
     plus those `include(name, param)` selects (frozen ones the save still writes).
     `offload_to_cpu` may be a predicate `(name, param) -> bool`.
-    Packed 4-bit weights stay on their device: the merge dequantizes them there."""
+    Packed 4-bit weights stay on their device (a merge dequantizes them there) unless `offload_4bit`:
+    they then go, with a CPU copy of their QuantState, to the CPU right after each one is gathered, so
+    rank 0 never holds the whole quantized base on its accelerator. A merge brings them back one layer
+    at a time (`merge_4bit_lora_layer_by_layer`)."""
     if _ACTIVE:
         yield _ACTIVE[-1]
         return
@@ -201,6 +235,7 @@ def fsdp2_gathered(
             if param is not None:
                 owners.setdefault(id(param), []).append((module, name))
     replaced = {}
+    staged = {}
     seen = set()
     pushed = False
     try:
@@ -222,19 +257,33 @@ def fsdp2_gathered(
                 continue
             module = owners[id(param)][0][0]
             offload = offload_to_cpu(name, param) if callable(offload_to_cpu) else offload_to_cpu
-            if offload and getattr(param, "quant_state", None) is None:
+            quant_state = getattr(param, "quant_state", None)
+            home = None
+            if offload and quant_state is None:
                 full = full.cpu()
-            replaced[id(param)] = (param, _rebuild(param, full.detach(), module))
+            elif offload and offload_4bit:
+                home = full.device
+                full = full.cpu()
+                quant_state = _quant_state_on_cpu(quant_state)
+            rebuilt = _rebuild(param, full.detach(), module)
+            if quant_state is not None and rebuilt.quant_state is not quant_state:
+                rebuilt.quant_state = quant_state
+            if home is not None:
+                staged[id(rebuilt)] = home
+            replaced[id(param)] = (param, rebuilt)
         if writer:
             for key, (old, new) in replaced.items():
                 for module, name in owners[key]:
                     module._parameters[name] = new
         _ACTIVE.append(writer)
+        _STAGED_4BIT.append(staged)
         pushed = True
         yield writer
     finally:
         if pushed:
             _ACTIVE.pop()
+            _STAGED_4BIT.pop()
+        staged.clear()
         for key, (old, new) in replaced.items():
             for module, name in owners[key]:
                 module._parameters[name] = old
@@ -275,6 +324,91 @@ def offload_all_but_4bit_merge_operands(model):
                 prefixes.append(f"{prefix}{attr}.")
     prefixes = tuple(prefixes)
     return lambda name, param: not name.startswith(prefixes)
+
+
+_MERGED_4BIT_METHODS = ("merged_4bit", "merged_4bit_forced", "forced_merged_4bit")
+
+
+def _merges_onto_dequantized_4bit(model):
+    """unsloth_zoo folds a merged_16bit LoRA onto dequant(W4) for a few architectures (falcon_h1),
+    dequantizing the live packed weight where it sits."""
+    try:
+        from unsloth_zoo.saving_utils import (
+            _model_type_needs_dequant_merge_base,
+            find_lora_base_model,
+        )
+    except Exception:
+        config = getattr(model, "config", None)
+        return (getattr(config, "model_type", "") or "").lower() == "falcon_h1"
+    try:
+        model = find_lora_base_model(model)
+    except Exception:
+        pass
+    return bool(_model_type_needs_dequant_merge_base(model))
+
+
+def merged_save_gather_options(model, save_method):
+    """`fsdp2_gathered` options for save_pretrained_merged / push_to_hub_merged.
+
+    merged_16bit reads its base weights from the 16-bit checkpoint and only the LoRA weights from the
+    model, so the packed 4-bit base goes to the CPU like everything else.
+    merged_4bit stages the packed base on the CPU too, keeps the adapters of 4-bit layers on their
+    device, and `merge_4bit_lora_layer_by_layer` brings one packed layer at a time back there to merge.
+    Either way rank 0's accelerator holds one gathered layer above its shards, not the whole base.
+    A merged_16bit that dequantizes the live 4-bit base (`_merges_onto_dequantized_4bit`) and other
+    export methods keep the previous placement."""
+    if save_method in _MERGED_4BIT_METHODS:
+        return dict(offload_to_cpu = offload_all_but_4bit_merge_operands(model), offload_4bit = True)
+    if save_method == "merged_16bit" and not _merges_onto_dequantized_4bit(model):
+        return dict(offload_to_cpu = True, offload_4bit = True)
+    return dict(offload_to_cpu = True)
+
+
+def merge_4bit_lora_layer_by_layer(model):
+    """Writer, inside `fsdp2_gathered` with packed 4-bit weights staged on the CPU: merges each LoRA
+    layer over such a base with PEFT's own `merge`, one layer at a time, on the device that weight
+    was gathered on (where the merge ran before, so the requantized bytes are the same), then stages
+    the merged weight back on the CPU. PEFT's `merge_and_unload` afterwards finds those layers merged
+    and only unloads them. Returns the merged layers (see `unmerge_flags`); [] outside such a gather."""
+    staged = _STAGED_4BIT[-1] if _STAGED_4BIT else None
+    if not staged or not isinstance(model, torch.nn.Module):
+        return []
+    merged = []
+    for module in model.modules():
+        base_layer = getattr(module, "base_layer", None)
+        if not isinstance(base_layer, torch.nn.Module) or not callable(
+            getattr(module, "merge", None)
+        ):
+            continue
+        weight = base_layer._parameters.get("weight", None)
+        home = staged.get(id(weight)) if weight is not None else None
+        if home is None:
+            continue
+        before = list(getattr(module, "merged_adapters", None) or ())
+        try:
+            base_layer._parameters["weight"] = _restage_4bit(weight, home)
+            module.merge()
+            result = base_layer._parameters.get("weight", None)
+            if result is not None and getattr(result, "quant_state", None) is not None:
+                result = _restage_4bit(result, "cpu")
+                base_layer._parameters["weight"] = result
+        except BaseException:
+            base_layer._parameters["weight"] = weight
+            # Layers merged earlier in this loop get their unmerged shards back from the gather too.
+            if list(getattr(module, "merged_adapters", None) or ()) != before:
+                merged.append((module, before))
+            unmerge_flags(merged)
+            raise
+        if list(getattr(module, "merged_adapters", None) or ()) != before:
+            merged.append((module, before))
+    return merged
+
+
+def unmerge_flags(merged):
+    """Undo `merge_4bit_lora_layer_by_layer`'s bookkeeping when the export fails before it unloads:
+    the gather puts the sharded (unmerged) base weights back, so the layers must not claim a merge."""
+    for module, before in merged:
+        module.merged_adapters[:] = before
 
 
 def fsdp2_gather_active():
@@ -459,9 +593,138 @@ def _add_quant_state_entries(model, state_dict, options):
             state_dict[prefix + "weight." + key] = value.cpu() if cpu else value
 
 
+_LEGACY_4BIT_NOTICE = [False]
+logger = logging.getLogger(__name__)
+
+
+def _as_bytes(tensor):
+    return tensor.detach().contiguous().reshape(-1).view(torch.uint8)
+
+
+def _same_packed_bytes(live, loaded, broadcast_dist):
+    """Whether the packed 4-bit bytes being loaded equal the live (possibly sharded) weight's. Every
+    rank gathers the live weight (a collective); with `broadcast_dist` only rank 0 holds `loaded`,
+    decides, and sends the verdict, so all ranks agree."""
+    DTensor = _dtensor_class()
+    if DTensor is not None and isinstance(live, DTensor):
+        live = _gather_full(live, DTensor)
+    if DTensor is not None and isinstance(loaded, DTensor):
+        loaded = loaded.full_tensor()
+    same = False
+    if isinstance(loaded, torch.Tensor):
+        a, b = _as_bytes(live), _as_bytes(loaded)
+        same = a.numel() == b.numel() and torch.equal(a.cpu(), b.cpu())
+    if broadcast_dist is not None:
+        verdict = [same]
+        broadcast_dist.broadcast_object_list(verdict, src = 0)
+        same = bool(verdict[0])
+    return same
+
+
+def _restore_quant_state(model, state_dict, options):
+    """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
+    copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
+    scales they were saved with. A saved QuantState that does not fit the live one (other shape,
+    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. With
+    `broadcast_from_rank0` only rank 0 holds the entries and sends them to the others."""
+    entries = _linear4bit_entries(model)
+    if not entries:
+        return
+    dist = _dist()
+    broadcast = dist is not None and bool(getattr(options, "broadcast_from_rank0", False))
+    if not isinstance(state_dict, dict):
+        state_dict = {}
+    if broadcast:
+        # An object broadcast, not a tensor one: a CPU tensor cannot go through an NCCL group, and
+        # broadcast_object_list stages on whatever device the group's backend needs.
+        has = [
+            any(
+                k == prefix + "weight" or k.startswith(prefix + "weight.")
+                for prefix, _ in entries
+                for k in state_dict
+            )
+        ]
+        dist.broadcast_object_list(has, src = 0)
+        if not has[0]:
+            return
+    from bitsandbytes.functional import QuantState
+
+    for prefix, module in entries:
+        live = module.weight.quant_state
+        head = prefix + "weight."
+        saved = {
+            k[len(head) :]: v
+            for k, v in state_dict.items()
+            if k.startswith(head) and isinstance(v, torch.Tensor)
+        }
+        loads_weight = head[:-1] in state_dict
+        if broadcast:
+            payload = [(loads_weight, {k: v.detach().cpu() for k, v in saved.items()})]
+            dist.broadcast_object_list(payload, src = 0)
+            loads_weight, saved = payload[0]
+        if not saved:
+            if loads_weight:
+                # A checkpoint written before QuantState was saved (a frozen QLoRA base): its packed
+                # bytes are the live ones, so the live scales are theirs. Other bytes would be
+                # dequantized with the wrong scales.
+                same = _same_packed_bytes(
+                    module.weight, state_dict.get(head[:-1]), dist if broadcast else None
+                )
+                if not same:
+                    raise ValueError(
+                        f"Unsloth: the checkpoint holds the 4-bit weight `{head[:-1]}` but none of "
+                        "its quantization state (`weight.absmax`, `weight.quant_state.*`), and its "
+                        "packed bytes differ from the model's, so they cannot be dequantized "
+                        "correctly. Save the full state dict again with Unsloth, or load it without "
+                        "the frozen 4-bit base weights."
+                    )
+                if not _LEGACY_4BIT_NOTICE[0]:
+                    _LEGACY_4BIT_NOTICE[0] = True
+                    logger.info(
+                        "Unsloth: the checkpoint has 4-bit weights without their quantization state "
+                        "(saved by an older Unsloth); their packed bytes match the model's, so its "
+                        "quantization state is kept."
+                    )
+            continue
+        expected = set(live.as_dict(packed = True))
+        if set(saved) != expected:
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` has entries "
+                f"{sorted(saved)}, the model's has {sorted(expected)}."
+            )
+        loaded = QuantState.from_dict(saved, device = live.absmax.device)
+        pairs = [("absmax", loaded.absmax, live.absmax), ("code", loaded.code, live.code)]
+        if live.nested:
+            pairs += [
+                ("offset", loaded.offset, live.offset),
+                ("state2.absmax", loaded.state2.absmax, live.state2.absmax),
+                ("state2.code", loaded.state2.code, live.state2.code),
+            ]
+        same = (
+            loaded.quant_type == live.quant_type
+            and loaded.blocksize == live.blocksize
+            and loaded.nested == live.nested
+            and tuple(loaded.shape) == tuple(live.shape)
+            and loaded.dtype == live.dtype
+            and (not live.nested or loaded.state2.blocksize == live.state2.blocksize)
+            and all(
+                isinstance(a, torch.Tensor) and a.shape == b.shape and a.dtype == b.dtype
+                for _, a, b in pairs
+            )
+        )
+        if not same:
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` does not "
+                "match the model's (shape, blocksize, quant type or nesting differ)."
+            )
+        with torch.no_grad():
+            for _, a, b in pairs:
+                b.copy_(a.to(b.device))
+
+
 def _without_quant_state_entries(name, args, kwargs):
-    """Loading: drop the entries `_add_quant_state_entries` wrote (DCP would reject them as unexpected
-    keys); the QuantState is rebuilt identically when the 4-bit model is loaded again."""
+    """Loading: the entries `_add_quant_state_entries` wrote are restored into the live QuantState
+    (`_restore_quant_state`) and then dropped, as DCP would reject them as unexpected keys."""
     model = args[0] if args else kwargs.get("model")
     if not isinstance(model, torch.nn.Module):
         return args, kwargs
@@ -472,6 +735,12 @@ def _without_quant_state_entries(name, args, kwargs):
         )
     if not drop:
         return args, kwargs
+    if name == "set_model_state_dict" and len(args) > 1:
+        loading = args[1]
+    else:
+        loading = kwargs.get("model_state_dict")
+    if name in ("set_model_state_dict", "set_state_dict"):
+        _restore_quant_state(model, loading, kwargs.get("options", None))
 
     def strip(state_dict):
         if not isinstance(state_dict, dict) or not drop.intersection(state_dict):

@@ -383,7 +383,7 @@ export function MediaViewer({
           lightbox
             ? // The whole window below the desktop titlebar; the picture is the only surface.
               "top-[var(--studio-window-chrome-top,0px)] right-0 bottom-0 left-0 flex h-auto max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] w-auto max-w-none translate-none flex-col gap-0 overflow-hidden rounded-none bg-transparent p-0 ring-0 duration-150 sm:max-w-none max-sm:h-auto"
-            : "flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden rounded-[1.5rem] p-0 sm:max-w-none"
+            : "flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:max-w-none"
         }
       >
         {lightbox ? (

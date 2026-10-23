@@ -194,7 +194,7 @@ export function CategoryDialog({
             {Object.entries(conditional).map(([condition, params]) => (
               <div
                 key={condition}
-                className="space-y-3 rounded-2xl border border-border/60 p-3"
+                className="space-y-3 rounded-lg border border-border/60 p-3"
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-semibold text-foreground">{condition}</p>
