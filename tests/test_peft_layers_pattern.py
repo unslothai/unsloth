@@ -105,3 +105,30 @@ def test_scalar_layer_zero_with_layers_pattern_fast_base_model(monkeypatch):
     config = info.value.args[0]
     assert config.layers_to_transform == [0]
     assert _lora_modules(config) == ["model.layers.0.self_attn.q_proj"]
+
+
+def test_existing_scalar_layer_adapter_matches_the_same_request(monkeypatch):
+    # PEFT keeps a scalar layers_to_transform in to_dict(); the request is now a list, and must still match.
+    from peft import LoraConfig
+
+    monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    config = LoraConfig(
+        r = 4,
+        lora_alpha = 16,
+        target_modules = ["q_proj"],
+        layers_to_transform = 1,
+        layers_pattern = "layers",
+        task_type = "CAUSAL_LM",
+    )
+    wrapped = get_peft_model(_tiny_llama_with_aux_stack(), config)
+    assert wrapped.peft_config["default"].to_dict()["layers_to_transform"] == 1
+    again = FastLlamaModel.get_peft_model(
+        wrapped,
+        r = 4,
+        target_modules = ["q_proj"],
+        use_gradient_checkpointing = False,
+        layers_to_transform = 1,
+        layers_pattern = "layers",
+    )
+    assert again is wrapped

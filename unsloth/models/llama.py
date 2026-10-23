@@ -4461,6 +4461,10 @@ class FastLlamaModel:
                     layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
             peft_config = model.peft_config["default"].to_dict()
+            # An adapter made with a scalar keeps it in to_dict(); compare it as the list this call now uses.
+            _stored_layers = peft_config.get("layers_to_transform")
+            if isinstance(_stored_layers, int) and not isinstance(_stored_layers, bool):
+                peft_config["layers_to_transform"] = [_stored_layers]
             _same_layered = (
                 isinstance(target_modules, str)
                 and layers_to_transform is not None
