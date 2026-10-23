@@ -345,3 +345,47 @@ def test_swap_probe_failure_is_not_swap_covered(monkeypatch):
     monkeypatch.setattr(torch.cuda, "get_device_capability", boom)
     monkeypatch.setattr(g8, "int8_gemm_mode", lambda: "auto")
     assert not mod._swap_card_present(model)
+
+
+@pytest.mark.parametrize(
+    "env", ["UNSLOTH_DIFFUSION_INT8_ROTQUANT", "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT", "probe"]
+)
+def test_shared_qkv_needs_the_rotation_kernel_not_just_the_fused_gemm(monkeypatch, env):
+    """A fused-GEMM arch with ``rotq_i8`` switched off (or failed its per-device probe): ``shared_rotq_linears``
+    declines every record (``not r[2]``), so the helper is neither installed nor counted."""
+    import core.inference.diffusion_convrot_quant as cq
+    import core.inference.diffusion_int8_gemm as g8
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    calls = []
+    for name in (
+        "UNSLOTH_DIFFUSION_INT8_ROTQUANT",
+        "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT",
+        "UNSLOTH_DIFFUSION_INT8_GEMM",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 9))
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(g8, "int8_gemm_mode", lambda: "auto")
+    monkeypatch.setattr(mod, "install_shared_qkv", lambda t, logger = None: calls.append(t) or 2)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+    monkeypatch.delitem(cq._ROTQ_DEVICE, 0, raising = False)
+    assert g8._gates((8, 9)) == (True, True)
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 2, "out": 0}  # control: engaged
+    assert calls == [model]
+    calls.clear()
+    qf.uninstall()
+    if env == "probe":
+        monkeypatch.setitem(
+            cq._ROTQ_DEVICE, 0, None
+        )  # rotq_i8 failed its bit-exact probe on cuda:0
+    else:
+        monkeypatch.setenv(env, "0")
+        assert g8._gates((8, 9)) == (True, False)
+    assert not mod._swap_card_present(model)
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 0, "out": 0}
+    assert calls == []
