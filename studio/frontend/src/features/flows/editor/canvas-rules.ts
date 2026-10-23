@@ -27,6 +27,8 @@ const MEDIA_EXT: Record<string, "image" | "audio" | "video"> = {
   mp3: "audio",
   ogg: "audio",
   flac: "audio",
+  m4a: "audio",
+  m4b: "audio",
   mp4: "video",
   webm: "video",
 };

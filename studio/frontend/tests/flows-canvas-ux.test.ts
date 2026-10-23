@@ -21,6 +21,7 @@ test("a dropped file becomes the matching input block", () => {
     via: "asset",
   });
   assert.equal(inputForFile("song.mp3", "")?.type, "input.audio");
+  assert.equal(inputForFile("memo.m4a", "")?.type, "input.audio");
   assert.equal(inputForFile("clip.webm", "video/webm")?.type, "input.video");
   assert.deepEqual(inputForFile("notes.md", ""), {
     type: "input.text",
