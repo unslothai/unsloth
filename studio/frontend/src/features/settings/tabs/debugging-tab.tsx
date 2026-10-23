@@ -922,7 +922,7 @@ export function DebuggingTab() {
             </Button>
             <Button
               size="sm"
-              variant="ghost"
+              variant="muted"
               data-testid="debug-log-download-all"
               aria-busy={exporting}
               disabled={exporting}
