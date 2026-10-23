@@ -91,6 +91,14 @@ def _column_names(dataset) -> list[str]:
     return list(next(iter(dataset)).keys())
 
 
+def resolve_completion_only_loss(train_dataset, completion_only_loss = None) -> bool:
+    """TRL resolves an unset `completion_only_loss` once, from the train split's first row, for every split."""
+    if completion_only_loss is not None:
+        return completion_only_loss
+    names = _column_names(train_dataset)
+    return "prompt" in names and "completion" in names
+
+
 def has_custom_labels(dataset) -> bool:
     return "labels" in _column_names(dataset)
 
@@ -133,9 +141,12 @@ def prepare_pretokenized_dataset(
 ):
     """Unsloth's SFT preparation passes tokenized rows through untouched: an over-long row would reach the model whole and an id past the embedding table is a device-side assert mid-run. Idempotent."""
     names = _column_names(dataset)
-    masks = _checked_masks(names, completion_only_loss)
+    completion_only_loss = resolve_completion_only_loss(dataset, completion_only_loss)
+    # Masks are checked even when set_format hides them: TRL 0.22-0.26 re-exposes every column through
+    # with_transform, and 1.7+ reads dataset.column_names and builds labels with map(), which sees them all.
+    masks = _checked_masks(getattr(dataset, "column_names", None) or names, completion_only_loss)
     # A mask the trainer will not apply is left as it is (it may not even be a list).
-    columns = [c for c in _TOKEN_COLUMNS if c in names and (c not in _MASK_COLUMNS or c in masks)]
+    columns = [c for c in _TOKEN_COLUMNS if (c in names and c not in _MASK_COLUMNS) or c in masks]
     table = getattr(dataset, "data", None)
     needs_truncation = True
     if table is not None and hasattr(table, "column"):

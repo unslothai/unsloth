@@ -280,21 +280,48 @@ def test_prepare_still_checks_assistant_masks_without_completion_only_loss():
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
-def test_prepare_ignores_columns_hidden_by_the_dataset_format():
-    # set_format(columns = ...) hides backing columns from the rows the trainer reads: a stale
-    # hidden mask or labels column is not applied, so it is neither checked nor re-exposed.
-    ds = Dataset.from_dict(
-        {
-            "input_ids": [[1, 2, 3, 4, 5, 6]],
-            "assistant_masks": [[0, 1]],
-            "labels": [[1, 2]],
-        }
-    )
+def test_prepare_keeps_hidden_columns_hidden():
+    # A labels column hidden by set_format(columns = ...) is not the user's labels, and the
+    # truncation restores the format so it stays hidden.
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3, 4, 5, 6]], "labels": [[1, 2, 3, 4, 5, 6]]})
     ds.set_format(columns = ["input_ids"], output_all_columns = False)
     assert not has_custom_labels(ds)
     out = prepare_pretokenized_dataset(ds, max_seq_length = 4, vocab_size = 100)
     assert list(out[0]) == ["input_ids"]
     assert out[0]["input_ids"] == [1, 2, 3, 4]
+
+
+def test_prepare_checks_and_truncates_masks_hidden_by_the_format():
+    # TRL 0.22-0.26 re-exposes every column via with_transform, and 1.7+ builds labels with
+    # map() over dataset.column_names, which ignore set_format: a hidden mask is still applied.
+    bad = Dataset.from_dict({"input_ids": [[1, 2, 3]], "assistant_masks": [[0, 1]]})
+    bad.set_format(columns = ["input_ids"], output_all_columns = False)
+    with pytest.raises(ValueError, match = "'assistant_masks' must have the same length"):
+        prepare_pretokenized_dataset(bad, max_seq_length = 2048, vocab_size = 100)
+    ok = Dataset.from_dict({"input_ids": [[1, 2, 3, 4, 5, 6]], "assistant_masks": [[0, 1, 1, 1, 1, 1]]})
+    ok.set_format(columns = ["input_ids"], output_all_columns = False)
+    out = prepare_pretokenized_dataset(ok, max_seq_length = 4, vocab_size = 100)
+    assert list(out[0]) == ["input_ids"]
+    assert out.data.column("assistant_masks").to_pylist() == [[0, 1, 1, 1]]
+
+
+def test_completion_only_loss_resolves_from_the_train_split():
+    # TRL resolves an unset completion_only_loss once, from the train split, and applies it to
+    # eval too: an input_ids eval split's completion_mask is then applied, so it is checked.
+    src = (_BACKEND_ROOT / "core" / "training" / "trainer.py").read_text()
+    assert 'resolve_completion_only_loss(\n                    dataset["dataset"]' in src
+    from utils.datasets.pretokenized import resolve_completion_only_loss
+
+    train = Dataset.from_dict({"prompt": ["a"], "completion": ["b"], "input_ids": [[1, 2]]})
+    evals = Dataset.from_dict({"input_ids": [[1, 2, 3]], "completion_mask": [[0, 1]]})
+    assert resolve_completion_only_loss(train) is True
+    assert resolve_completion_only_loss(evals) is False
+    assert resolve_completion_only_loss(evals, True) is True
+    with pytest.raises(ValueError, match = "'completion_mask' must have the same length"):
+        prepare_pretokenized_dataset(
+            evals, max_seq_length = 2048, vocab_size = 100,
+            completion_only_loss = resolve_completion_only_loss(train),
+        )
 
 
 def test_prepare_checks_masks_the_format_still_outputs():

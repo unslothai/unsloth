@@ -89,6 +89,7 @@ from utils.datasets.pretokenized import (
     PRETOKENIZED_FORMAT,
     has_custom_labels,
     prepare_pretokenized_dataset,
+    resolve_completion_only_loss,
 )
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
@@ -4955,9 +4956,11 @@ class UnslothTrainer:
                 except Exception:
                     vocab_size = None
                 max_seq = training_args.get("max_seq_length", 2048)
-                # The SFTConfig's own value (unset here, so TRL resolves it from the dataset shape) decides
-                # whether a completion_mask column is applied, so only then is it checked.
-                completion_only = config_args.get("completion_only_loss")
+                # completion_mask is applied (so checked) only under completion_only_loss, which TRL resolves
+                # once from the train split when unset and uses for eval too.
+                completion_only = resolve_completion_only_loss(
+                    dataset["dataset"], config_args.get("completion_only_loss")
+                )
                 dataset["dataset"] = prepare_pretokenized_dataset(
                     dataset["dataset"],
                     max_seq_length = max_seq,
