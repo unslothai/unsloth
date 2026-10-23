@@ -41,9 +41,9 @@ async def generate(ctx: NodeContext) -> dict:
         if ctx.params.get(key) is not None:
             body[key] = cast(ctx.params[key])
     references = [r for r in ctx.inputs.get("reference") or [] if isinstance(r, dict)]
-    if references and ctx.inputs.get("first_frame"):
+    if references and (ctx.inputs.get("first_frame") or ctx.inputs.get("last_frame")):
         raise FlowNodeError(
-            "Connect either a first frame or reference images: the video model takes one or the other"
+            "Connect either keyframes (first or last frame) or reference images: the video model takes one or the other"
         )
     if references:
         body["reference_images"] = [await data_url(ctx, r) for r in references[:9]]

@@ -302,3 +302,42 @@ def test_grid_row_labels_wrap_between_words():
     assert image_nodes._wrap_label("watercolor", 128, font) == "watercolor"
     text = "film photo of a red fox"
     assert image_nodes._wrap_label(text, 128, font).split() == text.split()
+
+
+def test_grow_mask_matches_max_filter_and_stays_fast():
+    import time
+
+    from PIL import ImageFilter
+
+    noise = Image.effect_noise((61, 47), 80).convert("L").point(lambda v: 255 if v > 235 else 0)
+    for radius in (1, 2, 5, 12, 64):
+        expected = noise.filter(ImageFilter.MaxFilter(2 * radius + 1))
+        assert image_nodes.grow_mask(noise, radius).tobytes() == expected.tobytes()
+    started = time.monotonic()
+    image_nodes.grow_mask(Image.new("L", (2048, 2048), 0), 64)
+    assert time.monotonic() - started < 3  # a 129 px MaxFilter here takes minutes
+
+
+def test_video_rejects_references_with_a_last_frame_before_calling_the_route():
+    from core.flows.nodes import video as video_nodes
+
+    calls = []
+
+    async def ensure_model(*args, **kwargs):
+        return None
+
+    async def call(*args, **kwargs):
+        calls.append(args)
+        return {}
+
+    ctx = SimpleNamespace(
+        inputs = {"reference": [_media("a")], "last_frame": _media("b")},
+        params = {"prompt": "a fox"},
+        flow_params = {},
+        seed = 1,
+        ensure_model = ensure_model,
+        call = call,
+    )
+    with pytest.raises(FlowNodeError, match = "keyframes"):
+        asyncio.run(video_nodes.generate(ctx))
+    assert calls == []

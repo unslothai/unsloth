@@ -144,9 +144,39 @@ async def remove_bg(ctx: NodeContext) -> dict:
     return {"image": cutout, "mask": mask}
 
 
+def _max_along(a, radius: int, axis: int):
+    """Running max over a 2*radius+1 window along one axis, zero-padded, in O(log radius) passes."""
+    import numpy as np
+
+    n, window = a.shape[axis], 2 * radius + 1
+    pad = [(0, 0), (0, 0)]
+    pad[axis] = (radius, radius)
+    cur, width = np.pad(a, pad), 1
+
+    def take(x, start, stop):
+        return x[start:stop] if axis == 0 else x[:, start:stop]
+
+    while width * 2 <= window:
+        size = cur.shape[axis]
+        cur = np.maximum(take(cur, 0, size - width), take(cur, width, size))
+        width *= 2
+    return np.maximum(take(cur, 0, n), take(cur, window - width, window - width + n))
+
+
+def grow_mask(im, radius: int):
+    """Widen the white area by `radius` px on every side: the same result as
+    ImageFilter.MaxFilter(2 * radius + 1), but separable, so radius 64 on a 2048 px mask
+    takes milliseconds instead of minutes."""
+    import numpy as np
+    from PIL import Image
+
+    a = np.asarray(im.convert("L"))
+    return Image.fromarray(_max_along(_max_along(a, radius, 0), radius, 1), "L")
+
+
 @handler("image.segment")
 async def segment(ctx: NodeContext) -> dict:
-    from PIL import Image, ImageFilter, ImageOps
+    from PIL import Image, ImageOps
 
     png = await ctx.segment(
         ctx.inputs["image"], str(ctx.params.get("subject") or "the main subject")
@@ -157,8 +187,7 @@ async def segment(ctx: NodeContext) -> dict:
     def shape() -> bytes:
         im = Image.open(io.BytesIO(png)).convert("L")
         if grow:
-            # MaxFilter takes an odd size; this widens the white area by `grow` px on every side.
-            im = im.filter(ImageFilter.MaxFilter(2 * grow + 1))
+            im = grow_mask(im, grow)
         if invert:
             im = ImageOps.invert(im)
         return _png(im)
