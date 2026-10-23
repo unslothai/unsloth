@@ -938,6 +938,16 @@ def test_arrow_padding_from_mixed_message_rows_keeps_speaker_and_text():
     ]
 
 
+def test_sharegpt_speakers_match_case_insensitively_as_in_sft():
+    from core.training.rl import _split_conversation
+
+    context, reply = _split_conversation(
+        [{"from": "Human", "value": "2 + 2?"}, {"from": "GPT ", "value": "4"}]
+    )
+    assert context == [{"role": "user", "content": "2 + 2?"}]
+    assert reply == [{"role": "assistant", "content": "4"}]
+
+
 def test_the_mapped_prompts_system_message_survives_full_conversation_branches():
     system = {"role": "system", "content": "Always answer in French."}
     user = {"role": "user", "content": "Say hello."}
