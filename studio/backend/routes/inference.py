@@ -4359,6 +4359,9 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
             };
           }
         };
+        const annotationFactory = (post) => {
+          /* ANNOTATE_JS */
+        };
         // Named for canvasStack() in the frontend, which trims from this frame down.
         const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
@@ -4370,6 +4373,22 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           captureConsole();
           document.write(html);
           document.close();
+          // Instantiate only on a parent command; the factory predates the page's meta CSP.
+          let annotation = null;
+          const postAnnotation = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
+          window.addEventListener("message", (event) => {
+            if (event.source !== parent) return;
+            const data = event.data;
+            if (!data || data.type !== "unsloth:browser-command") return;
+            if (data.command === "annotateInstall") {
+              if (!annotation) annotation = annotationFactory(postAnnotation);
+            } else if (data.command === "annotate") {
+              if (data.on === true) annotation?.start(data.color);
+              else annotation?.stop();
+            } else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
+            else if (data.command === "annotateNumbers") annotation?.number(data.numbers);
+          });
+          postAnnotation({ type: "annotate", event: "ready" });
           // document.open() drops listeners bound before it, so rebind here.
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
@@ -4387,6 +4406,12 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
     </script>
   </body>
 </html>"""
+
+
+def _artifact_preview_frame_html() -> str:
+    # Imported at request time: browser also uses the frame-ancestors policy from this module.
+    from routes.browser import _ANNOTATE_JS
+    return _ARTIFACT_PREVIEW_FRAME_HTML.replace("/* ANNOTATE_JS */", _ANNOTATE_JS, 1)
 
 
 async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
@@ -4413,7 +4438,7 @@ async def artifact_preview_frame(allow_network: bool = False):
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
     )
     return Response(
-        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        content = _artifact_preview_frame_html(),
         media_type = "text/html; charset=utf-8",
         headers = {
             "Cache-Control": "no-store",
@@ -4631,7 +4656,7 @@ async def mcp_app_frame(
         _mcp_app_domains(base_uri, local_schemes = False),
     )
     return Response(
-        content = _ARTIFACT_PREVIEW_FRAME_HTML,
+        content = _artifact_preview_frame_html(),
         media_type = "text/html; charset=utf-8",
         headers = {
             "Cache-Control": "no-store",

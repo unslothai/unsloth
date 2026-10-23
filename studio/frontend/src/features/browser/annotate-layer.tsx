@@ -28,7 +28,7 @@ import { screenshotPage } from "./capture";
 import { type AnnotateEvent, type AnnotateRect, MAX_MARKS } from "./frame-message";
 import { startNativeAnnotate } from "./native-annotate";
 import { focusPanel, nativeViewBounds } from "./native-view";
-import { type FrameCommand, frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
+import { type FrameCommand, frameRect, frameScale, onFrameAnnotate, sendFrameCommand } from "./page-frame";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { useBrowserStore } from "./store";
 
@@ -1032,7 +1032,7 @@ export function WebAnnotateLayer({
   url,
   page,
   native = false,
-}: { tabId: string; title: string; url: string; page: HTMLElement | null; native?: boolean }) {
+}: { tabId: string; title: string; url?: string; page: HTMLElement | null; native?: boolean }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -1101,7 +1101,7 @@ export function WebAnnotateLayer({
     setDraft("");
     const files = await annotationScreenshot(page);
     const sent = await sendAnnotations(
-      { file: title || url, url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      { file: title || url || "", url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
       files,
     ).finally(() => setSending(false));
     if (sent) exit();
@@ -1228,7 +1228,7 @@ export function WebAnnotateLayer({
   // Native views report CSS pixels; scale by their zoom.
   const bounds = native ? nativeViewBounds(tabId) : null;
   const frame = bounds ? { left: bounds.x, top: bounds.y } : (frameRect(tabId) ?? origin);
-  const scale = bounds ? zoom : 1;
+  const scale = bounds ? zoom : frameScale(tabId);
   const rect = pending ? rects.get(pending.id) : null;
   const pendingBox: Box | null = rect
     ? {
