@@ -3628,6 +3628,9 @@ TRAIN_PP_70B = {
 }
 
 
+TRAIN_LAYER_SPLIT_NODES = 2  # spark_pipeline_plan / train runs are torchrun --nnodes=2
+
+
 def plan_training(
     size_gib: Optional[float],
     n_nodes: int = 2,
@@ -3656,6 +3659,8 @@ def plan_training(
         return out
     fits = size_gib <= budget
     out["fits_one_node"] = fits
+    # The layer-split launcher is torchrun --nnodes=2, so extra paired Sparks add no capacity.
+    split_capacity = budget * TRAIN_LAYER_SPLIT_NODES
     env = 'eval "$(unsloth spark env)"   # GB10 NCCL settings; NCCL_NET_GDR_LEVEL=0 is mandatory'
     if nodes < 2:
         out.update(
@@ -3671,6 +3676,10 @@ def plan_training(
                 if fits
                 else f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB "
                 f"budget). Pair a second Spark and layer-split it."
+                if size_gib <= split_capacity
+                else f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB "
+                f"budget), nor across the {TRAIN_LAYER_SPLIT_NODES} Sparks a layer split "
+                f"uses ({split_capacity:.0f} GiB). Use a smaller or quantized model."
             ),
         )
         return out
@@ -3693,6 +3702,21 @@ def plan_training(
                 f"{over_pp:.2f}x or more on every model tried. The split costs a fill/drain "
                 f"bubble and buys nothing here; it is for capacity. Budget the WHOLE model "
                 f"per node, not half."
+            ),
+        )
+        return out
+    if size_gib > split_capacity:
+        out.update(
+            axis = "none",
+            schedule = None,
+            speedup = None,
+            measured = False,
+            commands = [],
+            recommendation = (
+                f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB budget), "
+                f"nor across the {TRAIN_LAYER_SPLIT_NODES} Sparks the layer-split launcher "
+                f"uses ({split_capacity:.0f} GiB aggregate). No command is generated: a "
+                f"layer split would only fail after loading. Use a smaller or quantized model."
             ),
         )
         return out
