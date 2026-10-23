@@ -19,6 +19,7 @@ if _BACKEND_DIR not in sys.path:
 from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
     _extra_weight_file_bytes,
+    _gguf_set_bytes,
     parse_weight_placement,
 )
 
@@ -168,6 +169,18 @@ def test_projector_and_drafter_on_the_command_line_count_toward_the_load(tmp_pat
     assert (
         _extra_weight_file_bytes(["llama-server", "--mmproj", str(tmp_path / "missing.gguf")]) == 0
     )
+
+
+def test_a_split_drafter_counts_every_shard(tmp_path):
+    # llama-server opens a split drafter's siblings from the named first shard.
+    for index in (1, 2, 3):
+        (tmp_path / f"Model-Q4_K_M-MTP-{index:05d}-of-00003.gguf").write_bytes(b"x" * 100)
+    # The main model's set in the same folder, whose prefix the drafter's starts with, is not the drafter's.
+    for index in (1, 2):
+        (tmp_path / f"Model-Q4_K_M-{index:05d}-of-00002.gguf").write_bytes(b"x" * 7)
+    argv = ["llama-server", "-md", str(tmp_path / "Model-Q4_K_M-MTP-00001-of-00003.gguf")]
+    assert _extra_weight_file_bytes(argv) == 300
+    assert _gguf_set_bytes(tmp_path / "Model-Q4_K_M-00001-of-00002.gguf") == 14
 
 
 @pytest.mark.skipif(not Path("/proc").exists(), reason = "live /proc test is Linux-only")

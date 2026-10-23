@@ -1186,15 +1186,7 @@ def _extra_weight_file_bytes(argv) -> int:
             paths.append(value)
         elif index + 1 < len(tokens):
             paths.append(tokens[index + 1])
-    total = 0
-    for value in paths:
-        try:
-            path = Path(value)
-            if path.is_file():
-                total += path.stat().st_size
-        except OSError:
-            continue
-    return total
+    return sum(_gguf_set_bytes(Path(value)) for value in dict.fromkeys(paths))
 
 
 def parse_gpu_offload_counts(lines: "list[str]") -> "Optional[tuple[int, int]]":
@@ -2895,6 +2887,33 @@ def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> boo
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
+
+
+def _gguf_set_bytes(path: Path) -> int:
+    """Size of a GGUF plus, when it is a split one, its sibling shards: llama-server opens the whole set."""
+    total = 0
+    try:
+        if path.is_file():
+            total += path.stat().st_size
+        m = _SHARD_RE.match(path.name)
+        if m is None or not path.parent.is_dir():
+            return total
+        prefix = m.group(1).lower()
+        for sibling in path.parent.iterdir():
+            if sibling.name == path.name:
+                continue
+            # Exact prefix: a drafter split as "<main prefix>-MTP-...-of-..." is its own set.
+            sibling_match = _SHARD_RE.match(sibling.name)
+            if sibling_match is None or sibling_match.group(1).lower() != prefix:
+                continue
+            try:
+                if sibling.is_file():
+                    total += sibling.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return total
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
@@ -9541,37 +9560,8 @@ class LlamaCppBackend:
         if pid is None:
             return None
 
-        # Sum shard sizes (primary + any extras alongside).
-        bytes_total = 0
         gguf_path = self._gguf_path
-        if gguf_path:
-            primary = Path(gguf_path)
-            try:
-                if primary.is_file():
-                    bytes_total += primary.stat().st_size
-            except OSError:
-                pass
-            # Extra shards share the primary's prefix before the shard index.
-            try:
-                parent = primary.parent
-                stem = primary.name
-                m = _SHARD_RE.match(stem)
-                prefix = m.group(1) if m else None
-                if prefix and parent.is_dir():
-                    prefix_lower = prefix.lower()
-                    for sibling in parent.iterdir():
-                        if (
-                            sibling.is_file()
-                            and sibling.name.lower().startswith(prefix_lower)
-                            and sibling.name != stem
-                            and sibling.suffix.lower() == ".gguf"
-                        ):
-                            try:
-                                bytes_total += sibling.stat().st_size
-                            except OSError:
-                                pass
-            except OSError:
-                pass
+        bytes_total = _gguf_set_bytes(Path(gguf_path)) if gguf_path else 0
         bytes_total += _extra_weight_file_bytes(getattr(proc, "args", None))
 
         rss = LlamaCppBackend._read_rss_bytes(pid)
