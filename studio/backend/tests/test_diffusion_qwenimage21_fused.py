@@ -171,7 +171,7 @@ def test_plain_int8_block_is_left_alone():
 @needs_cuda
 def test_arch_covered_by_the_int8_gemm_swap_is_left_alone(monkeypatch):
     blk = _block()
-    monkeypatch.setattr(qf, "arch_ok", lambda device = None: False)
+    monkeypatch.setattr(qf, "arch_ok", lambda device = None, linears = (): False)
     assert not qf.rotated_ff(blk.img_mlp)
     assert qf.install_modules(blk) == {"fused_qkv": 0, "out": 0}
 

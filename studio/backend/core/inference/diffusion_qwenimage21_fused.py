@@ -4,7 +4,9 @@
 """Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
 
 Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
-for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm90, sm100), resident only.
+for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path, resident only: archs with neither
+its fused GEMM nor ``rotq_i8`` (e.g. sm90, sm100), and attention / SwiGLU groups whose every shape its latency gate
+routes to cuBLAS (it then yields them here: A100 + Triton 3.8, Qwen-Image-2.1 1024 px, 0.2557 -> 0.2504 s/step).
 Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
 """
 
@@ -36,8 +38,10 @@ def q21_convrot_fused_disabled() -> bool:
     )
 
 
-def arch_ok(device: Any = None) -> bool:
-    """True where ``diffusion_int8_gemm`` has neither its fused GEMM nor ``rotq_i8`` for this arch."""
+def arch_ok(device: Any = None, linears: Any = ()) -> bool:
+    """True where ``diffusion_int8_gemm`` leaves ``linears`` on the stock path: neither its fused GEMM nor ``rotq_i8``
+    on this arch, or (``linears`` given) its latency gate routes every shape of them to cuBLAS, so the swap yields
+    them here (``stock_claims``). Eager only: the gate may time missing shapes."""
     try:
         import torch
 
@@ -53,9 +57,79 @@ def arch_ok(device: Any = None) -> bool:
         if int8_gemm_mode() == "off":
             return True
         gemm, rotq = _gates(torch.cuda.get_device_capability(index))
-        return not (gemm or rotq)
+        if not (gemm or rotq):
+            return True
+        if gemm and linears:
+            from .diffusion_int8_gemm import gate_routes_to_cublas
+            return gate_routes_to_cublas(index, _shapes(linears))
+        return False
     except Exception:  # noqa: BLE001
         return False
+
+
+def _shapes(linears: Any) -> set:
+    return {(int(lin.out_features), int(lin.in_features)) for lin in linears}
+
+
+def _attn_group(attn: Any) -> Optional[list]:
+    """to_q, to_k, to_v (+ to_out[0] when it rotates) of a rotated QwenImage21Attention, else None."""
+    try:
+        if type(attn).__name__ != "QwenImage21Attention":
+            return None
+        parts = [getattr(attn, n, None) for n in ("to_q", "to_k", "to_v")]
+        if any(p is None for p in parts) or not _rotated_group(parts):
+            return None
+        out = attn.to_out[0]
+        return parts + [out] if _rotated_group([out]) else parts
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ff_group(module: Any) -> Optional[list]:
+    """gate_layer, proj, out of a QwenImage21SwiGLUFeedForward that all rotate, else None."""
+    try:
+        if type(module).__name__ != "QwenImage21SwiGLUFeedForward":
+            return None
+        parts = [module.gate_layer, module.proj]
+        if not _rotated_group(parts) or not _rotated_group([module.out]):
+            return None
+        return parts + [module.out]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def claimed(root: Any) -> set:
+    """ids of the rotated Linears a stock-path fusion has actually taken: the fused QKV (+ the marked to_out) here,
+    and a SwiGLU region ``diffusion_int8_fused`` installed. A group whose installer declined is absent."""
+    from .diffusion_int8_fused import _MARK as _FUSED_MARK
+
+    out: set = set()
+    for module in root.modules():
+        attn = _attn_group(module)
+        if attn is not None:
+            if _qkv_intact(module) is not None:
+                out.update(id(m) for m in attn[:3])
+            if len(attn) == 4 and _OUT_MARK in attn[3].__dict__:
+                out.add(id(attn[3]))
+            continue
+        ff = _ff_group(module)
+        if ff is not None and _FUSED_MARK in module.__dict__:
+            out.update(id(m) for m in ff)
+    return out
+
+
+def stock_claims(root: Any) -> list:
+    """The rotated Linear groups this module (QKV / to_out) and ``diffusion_int8_fused`` (SwiGLU) take when
+    ``arch_ok(device, group)`` holds; ``diffusion_int8_gemm`` leaves exactly these unswapped where its gate is all
+    cuBLAS. Empty for another model or under the kill switch."""
+    if q21_convrot_fused_disabled() or type(root).__name__ != "QwenImage21Transformer2DModel":
+        return []
+    groups = []
+    for module in root.modules():
+        group = _attn_group(module) or _ff_group(module)
+        if group:
+            groups.append(group)
+    return groups
 
 
 def _rotated_group(linears: list) -> int:
@@ -74,13 +148,13 @@ def _plain(lin: Any) -> bool:
 
 def rotated_ff(module: Any) -> bool:
     """A Qwen-Image-2.1 SwiGLU with rotated gate/value and down projections, on a covered arch."""
-    if type(module).__name__ != "QwenImage21SwiGLUFeedForward" or q21_convrot_fused_disabled():
+    if q21_convrot_fused_disabled():
+        return False
+    group = _ff_group(module)
+    if group is None:
         return False
     try:
-        parts = [module.gate_layer, module.proj]
-        if not _rotated_group(parts) or not _rotated_group([module.out]):
-            return False
-        return arch_ok(module.gate_layer.weight.device)
+        return arch_ok(module.gate_layer.weight.device, group)
     except Exception:  # noqa: BLE001
         return False
 
@@ -208,22 +282,19 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     result = {"fused_qkv": 0, "out": 0}
     if q21_convrot_fused_disabled():
         return result
-    import torch
-
     from .diffusion_int8_fused import resident_cuda_cards
 
-    cards = resident_cuda_cards(root)  # one card, or each card of a layer split
-    if not cards or not all(arch_ok(torch.device("cuda", index)) for index in cards):
+    if not resident_cuda_cards(root):  # one card, or each card of a layer split
         return result
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
     todo = []
     for _name, module in root.named_modules():
-        if type(module).__name__ != "QwenImage21Attention":
+        group = _attn_group(module)
+        # per group, on the card holding it: a layer split can put attention modules on different archs
+        if group is None or not arch_ok(group[0].weight.device, group):
             continue
-        parts = [getattr(module, n, None) for n in ("to_q", "to_k", "to_v")]
-        if any(p is None for p in parts) or not _rotated_group(parts):
-            continue
+        parts = group[:3]
         if len({p.weight.device for p in parts}) != 1:
             continue
         todo.append((module, parts))
@@ -272,6 +343,45 @@ def uninstall(transformer: Any = None) -> None:
                     fwd = module.__dict__.get("forward")
                     if getattr(fwd, "__func__", None) is _out_forward:
                         module.__dict__.pop("forward", None)
+
+
+def release_after_layer_split(root: Any) -> int:
+    """A layer split moved groups that were taken here (QKV / to_out) or by ``diffusion_int8_fused`` (SwiGLU) while
+    the model sat on a card whose gate sent them all to cuBLAS. A group now on a card where ``arch_ok`` no longer
+    holds (its plan keeps a fused bucket) gets its stock Linears back, so the per-card swap after the split
+    (``diffusion_int8_gemm.after_layer_split``) gives it that card's fused GEMM. Returns how many groups were released.
+    Eager, before the first forward."""
+    if type(root).__name__ != "QwenImage21Transformer2DModel":
+        return 0
+    from .diffusion_int8_fused import _LOCK as _FUSED_LOCK
+    from .diffusion_int8_fused import _MARK as _FUSED_MARK
+    from .diffusion_int8_fused import _restore_module
+
+    released = 0
+    for module in root.modules():
+        attn = _attn_group(module)
+        if attn is not None:
+            out = module.to_out[0]
+            taken = _QKV_ATTR in module.__dict__ or _OUT_MARK in out.__dict__
+            if taken and not arch_ok(attn[0].weight.device, attn):
+                with _LOCK:
+                    module.__dict__.pop(_QKV_ATTR, None)
+                    if out.__dict__.pop(_OUT_MARK, None) is not None:
+                        fwd = out.__dict__.get("forward")
+                        if getattr(fwd, "__func__", None) is _out_forward:
+                            out.__dict__.pop("forward", None)
+                released += 1
+            continue
+        ff = _ff_group(module)
+        if (
+            ff is not None
+            and _FUSED_MARK in module.__dict__
+            and not arch_ok(ff[0].weight.device, ff)
+        ):
+            with _FUSED_LOCK:
+                _restore_module(module)
+            released += 1
+    return released
 
 
 def is_installed(module: Any) -> bool:
