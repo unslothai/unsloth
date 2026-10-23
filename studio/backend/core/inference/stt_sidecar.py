@@ -1186,16 +1186,20 @@ def _close_engine(engine) -> bool:
         return not _engine_is_alive(engine)
 
 
-def _av_open(av, source):
+# An upload probed as a concat playlist would otherwise decode the files it names.
+NO_PROTOCOLS = {"protocol_whitelist": "none"}
+
+
+def _av_open(av, source, **extra):
     """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", **extra)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
         # format = None is PyAV's own default (probe the container); spelling it keeps this call
         # distinguishable from Path.open for the text-encoding lint.
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, **extra)
 
 
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
@@ -1241,7 +1245,7 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         raw_buffer.write(array)
 
     try:
-        with _av_open(av, io.BytesIO(audio)) as container:
+        with _av_open(av, io.BytesIO(audio), options = NO_PROTOCOLS) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
             try:

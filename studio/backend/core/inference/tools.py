@@ -10178,15 +10178,112 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
 _with_session_packages = os_sandbox.with_session_packages
 
 
-def _software_safeguards_launch(plan, fault: str):
-    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
+def _script_top_level_imports(script: str) -> "list[str]":
+    """Top-level module names an approved script imports by absolute name; none if it does not parse."""
+    try:
+        tree = ast.parse(script)
+    except (SyntaxError, ValueError):
+        return []
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return sorted(names)
+
+
+def _requested_chat_clis(scripts: str, text: str, dest: str) -> "str | None":
+    """Copy the chat-installed CLIs whose names appear as words in *text* into *dest*; *dest* if any."""
+    try:
+        entries = os.listdir(scripts)
+    except OSError:
+        return None
+    # Windows resolves commands case-insensitively.
+    fold = str.lower if os.name == "nt" else str
+    words = {fold(word) for word in re.findall(r"[\w.+-]+", text)}
+    copied = False
+    for entry in entries:
+        stem = os.path.splitext(entry)[0] if os.name == "nt" else entry
+        source = os.path.join(scripts, entry)
+        if (fold(entry) in words or fold(stem) in words) and os.path.isfile(source):
+            os.makedirs(dest, exist_ok = True)
+            shutil.copy2(source, os.path.join(dest, entry))
+            copied = True
+    return dest if copied else None
+
+
+def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]":
+    """argv and env for an approved host-access launch: nothing it loads comes from the sandbox-writable workdir.
+
+    HOME and (for the python tool) the script move to a private per-call directory outside every workdir, and the
+    session packages and the helpers the script imports only ever go last on sys.path/PATH; earlier sandboxed calls can write all of those in the workdir. The
+    cwd stays the workdir, so relative paths in the approved code resolve as before.
+    """
+    private = tempfile.mkdtemp(prefix = "unsloth-host-call-")
+    try:
+        env = dict(plan.env)
+        env["HOME"] = private
+        if sys.platform == "win32":
+            env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(private)
+        argv = tuple(plan.argv)
+        packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
+        if os.path.isdir(packages):
+            # The trusted sitecustomize appends these after installed packages for Python and Terminal alike.
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            env["PYTHONNOUSERSITE"] = "1"
+            # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
+            # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
+            requested = _requested_chat_clis(
+                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
+                script if script is not None else " ".join(map(str, argv)),
+                os.path.join(private, ".unsloth-chat-bin"),
+            )
+            if requested:
+                env["PATH"] = os.pathsep.join(
+                    part for part in (env.get("PATH", ""), requested) if part
+                )
+        if script is not None and argv:
+            # Helper modules the approved script itself imports stay importable from the chat folder, after
+            # everything else. Only those names: a library probing an optional import never reaches the folder.
+            helpers = _script_top_level_imports(script)
+            if helpers:
+                env["_UNSLOTH_HOST_WORKDIR"] = plan.workdir
+                env["_UNSLOTH_HOST_WORKDIR_MODULES"] = ",".join(helpers)
+            # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
+            path = os.path.join(private, os.path.basename(argv[-1]))
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding = "utf-8") as f:
+                f.write(script)
+            argv = (*argv[:-1], path)
+            # The script's own folder stays off sys.path too (CPython >= 3.11).
+            env["PYTHONSAFEPATH"] = "1"
+        return argv, env, private
+    except BaseException:
+        shutil.rmtree(private, ignore_errors = True)
+        raise
+
+
+def _software_safeguards_launch(
+    plan,
+    fault: str,
+    *,
+    off_workdir: bool = False,
+    host_script: "str | None" = None,
+):
+    """Prepare an unisolated launch, retaining session packages (unless *off_workdir*) and recording *fault*."""
     full = plan.requested_mode == "full"
+    argv, env, cleanup_paths = plan.argv, None, []
+    if off_workdir:
+        argv, env, private = _host_access_launch(plan, host_script)
+        cleanup_paths.append(private)
     return os_sandbox.PreparedSandboxLaunch(
-        argv = plan.argv,
+        argv = argv,
         workdir = plan.workdir,
-        env = _with_session_packages(plan.env, plan.workdir),
+        env = env if env is not None else _with_session_packages(plan.env, plan.workdir),
         preexec_fn = plan.preexec_fn,
         backend = "software-safeguards",
+        cleanup_paths = cleanup_paths,
         timeout_seconds = plan.timeout_seconds,
         close_fds = plan.close_fds,
         terminate_descendants = plan.terminate_descendants,
@@ -10239,12 +10336,19 @@ def _prepare_tool_launch(
     *,
     host_access_approved: bool = False,
     user_folder: bool = False,
+    host_script: "str | None" = None,
 ):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if user_folder and plan.requested_mode == "auto":
         os_sandbox.recheck_overran_workdir(plan.workdir)
     if host_access_approved and plan.requested_mode == "auto":
-        return _software_safeguards_launch(plan, "user_approved_host_access")
+        # A chosen project folder is never a sandbox workdir in auto, so its calls keep importing from it.
+        return _software_safeguards_launch(
+            plan,
+            "user_approved_host_access",
+            off_workdir = not user_folder,
+            host_script = host_script,
+        )
     # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
     # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
     # never after a scan finding, which tool code could plant to drop its own boundary.
@@ -11072,11 +11176,24 @@ def _get_project_workdir(session_id: str) -> str | None:
         return None
     root_real = os.path.realpath(root_path)
     sandbox_real = os.path.realpath(sandbox_path)
-    if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
+    # Same rule as _get_workdir: a link left by tool code is dropped, and the root itself is never the workdir.
+    if (
+        os.path.islink(sandbox_path)
+        or _is_windows_reparse_point(sandbox_path)
+        or not sandbox_real.startswith(root_real + os.sep)
+    ):
         return None
     from storage.studio_db import available_project_working_folder
 
     return available_project_working_folder(project) or sandbox_real
+
+
+def _is_windows_reparse_point(path: str) -> bool:
+    """A Windows junction, which ``os.path.islink`` does not report."""
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return False
 
 
 # Dropped in every session directory we create. The root can be an existing shared folder the user pointed us at, and
@@ -14981,6 +15098,16 @@ def _scope_retrieval_kwargs(scope: dict) -> dict:
     return {"mode": mode if mode in ("hybrid", "dense", "lexical") else "hybrid"}
 
 
+# The sidebar's Top K maximum. Uncapped, lexical binds top_k as an SQL LIMIT and dense fails past vec0's KNN limit.
+_MAX_KNOWLEDGE_SEARCH_TOP_K = 50
+
+
+def _kb_top_k(value) -> int | None:
+    """``value`` capped at the sidebar maximum, or None (the search default) when it is not a positive count."""
+    k = _opt_int(value)
+    return min(k, _MAX_KNOWLEDGE_SEARCH_TOP_K) if k is not None and k > 0 else None
+
+
 def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     """Run the RAG search bound to the hidden per-request ``rag_scope`` (the model supplies only
     ``query``/``top_k``). Lazy import; missing sqlite-vec degrades to a friendly message."""
@@ -14997,7 +15124,7 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         logger.warning("RAG tool unavailable: %s", exc)
         return "Knowledge base search is unavailable on this server."
 
-    top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
+    top_k = _kb_top_k((arguments or {}).get("top_k")) or _kb_top_k(scope.get("default_top_k"))
     text, sources = search_knowledge_base_with_sources(
         query = str(query),
         scope_kb_id = scope.get("kb_id"),
@@ -23794,6 +23921,7 @@ def _python_exec(
                 ),
                 host_access_approved = host_access_approved and _reaches_host_paths("python", code),
                 user_folder = _is_user_project_folder(session_id, workdir),
+                host_script = code,
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)

@@ -1958,6 +1958,25 @@ def _harden_console_close(stream):
         pass
 
 
+def _restrict_server_log_perms(log_dir: Path) -> None:
+    """Best-effort owner-only modes on the server log dir and its existing session logs (POSIX only)."""
+    if os.name == "nt":
+        return
+    try:
+        os.chmod(log_dir, 0o700)
+    except OSError:
+        pass
+    try:
+        for old_log in log_dir.glob("server-*.log"):
+            try:
+                if not old_log.is_symlink() and old_log.stat().st_mode & 0o077:
+                    os.chmod(old_log, 0o600)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _setup_server_disk_logging():
     """Tee stdout/stderr to ~/.unsloth/studio/logs/server/ and aim faulthandler at the same file so hard
     crashes (access violations / SIGSEGV in the GPU runtime) leave a stack trace on disk. Also exports
@@ -1976,12 +1995,20 @@ def _setup_server_disk_logging():
         )
         log_dir = Path(home) / "logs" / "server"
     try:
-        log_dir.mkdir(parents = True, exist_ok = True)
+        log_dir.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        _restrict_server_log_perms(log_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = log_dir / f"server-{stamp}-pid{os.getpid()}.log"
+        # Owner-only from creation: the session log carries the startup banner's API key.
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if os.name != "nt":
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
         # Line-buffered so the tail survives a hard kill; errors="replace" so a console encoding quirk can
         # never take the server down.
-        log_fh = open(log_path, "w", encoding = "utf-8", errors = "replace", buffering = 1)
+        log_fh = os.fdopen(fd, "w", encoding = "utf-8", errors = "replace", buffering = 1)
     except Exception:
         return None
 

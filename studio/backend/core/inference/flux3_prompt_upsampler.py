@@ -54,6 +54,11 @@ UPSAMPLER_MODEL_FILES = {
 # divergence than the imatrix Q4_K_M for 6% more bytes, at the same speed.
 UPSAMPLER_DEFAULT_QUANT = "UD-Q4_K_XL"
 UPSAMPLER_MODEL_FILE = UPSAMPLER_MODEL_FILES[UPSAMPLER_DEFAULT_QUANT]
+# Cached earlier defaults, best first, used when UPSAMPLER_MODEL_FILE is absent (fresh installs still download it).
+UPSAMPLER_CACHED_FALLBACK_QUANTS = ("Q8_0", "Q4_K_M")
+UPSAMPLER_MODEL_FILE_PREFERENCE = (UPSAMPLER_MODEL_FILE,) + tuple(
+    UPSAMPLER_MODEL_FILES[quant] for quant in UPSAMPLER_CACHED_FALLBACK_QUANTS
+)
 # Vision projector, needed only for edits (reference images).
 UPSAMPLER_MMPROJ_FILE = "mmproj-F16.gguf"
 # Expected sizes of the files as built, for the UI before the download starts (the download reads the real ones).
@@ -726,16 +731,18 @@ def _cached_at_any_revision(filename: str, hub_cache: Optional[Path] = None) -> 
 
 def _cached_pair(hub_cache: Optional[Path] = None) -> tuple[Optional[str], Optional[str]]:
     """The model and projector from ONE revision (the recorded one first), as the downloader pins them; a model
-    with no projector at its revision when no revision holds both."""
+    with no projector at its revision when no revision holds both. Files tried in UPSAMPLER_MODEL_FILE_PREFERENCE order."""
+    revisions = _candidate_revisions(hub_cache)
     model_only = None
-    for revision in _candidate_revisions(hub_cache):
-        model = _cached_file(UPSAMPLER_MODEL_FILE, hub_cache = hub_cache, revision = revision)
-        if model is None:
-            continue
-        mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
-        if mmproj is not None:
-            return model, mmproj
-        model_only = model_only or model
+    for filename in UPSAMPLER_MODEL_FILE_PREFERENCE:
+        for revision in revisions:
+            model = _cached_file(filename, hub_cache = hub_cache, revision = revision)
+            if model is None:
+                continue
+            mmproj = _cached_file(UPSAMPLER_MMPROJ_FILE, hub_cache = hub_cache, revision = revision)
+            if mmproj is not None:
+                return model, mmproj
+            model_only = model_only or model
     return model_only, None
 
 
@@ -745,7 +752,8 @@ def _cached_download_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both repo files at one revision, or None (the download state's completion check)."""
+    """Both repo files at one revision, or None (the download state's completion check). A pinned revision is the
+    one just downloaded, so it checks the default quant the download fetched; without one, any cached quant counts."""
     if revision is None:
         model, mmproj = _cached_pair(hub_cache)
     else:
@@ -827,9 +835,7 @@ def status() -> dict:
     """The prompt-upsampler status route body."""
     model = model_path()
     mmproj = mmproj_path()
-    model_name = (
-        Path(model).name if model and os.environ.get(ENV_MODEL_OVERRIDE) else UPSAMPLER_MODEL_FILE
-    )
+    model_name = Path(model).name if model else UPSAMPLER_MODEL_FILE
     size = None
     if model:
         with suppress(OSError):
@@ -840,7 +846,9 @@ def status() -> dict:
         "loaded": get_sidecar().loaded,
         "repo": UPSAMPLER_REPO,
         "filename": model_name,
-        "size_bytes": size or UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MODEL_FILE),
+        "size_bytes": size
+        or UPSAMPLER_FILE_SIZES.get(model_name)
+        or UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MODEL_FILE),
         "mmproj_filename": UPSAMPLER_MMPROJ_FILE,
         "mmproj_size_bytes": UPSAMPLER_FILE_SIZES.get(UPSAMPLER_MMPROJ_FILE),
         "mmproj_downloaded": mmproj is not None,
@@ -897,27 +905,34 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
 
 _VULKAN_ROWS_TTL_S = 120.0
 _vulkan_rows_memo: dict = {}
+# One probe at a time: concurrent prefetches read the answer the first one cached.
+_vulkan_rows_lock = threading.Lock()
 
 
-def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
-    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer."""
+def _vulkan_rows(
+    binary: str,
+    retry_empty: bool = False,
+    throttle_retry: bool = False,
+) -> list:
+    """Vulkan probe rows, cached briefly; ``retry_empty`` re-probes a cached (maybe transient) empty answer. With
+    ``throttle_retry`` (a speculative prefetch) an empty answer that already was a retry stands until the window ends."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     try:
         key = (binary, os.path.getmtime(binary))
     except OSError:
         key = (binary, None)
-    hit = _vulkan_rows_memo.get(key)
-    if (
-        hit is not None
-        and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
-        and (hit[0] or not retry_empty)
-    ):
-        return hit[0]
-    rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
-    _vulkan_rows_memo.clear()
-    _vulkan_rows_memo[key] = (rows, time.monotonic())
-    return rows
+    with _vulkan_rows_lock:
+        hit = _vulkan_rows_memo.get(key)
+        live = hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
+        # Only a speculative prefetch is throttled: a real launch always asks again.
+        if live and (hit[0] or not retry_empty or (throttle_retry and len(hit) > 2 and hit[2])):
+            return hit[0]
+        rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
+        _vulkan_rows_memo.clear()
+        # (rows, probed at, this probe retried a live empty answer)
+        _vulkan_rows_memo[key] = (rows, time.monotonic(), live)
+        return rows
 
 
 def _user_device_pick(binary: Optional[str] = None) -> bool:
@@ -938,13 +953,130 @@ def _user_device_pick(binary: Optional[str] = None) -> bool:
         return True
 
 
-def _prefetch_vulkan_rows(binary: str) -> None:
+def _vulkan_pin_possible(binary: str, torch) -> bool:
+    """Whether a Vulkan pin is worth the probe: a torch card, a Vulkan build, nothing the user picked."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    return (
+        torch.cuda.device_count() >= 1
+        and not _user_device_pick()
+        and not str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
+        and bool(LlamaCppBackend._is_vulkan_backend(binary))
+        and not (
+            (os.environ.get("HIP_VISIBLE_DEVICES") or "").strip()
+            and not LlamaCppBackend._torch_is_rocm(torch)
+        )
+    )
+
+
+def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None) -> None:
+    """Probe (and read the card lookup's inventory) before the render slot, waited for cancellably: the probe can take
+    its 15 s timeout, which a blocking unload behind this warm start must not sit out."""
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
-        if not _user_device_pick() and LlamaCppBackend._is_vulkan_backend(binary):
-            _vulkan_rows(binary)
+        import torch
+        if not _vulkan_pin_possible(binary, torch):
+            return
     except Exception:  # noqa: BLE001
-        pass
+        return
+
+    def _work() -> None:
+        try:
+            # An empty answer (cached or fresh) is retried once, as the launch it stands in for did.
+            rows = _vulkan_rows(binary, retry_empty = True, throttle_retry = True) or _vulkan_rows(
+                binary, retry_empty = True, throttle_retry = True
+            )
+            # One row on one torch card launches unpinned, so it needs no card lookup.
+            if rows and (len(rows) > 1 or torch.cuda.device_count() > 1):
+                ordinal = _resident_cuda_ordinal()
+                if ordinal is not None and ordinal >= 0:
+                    _vulkan_card_name(ordinal, torch)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # A maintenance pass that cancelled this start before the probe began must not find one running.
+    if cancel is not None and cancel.is_set():
+        raise UpsamplerCancelledError("Cancelled.")
+    worker = threading.Thread(target = _work, name = "flux3-pup-vulkan-probe", daemon = True)
+    # Registered once started: joining a thread that has not started raises.
+    worker.start()
+    _vulkan_probe_workers[:] = [w for w in _vulkan_probe_workers if w.is_alive()] + [worker]
+    while worker.is_alive():
+        worker.join(0.1)
+        if cancel is not None and cancel.is_set():
+            raise UpsamplerCancelledError("Cancelled.")
+
+
+_vulkan_probe_workers: list = []
+
+
+def _wait_for_vulkan_probe(timeout: float = 20.0) -> None:
+    """Join prefetches cancelled warm starts abandoned: their probes can still hold the llama.cpp tree's libraries."""
+    deadline = time.monotonic() + timeout
+    for worker in list(_vulkan_probe_workers):
+        worker.join(max(0.0, deadline - time.monotonic()))
+
+
+def _vulkan_rows_came_back_empty(binary: str) -> bool:
+    """A pinnable multi-GPU host whose cached Vulkan probe listed nothing: a warm start would stay unpinned for good.
+    One torch card warm-starts unpinned as before."""
+    try:
+        import torch
+        return (
+            torch.cuda.device_count() > 1
+            and _vulkan_pin_possible(binary, torch)
+            and not _vulkan_rows(binary)
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _vulkan_card_name(ordinal: int, torch) -> tuple:
+    """``physical_card_name`` on ROCm. A CUDA torch reads no HIP/ROCR mask and its cards are not amd-smi's, so that
+    lookup would place it by an AMD card's position: name it in torch order, unplaced under a CUDA mask (Vulkan still
+    lists the cards it hides)."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.sd_cpp_backend import physical_card_name
+
+    if LlamaCppBackend._torch_is_rocm(torch):
+        return physical_card_name(ordinal)
+    if not torch.cuda.is_available() or not 0 <= ordinal < torch.cuda.device_count():
+        return None, None
+    names = [
+        (torch.cuda.get_device_name(i) or "").strip() for i in range(torch.cuda.device_count())
+    ]
+    name = names[ordinal]
+    if not name:
+        return None, None
+    if (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
+        return name, None
+    # Between identical cards only PCI order matches Vulkan's; FASTEST_FIRST (CUDA's default) may not.
+    if names.count(name) > 1 and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+        return name, None
+    return name, names[:ordinal].count(name)
+
+
+# Vendor by positive evidence: older NVIDIA drivers name Vulkan devices "Tesla T4" or "GeForce GTX 1080 Ti".
+_VULKAN_VENDOR_RES = (
+    ("nvidia", re.compile(r"\b(?:nvidia|geforce|quadro|tesla|titan|rtx)\b")),
+    ("amd", re.compile(r"\b(?:amd|radeon|radv|instinct|firepro)\b")),
+    ("intel", re.compile(r"\b(?:intel|arc|iris|uhd)\b")),
+    ("software", re.compile(r"\b(?:llvmpipe|lavapipe|swiftshader)\b")),
+)
+
+
+def _vulkan_row_vendor(row_name: str) -> Optional[str]:
+    """``nvidia`` / ``amd`` / ``intel`` / ``software`` when the Vulkan row names one, else None (unknown)."""
+    name = str(row_name or "").lower()
+    return next((vendor for vendor, pattern in _VULKAN_VENDOR_RES if pattern.search(name)), None)
+
+
+def _vulkan_row_is_another_vendor(row_name: str, torch) -> bool:
+    """A CUDA torch's card is NVIDIA's and a ROCm torch's AMD's: a Vulkan row is another card only when it names
+    another vendor. A row naming no vendor at all is not evidence either way."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    vendor = _vulkan_row_vendor(row_name)
+    expected = "amd" if LlamaCppBackend._torch_is_rocm(torch) else "nvidia"
+    return vendor is not None and vendor != expected
 
 
 def _vulkan_device_args(
@@ -952,55 +1084,54 @@ def _vulkan_device_args(
     ordinal: Optional[int],
     retry_empty: bool = False,
 ) -> Optional[list]:
-    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown."""
+    """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown.
+    One torch card and one Vulkan device launch as before Vulkan pinning; non-Vulkan builds never probe."""
     if ordinal is None or ordinal < 0:
         return []
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
-
         import torch
 
-        # The user's own device pick wins (a Vulkan mask renumbers what the probe lists).
-        if _user_device_pick():
+        count = torch.cuda.device_count()
+        if count < 1 or _user_device_pick():
             return []
-        # Backends loaded from GGML_BACKEND_PATH are not the ones beside the binary the probe would list.
-        if str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
-            return None if torch.cuda.device_count() > 1 else []
-        if not LlamaCppBackend._is_vulkan_backend(binary):
-            return []
-        # The card lookup reads HIP masks, which only a ROCm torch applies: elsewhere one could name the wrong card.
-        if (
-            os.environ.get("HIP_VISIBLE_DEVICES") or ""
-        ).strip() and not LlamaCppBackend._torch_is_rocm(torch):
-            return None if torch.cuda.device_count() > 1 else []
-        # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
+        if not _vulkan_pin_possible(binary, torch):
+            # Backends from GGML_BACKEND_PATH are not the ones the probe lists; a HIP mask on a CUDA torch steers nothing.
+            from core.inference.llama_cpp import LlamaCppBackend
+            if count == 1 or not (
+                str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
+                or LlamaCppBackend._is_vulkan_backend(binary)
+            ):
+                return []
+            return None
+        # Vulkan also lists an iGPU and cards a mask hides (ggml's default takes discrete AND integrated GPUs).
         rows = _vulkan_rows(binary, retry_empty = retry_empty)
         if not rows:
-            return None if torch.cuda.device_count() > 1 else []
+            return None if count > 1 else []
+        if len(rows) == 1 and count == 1:
+            # Nothing to choose, so no name match (a renamed card never declines a single-GPU host),
+            # unless that one device is plainly another vendor's: then it is not the image model's card.
+            return None if _vulkan_row_is_another_vendor(rows[0]["name"], torch) else []
     except Exception:  # noqa: BLE001
         return []
     try:
         from core.inference.sd_cpp_backend import (
             _normalized_card_name,
             _without_driver_tag,
-            physical_card_name,
             sd_cpp_device_named,
         )
 
         # By name, as the image engine pins its Vulkan build: no torch ordinal maps onto Vulkan's index.
         listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
-        name, position = physical_card_name(ordinal)
+        name, position = _vulkan_card_name(ordinal, torch)
         device = sd_cpp_device_named(binary, name, position = position, listing = listing)
         if not device:
             return None
         # Exact model match: containment takes an `RX 7600 XT` for an `RX 7600`.
-        import torch
-
         matched = next((row["name"] for row in rows if f"Vulkan{row['index']}" == device), "")
         exact = bool(name) and _normalized_card_name(
             _without_driver_tag(matched)
         ) == _normalized_card_name(name)
-        if not exact and (len(rows) > 1 or torch.cuda.device_count() > 1):
+        if not exact:
             return None
         return [] if len(rows) == 1 else ["--device", device]
     except Exception:  # noqa: BLE001
@@ -1194,10 +1325,14 @@ class PromptUpsamplerSidecar:
         self._update_in_progress = True
         try:
             self.cancel_pending_load()
-            with self._request_lock, self._lock:
-                was_active = self.loaded
-                self._release_locked()
-                yield was_active
+            _wait_for_vulkan_probe()
+            with self._request_lock:
+                # Again once no warm start can still be about to start one.
+                _wait_for_vulkan_probe()
+                with self._lock:
+                    was_active = self.loaded
+                    self._release_locked()
+                    yield was_active
         finally:
             self._update_in_progress = False
 
@@ -1207,12 +1342,49 @@ class PromptUpsamplerSidecar:
         self._load_cancel.clear()
         with self._lock:
             self._loading = True
+        slot = None
         try:
+            # Offloaded layers size themselves to the free memory read at spawn: a render denoising meanwhile (another
+            # request's) has not reached its peak yet, so the start waits for the generation slot, as a warm start
+            # holds it. Called ahead of the request's own render, never inside one.
+            slot = self._wait_for_render_slot()
             self._spawn_server(binary, model, mmproj)
         finally:
+            if slot is not None:
+                slot.release()
             with self._lock:
                 self._loading = False
                 self._starting_process = None
+
+    def _wait_for_render_slot(self) -> Any:
+        """The active image engine's generation lock, acquired, or None where the start would not offload (training,
+        nobody on the GPU, a CPU-only host) or the engine cannot be read. Waited for cancellably: a Stop, training
+        start or handover sets ``_load_cancel``."""
+        from core.inference.stt_sidecar import _training_active
+
+        if _training_active() or _gpu_unowned():
+            return None
+        if _accelerator_memory_mib(_resident_cuda_ordinal())[2] == "cpu":
+            return None
+        try:
+            from core.inference.diffusion_engine_router import get_active_diffusion_engine
+            engine = get_active_diffusion_engine()
+            lock = getattr(engine, "_generate_lock", None)
+        except Exception:  # noqa: BLE001 -- unreadable: start as before rather than fail the enhancement
+            return None
+        if lock is None:
+            return None
+        while not lock.acquire(timeout = 0.2):
+            if self._load_cancel.is_set():
+                raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if self._load_cancel.is_set():
+            lock.release()
+            raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
+        if _engine_loading(engine) or not _image_model_owns_gpu():
+            # The model this caption is for is leaving: the run goes as typed (or retries with the new model).
+            lock.release()
+            raise UpsamplerUnavailableError("The image model is being replaced.")
+        return lock
 
     def _spawn_server(self, binary: str, model: str, mmproj: Optional[str]) -> None:
         from core.inference.stt_mtmd_sidecar import (
@@ -1258,7 +1430,8 @@ class PromptUpsamplerSidecar:
             if layers == 0:
                 cmd.append("--no-mmproj-offload")
         if layers:
-            cmd += _vulkan_device_args(binary, ordinal, retry_empty = True) or []
+            # A warm start probed just before its slot: re-probing an empty answer here would run it twice.
+            cmd += _vulkan_device_args(binary, ordinal, retry_empty = not self._warming) or []
         sock.close()
         if is_process_shutting_down():
             raise UpsamplerUnavailableError("Unsloth is shutting down.")
@@ -1504,7 +1677,7 @@ class PromptUpsamplerSidecar:
             if _user_device_pick(binary) and _cuda_device_count() > 1:
                 return "placement"
             # The Vulkan probe can take its full timeout, so it runs before the slot that renders queue behind.
-            _prefetch_vulkan_rows(binary)
+            _prefetch_vulkan_rows(binary, self._load_cancel)
             # The engine's generation slot, held until the server is up: a render or model transition that arrives
             # meanwhile queues behind the start instead of overlapping it (a load cancels it first through
             # stop_for_handover). Not taken while one runs or a load is in flight.
@@ -1512,6 +1685,9 @@ class PromptUpsamplerSidecar:
             if slot is None:
                 return why
             slot_held = slot
+            # An empty (maybe transient) probe would leave the server unpinned for good; a real launch re-probes.
+            if _vulkan_rows_came_back_empty(binary):
+                return "placement"
             ordinal = _resident_cuda_ordinal()
             # Unpinnable on a multi-GPU host (the native engine records its card elsewhere): the server would split
             # over every visible card and the probe below would read the wrong one. Its first enhanced run starts it.

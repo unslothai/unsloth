@@ -9,8 +9,9 @@ posts the result back (``state.browser_actions``). The tab is where the user can
 take over, and it gates the risky actions (submitting forms, buying, signing in, new sites) with a
 prompt this side cannot classify: only the live page knows what ``r12`` is.
 
-What this side enforces: argument shapes, http(s) only, public hosts only, the request's website
-policy before and after a navigation, and that page text reaches the model fenced as untrusted.
+What this side enforces: argument shapes, http(s) only, public hosts or this machine off Studio's own
+ports, the request's website policy before and after a navigation, and that page text reaches the model
+fenced as untrusted.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import json
 import re
 import unicodedata
 from typing import Any, Callable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from loggers import get_logger
 
@@ -337,6 +338,9 @@ _LOCAL_SUFFIXES = (
     ".corp",
     ".intranet",
 )
+# Studio's own ports, as the desktop panel's local_origin refuses them.
+_STUDIO_PORTS = range(8888, 8909)
+_ASSIGNED_PORTS = 32768
 _FENCE = "untrusted_web_content"
 
 
@@ -400,6 +404,69 @@ def _host_problem(hostname: str) -> Optional[str]:
     return None
 
 
+def _is_loopback(hostname: str) -> bool:
+    host = hostname.strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip == ipaddress.IPv6Address("::1") or (ip.version == 4 and ip.is_loopback)
+
+
+def _studio_port_problem(url: str) -> Optional[str]:
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except ValueError:
+        return "the address has a bad port"
+    if port in _STUDIO_PORTS or port >= _ASSIGNED_PORTS:
+        return f"{parsed.hostname}:{port} is Unsloth's own address"
+    return None
+
+
+def _whatwg_path(path: str) -> str:
+    """The path as the tab's URL parser leaves it: `\\` is `/`, and `.` / `..` (also as %2e)
+    segments are resolved, with no network-path meaning for a leading `//`."""
+    segments: list[str] = []
+    parts = path.replace("\\", "/").split("/")[1:]
+    for index, part in enumerate(parts):
+        dots = re.sub(r"%2e", ".", part, flags = re.IGNORECASE)
+        last = index == len(parts) - 1
+        if dots == "..":
+            if segments:
+                segments.pop()
+            if last:
+                segments.append("")
+        elif dots == ".":
+            if last:
+                segments.append("")
+        else:
+            segments.append(part)
+    return "/" + "/".join(segments)
+
+
+def _redirect_target(url: str) -> Optional[str]:
+    """The page a search engine's redirect link lands on, as the browser tab unwraps it
+    (``unwrapRedirect`` in features/browser/address.ts), or None."""
+    try:
+        parsed = urlsplit(url)
+        # The tab's URL parser maps the host (UTS 46): full-width letters and ideographic dots too.
+        host = unicodedata.normalize("NFKC", parsed.hostname or "").replace("\u3002", ".").lower()
+        host = host.rstrip(".").removeprefix("www.")
+    except ValueError:
+        return None
+    query = parse_qs(parsed.query)
+    path = _whatwg_path(parsed.path)
+    target = None
+    if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
+        target = (query.get("uddg") or [None])[0]
+    elif re.fullmatch(r"google\.[a-z.]+", host) and path == "/url":
+        target = (query.get("q") or query.get("url") or [None])[0]
+    return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
+
+
 def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     """The http(s) URL to open, or ValueError saying why it may not be opened."""
     from .tools import _validate_and_resolve_host
@@ -413,10 +480,17 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
         if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", url) and not re.match(r"^[^:/]+:\d", url):
             raise ValueError("only http and https pages can be opened.")
-        url = "https://" + url.lstrip("/")
+        url = url.lstrip("/")
+        url = ("http://" if _is_loopback(urlsplit("//" + url).hostname or "") else "https://") + url
     allowed, reason, hostname = check_url_access(url, website_policy)
     if not allowed:
         raise ValueError(reason.removeprefix("Blocked: "))
+    # The desktop panel decides: it opens only the local origins the user typed there.
+    if _is_loopback(urlsplit(url).hostname or ""):
+        problem = _studio_port_problem(url)
+        if problem:
+            raise ValueError(f"{problem}, so the browser can't open it.")
+        return url
     problem = _host_problem(urlsplit(url).hostname or "")
     if problem:
         raise ValueError(f"{problem}, and the browser only opens public sites.")
@@ -425,6 +499,10 @@ def normalize_navigation_url(raw: Any, website_policy: Optional[dict]) -> str:
     ok, reason, _ips = _validate_and_resolve_host(hostname, port)
     if not ok:
         raise ValueError(reason.removeprefix("Blocked: "))
+    # The tab opens a redirect link's target, so the target has to pass the same checks.
+    target = _redirect_target(url)
+    if target is not None:
+        normalize_navigation_url(target, website_policy)
     return url
 
 
@@ -539,7 +617,8 @@ def format_result(name: str, result: dict, website_policy: Optional[dict]) -> st
     url = _one_line(_clip(result.get("url"), _MAX_URL_CHARS))
     if url.lower().startswith(("http://", "https://")):
         # A followed link or a redirect can land where browser_navigate would refuse to go.
-        problem = _host_problem(urlsplit(url).hostname or "")
+        host = urlsplit(url).hostname or ""
+        problem = _studio_port_problem(url) if _is_loopback(host) else _host_problem(host)
         if problem:
             return (
                 f"Error: the page went to {problem}, so its content is withheld. "
@@ -628,7 +707,7 @@ def execute_browser_tool(
 
     if output_callback is None:
         return (
-            "Error: the browser is only available in a Studio chat, where the browser panel runs "
+            "Error: the browser is only available in an Unsloth chat, where the browser panel runs "
             "these actions."
         )
     if not isinstance(arguments, dict):

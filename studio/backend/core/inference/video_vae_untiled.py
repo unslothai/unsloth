@@ -84,6 +84,18 @@ def _free_bytes(device: Any) -> Optional[int]:
         return None
 
 
+def _in_chain(fn: Any, target: Any) -> bool:
+    for _ in range(16):
+        if fn is None:
+            return False
+        if fn is target:
+            return True
+        from .decode_layers import next_layer  # noqa: PLC0415
+
+        fn = next_layer(fn)
+    return False
+
+
 def _decode_device(vae: Any, z: Any) -> Any:
     """Where the decode allocates: the latent's card, unless a multi-GPU split put the VAE on another CUDA card (its
     boundary moves the latent there inside this wrapper). An offloaded VAE (weights on the host) keeps the latent's."""
@@ -162,6 +174,11 @@ def install_untiled_decode(
         # Retried outside the handler so the failed attempt's tensors (held by the traceback) are gone first.
         stats["oom_fallback"] += 1
         oom_need[:] = [min([need, *oom_need])]
+        from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
+
+        clear_partial_decode(
+            vae, z
+        )  # the untiled attempt's causal state goes before the tiled decode
         torch.cuda.empty_cache()
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")
@@ -172,7 +189,8 @@ def install_untiled_decode(
             return gated(*args, **kwargs)
         finally:
             # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.
-            if vae.__dict__.get("decode") is not untiled_when_fits:
+            # (a layer installed over this one, e.g. the OOM retry's decode scope, keeps it in its __wrapped__ chain)
+            if not _in_chain(vae.__dict__.get("decode"), untiled_when_fits):
                 vae.decode = untiled_when_fits
 
     untiled_when_fits._unsloth_untiled_decode = True

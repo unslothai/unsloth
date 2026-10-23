@@ -84,6 +84,8 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "qwen-image-2.1": (14.2, 17.5, 1.4),
     "z-image": (12.3, 8.0, 0.2),
     "krea-2": (26.3, 8.9, 0.5),
+    # MOSS-Image: 5.08B DiT + headless Qwen3.5-9B + fp32 FLUX.2 VAE (MOSS-Image-SFT index metadata).
+    "moss-image": (10.2, 15.9, 0.3),
     # Ships fp32 (10.4 + 10.5 + 0.3 GB of shards); bf16-resident is half.
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
@@ -170,6 +172,27 @@ def resident_bytes_from_declared(
         + extra_bf16_bytes
     )
     return int(dtype_resident * dtype_scale) + prequant_bytes
+
+
+def companion_bytes_from_declared(
+    base_repo: Optional[str],
+    declared_files: Any,
+    *,
+    dtype_scale: float = 1.0,
+) -> Optional[int]:
+    """Non-denoiser (text encoder, VAE) share of ``resident_bytes_from_declared``; None when none declared."""
+    _denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
+        _base_key(base_repo) if base_repo else "", (1.0, 1.0)
+    )
+    # An SDXL-style UNet is a denoiser too.
+    companions = sum(
+        max(0, int(size or 0))
+        for path, size in (declared_files or ())
+        if not str(path).startswith(DENOISER_SUBFOLDERS + ("unet/",))
+    )
+    if companions <= 0:
+        return None
+    return int(int(companions / max(companion_factor, 0.01)) * max(1.0, float(dtype_scale or 1.0)))
 
 
 def _base_key(base_repo: Optional[str]) -> str:
@@ -563,6 +586,8 @@ def format_generation_for_log(
     """One-line log summary of a generate() result."""
     images = result.get("images") or ()
     size = getattr(images[0], "size", None) if images else None
+    if not isinstance(size, tuple):
+        size = None  # a latent tensor (Hires fix base pass) has no pixel size
     fields = {
         "engine": engine,
         "workflow": result.get("workflow"),

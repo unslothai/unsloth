@@ -119,6 +119,7 @@ export const ja = {
     reload: "再読み込み",
     more: "その他",
     addressPlaceholder: "検索または URL を入力",
+    local: "ローカル",
     suggested: "おすすめ",
     suggestedMenu: {
       open: "開く",
@@ -216,7 +217,7 @@ export const ja = {
     importBookmarksDoneOne: "{count} 件のブックマークをインポートしました。",
     importBookmarksDoneMany: "{count} 件のブックマークをインポートしました。",
     importBookmarksNone: "このファイルに新しいブックマークはありません。",
-    importBookmarksPartial: "{count} 件をインポートしましたが、残りの {leftOut} 件は入りませんでした。Studio に保存できるブックマークは最大 {max} 件です。",
+    importBookmarksPartial: "{count} 件をインポートしましたが、残りの {leftOut} 件は入りませんでした。Unsloth に保存できるブックマークは最大 {max} 件です。",
     importBookmarksFailed: "ファイルを読み込めませんでした。ブラウザからエクスポートしたブックマークの HTML ファイルを選択してください。",
     downloadsTitle: "ダウンロード",
     askWhereToSaveSetting: "ファイルごとに保存先を確認する",
@@ -267,7 +268,7 @@ export const ja = {
     annotationScreenshotsAlways: "常に含める",
     annotationScreenshotsNever: "含めない",
     clearDataSetting: "閲覧データを消去",
-    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Studio を再読み込みするまでのみ保持されます。",
+    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Unsloth を再読み込みするまでのみ保持されます。",
     manage: "管理",
     fullView: {
       enter: "全画面表示",
@@ -469,6 +470,8 @@ export const ja = {
       downloadFailed: "{name} をダウンロードできませんでした",
       notMarked: "{name} は保存されましたが、インターネットからダウンロードしたファイルとしてマークできなかったため、開く前にシステムの警告が表示されません。",
       blocked: "このアドレスはブラウザパネルでは開けません。開けるのは公開ウェブサイトのみです。",
+      blockedLocal: "このローカルアドレスはここでは開けません。開くにはアドレスバーに入力してください。",
+      studioAddress: "これは Unsloth 自身のアドレスのため、ブラウザパネルでは開けません。",
       clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去します。サイトからはログアウトされます。",
       clearDataDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
@@ -623,6 +626,8 @@ export const ja = {
     temporaryChatDescription: "このチャットは履歴に表示されず、保存されません。離れると消えます。",
   },
   picker: {
+    unifiedTightFit: "ぎりぎり",
+    unifiedTightFitHint: "この Mac では短いコンテキストで読み込まれるか、動作が遅くなる可能性があります。",
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
     retry: "再試行",
@@ -846,6 +851,7 @@ export const ja = {
       byProject: "プロジェクト別",
       inOneList: "1つのリストで",
       sortChatsBy: "チャットの並び順",
+      projectsHome: "プロジェクトのホーム",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
@@ -1067,6 +1073,7 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
+      intro: "ショートカットを変更するには、キーの組み合わせを選択してから新しいキーを入力します",
       searchPlaceholder: "ショートカットを検索…",
       keystrokePlaceholder: "ショートカットを押して検索",
       searchByKeystrokes: "キー入力で検索",
@@ -1074,18 +1081,23 @@ export const ja = {
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
-      recordingHint: "新しいキーの組み合わせを押すか、Esc でキャンセルします。",
       needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
       conflict: "別のショートカットでも使われています",
       conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",
       edit: "ショートカットを変更",
-      clear: "ショートカットを削除",
       reset: "既定値に戻す",
       resetAll: "すべて既定値に戻す",
-      primarySlot: "ショートカット",
-      alternateSlot: "代替ショートカット",
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
+      metaUnsupported: "Windows キーはショートカットに使用できません。",
+      altGraphUnsupported: "AltGr の組み合わせはショートカットに使用できません。",
+      desktopOnly: "デスクトップアプリのみ",
+      groups: {
+        composer: "入力欄",
+        chat: "チャット",
+        navigation: "ナビゲーション",
+        app: "アプリ",
+      },
       actions: {
         findInPage: {
           label: "ページ内検索",
@@ -1275,6 +1287,10 @@ export const ja = {
           label: "写真とファイルを添付",
           description: "入力欄に添付ファイルを追加します",
         },
+        openComposerMenu: {
+          label: "+ メニューを開く",
+          description: "入力欄のツールと添付ファイルの + メニューを開く",
+        },
         sendMessage: {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
@@ -1287,6 +1303,10 @@ export const ja = {
           label: "応答を修正",
           description: "現在の応答を停止して下書きを次に送信します",
         },
+        stopGeneration: {
+          label: "生成を停止",
+          description: "生成中の応答を停止します",
+        },
         cycleReasoningEffort: {
           label: "思考の深さを順に切り替え",
           description: "思考の深さのレベルを順に切り替えます",
@@ -1298,10 +1318,6 @@ export const ja = {
         decreaseReasoningEffort: {
           label: "思考の深さを下げる",
           description: "思考の深さを 1 段階下げます",
-        },
-        toggleFastMode: {
-          label: "Fast モードの切り替え",
-          description: "Fast モードをオンまたはオフにします",
         },
         renameChat: {
           label: "チャット名を変更",
@@ -1411,7 +1427,8 @@ export const ja = {
       lineCount: "{count} 行",
       filteredLineCount: "{total} 行中 {shown} 行",
       wrapLines: "行を折り返す",
-      jumpToLatest: "最新へ移動",
+      jumpToLatest: "最新",
+      resizeLog: "ドラッグしてログのサイズを変更",
       noMatches: "フィルターに一致する行はありません。",
       mode: "モード",
       modeLive: "ライブ",
@@ -1448,15 +1465,15 @@ export const ja = {
       dictation: {
         audioUploadTitle: "録音を使って音声入力",
         audioUploadDescription:
-          "Studio で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Studio サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
+          "Unsloth で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Unsloth サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
         audioUploadChooseFile: "録音を選択",
         audioUploadRecord: "音声を録音",
         audioUploadIphoneHint:
           "iPhone では、Voice Memos または別の録音アプリで録音を保存してから、ここで選択してください。",
         audioUploadServerModelNote:
-          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Studio サーバー上で上に表示されているローカルモデルを使用します。",
+          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Unsloth サーバー上で上に表示されているローカルモデルを使用します。",
         audioUploadAutomatic: "自動",
-        audioUploadModelReady: "この Studio サーバーで使用可能",
+        audioUploadModelReady: "この Unsloth サーバーで使用可能",
         audioUploadRetryTitle: "{file} を文字起こしできませんでした",
         audioUploadRetry: "文字起こしを再試行",
         audioUploadChooseModel:
@@ -1798,20 +1815,14 @@ export const ja = {
       },
       notifications: {
         sectionTitle: "通知",
-        showLlamaUpdates: "llama.cpp のアップデート通知",
-        showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
-        showLoadedModels: "読み込み済みモデルのインジケーター",
-        showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
-        showWhisperUpdates: "whisper.cpp のアップデート通知",
-        showWhisperUpdatesDescription: "音声認識モデル向けの新しい whisper.cpp ビルドが利用可能になったときに通知します。音声を文字起こししない場合はオフにしてください。",
-        showAudioCppUpdates: "audio.cpp のアップデート通知",
-        showAudioCppUpdatesDescription:
-          "音声ページに必要な audio.cpp ランタイムの更新があるときに通知します。音声機能を使わない場合はオフにしてください。",
-        showUnslothUpdates: "Unsloth のアップデート通知",
-        showUnslothUpdatesDescription:
-          "新しいバージョンの Unsloth をインストールできるようになったときに通知します。",
+        showLoadedModels: "読み込み済みモデルのカード",
+        showLoadedModelsDescription: "読み込み中のモデルを並べた隅のカード。ワンクリックで取り出せます。",
+        updateReminders: "更新のお知らせ",
+        updateRemindersDescription: "新しいバージョンの準備ができたときに案内する頻度です。",
+        llamaHint: "チャットと GGUF モデル",
+        audioHint: "音声、音楽、文字起こし",
         frequency: {
-          always: "常に",
+          always: "出るたびに",
           daily: "1日1回",
           weekly: "週に1回",
           biweekly: "2週間に1回",
@@ -1946,7 +1957,7 @@ export const ja = {
         menuSubtitle: "ファイル検索に使用",
         device: "埋め込みデバイス",
         deviceDescription:
-          "すべてのモデルで埋め込みモデルを実行する場所です。GPU は大量のドキュメントをより速くインデックスしますが、Studio を再起動するまで一部の VRAM を使用し続けます。",
+          "すべてのモデルで埋め込みモデルを実行する場所です。GPU は大量のドキュメントをより速くインデックスしますが、Unsloth を再起動するまで一部の VRAM を使用し続けます。",
         deviceAuto: "自動",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -1963,6 +1974,18 @@ export const ja = {
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
       },
+      fullInstall: {
+        label: "インストールの種類",
+        description:
+          "チャット専用 (GGUF)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
+        action: "フルインストールにアップグレード",
+        confirmTitle: "フルインストールにアップグレードしますか？",
+        confirmDescription:
+          "このチャット専用インストールは GGUF モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
+        confirmAction: "アップグレード",
+        keywords:
+          "full install upgrade インストールの種類 フルインストール アップグレード チャット専用 chat only gguf add training トレーニング 学習 train fine-tune pytorch torch エクスポート 動画 画像生成 safetensors",
+      },
       repairInstall: {
         label: "インストールを修復",
         description:
@@ -1971,6 +1994,8 @@ export const ja = {
         confirmTitle: "このインストールを修復しますか？",
         confirmDescription:
           "サーバーを停止してインストーラーを再実行し、このマシンの GPU に合わせて PyTorch を再インストールします。チャットと設定は保持されます。数分かかる場合があります。",
+        confirmDescriptionChatOnly:
+          "サーバーを停止してインストーラーを再実行します。これはチャット専用インストールのため、インストーラーは PyTorch を含むフルインストールにもアップグレードします (合計数 GB)。チャットと設定は保持されます。数分かかる場合があります。",
         confirmAction: "今すぐ修復",
       },
       resetPreferences: {
@@ -2047,9 +2072,9 @@ export const ja = {
         longestStreak: "最長の連続日数",
         activityTitle: "トークンの推移",
         activityDescription: {
-          daily: "直近{weeks}で{total}",
-          weekly: "ピーク週 {total} · 直近{weeks}",
-          cumulative: "直近{weeks}で累計{total}",
+          daily: "{since}以降 {total}",
+          weekly: "最も多い週 {total} · {since}以降",
+          cumulative: "{since}以降の累計 {total}",
         },
         mode: {
           daily: "日次",
@@ -2058,8 +2083,9 @@ export const ja = {
         },
         cellTooltip: "{date} · {tokens}、{messages}",
         weekTooltip: "{date} の週 · {tokens}",
-        chartToggle: "グラフ",
-        chartToggleHint: "週次と累計を軸ラベル付きのグラフで表示",
+        emptyDayTooltip: "{date} · アクティビティなし",
+        apiRequests: "API経由 {count}",
+        cumulativeTooltip: "{date}の週まで · 累計 {tokens}",
         less: "少ない",
         more: "多い",
         insightsTitle: "アクティビティの分析",
@@ -2374,6 +2400,9 @@ export const ja = {
         multiModelDescriptionAlways:
           "モデルを読み込んでも、他のモデルはアンロードされません。収まらないモデルは読み込まれません。アイドル時の自動アンロードとトレーニングでは引き続きメモリが解放されます。",
         multiModelHint: "チャット、音声、画像、動画のモデルが対象です。読み込まれた各チャットモデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、Unsloth は新しいモデルを他のモデルが使っていない GPU に配置しようとします。「収まる場合」は約 1 GB の空きを残します。「収まる場合」と「常に」は、別の GPU 上のモデルをアンロードしません。",
+        allowOversizedLoad: "大きすぎるモデルの読み込みを許可",
+        allowOversizedLoadDescription: "メモリチェックで収まらないと判定された場合でも、画像と動画のモデルを読み込みます。",
+        allowOversizedLoadHint: "CPU と GPU が 1 つのメモリを共有する環境 (Apple Silicon、内蔵 GPU) に適用されます。モデルの重みの推定値が、オペレーティングシステム用の領域を確保した後の残りメモリを超えると、Unsloth は読み込みを拒否します。オンにすると、その場合でも読み込みを試みます。推定はどちらの方向にも外れることがあり、大きすぎる読み込みは失敗する、メモリを使い切る、激しいスワップや応答停止を起こす、または Unsloth を停止させることがあります。既定ではオフです。",
         mediaIdleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
@@ -2686,6 +2715,10 @@ export const ja = {
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
+      showReplyTimes: "応答の時刻",
+      showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
+      showReplyTimesKeywords:
+        "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
@@ -2740,6 +2773,22 @@ export const ja = {
         visibility: "思考",
         visibilityDescription:
           "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
+      },
+      memory: {
+        title: "メモリー",
+        description: "すべてのチャットが読み込むメモです。ローカルでもクラウドでも、どのモデルでも使われます。プロジェクト内のチャットは、そのプロジェクトの AGENTS.md も読み込みます。",
+        enable: "チャットでメモリーを使う",
+        enableDescription: "このメモをすべてのチャットに送信します。",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD により、このインストールでは無効になっています。",
+        editor: "メモリーのメモ",
+        placeholder: "例:\n- Python を書いていて uv を使っています。\n- 簡潔に答えてください。",
+        hint: "{path} に保存されます。このファイルは任意のテキストエディタでも編集できます。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "メモリーを保存しました",
+        loadError: "メモリーを読み込めませんでした。",
+        saveError: "メモリーを保存できませんでした。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md メモリー 記憶 覚える パーソナライズ プロフィール メモ",
       },
       currentDate: {
         label: "今日の日付をモデルに伝える",
@@ -2818,7 +2867,7 @@ export const ja = {
       importFailed: "インポートに失敗しました。",
       importFromSource: "{source} からインポート",
       importFromSourceDescription:
-        "{source} の会話をプロジェクトごとにまとめて Studio にコピーします。",
+        "{source} の会話をプロジェクトごとにまとめて Unsloth にコピーします。",
       importingAction: "インポート中...",
       importedSourceOneChat: "{source} から 1 件の会話をインポートしました。",
       importedSourceChatCount:
@@ -3041,12 +3090,13 @@ export const ja = {
       copyNow: "今すぐコピーしてください - これは二度と表示されません。",
       usageExamples: "使用例",
       usageTools: "ツール",
-      exampleCurlTools: "curl + ツール",
-      examplePythonTools: "Python + ツール",
-      exampleJavaScriptTools: "JavaScript + ツール",
-      exampleCurlAdvanced: "curl + 高度な設定",
-      examplePythonAdvanced: "Python + 高度な設定",
-      exampleJavaScriptAdvanced: "JavaScript + 高度な設定",
+      exampleLanguage: "言語",
+      exampleRequest: "リクエスト",
+      examplePlatform: "プラットフォーム",
+      requestPlain: "基本",
+      requestTools: "ツールあり",
+      requestAdvanced: "詳細なサンプリング",
+      exampleKind: "例",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "セキュア HTTPS",
@@ -3055,15 +3105,14 @@ export const ja = {
       copySnippet: "スニペットをコピー",
       copy: "コピー",
       copied: "コピーしました",
-      setupDocs: "セットアップドキュメント:",
       codingAgents: "コーディングエージェント",
       codingAgentsHint: "このサーバーに対してコーディングエージェントを起動します。読み込み済みのモデルを使用します。ローカルサーバーでは API キーが自動的に発行され、リモートサーバーではコマンドに含まれます。",
+      openAgentsTab: "エージェントで開く",
       codingAgentsSwap: "claude を codex、openclaw、opencode、hermes に置き換えられます。",
-      codingAgentDetected: "このマシンにインストール済み",
-      codingAgentsDetectedHint: "このマシンで検出されました: {agents}。",
       relativeNever: "なし",
       relativeJustNow: "たった今",
       expired: "期限切れ",
+      expiredStatus: "期限切れ",
       today: "今日",
       created: "作成日時 {value}",
       used: "使用日時 {value}",
@@ -3091,6 +3140,14 @@ export const ja = {
         autoSwitchOff:
           "モデルの自動切り替えがオンのときだけ、名前でモデルが読み込まれます。オンにするか、先にそのモデルをオーディオページで読み込んでください。",
         useViaApi: "API で使う",
+      },
+      mediaApi: {
+        title: "画像と動画の API",
+        description: "OpenAI 互換のエンドポイントで、自分のコードから画像と動画を生成できます。",
+        images: "画像",
+        video: "動画",
+        placeholderModel: "表示中のモデルは例です。画像または動画ページでモデルを読み込み、そのページの API ボタンからここを開くと入力されます。",
+        autoSwitchOff: "メディアの自動切り替えがオフのため、リクエストは指定した名前にかかわらず、ページで読み込まれているモデルで実行されます。",
       },
       decisionApi: {
         title: "判定 API",
@@ -3171,6 +3228,24 @@ export const ja = {
       desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       audioCppVersion: "audio.cpp バージョン",
+      whisperCppVersion: "whisper.cpp バージョン",
+      engines: {
+        title: "エンジン",
+        description: "Unsloth がモデルの実行に使うランタイムです。更新はバックグラウンドでインストールされ、再起動は不要です。",
+        updatesLabel: "エンジンの更新",
+        notInstalled: "未インストール",
+        available: "{version} を利用可能",
+        upToDate: "最新です",
+        updatesAvailable: "更新があります",
+        checking: "更新を確認しています...",
+        checkFailed: "更新を確認できませんでした。後でもう一度お試しください。",
+        unsupported: "このインストールのエンジンは Unsloth の外部で管理されています。",
+        checkForUpdates: "更新を確認",
+        update: "更新",
+        updating: "更新しています...",
+        updated: "エンジンを更新しました。",
+        updateFailed: "更新に失敗しました: {error}",
+      },
       hardware: "ハードウェア",
       gpu: "GPU",
       gpuIntegrated: "内蔵",
@@ -3228,7 +3303,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "アプリはすでに実行中の Studio サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
+          "アプリはすでに実行中の Unsloth サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",
@@ -3251,6 +3326,9 @@ export const ja = {
         docsUpdating: "アップデート方法",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -3824,7 +3902,7 @@ export const ja = {
         decisionColumnsMissing:
           "判定モデルには state、questions、gold（または answers）列が必要です。不足している列: {columns}",
         decisionOwnerOnly:
-          "判定モデルをファインチューニングできるのは Studio の所有者だけです。",
+          "判定モデルをファインチューニングできるのは Unsloth の所有者だけです。",
         hfDatasetRequired:
           "先に Hugging Face データセットを選択してください。",
         hfDatasetSplitRequired:
@@ -4575,5 +4653,42 @@ export const ja = {
     cantRun: "実行できませんでした",
     failed: "エラー {status}",
     invalidJson: "リクエストのボディが有効な JSON ではありません。",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "読み込み済みモデル",
+      countOne: "{count} 件のモデルを読み込み済み",
+      countMany: "{count} 件のモデルを読み込み済み",
+      pillLabel: "{count}。詳細を表示、またはドラッグして移動",
+      dragToMove: "ドラッグして移動",
+      dragHandleLabel: "読み込み済みモデルを移動します。矢印キーで少しずつ動かせます。",
+      collapse: "折りたたむ",
+      collapseLabel: "読み込み済みモデルを折りたたむ",
+      close: "閉じる",
+      closeLabel: "読み込み済みモデルを閉じる",
+      backOnNextLoad: "次にモデルを読み込むと再表示されます",
+      ejectToFree: "取り出してメモリを解放",
+      ejectLabel: "{model} を取り出す",
+      openTarget: "{target} を開く",
+      rowLabel: "{model}。{target} を開く",
+      loading: "読み込み中",
+      ejecting: "取り出し中",
+      stillInMemory: "まだメモリ上にあります",
+      alsoServing: "他にも提供中",
+      noneLoaded: "読み込み済みのモデルはありません",
+      noneLoadedDetail: "読み込んだモデルはここに表示されます。",
+      otherAccount: "別のアカウントが使用中",
+      otherAccountDetail: "表示できないモデルがメモリを保持しています",
+      toastStillResident: "取り出し中に「{model}」が読み込まれたため、まだメモリを使用しています。もう一度取り出すと解放されます。",
+      toastUnverified: "{model} のアンロードを要求しましたが、ランタイムから確認が取れませんでした。しばらくしてからカードを確認してください。",
+      toastAlreadyFree: "{model} はすでに読み込まれていませんでした。",
+      toastReplaced: "{model} は読み込まれていません。代わりに「{resident}」が読み込まれており、そのままにしています。",
+      toastEjected: "{model} を取り出しました",
+      toastFailed: "{model} を取り出せませんでした",
+    },
+    monitor: {
+      dragHandleLabel: "ライブモニターを移動します。矢印キーで少しずつ動かせ、ダブルクリックで位置をリセットします。",
+      reconnecting: "再接続中...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

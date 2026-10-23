@@ -482,7 +482,7 @@ export function TranscribeFooter({
           className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
           onClick={running ? onStop : onTranscribe}
           disabled={running ? stopping : busy !== null || blocker !== null}
-          variant={running ? "destructive" : "default"}
+          variant={running ? "destructive" : "dark"}
           aria-describedby={
             blocker
               ? "transcribe-blocker"

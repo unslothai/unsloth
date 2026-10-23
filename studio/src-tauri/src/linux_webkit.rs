@@ -19,8 +19,7 @@ const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 // DISABLE_DMABUF first, so it never gets there unless we honour it ourselves.
 const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // Turns accelerated compositing off outright, a level above the transport switches above.
-// WebKit is not assumed to special-case "0" here, so presence alone is an operator override
-// and the setting below is the documented way off.
+// Presence alone is an operator override; compositing_disabled_by says which values turn it off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 // Ours, not WebKit's; compositing_setting parses it.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
@@ -119,6 +118,13 @@ fn force_dmabuf_requested(value: &OsStr) -> bool {
     value.as_encoded_bytes().first() != Some(&b'0')
 }
 
+/// HardwareAccelerationManager.cpp: a non-empty value turns compositing off unless it is
+/// exactly `"0"`. Byte for byte, so `00`, ` 0` and `false` still turn it off.
+fn compositing_disabled_by(value: &OsStr) -> bool {
+    let value = value.as_encoded_bytes();
+    !value.is_empty() && value != b"0"
+}
+
 /// Lenient: matching `"0"` byte for byte would strand someone who wrote `false` on the
 /// fallback they were opting out of.
 fn compositing_setting(value: &OsStr) -> Option<bool> {
@@ -159,7 +165,16 @@ fn rendering_plan(
     if env(FORCE_SHARED_MEMORY).is_some() && !ours(FORCE_SHARED_MEMORY) {
         return RenderingPlan::PreserveEnvironment;
     }
-    let operator_compositing_off = env(DISABLE_COMPOSITING).is_some() && !ours(DISABLE_COMPOSITING);
+    // `=0` and an empty value leave compositing on in WebKit, so they keep the operator's
+    // environment as they did before the NVIDIA Wayland branch below existed.
+    let operator_compositing = env(DISABLE_COMPOSITING).filter(|_| !ours(DISABLE_COMPOSITING));
+    if operator_compositing
+        .as_deref()
+        .is_some_and(|value| !compositing_disabled_by(value))
+    {
+        return RenderingPlan::PreserveEnvironment;
+    }
+    let operator_compositing_off = operator_compositing.is_some();
 
     // Stands the NVIDIA branch down and nothing else: it answers that patch's question,
     // not the missing-GLES one below, and that launch cannot render without its fallback.
@@ -1372,5 +1387,59 @@ mod tests {
                 "{name}={value}"
             );
         }
+    }
+
+    #[test]
+    fn compositing_values_webkit_reads_as_on_keep_the_environment() {
+        for value in ["0", ""] {
+            for nvidia in [true, false] {
+                let wayland: &[(&str, &str)] =
+                    &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING, value)];
+                assert_eq!(
+                    plan_on_graphics(wayland, nvidia),
+                    RenderingPlan::PreserveEnvironment,
+                    "Wayland, nvidia={nvidia}, {DISABLE_COMPOSITING}={value:?}"
+                );
+                let x11: &[(&str, &str)] = &[(X11_DISPLAY, ":0"), (DISABLE_COMPOSITING, value)];
+                assert_eq!(
+                    plan_on_graphics(x11, nvidia),
+                    RenderingPlan::PreserveEnvironment,
+                    "X11, nvidia={nvidia}, {DISABLE_COMPOSITING}={value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compositing_values_webkit_reads_as_off_keep_dmabuf_off_on_nvidia_wayland() {
+        for value in ["1", "00", " 0", "0 ", "false", "no"] {
+            assert!(compositing_disabled_by(OsStr::new(value)), "{value:?}");
+            let vars: &[(&str, &str)] =
+                &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING, value)];
+            assert_eq!(
+                plan_on_graphics(vars, true),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableDmabuf,
+                    NVIDIA_WAYLAND_OPERATOR_COMPOSITING_REASON,
+                ),
+                "{DISABLE_COMPOSITING}={value:?}"
+            );
+        }
+        assert!(!compositing_disabled_by(OsStr::new("0")));
+        assert!(!compositing_disabled_by(OsStr::new("")));
+    }
+
+    #[test]
+    fn our_own_compositing_zero_is_not_read_back_as_an_operator_override() {
+        // A claimed value is ours whatever it is, so the planner decides afresh.
+        let vars: &[(&str, &str)] = &[
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (DISABLE_COMPOSITING, "0"),
+            (APPLIED_WORKAROUND, DISABLE_COMPOSITING),
+        ];
+        assert_eq!(
+            plan_on_graphics(vars, true),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
     }
 }

@@ -24,6 +24,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
 from .family_name_match import (
+    model_identity,
     name_key_in,
     normalize_family_name,
     token_in_name,
@@ -100,6 +101,8 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
+    # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
+    native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
     img2img_pipeline_class: Optional[str] = None
@@ -138,6 +141,11 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
+    # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
+    comfy_shift_node: Optional[str] = None
+    comfy_shift_node_variants: tuple[tuple[str, Optional[str]], ...] = field(default_factory = tuple)
+    # Textual-inversion format (diffusion_embeddings KIND_*); None = no embeddings.
+    textual_inversion: Optional[str] = None
     # (lowercased id substring, ((key, value), ...)) overriding ``base_repo``'s transformer config; first match wins.
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
@@ -205,6 +213,8 @@ class DiffusionFamily:
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # (repo_id, filename) of a tokenizer.json for sd-cli --tokenizer (MOSS-Image requires it).
+    sd_cpp_tokenizer: Optional[tuple[str, str]] = None
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -257,8 +267,13 @@ class DiffusionFamily:
 
 
 # Fresh servers rendered 2-4 variants of one seed here (FLUX.1, Z-Image, Qwen-Image; the edit siblings share their DiT):
-# near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200 measured deterministic.
+# near-tied norm-reduction configs, benchmarked per process, sum in different orders.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
+# FLUX.1 races on B200 too (schnell int8, cold inductor cache): 15 fresh processes denoised one seed into 3 latents; with
+# the filter 12/12 matched bitwise. Kontext runs the same DiT.
+_FLUX1_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
+# Qwen-Image races on B200 too (torch 2.14): fresh processes rendered one seed 26 dB apart; with the filter 6/6 matched bitwise.
+_QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 
 # --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
 
@@ -315,6 +330,26 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
+# Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
+# Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
+SMALL_DIT_BF16_WHEN_RESIDENT = (
+    "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
+    "0.103 on Z-Image-Turbo)"
+)
+# Bases of a small-DiT family that are not small: FLUX.2 klein 9B / base 9B (18.2 GB bf16 transformer, unmeasured)
+# keep the quantized auto default. Upstream ids; mirrors fold back through ``canonical_base``.
+_SMALL_DIT_LARGE_BASES = frozenset(
+    {
+        "black-forest-labs/flux.2-klein-9b",
+        "black-forest-labs/flux.2-klein-base-9b",
+    }
+)
+
+
+def small_dit_rule_excludes(base_repo: Optional[str]) -> bool:
+    """True when ``base_repo`` (vendor id or mirror) is a large variant the small-DiT bf16 rule must not cover."""
+    return canonical_base(base_repo).lower() in _SMALL_DIT_LARGE_BASES
+
 
 # FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
 # sharded T5 through its index (the shards sit beside it in the snapshot). The shards are listed so every fetch,
@@ -349,13 +384,34 @@ _FLUX3_SD_CPP_TEXT_ENCODERS = (
 # FLUX.3 landed upstream in master-968 (leejet/stable-diffusion.cpp#2143), after builds were in the wild. The model
 # version name is in every sd-cli / sd-server that can run it and in none before.
 _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
+# Krea 2 support: sd.cpp master-721 (leejet/stable-diffusion.cpp#1705).
+_KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
+MOSS_IMAGE_FAMILY_NAME = "moss-image"
+# MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
+_MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
+_MOSS_IMAGE_CONVROT_SUFFIXES = (
+    "proj.q",
+    "proj.k",
+    "proj.v",
+    "proj.o",
+    "proj.ffn_up_gate",
+    "proj.ffn_down",
+)
+
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        comfy_shift_node = "flux",
+        # FLUX.1-schnell is ComfyUI's FLOW-type FluxSchnell (ModelSamplingDiscreteFlow, shift 1.0).
+        comfy_shift_node_variants = tuple(
+            (f"{prefix}-{model}", node)
+            for model, node in (("schnell", "sd3"), ("krea-dev", "flux"), ("dev", "flux"))
+            for prefix in ("flux.1", "flux1", "flux-1", "flux")
+        ),
         label = "FLUX.1-dev",
         profile = FamilyProfile(
             auto_prefer = _GATED_AUTO_PREFER,
@@ -368,7 +424,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         uses_negative_prompt = False,
@@ -420,8 +476,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # flux match.
     DiffusionFamily(
         name = "flux.2-klein",
+        comfy_shift_node = "flux",
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -431,6 +489,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         pipeline_class = "Flux2KleinPipeline",
+        # B200: a per-process XBLOCK pick for the q/k RMSNorm reduction changed the latent and stuck to the compile home.
+        filter_reduction_configs_archs = ((10, 0),),
+        # Same VAE as FLUX.2-dev: cudnn.benchmark's per-process conv pick decoded one latent into 6 images over 9 fresh
+        # B200 processes; with it off every process matched.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
@@ -491,8 +554,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae_format = "flux2",
         # Klein 4B's text encoder IS Qwen3-4B (byte-identical shards to unsloth/Qwen3-4B; the BF16 GGUF matches it
         # tensor for tensor and renders pixel-identical to the old single-file encoder), so sd-cli reads unsloth's
-        # own GGUF of it. Q8_0, not Q4_K_M: on klein 4B the Q4 encoder moved renders by LPIPS 0.15, Q8 by 0.06.
-        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
+        # own GGUF of it. BF16, the precision the bf16 encoder had and ComfyUI's klein template loads: Q8_0 moved
+        # renders by LPIPS 0.06 and Q4_K_M by 0.15 against an A/A of exactly 0. UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT
+        # trades it down.
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-BF16.gguf", "llm"),),
     ),
     # FLUX.3 Image Klein: a 5.6B flow-map DiT with a Qwen3-VL-4B encoder (layers 4..32 stacked) and the FLUX.2 VAE.
     # Diffusers ships it only as modular blocks, so diffusion_flux3 assembles it per component behind a classic
@@ -502,8 +567,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # for reading order; the longest-alias match is what keeps "...-klein-base" off the distilled entry.
     DiffusionFamily(
         name = "flux.3-klein-base",
+        comfy_shift_node = "flux",
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -556,8 +623,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "flux.3-klein",
+        comfy_shift_node = "flux",
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -607,9 +676,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # BFL's own diffusers file.
     DiffusionFamily(
         name = "flux.2-dev",
+        comfy_shift_node = "flux",
         label = "FLUX.2-dev",
         profile = FamilyProfile(te_int8_skip = (3, 0), preview_factors = "flux2"),
         pipeline_class = "Flux2Pipeline",
+        # cudnn.benchmark's per-process VAE conv pick rendered 5 variants of one seed over 7 fresh B200 processes.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
@@ -631,11 +703,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
         # FLUX.2-dev's text encoder is Mistral-Small-3.2-24B-Instruct-2506 (byte-identical shards to the unsloth
-        # copy; the BF16 GGUF matches every text tensor), so sd-cli reads unsloth's GGUF of it.
+        # copy; the BF16 GGUF matches every text tensor), so sd-cli reads unsloth's GGUF of it. Q8_0, not Q4_K_M: at
+        # least as precise as ComfyUI's fp8 template (its default is a 36 GB bf16 file) and the int8 the diffusers route
+        # takes, at 25 GB. The GGUF's q/k rows are in llama.cpp's interleaved RoPE order, which is the order sd.cpp's
+        # GGML_ROPE_TYPE_NORMAL Mistral path expects; the HF-order bf16 safetensors this replaced did not match it.
         sd_cpp_text_encoders = (
             (
                 "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
-                "Mistral-Small-3.2-24B-Instruct-2506-Q4_K_M.gguf",
+                "Mistral-Small-3.2-24B-Instruct-2506-Q8_0.gguf",
                 "llm",
             ),
         ),
@@ -644,8 +719,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # FLUX instruction editing: FluxKontextPipeline takes an image + instruction. Specific aliases first so
         # detect_family prefers this over "flux.1".
         name = "flux.1-kontext",
+        comfy_shift_node = "flux",
         profile = FamilyProfile(preview_factors = "flux1"),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _FLUX1_REDUCTION_RACE_ARCHS,
+        # FLUX.1 VAE, as flux.1: with cudnn.benchmark one 768 px latent decoded 4 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = flux_mu_shift(
             1.15
         ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
@@ -675,6 +753,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
+        comfy_shift_node = "sd3",
         # Same DiT class + unpadded text stream as qwen-image.
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
@@ -683,7 +762,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
             preview_factors = "qwen_image",
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # Qwen-Image VAE, as qwen-image: cudnn.benchmark split one latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         comfy_flow_shift_variants = (
             ("qwen-image-edit-2511", 3.1),
@@ -750,13 +831,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # qwen-image's DiT plus use_additional_t_cond / use_layer3d_rope (read from the base config for a GGUF) and an
         # RGBA VAE. Listed before qwen-image so the name outranks it.
         name = "qwen-image-layered",
+        comfy_shift_node = "sd3",
         # Same DiT class + unpadded text stream as qwen-image.
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # RGBA Qwen-Image VAE: cudnn.benchmark split one 768 px latent 2 ways over 5 fresh B200 processes.
+        cudnn_benchmark = False,
         # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
         comfy_flow_shift = 1.0,
         layer_count = 2,
@@ -794,6 +878,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "qwen-image",
+        comfy_shift_node = "sd3",
         label = "Qwen-Image",
         profile = FamilyProfile(
             int8_exclude_tokens = _QWENIMAGE_INT8_EXCLUDES,
@@ -804,7 +889,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "qwen_image",
             auto_static_skip = (("qwen/qwen-image", (("default", 2), ("max", 3), ("steps", 20))),),
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
@@ -863,6 +948,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
         # rules, none of which fit.
         name = "qwen-image-2.1",
+        comfy_shift_node = "flux",
         profile = FamilyProfile(
             # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's exclusion list
             # does not apply and this one was measured rather than inherited. ``txt_in`` is here as a QUALITY lever,
@@ -1004,6 +1090,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
+        comfy_shift_node = "sd3",
         label = "Z-Image",
         profile = FamilyProfile(
             # exactly the Linears the hosted INT8 checkpoint quantizes (all input axes 256-divisible)
@@ -1024,9 +1111,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 default_on = True,
             ),
             auto_prefer = _GATED_AUTO_PREFER,
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "zimage",
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS + ((10, 0),),
         cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
@@ -1068,12 +1157,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
-        # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same Q8_0 file
+        # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same BF16 file
         # klein 4B reads, so one download serves both.
-        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q8_0.gguf", "llm"),),
+        sd_cpp_text_encoders = (("unsloth/Qwen3-4B-GGUF", "Qwen3-4B-BF16.gguf", "llm"),),
     ),
     DiffusionFamily(
         name = "krea-2",
+        comfy_shift_node = "flux",
         label = "Krea 2",
         pipeline_class = "Krea2Pipeline",
         transformer_class = "Krea2Transformer2DModel",
@@ -1098,11 +1188,17 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Adapters trained on Raw run on Turbo; deploy previews them there (same bf16 precision).
         deploy_base_repo = "krea/Krea-2-Turbo",
         fp16_incompatible = True,
+        # VAE is byte-identical in Raw and Turbo; the text encoder is stock Qwen3-VL-4B, shared with FLUX.3.
+        sd_cpp_vae = ("unsloth/Krea-2-Turbo", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_arch_marker = _KREA2_SD_CPP_ARCH_MARKER,
     ),
     # Lumina Image 2.0: a 2.6B single-stream DiT with a Gemma2-2B encoder and a standard AutoencoderKL, so the generic
     # from_pretrained path loads it. NOT aliased to bare "lumina": Lumina-Next checkpoints are a different arch.
     DiffusionFamily(
         name = "lumina-2",
+        comfy_shift_node = "sd3",
         profile = FamilyProfile(auto_bf16_when_resident = _LUMINA2_BF16_WHEN_RESIDENT),
         pipeline_class = "Lumina2Pipeline",
         transformer_class = "Lumina2Transformer2DModel",
@@ -1128,6 +1224,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # covers Full/Dev/Fast.
     DiffusionFamily(
         name = "hunyuanimage-2.1",
+        comfy_shift_node = "sd3",
         profile = FamilyProfile(
             auto_static_skip = (
                 ("hunyuanvideo-community/hunyuanimage-2.1-diffusers", (("max", 2), ("steps", 50))),
@@ -1160,6 +1257,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "hidream-i1",
+        comfy_shift_node = "sd3",
         profile = FamilyProfile(
             auto_bf16_when_resident = _HIDREAM_BF16_WHEN_RESIDENT,
             trusted_repos = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
@@ -1217,10 +1315,74 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
     ),
+    # MOSS-Image: remote-code repos, so the pipeline is the in-tree port in diffusion_moss_image; encoder needs transformers >= 5.3.
+    DiffusionFamily(
+        name = MOSS_IMAGE_FAMILY_NAME,
+        label = "MOSS-Image",
+        # ComfyUI's MOSSImage is ModelType.FLOW (ModelSamplingDiscreteFlow, shift 5), the node ModelSamplingSD3 sets.
+        comfy_shift_node = "sd3",
+        profile = FamilyProfile(
+            quant_exclude_tokens = _MOSS_IMAGE_QUANT_KEEP,
+            # Required, not optional: plain int8 with the same keep-list scored 0.111 against ConvRot's 0.058 (SFT).
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _MOSS_IMAGE_CONVROT_SUFFIXES,
+                filename = "MOSS-Image-SFT-INT8-ConvRot.safetensors",
+                repo = "unsloth/MOSS-Image-SFT-FP8",
+                variant_repos = ("unsloth/MOSS-Image-Base-FP8",),
+                default_on = True,
+            ),
+            quant_names = ("moss-image-base",),
+            # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
+            auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
+            # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
+            scheme_deny = frozenset({"nvfp4"}),
+            # Small-DiT rule: bf16 while it fits, INT8-ConvRot (LPIPS 0.058) when bf16 would offload.
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            preview_factors = "flux2",
+        ),
+        pipeline_class = "MOSSImagePipeline",
+        transformer_class = "MOSSImageTransformer",
+        base_repo = "OpenMOSS-Team/MOSS-Image-SFT",
+        named_variant_bases = ("OpenMOSS-Team/MOSS-Image-Base",),
+        prequant_repos = (
+            ("int8", "unsloth/MOSS-Image-SFT-FP8"),
+            ("fp8", "unsloth/MOSS-Image-SFT-FP8"),
+        ),
+        prequant_filenames = (
+            ("int8", "MOSS-Image-SFT-INT8.safetensors"),
+            ("fp8", "MOSS-Image-SFT-FP8.safetensors"),
+        ),
+        prequant_variant_repos = (
+            ("openmoss-team/moss-image-base", "int8", "unsloth/MOSS-Image-Base-FP8"),
+            ("openmoss-team/moss-image-base", "fp8", "unsloth/MOSS-Image-Base-FP8"),
+        ),
+        # Other schemes on Base quantise Base's own weights, never SFT's file.
+        prequant_excluded_bases = ("openmoss-team/moss-image-base",),
+        # Qwen3.5-9B int8 ConvRot: LPIPS 0.059 vs bf16; without the hosted file auto keeps bf16.
+        te_quant_auto = "int8",
+        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
+        prompt_hint = (
+            "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
+        ),
+        dimension_multiple = 16,
+        # ComfyUI lists bf16 / fp32 only for MOSS-Image; the residual stream overflows float16.
+        fp16_incompatible = True,
+        # cudnn.benchmark on the fp32 VAE decode took 254 s / 73 GiB and picked a 4x slower plan: keep the heuristic.
+        cudnn_benchmark = False,
+        native_transformer_files_only = True,
+        # MOSS's own small-decoder FLUX.2 VAE, not FLUX.2-dev's.
+        sd_cpp_vae = ("unsloth/MOSS-Image-SFT-FP8", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = (("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf", "llm"),),
+        sd_cpp_tokenizer = ("unsloth/MOSS-Image-SFT-FP8", "tokenizer/tokenizer.json"),
+        # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
+        sd_cpp_arch_marker = "MOSS-Image",
+    ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
         name = "sdxl",
+        textual_inversion = "sdxl",
         label = "SDXL",
         profile = FamilyProfile(preview_factors = "sdxl"),
         # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
@@ -1321,7 +1483,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    needle = repo_id.lower()
+    needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:
         # Do not let a generic family (qwen-image) swallow a variant it cannot run (qwen-image-LAYERED). Scoped to the
@@ -1460,9 +1622,32 @@ def detect_family_for_pick(
         fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    if fam is None and not override:
+        fam = _family_from_hub_evidence(repo_id, gguf_filename)
     if not override:
         fam = _family_from_content(fam, repo_id, gguf_filename)
     return fam
+
+
+def _family_from_hub_evidence(
+    repo_id: str, gguf_filename: Optional[str]
+) -> Optional[DiffusionFamily]:
+    """A Hub single-file pick named for no family (``Laxhar/noobai-XL-Vpred-1.0``): the family its
+    checkpoint header declares. Never overrides a name that said no or an excluded repo, and never
+    answers for a repo or file named for a variant (``edit`` / ``inpaint`` / ...): the header cannot
+    tell an SDXL inpaint checkpoint from a plain one, and the base pipeline would load it. No network."""
+    needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
+    if any(_best_family_match(model_identity(n).lower()) is not None for n in needles):
+        return None
+    segments = [seg for n in needles for seg in re.split(r"[/\\]+", n.lower()) if seg]
+    if any(_token_in_needle(kw, seg) for kw in _EDIT_KEYWORDS for seg in segments):
+        return None
+    if excluded_model_reason(repo_id):
+        return None
+    from .diffusion_hub_evidence import cached_family
+
+    name = cached_family(repo_id, gguf_filename)
+    return detect_family("", override = name) if name else None
 
 
 def _family_from_content(
@@ -1476,7 +1661,9 @@ def _family_from_content(
     if not path:
         return fam
     needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
-    vetoed = fam is None and any(_best_family_match(n.lower()) is not None for n in needles)
+    vetoed = fam is None and any(
+        _best_family_match(model_identity(n).lower()) is not None for n in needles
+    )
     name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
     if name is None:
         return None
@@ -1535,6 +1722,9 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),
     ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
     ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
+    # MOSS-Image, as FLUX.3: upstream diffusers folders are mirrored byte-identical into each variant's -FP8 repo.
+    ("OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8"),
+    ("OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
     # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B is what
     # `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are offered directly as bf16
@@ -1594,6 +1784,8 @@ _ARTIFACT_MIRRORS: frozenset[str] = frozenset(
         "unsloth/qwen-image-edit-gguf",
         "unsloth/qwen-image-edit-2509-gguf",
         "unsloth/qwen-image-layered-gguf",
+        "unsloth/moss-image-sft-fp8",
+        "unsloth/moss-image-base-fp8",
     }
 )
 _ALL_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _MIRROR_PAIRS + _VIDEO_MIRROR_PAIRS
@@ -1951,6 +2143,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.1-krea", 20, 3.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
+    # The same Raw checkpoint as GGUFs name it (realrebelai/KREA-2_GGUFs BASE/Krea-2-Base-*, krea2_raw-*).
+    ("krea-2-base", 52, 3.5),
+    ("krea2-raw", 52, 3.5),
+    ("krea2-base", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
     ("flux1-krea", 20, 3.5),  # before Krea-2's generic row
     ("krea", 8, 0.0),
@@ -2007,6 +2203,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
+    # MOSS-Image: ComfyUI workflow, 50 steps at CFG 3.
+    ("moss-image", 50, 3.0),
+    ("moss_image", 50, 3.0),
+    ("mossimage", 50, 3.0),
     # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
     ("sdxl-turbo", 3, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
@@ -2047,6 +2247,12 @@ def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[floa
 _FLUX3_FLOW_MAP = {"flux.3-klein": True, "flux.3-klein-base": False}
 
 
+def comfy_shift_node_for(fam: Any, *identifiers: Optional[str]) -> Optional[str]:
+    """The ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*) for this checkpoint, or None."""
+    row = _first_variant(getattr(fam, "comfy_shift_node_variants", ()), identifiers)
+    return row[1] if row else getattr(fam, "comfy_shift_node", None)
+
+
 def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> dict[str, Any]:
     row = _first_variant(getattr(fam, "transformer_config_variants", ()), identifiers)
     overrides = dict(row[1]) if row else {}
@@ -2084,14 +2290,37 @@ def transformer_variant_differs_from_base(
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
+def _generation_defaults_row(*identifiers: Optional[str]) -> Optional[tuple[str, int, float]]:
+    for identifier in identifiers:
+        needle = model_identity(identifier).lower()
+        for row in _GENERATION_DEFAULTS:
+            if name_key_in(row[0], needle):
+                return row
+    return None
+
+
 def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
     """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
-    for identifier in identifiers:
-        needle = (identifier or "").lower()
-        for key, steps, guidance in _GENERATION_DEFAULTS:
-            if name_key_in(key, needle):
-                return steps, guidance
-    return None
+    row = _generation_defaults_row(*identifiers)
+    return (row[1], row[2]) if row is not None else None
+
+
+_KREA2_RAW_KEYS = frozenset({"krea-2-raw", "krea-2-base", "krea2-raw", "krea2-base"})
+
+
+def krea2_raw_checkpoint(*identifiers: Optional[str]) -> bool:
+    """Whether the identifiers name Krea 2 Raw, with the same precedence as the generation defaults."""
+    row = _generation_defaults_row(*identifiers)
+    return row is not None and row[0] in _KREA2_RAW_KEYS
+
+
+def krea2_sd_cpp_flow_shift(width: int, height: int) -> float:
+    """sd.cpp ``--flow-shift`` matching diffusers' Krea 2 Raw schedule. Raw computes mu from the packed latent tokens
+    (calculate_shift: 0.5 at 256 tokens, 1.15 at 6400); Turbo fixes mu = 1.15, sd.cpp's Krea2 default. sd.cpp's FLUX
+    flow denoiser takes the shift as mu itself."""
+    tokens = (int(height) // 16) * (int(width) // 16)
+    slope = (1.15 - 0.5) / (6400 - 256)
+    return tokens * slope + (0.5 - slope * 256)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
@@ -2288,6 +2517,12 @@ def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Opt
 
 
 _CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
+# Remote-code components loaded via an in-tree port, judged by the layout that port reads (else a config-only
+# MOSS-Image transformer/ would pass).
+_IN_TREE_PORT_LIBRARIES = {
+    ("pipeline_moss_image", "MOSSImageTransformer"): "diffusers",
+    ("pipeline_moss_image", "MOSSImageScheduler"): "diffusers",
+}
 # safetensors first, default variant only: the load uses variant=None, which cannot open *.fp16.safetensors.
 _LOCAL_PIPELINE_WEIGHT_FORMATS = (
     (("diffusion_pytorch_model", "model"), "safetensors"),
@@ -2356,6 +2591,7 @@ def _local_pipeline_component_is_complete(
 ) -> bool:
     if not component.is_dir():
         return False
+    library_name = _IN_TREE_PORT_LIBRARIES.get((library_name, class_name), library_name)
     if library_name not in {"diffusers", "transformers"}:
         return any(_nonempty_file(child) for child in component.iterdir())
     identity = class_name.replace("_", "").lower()
@@ -2482,6 +2718,46 @@ _PIPELINE_PROBE_FILES: dict[str, str] = {
     "Flux3ModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
     "Flux3DistilledModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
 }
+
+
+# In-tree pipelines: (diffusers VAE module, transformers floor, family label).
+_IN_TREE_PIPELINES: dict[str, tuple[str, str, str]] = {
+    "MOSSImagePipeline": ("models/autoencoders/autoencoder_kl_flux2.py", "5.3.0", "MOSS-Image"),
+}
+
+
+def in_tree_pipeline(pipeline_class: Optional[str]) -> bool:
+    """Whether ``pipeline_class`` is one of Studio's in-tree pipelines (no diffusers class of that name)."""
+    return str(pipeline_class or "") in _IN_TREE_PIPELINES
+
+
+def _installed_transformers_version() -> Optional[str]:
+    try:
+        from importlib.metadata import version
+        installed = version("transformers")
+    except Exception:  # noqa: BLE001 - not installed / unreadable metadata
+        return None
+    return installed.strip() if isinstance(installed, str) and installed.strip() else None
+
+
+def in_tree_pipeline_refusal(pipeline_class: str, family_name: str) -> Optional[str]:
+    """Why this environment cannot build the in-tree ``pipeline_class``, or None when it can. Import-free."""
+    vae_file, min_transformers, label = _IN_TREE_PIPELINES[pipeline_class]
+    installed = _installed_transformers_version()
+    if installed is None:
+        return f"'{family_name}' ({label}) needs transformers >= {min_transformers}, which is not installed."
+    if not _installed_at_least(installed, min_transformers):
+        return (
+            f"'{family_name}' ({label}) needs transformers >= {min_transformers} for its Qwen3.5 text encoder "
+            f"(transformers.Qwen3_5Model), but this environment has transformers {installed}. Update Unsloth Studio "
+            f"(or run: pip install -U 'transformers>={min_transformers}') and restart it."
+        )
+    if _diffusers_package_has_file(vae_file) is False:
+        return (
+            f"'{family_name}' ({label}) needs a diffusers with the FLUX.2 VAE (AutoencoderKLFlux2). "
+            f"{DIFFUSERS_UPDATE_REMEDY}"
+        )
+    return None
 
 
 def _diffusers_package_has_file(relative: str) -> Optional[bool]:
@@ -2668,6 +2944,11 @@ def assert_pipeline_class_available(
     except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
         pass
 
+    if in_tree_pipeline(pipeline_class):
+        reason = in_tree_pipeline_refusal(pipeline_class, family_name)
+        if reason is not None:
+            raise ValueError(reason)
+        return
     try:
         # diffusers' LTX-2 modules import a transformers class the pinned transformers lacks; see ltx2_import_compat.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
@@ -2798,6 +3079,8 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     # is False -- which would hide the model.
     if not name:
         return True
+    if in_tree_pipeline(name):
+        return in_tree_pipeline_refusal(name, getattr(fam, "name", name)) is None
     probe_file = _PIPELINE_PROBE_FILES.get(name)
     if probe_file is not None:
         has_file = _diffusers_package_has_file(probe_file)
@@ -2891,8 +3174,63 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in
-# sd-cli), so pick per variant. Klein 9B's text encoder is byte-identical to unsloth/Qwen3-8B.
-_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-Q4_K_M.gguf", "llm"),)
+# sd-cli), so pick per variant. Klein 9B's text encoder is byte-identical to unsloth/Qwen3-8B; BF16 is the precision
+# the released bf16 encoder had (and renders pixel-identical to it).
+_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (("unsloth/Qwen3-8B-GGUF", "Qwen3-8B-BF16.gguf", "llm"),)
+
+# Opt-in lower-precision sd.cpp text encoder for hosts short on RAM / VRAM: bf16, q8_0 or q4_k_m. Unset keeps each
+# family's table entry. Only the unsloth LLM GGUF encoders follow it (every one of those repos ships all three files);
+# official safetensors encoders (CLIP / T5 / vision projectors) are left alone.
+SD_CPP_TEXT_ENCODER_QUANT_ENV = "UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT"
+_SD_CPP_TEXT_ENCODER_QUANTS = {"bf16": "BF16", "q8_0": "Q8_0", "q4_k_m": "Q4_K_M"}
+_SD_CPP_LLM_GGUF_QUANT_RE = re.compile(r"-(BF16|F16|Q8_0|Q4_K_M)\.gguf$")
+_SD_CPP_REQUANTABLE_TE_REPOS = frozenset(
+    {
+        "unsloth/qwen3-4b-gguf",
+        "unsloth/qwen3-8b-gguf",
+        "unsloth/mistral-small-3.2-24b-instruct-2506-gguf",
+    }
+)
+
+
+def sd_cpp_text_encoder_quant() -> Optional[str]:
+    """The ``UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT`` file tag (``BF16`` / ``Q8_0`` / ``Q4_K_M``), else None."""
+    raw = (os.environ.get(SD_CPP_TEXT_ENCODER_QUANT_ENV) or "").strip().lower()
+    return _SD_CPP_TEXT_ENCODER_QUANTS.get(raw)
+
+
+def _with_text_encoder_quant(
+    encoders: tuple[tuple[str, str, str], ...], tag: Optional[str]
+) -> tuple[tuple[str, str, str], ...]:
+    if not tag:
+        return encoders
+    out = []
+    for repo, filename, kind in encoders:
+        if kind == "llm" and repo.lower() in _SD_CPP_REQUANTABLE_TE_REPOS:
+            filename = _SD_CPP_LLM_GGUF_QUANT_RE.sub(f"-{tag}.gguf", filename)
+        out.append((repo, filename, kind))
+    return tuple(out)
+
+
+# Highest precision first: the order a load that cannot download walks when its encoder file is not cached.
+_SD_CPP_TEXT_ENCODER_CACHED_ORDER = ("BF16", "Q8_0", "Q4_K_M")
+
+
+def sd_cpp_text_encoder_cached_alternatives(repo: str, filename: str, kind: str) -> tuple[str, ...]:
+    """Other precisions a cache-only load may use: defaults moved to BF16 after builds cached
+    Q8_0 / Q4_K_M. Empty under UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT (explicit pick honoured)."""
+    if sd_cpp_text_encoder_quant() is not None:
+        return ()
+    if kind != "llm" or str(repo).lower() not in _SD_CPP_REQUANTABLE_TE_REPOS:
+        return ()
+    match = _SD_CPP_LLM_GGUF_QUANT_RE.search(filename)
+    if match is None:
+        return ()
+    return tuple(
+        _SD_CPP_LLM_GGUF_QUANT_RE.sub(f"-{tag}.gguf", filename)
+        for tag in _SD_CPP_TEXT_ENCODER_CACHED_ORDER
+        if tag != match.group(1)
+    )
 
 
 # sd-cli companion repos released Studio builds fetched and this one no longer reads: the unsloth copies of the
@@ -2961,6 +3299,9 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(row[2] for row in fam.te_prequant_repos)
         loadable.update(row[3] for row in fam.te_prequant_variant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # A full mirror of a loadable base stays loadable even when used as a VAE source (unsloth/Krea-2-Turbo).
+    loadable_lower = {r.strip().lower() for r in loadable if r}
+    loadable.update(m for u, m in _ALL_MIRROR_PAIRS if u.strip().lower() in loadable_lower)
     return (
         frozenset(r.strip().lower() for r in companions - loadable if r)
         | _RETIRED_SD_CPP_COMPANION_REPOS
@@ -3031,6 +3372,12 @@ def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str
     sets = [fam.sd_cpp_text_encoders]
     if fam.name == "flux.2-klein":
         sets.append(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    # Every precision UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT can pick: a load made under another setting fetched that file.
+    sets = [
+        _with_text_encoder_quant(group or (), tag)
+        for group in sets
+        for tag in (None, *_SD_CPP_TEXT_ENCODER_QUANTS.values())
+    ]
     return tuple(dict.fromkeys(entry for group in sets for entry in group or ()))
 
 
@@ -3050,16 +3397,17 @@ def sd_cpp_text_encoders_for(
     if fam.name == "flux.2-klein":
         # A dim this family does not have (a FLUX.2-dev file, a misread) falls through to the strings rather than
         # guessing, exactly as the base-size guard fails open on one.
+        tag = sd_cpp_text_encoder_quant()
         if inner_dim == _FLUX2_KLEIN_9B_INNER_DIM:
-            return _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
+            return _with_text_encoder_quant(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS, tag)
         if inner_dim == _FLUX2_KLEIN_4B_INNER_DIM:
-            return fam.sd_cpp_text_encoders
+            return _with_text_encoder_quant(fam.sd_cpp_text_encoders, tag)
         identity = f"{repo_id or ''}/{gguf_filename or ''}".lower()
         # Match the size token on its own: klein-BASE-9B is 9B too, and matching "klein-9b" literally handed it the 4B
         # text encoder.
         if _token_in_needle("9b", identity) or "klein9b" in identity:
-            return _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
-    return fam.sd_cpp_text_encoders
+            return _with_text_encoder_quant(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS, tag)
+    return _with_text_encoder_quant(fam.sd_cpp_text_encoders, sd_cpp_text_encoder_quant())
 
 
 # FLUX.2 sizes the adaLN modulation projection as (6 * inner_dim, inner_dim), and inner_dim is the only thing that

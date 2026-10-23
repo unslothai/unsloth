@@ -247,7 +247,10 @@ import {
   beginServerModelWait,
   statusPollSignal,
 } from "../lib/server-model-wait";
-import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
+import {
+  syncInferenceStatusToStore,
+  syncModelCapabilities,
+} from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
@@ -415,6 +418,7 @@ import {
 } from "./chat-api";
 import {
   type AgentsMdRecord,
+  agentsMdEditCount,
   composeChatInstructions,
   EMPTY_AGENTS_MD,
 } from "../utils/agents-md";
@@ -2471,19 +2475,20 @@ async function resolveProjectInstructions(projectId: string | null): Promise<str
 const AGENTS_MD_TTL_MS = 2_000;
 const agentsMdByProject = new Map<
   string,
-  { at: number; value: Promise<AgentsMdRecord> }
+  { at: number; edits: number; value: Promise<AgentsMdRecord> }
 >();
 
 /** The AGENTS.md text for a request; a failed read sends what it would without the file. */
 function resolveAgentsMd(projectId: string | null): Promise<AgentsMdRecord> {
   const key = projectId ?? "";
   const now = Date.now();
+  const edits = agentsMdEditCount();
   const hit = agentsMdByProject.get(key);
-  if (hit && now - hit.at < AGENTS_MD_TTL_MS) {
+  if (hit && hit.edits === edits && now - hit.at < AGENTS_MD_TTL_MS) {
     return hit.value;
   }
   const value = getChatAgentsMd(projectId).catch(() => EMPTY_AGENTS_MD);
-  agentsMdByProject.set(key, { at: now, value });
+  agentsMdByProject.set(key, { at: now, edits, value });
   return value;
 }
 
@@ -2772,6 +2777,15 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxKvQuantNote",
   "mlxInt8Prefill",
   "loadedMlxInt8PrefillRequested",
+  "mlxPleOffload",
+  "mlxExpertOffload",
+  "loadedMlxPleOffloadRequested",
+  "loadedMlxExpertOffloadRequested",
+  "loadedMlxPleOffload",
+  "loadedMlxExpertOffload",
+  "mlxPleOffloadReason",
+  "mlxExpertOffloadReason",
+  "loadedMlxOffloadDiskBytes",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -3854,6 +3868,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
+      mlx_ple_offload: config.mlxPleOffload ?? null,
+      mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       ...mlxDrafter,
@@ -7651,7 +7667,7 @@ export function createOpenAIStreamAdapter(
                         body: JSON.stringify({
                           action_id: raw.id,
                           session_id: typeof raw.session_id === "string" ? raw.session_id : "",
-                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Unsloth." },
                         }),
                       }).catch(() => undefined);
                     },
@@ -9186,6 +9202,10 @@ export function createOpenAIStreamAdapter(
             toast.error("Generation failed", {
               description: msg || "Unknown error",
             });
+          }
+          // Only a status read shows a killed worker's model is gone; quiet, the failure has its toast.
+          if (!isExternalRequest) {
+            void syncInferenceStatusToStore({ includeLoras: false, quiet: true });
           }
         }
         // An explicit Stop is an abort too, but it must persist its reason instead of

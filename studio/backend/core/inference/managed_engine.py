@@ -65,7 +65,7 @@ def validate_load(engine: str, request) -> list[int]:
     # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
     gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
-        raise ValueError("Studio has no GPU it can assign to this engine.")
+        raise ValueError("Unsloth has no GPU it can assign to this engine.")
     from . import wsl_host
 
     if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
@@ -85,7 +85,7 @@ def validate_load(engine: str, request) -> list[int]:
             mask = None
         if mask:
             raise ValueError(
-                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Studio runs with {mask}. "
+                f"{ENGINE_NAMES[engine]} cannot select AMD GPUs while Unsloth runs with {mask}. "
                 "Use only HIP_VISIBLE_DEVICES or only ROCR_VISIBLE_DEVICES instead."
             )
     for gpu_id in gpu_ids:
@@ -99,7 +99,7 @@ def validate_load(engine: str, request) -> list[int]:
         )
     if stale(info):
         raise ValueError(
-            f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
+            f"Unsloth's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
     if info.get("profile_digest") != profile_digest(engine) and not (
         info.get("restored") and built_for_this_gpu(engine, info)
@@ -756,7 +756,7 @@ class ManagedEngine:
                 )
                 adopt_pid(self.process.pid)
                 if is_process_shutting_down():
-                    raise RuntimeError("Studio is shutting down")
+                    raise RuntimeError("Unsloth is shutting down")
                 self._reader = threading.Thread(
                     target = self._drain, args = (self.process,), daemon = True
                 )
@@ -1076,7 +1076,7 @@ class ManagedEngine:
             )
         if params.get("video"):
             raise ValueError(
-                "Video input is not yet supported by the Studio managed engine transport."
+                "Video input is not yet supported by the Unsloth managed engine transport."
             )
         from .orchestrator import _encoded_images, InferenceOrchestrator
 

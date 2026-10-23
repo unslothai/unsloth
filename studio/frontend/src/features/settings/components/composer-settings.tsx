@@ -63,7 +63,7 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           className={
             embedded
               ? ""
-              : "mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4"
+              : "mt-2 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-4"
           }
         >
           <SettingsRow
