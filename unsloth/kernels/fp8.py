@@ -160,7 +160,15 @@ def _f32_to_f16_rne(x):
 
 
 @triton.jit
-def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr, EXACT_F16: tl.constexpr = False):
+def weight_dequant_kernel(
+    x_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    BLOCK_SIZE: tl.constexpr,
+    EXACT_F16: tl.constexpr = False,
+):
     pid_m = tl.program_id(axis = 0)
     pid_n = tl.program_id(axis = 1)
     n = tl.cdiv(N, BLOCK_SIZE)
@@ -202,7 +210,13 @@ def weight_dequant_block(
     )
     with _fp8_triton_device_context(x):
         weight_dequant_kernel[grid](
-            x, s, y, M, N, BLOCK_SIZE = block_size, EXACT_F16 = _fp8_exact_f16_round(dtype),
+            x,
+            s,
+            y,
+            M,
+            N,
+            BLOCK_SIZE = block_size,
+            EXACT_F16 = _fp8_exact_f16_round(dtype),
             enable_fp_fusion = True,
         )
     return y

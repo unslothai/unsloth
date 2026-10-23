@@ -46,15 +46,20 @@ def test_data_has_double_rounding_ties():
     # Non-vacuity: some products round differently from exact -> fp16 than from fp32 -> fp16.
     w, s = _data("cpu")
     p = (w.double() * s.double().repeat_interleave(BLOCK, 0).repeat_interleave(BLOCK, 1)).numpy()
-    once, twice = p.astype(np.float16).view(np.int16), p.astype(np.float32).astype(np.float16).view(np.int16)
+    once, twice = (
+        p.astype(np.float16).view(np.int16),
+        p.astype(np.float32).astype(np.float16).view(np.int16),
+    )
     assert int((once != twice).sum()) > 50
-
 
 
 def _rounding_inputs():
     # Every fp32 exponent x mantissas around the fp16 rounding point (exact halves, one above and
     # below, odd / even kept bits), both signs, plus zeros, infinities and NaNs.
-    low = torch.tensor([0, 1, 0xFFF, 0x1000, 0x1001, 0x1FFF, 0x2000, 0x3000, 0x7FFFFF, 0x7FE000, 0x7FF000], dtype = torch.int64)
+    low = torch.tensor(
+        [0, 1, 0xFFF, 0x1000, 0x1001, 0x1FFF, 0x2000, 0x3000, 0x7FFFFF, 0x7FE000, 0x7FF000],
+        dtype = torch.int64,
+    )
     exps = torch.arange(256, dtype = torch.int64)
     bits = (exps[:, None] << 23 | low[None, :]).flatten()
     g = torch.Generator(device = "cpu").manual_seed(0)
@@ -78,6 +83,7 @@ def test_f32_to_f16_rne_matches_torch_cast():
     y = torch.empty_like(x, dtype = torch.float16)
     _round[(triton.cdiv(x.numel(), 1024),)](x, y, x.numel(), BLOCK = 1024, enable_fp_fusion = True)
     _same_bits(y, x.half())
+
 
 @needs_cuda
 @pytest.mark.parametrize("exact", ["1", "0"])
@@ -104,7 +110,10 @@ def test_other_dtypes_untouched(monkeypatch, dtype):
     monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
     assert fp8._fp8_exact_f16_round(dtype) is False
     w, s = _data("cuda")
-    _same_bits(fp8._e4m3fn_bytes_dequant(w, s, BLOCK, BLOCK, dtype), fp8._torch_blockwise_dequant(w, s, [BLOCK, BLOCK], dtype))
+    _same_bits(
+        fp8._e4m3fn_bytes_dequant(w, s, BLOCK, BLOCK, dtype),
+        fp8._torch_blockwise_dequant(w, s, [BLOCK, BLOCK], dtype),
+    )
 
 
 def test_exact_round_is_the_rocm_fp16_default(monkeypatch):
@@ -140,9 +149,24 @@ def test_hip_codegen_has_no_fma_mix():
         ),
         "_e4m3fn_bytes_dequant_kernel": (
             fp8._e4m3fn_bytes_dequant_kernel,
-            {"x_ptr": "*u8", "s_ptr": "*fp32", "y_ptr": "*fp16", "M": "i32", "N": "i32", "stride_xm": "i32",
-             "stride_xn": "i32", "stride_sm": "i32", "stride_sn": "i32"},
-            {"BLOCK_M_Q": 128, "BLOCK_N_Q": 128, "BLOCK_R": 8, "BLOCK_C": 512, "LONG_INDEXING": False},
+            {
+                "x_ptr": "*u8",
+                "s_ptr": "*fp32",
+                "y_ptr": "*fp16",
+                "M": "i32",
+                "N": "i32",
+                "stride_xm": "i32",
+                "stride_xn": "i32",
+                "stride_sm": "i32",
+                "stride_sn": "i32",
+            },
+            {
+                "BLOCK_M_Q": 128,
+                "BLOCK_N_Q": 128,
+                "BLOCK_R": 8,
+                "BLOCK_C": 512,
+                "LONG_INDEXING": False,
+            },
         ),
     }
     for name, (fn, sig, consts) in cases.items():
@@ -151,7 +175,10 @@ def test_hip_codegen_has_no_fma_mix():
             c = {**consts, "EXACT_F16": exact}
             try:
                 k = triton.compile(
-                    ASTSource(fn = fn, signature = {**sig, **{x: "constexpr" for x in c}}, constexprs = c), target = target
+                    ASTSource(
+                        fn = fn, signature = {**sig, **{x: "constexpr" for x in c}}, constexprs = c
+                    ),
+                    target = target,
                 )
             except Exception as e:  # noqa: BLE001
                 pytest.skip(f"offline HIP compile unavailable: {type(e).__name__}: {e}"[:200])
