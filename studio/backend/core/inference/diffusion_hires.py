@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 from loggers import get_logger
 
 from . import diffusion_upscalers as upscalers
+from .diffusion_vae_upcast import fp32_keeping_storage
 
 logger = get_logger(__name__)
 
@@ -513,14 +514,9 @@ def encode_upscaled_latents(pipe: Any, base_image: Any, target: tuple[int, int])
     x = pipe.image_processor.preprocess(base_image).to(device = device, dtype = dtype)
     upcast = bool(getattr(vae.config, "force_upcast", False)) and dtype == torch.float16
     with torch.inference_mode():
-        if upcast:
-            vae.to(dtype = torch.float32)
-            x = x.float()
-        try:
-            lat = vae.encode(x).latent_dist.mode()
-        finally:
-            if upcast:
-                vae.to(dtype = dtype)
+        # fp32 without rewriting the stored weights (they stay pinned under model offload).
+        with fp32_keeping_storage(vae) if upcast else contextlib.nullcontext():
+            lat = vae.encode(x.float() if upcast else x).latent_dist.mode()
         lat = lat.to(dtype)
         mean = getattr(vae.config, "latents_mean", None)
         std = getattr(vae.config, "latents_std", None)

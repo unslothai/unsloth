@@ -122,6 +122,8 @@ def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
 
 OFFLOAD_KEEP_CPU_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_KEEP_CPU"
 _KEEP_ATTR = "_unsloth_offload_keep_cpu"
+# diffusion_vae_upcast.DTYPE_ONLY_TO_ATTR
+_DTYPE_ONLY_TO_ATTR = "_unsloth_dtype_only_to"
 
 
 def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
@@ -757,8 +759,10 @@ def _wrap_cpu_offload_hook(
                     type(mod).__name__,
                 )
         layout = state.get("pin_layout") if onload and _fast_upload_enabled() else None
-        if layout and "to" in mod.__dict__:
-            # An instance-level mover is already installed (stable arena, pinned swap): defer to it.
+        prior_to = mod.__dict__.get("to")
+        if layout and prior_to is not None and not getattr(prior_to, _DTYPE_ONLY_TO_ATTR, False):
+            # An instance-level mover is already installed (stable arena, pinned swap): defer to it. A dtype-only
+            # one (diffusion_vae_upcast) passes device moves through, so the pinned chunks still go up first.
             layout = None
         if not layout:
             out = pre_forward(mod, *args, **kwargs)
@@ -778,8 +782,14 @@ def _wrap_cpu_offload_hook(
             # The stock pre_forward offloads the previous component, then calls module.to(device) only if the module
             # is not there yet. Shadow that one call so the pinned chunks go up first; module.to then moves whatever
             # the chunks did not cover (unpinned or replaced weights) exactly as before.
+            def _put_back_to() -> None:
+                if prior_to is None:
+                    mod.__dict__.pop("to", None)
+                else:
+                    mod.__dict__["to"] = prior_to
+
             def _to(*to_args: Any, **to_kwargs: Any) -> Any:
-                mod.__dict__.pop("to", None)
+                _put_back_to()
                 import torch
 
                 target = to_args[0] if to_args else to_kwargs.get("device")
@@ -799,7 +809,7 @@ def _wrap_cpu_offload_hook(
             try:
                 out = pre_forward(mod, *args, **kwargs)
             finally:
-                mod.__dict__.pop("to", None)
+                _put_back_to()
         if onload:
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
