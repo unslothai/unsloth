@@ -1037,7 +1037,7 @@ export function UsageExamples({
             <button
               type="button"
               onClick={handleCopy}
-              className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="btn-fill absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               aria-label={t("settings.apiKeys.copySnippet")}
             >
               <HugeiconsIcon
@@ -1117,7 +1117,7 @@ export function UsageExamples({
             <button
               type="button"
               onClick={handleCopyAgent}
-              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="btn-fill absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               aria-label={t("settings.apiKeys.copySnippet")}
             >
               <HugeiconsIcon

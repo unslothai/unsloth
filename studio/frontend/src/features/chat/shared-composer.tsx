@@ -3552,7 +3552,7 @@ export function SharedComposer({
                     stop();
                   }}
                   aria-label="Stop prompt queue"
-                  className="flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="btn-fill flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground "
                 >
                   <SquareIcon className="size-2.5 shrink-0 fill-current" />
                   <span className="tabular-nums">

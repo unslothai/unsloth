@@ -2683,7 +2683,7 @@ export function PromptStorageDialog({
                   if (activeTab === "prompts") setShowNewPrompt(true);
                   else setShowNewList(true);
                 }}
-                className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground hover:border-border hover:bg-muted/50 hover:text-foreground transition-all"
+                className="btn-fill flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-transparent px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-all"
               >
                 <PlusIcon className="size-3.5" />
                 {activeTab === "prompts" ? "New prompt" : "New prompt list"}

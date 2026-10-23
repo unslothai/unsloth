@@ -97,7 +97,7 @@ export function LibraryToolbar({
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <Button
-            variant="outline"
+            variant="picker"
             disabled={disabled}
             className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
@@ -157,7 +157,7 @@ export function LibraryToolbar({
         <Popover open={projectOpen} onOpenChange={setProjectOpen}>
           <PopoverTrigger asChild={true}>
             <Button
-              variant="outline"
+              variant="picker"
               disabled={disabled}
               className="h-10 max-w-full gap-2 rounded-full"
               aria-label={t("settings.data.library.filterProject")}

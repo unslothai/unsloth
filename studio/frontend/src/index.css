@@ -15,6 +15,21 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* A clickable button's fill: the segmented toggles' track (.hub-tab-toggle in hub.css), so a filled
+   button and a toggle are the same grey in both themes, panels included. No border. */
+@utility btn-fill {
+	background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
+	&:hover {
+		background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
+	}
+	&:where(.dark *) {
+		background-color: var(--hub-tab-track);
+	}
+	&:where(.dark *):hover {
+		background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), transparent);
+	}
+}
+
 @layer components {
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface
@@ -3093,6 +3108,20 @@ html[data-chat-font] .aui-root {
 	}
 	.unsloth-model-selector-menu[data-slot] {
 		border-radius: 1.25rem !important;
+	}
+	/* Its outline buttons keep their border. */
+	html:not(.dark) .unsloth-model-selector-menu .btn-fill {
+		border-color: var(--border);
+		background-color: var(--background);
+	}
+	html:not(.dark) .unsloth-model-selector-menu .btn-fill:hover {
+		background-color: color-mix(in oklab, var(--accent) 50%, transparent);
+	}
+	html.dark .unsloth-model-selector-menu .btn-fill {
+		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	html.dark .unsloth-model-selector-menu .btn-fill:hover {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
@@ -6474,11 +6503,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 .unsloth-files-panel-action {
 	/* pt-px: centred by its line box, the cap-height text sits half a pixel high. */
-	@apply inline-flex h-7 shrink-0 items-center rounded-full border px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
-	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
-}
-.unsloth-files-panel-action:hover {
-	background-color: rgb(0 0 0 / calc(0.09 * var(--contrast-wash-gain, 1)));
+	@apply inline-flex h-7 shrink-0 items-center rounded-full px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
+	@apply btn-fill;
 }
 .unsloth-files-add-card:disabled {
 	@apply pointer-events-none opacity-50;

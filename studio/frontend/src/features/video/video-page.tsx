@@ -4984,7 +4984,7 @@ function VideoGenerator({
                     <button
                       type="button"
                       onClick={() => setClearConfirmOpen(true)}
-                      className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-[10px] text-muted-foreground ring-1 ring-border transition-colors hover:text-destructive hover:ring-destructive/40"
+                      className="btn-fill flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-muted-foreground transition-colors hover:text-destructive"
                     >
                       <HugeiconsIcon icon={Delete02Icon} className="size-4" />
                       <span className="text-ui-9 font-medium">Clear all</span>

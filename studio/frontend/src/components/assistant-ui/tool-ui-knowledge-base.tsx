@@ -62,7 +62,7 @@ export function CitationBadge({
       size="sm"
       className={`rounded-full inline-flex items-center gap-1.5 max-w-[calc(15rem*var(--ui-space-scale,1))] ${
         clickable
-          ? "cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
+          ? "btn-fill cursor-pointer border-transparent hover:text-accent-foreground transition-colors"
           : "cursor-default"
       }`}
     >
