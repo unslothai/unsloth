@@ -423,9 +423,7 @@ def test_fsdp2_sharded_grads_norm_and_clip_on_local_shards(tmp_path):
 
 
 def test_ddp_two_ranks_train_each_adapter_on_its_global_mean(tmp_path):
-    # Real torch.distributed (gloo, 2 CPU ranks, DDP): rank 0 holds adapter 0's rows, rank 1 adapter 1's
-    # with fewer valid labels. After DDP both ranks must agree on presence and hold, per adapter, the
-    # gradient of that adapter's mean over the global batch.
+    # gloo DDP, 2 ranks with different adapters: per-adapter grads must equal the global-batch mean.
     script = tmp_path / "ddp.py"
     script.write_text(
         textwrap.dedent(

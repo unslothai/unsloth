@@ -353,8 +353,7 @@ def _launch_seg_wgrad(
     )
 
 
-# As torch.library triton ops, Dynamo and Inductor trace the launches instead of breaking the graph on them.
-# The interpreter (TRITON_INTERPRET=1) runs plain Python kernels that wrap_triton does not accept.
+# triton_op lets Dynamo trace the launches without a graph break; wrap_triton rejects interpreter kernels.
 _INTERPRETED = os.environ.get("TRITON_INTERPRET", "0") == "1"
 if HAS_TRITON and hasattr(torch.library, "triton_op") and not _INTERPRETED:
     _wrap = torch.library.wrap_triton
@@ -370,7 +369,6 @@ else:
 
 
 def _eager_guard(device: torch.device):
-    # Triton launches on the current device; compiled code sets its own device guard.
     if torch.compiler.is_compiling():
         return contextlib.nullcontext()
     return _device_guard(device)
@@ -610,8 +608,7 @@ class MultiLoraLinear(nn.Module):
         scales = [a / (math.sqrt(k) if use_rslora else k) for a, k in zip(alphas, ranks)]
         self.register_buffer("scales", torch.tensor(scales, dtype = torch.float32, device = device))
         self.reset_parameters()
-        # A plain attribute, not a buffer: DDP broadcasts buffers from rank 0, which would hand every rank
-        # rank 0's routing.
+        # Not a buffer: DDP broadcasts buffers from rank 0, giving every rank rank 0's routing.
         self.batch: Optional[MultiLoraBatch] = None
         self.seen: Optional[torch.Tensor] = None
         self.trained: Optional[torch.Tensor] = None
@@ -779,8 +776,7 @@ def per_adapter_loss(
             layer.trained = mark if layer.trained is None else layer.trained | mark
     if not _distributed():
         return losses.sum(), losses.detach()
-    # DDP / FSDP average gradients over ranks: divide by every rank's tokens and undo that average, so each
-    # adapter's gradient is its mean over the global batch.
+    # Undo DDP / FSDP's rank average so each adapter's gradient is its mean over the global batch.
     total = counts.detach().clone()
     torch.distributed.all_reduce(total, group = process_group)
     world = torch.distributed.get_world_size(process_group)
