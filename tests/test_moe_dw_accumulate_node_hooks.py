@@ -54,12 +54,7 @@ def gg(monkeypatch):
     def dX(dY, W, **kw):
         return dY @ W[0]
 
-    def dense_dW(
-        X,
-        dY,
-        dW_dtype = None,
-        **kw,
-    ):
+    def dense_dW(X, dY, dW_dtype = None, **kw):
         return (dY.T @ X).unsqueeze(0).to(dW_dtype or X.dtype)
 
     def dW_accumulate(dW, **kw):
@@ -89,12 +84,7 @@ def _scale(g, k):
     return None if g is None else g * k
 
 
-def _run(
-    gg,
-    monkeypatch,
-    enabled,
-    hook = None,
-):
+def _run(gg, monkeypatch, enabled, hook = None):
     monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1" if enabled else "0")
     gen = torch.Generator().manual_seed(0)
     X = torch.randn(4, 3, generator = gen, requires_grad = True)
@@ -103,21 +93,7 @@ def _run(
     G = torch.randn(4, 2, generator = gen)
     cfg = _cfg()
     Y = gg.GroupedGemm.apply(
-        X,
-        W,
-        torch.tensor([4]),
-        1,
-        None,
-        False,
-        False,
-        None,
-        False,
-        cfg,
-        cfg,
-        cfg,
-        False,
-        False,
-        False,
+        X, W, torch.tensor([4]), 1, None, False, False, None, False, cfg, cfg, cfg, False, False, False
     )
     handle = None
     if hook == "acc_prehook":
