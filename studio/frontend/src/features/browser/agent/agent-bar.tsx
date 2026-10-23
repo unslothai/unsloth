@@ -30,9 +30,9 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
     <div
       role={question ? "alertdialog" : "status"}
       aria-live="polite"
-      className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/70 bg-primary/5 px-3 py-1.5 text-ui-12"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/70 bg-[var(--browser-surface)] px-3 py-1.5 text-ui-12"
     >
-      {question ? null : <Spinner className="size-3.5 text-primary" />}
+      {question ? null : <Spinner className="size-3.5 text-muted-foreground" />}
       <div className="min-w-0 flex-[1_1_12rem]">
         <p className="truncate font-medium text-foreground">
           {question ? t(`browser.agent.ask.${question.ask}`, { host: question.host, name: question.name }) : doing}
