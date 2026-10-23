@@ -32,7 +32,11 @@ class _Many(torch.nn.Module):
     """Many small sharded Linears (the LoRA shape of the problem), optionally a 1-row one (empty
     shard on rank 1) and a float16 one (a second gradient dtype)."""
 
-    def __init__(self, empty_shard = False, mixed = False):
+    def __init__(
+        self,
+        empty_shard = False,
+        mixed = False,
+    ):
         super().__init__()
         torch.manual_seed(0)
         self.layers = torch.nn.ModuleList(torch.nn.Linear(6, 6) for _ in range(12))
@@ -85,7 +89,11 @@ def _reference(native_dtensor, params, max_norm, p):
     elif p == math.inf:
         part = sh.max()
         dist.all_reduce(part, op = dist.ReduceOp.MAX)
-        total = torch.max(torch.stack([rep.max(), part])) if rep.numel() else torch.max(torch.stack([part]))
+        total = (
+            torch.max(torch.stack([rep.max(), part]))
+            if rep.numel()
+            else torch.max(torch.stack([part]))
+        )
     else:
         powers = sh.pow(p).sum()
         dist.all_reduce(powers, op = dist.ReduceOp.SUM)
@@ -156,7 +164,6 @@ def _worker(rank, world, port, out, case):
         out.put((rank, _case(native, empty_shard = case == "empty", mixed = case == "mixed")))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         try:
