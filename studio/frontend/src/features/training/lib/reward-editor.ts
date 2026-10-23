@@ -202,7 +202,6 @@ export function rewardReferenceColumn(
     : null;
 }
 
-/** Rule types whose response part can be extracted before scoring; the backend applies it to each. */
 export function rewardExtractsResponse(
   rule: Record<string, unknown> | null | undefined,
 ): boolean {
