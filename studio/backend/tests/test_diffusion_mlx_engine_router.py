@@ -163,7 +163,6 @@ def test_opt_in_on_the_mps_less_cpu_backend_still_picks_mlx(monkeypatch):
     assert _predict() == _select() == ENGINE_MLX
 
 
-# ── default (auto) picks MLX on a capable Mac; 0 never consults it ──────────
 
 
 @pytest.mark.parametrize("value", [None, "", "auto", "AUTO"])
@@ -574,7 +573,6 @@ def test_auto_switch_planner_judges_mlx_with_the_picks_gguf(monkeypatch):
     assert media_locality.planners_for(DIFFUSION, pick) == [ENGINE_MLX]
 
 
-# ── a LoRA load never lands on MLX, in any mode ──────────────────────────────
 
 
 @pytest.mark.parametrize("value", [None, "auto", "1"])

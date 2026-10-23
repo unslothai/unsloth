@@ -569,7 +569,6 @@ def engine_for(name: str) -> Any:
         return get_sd_cpp_backend()
     if name == ENGINE_MLX:
         if mlx_mode() == MLX_AUTO:
-            # MLX for what it serves, diffusers MPS (loaded on demand) for the rest.
             from core.inference.mlx_diffusion_routing import get_routed_mlx_engine
             return get_routed_mlx_engine()
         from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
@@ -606,8 +605,7 @@ def cancel_generation_for_account(account_id: str) -> bool:
         # cancel_generate rechecks the owner under its lock.
         if engine.cancel_generate(expected_account = account_id):
             cancelled = True
-    # The routed MLX engine owns a generation only while it loads its diffusers fallback; the engines it routes to are
-    # scanned above.
+    # The routed engine owns a generation only while loading its fallback; its targets are scanned above.
     routing = sys.modules.get("core.inference.mlx_diffusion_routing")
     routed = getattr(routing, "_routed_mlx_engine", None) if routing is not None else None
     if routed is not None and routed._active_generate_account == account_id:

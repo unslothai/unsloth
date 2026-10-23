@@ -214,7 +214,6 @@ def _img2img(engine, **extra):
     )
 
 
-# ── the routing decision ─────────────────────────────────────────────────────
 
 
 def test_plain_txt2img_runs_on_mlx_and_never_loads_diffusers(rig):
@@ -372,7 +371,6 @@ def test_status_advertises_the_fallback_workflows_while_mlx_is_resident(rig):
     assert status["hires"] == {"available": True}
 
 
-# ── memory budget ────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -437,7 +435,6 @@ def test_the_real_fit_check_reads_the_mlx_plan_and_the_budget(tmp_path, monkeypa
     assert big._engines_fit_together() is True
 
 
-# ── failure, cancel, replacement, unload ─────────────────────────────────────
 
 
 def test_a_failed_fallback_reports_the_error_and_restores_mlx(rig):
@@ -530,7 +527,6 @@ def test_repo_ids_cover_both_engines(rig):
     assert rig.engine.loaded_repo_ids() == ("unsloth/Z-Image-Turbo-GGUF",)
 
 
-# ── the route's signature checks ─────────────────────────────────────────────
 
 
 def test_generate_signature_is_the_union_of_both_engines(rig):

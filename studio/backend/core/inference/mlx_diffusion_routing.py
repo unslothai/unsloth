@@ -1,23 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-request engine routing on Apple Silicon: MLX for what it serves, diffusers MPS for the rest.
+"""Per-request engine routing on Apple Silicon: MLX for plain text-to-image, diffusers MPS for the rest.
 
-The default (``UNSLOTH_DIFFUSION_MLX`` unset or ``auto``) for a load the MLX engine can take. The router activates
-``RoutedMlxEngine`` under the MLX engine's name; it loads the model on MLX and routes every generation:
-
-* A plain text-to-image request (no init / mask / reference image, LoRA, ControlNet, Hires fix, sampler or shift
-  override, per-image prompt lists) runs on MLX, which is 1.5-2x faster than diffusers MPS at equal accuracy.
-* Anything else is served by the diffusers engine, loaded on the first such request with the same load options.
-  When both engines do not fit the Metal working set together, the MLX model is unloaded first, and later requests
-  stay on diffusers (no ping-pong reloads) until the model is loaded again. When they fit, both stay resident and
-  text-to-image goes back to MLX.
-
-Which engine served a request is in its result (``engine``, persisted in the gallery record) and in
-``status()["engine_routing"]``. ``UNSLOTH_DIFFUSION_MLX=0`` never builds this engine; ``=1`` runs the MLX engine alone.
-
-What MLX can serve is ``MLX_CAPABILITIES`` (one entry for every family the MLX engine loads, today Z-Image): a family
-wired later declares its own entry, and the request check reads it.
+When both engines do not fit the Metal working set, MLX is unloaded first and later requests stay on diffusers
+(no ping-pong reloads) until the model is loaded again. ``UNSLOTH_DIFFUSION_MLX=0`` never builds this engine;
+``=1`` runs the MLX engine alone.
 """
 
 from __future__ import annotations
@@ -41,7 +29,6 @@ ENGINE_DIFFUSERS = "diffusers"
 COEXIST_ENV = "UNSLOTH_DIFFUSION_MLX_COEXIST"
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
-# Values that hand the choice to the engine rather than ask for something specific.
 _UNSET_TOKENS = frozenset({"", "auto", "none", "default"})
 
 
@@ -90,7 +77,6 @@ def load_blocker(
 
 # Generate kwargs a request may carry that change nothing on a text-to-image MLX run.
 _IGNORED_ON_MLX = frozenset({"live_preview", "mask_blur", "inpaint_only_masked", "inpaint_padding"})
-# Checked by name below.
 _CHECKED = frozenset(
     {
         "hires",
@@ -130,9 +116,7 @@ def request_blocker(
     family: Optional[str] = None,
     mlx_params: Optional[frozenset[str]] = None,
 ) -> Optional[str]:
-    """What in a generate request the MLX engine cannot serve, else None (it runs on MLX).
-
-    ``mlx_params`` is the MLX engine's generate signature: any other option the request sets is diffusers-only."""
+    """What in a generate request MLX cannot serve, else None. Options outside ``mlx_params`` are diffusers-only."""
     caps = mlx_capabilities(family)
     get = kwargs.get
     workflow = get("workflow")
@@ -294,8 +278,7 @@ def _identity_of(engine: Any) -> Any:
 
 
 class _RoutedGenerate:
-    """``generate`` with the union of both engines' keywords, so the route's signature checks pass a diffusers-only
-    option through (and the request is routed to diffusers) instead of refusing it."""
+    """``generate`` with both engines' keywords, so the route's signature checks pass diffusers-only options through."""
 
     def __init__(self, owner: "RoutedMlxEngine") -> None:
         self.__self__ = owner
@@ -336,7 +319,6 @@ class RoutedMlxEngine:
         self._budget_fn = budget_fn or _default_budget
         self._capabilities_fn = capabilities_fn or _diffusers_capabilities
         self._poll_s = poll_s
-        # One routed generation, with any engine transition it needs, at a time.
         self._route_lock = threading.Lock()
         self._lock = threading.Lock()
         self._load_kwargs: Optional[dict[str, Any]] = None
@@ -358,8 +340,6 @@ class RoutedMlxEngine:
     def _diffusers(self) -> Any:
         return self._diffusers_factory()
 
-    # ── Residency ────────────────────────────────────────────────────────────
-
     def _diffusers_resident(self) -> bool:
         return self._diffusers_ours and getattr(self._diffusers(), "_state", None) is not None
 
@@ -378,7 +358,6 @@ class RoutedMlxEngine:
         return self._state is not None
 
     def __getattr__(self, name: str) -> Any:
-        # Anything this class does not route (static views, timings) is the resident engine's.
         if name.startswith("__") or name in (
             "_mlx_factory",
             "_diffusers_factory",
@@ -426,8 +405,6 @@ class RoutedMlxEngine:
             fits,
         )
         return fits
-
-    # ── Load ─────────────────────────────────────────────────────────────────
 
     def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
         """A new load replaces everything: the old model's diffusers copy goes first, then MLX loads."""
@@ -521,8 +498,6 @@ class RoutedMlxEngine:
                     self._fallback_cancel = None
                     self._active_generate_account = None
 
-    # ── Generate ─────────────────────────────────────────────────────────────
-
     def _accepted_identities(self) -> list[Any]:
         ids = []
         if self._mlx_resident():
@@ -594,7 +569,6 @@ class RoutedMlxEngine:
 
     def generate_progress(self) -> dict[str, Any]:
         if self._fallback_cancel is not None:
-            # Loading the diffusers copy before the first step.
             return {
                 "active": True,
                 "step": 0,
@@ -621,8 +595,6 @@ class RoutedMlxEngine:
         if self._serving == ENGINE_DIFFUSERS:
             return self._diffusers().cancel_generate(expected_account = expected_account)
         return self._mlx().cancel_generate(expected_account = expected_account)
-
-    # ── Unload / status ──────────────────────────────────────────────────────
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         if expected_account is None:
@@ -704,7 +676,6 @@ class RoutedMlxEngine:
             "mode": "auto",
             "default_engine": ENGINE_MLX,
             "resident": resident,
-            # The engine a plain text-to-image request runs on next.
             "txt2img_engine": ENGINE_DIFFUSERS
             if dropped and not self._mlx_resident()
             else ENGINE_MLX,
