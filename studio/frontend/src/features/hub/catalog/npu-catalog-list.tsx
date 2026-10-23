@@ -152,7 +152,7 @@ function NpuCatalogRow({
           <Button size="sm" variant="outline" onClick={onRun}>
             Run
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>
+          <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>
             Delete
           </Button>
           <DeleteConfirmDialog

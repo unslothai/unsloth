@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { SegmentedPill } from "@/components/segmented-control";
 import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
@@ -25,9 +26,6 @@ import {
   Refresh01Icon,
   ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, memo, useId, useMemo } from "react";
@@ -138,7 +136,8 @@ export function HubListHeader({
             // avatars below, just inside the row hover's left edge.
             className="hub-section-chevron -ml-3 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
-            <ChevronLeftIcon
+            <HugeiconsIcon
+              icon={ChevronLeftStandardIcon}
               strokeWidth={2}
               className="size-4"
             />

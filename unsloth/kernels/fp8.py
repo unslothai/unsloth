@@ -253,6 +253,7 @@ def _scale_dequant_one_pass(x: torch.Tensor, s: torch.Tensor, dtype: torch.dtype
             ROUND_SCALE = dtype != torch.float16,
             LONG_INDEXING = long_indexing(xb, out, block = BLOCK_M * n),
             num_warps = num_warps,
+            enable_fp_fusion = True,
         )
     return out.t() if transposed else out
 

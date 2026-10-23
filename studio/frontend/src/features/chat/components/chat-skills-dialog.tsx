@@ -450,7 +450,7 @@ export function ChatSkillsDialog({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button type="button" size="sm" onClick={openNew}>
+              <Button variant="secondary" type="button" size="sm" onClick={openNew}>
                 <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} />
                 {t("skills.newSkill")}
               </Button>
@@ -646,7 +646,8 @@ export function ChatSkillsDialog({
                     <Button type="button" variant="ghost" disabled={creating} onClick={goLibrary}>
                       {t("common.cancel")}
                     </Button>
-                    <Button type="submit" form="skill-new-form" disabled={creating || !canCreate}>
+                    <Button variant="secondary" type="submit" form="skill-new-form" disabled={creating || !canCreate}>
+                      <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                       {creating ? <Spinner /> : null}
                       {t("skills.create")}
                     </Button>
@@ -655,7 +656,7 @@ export function ChatSkillsDialog({
                   <>
                     <Button
                       type="button"
-                      variant="ghost"
+                      variant="destructive"
                       disabled={pending !== null}
                       onClick={() => setConfirmingDelete(selected)}
                       aria-label={t("skills.delete", { name: selected.name })}

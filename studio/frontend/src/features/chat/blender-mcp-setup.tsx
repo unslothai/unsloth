@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ChevronDown } from "lucide-react";
 import { openLink } from "@/lib/open-link";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -165,7 +166,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       <Collapsible className="border-t pt-3">
         <CollapsibleTrigger className="group flex items-center gap-1 rounded-full py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {config?.server_id ? "Setup help" : "Set up Blender"}
-          <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
+          <HugeiconsIcon icon={ChevronDownStandardIcon} aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
         <div className="space-y-4 pt-4 text-sm leading-relaxed text-muted-foreground">
@@ -184,7 +185,7 @@ export function BlenderMcpSetup({ servers, disabled, onBusyChange }: {
       <Collapsible className="border-t pt-3">
         <CollapsibleTrigger className="group flex w-full items-center justify-between rounded-full py-1 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           Advanced settings
-          <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
+          <HugeiconsIcon icon={ChevronDownStandardIcon} aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
         <div className="space-y-4 pt-4">

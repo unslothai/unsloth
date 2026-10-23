@@ -8,11 +8,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Bookmark,
   Check,
-  ChevronDown,
   ClipboardPaste,
   ImageUp,
   Trash2,
@@ -125,7 +126,8 @@ export function MediaGenerationPresetControl({
               aria-label="Modified"
             />
           ) : null}
-          <ChevronDown
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
             className={cn(
               "hidden size-3.5 shrink-0 text-muted-foreground transition-transform sm:block",
               open && "rotate-180",

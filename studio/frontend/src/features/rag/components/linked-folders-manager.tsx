@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { SOURCE_FOLDER_DESCRIPTION, sourceFolderUnavailableMessage } from "./source-folder-copy";
 import { RefreshGlyph } from "@/lib/refresh-icon";
-import { FolderAddIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { FolderSyncIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
@@ -338,7 +338,7 @@ export function LinkedFoldersManager({
                 <Spinner className="size-4 shrink-0" />
               ) : (
                 <HugeiconsIcon
-                  icon={FolderAddIcon}
+                  icon={PlusSignIcon}
                   strokeWidth={1.75}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
