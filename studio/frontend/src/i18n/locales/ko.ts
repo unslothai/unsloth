@@ -1314,10 +1314,6 @@ export const ko = {
           label: "추론 강도 낮추기",
           description: "추론 강도를 한 단계 내립니다",
         },
-        toggleFastMode: {
-          label: "Fast 모드 토글",
-          description: "Fast 모드를 켜거나 끕니다",
-        },
         renameChat: {
           label: "채팅 이름 바꾸기",
           description: "현재 채팅의 이름을 바꿉니다",

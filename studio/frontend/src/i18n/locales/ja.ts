@@ -1316,10 +1316,6 @@ export const ja = {
           label: "思考の深さを下げる",
           description: "思考の深さを 1 段階下げます",
         },
-        toggleFastMode: {
-          label: "Fast モードの切り替え",
-          description: "Fast モードをオンまたはオフにします",
-        },
         renameChat: {
           label: "チャット名を変更",
           description: "現在のチャットの名前を変更します",

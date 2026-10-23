@@ -1318,10 +1318,6 @@ export const es = {
           label: "Reducir esfuerzo de razonamiento",
           description: "Bajar un nivel el esfuerzo de razonamiento",
         },
-        toggleFastMode: {
-          label: "Alternar modo Fast",
-          description: "Activar o desactivar el modo Fast",
-        },
         renameChat: {
           label: "Renombrar chat",
           description: "Renombrar el chat actual",

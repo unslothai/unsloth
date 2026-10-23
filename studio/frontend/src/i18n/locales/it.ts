@@ -1220,10 +1220,6 @@ export const it = {
           label: "Riduci lo sforzo di ragionamento",
           description: "Abbassa di un livello lo sforzo di ragionamento",
         },
-        toggleFastMode: {
-          label: "Attiva/disattiva la modalità Fast",
-          description: "Attiva o disattiva la modalità Fast",
-        },
         renameChat: {
           label: "Rinomina chat",
           description: "Rinomina la chat corrente",

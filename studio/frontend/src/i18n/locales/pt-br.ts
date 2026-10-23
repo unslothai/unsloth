@@ -1317,10 +1317,6 @@ export const ptBR = {
           label: "Reduzir esforço de raciocínio",
           description: "Descer um nível o esforço de raciocínio",
         },
-        toggleFastMode: {
-          label: "Alternar modo Fast",
-          description: "Ligar ou desligar o modo Fast",
-        },
         renameChat: {
           label: "Renomear chat",
           description: "Renomear o chat atual",

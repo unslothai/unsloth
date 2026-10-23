@@ -1319,10 +1319,6 @@ export const de = {
           label: "Denkaufwand verringern",
           description: "Den Denkaufwand um eine Stufe senken",
         },
-        toggleFastMode: {
-          label: "Fast-Modus umschalten",
-          description: "Den Fast-Modus ein- oder ausschalten",
-        },
         renameChat: {
           label: "Chat umbenennen",
           description: "Den aktuellen Chat umbenennen",

@@ -61,7 +61,6 @@ export type ShortcutId =
   | "queueMessage"
   | "steerMessage"
   | "stopGeneration"
-  | "toggleFastMode"
   | "copyChatAsMarkdown"
   | "copySessionId"
   | "forkChat"
@@ -239,7 +238,6 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("steerMessage", null),
   // ⌘. is the macOS cancel chord. Safari's Stop loading shares it, but only while a page loads.
   def("stopGeneration", "Mod+Period"),
-  def("toggleFastMode", null),
 
   def("copyChatAsMarkdown", null),
   // ⌥⌘C is Firefox's element picker and Safari's console, so C moves the same way U did above.
@@ -283,7 +281,6 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     "cycleReasoningEffort",
     "decreaseReasoningEffort",
     "increaseReasoningEffort",
-    "toggleFastMode",
     "startDictation",
     "attachFiles",
     "openModelPicker",

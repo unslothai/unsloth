@@ -1372,10 +1372,6 @@ export const en = {
           label: "Decrease reasoning effort",
           description: "Lower reasoning effort one level",
         },
-        toggleFastMode: {
-          label: "Toggle Fast mode",
-          description: "Turn Fast mode on or off",
-        },
         renameChat: {
           label: "Rename chat",
           description: "Rename the current chat",

@@ -1314,10 +1314,6 @@ export const ar = {
           label: "خفض جهد التفكير",
           description: "خفض جهد التفكير مستوى واحدًا",
         },
-        toggleFastMode: {
-          label: "تبديل وضع Fast",
-          description: "تشغيل وضع Fast أو إيقافه",
-        },
         renameChat: {
           label: "إعادة تسمية المحادثة",
           description: "إعادة تسمية المحادثة الحالية",

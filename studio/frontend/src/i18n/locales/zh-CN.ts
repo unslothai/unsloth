@@ -1312,10 +1312,6 @@ export const zhCN = {
           label: "降低推理强度",
           description: "将推理强度降低一级",
         },
-        toggleFastMode: {
-          label: "切换 Fast 模式",
-          description: "开启或关闭 Fast 模式",
-        },
         renameChat: {
           label: "重命名聊天",
           description: "重命名当前聊天",

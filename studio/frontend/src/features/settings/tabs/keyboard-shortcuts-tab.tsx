@@ -561,7 +561,7 @@ export function KeyboardShortcutsTab() {
         <Button
           type="button"
           variant="dark"
-          className="pointer-events-auto shadow-md"
+          className="pointer-events-auto shadow-md disabled:bg-muted-foreground disabled:opacity-100"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {
             stopRecording();

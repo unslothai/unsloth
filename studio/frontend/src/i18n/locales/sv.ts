@@ -1432,10 +1432,6 @@ export const sv = {
           label: "Minska resonemangsnivå",
           description: "Sänk resonemangsnivån ett steg",
         },
-        toggleFastMode: {
-          label: "Växla snabbt läge",
-          description: "Aktivera eller inaktivera snabbt läge",
-        },
         renameChat: {
           label: "Byt namn på chatt",
           description: "Byt namn på den aktuella chatten",

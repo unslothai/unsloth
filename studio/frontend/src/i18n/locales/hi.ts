@@ -1318,10 +1318,6 @@ export const hi = {
           label: "तर्क प्रयास घटाएँ",
           description: "तर्क प्रयास एक स्तर घटाएँ",
         },
-        toggleFastMode: {
-          label: "Fast मोड टॉगल करें",
-          description: "Fast मोड चालू या बंद करें",
-        },
         renameChat: {
           label: "चैट का नाम बदलें",
           description: "मौजूदा चैट का नाम बदलें",

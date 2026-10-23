@@ -1317,10 +1317,6 @@ export const ru = {
           label: "Уменьшить усилие рассуждения",
           description: "Снизить усилие рассуждения на один уровень",
         },
-        toggleFastMode: {
-          label: "Переключить режим Fast",
-          description: "Включить или выключить режим Fast",
-        },
         renameChat: {
           label: "Переименовать чат",
           description: "Переименовать текущий чат",

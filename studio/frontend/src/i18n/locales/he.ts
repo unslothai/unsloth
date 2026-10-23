@@ -1404,10 +1404,6 @@ export const he = {
           label: "הפחת מאמץ חשיבה",
           description: "הורד את רמת מאמץ החשיבה בדרגה אחת",
         },
-        toggleFastMode: {
-          label: "הפעל/השבת מצב מהיר",
-          description: "הפעל או כבה את המצב המהיר",
-        },
         renameChat: {
           label: "שינוי שם צ'אט",
           description: "שנה את שם הצ'אט הנוכחי",

@@ -1319,10 +1319,6 @@ export const fr = {
           label: "Diminuer l’effort de raisonnement",
           description: "Descendre d’un niveau l’effort de raisonnement",
         },
-        toggleFastMode: {
-          label: "Activer/désactiver le mode Fast",
-          description: "Activer ou désactiver le mode Fast",
-        },
         renameChat: {
           label: "Renommer la discussion",
           description: "Renommer la discussion en cours",
