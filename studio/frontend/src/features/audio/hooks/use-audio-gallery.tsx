@@ -150,6 +150,9 @@ export function useAudioGallery({
   const retryClipSrc = useCallback(
     (clip: AudioGalleryClip, failedUrl: string) => {
       if (!galleryCache.srcById.retry(clip.id, failedUrl)) return;
+      // Unmount the failed src first: a remint in the same second returns the same URL,
+      // and an unchanged src prop would leave the errored element untouched.
+      setSrcById(galleryCache.srcById.toRecord());
       void ensureClipSrc(clip);
     },
     [ensureClipSrc],
