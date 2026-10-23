@@ -435,7 +435,7 @@ export function FullAccessConfirmContent({
           Tools will run without asking and outside the sandbox, including:
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <ul className="flex flex-col rounded-2xl bg-muted/50 px-5 py-1.5">
+      <ul className="flex flex-col rounded-xl bg-muted/50 px-5 py-1.5">
         {FULL_ACCESS_SCOPES.map((scope) => (
           <li key={scope.title} className="flex items-center gap-4 py-3">
             <HugeiconsIcon
@@ -531,7 +531,7 @@ export function PermissionModeDropdown({
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <Button
-            variant="outline"
+            variant="picker"
             size="sm"
             className={cn("gap-1.5", triggerClassName)}
             aria-label="Permission level for tool calls"

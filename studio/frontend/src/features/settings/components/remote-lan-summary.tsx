@@ -125,7 +125,7 @@ export function RemoteLanSummary() {
   return (
     <section
       data-settings-label={t("settings.remoteLan.title")}
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
