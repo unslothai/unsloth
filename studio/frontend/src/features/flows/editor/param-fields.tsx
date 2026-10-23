@@ -215,6 +215,8 @@ function useRemoteOptions(spec: ParamSpec): string[] | null {
     if (!source) return;
     // Per login session: routes are account-scoped, so a new sign-in never reuses the last account's answers.
     const key = `${getAuthSessionEpoch()}|${source}|${path ?? ""}`;
+    // The saved-flow list changes while you work (a helper flow made a minute ago), so it is fetched fresh.
+    if (source === "/api/flows") remoteOptions.delete(key);
     let request = remoteOptions.get(key);
     if (!request) {
       request = authFetch(source)

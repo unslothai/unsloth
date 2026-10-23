@@ -272,3 +272,9 @@ async def test_called_flows_share_the_callers_gpu_step_limit(monkeypatch):
     monkeypatch.setattr(engine_mod, "MAX_GPU_OPS_PER_RUN", 1)
     rs = await _run(eng, parent)
     assert rs.status == "failed"
+
+
+def test_declared_flow_params_are_passed_through():
+    d = {"nodes": [], "params": [{"id": "topic", "type": "text"}]}
+    _, params = apply_input_values(d, {"topic": "otters", "unknown": 1})
+    assert params == {"topic": "otters"}

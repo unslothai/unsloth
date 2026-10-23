@@ -49,6 +49,8 @@ export function NodeHistory({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a different node starts with nothing viewed
   useEffect(() => {
+    // The strip until the new answer arrives would belong to the last node, and Pin would save it here.
+    setEntries(null);
     setViewing(null);
     onView(null);
   }, [nodeId, onView]);

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { doc, node } from "./flows-editor-fixtures.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -165,4 +165,12 @@ test("history cells preview media first, and pins only go with nodes still in th
   assert.deepEqual(pinsForRun(["a", "b"]), { a: { text: "kept" } });
   usePinsStore.getState().setPin("a", null);
   assert.deepEqual(pinsForRun(["a"]), {});
+});
+
+test("the Run Flow picker refetches the flow list and history never shows another node's strip", () => {
+  const fields = readSrc("features/flows/editor/param-fields.tsx");
+  assert.match(fields, /source === "\/api\/flows"\) remoteOptions\.delete\(key\)/);
+  const history = readSrc("features/flows/editor/node-history.tsx");
+  const reset = history.slice(history.indexOf("a different node starts with nothing viewed"));
+  assert.ok(reset.indexOf("setEntries(null)") < reset.indexOf("}, [nodeId, onView]);"));
 });
