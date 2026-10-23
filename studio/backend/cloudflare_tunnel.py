@@ -662,8 +662,9 @@ class CloudflareTunnel:
     def _release_named(self) -> None:
         with self._lock:
             cleanup, self._named_cleanup = self._named_cleanup, None
-        if cleanup:
-            cleanup()
+            if cleanup:
+                # A concurrent stop must wait until the installation lease is released.
+                cleanup()
 
     def is_running(self) -> bool:
         with self._lock:

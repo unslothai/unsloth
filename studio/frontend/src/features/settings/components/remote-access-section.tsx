@@ -30,6 +30,7 @@ import {
 import {
   type RemoteAccessStatus,
   type TunnelMode,
+  namedTunnelErrorMessage,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
   remoteAccessErrorMessage,
@@ -51,10 +52,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
-import {
-  NamedTunnelSettings,
-  namedTunnelErrorMessage,
-} from "./named-tunnel-settings";
+import { NamedTunnelSettings } from "./named-tunnel-settings";
 import { SettingsRow } from "./settings-row";
 
 type RemoteAccessOperation = "start" | "stop" | "auto" | "config" | "named";

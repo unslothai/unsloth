@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   type ApiRemoteAccessStatus,
   cloudflareLoginUrl,
+  namedTunnelErrorMessage,
   normalizeRemoteAccessStatus,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
@@ -19,6 +20,30 @@ import {
 } from "../src/features/settings/api/remote-access-state.ts";
 
 const TUNNEL = "https://calm-otter-review.trycloudflare.com";
+
+test("named tunnel failures offer localized recovery without exposing raw errors", () => {
+  const t = (key: string) => key;
+  assert.equal(
+    namedTunnelErrorMessage("cloudflare_login_required", t),
+    "settings.namedTunnel.errors.login",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("dns_hostname_mismatch", t),
+    "settings.namedTunnel.errors.zone",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("credentials_unreadable", t),
+    "settings.namedTunnel.errors.credentials",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("named_setup_required", t),
+    "settings.namedTunnel.prepareHint",
+  );
+  assert.equal(
+    namedTunnelErrorMessage("unexpected response containing private credentials", t),
+    "settings.namedTunnel.errors.generic",
+  );
+});
 
 function apiStatus(
   over: Partial<ApiRemoteAccessStatus> = {},

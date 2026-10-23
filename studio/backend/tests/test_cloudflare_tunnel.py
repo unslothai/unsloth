@@ -344,6 +344,50 @@ def test_named_connector_keeps_lease_until_process_exit(monkeypatch):
     assert releases == [True]
 
 
+def test_named_stop_waits_for_reader_cleanup_before_retry(monkeypatch):
+    module = _load_ct()
+    monkeypatch.setattr(module, "_forget_pid", lambda pid: None)
+    tunnel = module.CloudflareTunnel(
+        8888, "cloudflared", named_tunnel = {"hostname": "studio.example.com"}
+    )
+    proc = _FakePopen()
+    proc._alive = False
+    proc.stdout = io.StringIO("")
+    tunnel._proc = proc
+    cleanup_started, finish_cleanup, stop_started, stopped = (
+        _real_threading.Event() for _ in range(4)
+    )
+    releases, results = [], []
+
+    def cleanup():
+        cleanup_started.set()
+        assert finish_cleanup.wait(3)
+        releases.append(True)
+
+    def stop():
+        stop_started.set()
+        results.append(tunnel.stop())
+        stopped.set()
+
+    tunnel._named_cleanup = cleanup
+    reader = _real_threading.Thread(target = tunnel._reader, args = (proc,))
+    stopper = _real_threading.Thread(target = stop)
+    reader.start()
+    try:
+        assert cleanup_started.wait(1)
+        stopper.start()
+        assert stop_started.wait(1)
+        assert not stopped.wait(0.1), "stop returned while the named tunnel lease was still held"
+    finally:
+        finish_cleanup.set()
+        reader.join(3)
+        if stopper.ident is not None:
+            stopper.join(3)
+    assert not reader.is_alive() and not stopper.is_alive()
+    assert results == [True]
+    assert releases == [True]
+
+
 def test_quick_connector_cannot_inherit_named_tunnel_options(monkeypatch):
     calls = []
     monkeypatch.setenv("TUNNEL_TOKEN", "parent-token")

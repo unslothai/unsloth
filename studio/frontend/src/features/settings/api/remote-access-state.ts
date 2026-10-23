@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { useT } from "@/i18n";
 import { isLoopbackHost, normalizeHost } from "../components/agent-command.ts";
 
 export type RemoteAccessState =
@@ -249,6 +250,52 @@ export function remoteAccessSelfStopPoll(
     return { expectingDisconnect: false, apply: true };
   }
   return { expectingDisconnect: true, apply: next.state !== "stopping" };
+}
+
+export function namedTunnelErrorMessage(
+  error: string,
+  t: ReturnType<typeof useT>,
+): string {
+  switch (error) {
+    case "invalid_hostname":
+      return t("settings.namedTunnel.errors.hostname");
+    case "token_required":
+    case "invalid_tunnel_token":
+      return t("settings.namedTunnel.errors.token");
+    case "remove_configuration_first":
+      return t("settings.namedTunnel.errors.removeFirst");
+    case "named_tunnel_busy":
+    case "stop_tunnel_first":
+    case "operation_in_progress":
+      return t("settings.namedTunnel.errors.busy");
+    case "cloudflare_login_failed":
+    case "cloudflare_login_required":
+      return t("settings.namedTunnel.errors.login");
+    case "command_timed_out":
+    case "setup_timed_out":
+      return t("settings.namedTunnel.errors.timeout");
+    case "setup_cancelled":
+      return t("settings.namedTunnel.errors.cancelled");
+    case "dns_route_failed":
+    case "dns_result_unrecognized":
+      return t("settings.namedTunnel.errors.dns");
+    case "dns_hostname_mismatch":
+      return t("settings.namedTunnel.errors.zone");
+    case "tunnel_delete_failed":
+      return t("settings.namedTunnel.errors.remove");
+    case "tunnel_still_active":
+      return t("settings.namedTunnel.errors.stillActive");
+    case "tunnel_status_unavailable":
+      return t("settings.namedTunnel.errors.statusUnavailable");
+    case "credentials_unreadable":
+    case "configuration_invalid":
+    case "tunnel_credentials_invalid":
+      return t("settings.namedTunnel.errors.credentials");
+    case "named_setup_required":
+      return t("settings.namedTunnel.prepareHint");
+    default:
+      return t("settings.namedTunnel.errors.generic");
+  }
 }
 
 export function remoteAccessErrorMessage(
