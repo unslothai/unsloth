@@ -15,14 +15,6 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* A box that is usually one line but may wrap (commands, URLs, codes): a pill on one line, soft
-   corners of half a line box once it wraps. Set --line-pad to the box's block padding; the 1px
-   covers a border. The first declaration is the fallback for engines without the lh unit. */
-@utility rounded-line {
-	border-radius: var(--radius-xl);
-	border-radius: calc(0.5lh + var(--line-pad, 0.5rem) + 1px);
-}
-
 @layer components {
 	/* The custom Windows/Linux titlebar stays above modal backdrops so native
 	   window actions remain usable. Repeat the standard backdrop over the surface

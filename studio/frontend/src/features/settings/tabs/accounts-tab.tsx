@@ -511,7 +511,7 @@ function OwnerAccountsTab() {
           {setup ? (
             <>
               <code
-                className="block select-all break-all rounded-line [--line-pad:0.75rem] border border-border/60 bg-muted/30 px-4 py-3 font-mono text-sm leading-relaxed"
+                className="block select-all break-all rounded-full border border-border/60 bg-muted/30 px-4 py-3 font-mono text-sm leading-relaxed"
                 data-testid="account-setup-code"
               >
                 {setup.setup_code}

@@ -55,6 +55,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
+import { LineBox } from "@/components/ui/line-box";
 
 type LanAccessOperation = "start" | "stop" | "auto" | "port" | "addresses";
 type PortMode = "automatic" | "custom";
@@ -224,9 +225,9 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
       {status.urls.map((url) => (
         <div key={url} className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <code className="block w-full min-w-0 break-all rounded-line [--line-pad:0.5rem] border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+            <LineBox as="code" className="block w-full min-w-0 break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
               {url}
-            </code>
+            </LineBox>
             {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
           </div>
           {stale.has(url) ? (
