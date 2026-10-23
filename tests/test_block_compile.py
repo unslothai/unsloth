@@ -1407,7 +1407,7 @@ def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
     output_capturing = pytest.importorskip("transformers.utils.output_capturing")
     misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
     if not hasattr(misc, "output_capture_scratch"):
-        pytest.fail("unsloth_zoo has no output_capture_scratch")
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
     misc.patch_output_collector_for_compiled_submodules()
     from torch._dynamo.testing import CompileCounter
 
