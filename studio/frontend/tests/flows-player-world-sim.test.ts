@@ -249,3 +249,25 @@ test("scheduler: paused while the player talks, and the call in flight is aborte
   off.pump();
   assert.ok(!seen.includes("never"));
 });
+
+test("a re-roll skips every player entry point, plan and chat included", async () => {
+  const { rerollTargets, PLAYER_ENTRYPOINTS } = await import(
+    "../src/features/flows/player/player-api.ts"
+  );
+  const { readFileSync } = await import("node:fs");
+  const catalog = JSON.parse(
+    readFileSync(new URL("./fixtures/flows-catalog.json", import.meta.url), "utf8"),
+  ) as { nodes: { type: string; entrypoint?: boolean }[] };
+  const entry = catalog.nodes.filter((n) => n.entrypoint).map((n) => n.type);
+  assert.ok(entry.includes("world.npc_plan") && entry.includes("world.npc_chat"));
+  for (const t of entry) assert.ok(PLAYER_ENTRYPOINTS.has(t), t);
+  const doc = {
+    nodes: [
+      { id: "world", type: "world.generator" },
+      { id: "plan", type: "world.npc_plan" },
+      { id: "chat", type: "world.npc_chat" },
+      { id: "reply", type: "world.npc_reply" },
+    ],
+  } as never;
+  assert.deepEqual(rerollTargets(doc), ["world"]);
+});

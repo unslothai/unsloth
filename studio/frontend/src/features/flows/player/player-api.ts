@@ -15,10 +15,12 @@ import type {
 } from "../types";
 
 /** Answered on demand through /invoke while playing; a re-roll leaves them alone. */
-const PLAYER_ENTRYPOINTS = new Set([
+export const PLAYER_ENTRYPOINTS = new Set([
   "story.next_scene",
   "story.scene_art",
   "world.npc_reply",
+  "world.npc_plan",
+  "world.npc_chat",
 ]);
 
 /** Only what the story or world is built from: a side branch (Fine-tune, Export, Save to Library) must not run. */
