@@ -190,6 +190,23 @@ def test_sessions_round_trip(client):
     assert client.get("/api/flows/flow1/sessions/auto").status_code == 404
 
 
+def test_documents_upload_and_come_back_as_plain_text(client):
+    pdf = client.post("/api/flows/assets?name=report.pdf", content = b"%PDF-1.4 tiny").json()["media"]
+    assert (
+        pdf["kind"] == "document"
+        and pdf["mime"] == "application/pdf"
+        and pdf["name"] == "report.pdf"
+    )
+    page = b"<script>alert(1)</script>"
+    html = client.post("/api/flows/assets?name=page.html", content = page).json()["media"]
+    served = client.get(html["url"])
+    # An uploaded page is never rendered on Studio's origin.
+    assert served.headers["content-type"].startswith("text/plain")
+    assert served.headers["x-content-type-options"] == "nosniff"
+    # Text with no named type is still refused.
+    assert client.post("/api/flows/assets", content = b"plain words").status_code == 415
+
+
 def test_import_export_assets_round_trip(client, monkeypatch):
     async def no_resident(request):
         return {}
@@ -242,7 +259,7 @@ def test_examples_list_and_copy(client, monkeypatch):
 
 def test_bundled_examples_are_listed_and_copy(client):
     listed = client.get("/api/flows/examples").json()["examples"]
-    assert len(listed) == 22 and "lantern-picnic" in {e["id"] for e in listed}
+    assert len(listed) == 32 and "lantern-picnic" in {e["id"] for e in listed}
     copied = client.post("/api/flows/examples/lantern-picnic/copy").json()
     assert copied["doc"]["kind"] == "story"
 
@@ -339,3 +356,27 @@ def test_many_side_runs_keep_the_older_outputs(client):
     engine_mod.ENGINE.runs.clear()
     latest = client.get("/api/flows/flow1/latest-outputs").json()["nodes"]
     assert latest["a"]["outputs"] == {"text": "story"}
+
+
+def test_text_upload_is_sniffed_off_the_event_loop(client, monkeypatch):
+    import threading
+
+    from core.flows import assets as asset_store
+
+    real, seen = asset_store.sniff_text, []
+
+    def sniff(data, hint):
+        seen.append(threading.current_thread() is threading.main_thread() or _on_loop())
+        return real(data, hint)
+
+    def _on_loop():
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    monkeypatch.setattr(asset_store, "sniff_text", sniff)
+    media = client.post("/api/flows/assets?name=notes.md", content = b"# Notes").json()["media"]
+    # store() sniffs again in its own worker thread; no call may run on the loop.
+    assert media["kind"] == "document" and seen and not any(seen)

@@ -6,6 +6,7 @@ import {
   AudioWave01Icon,
   Book01Icon,
   Bookmark01Icon,
+  Calendar01Icon,
   CodeIcon,
   CropIcon,
   Database01Icon,
@@ -46,6 +47,7 @@ import {
   TextIcon,
   ToggleOnIcon,
   UserIcon,
+  UserMultipleIcon,
   Video01Icon,
   ViewIcon,
   VolumeHighIcon,
@@ -101,6 +103,8 @@ const ICONS: Record<string, IconData> = {
   map: MapsIcon,
   gamepad: GameController01Icon,
   flow: FlowConnectionIcon,
+  calendar: Calendar01Icon,
+  users: UserMultipleIcon,
 };
 
 export function nodeIcon(name: string | null | undefined): IconData {

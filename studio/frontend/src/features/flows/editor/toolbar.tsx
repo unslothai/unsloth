@@ -80,6 +80,13 @@ function ToolbarImpl({
 }: { onBack: () => void; onPlay: () => void; onApp?: () => void }) {
   const name = useDocStore((s) => s.meta.name);
   const kind = useDocStore((s) => s.meta.kind);
+  // A pipeline with a Chat Output block plays as a chat.
+  const playsChat = useDocStore((s) =>
+    s.graph.nodeOrder.some((id) => {
+      const n = s.graph.nodes[id];
+      return n?.type === "chat.output" && !n.disabled;
+    }),
+  );
   const canUndo = useDocStore((s) => s.past.length > 0);
   const canRedo = useDocStore((s) => s.future.length > 0);
   const saveState = useUiStore((s) => s.saveState);
@@ -213,7 +220,7 @@ function ToolbarImpl({
             <HugeiconsIcon icon={GridViewIcon} size={15} /> Open as app
           </button>
         )}
-        {(kind === "story" || kind === "world") && (
+        {(kind === "story" || kind === "world" || playsChat) && (
           <button
             type="button"
             onClick={onPlay}

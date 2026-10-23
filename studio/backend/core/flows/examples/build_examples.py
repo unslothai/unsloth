@@ -21,6 +21,7 @@ TTS = {"repo": "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", "variant": None}
 CLONE = {"repo": "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF", "variant": None}
 MUSIC = {"repo": "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", "variant": None}
 RIVAL = {"repo": "unsloth/gemma-3-4b-it-GGUF", "variant": "Q4_K_M"}
+COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/"
 REQ = {
     "chat": {
         "ref": "writer",
@@ -36,6 +37,14 @@ REQ = {
         **IMAGE,
     },
     "video": {"ref": "director", "kind": "video", "note": "5B text+image to video.", **VIDEO},
+    "embedding": {
+        "ref": "embedder",
+        "kind": "embedding",
+        "note": "Studio's local embedding model for knowledge bases (Settings can change it); runs offline once "
+        "downloaded.",
+        "repo": "unsloth/bge-small-en-v1.5",
+        "variant": None,
+    },
     "tts": {
         "ref": "voice",
         "kind": "tts",
@@ -822,6 +831,233 @@ def pocket_village() -> B:
     return b
 
 
+def smallville_lite() -> B:
+    b = B(
+        "smallville-lite",
+        "Smallville Lite",
+        "world",
+        "A small town whose six villagers live their own day: they remember, plan, walk between places and chat with "
+        "each other, so news spreads without you. After Park et al. 2023, Generative Agents.",
+        tags = ["world", "game", "npc", "memory", "agent"],
+        seed = 214,
+    ).need("chat")
+    places = [
+        {
+            "id": "hobbs_cafe",
+            "name": "Hobbs Cafe",
+            "x": 20,
+            "y": 6,
+            "w": 8,
+            "h": 5,
+            "on_enter_text": "Smells of fresh coffee.",
+        },
+        {
+            "id": "johnson_park",
+            "name": "Johnson Park",
+            "x": 5,
+            "y": 21,
+            "w": 10,
+            "h": 7,
+            "on_enter_text": "Birds and benches.",
+        },
+        {
+            "id": "the_market",
+            "name": "The Market",
+            "x": 33,
+            "y": 21,
+            "w": 10,
+            "h": 6,
+            "on_enter_text": "Stalls and chatter.",
+        },
+        {
+            "id": "lin_house",
+            "name": "Lin family home",
+            "x": 5,
+            "y": 5,
+            "w": 7,
+            "h": 5,
+            "on_enter_text": "A cosy blue house.",
+        },
+        {
+            "id": "moreno_house",
+            "name": "Moreno house",
+            "x": 36,
+            "y": 5,
+            "w": 7,
+            "h": 5,
+            "on_enter_text": "A tidy garden.",
+        },
+    ]
+
+    def npc(
+        name: str,
+        at: str,
+        persona: str,
+        routine: str,
+        relationships: dict,
+        memories: list,
+        dx: int = 0,
+    ) -> dict:
+        p = next(x for x in places if x["id"] == at)
+        return {
+            "name": name,
+            "persona": persona,
+            "greeting": f"Hi, I'm {name.split()[0]}.",
+            "routine": routine,
+            "relationships": relationships,
+            "seed_memories": memories,
+            "x": p["x"] + p["w"] // 2 + dx,
+            "y": p["y"] + p["h"] // 2,
+        }
+
+    world = {
+        "title": "Smallville Lite",
+        "seed": 214,
+        "biome": "town",
+        "width": 48,
+        "height": 34,
+        "intro_text": "It is February 14 in Smallville. Isabella is planning something at Hobbs Cafe tonight. "
+        "Walk around, talk to people, and watch the news spread.",
+        "player": {"name": "Pip"},
+        "npcs": [
+            npc(
+                "Isabella Rodriguez",
+                "hobbs_cafe",
+                "Owner of Hobbs Cafe; warm, outgoing and loves bringing people together.",
+                "Opens the cafe at 8, serves customers all day, closes at 8 in the evening.",
+                {
+                    "Maria Lopez": "a regular at the cafe and a good friend",
+                    "Tom Moreno": "sells her coffee beans",
+                },
+                [
+                    {
+                        "text": "I am hosting a Valentine's Day party at Hobbs Cafe on February 14 from 5pm to 7pm",
+                        "importance": 8,
+                    },
+                    {
+                        "text": "I want to invite as many people as I can to my party",
+                        "importance": 6,
+                    },
+                ],
+            ),
+            npc(
+                "Maria Lopez",
+                "lin_house",
+                "A physics student who streams games in the evening; curious and chatty.",
+                "Studies in the morning, has lunch at Hobbs Cafe, walks in the park in the afternoon.",
+                {
+                    "Klaus Mueller": "a classmate she has a quiet crush on",
+                    "Isabella Rodriguez": "her friend at the cafe",
+                },
+                [{"text": "I have a crush on Klaus Mueller", "importance": 6}],
+            ),
+            npc(
+                "Klaus Mueller",
+                "lin_house",
+                "A sociology student writing a paper on gentrification; thoughtful and a little shy.",
+                "Reads at home in the morning, takes notes in the park, shops at the market before dinner.",
+                {"Maria Lopez": "a friendly classmate"},
+                [{"text": "My research paper on gentrification is due next week", "importance": 5}],
+                dx = -2,
+            ),
+            npc(
+                "Tom Moreno",
+                "the_market",
+                "Runs the grocery stall at the market; grumbles about prices but helps everyone.",
+                "Sets up his stall at 7, sells until 6, then goes home to the Moreno house.",
+                {
+                    "Isabella Rodriguez": "buys his coffee beans",
+                    "Sam Moore": "an old friend he argues politics with",
+                },
+                [
+                    {
+                        "text": "Sam Moore is running for mayor and I am not sure I will vote for him",
+                        "importance": 5,
+                    }
+                ],
+            ),
+            npc(
+                "Sam Moore",
+                "moreno_house",
+                "A retired shop owner running for local mayor; friendly, talks to everyone about his plans.",
+                "Walks around town all day to talk to voters, ending at the park in the evening.",
+                {"Tom Moreno": "an old friend who doubts his campaign"},
+                [
+                    {
+                        "text": "I am running for mayor of Smallville and want to meet every resident",
+                        "importance": 7,
+                    }
+                ],
+            ),
+            npc(
+                "Ayesha Khan",
+                "johnson_park",
+                "A literature student writing a senior thesis on Shakespeare; quiet and observant.",
+                "Writes in the park in the morning, works at Hobbs Cafe in the afternoon.",
+                {"Isabella Rodriguez": "her boss at the cafe"},
+                [{"text": "I work afternoon shifts at Hobbs Cafe", "importance": 4}],
+            ),
+        ],
+        "items": [
+            {
+                "id": "chocolates",
+                "name": "Box of chocolates",
+                "description": "Perfect for a Valentine's party.",
+                "x": 38,
+                "y": 23,
+            },
+        ],
+        "quests": [
+            {
+                "id": "party_treats",
+                "title": "Treats for the party",
+                "description": "Isabella needs something sweet for the Valentine's Day party.",
+                "giver": "isabella_rodriguez",
+                "requires_item": "chocolates",
+                "reward_text": "Isabella beams and saves you the best seat.",
+            }
+        ],
+        "regions": places,
+        "vars": {"party_attendance": 0},
+        "simulation": {
+            "minutes_per_second": 2,
+            "start_minute": 480,
+            "chat_cooldown_min": 120,
+            "calls_per_minute": 4,
+        },
+    }
+    b.n("world", "world.spec", 0, 1, world = world)
+    b.n("play", "world.play", 1, 1)
+    b.e("world.world", "play.world")
+    b.n(
+        "reply",
+        "world.npc_reply",
+        2,
+        0.2,
+        label = "Talk (live)",
+        model = CHAT,
+        max_tokens = 160,
+        rules = "Stay in character. Keep replies under 50 words. Talk about what you remember and plan. If you decide "
+        "to go to Isabella's party, set party_attendance to one more than its current value.",
+    )
+    b.n("plan", "world.npc_plan", 2, 1.2, label = "Daily plans (live)", model = CHAT)
+    b.n("chat", "world.npc_chat", 2, 2.2, label = "Villager chats (live)", model = CHAT)
+    b.note(
+        "about",
+        'Village life after Park et al. 2023, "Generative Agents: Interactive Simulacra of Human Behavior" '
+        "(arXiv:2304.03442). Each villager keeps a memory stream; replies, plans and chats recall what matters by "
+        "recency, importance and relevance, and record new memories in the same call.\n\n"
+        "Play: one game day is 12 real minutes. Villagers plan their day once, walk between places and chat when they "
+        "meet, at most 4 background model calls a minute; time stops while you talk. Everything runs on the local chat "
+        "model (and the local embedding model when one is loaded). Watch whether word of Isabella's party spreads.",
+        0,
+        2.2,
+        1.8,
+        1.4,
+    )
+    return b
+
+
 def comic_strip() -> B:
     b = B(
         "comic-strip",
@@ -1395,148 +1631,76 @@ def sticker_pack() -> B:
     return b
 
 
-COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/"
-
-
-def notebook_template(
-    id: str,
-    name: str,
-    notebook: str,
-    description: str,
-    *,
-    dataset: str,
-    tune: dict[str, Any],
-    export: Optional[dict[str, Any]],
-    ask: Optional[str] = None,
-    tags: list[str],
-) -> B:
-    """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
-    b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
-    b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
-    b.n("tune", "train.finetune", 1, 1, **{"training_type": "lora", **tune})
-    b.e("data.dataset", "tune.dataset")
-    b.n("metrics", "output.preview", 2, 0)
-    b.e("tune.metrics", "metrics.value")
-    if ask:
-        b.n("ask", "input.text", 1, 2.2, value = ask)
-        b.n("test", "train.chat_checkpoint", 2, 1, max_tokens = 300)
-        b.e("tune.checkpoint", "test.checkpoint")
-        b.e("ask.text", "test.prompt")
-        b.n("answer", "output.preview", 3, 1)
-        b.e("test.text", "answer.value")
-    if export:
-        b.n("export", "train.export", 3 if ask else 2, 2.2 if ask else 1, **export)
-        b.e("tune.checkpoint", "export.checkpoint")
-    b.note(
-        "n1",
-        f"Based on the Unsloth notebook {notebook}: {COLAB_NB}{notebook}. Training needs a GPU and stops chat "
-        "models while it runs.",
+def remembering_assistant() -> B:
+    b = B(
+        "remembering-assistant",
+        "Remembering Assistant",
+        "pipeline",
+        "An assistant with a memory stream (after Park et al. 2023, Generative Agents): it recalls what matters "
+        "for your message by recency, importance and meaning, answers with it, and adds the answer to its memory. "
+        "Each run starts from the facts in What it already knows: add a line there to teach it something.",
+        tags = ["memory", "agent", "chat"],
+        seed = 41,
+    ).need("chat")
+    b.n(
+        "past",
+        "input.list",
         0,
-        -0.2,
+        0.4,
+        label = "What it already knows",
+        items = [
+            "Maya is training for a half marathon in May.",
+            "Maya hurt her left knee running hills last Tuesday.",
+            "Maya's favourite breakfast is oatmeal with blueberries.",
+            "Maya's sister Ana visits next weekend.",
+            "Maya said she wants to cook more at home this month.",
+        ],
+    )
+    b.n("seed", "memory.add", 1, 0.4, label = "Remember", model = CHAT)
+    b.e("past.items", "seed.items")
+    b.n(
+        "message",
+        "input.text",
+        0,
+        1.4,
+        label = "Your message",
+        value = "Should I run hills again tomorrow?",
+    )
+    b.n("recall", "memory.retrieve", 2, 1, label = "Recall", top_k = 3)
+    b.e("seed.memory", "recall.memory")
+    b.e("message.text", "recall.query")
+    b.n(
+        "answer",
+        "llm.generate",
+        3,
+        1,
+        label = "Answer",
+        model = CHAT,
+        temperature = 0.6,
+        max_tokens = 400,
+        system = "You are Maya's friendly assistant. Use what you remember when it helps; keep it short.",
+        prompt = "What you remember:\n{{context}}\n\nMaya says: {{prompt}}",
+    )
+    b.e("recall.context", "answer.context")
+    b.e("message.text", "answer.prompt")
+    b.n("keep", "memory.add", 4, 1, label = "Remember the answer", model = CHAT)
+    b.e("recall.memory", "keep.memory")
+    b.e("answer.text", "keep.items")
+    b.n("show", "output.preview", 5, 1)
+    b.e("answer.text", "show.value")
+    b.e("recall.records", "show.value")
+    b.n("stream", "output.preview", 5, 2, label = "Updated memory")
+    b.e("keep.memory", "stream.value")
+    b.note(
+        "tip",
+        "Recall scores every memory by how recent, how important and how related it is to the message. "
+        "Everything runs on the local chat and embedding models.",
+        2,
+        2.0,
         1.8,
-        0.9,
+        0.6,
     )
     return b
-
-
-def text_sft() -> B:
-    return notebook_template(
-        "notebook-text-sft",
-        "Notebook: Llama 3.1 Alpaca fine-tune",
-        "Llama3.1_(8B)-Alpaca.ipynb",
-        "The Llama 3.1 (8B) Alpaca notebook as a flow: LoRA fine-tune on Alpaca, ask the result a question, export to GGUF.",
-        dataset = "unsloth/alpaca-cleaned",
-        tune = {
-            "base_model": "unsloth/Llama-3.1-8B",
-            "max_steps": 60,
-            "learning_rate": 0.0002,
-            "lora_r": 16,
-            "max_seq_length": 2048,
-            "format_type": "alpaca",
-            "batch_size": 2,
-            "gradient_accumulation_steps": 4,
-            "warmup_steps": 5,
-        },
-        ask = "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8",
-        export = {"format": "gguf", "quant": "q4_k_m"},
-        tags = ["sft"],
-    )
-
-
-def vision_sft() -> B:
-    return notebook_template(
-        "notebook-vision-sft",
-        "Notebook: Qwen2.5-VL LaTeX OCR fine-tune",
-        "Qwen2.5_VL_(7B)-Vision.ipynb",
-        "The Qwen2.5-VL (7B) vision notebook as a flow: teach the model to write LaTeX from images of equations, then save the adapter.",
-        dataset = "unsloth/LaTeX_OCR",
-        tune = {
-            "base_model": "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
-            "task": "vision",
-            "max_steps": 30,
-            "learning_rate": 0.0002,
-            "lora_r": 16,
-            "max_seq_length": 2048,
-            "batch_size": 2,
-            "gradient_accumulation_steps": 4,
-            "warmup_steps": 5,
-        },
-        export = {"format": "lora"},
-        tags = ["vision"],
-    )
-
-
-def tts_sft() -> B:
-    return notebook_template(
-        "notebook-tts-sft",
-        "Notebook: Orpheus TTS voice fine-tune",
-        "Orpheus_(3B)-TTS.ipynb",
-        "The Orpheus (3B) TTS notebook as a flow: fine-tune a voice on a speech dataset, then save the adapter.",
-        dataset = "Etherll/kaira",
-        tune = {
-            "base_model": "unsloth/orpheus-3b-0.1-ft",
-            # The notebook trains a 16-bit LoRA.
-            "load_in_4bit": False,
-            "task": "audio",
-            "max_steps": 60,
-            "learning_rate": 0.0002,
-            "lora_r": 64,
-            "lora_alpha": 64,
-            "max_seq_length": 2048,
-            "batch_size": 1,
-            "gradient_accumulation_steps": 4,
-            "warmup_steps": 5,
-        },
-        export = {"format": "lora"},
-        tags = ["audio", "tts"],
-    )
-
-
-def embedding_sft() -> B:
-    return notebook_template(
-        "notebook-embedding",
-        "Notebook: EmbeddingGemma retrieval fine-tune",
-        "EmbeddingGemma_(300M).ipynb",
-        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
-        "retrieval, then export to GGUF.",
-        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
-        # so this uses a 40 MB set of the same question and passage shape.
-        dataset = "sentence-transformers/natural-questions",
-        tune = {
-            "base_model": "unsloth/embeddinggemma-300m",
-            "task": "embedding",
-            "max_steps": 30,
-            "learning_rate": 0.00002,
-            "lora_r": 32,
-            "lora_alpha": 64,
-            "max_seq_length": 1024,
-            "batch_size": 64,
-            "gradient_accumulation_steps": 2,
-            "dataset_slice_end": 19999,
-        },
-        export = {"format": "gguf", "quant": "q4_k_m"},
-        tags = ["embedding"],
-    )
 
 
 def photo_restyle() -> B:
@@ -1919,6 +2083,147 @@ def long_form_writer() -> B:
     return b
 
 
+def notebook_template(
+    id: str,
+    name: str,
+    notebook: str,
+    description: str,
+    *,
+    dataset: str,
+    tune: dict[str, Any],
+    export: Optional[dict[str, Any]],
+    ask: Optional[str] = None,
+    tags: list[str],
+) -> B:
+    """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
+    b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
+    b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
+    b.n("tune", "train.finetune", 1, 1, **{"training_type": "lora", **tune})
+    b.e("data.dataset", "tune.dataset")
+    b.n("metrics", "output.preview", 2, 0)
+    b.e("tune.metrics", "metrics.value")
+    if ask:
+        b.n("ask", "input.text", 1, 2.2, value = ask)
+        b.n("test", "train.chat_checkpoint", 2, 1, max_tokens = 300)
+        b.e("tune.checkpoint", "test.checkpoint")
+        b.e("ask.text", "test.prompt")
+        b.n("answer", "output.preview", 3, 1)
+        b.e("test.text", "answer.value")
+    if export:
+        b.n("export", "train.export", 3 if ask else 2, 2.2 if ask else 1, **export)
+        b.e("tune.checkpoint", "export.checkpoint")
+    b.note(
+        "n1",
+        f"Based on the Unsloth notebook {notebook}: {COLAB_NB}{notebook}. Training needs a GPU and stops chat "
+        "models while it runs.",
+        0,
+        -0.2,
+        1.8,
+        0.9,
+    )
+    return b
+
+
+def text_sft() -> B:
+    return notebook_template(
+        "notebook-text-sft",
+        "Notebook: Llama 3.1 Alpaca fine-tune",
+        "Llama3.1_(8B)-Alpaca.ipynb",
+        "The Llama 3.1 (8B) Alpaca notebook as a flow: LoRA fine-tune on Alpaca, ask the result a question, export to GGUF.",
+        dataset = "unsloth/alpaca-cleaned",
+        tune = {
+            "base_model": "unsloth/Llama-3.1-8B",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "format_type": "alpaca",
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        ask = "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8",
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["sft"],
+    )
+
+
+def vision_sft() -> B:
+    return notebook_template(
+        "notebook-vision-sft",
+        "Notebook: Qwen2.5-VL LaTeX OCR fine-tune",
+        "Qwen2.5_VL_(7B)-Vision.ipynb",
+        "The Qwen2.5-VL (7B) vision notebook as a flow: teach the model to write LaTeX from images of equations, then save the adapter.",
+        dataset = "unsloth/LaTeX_OCR",
+        tune = {
+            "base_model": "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
+            "task": "vision",
+            "max_steps": 30,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["vision"],
+    )
+
+
+def tts_sft() -> B:
+    return notebook_template(
+        "notebook-tts-sft",
+        "Notebook: Orpheus TTS voice fine-tune",
+        "Orpheus_(3B)-TTS.ipynb",
+        "The Orpheus (3B) TTS notebook as a flow: fine-tune a voice on a speech dataset, then save the adapter.",
+        dataset = "Etherll/kaira",
+        tune = {
+            "base_model": "unsloth/orpheus-3b-0.1-ft",
+            # The notebook trains a 16-bit LoRA.
+            "load_in_4bit": False,
+            "task": "audio",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 64,
+            "lora_alpha": 64,
+            "max_seq_length": 2048,
+            "batch_size": 1,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["audio", "tts"],
+    )
+
+
+def embedding_sft() -> B:
+    return notebook_template(
+        "notebook-embedding",
+        "Notebook: EmbeddingGemma retrieval fine-tune",
+        "EmbeddingGemma_(300M).ipynb",
+        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
+        "retrieval, then export to GGUF.",
+        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
+        # so this uses a 40 MB set of the same question and passage shape.
+        dataset = "sentence-transformers/natural-questions",
+        tune = {
+            "base_model": "unsloth/embeddinggemma-300m",
+            "task": "embedding",
+            "max_steps": 30,
+            "learning_rate": 0.00002,
+            "lora_r": 32,
+            "lora_alpha": 64,
+            "max_seq_length": 1024,
+            "batch_size": 64,
+            "gradient_accumulation_steps": 2,
+            "dataset_slice_end": 19999,
+        },
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["embedding"],
+    )
+
+
 def model_arena() -> B:
     b = B(
         "model-arena",
@@ -2053,21 +2358,459 @@ def model_arena() -> B:
     return b
 
 
+def summarise_pdf() -> B:
+    b = B(
+        "summarise-pdf",
+        "Summarise a Document",
+        "pipeline",
+        "Load a PDF, Word or text file, cut it into chunks, summarise each chunk, then write one summary of the "
+        "whole document.",
+        tags = ["documents", "llm", "for each"],
+        seed = 12,
+    ).need("chat")
+    b.n("doc", "input.file", 0, 1, label = "Your document")
+    b.n("read", "doc.load", 1, 1)
+    b.e("doc.file", "read.file")
+    b.n("chunks", "text.split", 2, 1, mode = "chunks", unit = "words", chunk_size = 700, overlap = 50)
+    b.e("read.text", "chunks.text")
+    b.n("each", "logic.for_each", 3, 1, group = "s_loop", max_items = 32)
+    b.n(
+        "part",
+        "llm.generate",
+        4,
+        1,
+        group = "s_loop",
+        label = "Summarise a part",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 300,
+        prompt = "Summarise this part of a document in 3 short bullet points:\n\n{{prompt}}",
+    )
+    b.group("s_loop", "For each chunk", (3, 0.4, 2.2, 1.6), "#0d9488")
+    b.e("chunks.items", "each.items")
+    b.e("each.item", "part.prompt")
+    b.e("part.text", "each.collect")
+    b.n("joined", "list.join", 5.4, 1)
+    b.e("each.results", "joined.items")
+    b.n(
+        "summary",
+        "llm.generate",
+        6.4,
+        1,
+        label = "Whole summary",
+        model = CHAT,
+        temperature = 0.3,
+        max_tokens = 700,
+        prompt = "These are notes on each part of one document, in order:\n{{context}}\n\nWrite a clear summary "
+        "of the whole document in one paragraph, then list the 5 key points.",
+    )
+    b.e("joined.text", "summary.context")
+    b.n("show", "output.preview", 7.4, 1)
+    b.e("summary.text", "show.value")
+    b.note("tip", "Upload a document in the first block, then Run.", 0, 2.2, 1.6, 0.6)
+    return b
+
+
+def ask_documents() -> B:
+    b = B(
+        "ask-documents",
+        "Ask Your Documents",
+        "pipeline",
+        "Add a document to a knowledge base (the same ones chat searches), then answer a question from the passages "
+        "that match it, with the sources cited.",
+        tags = ["documents", "knowledge base", "rag", "llm"],
+        seed = 13,
+    ).need("chat", "embedding")
+    b.n("doc", "input.file", 0, 0.5, label = "Your document")
+    b.n("add", "kb.add", 1, 0.5, knowledge_base = "Flows")
+    b.e("doc.file", "add.file")
+    b.n("question", "input.text", 0, 1.6, value = "What are the main points of this document?")
+    b.n("search", "kb.search", 2, 1.2, knowledge_base = "Flows", top_k = 6)
+    b.e("question.text", "search.query")
+    b.e("add.knowledge_base", "search.after")
+    b.n(
+        "answer",
+        "llm.generate",
+        3,
+        1.2,
+        label = "Answer",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 600,
+        prompt = "Answer the question using only these passages, and cite them like [1].\n\n{{context}}\n\n"
+        "Question: {{prompt}}",
+    )
+    b.e("question.text", "answer.prompt")
+    b.e("search.context", "answer.context")
+    b.n("show", "output.preview", 4, 1.2)
+    b.e("answer.text", "show.value")
+    b.note(
+        "tip",
+        "Upload a document, then Run. Parsing, embedding and search all run locally on Studio's own models, "
+        "offline once they are downloaded. Later runs can drop the first two blocks and search what is indexed.",
+        0,
+        2.5,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def contact_cleanup() -> B:
+    b = B(
+        "contact-cleanup",
+        "Clean Up a Contact List",
+        "pipeline",
+        "Paste a messy list or spreadsheet: a local model turns it into rows, then the list blocks drop rows "
+        "without an email, remove duplicates, tidy the fields and sort by name.",
+        tags = ["data", "json", "transform"],
+        seed = 13,
+    ).need("chat")
+    b.n(
+        "pasted",
+        "input.text",
+        0,
+        1,
+        label = "Pasted list",
+        value = "name,email,company\nAna Lima,ANA@example.com,Acme\nben ortiz,ben@example.org,\nAna Lima,"
+        "ana@example.com,Acme Inc\nChris Wu,,Globex\nDee Park,dee@example.net,Initech",
+    )
+    b.n(
+        "rows",
+        "llm.generate",
+        1,
+        1,
+        label = "Read the rows",
+        model = CHAT,
+        temperature = 0.0,
+        max_tokens = 2048,
+        system = "Copy every person in the text into rows exactly as written. Use an empty string for a missing "
+        "field. Do not fix, merge or drop anything.",
+        prompt = "{{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "company": {"type": "string"},
+                        },
+                        "required": ["name", "email", "company"],
+                    },
+                }
+            },
+            "required": ["rows"],
+        },
+    )
+    b.e("pasted.text", "rows.prompt")
+    b.n("list", "json.get", 2, 1, path = "rows")
+    b.e("rows.json", "list.json")
+    b.n(
+        "has_email",
+        "list.filter",
+        3,
+        1,
+        label = "Has an email",
+        condition = {"op": "contains", "args": [{"var": "item.email"}, "@"]},
+    )
+    b.e("list.value", "has_email.items")
+    b.n(
+        "tidy",
+        "json.set",
+        4,
+        1,
+        label = "Tidy fields",
+        fields = {
+            "email": {"op": "lower", "args": [{"var": "item.email"}]},
+            "company": {
+                "op": "if",
+                "args": [{"var": "item.company"}, {"var": "item.company"}, "unknown"],
+            },
+        },
+    )
+    b.e("has_email.items", "tidy.value")
+    b.n("unique", "list.dedupe", 5, 1, label = "One per email", key = {"var": "item.email"})
+    b.e("tidy.value", "unique.items")
+    b.n(
+        "sorted",
+        "list.sort",
+        6,
+        1,
+        label = "Sort by name",
+        key = {"op": "lower", "args": [{"var": "item.name"}]},
+    )
+    b.e("unique.items", "sorted.items")
+    b.n("clean", "output.result", 7, 1, name = "contacts")
+    b.e("sorted.items", "clean.value")
+    b.n("dropped", "output.preview", 4, 2)
+    b.e("has_email.dropped", "dropped.value")
+    b.note(
+        "tip",
+        "Only the first block uses a model; the cleanup after it is plain list blocks, so you can change a rule "
+        "and re-run in a blink.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def chat_with_documents() -> B:
+    b = B(
+        "chat-with-documents",
+        "Chat With My Documents",
+        "pipeline",
+        "A chat assistant that answers from one of your knowledge bases, fully offline with a local model. Open it "
+        "in the player to chat; pick the knowledge base in the Agent block.",
+        tags = ["chat", "agent", "knowledge base"],
+        seed = 41,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Ask me anything about your documents.")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 6)
+    b.e("in.history", "memory.history")
+    b.n(
+        "agent",
+        "llm.agent",
+        2,
+        1,
+        model = CHAT,
+        system = "Answer from the knowledge base and say which document you used. If it does not have the answer, "
+        "say so.",
+        web_search = False,
+    )
+    b.e("in.message", "agent.prompt")
+    b.e("memory.history", "agent.history")
+    b.n("out", "chat.output", 3, 1)
+    b.e("agent.text", "out.reply")
+    b.note(
+        "tip",
+        "Pick a knowledge base in the Agent block, then press Play to chat.",
+        0,
+        2.4,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def support_bot() -> B:
+    b = B(
+        "support-bot",
+        "Support Bot",
+        "pipeline",
+        "Sorts each message (question, bug report or other), then answers in the matching style. Open it in the "
+        "player to chat.",
+        tags = ["chat", "classify"],
+        seed = 42,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Hi! What can I help you with today?")
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["question", "bug report", "other"])
+    b.e("in.message", "kind.text")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 4)
+    b.e("in.history", "memory.history")
+    b.n(
+        "reply",
+        "llm.generate",
+        2,
+        1,
+        model = CHAT,
+        temperature = 0.5,
+        system = "You are a friendly support agent for a software product. The context gives the message's "
+        "category (question, bug report or other) and the conversation so far. For a bug report, thank them and "
+        "ask for steps to reproduce. Keep it short.",
+        prompt = "New message: {{prompt}}",
+    )
+    b.e("kind.label", "reply.context")
+    b.e("memory.text", "reply.context")
+    b.e("in.message", "reply.prompt")
+    b.n("out", "chat.output", 3, 1)
+    b.e("reply.text", "out.reply")
+    return b
+
+
+def research_agent() -> B:
+    b = B(
+        "research-agent",
+        "Research Agent",
+        "pipeline",
+        "Give it a question: a local model searches the web, reads what it finds and writes a short report with "
+        "its sources.",
+        tags = ["agent", "web search"],
+        seed = 43,
+    ).need("chat")
+    b.n("question", "input.text", 0, 1, value = "What changed in the latest stable Python release?")
+    b.n(
+        "agent",
+        "llm.agent",
+        1,
+        1,
+        label = "Researcher",
+        model = CHAT,
+        system = "Research the question with web search. Write a short report in plain sentences, then a Sources "
+        "list with the URL of every page you used. Never invent a source.",
+        web_search = True,
+        max_tool_calls = 6,
+        temperature = 0.3,
+    )
+    b.e("question.text", "agent.prompt")
+    b.n("report", "output.result", 2, 1, name = "report")
+    b.e("agent.text", "report.value")
+    b.note(
+        "tip",
+        "Web search is the only tool the Agent gets here; the model itself runs on your machine.",
+        0,
+        2,
+        1.8,
+        0.6,
+    )
+    return b
+
+
+def invoice_extractor() -> B:
+    b = B(
+        "invoice-extractor",
+        "Invoice Extractor",
+        "pipeline",
+        "Pulls the vendor, date, total and line items out of a pasted invoice or receipt as clean JSON.",
+        tags = ["extract", "json"],
+        seed = 44,
+    ).need("chat")
+    b.n(
+        "invoice",
+        "input.text",
+        0,
+        1,
+        value = "ACME Tools Ltd\nInvoice #2041, 3 March 2026\n2 x Claw hammer @ 18.50\n1 x Tape measure @ 7.25\n"
+        "Shipping 4.00\nTotal due: 48.25 GBP",
+    )
+    b.n(
+        "extract",
+        "llm.extract",
+        1,
+        1,
+        model = CHAT,
+        instructions = "Amounts are numbers without currency signs. Dates are YYYY-MM-DD.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "vendor": {"type": "string"},
+                "invoice_number": {"type": "string"},
+                "date": {"type": "string"},
+                "currency": {"type": "string"},
+                "total": {"type": "number"},
+                "line_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "quantity": {"type": "number"},
+                            "unit_price": {"type": "number"},
+                        },
+                        "required": ["description", "quantity", "unit_price"],
+                    },
+                },
+            },
+            "required": ["vendor", "date", "currency", "total", "line_items"],
+        },
+    )
+    b.e("invoice.text", "extract.text")
+    b.n("total", "json.get", 2, 0.5, path = "total")
+    b.e("extract.json", "total.json")
+    b.n("show_total", "output.preview", 3, 0.5)
+    b.e("total.value", "show_total.value")
+    b.n("data", "output.result", 2, 1.5, name = "invoice")
+    b.e("extract.json", "data.value")
+    b.note(
+        "tip",
+        'For a scan or photo, put an Image block and Describe Image ("Copy every line of this invoice") in front '
+        "of Extract.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def email_triage() -> B:
+    b = B(
+        "email-triage",
+        "Email Triage",
+        "pipeline",
+        "Sorts an incoming email (refund, bug report or other) and drafts a reply in the right style for each kind.",
+        tags = ["classify", "switch", "email"],
+        seed = 45,
+    ).need("chat")
+    b.n(
+        "email",
+        "input.text",
+        0,
+        1,
+        value = "Hi, I was charged twice for my subscription this month. Can I get one of them refunded? Thanks, Sam",
+    )
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["refund", "bug report", "other"])
+    b.e("email.text", "kind.text")
+    b.n("route", "logic.switch", 2, 1, cases = ["refund", "bug report"])
+    b.e("email.text", "route.value")
+    b.e("kind.label", "route.key")
+    replies = (
+        (
+            "refund",
+            "case_1",
+            "Apologise, confirm the refund will be checked within two working days, and ask for "
+            "the order number if it is missing.",
+        ),
+        (
+            "bug",
+            "case_2",
+            "Thank them, ask for the steps to reproduce, their app version and a screenshot.",
+        ),
+        ("other", "default", "Answer helpfully, or say who on the team will follow up."),
+    )
+    for row, (name, port, style) in enumerate(replies):
+        b.n(
+            f"reply_{name}",
+            "llm.generate",
+            3,
+            row * 0.9 + 0.1,
+            label = f"Reply: {name}",
+            model = CHAT,
+            temperature = 0.4,
+            max_tokens = 400,
+            system = f"You draft short, friendly support emails. {style} Sign off as the Support Team.",
+            prompt = "Reply to this email:\n\n{{prompt}}",
+        )
+        b.e(f"route.{port}", f"reply_{name}.prompt")
+    b.n("first", "logic.merge", 4, 1)
+    b.e("reply_refund.text", "first.a")
+    b.e("reply_bug.text", "first.b")
+    b.e("reply_other.text", "first.c")
+    b.n("draft", "output.result", 5, 1, name = "draft")
+    b.e("first.value", "draft.value")
+    b.n("label", "output.result", 2, 0.1, name = "category")
+    b.e("kind.label", "label.value")
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
     infinite_dungeon,
     pocket_village,
+    smallville_lite,
     comic_strip,
     podcast,
     storyboard,
     dataset_forge,
     prompt_tournament,
     sticker_pack,
-    text_sft,
-    vision_sft,
-    tts_sft,
-    embedding_sft,
+    remembering_assistant,
     photo_restyle,
     animate_photo,
     meeting_notes,
@@ -2075,7 +2818,19 @@ BUILDERS = (
     product_listing,
     song_maker,
     long_form_writer,
+    text_sft,
+    vision_sft,
+    tts_sft,
+    embedding_sft,
     model_arena,
+    summarise_pdf,
+    ask_documents,
+    contact_cleanup,
+    chat_with_documents,
+    support_bot,
+    research_agent,
+    invoice_extractor,
+    email_triage,
 )
 
 
