@@ -490,12 +490,13 @@ def test_stale_check_uses_the_display_name_for_a_local_env_model(client, monkeyp
     assert response.status_code == 204
 
 
-def test_settings_change_waits_for_a_running_load(client, monkeypatch):
+def test_settings_change_cancels_a_running_load(client, monkeypatch, runtime):
     release = threading.Event()
 
     def slow(checkpoint):
+        runtime.append(checkpoint.name)
         release.wait(5)
-        return FakeAgent(), "cpu"
+        return FakeAgent(checkpoint.name), "cpu"
 
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
     monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
@@ -509,15 +510,18 @@ def test_settings_change_waits_for_a_running_load(client, monkeypatch):
                 "expected_model": "laya-multilingual",
             },
         ).status_code
-        == 409
+        == 204
     )
-    assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 409
-    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+    assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 200
     release.set()
     laya_runtime._loader.join(5)
+    assert laya_runtime.status()["loaded_model"] is None
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 5.0)
+    assert _post(client).json()["model"] == "laya-english"
+    assert runtime == ["laya-multilingual", "laya-english"]
 
 
-def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
+def test_turning_it_off_cancels_a_claimed_load(client, monkeypatch, runtime):
     probing, release = threading.Event(), threading.Event()
 
     def probe(checkpoint):
@@ -531,11 +535,192 @@ def test_turning_it_off_waits_for_a_claimed_load(client, monkeypatch):
     )
     claim.start()
     assert probing.wait(5)
-    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 409
+    response = client.put("/api/settings/systemone", json = {"enabled": False})
+    assert response.status_code == 200 and response.json()["enabled"] is False
     release.set()
     claim.join(5)
     laya_runtime._loader.join(5)
-    assert client.get("/api/settings/systemone").json()["enabled"] is True
+    assert laya_runtime.status()["loaded_model"] is None
+    assert runtime == []
+
+
+def test_a_load_turned_off_while_it_downloads_never_builds(client, monkeypatch, tmp_path):
+    downloading, release, built = threading.Event(), threading.Event(), []
+
+    def download(checkpoint, **kwargs):
+        downloading.set()
+        release.wait(5)
+        return tmp_path
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", download)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cpu")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert downloading.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    release.set()
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_waiting_behind_a_decision_sees_the_unload_that_ran_first(
+    client, monkeypatch, tmp_path
+):
+    downloaded, built = threading.Event(), []
+
+    def download(checkpoint, **kwargs):
+        downloaded.set()
+        return tmp_path
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", download)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cpu")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    with laya_runtime._run_lock:
+        assert _post(client).status_code == 503
+        assert downloaded.wait(5)
+        time.sleep(0.5)
+        laya_runtime._unloads += 1
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_turned_off_while_it_builds_stops_its_worker(client, monkeypatch, tmp_path):
+    building, stopped = threading.Event(), []
+
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            building.set()
+            deadline = time.monotonic() + 5
+            while not cancelled() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stopped.append(cancelled())
+            if stopped[-1]:
+                raise laya_runtime.LayaWorkerError("stopped")
+            self.device = device
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cuda")
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert building.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    laya_runtime._loader.join(5)
+    assert stopped == [True]
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_turned_off_during_training_never_falls_back_to_cpu(client, monkeypatch, tmp_path):
+    building, go, training, built = threading.Event(), threading.Event(), [False], []
+
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            building.set()
+            go.wait(5)
+            if cancelled():
+                raise laya_runtime.LayaWorkerError("stopped")
+            self.device = device
+
+    def build(*args, **kwargs):
+        built.append(args)
+        return FakeAgent(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cuda")
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: training[0])
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert building.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    training[0] = True
+    go.set()
+    laya_runtime._loader.join(5)
+    assert built == []
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_a_load_unloaded_while_it_builds_in_process_frees_its_memory(client, monkeypatch, tmp_path):
+    agents, freed = [], []
+
+    def build(*args, **kwargs):
+        agent = FakeAgent()
+        agents.append(weakref.ref(agent))
+        laya_runtime.unload()
+        return agent, "mps"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mps")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(
+        laya_runtime, "_release_memory", lambda: freed.append(bool(agents) and agents[0]() is None)
+    )
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    _post(client)
+    laya_runtime._loader.join(5)
+    assert laya_runtime.status()["loaded_model"] is None
+    assert freed[-1] is True
+
+
+def test_a_load_unloaded_as_it_publishes_stays_fenced_until_it_has_closed(
+    client, monkeypatch, tmp_path
+):
+    fenced = []
+
+    class Closing(FakeAgent):
+        def close(self):
+            fenced.append(laya_runtime._loading is not None)
+
+    def build(*args, **kwargs):
+        laya_runtime.unload()
+        return Closing(), "mps"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mps")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    _post(client)
+    laya_runtime._loader.join(5)
+    assert fenced == [True]
+    assert laya_runtime._loading is None
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_an_unload_waits_for_a_load_that_is_publishing(client):
+    done = threading.Event()
+    unloading = threading.Thread(target = lambda: (laya_runtime.unload(), done.set()), daemon = True)
+    with laya_runtime._state_lock:
+        unloading.start()
+        assert not done.wait(0.2)
+    assert done.wait(5)
 
 
 def test_keyless_callers_only_reach_the_configured_model(client, monkeypatch, runtime):
@@ -1271,7 +1456,6 @@ class MovableModel:
 @pytest.fixture
 def gpu_agent(monkeypatch):
     torch = pytest.importorskip("torch")
-    # A CPU without native fp16/bf16: the fallback lands in fp32 whatever this host supports.
     monkeypatch.setattr(laya_runtime, "_precision", lambda device, fp16_checkpoint: (None, None))
     collate = lambda groups, pad: {"attention_mask": torch.ones(1, len(groups[0][0]["ids"]))}
     monkeypatch.setitem(
@@ -1351,7 +1535,6 @@ def test_mlx_out_of_memory_falls_back_to_cpu(monkeypatch, gpu_agent):
     loads, mlx_models, cleared = [], [], []
 
     def load(path, device):
-        # The MLX model and MLX's buffer cache are both released before the CPU copy loads.
         assert mlx_models[-1]() is None and cleared
         loads.append((path, device))
         if len(loads) == 1:
@@ -1490,7 +1673,6 @@ def _tiny_decision_model(torch):
             return self.out(self.layer(self.norm(self.emb(ids)))).float()
 
     model = Tiny().eval()
-    # Weights exactly representable in fp16, as a checkpoint saved in fp16 loads into fp32.
     for param in model.parameters():
         param.data = param.data.half().float()
     return model
@@ -1563,12 +1745,10 @@ def test_skip_init_build_matches_laya_after_loading(tmp_path):
     embedding = fast.encoder.get_input_embeddings()
     assert embedding.num_embeddings == 300 and fast.encoder.config.vocab_size == 300
     assert embedding.padding_idx == reference.encoder.get_input_embeddings().padding_idx
-    # laya loads strictly, so every parameter and persistent buffer comes from the checkpoint.
     fast.load_state_dict(reference.state_dict(), strict = True)
     ours = dict(fast.named_parameters()) | dict(fast.named_buffers())
     theirs = dict(reference.named_parameters()) | dict(reference.named_buffers())
     assert ours.keys() == theirs.keys()
-    # Includes the rotary inv_freq buffers, which the checkpoint does not carry.
     assert any("inv_freq" in name for name in theirs)
     assert all(torch.equal(ours[name], theirs[name]) for name in theirs)
     assert repr(fast) == repr(reference)
@@ -1738,7 +1918,6 @@ def test_marker_head_matches_laya_forward(tmp_path, head_layers):
         got = laya_runtime._decision_logits(model, *args)
         assert got.dtype == want.dtype == torch.float32
         torch.testing.assert_close(got, want, atol = 1e-5, rtol = 1e-4)
-        # Without padding the mask is dropped altogether.
         unpadded = [arg[:1] for arg in args]
         torch.testing.assert_close(
             laya_runtime._decision_logits(model, *unpadded, padded = False),
@@ -1824,7 +2003,6 @@ def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
     with torch.inference_mode():
         reference = model(*(value.cuda() for value in batch.values()))[0]
     torch.testing.assert_close(graphed, reference, atol = 1e-4, rtol = 1e-4)
-    # A second request with other contents replays the same graph.
     batch["input_ids"] = torch.randint(5, 300, ids.shape)
     with torch.inference_mode():
         reference = model(*(value.cuda() for value in batch.values()))[0]
@@ -1835,7 +2013,6 @@ def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
     # Moving or recasting the model drops the graphs that point at its old weights.
     laya_runtime._place(agent, torch.device("cuda"), False)
     assert "_unsloth_graphs" not in agent.__dict__
-    # Batches too large to be worth padding into a bucket run eagerly.
     assert (
         laya_runtime._CUDAGraphs(agent).run(
             {"input_ids": torch.zeros(16, 1024), "marker_pos": torch.zeros(16, 2)}
@@ -1948,7 +2125,6 @@ def test_cuda_graphs_sharing_a_pool_replay_in_any_order(tmp_path, monkeypatch):
         )
 
     graphs = None
-    # Capture order A B C D, then replay out of order, interleaving buckets.
     for index in [0, 1, 2, 3, 0, 2, 1, 3, 3, 0, 1, 0, 2]:
         batch = request(*shapes[index])
         got = laya_runtime._run_model(agent, batch).clone()
@@ -1968,7 +2144,6 @@ def test_cuda_graphs_over_the_memory_budget_run_eagerly(tmp_path, monkeypatch):
     agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
     batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
     graphs = agent.__dict__["_unsloth_graphs"] = laya_runtime._CUDAGraphs(agent)
-    # The first capture alone takes more than the budget.
     graphs.max_pool_bytes = 1 << 20
     reserved = iter([0, 2 << 20])
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: next(reserved))
@@ -2005,7 +2180,6 @@ def test_chunks_split_rows_and_trim_padding():
             continue
         assert torch.equal(torch.cat([p[name] for p in parts]), batch[name])
     assert list(laya_runtime._chunks(batch, 10**6)) == [batch]
-    # A row longer than the budget still runs, one row at a time.
     assert [p["input_ids"].shape[0] for p in laya_runtime._chunks(batch, 4)] == [1] * 5
 
 
@@ -2030,7 +2204,6 @@ def test_chunked_forward_matches_one_forward(tmp_path, monkeypatch):
         or torch.zeros(part["input_ids"].shape[0], part["marker_pos"].shape[1]),
     )
     assert laya_runtime._run_model(agent, batch).shape == want.shape and len(calls) == 4
-    # The kill switch keeps laya's single forward.
     calls.clear()
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_FAST", "0")
     laya_runtime._run_model(agent, batch)
@@ -2144,7 +2317,7 @@ def test_mlx_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
     agent = SimpleNamespace(device = "mlx", dtype = "float16", model = Model(), tok = gpu_agent.tok)
     logits, _ = laya_runtime._forward(agent, _items())
     assert logits.tolist() == [[1.0, 0.5]] and agent.dtype == agent.model.dtype == "float32"
-    # An fp32 agent has nothing wider to retry in: its non-finite logits come back without a set_dtype call.
+    # An fp32 agent has nothing wider to retry in.
     agent.model.dtype = "float16"  # only makes the fake emit inf
     agent.model.set_dtype = None
     logits, _ = laya_runtime._forward(agent, _items())
@@ -2278,7 +2451,6 @@ def test_mlx_overflow_in_a_later_chunk_reruns_the_whole_request_in_fp32(monkeypa
     items = [{"ids": [2, 5, 6, 1], "markers": [1, 2], "qtype": 0} for _ in range(5)]
     logits, _ = laya_runtime._forward(agent, items)
     assert np.isfinite(logits).all() and logits.shape == (5, 2)
-    # Three fp16 chunks, the last overflowing, then all three again in fp32.
     assert seen == [
         ("float16", 2),
         ("float16", 2),

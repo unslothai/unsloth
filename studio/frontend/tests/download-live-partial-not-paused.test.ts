@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A live download's `.incomplete` blob must not render as a paused partial (incl. scoped jobs).
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -247,7 +245,6 @@ test("every partial marker on the hub has a downloading branch", () => {
   assert.match(card, /tone="downloading" label="Downloading"/);
 
   const rows = readSrc("features/hub/catalog/models-catalog-rows.tsx");
-  // The amber dot is only drawn through PartialStatusDot, which picks Downloading when live.
   assert.equal(rows.match(/<StatusDot tone="warning" label="Partial download" \/>/g)?.length, 1);
   assert.match(rows, /<PartialStatusDot downloading=\{downloading\} \/>/);
 

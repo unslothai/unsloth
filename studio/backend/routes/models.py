@@ -1252,6 +1252,7 @@ async def _shared_compat_local_inventory_scan(
     models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
 ) -> List[LocalModelInfo]:
     from storage.studio_db import list_scan_folders
+    from hub.services.models.local_inventory import custom_folder_identities
     from hub.utils import inventory_scan as hf_cache_scan
 
     requested_sources = sources
@@ -1306,13 +1307,16 @@ async def _shared_compat_local_inventory_scan(
         except Exception as e:
             logger.warning("Could not load custom scan folders: %s", e)
             custom_folders = []
+        # Off the loop and under the scan budget: realpath on a hung mount blocks in the kernel.
+        identities = await asyncio.to_thread(
+            custom_folder_identities, custom_folders, _compat_inventory_path_identity
+        )
         key: _CompatLocalInventoryKey = (
             Path(_compat_inventory_path_identity(models_root)),
             scan_sources,
             tuple(
-                _compat_inventory_path_identity(folder.get("path", ""))
-                + ("\x00r" if folder.get("recursive") else "")
-                for folder in custom_folders
+                identity + ("\x00r" if folder.get("recursive") else "")
+                for identity, folder in zip(identities, custom_folders)
             ),
             epoch,
         )

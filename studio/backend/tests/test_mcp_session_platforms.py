@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Platform-dependent behaviour of the shared MCP session machinery.
-
-What these can and cannot prove: Linux does not export asyncio.ProactorEventLoop
-at all, so a win32 test has to supply one. That makes these honest tests of which
-branch is *chosen*, and no test at all of IOCP, overlapped pipes or Windows handle
-cleanup. Those need a Windows runner, and this repo runs studio/backend/tests on
-ubuntu only. Do not read a pass here as Windows coverage.
-"""
+"""These check which win32 branch is chosen on Linux; a pass is not Windows coverage."""
 
 from __future__ import annotations
 
@@ -136,7 +129,6 @@ def test_a_forked_child_does_not_inherit_a_usable_session():
 def _child_checks_inherited_thread_is_dead():
     import threading
 
-    # The parent's mcp-session thread does not exist here; anything that waits on
-    # it would block forever, so the child must be able to see that.
+    # The parent's mcp-session thread does not exist in the child; waiting on it would hang.
     names = [t.name for t in threading.enumerate()]
     sys.exit(0 if "mcp-session" not in names else 1)
