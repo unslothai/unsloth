@@ -758,9 +758,7 @@ def refine_plan_for_multigpu(
     )
     headroom = int(measured_headroom or flat_headroom or 0)
     if plan.estimates.get("measured_omits_references"):
-        # A split keeps no resident offload groups a request can stream back: a measured reserve that leaves out the
-        # family's reference images (a reference request then needs the flat estimate) would leave it refused on the
-        # primary, so the split takes the flat headroom, or the measured one (a learned peak) where that is larger.
+        # A split has no resident groups to stream back, so a reference request needs the flat headroom.
         headroom = max(headroom, int(flat_headroom or 0))
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
     rejected: list[PlacementCandidate] = []

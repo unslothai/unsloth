@@ -3476,9 +3476,7 @@ def refine_plan_from_loaded_weights(
             measured_compute_bytes = compute_bytes,
             measured_static_seed = static_seed,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
-            # measured on text-to-image, and the family's reference images join the denoiser's sequence unpriced:
-            # measured_request_extra_mib sizes such a request from the flat estimate, which only resident groups
-            # streamed back can pay for
+            # peak measured on text-to-image; unpriced reference requests fall back to the flat estimate
             measured_omits_references = bool(
                 dense_mib is not None
                 and getattr(pipe, "_unsloth_dense_tier_seeds", False)

@@ -2580,8 +2580,7 @@ def _measured_target(target: Any) -> bool:
 
 
 def _references_unpriced(fam: Any) -> bool:
-    """Whether ``fam``'s reference images join the denoiser's sequence without the request guard pricing them (no
-    ``reference_resolutions``; FLUX.3 resizes each to 1 MP and charges it): FLUX.2 Klein's source image."""
+    """Reference images join the denoiser sequence unpriced by the request guard (FLUX.2 Klein; FLUX.3 charges them)."""
     return bool(
         getattr(fam, "reference", False)
         and not tuple(getattr(fam, "reference_resolutions", ()) or ())
