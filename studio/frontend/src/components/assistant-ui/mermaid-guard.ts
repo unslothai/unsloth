@@ -54,10 +54,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Every `@{` that closes, with the block it would open: up to the first `}` outside a "string", as
- * mermaid's lexer ends shape data. Whether a given `@{` is shape data or text (a quoted label,
- * accessibility text, a sequence message) depends on lexer state, so each one is read on its own and
- * the blocks may overlap.
+ * Every `@{` that closes on a block that could name an image, with that block: up to the first `}`
+ * outside a "string", as mermaid's lexer ends shape data. Whether a given `@{` is shape data or text
+ * (a quoted label, accessibility text, a sequence message) depends on lexer state, so each one is read
+ * on its own and the blocks may overlap. A block holding neither `img` nor a `\` escape cannot name
+ * one, so it is left out before any parsing.
  */
 function shapeDataBlocks(source: string): { start: number; end: number; body: string }[] {
   const blocks: { start: number; end: number; body: string }[] = [];
@@ -76,9 +77,19 @@ function shapeDataBlocks(source: string): { start: number; end: number; body: st
       quotedFrom[index] = quotedFrom[index + 1];
     }
   }
+  // Where the first `img` (any case) or `\` at or after i ends, so the check costs O(1) per `@{`.
+  const hintEnd = new Int32Array(source.length + 1).fill(-1);
+  for (let index = source.length - 1; index >= 0; index--) {
+    if (source[index] === "\\") hintEnd[index] = index + 1;
+    else if (source.slice(index, index + 3).toLowerCase() === "img") hintEnd[index] = index + 3;
+    else hintEnd[index] = hintEnd[index + 1];
+  }
   for (let open = source.indexOf("@{"); open >= 0; open = source.indexOf("@{", open + 2)) {
     const close = closeFrom[open + 2];
-    if (close >= 0) blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
+    const hint = hintEnd[open + 2];
+    if (close >= 0 && hint >= 0 && hint <= close) {
+      blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
+    }
   }
   return blocks;
 }
@@ -86,28 +97,50 @@ function shapeDataBlocks(source: string): { start: number; end: number; body: st
 // Mermaid's own entity for `@`: it shows as `@` in text and never opens shape data.
 const INERT_OPENER = "#64;{";
 
+// Characters of block text parsed per diagram. Blocks may share a close, so their lengths can sum to
+// the square of the source; past this every `@{` is made inert instead of parsed.
+const PARSE_BUDGET = 1 << 20;
+
 /**
- * Each `@{` read as a block that would name a remote image gets that image taken out. When two such
- * readings overlap, which one mermaid takes depends on lexer state, so both openers are made inert.
- * A rewrite can change how a neighbouring `@{` reads, so the result is vetted again until it is stable.
+ * Each `@{` read as a block that would name a remote image gets that image taken out. When such
+ * readings overlap, which one mermaid takes depends on lexer state, so every opener in that run of
+ * overlapping blocks is made inert; a block overlapping none is rewritten in place. A rewrite can
+ * change how a neighbouring `@{` reads, so the result is vetted again until it is stable.
  */
 function withoutRemoteShapeImages(source: string): string {
   let current = source;
+  let budget = PARSE_BUDGET;
   for (let pass = 0; pass < 8; pass++) {
     // Comments are blanked to the same length, so a `@{` or `"` in one cannot hide a later block.
     const scanned = current.replace(COMMENT_LINE, (line) => " ".repeat(line.length));
     const fetching: { start: number; end: number; replaced: string }[] = [];
     for (const block of shapeDataBlocks(scanned)) {
+      budget -= block.body.length;
+      if (budget < 0) return current.replaceAll("@{", INERT_OPENER);
       const replaced = withoutRemoteImage(block.body);
       if (replaced !== null) fetching.push({ start: block.start, end: block.end, replaced });
     }
     if (fetching.length === 0) return current;
-    const overlap = fetching.some((block, index) => index > 0 && block.start < fetching[index - 1].end);
     let out = "";
     let at = 0;
-    for (const block of fetching) {
-      out += current.slice(at, block.start) + (overlap ? INERT_OPENER : block.replaced);
-      at = overlap ? block.start + 2 : block.end;
+    for (let first = 0; first < fetching.length; ) {
+      // Blocks come in start order; a run lasts while the next one starts before the run ends.
+      let last = first;
+      let runEnd = fetching[first].end;
+      while (last + 1 < fetching.length && fetching[last + 1].start < runEnd) {
+        last++;
+        runEnd = Math.max(runEnd, fetching[last].end);
+      }
+      if (last === first) {
+        out += current.slice(at, fetching[first].start) + fetching[first].replaced;
+        at = fetching[first].end;
+      } else {
+        for (let index = first; index <= last; index++) {
+          out += current.slice(at, fetching[index].start) + INERT_OPENER;
+          at = fetching[index].start + 2;
+        }
+      }
+      first = last + 1;
     }
     current = out + current.slice(at);
   }
