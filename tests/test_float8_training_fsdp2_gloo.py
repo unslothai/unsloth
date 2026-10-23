@@ -41,18 +41,28 @@ def _native():
         pkg.__path__ = [os.path.join(REPO, *name.split("."))]
         sys.modules.setdefault(name, pkg)
     _load("unsloth.fsdp2_launch", os.path.join(REPO, "unsloth", "fsdp2_launch.py"))
-    return _load("unsloth.models.fsdp2_native", os.path.join(REPO, "unsloth", "models", "fsdp2_native.py"))
+    return _load(
+        "unsloth.models.fsdp2_native", os.path.join(REPO, "unsloth", "models", "fsdp2_native.py")
+    )
 
 
 def _build():
     from torchao.float8 import Float8LinearConfig
     from transformers import LlamaConfig, LlamaForCausalLM
 
-    f8t = _load("_unsloth_float8_training_fsdp2", os.path.join(REPO, "unsloth", "models", "float8_training.py"))
+    f8t = _load(
+        "_unsloth_float8_training_fsdp2",
+        os.path.join(REPO, "unsloth", "models", "float8_training.py"),
+    )
     torch.manual_seed(0)
     config = LlamaConfig(
-        vocab_size = 256, hidden_size = 128, intermediate_size = 256, num_hidden_layers = 2,
-        num_attention_heads = 4, num_key_value_heads = 2, max_position_embeddings = 64,
+        vocab_size = 256,
+        hidden_size = 128,
+        intermediate_size = 256,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        max_position_embeddings = 64,
     )
     model = LlamaForCausalLM(config).float()
     fp8 = Float8LinearConfig.from_recipe_name("tensorwise")
@@ -79,19 +89,28 @@ def _worker(rank, port, out):
     import torch.distributed as dist
     from torchao.float8.float8_linear import Float8Linear
 
-    os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port), RANK = str(rank),
-                      WORLD_SIZE = "2", LOCAL_RANK = str(rank))
+    os.environ.update(
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
+        RANK = str(rank),
+        WORLD_SIZE = "2",
+        LOCAL_RANK = str(rank),
+    )
     dist.init_process_group("gloo", rank = rank, world_size = 2)
     try:
         native = _native()
         model, names = _build()
-        model = native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, device = "cpu"))
+        model = native.shard_model(
+            model, native.FSDP2Config(param_dtype = torch.float32, device = "cpu")
+        )
         fp8 = [m for m in model.modules() if isinstance(m, Float8Linear)]
         sharded = sum(type(m.weight).__name__ == "DTensor" for m in fp8)
         losses = _train(model)
         if rank == 0:
             with open(out, "w") as f:
-                json.dump(dict(converted = len(names), fp8 = len(fp8), sharded = sharded, losses = losses), f)
+                json.dump(
+                    dict(converted = len(names), fp8 = len(fp8), sharded = sharded, losses = losses), f
+                )
     finally:
         dist.destroy_process_group()
 

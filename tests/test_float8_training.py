@@ -36,7 +36,6 @@ def _tiny_qwen3(dtype = torch.float32):
 
 def _float8_linear():
     from torchao.float8.float8_linear import Float8Linear
-
     return Float8Linear
 
 
@@ -241,7 +240,6 @@ def test_refuses_when_scaled_mm_probe_fails(monkeypatch):
 
 def test_loader_rejects_float8_training_for_lora():
     from unsloth import FastLanguageModel, FastModel
-
     for loader in (FastLanguageModel, FastModel):
         with pytest.raises(ValueError, match = "full_finetuning = True"):
             loader.from_pretrained(

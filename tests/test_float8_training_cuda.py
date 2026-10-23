@@ -24,14 +24,15 @@ from unsloth.models import float8_training as f8t  # noqa: E402
 
 def _config(recipe):
     from torchao.float8 import Float8LinearConfig
-
     return Float8LinearConfig.from_recipe_name(recipe)
 
 
 def _mlp():
     torch.manual_seed(0)
     return torch.nn.Sequential(
-        torch.nn.Linear(256, 512, bias = False), torch.nn.GELU(), torch.nn.Linear(512, 256, bias = False)
+        torch.nn.Linear(256, 512, bias = False),
+        torch.nn.GELU(),
+        torch.nn.Linear(512, 256, bias = False),
     ).to("cuda", torch.bfloat16)
 
 
@@ -55,7 +56,9 @@ def test_offloaded_embedding_does_not_block_conversion():
     class M(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.embed = torch.nn.Embedding(64, 256)  # stays on the CPU, like offload_embedding = True
+            self.embed = torch.nn.Embedding(
+                64, 256
+            )  # stays on the CPU, like offload_embedding = True
             self.body = _mlp()
 
     model = M()

@@ -70,7 +70,11 @@ def _size_ok(recipe, out_features, in_features):
     return not (N <= 4096 and K <= 2048)
 
 
-def float8_training_filter(model, recipe = "tensorwise", size_filter = True):
+def float8_training_filter(
+    model,
+    recipe = "tensorwise",
+    size_filter = True,
+):
     """Filter for convert_to_float8_training: plain nn.Linear, dims divisible by 16, trainable floating weight, not an output head or router."""
     out_heads = set()
     try:
@@ -121,7 +125,11 @@ def _recipe_scaling(recipe):
         return recipe
     try:
         granularity = recipe.cast_config_input.scaling_granularity
-        return "rowwise" if "AXIS" in str(getattr(granularity, "name", granularity)).upper() else "tensorwise"
+        return (
+            "rowwise"
+            if "AXIS" in str(getattr(granularity, "name", granularity)).upper()
+            else "tensorwise"
+        )
     except Exception:
         return "rowwise"
 
@@ -149,7 +157,11 @@ def _check_hardware(device, recipe):
             "Unsloth: float8_training needs compute capability 8.9+ (fp8 tensor cores); "
             f"{name} is {major}.{minor}. Train in bfloat16 / float16 instead."
         )
-    if torch.version.hip is None and _recipe_scaling(recipe) == "tensorwise" and (major, minor) < (9, 0):
+    if (
+        torch.version.hip is None
+        and _recipe_scaling(recipe) == "tensorwise"
+        and (major, minor) < (9, 0)
+    ):
         # Measured on an L4: every gradient is NaN from the first step once gradient checkpointing runs.
         # The scaling is what fails, so explicit Float8LinearConfigs are refused too.
         raise RuntimeError(
@@ -158,7 +170,9 @@ def _check_hardware(device, recipe):
         )
     if isinstance(recipe, str):
         if torch.version.hip is not None or (major, minor) not in _MEASURED_FASTER.get(recipe, ()):
-            where = "ROCm" if torch.version.hip is not None else f"compute capability {major}.{minor}"
+            where = (
+                "ROCm" if torch.version.hip is not None else f"compute capability {major}.{minor}"
+            )
             raise RuntimeError(
                 f"Unsloth: float8_training = {recipe!r} has not been measured faster than bfloat16 on "
                 f"{name} ({where}); it is enabled by name only on RTX PRO 6000 / RTX 50 class GPUs "
@@ -219,7 +233,6 @@ def convert_model_to_float8_training(
     converted = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
     if not converted:
         import warnings
-
         warnings.warn(
             "Unsloth: float8_training found no eligible Linear layer (dims divisible by 16 and large enough "
             "for fp8 to pay off); the model trains in its original precision.",
