@@ -255,18 +255,37 @@ def default_install_dir() -> Path:
     return legacy if root == (Path.home() / ".unsloth" / "studio").resolve() else root / "audio.cpp"
 
 
+# detect_accelerator and the release pick both ask, so a version nvidia-smi reported is kept. Keyed
+# on its mtime (a driver update replaces it) and the runner, so a stubbed subprocess.run never
+# reads another stub's answer. No answer is not kept: a driver that recovers is seen next time.
+_DRIVER_CUDA_MEMO: Optional[tuple] = None
+
+
 def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
     """The CUDA version the installed NVIDIA driver supports, from nvidia-smi, or None."""
+    global _DRIVER_CUDA_MEMO
     exe = shutil.which("nvidia-smi")
     if not exe:
         return None
     try:
-        out = subprocess.run([exe], capture_output = True, text = True, timeout = 15).stdout
+        stamp = os.stat(exe).st_mtime_ns
+    except OSError:
+        stamp = None
+    runner = subprocess.run
+    memo = _DRIVER_CUDA_MEMO
+    if memo is not None and memo[:2] == (exe, stamp) and memo[2] is runner:
+        return memo[3]
+    try:
+        out = runner([exe], capture_output = True, text = True, timeout = 15).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     # Newer drivers print "CUDA UMD Version: X.Y" in place of "CUDA Version: X.Y" (same rule as the llama installer).
     match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", out or "")
-    return (int(match.group(1)), int(match.group(2))) if match else None
+    if not match:
+        return None
+    version = (int(match.group(1)), int(match.group(2)))
+    _DRIVER_CUDA_MEMO = (exe, stamp, runner, version)
+    return version
 
 
 def _nvidia_has_prebuilt_arch() -> Optional[bool]:

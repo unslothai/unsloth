@@ -415,14 +415,16 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
             [
                 "$ErrorActionPreference = 'Stop'",
                 # Both names: routing scan uses WMI, the report-only peer scan uses CIM.
-                f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                "$script:cimCalls = 0",
+                f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) $script:cimCalls++; @({items}) }}",
                 f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 "function substep { param($a, $b) }",
                 "$HasROCm = $false",
                 "$ROCmGpuLabel = $null",
                 "$ROCmGfxArch = $null",
                 _installer_scan_block(),
-                "@{ label = $ROCmGpuLabel; arch = $ROCmGfxArch } | ConvertTo-Json -Compress",
+                "@{ label = $ROCmGpuLabel; arch = $ROCmGfxArch; cim = $script:cimCalls; peers = @($wmiAmdNames) }"
+                " | ConvertTo-Json -Compress",
             ]
         ),
         encoding = "utf-8",
@@ -446,6 +448,16 @@ def test_the_installer_skips_a_disabled_adapter(tmp_path):
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)])
     assert out["label"] == "AMD Radeon RX 580"
     assert out["arch"] is None, "the active card is unsupported, so this host belongs on CPU"
+
+
+@requires_pwsh
+def test_the_peer_scan_reuses_the_routing_scan(tmp_path):
+    """No arch is inferred for an RX 580, so the report-only peer scan runs too. It asks WMI the
+    same question as the routing scan, so one query answers both, with the same peer list."""
+    out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)])
+    assert out["arch"] is None
+    assert out["peers"] == ["AMD Radeon RX 580"]
+    assert out["cim"] == 1
 
 
 @requires_pwsh

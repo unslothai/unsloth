@@ -5,6 +5,7 @@
 
 import importlib.util
 import json
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -125,6 +126,38 @@ def test_driver_cuda_version_reads_both_spellings(monkeypatch, smi, expected):
     monkeypatch.setattr(M.shutil, "which", lambda name: "nvidia-smi")
     monkeypatch.setattr(M.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": smi})())
     assert M.nvidia_driver_cuda_version() == expected
+
+
+def test_driver_cuda_version_is_read_once_per_binary(monkeypatch, tmp_path):
+    # detect_accelerator and the release pick both ask; nvidia-smi runs once.
+    exe = tmp_path / "nvidia-smi"
+    exe.write_text("")
+    calls = []
+
+    def run(*a, **k):
+        calls.append(a)
+        return type("R", (), {"stdout": "CUDA Version: 12.6"})()
+
+    monkeypatch.setattr(M.shutil, "which", lambda name: str(exe))
+    monkeypatch.setattr(M.subprocess, "run", run)
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 1
+    # A driver update replaces the binary: asked again.
+    os.utime(exe, ns = (1, 1))
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 2
+
+
+def test_driver_cuda_version_keeps_no_failed_answer(monkeypatch, tmp_path):
+    # A driver that did not answer can recover without a restart (in-app update): ask again.
+    exe = tmp_path / "nvidia-smi"
+    exe.write_text("")
+    outputs = ["NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver", "CUDA Version: 12.8"]
+    monkeypatch.setattr(M.shutil, "which", lambda name: str(exe))
+    monkeypatch.setattr(M.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": outputs.pop(0)})())
+    assert M.nvidia_driver_cuda_version() is None
+    assert M.nvidia_driver_cuda_version() == (12, 8)
 
 
 def _fake_nvidia_smi(

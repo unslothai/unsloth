@@ -525,6 +525,29 @@ fedora_no_version_host gfx1201
 assert_eq "an override that corroborated nothing is left alone" \
     "11.0.0" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_hsa)"
 
+# lspci is read once per install: every caller runs in a command substitution, so the
+# answer is shared through a file, not a variable.
+mock_lspci_counting() {   # $1 = the display-controller name lspci reports
+    mock_lspci "$1"
+    : > "$_MOCK/.lspci.calls"
+    cat > "$_MOCK/lspci" <<'MOCK'
+#!/bin/sh
+echo x >> "$(dirname "$0")/.lspci.calls"
+cat "$(dirname "$0")/.lspci.out"
+MOCK
+    chmod +x "$_MOCK/lspci"
+}
+lspci_calls() { wc -l < "$_MOCK/.lspci.calls" | tr -d ' '; }
+for _probe_host in "gfx1201 gfx1036" "gfx1200 gfx1201"; do
+    # shellcheck disable=SC2086
+    fedora_no_version_host $_probe_host
+    mock_lspci_counting "Navi 48 [Radeon RX 9070 XT]"
+    _probe_index=$(run_index)
+    _probe_calls=$(lspci_calls)
+    assert_eq "lspci runs at most once for $_probe_host (index $_probe_index)" \
+        "yes" "$([ "$_probe_calls" -le 1 ] && echo yes || echo "no ($_probe_calls)")"
+done
+
 echo ""
 echo "  passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
