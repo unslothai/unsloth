@@ -7254,16 +7254,9 @@ def fix_triton_compiled_kernel_missing_attrs():
 
 
 def fix_inductor_reduction_readback_race():
-    """
-    torch < 2.14 Inductor: a looped reduction that stores a buffer in one loop and reloads it in
-    a later loop of the same kernel has no barrier in between. Triton's coalesce pass may give the
-    store and the reload different thread layouts, so one warp reads what another has not written
-    yet: silently wrong gradients (Qwen3.5 q-norm + RoPE backward at R0_BLOCK 256, about 3% of rows,
-    2.5e4x grad norms). pytorch/pytorch#198562, triton-lang/triton#10924.
-
-    Backports pytorch/pytorch#190519 (torch 2.14): emit tl.debug_barrier() before loading a buffer
-    whose store left the CSE cache, in the buffer the load itself goes to.
-    """
+    """torch < 2.14 Inductor reloads a buffer stored by an earlier loop of the same reduction kernel with no
+    barrier, and Triton may give the store and the reload different warps: silently wrong gradients
+    (pytorch/pytorch#198562). Backports pytorch/pytorch#190519."""
     try:
         import torch
         from torch._inductor.codegen import triton as triton_codegen
