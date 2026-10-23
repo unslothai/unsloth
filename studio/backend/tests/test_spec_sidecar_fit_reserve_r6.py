@@ -253,7 +253,7 @@ def _write(path, payload = b""):
 
 
 def test_native_measurement_is_read_from_the_shared_common_library(tmp_path):
-    binary = _write(tmp_path / "llama-server")
+    binary = _write(tmp_path / "llama-server", b"libllama-common.so.0")
     real = _write(tmp_path / "libllama-common.so.0.0.1", b"..." + _MARKER + b"...")
     (tmp_path / "libllama-common.so.0").symlink_to(real.name)
     (tmp_path / "libllama-common.so").symlink_to("libllama-common.so.0")
@@ -593,7 +593,7 @@ def test_a_cuda_draft_pin_on_the_only_target_card_keeps_the_reserve(tmp_path, pi
 def test_a_cached_probe_rereads_the_shared_library(tmp_path, monkeypatch):
     """The capability cache is keyed on the server alone; a swapped libllama-common
     must not keep an older answer."""
-    binary = _write(tmp_path / "llama-server")
+    binary = _write(tmp_path / "llama-server", b"libllama-common.so")
     st = binary.stat()
     key = (str(binary), st.st_mtime_ns, st.st_size)
     monkeypatch.setattr(LlamaCppBackend, "_exec_path_for_launch", staticmethod(lambda b: b))
@@ -649,7 +649,7 @@ def test_a_dspark_prompt_graph_is_priced_with_the_micro_batch(ub, measured_mib):
 
 def test_only_the_linked_common_library_speaks_for_the_build(tmp_path):
     """A stale versioned file beside the soname proves nothing about the running server."""
-    binary = _write(tmp_path / "llama-server")
+    binary = _write(tmp_path / "llama-server", b"libllama-common.so.0")
     _write(tmp_path / "libllama-common.so.0")
     _write(tmp_path / "libllama-common.so.0.9.9", _MARKER)
     assert not _lc._fit_measures_borrowed_drafts(str(binary))

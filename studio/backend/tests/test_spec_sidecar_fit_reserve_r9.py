@@ -267,3 +267,41 @@ def test_planning_drops_an_inherited_split_mode_the_launch_clears(tmp_path, monk
     backend._arch_gate_survivors = lambda binary = None: []
     cmd = _r7._dspark(backend, gguf, tmp_path, extra_args = ["--device-draft", "CUDA1"])
     assert max(_r7._margins(cmd)) >= _FLOOR
+
+
+# Only a common library the server actually links speaks for its fitter.
+
+_MARKER = b"measuring the extra model next to an allocation-free target context"
+
+
+def _elf(path, payload = b""):
+    path.write_bytes(b"\x7fELF" + payload + b"\x00")
+    return path
+
+
+def test_a_static_server_beside_a_stale_common_library_keeps_the_reserve(tmp_path):
+    binary = _elf(tmp_path / "llama-server")
+    _elf(tmp_path / "libllama-common.so.0", _MARKER)
+    assert not _lc._fit_measures_borrowed_drafts(str(binary))
+
+
+def test_the_common_library_is_followed_through_the_server_impl_library(tmp_path):
+    """b11734-style layout: llama-server links libllama-server-impl.so, which links
+    libllama-common.so.0, where fit.cpp lives."""
+    binary = _elf(tmp_path / "llama-server", b"libllama-server-impl.so")
+    _elf(tmp_path / "libllama-server-impl.so", b"libllama-common.so.0")
+    _elf(tmp_path / "libllama-common.so.0", _MARKER)
+    assert _lc._fit_measures_borrowed_drafts(str(binary))
+    # An impl library that does not link it leaves a stale sibling unread.
+    _elf(tmp_path / "libllama-server-impl.so")
+    assert not _lc._fit_measures_borrowed_drafts(str(binary))
+
+
+@pytest.mark.parametrize(
+    "linked",
+    ["libllama-common.so.0", "libllama-common.0.dylib", "llama-common.dll"],
+)
+def test_a_server_that_names_its_common_library_is_read_through_it(tmp_path, linked):
+    binary = _elf(tmp_path / "llama-server", linked.encode())
+    _elf(tmp_path / linked, _MARKER)
+    assert _lc._fit_measures_borrowed_drafts(str(binary))

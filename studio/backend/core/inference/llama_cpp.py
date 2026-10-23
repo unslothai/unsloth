@@ -5302,6 +5302,33 @@ _LLAMA_COMMON_LIB_NAMES = (
     "libllama-common.dylib",
     "llama-common.dll",
 )
+# Newer builds move each tool's body into a library the executable links (the
+# server links libllama-server-impl, which links libllama-common).
+_LLAMA_SERVER_IMPL_LIB_NAMES = (
+    "libllama-server-impl.so",
+    "libllama-server-impl.dylib",
+    "llama-server-impl.dll",
+)
+
+
+def _linked_llama_libs(binary: Path, lib_dir: Path) -> list:
+    """The server-impl and common libraries in ``lib_dir`` that ``binary`` names as a
+    dependency (DT_NEEDED, LC_LOAD_DYLIB and the PE import table all store the file
+    name), so a sibling file from another build is not taken for the linked one."""
+    try:
+        data = binary.read_bytes()
+    except OSError:
+        return []
+    linked = []
+    for names in (_LLAMA_SERVER_IMPL_LIB_NAMES, _LLAMA_COMMON_LIB_NAMES):
+        # The first name is the most specific (the soname before the dev symlink).
+        hit = next(
+            (n for n in names if n.encode() in data and (lib_dir / n).exists()),
+            None,
+        )
+        if hit is not None:
+            linked.append(lib_dir / hit)
+    return linked
 
 
 _CUDA_LIKE_DEVICE_RE = re.compile(r"(?i)(cuda|rocm|hip)\d+$")
@@ -5411,20 +5438,20 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
     """Whether ``bin_path``'s fitter sizes a borrowed-tensor draft itself.
 
     common/fit.cpp is linked into the server in a static build and into
-    libllama-common beside it in a shared one (the prebuilt default), so both are
-    scanned. Fails closed: no marker keeps Studio's own sidecar reserve."""
+    libllama-common in a shared one (the prebuilt default), which the server links
+    directly or through libllama-server-impl, so each linked file is scanned. Fails closed: no marker keeps Studio's own sidecar reserve."""
     if not bin_path:
         return False
     candidates = [Path(bin_path)]
     try:
         # A wrapper script execs the real server, which holds fit.cpp in a static build.
-        candidates.append(Path(_resolve_llama_binary(bin_path)))
+        server = Path(_resolve_llama_binary(bin_path))
+        candidates.append(server)
         lib_dir = _llama_lib_dir(bin_path)
-        linked = next(
-            (lib_dir / n for n in _LLAMA_COMMON_LIB_NAMES if (lib_dir / n).exists()), None
-        )
-        if linked is not None:
-            candidates.append(linked)
+        # Only the libraries the server links, directly or through its -impl library.
+        for lib in _linked_llama_libs(server, lib_dir):
+            candidates.append(lib)
+            candidates.extend(l for l in _linked_llama_libs(lib, lib_dir) if l not in candidates)
     except Exception:  # noqa: BLE001 -- an unreadable lib dir is "not known"
         pass
     seen: set = set()
