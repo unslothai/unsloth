@@ -2261,9 +2261,7 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
-        # Callers read the denoiser's forward signature to pick what to pass: FLUX.3's modular denoise step forwards only
-        # the fields named there (img_ids, txt_ids, image_cond_*), so a bare ``(*args, **kwargs)`` router dropped them
-        # and the step crashed. Report the wrapped forward's signature, as the CUDA graph wrapper under it does.
+        # FLUX.3's modular denoise step passes only kwargs named in forward's signature: expose the wrapped one.
         try:
             import inspect
             self.__signature__ = inspect.signature(self.orig_forward)

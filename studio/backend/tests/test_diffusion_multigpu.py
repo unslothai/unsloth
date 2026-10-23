@@ -2378,10 +2378,7 @@ def test_router_stays_on_the_source_for_a_forced_eager_render_and_the_compile_th
 
 
 def test_router_keeps_the_forward_signature_callers_filter_on():
-    """FLUX.3's modular denoise step passes the transformer only the fields its ``forward`` signature names
-    (``img_ids``, ``txt_ids``, ``image_cond_*``). Under a bare ``(*args, **kwargs)`` router those were dropped, the
-    stock forward raised "missing 2 required positional arguments: 'img_ids' and 'txt_ids'" on step 0 of every
-    render with two cards selected (the base model: ``pos_embed(None)``)."""
+    """FLUX.3's modular denoise step filters kwargs by forward's signature; a bare router dropped img_ids/txt_ids."""
     import inspect
 
     class Dit(torch.nn.Module):
