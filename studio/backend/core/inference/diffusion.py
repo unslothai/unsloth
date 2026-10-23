@@ -2549,19 +2549,6 @@ def _release_before_tiling_off() -> bool:
     )
 
 
-def _untiled_shortfall_mib(verdict: Any, guard_kwargs: dict) -> Optional[int]:
-    """MiB the untiled plan is short by on ``verdict`` (its activations plus the fixed overhead past the budget), or
-    None when the verdict carries no figures."""
-    needed = getattr(verdict, "needed_mib", None)
-    budget = getattr(verdict, "budget_mib", None)
-    if needed is None or budget is None:
-        return None
-    from .diffusion_memory import DEFAULT_BASE_OVERHEAD_MIB
-
-    overhead = guard_kwargs.get("base_overhead_mib", DEFAULT_BASE_OVERHEAD_MIB)
-    return int(needed) + max(0, int(overhead or 0)) - int(budget)
-
-
 def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
     """MiB the free VRAM is short by, now, for decoding ``z`` in one piece: the rule the wide-tile decode picks its
     tile by (``decode_tile_budget``: per-latent decode peak within ``FREE_FRACTION`` of the free memory), applied to
@@ -2706,8 +2693,9 @@ def _defer_tiling_to_decode(
     are unknown; an out-of-memory on an untiled encode retries tiled, only as a backstop. Both wrappers sit on the
     public ``decode`` / ``encode`` slots, above the OOM scope and outside every compiled or captured region. Returns
     the request's VAE restore extended to drop them. Changes nothing for a verdict that would not stream (not tile,
-    overridden, nothing resident, hopeless, a split that decodes on another card, the kill switch
-    ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0``) or a tiling that did not engage."""
+    overridden, nothing resident, a split that decodes on another card, the kill switch
+    ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0``) or a tiling that did not engage. A frame short by more than every
+    resident group is judged at the decode, on its own latents, and tiles there with nothing streamed."""
     vae = getattr(pipe, "vae", None)
     if (
         vae is None
@@ -2723,9 +2711,8 @@ def _defer_tiling_to_decode(
     resident = resident_group_mib(state_pipe)
     if resident <= 0:
         return restore_vae
-    short = _untiled_shortfall_mib(verdict, guard_kwargs)
-    if short is not None and short > resident:
-        return restore_vae  # hopeless: even every resident group would leave the request tiled
+    # No request-wide "hopeless" gate: the verdict's figures price the conditioning and the denoise, which are no longer
+    # live at the decode, so only the decode-time check (``_untiled_decode_shortfall_mib``) may decide it tiles.
     try:
         if _vae_on_other_card(pipe, guard_target) is not None:
             return restore_vae

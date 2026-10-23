@@ -318,7 +318,7 @@ def test_an_untiled_encode_out_of_memory_retries_tiled(card):
 
 @pytest.mark.parametrize(
     "case",
-    ["kill", "run", "overridden", "nothing_resident", "hopeless", "split", "not_engaged"],
+    ["kill", "run", "overridden", "nothing_resident", "split", "not_engaged"],
 )
 def test_cases_that_do_not_stream_keep_the_request_tiling(card, monkeypatch, case):
     verdict = _priced(6000)
@@ -331,8 +331,6 @@ def test_cases_that_do_not_stream_keep_the_request_tiling(card, monkeypatch, cas
         verdict = ImageActivationVerdict(ACTIVATION_TILE, overridden = True)
     elif case == "nothing_resident":
         card.resident = 0
-    elif case == "hopeless":
-        card.resident = 2000  # the request is short 3000 MiB
     elif case == "split":
         monkeypatch.setattr(diffusion, "_vae_on_other_card", lambda pipe, target: "cuda:1")
     elif case == "not_engaged":
@@ -342,6 +340,36 @@ def test_cases_that_do_not_stream_keep_the_request_tiling(card, monkeypatch, cas
     out = diffusion._defer_tiling_to_decode(pipe, pipe, verdict, TARGET, {}, restore_vae, None)
     assert out is restore_vae and "decode" not in vae.__dict__ and "encode" not in vae.__dict__
     assert card.releases == []
+
+
+@pytest.mark.parametrize("decode_free", [9500, 6000])
+def test_a_conditioned_request_short_past_the_groups_still_decodes_untiled(card, decode_free):
+    # An edit / ControlNet / layered request: the verdict prices the conditioning and the denoise as well, 20000 MiB
+    # past the budget, more than the 4283 MiB resident. At the decode only the frame is live: it fits as is (9500
+    # free) or once the 3000 MiB shortfall streams (6000 free), so it must decode untiled, not stay tiled.
+    verdict = ImageActivationVerdict(
+        ACTIVATION_TILE, needed_mib = 23952, tiled_needed_mib = 2952, budget_mib = 6000
+    )
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae, verdict)
+    card.free = decode_free
+    assert vae.decode("z") == "z"
+    assert vae.decodes == [(False, 4283 if decode_free >= UNTILED_NEED else 277)]
+    assert card.releases == (
+        [] if decode_free >= UNTILED_NEED else [(4006, "an untiled VAE decode")]
+    )
+    assert card.resident == 4283 and vae.use_tiling is False
+    restore()
+
+
+def test_a_frame_short_past_every_group_tiles_at_the_decode_with_nothing_streamed(card):
+    card.resident = 2000  # the decode is short 3000 MiB: even every resident group leaves it tiled
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    assert vae.decode("z") == "z"
+    assert vae.decodes == [(True, 2000)] and card.releases == [] and vae.use_tiling is False
+    assert vae.__dict__[diffusion.RELEASE_BEFORE_TILING_STATS]["tiled"] == 1
+    restore()
 
 
 def test_an_oversized_encode_keeps_tiling_with_no_untiled_attempt(card):
