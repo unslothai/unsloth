@@ -177,3 +177,36 @@ def test_streamed_merge_restage_failure_clears_merge_flags(monkeypatch):
     with pytest.raises(RuntimeError, match = "host out of memory"):
         fsdp2_save.merge_4bit_lora_layer_by_layer(model)
     assert [layer.merged_adapters for layer in model] == [[], []]
+
+
+def test_streamed_merge_gpu_restage_failure_clears_earlier_merge_flags(monkeypatch):
+    # The GPU restage of a later layer failing must also clear the layers merged before it.
+    import torch
+
+    class _Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.base_layer = torch.nn.Linear(2, 2, bias = False)
+            self.base_layer.weight.quant_state = object()
+            self.merged_adapters = []
+
+        def merge(self):
+            self.merged_adapters.append("default")
+
+    model = torch.nn.Sequential(_Layer(), _Layer())
+    staged = {id(layer.base_layer.weight): "cuda" for layer in model}
+    monkeypatch.setattr(fsdp2_save, "_STAGED_4BIT", [staged])
+    calls = []
+
+    def restage(weight, device):
+        calls.append(device)
+        if device == "cuda" and len(calls) == 3:
+            raise RuntimeError("CUDA out of memory")
+        return weight
+
+    monkeypatch.setattr(fsdp2_save, "_restage_4bit", restage)
+    second = model[1].base_layer.weight
+    with pytest.raises(RuntimeError, match = "CUDA out of memory"):
+        fsdp2_save.merge_4bit_lora_layer_by_layer(model)
+    assert [layer.merged_adapters for layer in model] == [[], []]
+    assert model[1].base_layer._parameters["weight"] is second

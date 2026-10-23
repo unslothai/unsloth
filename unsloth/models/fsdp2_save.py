@@ -382,9 +382,9 @@ def merge_4bit_lora_layer_by_layer(model):
         home = staged.get(id(weight)) if weight is not None else None
         if home is None:
             continue
-        base_layer._parameters["weight"] = _restage_4bit(weight, home)
         before = list(getattr(module, "merged_adapters", None) or ())
         try:
+            base_layer._parameters["weight"] = _restage_4bit(weight, home)
             module.merge()
             result = base_layer._parameters.get("weight", None)
             if result is not None and getattr(result, "quant_state", None) is not None:
