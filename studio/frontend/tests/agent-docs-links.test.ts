@@ -17,13 +17,14 @@ test("Pi and Mistral Vibe docs open the unsloth start page", () => {
   }
 });
 
-test("the API tab hands the picked agent to the Agents tab instead of linking out", () => {
+test("the API tab hands owners to the Agents tab and gives other accounts the agent's docs", () => {
   const src = readSrc("features/settings/components/usage-examples.tsx");
   assert.match(
     src,
-    /setAgentsTabAgent\(agent\);\s*useSettingsDialogStore\.getState\(\)\.setActiveTab\("agents"\);/,
+    /\{isOwner \? \([\s\S]*?setAgentsTabAgent\(agent\);\s*useSettingsDialogStore\.getState\(\)\.setActiveTab\("agents"\);[\s\S]*?\) : \([\s\S]*?href=\{agentDetails\.docsUrl\}/,
   );
-  assert.doesNotMatch(src, /docsUrl/);
+  const visibility = readSrc("features/settings/settings-tab-visibility.ts");
+  assert.match(visibility, /OWNER_ONLY_SETTINGS_TABS[\s\S]*?"agents"/);
   assert.doesNotMatch(src, /const DOC_LINKS/);
   assert.doesNotMatch(src, /href: "https?:\/\//);
 });

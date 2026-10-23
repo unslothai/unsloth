@@ -22,6 +22,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   getInferenceStatus,
   isExternalModelId,
@@ -37,6 +38,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
+  ArrowUpRight01Icon,
   BotIcon,
   Copy01Icon,
   InformationCircleIcon,
@@ -616,6 +618,7 @@ export function UsageExamples({
 }) {
   const t = useT();
   const pillId = useId();
+  const isOwner = useIsAccountOwner();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
@@ -1105,20 +1108,36 @@ export function UsageExamples({
           <span className="text-xs font-medium text-foreground">
             {t("settings.apiKeys.codingAgents")}
           </span>
-          {/* The Agents tab restores its agent from this pref when it mounts. */}
-          <button
-            type="button"
-            onClick={() => {
-              setAgentsTabAgent(agent);
-              useSettingsDialogStore.getState().setActiveTab("agents");
-            }}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {/* The Agents tab's own sidebar icon. */}
-            <HugeiconsIcon icon={BotIcon} className="size-3.5" />
-            {t("settings.apiKeys.openAgentsTab")}
-            <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
-          </button>
+          {/* Agents is owner-only (settings-tab-visibility.ts): other accounts would land
+              on General, so they get the agent's docs instead. The tab restores its agent
+              from this pref when it mounts. */}
+          {isOwner ? (
+            <button
+              type="button"
+              onClick={() => {
+                setAgentsTabAgent(agent);
+                useSettingsDialogStore.getState().setActiveTab("agents");
+              }}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <HugeiconsIcon icon={BotIcon} className="size-3.5" />
+              {t("settings.apiKeys.openAgentsTab")}
+              <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+            </button>
+          ) : (
+            <a
+              href={agentDetails.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={t("settings.agents.agentDocs", {
+                agent: agentDetails.name,
+              })}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {t("settings.agents.docs")}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+            </a>
+          )}
         </div>
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.codingAgentsHint")}
