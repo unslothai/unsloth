@@ -3956,7 +3956,9 @@ class UnslothTrainer:
                 eval_dataset = eval_info["dataset"]
                 # Formatted on its own, so it can resolve to another format than the training split (a split carved
                 # out of train has no entry and shares the training format).
-                dataset_info["eval_final_format"] = str(eval_info.get("final_format", "") or "").lower()
+                dataset_info["eval_final_format"] = str(
+                    eval_info.get("final_format", "") or ""
+                ).lower()
                 logger.info("Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
                 formatted_dataset = dataset_info["dataset"]
@@ -4953,7 +4955,9 @@ class UnslothTrainer:
                 # Packed rows share one bidirectional attention window, so documents would see each other.
                 config_args["packing"] = False
                 logger.info("Text-diffusion model: sequence packing turned off\n")
-            eval_pretokenized = eval_dataset is not None and eval_final_format == PRETOKENIZED_FORMAT
+            eval_pretokenized = (
+                eval_dataset is not None and eval_final_format == PRETOKENIZED_FORMAT
+            )
             if pretokenized_mode or eval_pretokenized:
                 try:
                     vocab_size = int(self.model.get_input_embeddings().num_embeddings)

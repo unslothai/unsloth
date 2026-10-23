@@ -2465,7 +2465,11 @@ def _mlx_vocab_size(model):
             getattr(owner, "embed_tokens", None),
         ):
             # A LoRA-wrapped embedding keeps the table on its inner module.
-            for layer in (embed, getattr(embed, "embedding", None), getattr(embed, "base_layer", None)):
+            for layer in (
+                embed,
+                getattr(embed, "embedding", None),
+                getattr(embed, "base_layer", None),
+            ):
                 if layer is None:
                     continue
                 # QuantizedEmbedding packs its weight, so its row count is the stored num_embeddings.
@@ -3633,13 +3637,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # split can be pre-tokenized while the training split is text, and the reverse.
     if dataset_final_format == "pretokenized":
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
-
         dataset = prepare_pretokenized_dataset(
             dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model)
         )
     if eval_dataset is not None and eval_final_format == "pretokenized":
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
-
         eval_dataset = prepare_pretokenized_dataset(
             eval_dataset, max_seq_length = None, vocab_size = _mlx_vocab_size(model)
         )

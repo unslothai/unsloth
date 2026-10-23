@@ -358,7 +358,9 @@ def test_mlx_training_prepares_eval_only_when_it_is_pretokenized():
         if isinstance(node, ast.Assign)
         and any(getattr(t, "id", None) == "eval_final_format" for t in node.targets)
     ]
-    assert any("ev" in {n.id for n in ast.walk(a.value) if isinstance(n, ast.Name)} for a in assigned)
+    assert any(
+        "ev" in {n.id for n in ast.walk(a.value) if isinstance(n, ast.Name)} for a in assigned
+    )
 
 
 def test_mlx_training_prepares_a_pretokenized_eval_split_whatever_the_train_format():
@@ -432,7 +434,8 @@ def test_cuda_training_prepares_each_split_by_its_own_format():
         and getattr(a.targets[0].slice, "value", None) == "eval_final_format"
     ]
     assert any(
-        "eval_info" in {n.id for n in ast.walk(a.value) if isinstance(n, ast.Name)} for a in recorded
+        "eval_info" in {n.id for n in ast.walk(a.value) if isinstance(n, ast.Name)}
+        for a in recorded
     )
 
 
@@ -601,5 +604,4 @@ def test_cuda_training_turns_eval_packing_off_for_a_pretokenized_eval_split():
 def test_eval_packing_is_a_field_on_every_supported_trl():
     # eval_packing exists from TRL 0.22.2 (the floor) on, so setting it never breaks SFTConfig construction.
     from trl import SFTConfig
-
     assert "eval_packing" in SFTConfig.__dataclass_fields__
