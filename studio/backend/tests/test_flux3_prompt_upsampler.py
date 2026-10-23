@@ -1413,6 +1413,131 @@ def test_model_and_projector_come_from_one_revision(monkeypatch):
     assert pup._cached_download_paths(pup.UPSAMPLER_ID) is None
 
 
+# ── an earlier default quant already in the cache ───────────────────────────────────────────────────────────────────
+_REV_A = "a" * 40
+_REV_B = "b" * 40
+
+
+@pytest.fixture
+def fake_hub(monkeypatch, tmp_path):
+    """A real Hugging Face cache layout under tmp_path, with no revision record, so lookups go through
+    hf_hub_download(local_files_only=True) the way the app does."""
+    from core.inference import stt_sidecar
+
+    hub = tmp_path / "hub"
+    repo_dir = hub / f"models--{pup.UPSAMPLER_REPO.replace('/', '--')}"
+    monkeypatch.setattr(stt_sidecar, "_active_hf_hub_cache", lambda: hub)
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    monkeypatch.setattr(pup, "find_llama_server_binary", lambda: "/usr/bin/llama-server")
+
+    def put(
+        revision,
+        *filenames,
+        main = False,
+    ):
+        snapshot = repo_dir / "snapshots" / revision
+        snapshot.mkdir(parents = True, exist_ok = True)
+        for name in filenames:
+            (snapshot / name).write_bytes(name.encode())
+        if main:
+            (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+            (repo_dir / "refs" / "main").write_text(revision)
+        return snapshot
+
+    return put
+
+
+def test_a_cached_earlier_quant_is_used_when_the_default_is_missing(fake_hub):
+    q4 = pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    snapshot = fake_hub(_REV_A, q4, pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    assert pup.model_path() == str(snapshot / q4)
+    assert pup.mmproj_path() == str(snapshot / pup.UPSAMPLER_MMPROJ_FILE)
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID) == (
+        str(snapshot / q4),
+        str(snapshot / pup.UPSAMPLER_MMPROJ_FILE),
+    )
+    out = pup.status()
+    # Ready: the UI offers no download beside it.
+    assert (
+        out["supported"] is True and out["downloaded"] is True and out["mmproj_downloaded"] is True
+    )
+    assert out["override"] is False
+    assert out["filename"] == q4 and out["size_bytes"] == len(q4.encode())
+
+
+def test_the_default_quant_wins_over_a_cached_fallback(fake_hub):
+    fake_hub(_REV_B, pup.UPSAMPLER_MODEL_FILES["Q8_0"], pup.UPSAMPLER_MMPROJ_FILE)
+    snapshot = fake_hub(
+        _REV_A,
+        pup.UPSAMPLER_MODEL_FILE,
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"],
+        pup.UPSAMPLER_MMPROJ_FILE,
+        main = True,
+    )
+    assert pup.model_path() == str(snapshot / pup.UPSAMPLER_MODEL_FILE)
+    out = pup.status()
+    assert out["downloaded"] is True and out["filename"] == pup.UPSAMPLER_MODEL_FILE
+
+
+def test_q8_0_is_preferred_over_q4_k_m_among_fallbacks(fake_hub):
+    snapshot = fake_hub(
+        _REV_A,
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"],
+        pup.UPSAMPLER_MODEL_FILES["Q8_0"],
+        pup.UPSAMPLER_MMPROJ_FILE,
+        main = True,
+    )
+    assert pup.model_path() == str(snapshot / pup.UPSAMPLER_MODEL_FILES["Q8_0"])
+    assert pup.UPSAMPLER_MODEL_FILE_PREFERENCE == (
+        pup.UPSAMPLER_MODEL_FILE,
+        pup.UPSAMPLER_MODEL_FILES["Q8_0"],
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"],
+    )
+    assert set(pup.UPSAMPLER_MODEL_FILE_PREFERENCE) == set(pup.UPSAMPLER_MODEL_FILES.values())
+
+
+def test_a_fallback_quant_pairs_with_the_projector_at_its_own_revision(fake_hub):
+    q4 = pup.UPSAMPLER_MODEL_FILES["Q4_K_M"]
+    # The newest revision holds only the projector; the old quant and its projector sit at an older one.
+    fake_hub(_REV_B, pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    old = fake_hub(_REV_A, q4, pup.UPSAMPLER_MMPROJ_FILE)
+    assert (pup.model_path(), pup.mmproj_path()) == (
+        str(old / q4),
+        str(old / pup.UPSAMPLER_MMPROJ_FILE),
+    )
+
+
+def test_the_completion_check_of_a_pinned_download_still_wants_the_default(fake_hub):
+    # A download pins the revision it fetched; an older quant there does not complete the default's download.
+    fake_hub(_REV_A, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    assert pup._cached_download_paths(pup.UPSAMPLER_ID, revision = _REV_A) is None
+
+
+def test_nothing_cached_is_not_ready_and_downloads_the_default(fake_hub):
+    out = pup.status()
+    assert out["downloaded"] is False and out["mmproj_downloaded"] is False
+    assert out["filename"] == pup.UPSAMPLER_MODEL_FILE == "flux-3-image-klein-pup-UD-Q4_K_XL.gguf"
+    assert out["size_bytes"] == pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+    assert pup.model_path() is None and pup._cached_download_paths(pup.UPSAMPLER_ID) is None
+    spec = pup._get_download_state()._spec(pup.UPSAMPLER_ID)
+    assert (spec.model_file, spec.mmproj_file) == (
+        pup.UPSAMPLER_MODEL_FILE,
+        pup.UPSAMPLER_MMPROJ_FILE,
+    )
+
+
+def test_an_override_still_beats_a_cached_quant(fake_hub, monkeypatch, tmp_path):
+    fake_hub(_REV_A, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE, main = True)
+    local = tmp_path / "local.gguf"
+    local.write_bytes(b"x")
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, str(local))
+    assert pup.model_path() == str(local)
+    assert pup.status()["filename"] == "local.gguf" and pup.status()["override"] is True
+    # A missing override is a typo: not ready, never the cached quant instead.
+    monkeypatch.setenv(pup.ENV_MODEL_OVERRIDE, str(tmp_path / "missing.gguf"))
+    assert pup.model_path() is None
+
+
 def test_no_repo_download_beside_an_override(routes, monkeypatch):
     client, backend, saved = routes
     started = []
