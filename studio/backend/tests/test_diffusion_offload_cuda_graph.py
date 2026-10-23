@@ -316,6 +316,41 @@ def test_a_capture_refused_while_another_records_never_empties_the_cache(monkeyp
     cg.uninstall_all(handles)
 
 
+def test_a_deferred_release_still_clears_the_cublas_workspaces_before_the_next_recording(
+    monkeypatch,
+):
+    """An offloaded wrapper's release also clears the cuBLAS workspaces its recordings left on their capture stream.
+    Deferred because another thread was recording, that clear is owed with the retired pool: the next capture's entry
+    flush does it under the capture lock (no capture recording), once, before it records."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    monkeypatch.setattr(cg, "_CUBLAS_CLEAR_DUE", [False], raising = False)
+    monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 0.01)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    _two_shapes(net)
+    before = handles[0].stats["captures"]
+    _retire()
+    real = getattr(torch._C, "_cuda_clearCublasWorkspaces")
+    clears = []
+
+    def clear():
+        clears.append(cg._CAPTURE_DEPTH)
+        return real()
+
+    monkeypatch.setattr(torch._C, "_cuda_clearCublasWorkspaces", clear)
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)  # another thread is recording
+    _two_shapes(net, (12, 4))  # refused at entry: the release after it is deferred
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 0)
+    assert handles[0].stats["captures"] == before and clears == []
+    _two_shapes(net, (12, 4))
+    assert handles[0].stats["captures"] == before + 2
+    assert clears == [0]  # once, outside any recording
+    assert not cg._CUBLAS_CLEAR_DUE[0] and not _due()
+    cg.uninstall_all(handles)
+
+
 def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeypatch):
     """Another wrapper retired a pool; this wrapper's first capture is refused in _capturing (replica-side work still
     held) before anything flushes: the flush stays due for the next capture."""

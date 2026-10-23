@@ -305,6 +305,9 @@ def hold_off_capture():
 _RETIRE_LOCK = threading.Lock()
 _RETIRED_POOLS = [0, 0]  # [retirements counted, retirements flushed]
 _POOL_FLUSHES = [0]  # retired-pool flushes performed (diagnostics, tests)
+# A deferred release also owed a cuBLAS workspace clear (the offloaded recordings' capture-stream workspaces): the
+# next entry flush does it with the empty_cache, then resets it.
+_CUBLAS_CLEAR_DUE = [False]
 # How long a capture waits for another thread's recording to end before its retired-pool flush is given up: the
 # capture is then refused (the step or block runs eager) and the next one retries. Woken as soon as that recording ends.
 RETIRED_FLUSH_WAIT_S = 0.25
@@ -333,15 +336,28 @@ def _retired_pools_seen() -> Optional[int]:
 
 
 def _flush_retired_locked(seen: int) -> bool:
-    """Under ``_CAPTURE_LOCK`` with no capture recording: synchronize, flush, acknowledge up to ``seen``."""
+    """Under ``_CAPTURE_LOCK`` with no capture recording: synchronize, clear the cuBLAS workspaces a deferred release
+    owed, flush, acknowledge up to ``seen``."""
+    with _RETIRE_LOCK:
+        clear_cublas, _CUBLAS_CLEAR_DUE[0] = _CUBLAS_CLEAR_DUE[0], False
     try:
-        cuda = getattr(_torch(), "cuda", None)
+        torch = _torch()
+        cuda = getattr(torch, "cuda", None)
         if cuda is not None and cuda.is_available():
-            for step in ("synchronize", "empty_cache"):
-                call = getattr(cuda, step, None)
-                if callable(call):
-                    call()
-    except Exception:  # noqa: BLE001 - not flushed: stays due
+            sync = getattr(cuda, "synchronize", None)
+            if callable(sync):
+                sync()
+            if clear_cublas:
+                clear = getattr(getattr(torch, "_C", None), "_cuda_clearCublasWorkspaces", None)
+                if callable(clear):
+                    clear()
+            empty = getattr(cuda, "empty_cache", None)
+            if callable(empty):
+                empty()
+    except Exception:  # noqa: BLE001 - not flushed: stays due, the cuBLAS clear with it
+        if clear_cublas:
+            with _RETIRE_LOCK:
+                _CUBLAS_CLEAR_DUE[0] = True
         return False
     with _RETIRE_LOCK:
         _RETIRED_POOLS[1] = max(_RETIRED_POOLS[1], seen)
@@ -378,8 +394,8 @@ def flush_retired_pools() -> bool:
 
 def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
     """``empty_cache`` (and the cuBLAS workspaces) only when no capture is recording: either is prohibited inside
-    another thread's recording and can invalidate it. Skipped (False) then, and counted as a retired pool, so the next
-    capture's entry flush hands the segments back instead."""
+    another thread's recording and can invalidate it. Skipped (False) then, and counted as a retired pool (with the
+    cuBLAS clear owed), so the next capture's entry flush does both instead."""
     gc.collect()  # outside _CAPTURE_LOCK: a finalizer may take it
     with hold_off_capture() as safe:
         if safe:
@@ -395,6 +411,9 @@ def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
             except Exception:  # noqa: BLE001 - best effort
                 pass
             return True
+    if clear_cublas:
+        with _RETIRE_LOCK:
+            _CUBLAS_CLEAR_DUE[0] = True
     note_pool_retired()
     return False
 
