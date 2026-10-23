@@ -645,3 +645,68 @@ def test_an_option_mlx_never_receives_is_refused_without_a_fallback(rig, monkeyp
     assert ("mlx", "generate") not in rig.log
     # Neutral values still run.
     assert _txt2img(rig.engine, sampler = "default")["engine"] == "mlx"
+
+
+def test_a_load_replacing_the_model_after_the_identity_check_is_refused(rig):
+    # The identity forwarded to the engine is the one validated, not a later read that may already be B's.
+    a_identity = load_identity("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image-Turbo", "z-image")
+    entered, release = threading.Event(), threading.Event()
+    real_accepted = rig.engine._accepted_identities
+
+    def _paused(*args, **kwargs):
+        out = real_accepted(*args, **kwargs)
+        entered.set()
+        assert release.wait(5)
+        return out
+
+    rig.engine._accepted_identities = _paused
+    outcome: list = []
+
+    def _run():
+        try:
+            outcome.append(_txt2img(rig.engine, expected_load = a_identity)["engine"])
+        except Exception as exc:  # noqa: BLE001
+            outcome.append(exc)
+
+    worker = threading.Thread(target = _run)
+    worker.start()
+    assert entered.wait(5)
+    rig.engine.begin_load("someone/Other-GGUF", gguf_filename = "other-Q8_0.gguf")
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert len(outcome) == 1 and isinstance(outcome[0], DiffusionModelReplacedError), outcome
+    assert ("mlx", "generate") not in rig.log
+
+
+def test_a_superseded_fallback_never_unloads_the_new_load(rig):
+    # A new load landing before the fallback registers must not have its MLX model unloaded by it.
+    entered, release = threading.Event(), threading.Event()
+    real_fallback = rig.engine._load_fallback
+
+    def _paused(**kwargs):
+        entered.set()
+        assert release.wait(5)
+        return real_fallback(**kwargs)
+
+    rig.engine._load_fallback = _paused
+    outcome: list = []
+
+    def _run():
+        try:
+            outcome.append(_img2img(rig.engine)["engine"])
+        except RuntimeError as exc:
+            outcome.append(str(exc))
+
+    worker = threading.Thread(target = _run)
+    worker.start()
+    assert entered.wait(5)
+    rig.engine.begin_load("someone/Other-GGUF", gguf_filename = "other-Q8_0.gguf")
+    rig.log.clear()
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert outcome == [DIFFUSION_CANCELLED_MSG]
+    assert rig.log == []
+    assert rig.mlx._state is not None and rig.mlx._state.repo_id == "someone/Other-GGUF"
+    assert rig.engine.is_loaded

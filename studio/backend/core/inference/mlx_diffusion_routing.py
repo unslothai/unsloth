@@ -446,21 +446,28 @@ class RoutedMlxEngine:
             kwargs = {k: v for k, v in kwargs.items() if k in accepted}
         return kwargs
 
-    def _load_fallback(self, *, unload_mlx: bool, epoch: int) -> None:
-        """Load the diffusers copy of this model and wait for it, unloading MLX first when both do not fit."""
+    def _load_fallback(self, *, unload_mlx: bool, epoch: int) -> Any:
+        """Load the diffusers copy of this model and wait for it, unloading MLX first when both do not fit.
+        Returns the diffusers copy's identity, read while ``epoch`` was still current."""
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
 
         mlx, diffusers = self._mlx(), self._diffusers()
-        kwargs = self._diffusers_load_kwargs()
-        repo_id = kwargs.pop("repo_id")
         cancel, done = threading.Event(), threading.Event()
+        # Epoch check and registration are one step: a new load either sees this fallback in
+        # _drain_fallback (and waits for it) or this request sees the new epoch and touches nothing.
         with self._lock:
+            if self._epoch != epoch:
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             self._fallback_cancel = cancel
             self._fallback_done = done
             self._active_generate_account = current_account_id()
         dropped = False
         started = time.perf_counter()
         try:
+            kwargs = self._diffusers_load_kwargs()
+            repo_id = kwargs.pop("repo_id")
+            if cancel.is_set() or self._epoch != epoch:
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             if unload_mlx:
                 self._origin_identity = _identity_of(mlx) or self._origin_identity
                 mlx.unload()
@@ -490,11 +497,16 @@ class RoutedMlxEngine:
                     diffusers.unload()
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 time.sleep(self._poll_s)
+            identity = _identity_of(diffusers)
+            if cancel.is_set() or self._epoch != epoch:
+                diffusers.unload()
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             logger.info(
                 "mlx_routing.fallback_loaded: diffusers in %.1fs (mlx unloaded first: %s)",
                 time.perf_counter() - started,
                 dropped,
             )
+            return identity
         except BaseException:
             with self._lock:
                 self._diffusers_ours = False
@@ -517,15 +529,20 @@ class RoutedMlxEngine:
                     self._active_generate_account = None
             done.set()
 
-    def _accepted_identities(self) -> list[Any]:
-        ids = []
+    def _identity_snapshot(self) -> dict[str, Any]:
+        """Each resident engine's identity, read once: the request validates and forwards these same values."""
+        out: dict[str, Any] = {}
         if self._mlx_resident():
-            ids.append(_identity_of(self._mlx()))
+            out[ENGINE_MLX] = _identity_of(self._mlx())
         if self._diffusers_resident():
-            ids.append(_identity_of(self._diffusers()))
+            out[ENGINE_DIFFUSERS] = _identity_of(self._diffusers())
+        return {k: v for k, v in out.items() if v is not None}
+
+    def _accepted_identities(self, snapshot: Optional[dict[str, Any]] = None) -> list[Any]:
+        ids = list((self._identity_snapshot() if snapshot is None else snapshot).values())
         if self._origin_identity is not None and ids:
             ids.append(self._origin_identity)
-        return [i for i in ids if i is not None]
+        return ids
 
     def _generate(self, **kwargs: Any) -> dict[str, Any]:
         from core.inference.diffusion_families import (
@@ -559,8 +576,10 @@ class RoutedMlxEngine:
             if blocker and route.engine == ENGINE_MLX and not mlx_resident:
                 # Nothing to serve it from (no model, or one still loading): the 409, not MLX's feature refusal.
                 raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
+            snapshot: dict[str, Any] = {}
             if expected is not None:
-                accepted = self._accepted_identities()
+                snapshot = self._identity_snapshot()
+                accepted = self._accepted_identities(snapshot)
                 if accepted and expected not in accepted:
                     raise DiffusionModelReplacedError(expected, accepted[0])
             if route.load_diffusers and (mlx.load_progress() or {}).get("phase") != "ready":
@@ -577,16 +596,19 @@ class RoutedMlxEngine:
                         f"{blocker[0].upper()}{blocker[1:]} is not supported on the MLX engine, and "
                         "this install has no diffusers pipeline for the model to fall back to."
                     )
+            # The served engine's identity from the validated snapshot (or the fallback copy of that load), never
+            # a later read: a load replacing the model after the check is then refused by the engine itself.
+            own = snapshot.get(route.engine, expected) if expected is not None else None
             if route.load_diffusers:
                 logger.info("mlx_routing.fallback: %s", route.reason)
-                self._load_fallback(unload_mlx = route.unload_mlx, epoch = epoch)
+                fallback_identity = self._load_fallback(unload_mlx = route.unload_mlx, epoch = epoch)
+                if expected is not None:
+                    own = fallback_identity or expected
             engine = diffusers if route.engine == ENGINE_DIFFUSERS else mlx
             if route.engine == ENGINE_DIFFUSERS:
                 call = kwargs
             else:
                 call = {k: v for k, v in kwargs.items() if k in mlx_params}
-            # The served engine's own identity, so a load replacing it after this check is still refused there.
-            own = _identity_of(engine) if expected is not None else None
             with self._lock:
                 self._serving = route.engine
             try:
