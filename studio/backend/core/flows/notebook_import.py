@@ -16,6 +16,7 @@ import re
 from typing import Any, Optional
 
 from core.flows.examples.build_examples import COLAB_NB, notebook_template
+from core.flows.nodes.data import _REPO
 from utils.notebooks.catalog import _category
 
 MAX_NOTEBOOK_BYTES = 32 * 1024 * 1024
@@ -135,17 +136,21 @@ class _Reader(ast.NodeVisitor):
                 if isinstance(seq, int):
                     self.tune["max_seq_length"] = seq
         elif fn == "get_peft_model":
+            self.found["peft"] = True
             r = self.kw(node, "r")
             if isinstance(r, int):
                 self.tune["lora_r"] = r
         elif fn == "load_dataset" and "dataset" not in self.found:
             repo = self.kw(node, "path", 0)
-            if isinstance(repo, str) and "/" in repo:
+            # Same rule as the Hub dataset block: `imdb` and `owner/name` are both valid ids.
+            if isinstance(repo, str) and _REPO.match(repo):
                 self.found["dataset"] = repo
                 subset = self.kw(node, "name", 1)
                 self.found["subset"] = subset if isinstance(subset, str) else ""
                 split = self.kw(node, "split")
                 self.found["split"] = split if isinstance(split, str) else "train"
+                if self.kw(node, "streaming") is True:
+                    self.tune["dataset_streaming"] = True
         elif fn in _CONFIGS:
             for arg, param in _ARGS.items():
                 value = self.kw(node, arg)
@@ -219,8 +224,22 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
     if report["unsupported"]:
         return None, report
 
-    if "num_epochs" in tune and "max_steps" in tune:
-        tune.pop("num_epochs")
+    # max_steps = 0 (or below) means "train by epochs", so a positive count wins only when it is set.
+    if (tune.get("max_steps") or 0) > 0:
+        tune.pop("num_epochs", None)
+    else:
+        tune.pop("max_steps", None)
+    epochs = tune.get("num_epochs")
+    if isinstance(epochs, float) and not epochs.is_integer():
+        tune["num_epochs"] = max(1, round(epochs))
+        report["approximated"].append(
+            f"{epochs} epochs: Studio trains whole epochs, so this flow runs {tune['num_epochs']}"
+        )
+    elif isinstance(epochs, float):
+        tune["num_epochs"] = int(epochs)
+    if not found.get("peft"):
+        # No get_peft_model call: the notebook trains every weight, so the flow does too.
+        tune["training_type"] = "full"
     # TTS notebooks load through FastLanguageModel; the notebook's own name says it is audio.
     if found["task"] == "text" and _category(name) == "audio":
         found["task"] = "audio"
@@ -245,7 +264,7 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         ask = "Hello! What can you do?" if found["task"] == "text" else None,
         export = {"format": "gguf", "quant": found["gguf"]}
         if found.get("gguf")
-        else {"format": "lora"},
+        else {"format": "lora" if found.get("peft") else "merged"},
         tags = [found["task"]],
     ).doc
     for node in doc["nodes"]:

@@ -232,3 +232,39 @@ def test_new_settings_reach_the_start_request():
     assert body["vision_image_size"] == 512
     assert body["custom_format_mapping"] == {"image": "image", "text": "caption"}
     assert _start_body({"task": "embedding"})["is_embedding"] is True
+
+
+def _plain(*extra: str, peft: bool = True) -> bytes:
+    load = "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-0.6B')"
+    if peft:
+        load += "\nmodel = FastLanguageModel.get_peft_model(model, r = 8)"
+    return _nb(load, *extra)
+
+
+def test_epochs_win_when_max_steps_is_zero_and_fractions_are_reported():
+    doc, report = notebook_import.read_notebook(
+        _plain(
+            "dataset = load_dataset('imdb', split = 'train')",
+            "args = SFTConfig(max_steps = 0, num_train_epochs = 1.5)",
+        ),
+        "x.ipynb",
+    )
+    tune = _tune(doc)
+    assert "max_steps" not in tune and tune["num_epochs"] == 2
+    assert any("1.5 epochs" in line for line in report["approximated"])
+    # A single-segment Hub id is a real dataset.
+    data = next(n["params"] for n in doc["nodes"] if n["type"] == "data.hf_dataset")
+    assert data["repo"] == "imdb"
+
+
+def test_streaming_and_full_fine_tunes_carry_over():
+    doc, _ = notebook_import.read_notebook(
+        _plain("dataset = load_dataset('a/b', split = 'train', streaming = True)", peft = False),
+        "x.ipynb",
+    )
+    tune = _tune(doc)
+    assert tune["dataset_streaming"] is True and tune["training_type"] == "full"
+    export = next(n["params"] for n in doc["nodes"] if n["type"] == "train.export")
+    assert export["format"] == "merged"
+    lora, _ = notebook_import.read_notebook(_plain("dataset = load_dataset('a/b')"), "x.ipynb")
+    assert _tune(lora)["training_type"] == "lora"

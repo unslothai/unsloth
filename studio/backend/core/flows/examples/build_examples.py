@@ -1383,7 +1383,7 @@ def notebook_template(
     """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
     b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
     b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
-    b.n("tune", "train.finetune", 1, 1, training_type = "lora", **tune)
+    b.n("tune", "train.finetune", 1, 1, **{"training_type": "lora", **tune})
     b.e("data.dataset", "tune.dataset")
     b.n("metrics", "output.preview", 2, 0)
     b.e("tune.metrics", "metrics.value")
