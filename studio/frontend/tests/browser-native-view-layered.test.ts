@@ -375,6 +375,22 @@ test("a background page's popup opens in its own chat, and a page that fails to 
   releaseBackground(tabId);
 });
 
+test("a temporary page's popup in a chat off screen stays out of history", () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:saved");
+  const tabId = store.openTabIn("single:temporary", "https://worker.example/", { temporary: true }) ?? "";
+  const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+  listener?.({ payload: { kind: "newTab", tabId, url: "https://popup-temp.example/" } });
+  const popup = useBrowserStore.getState().tabs.find((tab) => {
+    const entry = currentEntry(tab);
+    return entry.kind === "web" && entry.url === "https://popup-temp.example/";
+  });
+  assert.equal(popup?.chat, "single:temporary");
+  const entry = popup && currentEntry(popup);
+  assert.equal(entry?.kind === "web" ? entry.temporary : undefined, true);
+});
+
 test("an address a local page can't go to itself is offered, not opened", async () => {
   const store = useBrowserStore.getState();
   store.closePanel();
