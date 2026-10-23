@@ -205,10 +205,15 @@ _SCALE_DEQUANT_MIN_NUMEL = 1 << 22
 
 
 def _scale_dequant_one_pass_ok(x, s, dtype):
-    # Eager NVIDIA e4m3fn only; compiled regions already fuse the torch expression.
+    # NVIDIA e4m3fn only. Compiled regions fuse the torch expression, except where Inductor cannot emit
+    # fp8e4nv (below sm89): there the expression fails to compile, so the byte kernel runs as one op.
+    if torch.compiler.is_compiling():
+        if not _fp8_kernel_unsupported(x):
+            return False
+    elif x.numel() <= _SCALE_DEQUANT_MIN_NUMEL:
+        return False
     return (
-        x.numel() > _SCALE_DEQUANT_MIN_NUMEL
-        and x.is_cuda
+        x.is_cuda
         and torch.version.hip is None
         and x.dtype == torch.float8_e4m3fn
         and dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -218,11 +223,14 @@ def _scale_dequant_one_pass_ok(x, s, dtype):
         and not (torch.is_grad_enabled() and (x.requires_grad or s.requires_grad))
         # The kernel indexes dense rows, so a transposed view must be a dense transpose.
         and (x.is_contiguous() or (_is_transposed_view(x) and x.t().is_contiguous()))
-        and not torch.compiler.is_compiling()
     )
 
 
-def _scale_dequant_one_pass(x, s, dtype):
+@_opaque_under_compile(
+    "fp8_scale_dequant",
+    lambda x, s, dtype: torch.empty_like(x, dtype = dtype),
+)
+def _scale_dequant_one_pass(x: torch.Tensor, s: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     transposed = _is_transposed_view(x)
     if transposed:
         x = x.t()
