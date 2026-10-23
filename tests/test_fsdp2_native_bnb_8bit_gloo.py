@@ -73,15 +73,15 @@ def _grads(step, device = "cpu"):
 
 def _set_grads(model, grads):
     from torch.distributed.tensor import DTensor, distribute_tensor
+
     for name, p in model.named_parameters():
         full = grads[name]
-        p.grad = (
-            distribute_tensor(full, p.device_mesh, p.placements) if isinstance(p, DTensor) else full
-        )
+        p.grad = distribute_tensor(full, p.device_mesh, p.placements) if isinstance(p, DTensor) else full
 
 
 def _locals(model):
     from torch.distributed.tensor import DTensor
+
     return {
         n: (p._local_tensor if isinstance(p, DTensor) else p).detach().clone()
         for n, p in model.named_parameters()
@@ -96,11 +96,7 @@ def _raw(optimizer, model):
     return out
 
 
-def _case_unit(
-    rank,
-    tmp,
-    device = "cpu",
-):
+def _case_unit(rank, tmp, device = "cpu"):
     import bitsandbytes as bnb
     from torch.distributed.device_mesh import init_device_mesh
 
@@ -130,12 +126,8 @@ def _case_unit(
     ref_opt = bnb.optim.AdamW8bit(ref_groups, lr = 1e-2, weight_decay = 0.01)
 
     # One GPU: bitsandbytes over the full tensors (different quantization blocks).
-    single = {
-        n: torch.nn.Parameter(getattr(model, n).full_tensor().clone())
-        if n in _SHAPES
-        else torch.nn.Parameter(getattr(model, n).detach().clone())
-        for n in local0
-    }
+    single = {n: torch.nn.Parameter(getattr(model, n).full_tensor().clone()) if n in _SHAPES else
+              torch.nn.Parameter(getattr(model, n).detach().clone()) for n in local0}
     single_opt = bnb.optim.AdamW8bit(
         [
             {"params": [single[n] for n in ("w", "b", "row")]},
@@ -148,10 +140,8 @@ def _case_unit(
     def _step(step):
         grads = _grads(step, device)
         _set_grads(model, grads)
-        local_grads = {
-            n: (p.grad._local_tensor if hasattr(p.grad, "_local_tensor") else p.grad)
-            for n, p in model.named_parameters()
-        }
+        local_grads = {n: (p.grad._local_tensor if hasattr(p.grad, "_local_tensor") else p.grad)
+                       for n, p in model.named_parameters()}
         for n, p in ref.items():
             p.grad = local_grads[n].clone()
         for n, p in single.items():
@@ -168,12 +158,13 @@ def _case_unit(
                 opt.param_groups[0]["lr"] = 2e-3
         _step(step)
     now = _locals(model)
-    res["vs_shard_bnb"] = max((now[n] - ref[n].detach()).abs().max().item() for n in ref)
+    res["vs_shard_bnb"] = max(
+        (now[n] - ref[n].detach()).abs().max().item() for n in ref
+    )
     res["moved"] = min((now[n] - local0[n]).abs().max().item() for n in ref)
     res["dtypes"] = {
         n: str(optimizer.state[getattr(model, n)].get("state1", torch.empty(0)).dtype)
-        if "state1" in optimizer.state[getattr(model, n)]
-        else "none"
+        if "state1" in optimizer.state[getattr(model, n)] else "none"
         for n in local0
     }
     res["steps"] = {n: optimizer.state[getattr(model, n)]["step"] for n in local0}
@@ -222,26 +213,91 @@ def _case_unit(
     res["after_reload_step_diff"] = max((a[n] - b[n]).abs().max().item() for n in a if a[n].numel())
 
     # A torch AdamW checkpoint (exp_avg / exp_avg_sq, tensor step) maps onto the bitsandbytes keys.
-    as_torch = {
-        "state": {
-            n: {"exp_avg": torch.zeros(2), "exp_avg_sq": torch.ones(2), "step": torch.tensor(3.0)}
-            for n in ("w",)
-        },
-        "param_groups": [],
-    }
+    as_torch = {"state": {n: {"exp_avg": torch.zeros(2), "exp_avg_sq": torch.ones(2),
+                              "step": torch.tensor(3.0)} for n in ("w",)}, "param_groups": []}
     rename_optimizer_state_for(optimizer, as_torch)
-    res["renamed"] = sorted(as_torch["state"]["w"]) + [
-        type(as_torch["state"]["w"]["step"]).__name__
-    ]
+    res["renamed"] = sorted(as_torch["state"]["w"]) + [type(as_torch["state"]["w"]["step"]).__name__]
     return res
 
 
-def _trainer_case(
-    native,
-    tmp,
-    resume_from = None,
-    max_steps = 4,
-):
+def _cpu_percentile_clipping(functional):
+    """bitsandbytes' percentile_clipping (CUDA only) in torch for the CPU ranks: the squared gradient
+    norm goes to gnorm_vec[step % 100], and the clip value is the given percentile of the history."""
+    original = functional.percentile_clipping
+
+    def percentile_clipping(grad, gnorm_vec, step, percentile = 5):
+        if grad.is_cuda:
+            return original(grad, gnorm_vec, step, percentile)
+        gnorm_vec[step % 100] = grad.float().pow(2).sum()
+        current = torch.sqrt(gnorm_vec[step % 100])
+        vals, _ = torch.sort(gnorm_vec)
+        clip = torch.sqrt(vals[percentile])
+        return current, clip, (clip / current if current > clip else 1.0)
+
+    functional.percentile_clipping = percentile_clipping
+
+
+def _case_pclip(rank, tmp, device = "cpu"):
+    """percentile_clipping = 5: bitsandbytes keeps the last 100 squared gradient norms per parameter
+    (gnorm_vec) and clips at their 5th percentile, so a resume must restore that history."""
+    import bitsandbytes as bnb
+    import bitsandbytes.optim.optimizer as bnb_optimizer
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models.fsdp2_bnb_optim import localize_bnb_optimizer
+
+    _cpu_percentile_clipping(bnb_optimizer.F)
+    native = sys.modules["unsloth.models.fsdp2_native"]
+    mesh = init_device_mesh(device, (2,))
+
+    def grads(step):
+        g = torch.Generator().manual_seed(1000 + step)
+        scale = 1.0 + (step % 7)
+        shapes = {**_SHAPES, **_REPLICATED}
+        return {n: (torch.randn(s, generator = g) * scale).to(device) for n, s in shapes.items()}
+
+    def build(model):
+        opt = bnb.optim.AdamW8bit(_groups(model), lr = 1e-3, percentile_clipping = 5)
+        localize_bnb_optimizer(opt)
+        return opt
+
+    def run(model, opt, steps):
+        for step in steps:
+            _set_grads(model, grads(step))
+            opt.step()
+            opt.zero_grad(set_to_none = True)
+
+    model = _Toy(mesh, 0)
+    optimizer = build(model)
+    run(model, optimizer, range(100))
+    path = os.path.join(tmp, "optimizer_pclip.pt")
+    native.native_save_optimizer(model, optimizer, path)
+    at_save = _locals(model)
+    run(model, optimizer, range(100, 104))
+
+    model2 = _Toy(mesh, 0)
+    with torch.no_grad():
+        for n, q in model2.named_parameters():
+            (q._local_tensor if hasattr(q, "_local_tensor") else q).copy_(at_save[n])
+    optimizer2 = build(model2)
+    native.native_load_optimizer(model2, optimizer2, path)
+    run(model2, optimizer2, range(100, 104))
+    a, b = _locals(model), _locals(model2)
+    res = {
+        "resume_diff": max((a[n] - b[n]).abs().max().item() for n in a if a[n].numel()),
+        "has_gnorm": sorted(
+            n for n, p in model.named_parameters() if "gnorm_vec" in optimizer.state[p]
+        ),
+        "gnorm_diff": max(
+            (optimizer.state[p]["gnorm_vec"] - optimizer2.state[q]["gnorm_vec"]).abs().max().item()
+            for (n, p), (_, q) in zip(model.named_parameters(), model2.named_parameters())
+            if "gnorm_vec" in optimizer.state[p]
+        ),
+    }
+    return res
+
+
+def _trainer_case(native, tmp, resume_from = None, max_steps = 4):
     from datasets import Dataset
     from transformers import Trainer, TrainingArguments
 
@@ -297,9 +353,7 @@ def _case_trainer(rank, tmp):
     ckpt = os.path.join(tmp, "out", "checkpoint-2")
     res["ckpt"] = os.path.isfile(os.path.join(ckpt, "optimizer.pt"))
     if rank == 0 and res["ckpt"]:
-        saved = torch.load(
-            os.path.join(ckpt, "optimizer.pt"), map_location = "cpu", weights_only = True
-        )
+        saved = torch.load(os.path.join(ckpt, "optimizer.pt"), map_location = "cpu", weights_only = True)
         any_state = next(iter(saved["state"].values()))
         res["saved_keys"] = sorted(any_state)
         step = any_state["step"]
@@ -333,7 +387,8 @@ def _worker(rank, world, port, out, case, tmp):
     )
     try:
         _load_native()
-        res = _case_unit(rank, tmp) if case == "unit" else _case_trainer(rank, tmp)
+        cases = {"unit": _case_unit, "trainer": _case_trainer, "pclip": _case_pclip}
+        res = cases[case](rank, tmp)
         out.put((rank, res))
     except Exception as exc:
         import traceback
@@ -345,11 +400,7 @@ def _worker(rank, world, port, out, case, tmp):
             pass
 
 
-def _run(
-    case,
-    tmp_path,
-    timeout = 300,
-):
+def _run(case, tmp_path, timeout = 300):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -367,9 +418,7 @@ def _run(
             if time.time() > deadline:
                 for p in procs.processes:
                     p.kill()
-                pytest.fail(
-                    f"{case}: the ranks did not finish within {timeout} s (hung collective)"
-                )
+                pytest.fail(f"{case}: the ranks did not finish within {timeout} s (hung collective)")
     except mp.ProcessExitedException as exc:
         pytest.fail(f"{case}: a rank died ({exc})")
     results = {}
@@ -396,14 +445,9 @@ def test_local_shard_bnb_matches_shard_bnb_and_reloads_exactly(tmp_path):
         assert r["steps"] == {n: 3 for n in r["steps"]}, r
         assert r["full_keys"] == ["state1", "state2", "step"], r
         assert r["full_dtype"] == "torch.float32", r
-        assert r["full_shapes"] == {
-            "w": [96, 64],
-            "b": [96],
-            "row": [1, 5000],
-            "odd": [3, 1000],
-            "mis": [5, 1000],
-            "rep": [4096],
-        }, r
+        assert r["full_shapes"] == {"w": [96, 64], "b": [96], "row": [1, 5000],
+                                    "odd": [3, 1000], "mis": [5, 1000],
+                                    "rep": [4096]}, r
         assert r["reload_mismatch"] == [], (rank, r["reload_mismatch"])
         assert r["lr_after_reload"] == [2e-3, 5e-3], r
         assert r["after_reload_step_diff"] == 0.0, (rank, r)
@@ -432,3 +476,21 @@ def test_trainer_adamw_8bit_keeps_bnb_state_and_resumes(tmp_path):
         assert r["ckpt"] and r["resume_steps"] == 4, r
         assert r["resume_diff"] == 0.0, (rank, r)
     assert results[0]["saved_keys"] == ["state1", "state2", "step"], results[0]
+
+
+def test_percentile_clipping_history_survives_resume(tmp_path):
+    bnb = pytest.importorskip("bitsandbytes")
+    import inspect
+
+    if "percentile_clipping" not in inspect.signature(bnb.optim.AdamW8bit.__init__).parameters:
+        pytest.skip("this bitsandbytes has no percentile_clipping")
+    probe = torch.nn.Parameter(torch.zeros(8))
+    probe.grad = torch.ones(8)
+    try:
+        bnb.optim.AdamW8bit([probe], percentile_clipping = 5, min_8bit_size = 0).step()
+    except RuntimeError as exc:  # bitsandbytes <= 0.48: 8-bit kernels are CUDA only
+        pytest.skip(f"this bitsandbytes cannot step 8-bit state on the CPU ({str(exc)[:60]})")
+    for rank, r in _run("pclip", tmp_path).items():
+        assert r["has_gnorm"], (rank, r)
+        assert r["gnorm_diff"] == 0.0, (rank, r)
+        assert r["resume_diff"] == 0.0, (rank, r)

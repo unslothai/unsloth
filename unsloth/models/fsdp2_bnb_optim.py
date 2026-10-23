@@ -36,6 +36,9 @@ __all__ = [
 _BLOCKSIZE = 256  # bitsandbytes Optimizer2State 8-bit blockwise state block size
 _FLAG = "_unsloth_fsdp2_local_shards"
 _STATE_KEYS = ("state1", "state2")
+# Per-parameter history vectors bitsandbytes keeps next to the moments: gnorm_vec (percentile_clipping
+# < 100: the last 100 squared gradient norms, of this rank's shard) and unorm_vec (max_unorm > 0).
+_AUX_KEYS = {"gnorm_vec": 100, "unorm_vec": 1}
 _TORCH_ADAM_KEYS = {"state1": "exp_avg", "state2": "exp_avg_sq"}
 
 
@@ -228,10 +231,47 @@ class _LocalShardMixin:
             return None
         return super().prefetch_state(p)
 
-    def _export_state(self, p, raw):
+    def _aux_keys(self, group, gindex, pindex):
+        """The history vectors bitsandbytes allocates for this parameter (the same on every rank)."""
+        config = self.get_config(gindex, pindex, group)
+        keys = []
+        if config.get("percentile_clipping", 100) < 100:
+            keys.append("gnorm_vec")
+        if config.get("max_unorm", 0.0) > 0.0:
+            keys.append("unorm_vec")
+        return keys
+
+    def _export_aux(self, p, raw, keys, out):
+        """Each rank's history vectors for a DTensor parameter, as one Shard(0) DTensor of shape
+        (world * n,) over the parameter's mesh, so the full checkpoint holds every rank's vector and a
+        same-world-size resume gets its own back; a replicated parameter's vector is plain."""
+        DTensor = _dtensor_class()
+        local = _local(p, DTensor)
+        for key in keys:
+            n = _AUX_KEYS[key]
+            device = (local if local is not None else p).device
+            value = raw.get(key)
+            if value is None:  # an empty shard never ran init_state
+                value = torch.zeros((n,), dtype = torch.float32, device = device)
+            value = value.detach().to(device = device, dtype = torch.float32).reshape(n).clone()
+            if local is not None:
+                mesh = p.device_mesh
+                if mesh.ndim != 1:
+                    continue  # not produced by native FSDP2 (1-D mesh); resumes from zeros
+                from torch.distributed.tensor import Shard
+
+                value = DTensor.from_local(
+                    value, mesh, [Shard(0)], run_check = False, shape = (mesh.size() * n,), stride = (1,)
+                )
+            out[key] = value
+
+    def _export_state(self, p, raw, slot = None):
         DTensor = _dtensor_class()
         local = _local(p, DTensor)
         out = {"step": int(raw.get("step", 0))}
+        if slot is not None:
+            group, gindex, pindex = slot
+            self._export_aux(p, raw, self._aux_keys(group, gindex, pindex), out)
         for key in _STATE_KEYS:
             if key in raw:
                 value = _dequantize(raw, key, (local if local is not None else p).device)
@@ -254,9 +294,13 @@ class _LocalShardMixin:
     def state_dict(self):
         """float32 state1 / state2 (DTensors for DTensor parameters) and an int step per parameter."""
         state_dict = torch.optim.Optimizer.state_dict(self)
-        params = [p for group in self.param_groups for p in group["params"]]
+        slots = [
+            (p, (group, gindex, pindex))
+            for gindex, group in enumerate(self.param_groups)
+            for pindex, p in enumerate(group["params"])
+        ]
         state_dict["state"] = {
-            index: self._export_state(params[index], raw)
+            index: self._export_state(slots[index][0], raw, slots[index][1])
             for index, raw in state_dict["state"].items()
         }
         return state_dict
@@ -284,6 +328,13 @@ class _LocalShardMixin:
                 _quantize_into(value, raw[f"qmap{index}"], target, raw[f"absmax{index}"])
             else:
                 target.copy_(value.to(device = target.device, dtype = target.dtype))
+        for key in _AUX_KEYS:
+            value = saved.get(key)
+            if value is None or key not in raw:
+                continue
+            value = _local_grad(value, DTensor)
+            if value.numel() == raw[key].numel():  # another world size: the vector starts fresh
+                raw[key].copy_(value.reshape(raw[key].shape).to(raw[key].device, raw[key].dtype))
 
     def load_state_dict(self, state_dict, *args, **kwargs):
         """Inverse of state_dict(); also reads exp_avg / exp_avg_sq (a torch Adam checkpoint)."""
