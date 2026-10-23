@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFilesForModel, readImageComponents, rememberImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, recalledComponentFiles, rememberImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -1894,16 +1894,16 @@ export function ImagesPage({
   // The fields start on the remembered model's files, and componentFieldsOwner holds what was filled in or loaded
   // last: fields that still match it are not the user's edit, so a pick may replace them.
   const [initialComponents] = useState<ImageComponentFiles>(() =>
-    rememberedModel
-      ? (readImageComponents(rememberedModel) ?? {
-          textEncoderFiles: rememberedModel.textEncoderFiles,
-          vaeFile: rememberedModel.vaeFile,
-        })
-      : {},
+    rememberedModel ? recalledComponentFiles(rememberedModel) : {},
   );
   const componentFieldsOwner = useRef(initialComponents);
   const [textEncoderFiles, setTextEncoderFiles] = useState((initialComponents.textEncoderFiles ?? []).join("\n"));
   const [vaeFile, setVaeFile] = useState(initialComponents.vaeFile ?? "");
+  // What the fields show, for the load poll, which outlives the render that started it.
+  const componentFieldsShown = useRef(initialComponents);
+  useEffect(() => {
+    componentFieldsShown.current = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
+  }, [textEncoderFiles, vaeFile]);
   const pickComponentFiles = useCallback(
     (model: ImageModelKey): ImageComponentFiles => {
       const typed = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
@@ -3427,7 +3427,7 @@ export function ImagesPage({
           setRememberedModel(remembered);
           const files = lastLoad.current.fieldFiles ?? lastLoad.current;
           rememberImageComponents(lastLoad.current, files);
-          componentFieldsOwner.current = files;
+          componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current);
         }
         setBusy(null);
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
@@ -3879,7 +3879,8 @@ export function ImagesPage({
       const retryPick = pickSeq.current;
       const retryOversized = retryWhileCurrent(
         () => retryPick === pickSeq.current && startLoad === loadSeq.current,
-        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+        // The same pick, not the stripped request: a native load drops the files again, and fieldFiles keeps them.
+        () => void retryLoadRef.current?.(repoId, opts, { ...picked, allow_oversized_load: true }),
       );
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
@@ -5770,6 +5771,8 @@ export function ImagesPage({
       // "Generate anyway" on an unloaded model: the retry's finally clears the one-shot before this runs.
       allowOversized: oversizedOnce.current,
     };
+    // The per-model entry, which keeps the files a native load stripped from the slot, so a success keeps it too.
+    const recalled = recalledComponentFiles(rememberedModel);
     const started = await handleLoad(
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
@@ -5778,8 +5781,8 @@ export function ImagesPage({
         ...currentLoadAdvanced(rememberedModel.repoId, false, true),
         family_override: rememberedModel.familyOverride,
         // The recalled build's own encoder / VAE files, not whatever the fields hold now.
-        text_encoder_file: rememberedModel.textEncoderFiles,
-        vae_file: rememberedModel.vaeFile,
+        text_encoder_file: recalled.textEncoderFiles,
+        vae_file: recalled.vaeFile,
       },
     );
     if (!started) pendingRecalledGeneration.current = null;

@@ -9,6 +9,7 @@ import {
   componentFilesMatch,
   matchesRememberedModel,
   readImageModel,
+  recalledComponentFiles,
   rememberImageModel,
 } from "../src/features/images/image-model-recall.ts";
 import { splitComponentFileList } from "../src/features/images/component-files.ts";
@@ -64,6 +65,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
       textEncoderFiles: "",
       vaeFile: "",
       splitComponentFileList,
+      recalledComponentFiles,
       busy: null,
       external: null,
       imagePresets: { hydrated: true },

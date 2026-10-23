@@ -5,9 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 import {
+  componentFieldsOwnerAfterLoad,
   componentFilesForModel,
   readImageComponents,
   readImageModel,
+  recalledComponentFiles,
   rememberImageComponents,
   rememberImageModel,
   sameComponentFiles,
@@ -128,7 +130,7 @@ test("a successful load stores the requested files per model and the page starts
   );
   // The requested files, not the load's: the native engine drops them from the request.
   assert.match(source, /const fieldFiles = componentFileFields\(opts\.kind, picked\.text_encoder_file, picked\.vae_file\);/);
-  assert.match(source, /readImageComponents\(rememberedModel\)/);
+  assert.match(source, /recalledComponentFiles\(rememberedModel\)/);
   // Every load pick routes through the prefill; a download-only pick and a staged snapshot keep theirs.
   assert.match(source, /downloadSnapshot \|\| downloadOnly \? null : pickComponentFiles\(\{ repoId, \.\.\.opts \}\)/);
 });
@@ -258,4 +260,43 @@ test("a Load-mode footprint plans the shown model with its own files, a Download
   // A download-only pick sends the fields as they are, so its footprint does too.
   const download = await footprint("download");
   assert.deepEqual(download.text_encoder_file, zFiles.textEncoderFiles);
+});
+
+test("a recalled model's files come from the per-model map, the last-model slot only as a fallback", () => {
+  store.clear();
+  // A native (sd_cpp) load strips the files from the request, so the slot holds none while the map keeps them.
+  rememberImageComponents(zImage, zFiles);
+  assert.deepEqual(recalledComponentFiles({ ...zImage }), zFiles);
+  // An entry an older build never wrote (or one evicted from the map) falls back to the slot.
+  assert.deepEqual(recalledComponentFiles({ ...flux, vaeFile: "ae.safetensors" }), { vaeFile: "ae.safetensors" });
+  assert.deepEqual(recalledComponentFiles({ ...flux }), {});
+
+  const source = readSrc("features/images/images-page.tsx");
+  const recall = source.slice(source.indexOf("const handleGenerateWithRecall = useCallback"));
+  const pinnedFiles = recall.slice(0, recall.indexOf("if (!started) pendingRecalledGeneration.current = null;"));
+  // The recalled load pins the map's files, so its success does not erase the entry the native load left.
+  assert.match(pinnedFiles, /const recalled = recalledComponentFiles\(rememberedModel\);/);
+  assert.match(pinnedFiles, /text_encoder_file: recalled\.textEncoderFiles,\s*vae_file: recalled\.vaeFile,/);
+  assert.match(source, /useState<ImageComponentFiles>\(\(\) =>\s*rememberedModel \? recalledComponentFiles\(rememberedModel\) : \{\},/);
+});
+
+test("a finished load owns the fields only while they show its files", () => {
+  // Typed paths that loaded become that model's, so the next pick may replace them.
+  assert.deepEqual(componentFieldsOwnerAfterLoad(zFiles, zFiles, {}), zFiles);
+  // An adapter deploy (a pipeline, which takes no files) or a recalled generation never touched the fields:
+  // they stay with the model that filled them, so a later pick still swaps them out instead of sending them on.
+  assert.deepEqual(componentFieldsOwnerAfterLoad(zFiles, {}, zFiles), zFiles);
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(
+    source,
+    /componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(componentFieldsShown\.current, files, componentFieldsOwner\.current\);/,
+  );
+});
+
+test("a Load anyway retry keeps the requested files, which a native load strips from what it sends", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const start = source.indexOf("const retryOversized = retryWhileCurrent(");
+  const retry = source.slice(start, source.indexOf("lastLoadAttempt.current = {", start));
+  // The retry re-runs the same pick: nativeLoadAdvanced strips the same fields again, and fieldFiles stays intact.
+  assert.match(retry, /retryLoadRef\.current\?\.\(repoId, opts, \{ \.\.\.picked, allow_oversized_load: true \}\)/);
 });

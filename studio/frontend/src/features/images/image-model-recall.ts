@@ -161,6 +161,22 @@ export function componentFilesForModel(
   return { files: readImageComponents(model) ?? {}, replaced: true };
 }
 
+/** The files a recalled model loads with: its per-model entry (which keeps what a native load strips from the
+ *  request), else the last-model slot's, which an older build or an evicted entry leaves as the only record. */
+export function recalledComponentFiles(model: RememberedImageModel): ImageComponentFiles {
+  return readImageComponents(model) ?? cleanComponentFiles(model);
+}
+
+/** Who owns the fields after a load finished: that load, only while they show its files. A load that never touched
+ *  them (an adapter deploy, a recalled generation) leaves them with the model that filled them. */
+export function componentFieldsOwnerAfterLoad(
+  shown: ImageComponentFiles,
+  loaded: ImageComponentFiles,
+  owner: ImageComponentFiles,
+): ImageComponentFiles {
+  return sameComponentFiles(shown, loaded) ? loaded : owner;
+}
+
 /** Store the paths a load succeeded with; a load with none forgets the model's entry. */
 export function rememberImageComponents(model: ImageModelKey, files: ImageComponentFiles): void {
   const key = componentsKey(model);
