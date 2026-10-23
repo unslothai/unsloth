@@ -52160,6 +52160,18 @@ async def load_diffusion_model_gated(
             def _acquire_and_begin():
                 # Before the acquire evicts chat for a load nobody wants any more.
                 raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+                admitted = []
+
+                def _admit():
+                    # Under the arbiter lock, before any eviction. The token's lock is then held
+                    # through the registration, so a cancel lands before this check (chat stays
+                    # loaded) or after the load is registered (the engine unload stops it).
+                    if preflight is None:
+                        return
+                    preflight.lock.acquire()
+                    admitted.append(True)
+                    raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
+
                 sink_token = eviction_sink.set(evicted_slots)
                 try:
                     with _diffusion_training_admission():
@@ -52168,9 +52180,12 @@ async def load_diffusion_model_gated(
                             guarded_media_begin(
                                 DIFFUSION, multi_model_mode, media_names, _begin_load
                             ),
+                            admit = _admit,
                             **fit_kwargs,
                         )
                 finally:
+                    if admitted:
+                        preflight.lock.release()
                     eviction_sink.reset(sink_token)
 
             from core.inference.chat_swap_kv import acquire_then_close, save_chat_kv_before_swap

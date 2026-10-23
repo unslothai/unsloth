@@ -1279,8 +1279,14 @@ def _force_engine(monkeypatch, backend, *, engine_name, device):
     )
     acquired: list = []
 
-    def _fake_acquire(role, register = None):
+    def _fake_acquire(
+        role,
+        register = None,
+        admit = None,
+    ):
         acquired.append(role)
+        if admit is not None:
+            admit()
         return register() if register is not None else None
 
     monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)

@@ -623,3 +623,45 @@ def test_a_cancelled_preflight_stops_before_the_native_video_unload():
     assert src.index("raise_if_load_cancelled(") < src.index(
         "_unload_native_video_sharing_the_sd_cpp_tree"
     )
+
+
+def test_an_unload_while_the_acquire_waits_never_evicts_chat(
+    client, env, monkeypatch, healthy_diffusers
+):
+    # The load passed its own cancel checks and waits for the arbiter (training admission, a busy
+    # lock). A Cancel then must stop it at admission, before chat is evicted for it.
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    monkeypatch.setattr(cs, "_preparing", {})
+    entered, gate = threading.Event(), threading.Event()
+    real_acquire_for = arb.acquire_for
+
+    def _waiting_acquire_for(*args, **kwargs):
+        if args and args[0] == arb.DIFFUSION:
+            entered.set()
+            gate.wait(10)
+        return real_acquire_for(*args, **kwargs)
+
+    monkeypatch.setattr(arb, "acquire_for", _waiting_acquire_for)
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        stopped = client.post(f"{base}/unload")
+    finally:
+        gate.set()
+    poster.join(10)
+    assert not poster.is_alive()
+    assert stopped.status_code == 200
+    resp = answer["resp"]
+    assert resp.status_code == 409 and resp.json()["detail"] == "Diffusion load was cancelled."
+    assert client.get(f"{base}/status").json()["loaded"] is False
+    assert (
+        not [c for c in env.calls if c[0] == "evict-chat"]
+        and env.is_loaded
+        and arb._owner == arb.CHAT
+    )
+    assert cs._preparing == {}

@@ -1165,7 +1165,7 @@ def test_the_load_route_takes_the_gpu_arbiter_for_mlx_on_a_cpu_torch_host(monkey
     monkeypatch.setattr("routes.inference._selected_gpu_ordinal", _no_ordinal)
     calls = []
     monkeypatch.setattr(
-        arbiter, "acquire_for_request", lambda owner, fn: calls.append("acquire") or fn()
+        arbiter, "acquire_for_request", lambda owner, fn, **_: calls.append("acquire") or fn()
     )
     monkeypatch.setattr(arbiter, "release", lambda owner: calls.append("release"))
     asyncio.run(
