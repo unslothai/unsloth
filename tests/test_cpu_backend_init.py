@@ -192,3 +192,25 @@ def test_cpu_backend_query_only_reads_an_already_imported_zoo(monkeypatch):
     )
     assert query("cpu_backend_forced") is True
     assert query("cpu_backend_allowed") is False  # an older zoo without the function
+
+
+@pytest.mark.parametrize("entry", ["studio/backend/main.py", "studio/backend/run.py"])
+def test_studio_keeps_training_off_on_cpu_only_hosts(entry):
+    """Studio / Desktop stay chat-only without a GPU: both entry points opt out of the CPU training backend
+    at module level, before anything can import unsloth, and spawned training workers inherit it."""
+    tree = ast.parse((_ROOT / entry).read_text(encoding = "utf-8"))
+    opt_out = first_unsloth_import = None
+    for node in tree.body:
+        line = ast.unparse(node)
+        if opt_out is None and "UNSLOTH_DISABLE_CPU_FALLBACK" in line and "'1'" in line:
+            opt_out = node.lineno
+        if first_unsloth_import is None and isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = (
+                [a.name for a in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+            )
+            if any(n == "unsloth" or n.startswith("unsloth.") for n in names):
+                first_unsloth_import = node.lineno
+    assert opt_out is not None, f"{entry} no longer sets UNSLOTH_DISABLE_CPU_FALLBACK=1"
+    assert first_unsloth_import is None or opt_out < first_unsloth_import
