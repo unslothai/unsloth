@@ -100,6 +100,40 @@ def test_streamed_frames_are_the_exported_frames(patch, tmp_path):
     assert "decode" not in vars(pipe.vae) and not pipe.vae.decoder._forward_hooks
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_a_compiled_decode_runs_the_chunk_hook_as_one_eager_island(device):
+    """UNSLOTH_DIFFUSION_COMPILE_VAE=1 compiles ``vae.decode`` (fullgraph=False, dynamic=True): Dynamo must not trace
+    into the hook's thread, queue and CUDA stream code, and the streamed frames are still the exported ones."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    from torch._dynamo.utils import counters
+
+    torch._dynamo.reset()
+    counters.clear()
+    pipe = _Pipe(_vae().to(device))
+    z = torch.randn(1, 4, 4, 8, 8, device = device)
+    with torch.inference_mode():
+        reference = pipe.video_processor.postprocess_video(
+            pipe.vae.decode(z, return_dict = False)[0], output_type = "np"
+        )[0]
+    pipe.vae.decode = torch.compile(
+        pipe.vae.decode, backend = "eager", fullgraph = False, dynamic = True
+    )
+    try:
+        for _ in range(2):
+            session = vse.StreamEncode(pipe.vae, pipe.video_processor, 8)
+            frames = _render(pipe, session, z)
+            assert len(session.chunks) == 4
+            assert np.array_equal(frames.cpu().numpy(), (reference * 255).round().astype(np.uint8))
+            assert session.take(frames, 8) is not None
+        reasons = {k.splitlines()[0] for k in counters["graph_break"]}
+        assert all("torch.compiler.disable" in r for r in reasons), reasons
+        assert sum(counters["graph_break"].values()) <= 2
+    finally:
+        del pipe.vae.decode
+        torch._dynamo.reset()
+
+
 def test_tiled_decode_falls_back():
     vae = _vae()
     vae.enable_tiling(tile_sample_min_height = 32, tile_sample_min_width = 32)
@@ -237,3 +271,43 @@ def test_a_failed_final_flush_falls_back_without_hanging(monkeypatch):
     assert result["data"] is None
     session.close()
     assert not os.path.exists(session.path)
+
+
+def test_rocm_bf16_decode_streams_the_exported_frames(monkeypatch, tmp_path):
+    """ROCm gfx11 / gfx12 decode the Wan VAE in bf16 by default and widen the result to fp32: the streamed chunks
+    must be widened the same way, or the session falls back ("frames differ") on every clip."""
+    from types import SimpleNamespace
+
+    from core.inference.diffusion_device import install_rocm_vae_bf16_decode
+
+    monkeypatch.setenv(
+        "UNSLOTH_VIDEO_VAE_BF16_DECODE", "1"
+    )  # forced: the CPU stands in for the ROCm card
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    for patch, outer in ((False, False), (True, False), (False, True), (True, True)):
+        pipe = _Pipe(_vae(patch))
+        target = SimpleNamespace(device = "cuda", backend = "rocm", dtype = torch.bfloat16)
+        assert install_rocm_vae_bf16_decode(pipe, target) == "weights"
+        if outer:
+            # Studio's default video load wraps the bf16 decode again (video_vae_untiled's untiled-when-fits layer):
+            # the outer function carries none of the inner wrapper's attributes.
+            inner = pipe.vae.decode
+
+            def untiled_when_fits(
+                *args,
+                _inner = inner,
+                **kwargs,
+            ):
+                return _inner(*args, **kwargs)
+
+            pipe.vae.decode = untiled_when_fits
+        assert pipe.vae.decoder.conv_in.weight.dtype == torch.bfloat16
+        z = torch.randn(1, 4, 4, 8, 8)
+        session = vse.StreamEncode(pipe.vae, pipe.video_processor, 8)
+        frames = _render(pipe, session, z)
+        assert len(session.chunks) == 4 and len(frames) == 13
+        before = vse.STATS["streamed"]
+        data = session.take(frames, 8)
+        assert data is not None, vse.STATS["last"]
+        assert vse.STATS["streamed"] == before + 1
+        assert len(_mp4_frames(data, tmp_path)) == 13

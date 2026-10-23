@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// NPU context settings must work before loading and when reloading.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -36,12 +35,10 @@ test("NPU run settings pin customContextLength and offer nothing FastFlowLM igno
   assert.match(configPage, /const targetIsNpu = isNpuModelId\(target\.id\);/);
   assert.match(configPage, /const pinsContextLength = targetIsMlx \|\| targetIsNpu;/);
   assert.match(configPage, /contextPinPatch\(value, pinsContextLength\)/);
-  // Both edit paths must write customContextLength.
   const writers = configPage.match(/contextPinPatch\(/g) ?? [];
   const npuAware = configPage.match(/contextPinPatch\(\w+, pinsContextLength\)/g) ?? [];
   assert.ok(writers.length > 0);
   assert.equal(npuAware.length, writers.length);
   assert.match(configPage, /!target\.isGguf && !targetIsMlx && !targetIsNpu && /);
-  // Leave unset context lengths to FastFlowLM.
   assert.match(configPage, /target\.isGguf \|\| pinsContextLength\s+\? effectiveRuntimeConfig/);
 });

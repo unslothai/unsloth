@@ -471,6 +471,278 @@ def _case_dcp_bnb(rank, world_size, m):
     return out
 
 
+def _nf4_model(nested = False, device = "cpu"):
+    bnb = pytest.importorskip("bitsandbytes")
+
+    def lin(seed):
+        torch.manual_seed(seed)
+        layer = bnb.nn.Linear4bit(
+            128,
+            96,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            compress_statistics = nested,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+        )
+        layer.weight = bnb.nn.Params4bit(
+            torch.randn(96, 128) * 0.05,
+            requires_grad = False,
+            compress_statistics = nested,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            module = layer,
+        )
+        return layer.to(device)
+
+    return torch.nn.Sequential(lin(0), lin(1))
+
+
+def _case_gather_4bit_offload(rank, world_size, m):
+    """A save that only writes the packed 4-bit bytes (`offload_4bit`) gets them and a copy of their
+    QuantState on the CPU; the merge path (default) keeps them where they are. On CPU ranks `.cpu()`
+    is a no-op, so the calls are recorded."""
+    q = _load("fsdp2_qlora")
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    model = _nf4_model()
+    reference = {k: v.clone() for k, v in model.state_dict().items()}
+    q.prepare_fsdp2_qlora(model)
+    mesh = init_device_mesh("cpu", (world_size,))
+    for layer in model:
+        fully_shard(layer, mesh = mesh)
+    fully_shard(model, mesh = mesh)
+    live = [layer.weight.quant_state for layer in model]
+    live_absmax = [s.absmax for s in live]
+    original_cpu = torch.Tensor.cpu
+    moved = []
+
+    def recording_cpu(self, *args, **kwargs):
+        moved.append((tuple(self.shape), self.dtype))
+        return original_cpu(self, *args, **kwargs)
+
+    out = {}
+    for offload_4bit in (False, True):
+        moved.clear()
+        torch.Tensor.cpu = recording_cpu
+        try:
+            kwargs = {"offload_4bit": True} if offload_4bit else {}
+            with m.fsdp2_gathered(model, **kwargs) as writer:
+                torch.Tensor.cpu = original_cpu
+                if writer:
+                    states = [layer.weight.quant_state for layer in model]
+                    sd = model.state_dict()
+                    out[offload_4bit] = dict(
+                        # The packed bytes are the only (n, 1) tensors gathered here.
+                        packed_moved = sum(len(shape) == 2 and shape[-1] == 1 for shape, _ in moved),
+                        own_state = [s is not l for s, l in zip(states, live)],
+                        state_cpu = [s.absmax.device.type == "cpu" for s in states],
+                        same_keys = sorted(sd) == sorted(reference),
+                        same_bytes = all(
+                            torch.equal(
+                                sd[k].reshape(-1).view(torch.uint8),
+                                reference[k].reshape(-1).view(torch.uint8),
+                            )
+                            if isinstance(sd[k], torch.Tensor)
+                            else sd[k] == reference[k]
+                            for k in reference
+                        ),
+                    )
+        finally:
+            torch.Tensor.cpu = original_cpu
+    # The live QuantState is untouched (same object, same tensors).
+    out["live_kept"] = all(
+        layer.weight.quant_state is s and s.absmax is a
+        for layer, s, a in zip(model, live, live_absmax)
+    )
+    return out
+
+
+def _case_dcp_quant_state(rank, world_size, m):
+    """A full DCP load restores the QuantState it saved, not just the packed bytes, and refuses one
+    that does not fit the model."""
+    q = _load("fsdp2_qlora")
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    out = {}
+    for nested in (False, True):
+        model = _nf4_model(nested)
+        q.prepare_fsdp2_qlora(model)
+        mesh = init_device_mesh("cpu", (world_size,))
+        for layer in model:
+            fully_shard(layer, mesh = mesh)
+        fully_shard(model, mesh = mesh)
+        m.install_dcp_bnb_state_dict()
+        save_opts = StateDictOptions(full_state_dict = True)  # every rank gets the full dict
+        saved = {
+            k: v.clone() for k, v in dcp.get_model_state_dict(model, options = save_opts).items()
+        }
+        states = [layer.weight.quant_state for layer in model]
+        before = [s.absmax.clone() for s in states]
+        results = {}
+        for broadcast in (False, True):
+            for s in states:
+                s.absmax.mul_(2)  # a requantized / differently initialized base
+            options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = broadcast)
+            payload = saved if (rank == 0 or not broadcast) else {}
+            dcp.set_model_state_dict(model, payload, options = options)
+            results[broadcast] = all(torch.equal(s.absmax, b) for s, b in zip(states, before))
+        out[f"restored_nested_{nested}"] = results
+        bad = dict(saved)
+        key = next(k for k in bad if k.endswith("weight.absmax"))
+        bad[key] = bad[key][:-1].clone()
+        try:
+            dcp.set_model_state_dict(model, bad, options = StateDictOptions(full_state_dict = True))
+            out[f"mismatch_nested_{nested}"] = "loaded"
+        except ValueError as error:
+            out[f"mismatch_nested_{nested}"] = "ValueError" if "4-bit" in str(error) else str(error)
+    return out
+
+
+def _sharded_nf4(
+    world_size,
+    m,
+    device = "cpu",
+):
+    q = _load("fsdp2_qlora")
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    model = _nf4_model(device = device)
+    q.prepare_fsdp2_qlora(model)
+    mesh = init_device_mesh(device.split(":")[0], (world_size,))
+    for layer in model:
+        fully_shard(layer, mesh = mesh)
+    fully_shard(model, mesh = mesh)
+    m.install_dcp_bnb_state_dict()
+    return model
+
+
+def _legacy_and_mismatched_loads(rank, model, saved, out):
+    """Layer 0 saved without its QuantState entries (a checkpoint from before they were saved): with
+    the live packed bytes it loads, keeps the live QuantState and dequantizes to the live weights;
+    with other packed bytes it raises. Both with and without broadcast_from_rank0."""
+    from bitsandbytes.functional import QuantState, dequantize_4bit
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    def dequantized(state_dict):
+        stats = {
+            k[len("0.weight.") :]: v for k, v in state_dict.items() if k.startswith("0.weight.")
+        }
+        state = QuantState.from_dict(stats, device = "cpu")
+        packed = state_dict["0.weight"].cpu().reshape(-1, 1)
+        state.absmax, state.code = state.absmax.cpu(), state.code.cpu()
+        return dequantize_4bit(packed, state).float()
+
+    reference = dequantized({k: v.cpu() for k, v in saved.items()})
+    live_absmax = model[0].weight.quant_state.absmax.clone()
+    legacy = {k: v for k, v in saved.items() if not k.startswith("0.weight.")}
+    mismatched = dict(legacy)
+    mismatched["0.weight"] = saved["1.weight"].clone()  # same shape, other bytes
+    full = StateDictOptions(full_state_dict = True)  # every rank gets the full dict
+    for broadcast in (False, True):
+        options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = broadcast)
+        try:
+            dcp.set_model_state_dict(
+                model, legacy if (rank == 0 or not broadcast) else {}, options = options
+            )
+            after = dcp.get_model_state_dict(model, options = full)
+            out[f"legacy_{broadcast}"] = torch.equal(
+                model[0].weight.quant_state.absmax, live_absmax
+            ) and torch.equal(dequantized(after), reference)
+        except Exception as error:
+            out[f"legacy_{broadcast}"] = f"{type(error).__name__}: {error}"
+        try:
+            dcp.set_model_state_dict(
+                model, mismatched if (rank == 0 or not broadcast) else {}, options = options
+            )
+            out[f"mismatch_{broadcast}"] = "loaded"
+        except ValueError as error:
+            out[f"mismatch_{broadcast}"] = (
+                "ValueError" if "`0.weight`" in str(error) else str(error)
+            )
+
+
+def _case_dcp_quant_state_missing(rank, world_size, m):
+    """A full DCP state dict holding a packed 4-bit weight but none of its QuantState entries loads
+    only when the bytes are the live ones (older checkpoints of a frozen base); other bytes would be
+    paired with the live scales and must not load. One without the packed weight still loads.
+    The broadcast_from_rank0 presence check must not send a CPU tensor through the process group
+    (NCCL rejects those): with tensor broadcasts of CPU tensors refused, the restore still works."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    import torch.distributed as dist
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    model = _sharded_nf4(world_size, m)
+    full = StateDictOptions(full_state_dict = True)
+    saved = {k: v.clone() for k, v in dcp.get_model_state_dict(model, options = full).items()}
+    out = {}
+    _legacy_and_mismatched_loads(rank, model, saved, out)
+    stripped = {k: v for k, v in saved.items() if not k.startswith("0.weight.")}
+    # No packed weight and no QuantState for layer 0: nothing of it is loaded, so nothing to refuse.
+    no_weight = {k: v for k, v in stripped.items() if k != "0.weight"}
+    try:
+        dcp.set_model_state_dict(
+            model, no_weight, options = StateDictOptions(full_state_dict = True, strict = False)
+        )
+        out["no_weight"] = "loaded"
+    except Exception as error:
+        out["no_weight"] = f"{type(error).__name__}: {error}"
+
+    # NCCL-like group: a tensor collective on a CPU tensor fails. Only the restore runs under it.
+    states = [layer.weight.quant_state for layer in model]
+    before = [s.absmax.clone() for s in states]
+    for s in states:
+        s.absmax.mul_(2)
+    original = dist.broadcast
+
+    def nccl_like_broadcast(tensor, *args, **kwargs):
+        if tensor.device.type == "cpu":
+            raise RuntimeError("No backend type associated with device type cpu")
+        return original(tensor, *args, **kwargs)
+
+    dist.broadcast = nccl_like_broadcast
+    try:
+        options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True)
+        m._restore_quant_state(model, saved if rank == 0 else {}, options)
+        out["nccl_like_flag"] = all(torch.equal(s.absmax, b) for s, b in zip(states, before))
+    except RuntimeError as error:
+        out["nccl_like_flag"] = str(error)
+    finally:
+        dist.broadcast = original
+    return out
+
+
+def _case_nccl_quant_state(rank, world_size, m):
+    """Real NCCL group on two GPUs: a full DCP load with broadcast_from_rank0 restores the saved
+    QuantState on every rank and refuses a packed weight saved without it."""
+    from torch.distributed.checkpoint.state_dict import StateDictOptions
+    import torch.distributed.checkpoint.state_dict as dcp
+
+    model = _sharded_nf4(world_size, m, device = f"cuda:{rank}")
+    full = StateDictOptions(full_state_dict = True)  # every rank gets the full dict
+    saved = {k: v.clone() for k, v in dcp.get_model_state_dict(model, options = full).items()}
+    states = [layer.weight.quant_state for layer in model]
+    before = [s.absmax.clone() for s in states]
+    for s in states:
+        s.absmax.mul_(2)
+    options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True)
+    out = {"backend": torch.distributed.get_backend()}
+    try:
+        dcp.set_model_state_dict(model, saved if rank == 0 else {}, options = options)
+        out["restored"] = all(torch.equal(s.absmax, b) for s, b in zip(states, before))
+    except Exception as error:
+        out["restored"] = f"{type(error).__name__}: {error}"
+    _legacy_and_mismatched_loads(rank, model, saved, out)
+    return out
+
+
 def _case_fp16_reduce(rank, world_size, m):
     """An fp16 trainable parameter FSDP2 does not manage: its gradient mean must not overflow."""
 
@@ -501,6 +773,9 @@ def _case_slow_writer(rank, world_size, m):
 
 def _worker(rank, world_size, port, case, queue):
     try:
+        nccl = case.startswith("nccl")
+        if nccl:
+            torch.cuda.set_device(rank)
         os.environ.update(
             MASTER_ADDR = "127.0.0.1",
             MASTER_PORT = str(port),
@@ -513,7 +788,10 @@ def _worker(rank, world_size, port, case, queue):
 
         timeout = datetime.timedelta(seconds = 4) if case == "slow_writer" else None
         dist.init_process_group(
-            "gloo", rank = rank, world_size = world_size, **({"timeout": timeout} if timeout else {})
+            "nccl" if nccl else "gloo",
+            rank = rank,
+            world_size = world_size,
+            **({"timeout": timeout} if timeout else {}),
         )
         m = _load("fsdp2_save")
         if case == "slow_writer":
@@ -526,6 +804,14 @@ def _worker(rank, world_size, port, case, queue):
             result = _case_merge_offload(rank, world_size, m)
         elif case == "gather_4bit":
             result = _case_gather_4bit(rank, world_size, m)
+        elif case == "gather_4bit_offload":
+            result = _case_gather_4bit_offload(rank, world_size, m)
+        elif case == "dcp_quant_state":
+            result = _case_dcp_quant_state(rank, world_size, m)
+        elif case == "dcp_quant_state_missing":
+            result = _case_dcp_quant_state_missing(rank, world_size, m)
+        elif case == "nccl_quant_state":
+            result = _case_nccl_quant_state(rank, world_size, m)
         elif case.startswith("replicated"):
             result = _case_replicated(rank, world_size, m, hooked = case.endswith("hooked"))
         else:
@@ -537,7 +823,11 @@ def _worker(rank, world_size, port, case, queue):
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
-def _run(case, world_size = 2):
+def _run(
+    case,
+    world_size = 2,
+    cpu_only = True,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -549,7 +839,8 @@ def _run(case, world_size = 2):
     ]
     # CPU only: a spawned child inherits this environment before it imports torch.
     saved = os.environ.get("CUDA_VISIBLE_DEVICES")
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    if cpu_only:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     try:
         for p in procs:
             p.start()
@@ -665,3 +956,60 @@ def test_merge_offload_keeps_4bit_adapters_after_an_eval_forward():
             expected[f"layers.{i}.{part}.default.weight"] = i == 1  # layer 1 is not 4-bit
         expected[f"layers.{i}.base_layer.weight"] = True
     assert decisions == expected, decisions
+
+
+def test_packed_4bit_save_stages_bytes_and_quant_state_on_the_cpu():
+    """A full save of a sharded NF4 model kept every gathered packed weight on rank 0's accelerator,
+    so the whole quantized base had to fit on one GPU. Saves that only write the bytes now get them
+    on the CPU, with a CPU copy of the QuantState; the merge path is unchanged and the written state
+    dict is byte for byte the same."""
+    pytest.importorskip("bitsandbytes")
+    r0 = _run("gather_4bit_offload")[0]
+    kept, staged = r0[False], r0[True]
+    assert kept["packed_moved"] == 0 and kept["own_state"] == [False, False], kept
+    assert staged["packed_moved"] == 2, staged
+    assert staged["own_state"] == [True, True] and all(staged["state_cpu"]), staged
+    for r in (kept, staged):
+        assert r["same_keys"] and r["same_bytes"], r
+    assert r0["live_kept"], r0
+
+
+def test_full_dcp_load_restores_the_saved_quant_state():
+    """A full DCP load dropped the saved QuantState entries, so the packed bytes were silently paired
+    with whatever scales the live model had."""
+    pytest.importorskip("bitsandbytes")
+    results = _run("dcp_quant_state")
+    for r in results.values():
+        for nested in (False, True):
+            assert r[f"restored_nested_{nested}"] == {False: True, True: True}, r
+            assert r[f"mismatch_nested_{nested}"] == "ValueError", r
+
+
+def test_full_dcp_load_refuses_a_packed_4bit_weight_without_its_quant_state():
+    """A packed 4-bit weight whose QuantState entries the checkpoint lacks was loaded silently and
+    dequantized with the live model's scales, also when its bytes were not the live ones; an older
+    checkpoint of the same frozen base (same bytes) must keep loading; the broadcast_from_rank0 presence check sent a CPU
+    tensor through the process group, which an NCCL group cannot carry."""
+    pytest.importorskip("bitsandbytes")
+    for r in _run("dcp_quant_state_missing").values():
+        for broadcast in (False, True):
+            assert r[f"legacy_{broadcast}"] is True, r
+            assert r[f"mismatch_{broadcast}"] == "ValueError", r
+        assert r["no_weight"] == "loaded", r
+        assert r["nccl_like_flag"] is True, r
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available()
+    or torch.cuda.device_count() < 2
+    or not torch.distributed.is_nccl_available(),
+    reason = "needs two CUDA GPUs and NCCL",
+)
+def test_full_dcp_broadcast_load_restores_quant_state_over_nccl():
+    pytest.importorskip("bitsandbytes")
+    for r in _run("nccl_quant_state", cpu_only = False).values():
+        assert r["backend"] == "nccl", r
+        assert r["restored"] is True, r
+        for broadcast in (False, True):
+            assert r[f"legacy_{broadcast}"] is True, r
+            assert r[f"mismatch_{broadcast}"] == "ValueError", r

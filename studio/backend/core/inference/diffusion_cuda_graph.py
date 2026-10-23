@@ -14,6 +14,7 @@ import contextlib
 import gc
 import inspect
 import os
+import sys
 import threading
 import traceback
 import weakref
@@ -32,7 +33,9 @@ OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH"
 # =0: a block-streamed whole-step graph records its copies into the graph pool instead of the prefetcher's slot ring.
 STEP_SLOTS_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS"
 MODEL_OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_MODEL_OFFLOAD_CUDA_GRAPH"
-# Default off: replay saved ~1% of a step (FLUX.2-klein 4B, 1024^2) but the per-render re-record + ~0.6 GB pool cost more.
+# =1: record over the stock onloads, re-recording whenever they move (replay saved ~1% of a step on FLUX.2-klein 4B
+# 1024^2 while each re-record + ~0.6 GB pool cost more). Default: record only over the stable range, see
+# diffusion_stable_arena.
 MODEL_OFFLOAD_REASON = (
     "model offload re-uploads the denoiser every render at new addresses, so its step graph would record again on "
     "every render; set " + MODEL_OFFLOAD_CUDA_GRAPH_ENV + "=1 to record it anyway"
@@ -138,6 +141,73 @@ def _disabled_reason() -> str:
 # and neither holds the lock while it records, so captures do not serialise against each other.
 _CAPTURE_LOCK = threading.Lock()
 _CAPTURE_DEPTH = 0
+# CFG-parallel replica work is counted from queueing until its inputs drop; a capture waits for the count to drain.
+_CAPTURE_IDLE = threading.Condition(_CAPTURE_LOCK)
+_OUTSIDE_JOBS = 0
+_OUTSIDE_LOCAL = threading.local()
+# A count that never drains (dead worker) must not hang captures: after this long the capture is refused and the step
+# runs eager. Symmetrically, replica work that waits this long on a recording is refused and its branch runs on the source.
+OUTSIDE_WAIT_S = 120.0
+# Set by a refusal, cleared once the replica-side count drains: while it stands, captures refuse without waiting again.
+_OUTSIDE_STUCK = [False]
+# Holds owned by threads parked in ``_capturing`` waiting to record: a parked thread issues no CUDA calls, so another
+# held thread may record while it waits (two replica workers that both want to capture do not wait each other out).
+_OUTSIDE_PARKED = [0]
+
+
+class CaptureExclusionTimeout(RuntimeError):
+    """A capture or a replica-side job gave up waiting on the other side of the capture exclusion."""
+
+
+class CaptureRefused(CaptureExclusionTimeout):
+    """Raised by ``_capturing`` BEFORE the depth is raised and before any recording begins: nothing to clean up."""
+
+
+class OutsideWorkRefused(CaptureExclusionTimeout):
+    """Raised by ``held_work`` before the replica-side work runs: none of its CUDA calls were made."""
+
+
+def _other_holds(own: int, parked: int) -> int:
+    """Replica-side holds a capture by this thread must wait for: its own held work (``own``) is discounted, and a
+    held thread also discounts holds whose threads are parked waiting to record (``parked``, this thread's excluded)."""
+    return _OUTSIDE_JOBS - own - (parked if own else 0)
+
+
+def capture_refused_now() -> bool:
+    """Whether a capture would be refused without waiting (a stale replica-side count is still standing)."""
+    with _CAPTURE_IDLE:
+        own = getattr(_OUTSIDE_LOCAL, "depth", 0)
+        return _OUTSIDE_STUCK[0] and _other_holds(own, _OUTSIDE_PARKED[0]) > 0
+
+
+def _wait_outside_drained(own: int) -> None:
+    """Under ``_CAPTURE_IDLE``: wait for other threads' held work to drain (a global capture forbids its CUDA calls), else raise ``CaptureRefused``."""
+    drained = _other_holds(own, _OUTSIDE_PARKED[0]) <= 0
+    if not drained and not _OUTSIDE_STUCK[0]:
+        if own:
+            _OUTSIDE_PARKED[0] += own
+            _CAPTURE_IDLE.notify_all()
+        try:
+            drained = _CAPTURE_IDLE.wait_for(
+                lambda: _other_holds(own, _OUTSIDE_PARKED[0] - own) <= 0,
+                timeout = OUTSIDE_WAIT_S,
+            )
+        finally:
+            if own:
+                _OUTSIDE_PARKED[0] -= own
+                _CAPTURE_IDLE.notify_all()
+    if not drained:
+        _OUTSIDE_STUCK[0] = True
+        raise CaptureRefused(
+            f"replica-side CUDA work still running after {OUTSIDE_WAIT_S:g}s; capture refused"
+        )
+
+
+def await_outside_drained() -> None:
+    """Wait as a capture does, for the warm-ups: they may compile, and up to torch 2.13 FX tracing is flagged process-wide."""
+    own = getattr(_OUTSIDE_LOCAL, "depth", 0)
+    with _CAPTURE_IDLE:
+        _wait_outside_drained(own)
 
 
 @contextlib.contextmanager
@@ -145,16 +215,62 @@ def _capturing():
     """Mark a capture as recording for the duration of the block.
 
     The depth MUST be raised before ``torch.cuda.graph`` is entered, which is what makes the
-    ordering above hold; keep this the outermost of the two context managers.
+    ordering above hold; keep this the outermost of the two context managers. Raises
+    ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
     """
     global _CAPTURE_DEPTH
-    with _CAPTURE_LOCK:
+    own = getattr(_OUTSIDE_LOCAL, "depth", 0)
+    with _CAPTURE_IDLE:
+        _wait_outside_drained(own)
         _CAPTURE_DEPTH += 1
     try:
         yield
     finally:
-        with _CAPTURE_LOCK:
+        with _CAPTURE_IDLE:
             _CAPTURE_DEPTH -= 1
+            _CAPTURE_IDLE.notify_all()
+
+
+def capture_hold() -> None:
+    global _OUTSIDE_JOBS
+    with _CAPTURE_IDLE:
+        _OUTSIDE_JOBS += 1
+
+
+def capture_release() -> None:
+    global _OUTSIDE_JOBS
+    with _CAPTURE_IDLE:
+        _OUTSIDE_JOBS = max(0, _OUTSIDE_JOBS - 1)
+        if _OUTSIDE_JOBS == 0:
+            _OUTSIDE_STUCK[0] = False
+        _CAPTURE_IDLE.notify_all()
+
+
+@contextlib.contextmanager
+def held_work():
+    """Waits for another thread's recording; this thread may then record without waiting on its own hold.
+
+    Raises ``OutsideWorkRefused`` (the body never runs) when a recording is still going after ``OUTSIDE_WAIT_S``."""
+    with _CAPTURE_IDLE:
+        if not _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = OUTSIDE_WAIT_S):
+            raise OutsideWorkRefused(
+                f"a CUDA graph capture still recording after {OUTSIDE_WAIT_S:g}s; replica work refused"
+            )
+    _OUTSIDE_LOCAL.depth = getattr(_OUTSIDE_LOCAL, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _OUTSIDE_LOCAL.depth -= 1
+
+
+@contextlib.contextmanager
+def outside_capture():
+    capture_hold()
+    try:
+        with held_work():
+            yield
+    finally:
+        capture_release()
 
 
 @contextlib.contextmanager
@@ -641,6 +757,17 @@ def _outer_layer(module: Any) -> Any:
     return slot if getattr(slot, "_unsloth_outer_forward", False) is True else None
 
 
+def _router_layer(module: Any) -> Any:
+    try:
+        slot = module.__dict__.get("forward")
+    except Exception:  # noqa: BLE001
+        return None
+    # A static step skip installed after the router wraps it: the router is the skip's inner.
+    if getattr(slot, "_unsloth_outer_forward", False) is True:
+        slot = getattr(slot, "inner", None)
+    return slot if getattr(type(slot), "_unsloth_cfg_router_layer", False) is True else None
+
+
 class _Entry:
     """One captured graph plus the static buffers it replays into."""
 
@@ -800,9 +927,13 @@ class GraphedForward:
         return bool(getattr(self, "_sealed_scopes", None))
 
     def install(self) -> "GraphedForward":
-        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
+        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any step-skip layer or CFG router."""
         if self.placement is not None:
             self.placement.install(self)
+            return self
+        router = _router_layer(self.module)
+        if router is not None:
+            router.inner = self
             return self
         outer = _outer_layer(self.module)
         if outer is not None:
@@ -814,6 +945,10 @@ class GraphedForward:
     def uninstall(self) -> "GraphedForward":
         if self.placement is not None:
             self.placement.uninstall(self)
+            return self
+        router = _router_layer(self.module)
+        if router is not None and router.inner is self:
+            router.inner = None
             return self
         outer = _outer_layer(self.module)
         if outer is not None:
@@ -1274,6 +1409,16 @@ class GraphedForward:
             stream_before = _current_stream()
             try:
                 captured = self._capture(args, kwargs, call, key)
+            except CaptureRefused as exc:
+                _restore_stream(stream_before)
+                self.stats["capture_refusals"] = self.stats.get("capture_refusals", 0) + 1
+                if self.logger is not None:
+                    self.logger.warning(
+                        "diffusion.cuda_graph: capture deferred on %s (%s); this step runs eager",
+                        type(self.module).__name__,
+                        exc,
+                    )
+                exc.__traceback__ = None
             except Exception as exc:  # noqa: BLE001 - a failed capture must never fail the render
                 # torch.cuda.graph's __exit__ raises in capture_end before it leaves its capture stream, so the thread
                 # would run everything after (the eager retry, the rest of the process) on the capture stream.
@@ -1443,6 +1588,9 @@ class GraphedForward:
         refuse_if_exhausted(
             self.logger
         )  # before the warm-ups, and before the step skip's counters are saved
+        if capture_refused_now():
+            raise CaptureRefused("replica-side CUDA work still running; capture refused")
+        await_outside_drained()
         # Under an offload placement the capture also records the copy-stream onloads (OffloadPlacement.record).
         record = call if self.placement is None else self.placement.recorder(call)
         # Side stream: a workspace first created DURING capture is only valid while recording.
@@ -1494,7 +1642,9 @@ class GraphedForward:
                 with _capturing(), recorder(graph, pool = pool):
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
-                retire_failed_capture(graph, pool, exc)
+                # A refusal is raised before the recording begins: the graph and the pool were never touched.
+                if not isinstance(exc, CaptureRefused):
+                    retire_failed_capture(graph, pool, exc)
                 raise
             finally:
                 if skip_stats is not None:
@@ -1580,7 +1730,9 @@ class OffloadPlacement:
     and the resident groups read in place. The pool holds the in-flight window at fixed addresses, so it plays the
     prefetch ring. Recorded again when a residency change, a release / restore or a host-copy swap moves an address.
 
-    ``model``: whole-module CPU offload (accelerate), only with ``MODEL_OFFLOAD_CUDA_GRAPH_ENV=1`` (see
+    ``model``: whole-module CPU offload (accelerate). By default only over the stable device range
+    (``diffusion_stable_arena``: every onload lands at the same addresses, so render 1's recording replays on every
+    later render); ``MODEL_OFFLOAD_CUDA_GRAPH_ENV=1`` records over the stock onloads instead (see
     ``MODEL_OFFLOAD_REASON``). The hook moves the module on the eager path first and the replay sits under it, in
     ``_old_forward``. Recorded again when the onload placed the weights at new addresses; after
     ``MODEL_MAX_INVALIDATIONS`` re-records the module runs eager (each re-record costs a forward)."""
@@ -1854,14 +2006,23 @@ def offload_placement(module: Any) -> tuple:
                 None,
                 f"offload hook {type(hf_hook).__name__} moves the weights inside the forward",
             )
-        if not model_offload_graphs_requested():
-            return None, MODEL_OFFLOAD_REASON
+        # Every other refusal first: the stable range below swaps the module's onload, so it attaches only for a
+        # placement that will record.
         why = _forward_refusal(module, "model")
         if why is not None:
             return None, why
+        arena = None
+        if not model_offload_graphs_requested():
+            # Recorded only where the onloads land at the same addresses every render (diffusion_stable_arena).
+            from .diffusion_stable_arena import attach
+            arena, _arena_why = attach(module)
+            if arena is None:
+                return None, MODEL_OFFLOAD_REASON
         try:
             return OffloadPlacement(module, "model"), None
         except Exception as exc:  # noqa: BLE001
+            if arena is not None:
+                arena.detach()
             return None, f"model offload hook unreadable ({exc})"
     registry = getattr(module, "_diffusers_hook", None)
     hooks = getattr(registry, "hooks", None) or {}
@@ -1899,6 +2060,25 @@ def offload_placement(module: Any) -> tuple:
         return None, f"block offload hook unreadable ({exc})"
     placement.skip = skip
     return placement, None
+
+
+def _detach_stable_range(module: Any) -> None:
+    """Give a module whose step stays eager its stock onload back (no stable range, no per-offload card sync)."""
+    try:
+        from .diffusion_stable_arena import arena_of
+        arena = arena_of(module)
+        if arena is not None:
+            arena.detach()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _stable_range(module: Any) -> bool:
+    try:
+        from .diffusion_stable_arena import arena_of
+        return arena_of(module) is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _forward_refusal(module: Any, mode: str) -> Optional[str]:
@@ -1996,8 +2176,11 @@ def arm_after_placement(
                         module, max_graphs = max_graphs, logger = logger, placement = placement
                     ).enable()
                 )
-                modes.append(placement.mode)
+                stable = placement.mode == "model" and _stable_range(module)
+                modes.append("model_stable" if stable else placement.mode)
         except Exception as exc:  # noqa: BLE001
+            if placement is not None and placement.mode == "model":
+                _detach_stable_range(module)
             refusals.append(f"{type(module).__name__}: {exc}")
     installed = tuple(handles)
     try:
@@ -2011,6 +2194,7 @@ def arm_after_placement(
             "resident": "resident",
             "group": "block-streamed (copies recorded in the graph)",
             "model": "model offload",
+            "model_stable": "model offload over a stable device range",
         }
         reason = "captured per input shape: " + ", ".join(sorted({labels.get(m, m) for m in modes}))
     if logger is not None:
@@ -2287,6 +2471,11 @@ def stats(handles: Any) -> dict:
                 out["replay_ms"] = float(handle.stats["replay_ms"])
             placement = getattr(handle, "placement", None)
             out["placements"].append("resident" if placement is None else placement.mode)
+            if placement is not None and placement.mode == "model":
+                from .diffusion_stable_arena import arena_of
+                arena = arena_of(placement.module)
+                if arena is not None:
+                    out["stable_range"] = arena.describe()
             if handle.poisoned:
                 out["poisoned"] = True
             error = handle.capture_error
@@ -2295,6 +2484,43 @@ def stats(handles: Any) -> dict:
                     "type": str(error.get("type")),
                     "msg": str(error.get("msg")),
                 }
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def engagement(handles: Any) -> dict:
+    """Compile / CUDA-graph engagement counters for the status payload, so a client can tell an engaged path from one
+    that merely never recompiles: this load's graph captures, replays and ungraphed denoiser calls (whole-step and per
+    block, with a layer split's per-card segment graphs), and the process's dynamo frame and graph-break totals
+    (process-wide: a new frame or break after the first render is a recompile or a new break)."""
+    # A whole-step graph that dropped a key or failed hands its calls to per-block graphs it holds as
+    # ``fallback_handle`` (``GraphedForward._engage_fallback``): those count too.
+    units: list = []
+    for handle in handles or ():
+        units.append(handle)
+        nested = getattr(handle, "fallback_handle", None)
+        if nested is not None and nested is not handle:
+            units.append(nested)
+    s = stats(units)
+    out = {
+        field: s[field]
+        for field in ("graphs", "captures", "replays", "eager_calls", "invalidations", "fallbacks")
+    }
+    out["segment_captures"] = out["segment_replays"] = 0
+    for handle in units:
+        for segment in getattr(handle, "segments", None) or ():
+            try:
+                out["segment_captures"] += int(segment.stats.get("segment_captures", 0))
+                out["segment_replays"] += int(segment.stats.get("segment_replays", 0))
+            except Exception:  # noqa: BLE001
+                pass
+    out["dynamo_frames"] = out["graph_breaks"] = None
+    if "torch._dynamo" in sys.modules:
+        try:
+            from torch._dynamo.utils import counters
+            out["dynamo_frames"] = int(counters["stats"].get("unique_graphs", 0))
+            out["graph_breaks"] = int(sum(counters["graph_break"].values()))
         except Exception:  # noqa: BLE001
             pass
     return out

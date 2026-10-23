@@ -17,8 +17,29 @@ if [ -n "${STUDIO_PERMISSION_FRONTEND:-}" ]; then
 fi
 
 mkdir -p "$artifact_dir"
+
+# The Windows UI lane calls this right after stopping its own server on the same home, and a
+# killed server on Windows can hold auth.db open for a few seconds after `kill` returns. The
+# wipe then failed with "Device or resource busy" and the lane went red after every suite had
+# passed (runs 39669502772, staging 39764533102). Retry for a bounded time, then fail loudly.
+wipe_auth() {
+  local tries=0
+  until rm -rf "$studio_home/auth" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge "${STUDIO_AUTH_WIPE_TRIES:-30}" ]; then
+      # One last attempt with rm's own error showing; it can still be the one that succeeds.
+      if rm -rf "$studio_home/auth"; then
+        return 0
+      fi
+      echo "::error::$studio_home/auth is still held open after $((tries + 1)) tries; a server on this home did not exit" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-rm -rf "$studio_home/auth"
+wipe_auth
 UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$port" "$@" \
   >"$server_log" 2>&1 &
 studio_pid=$!
