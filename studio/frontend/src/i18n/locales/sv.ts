@@ -841,6 +841,7 @@ export const sv = {
       hub: "Modellhub",
       train: "Träna",
       recipes: "Recept",
+      flows: "Flöden",
       images: "Bilder",
       video: "Video",
       audio: "Ljud",

@@ -743,6 +743,7 @@ export const fr = {
       library: "Bibliothèque",
       train: "Entraîner",
       recipes: "Recettes",
+      flows: "Flux",
       images: "Images",
       video: "Vidéo",
       audio: "Audio",

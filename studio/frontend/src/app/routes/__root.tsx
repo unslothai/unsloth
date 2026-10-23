@@ -178,6 +178,13 @@ const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
 );
 
+// The Flows player gets the same persistent mount so a game keeps its state when you step back into the editor.
+const FlowPlayerPage = lazy(() =>
+  import("@/features/flows/player/flow-player-page").then((m) => ({ default: m.FlowPlayerPage })),
+);
+
+const FLOW_PLAY_ROUTE = /^\/flows\/([^/]+)\/play\/?$/;
+
 // Enabled once the session is settled, not once a token exists. The first read runs once per session, so a read
 // refused mid password change would leave personalization unhydrated, and every save paused, until a reload. The
 // pathname subscription re-reads the gate on the navigation that ends the change.
@@ -314,6 +321,8 @@ function isChatOnlyAllowed(pathname: string): boolean {
   // verdict, and on Apple Silicon a chat-only host is where video works anyway. So a direct link
   // or a reload must reach VideoPage's gate, which self-gates on videoSupported.
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;
+  // Flows run whatever the host can: GGUF chat, sd.cpp images and CPU audio all work without a GPU.
+  if (pathname === "/flows" || pathname.startsWith("/flows/")) return true;
   return false;
 }
 
@@ -436,9 +445,14 @@ function RootLayout() {
     setAudioMounted(true);
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
+  // The Flows player mounts only on its route: unmounting stops its music, narration and game loop (stories autosave).
+  const playFlowId = FLOW_PLAY_ROUTE.exec(pathname)?.[1] ?? null;
+  const isFlowPlayRoute = playFlowId !== null;
+  const isFlowEditorRoute = !isFlowPlayRoute && pathname.startsWith("/flows/");
   // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
-  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
+  const isChatLike =
+    isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute || isFlowPlayRoute || isFlowEditorRoute;
   // Reserves the navbar the shell actually rendered. Read off the same hook
   // Navbar uses, not the `md` breakpoint: a narrowed desktop window keeps the
   // desktop navbar, and a CSS rule would reserve the mobile one's 56px and
@@ -611,6 +625,7 @@ function RootLayout() {
     "go-hub": goAction(routeShortcutEnabled, goTo("/hub")),
     "go-train": goAction(routeShortcutEnabled && !chatOnlyMeasured, goTo("/studio")),
     "go-recipes": goAction(routeShortcutEnabled, goTo("/data-recipes")),
+    "go-flows": goAction(routeShortcutEnabled, goTo("/flows")),
     "go-images": goAction(routeShortcutEnabled, goTo("/images")),
     "go-video": goAction(routeShortcutEnabled && !videoDisabled, goTo("/video")),
     "go-audio": goAction(routeShortcutEnabled, goTo("/audio")),
@@ -799,12 +814,20 @@ function RootLayout() {
                   </Suspense>
                 </div>
               )}
+              {/* Keyed by flow so switching games starts fresh. */}
+              {playFlowId && (
+                <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+                  <Suspense fallback={<RouteFallback />}>
+                    <FlowPlayerPage key={playFlowId} flowId={playFlowId} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && !isImagesRoute && !isVideoRoute && !isAudioRoute && (
+              {!isChatRoute && !isImagesRoute && !isVideoRoute && !isAudioRoute && !isFlowPlayRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}

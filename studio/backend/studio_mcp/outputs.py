@@ -652,6 +652,15 @@ class ExportInfo(ToolOutput):
     phase: RouteText
 
 
+class FlowRunInfo(ToolOutput):
+    flow_id: Optional[RouteText] = None
+    # Named results from the flow's Flow Output nodes; media come back as id + URL.
+    outputs: Optional[dict[str, Any]] = None
+    nodes_done: Optional[int] = None
+    nodes_total: Optional[int] = None
+    failed_nodes: Optional[list[RouteText]] = None
+
+
 class JobStatus(ToolOutput):
     kind: RouteText
     id: Optional[RouteText] = None
@@ -671,6 +680,7 @@ class JobStatus(ToolOutput):
     recipe: Optional[RecipeInfo] = None
     download: Optional[DownloadRef] = None
     export: Optional[ExportInfo] = None
+    flow: Optional[FlowRunInfo] = None
     jobs: Optional[list[Union[ExportJobSummary, JobSummary]]] = None
 
 

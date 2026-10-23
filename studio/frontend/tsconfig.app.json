@@ -43,6 +43,8 @@
     "smoke-thread-weight-main.tsx",
     "smoke-settings-main.tsx",
     "smoke-shortcuts-main.tsx",
+    "smoke-flows-player-main.tsx",
+    "smoke-flows-main.tsx",
     "smoke-stream-pacing-main.tsx",
     "smoke-code-block-flicker-main.tsx",
     "smoke-tool-activity-main.tsx",

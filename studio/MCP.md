@@ -296,6 +296,8 @@ api_key_format = "Bearer {token}"
 | `start_training` | Start LLM, text-to-speech or image LoRA training. Follow it with `get_job`. |
 | `list_training_runs` | Past runs and their checkpoints, by name. |
 | `export_model` | Export a checkpoint to GGUF, merged weights, a LoRA adapter or the base model. |
+| `list_flows` | Saved flows and the bundled example flows. |
+| `run_flow` | Run a saved flow, a bundled example or a flow document with its inputs. Poll it with `get_job`. |
 | `cancel` | Stop running work of a given kind; the kinds are listed in the tool's schema. |
 
 Long work keeps running in Unsloth Studio when a tool call times out.
@@ -304,6 +306,21 @@ Follow every long job with `get_job(kind=…, id=…, wait_s=…)`: it checks ev
 `load_model` waits up to `wait_s` too (240 s when unset), then returns `status: "loading"` and a `job_id` for `get_job(kind="load")`.
 Stop work with `cancel`.
 Unsloth Studio runs one export at a time, so `export_model` is refused while another export runs, and cancelling an export job stops only that job's own step.
+
+### Flows
+
+A flow is a node graph of Unsloth Studio steps (LLM text, images, video, audio, datasets, training and logic)
+built in the Flows page. `list_flows` names the saved flows and the bundled examples. `run_flow` takes one of
+`flow_id`, `example_id` (copied first) or `document` (a flow file, saved first), plus `params` for the flow's
+Flow Input nodes by name. It returns the run at once, or after `wait_s`; follow it with
+`get_job(kind="flow", id=…, wait_s=…)`. When it completes, `flow.outputs` holds the values of its Flow Output
+nodes, with media as Unsloth Studio ids and URLs. `cancel(kind="flow", id=…)` stops it; steps that already
+finished keep their results. A run keeps going in Unsloth Studio when the call returns. Each step loads the
+models its node names (unloading others to make room), and GPU steps run one at a time.
+
+A run acts as a short-lived internal key of the caller's account, so it sees what that account may see.
+These tools reach `/api/flows/` through the same in-process forwarding as every other tool; that prefix is
+the only one Flows add to the MCP list.
 
 ### Media and files
 

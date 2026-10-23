@@ -113,9 +113,10 @@ test("a customized version-5 sidebar keeps its order and only gains the rows add
   );
   assert.deepEqual(
     customization.sidebarNav.map((item) => item.id),
-    [...customizedV5.map((item) => item.id), "library", "audio"],
+    [...customizedV5.map((item) => item.id), "library", "audio", "flows"],
   );
-  assert.equal(customization.sidebarNav.at(-1)?.pinned, false);
+  assert.equal(customization.sidebarNav.find((item) => item.id === "audio")?.pinned, false);
+  assert.equal(customization.sidebarNav.at(-1)?.pinned, true, "Flows arrives pinned");
 });
 
 test("a user-arranged sidebar survives the migration", () => {
@@ -135,7 +136,7 @@ test("an install sitting on the version-6 default adopts the current layout", ()
   const migrated = migrateShippedSidebarNavDefault(customization, 6, 8);
   assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
   const ids = migrated.sidebarNav.filter((item) => item.pinned).map((i) => i.id);
-  assert.deepEqual(ids, ["hub", "projects", "library", "images", "train"]);
+  assert.deepEqual(ids, ["hub", "projects", "library", "images", "train", "flows"]);
 });
 
 test("an install sitting on the version-7 default gains Library and moves Video to More", () => {
@@ -147,6 +148,13 @@ test("an install sitting on the version-7 default gains Library and moves Video 
     ["hub", "projects", "library"],
   );
   assert.equal(migrated.sidebarNav.find((item) => item.id === "video")?.pinned, false);
+});
+
+test("an install sitting on the version-8 default gains Flows as a pinned row", () => {
+  const v8: SidebarNavItemPref[] = DEFAULT_CUSTOMIZATION.sidebarNav.filter((item) => item.id !== "flows");
+  const customization = sanitizeCustomization({ sidebarNav: v8 });
+  const pinned = customization.sidebarNav.filter((item) => item.pinned).map((item) => item.id);
+  assert.deepEqual(pinned, ["hub", "projects", "library", "images", "train", "flows"]);
 });
 
 test("a shipped-looking layout chosen after migration is preserved", () => {

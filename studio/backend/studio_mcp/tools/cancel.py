@@ -28,6 +28,7 @@ CancelKind = Literal[
     "chat",
     "dataset_download",
     "model_download",
+    "flow",
 ]
 START_CANCELLED = "training_start_cancelled"
 NEEDS_ID = {
@@ -37,6 +38,7 @@ NEEDS_ID = {
     "audio": "the run's cancel_id (generate_audio returns it)",
     "dataset_download": "the dataset's repo_id",
     "model_download": "the id download_model returned",
+    "flow": "the run id run_flow returned",
 }
 # The route each other kind posts to, and the body field that carries its id (or ``save``), if any.
 ROUTES = {
@@ -48,6 +50,7 @@ ROUTES = {
     "chat": ("/api/inference/cancel", "cancel_id"),
     "audio": ("/api/inference/audio/cancel", "cancel_id"),
     "dataset_download": ("/api/hub/datasets/download/cancel", "repo_id"),
+    "flow": ("/api/flows/runs/{id}/cancel", None),
 }
 
 
@@ -75,6 +78,8 @@ def _stopped(kind: str, answer: Any) -> bool:
     # "cancelled" here is a job that had already ended; only "cancelling" means this call stopped it.
     if kind == "recipe":
         return answer.get("status") == "cancelling"
+    if kind == "flow":
+        return answer.get("status") in ("cancelling", "cancelled")
     return answer.get("state") == "cancelling"
 
 
@@ -121,6 +126,7 @@ async def cancel(
     "audio" stops the generate_audio run whose cancel_id is ``id``; takes it already finished stay in Audio history.
     "dataset_download" stops downloading the dataset ``id`` (its repo id).
     "model_download" stops the model download ``id`` that download_model returned; a speech-to-text download can't be stopped here.
+    "flow" stops the flow run ``id`` (run_flow returns it); steps already finished keep their results.
     ``cancelled`` says whether this call stopped something.
     """
     caller = current_caller()
