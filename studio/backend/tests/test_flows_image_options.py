@@ -418,3 +418,22 @@ def test_find_mask_explains_an_install_without_sam3():
 
 async def _no_sleep(*_a, **_k):
     return None
+
+
+def test_generate_refuses_a_mask_with_reference_images_before_loading():
+    called = []
+
+    async def generate_image(**kwargs):
+        called.append(kwargs)
+        return [{"kind": "image", "ref": "x"}]
+
+    ctx = SimpleNamespace(
+        inputs = {"reference": [_media("a")], "mask": _media("m")},
+        params = {"prompt": "a fox"},
+        flow_params = {},
+        seed = 1,
+        generate_image = generate_image,
+    )
+    with pytest.raises(FlowNodeError, match = "mask or reference"):
+        asyncio.run(image_nodes.generate(ctx))
+    assert called == []

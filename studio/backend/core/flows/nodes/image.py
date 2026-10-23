@@ -82,6 +82,10 @@ async def generate(ctx: NodeContext) -> dict:
     init = ctx.inputs.get("init_image")
     refs = list(ctx.inputs.get("reference") or [])
     workflow = None
+    if refs and ctx.inputs.get("mask"):
+        raise FlowNodeError(
+            "Connect either a mask or reference images: the reference workflow does not take a mask"
+        )
     if refs:
         # Studio's reference workflow takes a source image plus extra references.
         workflow = "reference"
