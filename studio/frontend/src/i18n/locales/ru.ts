@@ -626,6 +626,8 @@ export const ru = {
       "Этот чат не появится в истории и не сохраняется. Он исчезнет, когда вы уйдёте.",
   },
   picker: {
+    unifiedTightFit: "Впритык",
+    unifiedTightFitHint: "На этом Mac может загрузиться с более коротким контекстом или работать медленнее.",
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
     retry: "Повторить",
@@ -1072,6 +1074,7 @@ export const ru = {
     },
     keyboardShortcuts: {
       title: "Сочетания клавиш",
+      intro: "Чтобы изменить сочетание клавиш, выберите его и нажмите новые клавиши",
       searchPlaceholder: "Поиск сочетаний…",
       keystrokePlaceholder: "Нажмите сочетание для поиска",
       searchByKeystrokes: "Поиск по нажатию",
@@ -1079,22 +1082,23 @@ export const ru = {
       noResults: "Ни одно сочетание не соответствует запросу.",
       unassigned: "Не назначено",
       recording: "Нажмите клавиши…",
-      recordingHint: "Нажмите новую комбинацию или Esc для отмены.",
       needsModifier: "Добавьте ⌘, Ctrl или Alt. Одиночная клавиша перехватит ввод текста.",
       conflict: "Используется также другим сочетанием",
       conflictShadowed: "Эта комбинация занята другим сочетанием, и выполняется оно",
       edit: "Изменить сочетание",
-      clear: "Удалить сочетание",
       reset: "Вернуть значение по умолчанию",
       resetAll: "Сбросить всё до значений по умолчанию",
-      primarySlot: "Сочетание",
-      alternateSlot: "Альтернативное сочетание",
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       metaUnsupported: "Клавишу Windows нельзя использовать в сочетаниях клавиш.",
       altGraphUnsupported: "Сочетания с AltGr нельзя использовать как сочетания клавиш.",
       desktopOnly: "Только в настольном приложении",
-      builtInKey: "Встроено: {key}",
+      groups: {
+        composer: "Поле ввода",
+        chat: "Чат",
+        navigation: "Навигация",
+        app: "Приложение",
+      },
       actions: {
         findInPage: {
           label: "Поиск на странице",
@@ -1284,6 +1288,10 @@ export const ru = {
           label: "Прикрепить фото и файлы",
           description: "Добавить вложение в поле ввода",
         },
+        openComposerMenu: {
+          label: "Открыть меню +",
+          description: "Открыть меню + поля ввода с инструментами и вложениями",
+        },
         sendMessage: {
           label: "Отправить сообщение",
           description: "Отправить содержимое поля ввода",
@@ -1311,10 +1319,6 @@ export const ru = {
         decreaseReasoningEffort: {
           label: "Уменьшить усилие рассуждения",
           description: "Снизить усилие рассуждения на один уровень",
-        },
-        toggleFastMode: {
-          label: "Переключить режим Fast",
-          description: "Включить или выключить режим Fast",
         },
         renameChat: {
           label: "Переименовать чат",
@@ -1992,6 +1996,18 @@ export const ru = {
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
       },
+      fullInstall: {
+        label: "Тип установки",
+        description:
+          "Только чат (GGUF). Полная установка добавляет обучение, экспорт, видео, модели safetensors и дополнительные функции генерации изображений.",
+        action: "Перейти на полную установку",
+        confirmTitle: "Перейти на полную установку?",
+        confirmDescription:
+          "Эта установка «Только чат» запускает модели GGUF. Полная установка добавляет PyTorch для графического процессора этого компьютера, что включает обучение, экспорт, видео, модели safetensors и дополнительные функции генерации изображений. Она скачивает несколько гигабайт (не менее 5 ГБ на диске) и перезапускает сервер. Чаты, модели и настройки сохраняются. Это может занять несколько минут.",
+        confirmAction: "Перейти",
+        keywords:
+          "full install upgrade тип установки полная установка обновить только чат chat only gguf add training обучение обучить train fine-tune pytorch torch экспорт видео генерация изображений safetensors",
+      },
       repairInstall: {
         label: "Восстановить установку",
         description:
@@ -2000,6 +2016,8 @@ export const ru = {
         confirmTitle: "Восстановить эту установку?",
         confirmDescription:
           "Останавливает сервер и повторно запускает установщик, который переустанавливает PyTorch для графического процессора этого компьютера. Чаты и настройки сохраняются. Это может занять несколько минут.",
+        confirmDescriptionChatOnly:
+          "Останавливает сервер и повторно запускает установщик. Это установка «Только чат», поэтому установщик также переведёт её на полную установку с PyTorch, в сумме несколько гигабайт. Чаты и настройки сохраняются. Это может занять несколько минут.",
         confirmAction: "Восстановить",
       },
       resetPreferences: {
@@ -2727,6 +2745,10 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      showReplyTimes: "Время ответов",
+      showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
+      showReplyTimesKeywords:
+        "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",
@@ -3133,6 +3155,7 @@ export const ru = {
       relativeNever: "никогда",
       relativeJustNow: "только что",
       expired: "истёк",
+      expiredStatus: "Истёк",
       today: "сегодня",
       created: "Создан {value}",
       used: "Использование: {value}",
@@ -4712,5 +4735,42 @@ export const ru = {
     cantRun: "Не удалось запустить",
     failed: "Ошибка {status}",
     invalidJson: "Тело запроса не является корректным JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Загруженные модели",
+      countOne: "Загружена {count} модель",
+      countMany: "Загружено моделей: {count}",
+      pillLabel: "{count}. Показать подробности или перетащить",
+      dragToMove: "Перетащите, чтобы переместить",
+      dragHandleLabel: "Переместить панель загруженных моделей. Стрелки сдвигают её понемногу.",
+      collapse: "Свернуть",
+      collapseLabel: "Свернуть загруженные модели",
+      close: "Закрыть",
+      closeLabel: "Закрыть загруженные модели",
+      backOnNextLoad: "Появится снова при следующей загрузке модели",
+      ejectToFree: "Извлечь, чтобы освободить память",
+      ejectLabel: "Извлечь {model}",
+      openTarget: "Открыть {target}",
+      rowLabel: "{model}. Открыть {target}",
+      loading: "Загрузка",
+      ejecting: "Извлечение",
+      stillInMemory: "Всё ещё в памяти",
+      alsoServing: "Также обслуживает",
+      noneLoaded: "Нет загруженных моделей",
+      noneLoadedDetail: "Загруженные вами модели появятся здесь.",
+      otherAccount: "Используется другой учётной записью",
+      otherAccountDetail: "Память занята моделью, которую вы не видите",
+      toastStillResident: "Пока шло извлечение, «{model}» была загружена, поэтому она всё ещё занимает память. Извлеките её ещё раз, чтобы освободить.",
+      toastUnverified: "Запрошена выгрузка {model}, но среда выполнения не подтвердила её. Проверьте карточку через минуту.",
+      toastAlreadyFree: "{model} уже не была загружена.",
+      toastReplaced: "{model} больше не загружена. Её место заняла «{resident}», её не трогали.",
+      toastEjected: "{model} извлечена",
+      toastFailed: "Не удалось извлечь {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
+      reconnecting: "Повторное подключение…",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

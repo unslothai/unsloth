@@ -180,7 +180,7 @@ test("a run whose response was lost still becomes the seed Reuse last seed picks
   assert.match(page, /seed: runBaseSeed,/);
   assert.match(
     page,
-    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\(runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
+    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\((?:compare\?\.sentSeed\(i\) \?\? )?runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
   );
 });
 

@@ -177,6 +177,21 @@ assert.equal(
   IMAGE_CATALOG.find((g) => g.pinToTop)?.canonicalId,
   "black-forest-labs/flux-3-image-klein",
 );
+// MOSS-Image: a dense row on the OpenMOSS id (fetched from the FP8 repo), with sd.cpp GGUF rows in the same group.
+for (const [base, fp8Repo, ggufRepo, name] of [
+  ["OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8", "unsloth/MOSS-Image-SFT-GGUF", "MOSS-Image"],
+  ["OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8", "unsloth/MOSS-Image-Base-GGUF", "MOSS-Image Base"],
+] as const) {
+  const group = groupForRepoId(base, IMAGE_CATALOG);
+  assert.ok(group, base);
+  assert.equal(groupForRepoId(fp8Repo, IMAGE_CATALOG), group, fp8Repo);
+  assert.equal(groupForRepoId(ggufRepo, IMAGE_CATALOG), group, ggufRepo);
+  assert.equal(curatedRowLabelFor(base, IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])?.name, `${name} (Fast FP8)`);
+  assert.equal(
+    curatedRowLabelFor(ggufRepo, IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    `${ggufRepo.split("/")[1]} (Slow)`,
+  );
+}
 // The pinned Fast FP8 row must survive "Fit on device" on a 24 GB card (6.0 GiB DiT + 8.6 GiB companions, under
 // the 70% rule), else the Slow GGUF row takes the top. A host without the dense quant sizes it in bf16 and drops it.
 for (const id of ["black-forest-labs/flux-3-image-klein", "black-forest-labs/flux-3-image-klein-base"]) {
@@ -325,6 +340,8 @@ for (const id of [
   "unsloth/FLUX.2-klein-9B-GGUF",
   "unsloth/flux-3-image-klein-GGUF",
   "unsloth/flux-3-image-klein-base-GGUF",
+  "unsloth/MOSS-Image-SFT-GGUF",
+  "unsloth/MOSS-Image-Base-GGUF",
   "unsloth/Qwen-Image-Edit-2511-GGUF",
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
@@ -1290,6 +1307,8 @@ const PREQUANT_ROWS = [
   ["Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"],
   ["black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8"],
   ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8"],
+  ["OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8"],
+  ["OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8"],
 ] as const;
 
 for (const [id, repo] of PREQUANT_ROWS) {

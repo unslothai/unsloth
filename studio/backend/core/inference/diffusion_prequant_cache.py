@@ -601,9 +601,25 @@ def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
     return (
         repo,
         "/".join(parts[i + 2 :]),
-        os.path.basename(os.path.realpath(str(path))),
+        _repo_blob_name(str(path), os.path.join(*parts[:i], "blobs")),
         parts[i + 1],
     )
+
+
+def _repo_blob_name(path: str, blobs_dir: str) -> str:
+    """Name of the ``<repo>/blobs`` entry a snapshot file links to, i.e. its etag. huggingface_hub >= 1.32 links that
+    entry on to a shared store (``<cache>/blobs/<xx>/<xet hash>``), so only the first hop into ``blobs_dir`` counts."""
+    blobs = os.path.normcase(os.path.realpath(blobs_dir))
+    current = path
+    for _ in range(8):
+        if os.path.normcase(os.path.realpath(os.path.dirname(current))) == blobs:
+            return os.path.basename(current)
+        try:
+            target = os.readlink(current)
+        except (OSError, ValueError):
+            break  # not a link: a copied file (no symlinks) or the chain's end
+        current = os.path.join(os.path.dirname(current), target)
+    return os.path.basename(os.path.realpath(path))
 
 
 def _is_content_hash(name: str) -> bool:

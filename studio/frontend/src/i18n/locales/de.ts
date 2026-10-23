@@ -626,6 +626,8 @@ export const de = {
       "Dieser Chat erscheint nicht in deinem Verlauf und wird nicht gespeichert. Er verschwindet, wenn du ihn verlässt.",
   },
   picker: {
+    unifiedTightFit: "Knapp",
+    unifiedTightFitHint: "Lädt auf diesem Mac eventuell nur mit kürzerem Kontext oder läuft langsamer.",
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
     retry: "Erneut versuchen",
@@ -1074,6 +1076,7 @@ export const de = {
     },
     keyboardShortcuts: {
       title: "Tastenkürzel",
+      intro: "Zum Ändern eines Kürzels die Tastenkombination auswählen und dann die neuen Tasten drücken",
       searchPlaceholder: "Kürzel suchen…",
       keystrokePlaceholder: "Kürzel drücken, um zu suchen",
       searchByKeystrokes: "Nach Tastendruck suchen",
@@ -1081,22 +1084,23 @@ export const de = {
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",
-      recordingHint: "Neue Tastenkombination drücken oder Esc zum Abbrechen.",
       needsModifier: "⌘, Strg oder Alt hinzufügen. Eine einzelne Taste würde die Eingabe verschlucken.",
       conflict: "Wird auch von einem anderen Kürzel verwendet",
       conflictShadowed: "Ein anderes Kürzel belegt diese Kombination und läuft stattdessen",
       edit: "Kürzel ändern",
-      clear: "Kürzel entfernen",
       reset: "Standard wiederherstellen",
       resetAll: "Alle auf Standard zurücksetzen",
-      primarySlot: "Kürzel",
-      alternateSlot: "Alternatives Kürzel",
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
       metaUnsupported: "Die Windows-Taste kann nicht in Tastenkürzeln verwendet werden.",
       altGraphUnsupported: "AltGr-Kombinationen können nicht als Tastenkürzel verwendet werden.",
       desktopOnly: "Nur in der Desktop-App",
-      builtInKey: "Integriert: {key}",
+      groups: {
+        composer: "Eingabefeld",
+        chat: "Chat",
+        navigation: "Navigation",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Auf der Seite suchen",
@@ -1286,6 +1290,10 @@ export const de = {
           label: "Fotos und Dateien anhängen",
           description: "Einen Anhang zum Eingabefeld hinzufügen",
         },
+        openComposerMenu: {
+          label: "+-Menü öffnen",
+          description: "Das +-Menü des Eingabefelds mit Werkzeugen und Anhängen öffnen",
+        },
         sendMessage: {
           label: "Nachricht senden",
           description: "Den Inhalt des Eingabefelds senden",
@@ -1313,10 +1321,6 @@ export const de = {
         decreaseReasoningEffort: {
           label: "Denkaufwand verringern",
           description: "Den Denkaufwand um eine Stufe senken",
-        },
-        toggleFastMode: {
-          label: "Fast-Modus umschalten",
-          description: "Den Fast-Modus ein- oder ausschalten",
         },
         renameChat: {
           label: "Chat umbenennen",
@@ -2011,6 +2015,18 @@ export const de = {
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",
       },
+      fullInstall: {
+        label: "Installationstyp",
+        description:
+          "Nur Chat (GGUF). Die vollständige Installation ergänzt Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung.",
+        action: "Auf vollständige Installation upgraden",
+        confirmTitle: "Auf die vollständige Installation upgraden?",
+        confirmDescription:
+          "Diese Nur-Chat-Installation führt GGUF-Modelle aus. Die vollständige Installation ergänzt PyTorch für die GPU dieses Rechners und ermöglicht damit Training, Export, Video, Safetensors-Modelle und weitere Funktionen zur Bildgenerierung. Sie lädt mehrere Gigabyte herunter (mindestens 5 GB Speicherplatz) und startet den Server neu. Chats, Modelle und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmAction: "Upgraden",
+        keywords:
+          "full install upgrade installationstyp vollständige installation nur chat chat only gguf add training training trainieren train fine-tune pytorch torch export video bildgenerierung safetensors",
+      },
       repairInstall: {
         label: "Installation reparieren",
         description:
@@ -2019,6 +2035,8 @@ export const de = {
         confirmTitle: "Diese Installation reparieren?",
         confirmDescription:
           "Stoppt den Server und führt das Installationsprogramm erneut aus, wodurch PyTorch für die GPU dieses Rechners neu installiert wird. Chats und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmDescriptionChatOnly:
+          "Stoppt den Server und führt das Installationsprogramm erneut aus. Dies ist eine Nur-Chat-Installation, daher upgradet das Installationsprogramm sie auch auf die vollständige Installation mit PyTorch, insgesamt mehrere Gigabyte. Chats und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Jetzt reparieren",
       },
       resetPreferences: {
@@ -2751,6 +2769,10 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      showReplyTimes: "Antwortzeiten",
+      showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
+      showReplyTimesKeywords:
+        "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
@@ -3164,6 +3186,7 @@ export const de = {
       relativeNever: "nie",
       relativeJustNow: "gerade eben",
       expired: "abgelaufen",
+      expiredStatus: "Abgelaufen",
       today: "heute",
       created: "Erstellt {value}",
       used: "Verwendet {value}",
@@ -4755,5 +4778,42 @@ export const de = {
     cantRun: "Konnte nicht ausgeführt werden",
     failed: "Fehler {status}",
     invalidJson: "Der Anfrage-Body ist kein gültiges JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Geladene Modelle",
+      countOne: "{count} Modell geladen",
+      countMany: "{count} Modelle geladen",
+      pillLabel: "{count}. Details anzeigen oder zum Verschieben ziehen",
+      dragToMove: "Zum Verschieben ziehen",
+      dragHandleLabel: "Geladene Modelle verschieben. Mit den Pfeiltasten feinjustieren.",
+      collapse: "Einklappen",
+      collapseLabel: "Geladene Modelle einklappen",
+      close: "Schließen",
+      closeLabel: "Geladene Modelle schließen",
+      backOnNextLoad: "Erscheint beim nächsten Laden eines Modells wieder",
+      ejectToFree: "Auswerfen, um Speicher freizugeben",
+      ejectLabel: "{model} auswerfen",
+      openTarget: "{target} öffnen",
+      rowLabel: "{model}. {target} öffnen",
+      loading: "Wird geladen",
+      ejecting: "Wird ausgeworfen",
+      stillInMemory: "Noch im Speicher",
+      alsoServing: "Stellt außerdem bereit",
+      noneLoaded: "Keine Modelle geladen",
+      noneLoadedDetail: "Modelle, die du lädst, werden hier angezeigt.",
+      otherAccount: "Von einem anderen Konto verwendet",
+      otherAccountDetail: "Der Speicher wird von einem Modell belegt, das du nicht sehen kannst",
+      toastStillResident: "„{model}“ wurde während des Auswerfens geladen und belegt daher weiterhin Speicher. Wirf es erneut aus, um ihn freizugeben.",
+      toastUnverified: "{model} sollte entladen werden, aber die Laufzeit hat dies nicht bestätigt. Prüfe die Karte gleich noch einmal.",
+      toastAlreadyFree: "{model} war nicht mehr geladen.",
+      toastReplaced: "{model} ist nicht mehr geladen. „{resident}“ hat seinen Platz eingenommen und wurde nicht angetastet.",
+      toastEjected: "{model} ausgeworfen",
+      toastFailed: "{model} konnte nicht ausgeworfen werden",
+    },
+    monitor: {
+      dragHandleLabel: "Live-Monitor verschieben. Mit den Pfeiltasten feinjustieren, per Doppelklick zurücksetzen.",
+      reconnecting: "Verbindung wird wiederhergestellt...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

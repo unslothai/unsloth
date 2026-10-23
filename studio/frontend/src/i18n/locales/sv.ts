@@ -728,6 +728,8 @@ export const sv = {
       "Den här chatten visas inte i din historik och sparas inte. Den försvinner när du lämnar den.",
   },
   picker: {
+    unifiedTightFit: "Snäv passform",
+    unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -1185,6 +1187,7 @@ export const sv = {
     },
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
+      intro: "Om du vill ändra en genväg markerar du tangentkombinationen och skriver sedan de nya tangenterna",
       searchPlaceholder: "Sök genvägar …",
       keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
       searchByKeystrokes: "Sök efter tangenttryckningar",
@@ -1192,25 +1195,25 @@ export const sv = {
       noResults: "Inga genvägar matchar sökningen.",
       unassigned: "Ej tilldelad",
       recording: "Tryck på tangenter …",
-      recordingHint:
-        "Tryck på den nya tangentkombinationen eller Esc för att avbryta.",
       needsModifier:
         "Lägg till ⌘, Ctrl eller Alt. En ensam tangent skulle fånga upp textinmatning.",
       conflict: "Används också av en annan genväg",
       conflictShadowed:
         "En annan genväg har denna tangentkombination och körs i stället",
       edit: "Ändra genväg",
-      clear: "Ta bort genväg",
       reset: "Återställ standard",
       resetAll: "Återställ alla till standard",
-      primarySlot: "Genväg",
-      alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
       metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
       altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
       desktopOnly: "Endast i skrivbordsappen",
-      builtInKey: "Inbyggt: {key}",
+      groups: {
+        composer: "Meddelandefält",
+        chat: "Chatt",
+        navigation: "Navigering",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1400,6 +1403,10 @@ export const sv = {
           label: "Bifoga foton och filer",
           description: "Lägg till en bilaga i skrivfältet",
         },
+        openComposerMenu: {
+          label: "Öppna +-menyn",
+          description: "Öppna meddelandefältets +-meny med verktyg och bilagor",
+        },
         sendMessage: {
           label: "Skicka meddelande",
           description: "Skicka det som finns i skrivfältet",
@@ -1427,10 +1434,6 @@ export const sv = {
         decreaseReasoningEffort: {
           label: "Minska resonemangsnivå",
           description: "Sänk resonemangsnivån ett steg",
-        },
-        toggleFastMode: {
-          label: "Växla snabbt läge",
-          description: "Aktivera eller inaktivera snabbt läge",
         },
         renameChat: {
           label: "Byt namn på chatt",
@@ -2169,6 +2172,18 @@ export const sv = {
         openError: "Det gick inte att öppna katalogen",
         copyError: "Det gick inte att kopiera sökvägen",
       },
+      fullInstall: {
+        label: "Installationstyp",
+        description:
+          "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        action: "Uppgradera till fullständig installation",
+        confirmTitle: "Uppgradera till den fullständiga installationen?",
+        confirmDescription:
+          "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmAction: "Uppgradera",
+        keywords:
+          "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
+      },
       repairInstall: {
         label: "Reparera installationen",
         description:
@@ -2177,6 +2192,8 @@ export const sv = {
         confirmTitle: "Reparera den här installationen?",
         confirmDescription:
           "Stoppar servern och kör installationsprogrammet igen, vilket installerar om PyTorch för den här datorns GPU i den senaste versionen som stöds. Chattar och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionChatOnly:
+          "Stoppar servern och kör installationsprogrammet igen. Det här är en installation med endast chatt, så installationsprogrammet uppgraderar den även till den fullständiga installationen med PyTorch, flera gigabyte totalt. Chattar och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Reparera nu",
       },
       resetPreferences: {
@@ -2910,6 +2927,10 @@ export const sv = {
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
+      showReplyTimes: "Svarstider",
+      showReplyTimesDescription: "Visa under varje svar när det blev klart.",
+      showReplyTimesKeywords:
+        "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
@@ -3338,6 +3359,7 @@ export const sv = {
       relativeNever: "aldrig",
       relativeJustNow: "just nu",
       expired: "har löpt ut",
+      expiredStatus: "Har löpt ut",
       today: "i dag",
       created: "Skapad {value}",
       used: "Senast använd {value}",
@@ -4962,5 +4984,42 @@ export const sv = {
     cantRun: "Kunde inte köras",
     failed: "Fel {status}",
     invalidJson: "Begärans body är inte giltig JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Inlästa modeller",
+      countOne: "{count} modell inläst",
+      countMany: "{count} modeller inlästa",
+      pillLabel: "{count}. Visa detaljer eller dra för att flytta",
+      dragToMove: "Dra för att flytta",
+      dragHandleLabel: "Flytta inlästa modeller. Piltangenterna flyttar den lite i taget.",
+      collapse: "Fäll ihop",
+      collapseLabel: "Fäll ihop inlästa modeller",
+      close: "Stäng",
+      closeLabel: "Stäng inlästa modeller",
+      backOnNextLoad: "Visas igen vid nästa modellinläsning",
+      ejectToFree: "Mata ut för att frigöra minne",
+      ejectLabel: "Mata ut {model}",
+      openTarget: "Öppna {target}",
+      rowLabel: "{model}. Öppna {target}",
+      loading: "Läser in",
+      ejecting: "Matar ut",
+      stillInMemory: "Finns kvar i minnet",
+      alsoServing: "Betjänar även",
+      noneLoaded: "Inga modeller inlästa",
+      noneLoadedDetail: "Modeller du läser in visas här.",
+      otherAccount: "Används av ett annat konto",
+      otherAccountDetail: "Minnet hålls av en modell som du inte kan se",
+      toastStillResident: "”{model}” lästes in under utmatningen och använder därför fortfarande minne. Mata ut den igen för att frigöra det.",
+      toastUnverified: "{model} ombads att laddas ur, men körmiljön bekräftade inte. Kontrollera kortet om en stund.",
+      toastAlreadyFree: "{model} var inte längre inläst.",
+      toastReplaced: "{model} är inte längre inläst. ”{resident}” tog dess plats och lämnades orörd.",
+      toastEjected: "{model} utmatad",
+      toastFailed: "Det gick inte att mata ut {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Flytta liveövervakaren. Piltangenterna flyttar den lite i taget, dubbelklick återställer den.",
+      reconnecting: "Återansluter …",
+    },
   },
 } as const;

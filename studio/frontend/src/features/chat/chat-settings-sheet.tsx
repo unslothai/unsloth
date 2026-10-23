@@ -1817,7 +1817,7 @@ export function ChatSettingsPanel({
                   placeholder='{ "env": "staging", "version": "v2.3.1" }'
                   fieldSizing="fixed"
                   className={cn(
-                    "min-h-24 border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
+                    "min-h-24 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
                     systemVariablesError &&
                       "ring-1 ring-destructive focus-visible:ring-destructive",
                   )}
@@ -1839,7 +1839,7 @@ export function ChatSettingsPanel({
             ) : null}
             {/* Squircle on the wrapper: Chrome leaves a scroll area's own
                 corners square. */}
-            <div className="corner-squircle overflow-hidden rounded-xl">
+            <div className="corner-squircle overflow-hidden rounded-xl border border-border transition-colors focus-within:border-ring dark:border-transparent dark:focus-within:border-transparent">
               <Textarea
                 value={systemPromptDraft}
                 onChange={(event) => setSystemPromptDraft(event.target.value)}
