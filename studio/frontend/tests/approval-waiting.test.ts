@@ -245,10 +245,10 @@ test("the New Chat item shows the mark instead of its spinner while a chat waits
     sidebar,
     /const anyChatWaiting = useMemo\(\s*\(\) => \[\.\.\.approvalWaitingElsewhere\]\.some\(\(id\) => runningByThreadId\[id\]\),/,
   );
-  // Off the chat route, and on it when the collapsed rail hides the Recents rows.
+  // On every route, since the waiting chat's own row may not be on screen.
   assert.match(
     sidebar,
-    /waiting=\{\s*anyChatWaiting &&\s*\(!isChatRoute \|\| \(!isMobile && sidebarState === "collapsed"\)\)\s*\? t\("shell\.navigation\.chatAwaitingApproval"\)\s*: undefined\s*\}/,
+    /waiting=\{\s*anyChatWaiting\s*\? t\("shell\.navigation\.chatAwaitingApproval"\)\s*: undefined\s*\}/,
   );
   const navItem = /function NavItem\([\s\S]*?\n\}\n/.exec(sidebar)?.[0] ?? "";
   assert.ok(navItem, "NavItem not found");

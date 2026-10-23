@@ -6172,10 +6172,9 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
-              // A wait also shows on the chat route when the rail hides the Recents rows.
+              // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
               waiting={
-                anyChatWaiting &&
-                (!isChatRoute || (!isMobile && sidebarState === "collapsed"))
+                anyChatWaiting
                   ? t("shell.navigation.chatAwaitingApproval")
                   : undefined
               }
