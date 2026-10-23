@@ -1328,6 +1328,58 @@ def test_offline_hub_full_fine_tune_keeps_the_manifest_probe_offline(tmp_path, m
     assert calls and all(offline for _, _, offline in calls)
 
 
+def _package_through_backend(backend, path, out):
+    out.mkdir()
+    if path == "merged":
+        backend._package_drafter_merged(str(out), None)
+    elif path == "gguf":
+        gguf = out / "model.Q8_0.gguf"
+        gguf.write_bytes(b"g")
+        backend._package_drafter_gguf(str(out), str(out), [str(gguf)])
+    else:
+        assert backend._package_drafter_lora(str(out), head_saved = True)
+    return json.loads((out / "drafter.json").read_text())
+
+
+@pytest.mark.parametrize("path", ["merged", "gguf", "lora"])
+@pytest.mark.parametrize("offline", [False, True])
+def test_drafter_packaging_reads_the_manifest_at_the_loaded_commit(
+    tmp_path, monkeypatch, path, offline
+):
+    """Merged, GGUF and LoRA packaging read a Hub id's manifest at the commit the load resolved
+    (not the branch head) and stay offline when the load did."""
+    backend, calls, _, _ = _hub_full_fine_tune_backend(tmp_path, monkeypatch, offline)
+    backend.current_checkpoint = "org/trained-full-mtp"
+    info = _package_through_backend(backend, path, tmp_path / "out")
+    assert info["strategy"] == "mtp"
+    assert calls and all(revision == "abc123" for _, revision, _ in calls)
+    assert all(local is offline for _, _, local in calls)
+
+
+def test_drafter_packaging_without_a_hub_load_passes_no_revision(tmp_path, monkeypatch):
+    """A local checkpoint (no resolved commit, online load) calls the helpers exactly as before."""
+    from core.export import drafter_export
+    from core.export import export as export_module
+
+    seen = []
+    for name in ("package_merged", "package_lora"):
+        monkeypatch.setattr(
+            drafter_export, name, lambda *a, **k: seen.append(sorted(k)) or None
+        )
+    monkeypatch.setattr(
+        drafter_export, "package_gguf", lambda *a, **k: seen.append(sorted(k)) or (None, [])
+    )
+    backend = object.__new__(export_module.ExportBackend)
+    backend.current_model = types.SimpleNamespace(config = types.SimpleNamespace())
+    backend.current_checkpoint = str(tmp_path)
+    backend._checkpoint_token = None
+    backend._checkpoint_local_files_only = False
+    backend._package_drafter_merged(str(tmp_path), None)
+    backend._package_drafter_gguf(str(tmp_path), str(tmp_path), [])
+    backend._package_drafter_lora(str(tmp_path), head_saved = True)
+    assert seen == [["allow_mtp", "token", "verifier"], ["token"], ["token"]]
+
+
 def test_load_records_its_offline_decision_for_the_manifest_probe():
     src = _source("core/export/export.py")
     assert "self._checkpoint_local_files_only = bool(local_files_only)" in src

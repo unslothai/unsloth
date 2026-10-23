@@ -2202,6 +2202,17 @@ class ExportBackend:
         """The Hub commit the current model's load resolved (None for a local folder)."""
         return getattr(getattr(self.current_model, "config", None), "_commit_hash", None)
 
+    def _loaded_manifest_kwargs(self) -> dict:
+        """The load's commit and offline decision, so a Hub id's drafter manifest is read where the
+        exported weights came from (only the ones that are set)."""
+        kwargs = {}
+        revision = self._loaded_commit()
+        if revision:
+            kwargs["revision"] = revision
+        if getattr(self, "_checkpoint_local_files_only", False):
+            kwargs["local_files_only"] = True
+        return kwargs
+
     def _loaded_hub_snapshot(self, repo_id: str, token) -> Optional[str]:
         """The local snapshot folder of a Hub checkpoint the current model was loaded from."""
         revision = self._loaded_commit()
@@ -2234,6 +2245,7 @@ class ExportBackend:
                 verifier = repo_id,
                 allow_mtp = allow_mtp,
                 token = self._checkpoint_token,
+                **self._loaded_manifest_kwargs(),
             )
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter into {final_dir}")
@@ -2249,7 +2261,11 @@ class ExportBackend:
             from core.export.drafter_export import package_lora
             return (
                 package_lora(
-                    self.current_checkpoint, adapter_dir, head_saved, token = self._checkpoint_token
+                    self.current_checkpoint,
+                    adapter_dir,
+                    head_saved,
+                    token = self._checkpoint_token,
+                    **self._loaded_manifest_kwargs(),
                 )
                 is not None
             )
@@ -2279,7 +2295,12 @@ class ExportBackend:
             from core.export.drafter_export import package_gguf
 
             info, files = package_gguf(
-                self.current_checkpoint, merged_dir, gguf_dir, ggufs, token = self._checkpoint_token
+                self.current_checkpoint,
+                merged_dir,
+                gguf_dir,
+                ggufs,
+                token = self._checkpoint_token,
+                **self._loaded_manifest_kwargs(),
             )
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter with the GGUF export")
