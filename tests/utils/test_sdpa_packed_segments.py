@@ -115,3 +115,31 @@ def test_peak_memory_is_linear_in_tokens(monkeypatch):
     # SDPA only its math kernel next to a mask flash cannot take.
     assert peaks[True] < 256, peaks
     assert peaks[False] < 512, peaks
+
+
+def test_segments_avoid_single_run_cat_and_keep_bshd_grads(monkeypatch):
+    calls = []
+    orig_cat = torch.cat
+    monkeypatch.setattr(
+        ad.torch,
+        "cat",
+        lambda tensors, *a, **kw: calls.append(len(tensors)) or orig_cat(tensors, *a, **kw),
+    )
+    q_bshd = torch.randn(1, 12, 4, 16, requires_grad = True)
+    k_bshd = torch.randn(1, 12, 2, 16, requires_grad = True)
+    v_bshd = torch.randn(1, 12, 2, 16, requires_grad = True)
+    out = ad._sdpa_packed_segments(
+        q_bshd.transpose(1, 2),
+        k_bshd.transpose(1, 2),
+        v_bshd.transpose(1, 2),
+        (6, 6),
+        n_groups = 2,
+        is_causal = True,
+        sliding_window = None,
+        sdpa_kwargs = {},
+    )
+    assert calls == []
+    out.sum().backward()
+    assert q_bshd.grad.is_contiguous()
+    assert k_bshd.grad.is_contiguous()
+    assert v_bshd.grad.is_contiguous()
