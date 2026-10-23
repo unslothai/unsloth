@@ -51549,6 +51549,9 @@ async def diffusion_download_plan(
             _assert_native_precision_unset(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
+                fam = fam,
+                repo_id = request.model_path,
+                gguf_filename = request.gguf_filename,
             )
         if fam is not None and not training:
             if planner is backend:
@@ -51614,14 +51617,21 @@ async def diffusion_download_plan(
 
 
 def _assert_native_precision_unset(
-    *, transformer_quant: Optional[str] = None, text_encoder_quant: Optional[str] = None
+    *,
+    transformer_quant: Optional[str] = None,
+    text_encoder_quant: Optional[str] = None,
+    fam: Any = None,
+    repo_id: Optional[str] = None,
+    gguf_filename: Optional[str] = None,
 ) -> None:
     """Refuse an EXPLICIT precision on the native sd.cpp engine, which cannot honour one.
 
     It accepts both knobs for interface parity with the diffusers backend and ignores them, so
     without this an explicit FP8 loads happily, quantises nothing, and reports null -- the silent
-    mismatch the resolved-precision work exists to remove. `auto` and `none` pass through: they
-    delegate the choice, and nothing is being promised.
+    mismatch the resolved-precision work exists to remove. `auto` passes through: it delegates the
+    choice. `none` / `off` ask for the released bf16 encoder (what the diffusers backend loads for
+    them), so they pass only when the encoder this pick reads natively is not quantised (``fam``
+    given); FLUX.3's Q8_0 Qwen3-VL encoder, for one, is refused rather than loaded in its place.
 
     Raises RuntimeError, which the route maps to 409 alongside the diffusers refusals."""
     from core.inference.diffusion_auto_policy import precision_fallback_allowed
@@ -51641,6 +51651,17 @@ def _assert_native_precision_unset(
         asked.append(f"transformer_quant={pinned!r}")
     if te_mode is not None and te_mode != TQ_AUTO:
         asked.append(f"text_encoder_quant={te_mode!r}")
+    dense_te = str(text_encoder_quant or "").strip().lower() in ("none", "off")
+    if dense_te and fam is not None:
+        from core.inference.diffusion_families import sd_cpp_quantized_text_encoders
+        quantized = sd_cpp_quantized_text_encoders(fam, repo_id, gguf_filename)
+        if quantized:
+            raise RuntimeError(
+                f"text_encoder_quant={str(text_encoder_quant).strip()!r} (dense bf16) could not "
+                f"be used: this pick runs on the native engine, which reads the text encoder "
+                f"{', '.join(quantized)} and has no dense copy to load in its place. Leave the "
+                "text encoder precision on 'auto', or pick a model that loads through diffusers."
+            )
     if not asked:
         return
     raise RuntimeError(
@@ -51939,6 +51960,9 @@ async def load_diffusion_model_gated(
             _assert_native_precision_unset(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
+                fam = fam,
+                repo_id = request.model_path,
+                gguf_filename = request.gguf_filename,
             )
         # And the same for a speech GGUF picked out of a mixed image repo. Both engines assert it
         # too, but the diffusers copy runs inside acquire_for and the native one on its worker,
@@ -52021,6 +52045,9 @@ async def load_diffusion_model_gated(
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
+                    fam = fam,
+                    repo_id = request.model_path,
+                    gguf_filename = request.gguf_filename,
                 )
             elif activated == ENGINE_DIFFUSERS:
                 await asyncio.to_thread(

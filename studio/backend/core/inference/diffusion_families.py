@@ -3058,6 +3058,26 @@ def _with_text_encoder_quant(
     return tuple(out)
 
 
+# GGUF tags that carry an encoder at the precision it was released in (or wider): no quantisation was applied.
+_SD_CPP_LOSSLESS_GGUF_TAG_RE = re.compile(r"-(BF16|F16|F32)\.gguf$", re.IGNORECASE)
+
+
+def sd_cpp_quantized_text_encoders(
+    fam: DiffusionFamily,
+    repo_id: Optional[str] = None,
+    gguf_filename: Optional[str] = None,
+) -> tuple[str, ...]:
+    """Filenames of the GGUF text encoders a native load of this pick reads below their released
+    precision (Q8_0, Q4_K_M, ...). A request for the dense bf16 encoder (``text_encoder_quant``
+    "none" / "off") cannot be honoured by sd.cpp when this is non-empty. Safetensors encoders
+    (CLIP / T5 / projectors) are the released files and never count."""
+    return tuple(
+        filename
+        for _repo, filename, _kind in sd_cpp_text_encoders_for(fam, repo_id, gguf_filename)
+        if filename.lower().endswith(".gguf") and not _SD_CPP_LOSSLESS_GGUF_TAG_RE.search(filename)
+    )
+
+
 # sd-cli companion repos released Studio builds fetched and this one no longer reads: the unsloth copies of the
 # ComfyUI-built repacks, each holding only VAE / text-encoder files (no denoiser). Nothing loads from them now, but an
 # upgraded install still holds their bytes (up to ~70 GB), so they stay companion-only: hidden from the model pickers
