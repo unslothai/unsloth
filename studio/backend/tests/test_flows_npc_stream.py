@@ -168,7 +168,7 @@ def test_in_process_streams_arrive_as_the_route_writes_them():
 
     monkey_headers = flow_caller._headers
     flow_caller._headers = lambda caller, content_type, extra = None: {"content-type": content_type}
-    flow_caller.checked_path, saved = (lambda url, method = "GET": url.path), flow_caller.checked_path
+    flow_caller.checked_path, saved = (lambda url, method = None: url.path), flow_caller.checked_path
 
     async def go():
         t0 = time.monotonic()
