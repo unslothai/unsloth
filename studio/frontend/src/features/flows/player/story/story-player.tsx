@@ -322,6 +322,11 @@ export function StoryPlayer({
   const requested = useRef<Set<string>>(new Set());
   const artEntry = manifest.entry_points?.scene_art;
   const nextEntry = manifest.entry_points?.next_scene;
+  // Load the writer's chat model on the title screen, so the first generated scene does not wait for it.
+  useEffect(() => {
+    if (nextEntry && api.warm)
+      void api.warm(flowId, nextEntry).catch(() => false);
+  }, [api, flowId, nextEntry]);
 
   const paint = useCallback(
     (target: StoryScene, rev: number) => {

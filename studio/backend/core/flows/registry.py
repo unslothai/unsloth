@@ -94,8 +94,10 @@ class NodeContext(Protocol):
         max_tokens: int = 4096,
         seed: Optional[int] = None,
         images: Optional[list[dict]] = None,
+        on_text: Optional[Callable[[str], None]] = None,
     ) -> Any:
-        """Structured output (`response_format` json_schema); falls back to parsing the first JSON object in the text."""
+        """Structured output (`response_format` json_schema); falls back to parsing the first JSON object in the text.
+        With ``on_text`` the answer streams, and it gets the raw JSON written so far after every chunk."""
         ...
 
     async def generate_image(
