@@ -98,25 +98,25 @@ def test_gathered_weight_reuses_its_plan_across_reallocation(monkeypatch):
 
 
 def test_gathered_weight_view_reuses_its_plan_across_reallocation(monkeypatch):
-    """The fused LoRA MLP backward dequantizes `downW.t()`, a new view of the gathered weight each
-    call: the plan is reused for a view laid out like the one it was built from."""
+    """The fused LoRA MLP dequantizes `downW` in the forward and `downW.t()`, a new view each call,
+    in the backward. On one GPU both hit the one plan (same address); after each FSDP2
+    re-allocation they must too, and decode the bytes now at the new address."""
     utils = _utils()
     calls = _count_planned(monkeypatch, utils)
     q, s = _quantize(4)
     q_other, _ = _quantize(5)
     p = _gathered_param(q, mark = True)
-    got = utils.fast_dequantize(p.t(), s, use_global_buffer = True).t()
-    assert _equal(got, bnb_functional.dequantize_4bit(q, s))
-    for step, packed in enumerate((q_other, q)):
-        old, blocker = _reallocate(p, packed)
-        assert p.data_ptr() != old
-        got = utils.fast_dequantize(p.t(), s, use_global_buffer = True).t()
-        assert _equal(got, bnb_functional.dequantize_4bit(packed, s)), step
-        del blocker
-    assert calls[0] == 1, "the planned launch was rebuilt for a view of a re-allocated FSDP2 weight"
-    # The parameter itself, another layout of the same bytes, still decodes them.
     got = utils.fast_dequantize(p, s, use_global_buffer = True)
     assert _equal(got, bnb_functional.dequantize_4bit(q, s))
+    for step, packed in enumerate((q_other, q, q_other)):
+        old, blocker = _reallocate(p, packed)
+        assert p.data_ptr() != old
+        want = bnb_functional.dequantize_4bit(packed, s)
+        assert _equal(utils.fast_dequantize(p, s, use_global_buffer = True), want), step
+        assert _equal(utils.fast_dequantize(p.t(), s, use_global_buffer = True).t(), want), step
+        assert _equal(utils.fast_dequantize(p, s, use_global_buffer = True), want), step
+        del blocker
+    assert calls[0] == 1, "the planned launch was rebuilt for a view of a re-allocated FSDP2 weight"
 
 
 def test_gathered_weight_with_swapped_storage_rebuilds(monkeypatch):
