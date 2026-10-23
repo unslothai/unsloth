@@ -13,7 +13,11 @@ const LAN_API = readSrc("features/settings/api/lan-access.ts");
 test("the API tab shows Remote & LAN as a status line, not a second set of polling panels", () => {
   assert.doesNotMatch(TAB, /<RemoteAccessSection|<LanAccessSection/);
   assert.match(TAB, /<RemoteLanSummary \/>/);
-  assert.doesNotMatch(SUMMARY, /setInterval|setTimeout/);
+  assert.doesNotMatch(SUMMARY, /setInterval/);
+  assert.match(
+    SUMMARY,
+    /settling = next\.state === "starting" \|\| next\.state === "stopping";\s*if \(settling\) \{\s*timer = window\.setTimeout/,
+  );
   assert.match(SUMMARY, /setActiveTab\("remote-lan"\)/);
 });
 
@@ -55,6 +59,22 @@ test("LAN URLs publish only when they change", () => {
 test("the API page marks one served row as the primary, found by checkpoint first", () => {
   const page = readSrc("features/api-monitor/api-monitor-page.tsx");
   assert.match(page, /active: index === activeIndex,/);
-  assert.match(page, /\(model\.checkpoint \?\? model\.id\) === residentCheckpoint/);
+  assert.match(
+    page,
+    /\(model\.checkpoint \?\? model\.id\) === residentCheckpoint/,
+  );
   assert.match(page, /\(model\.active && !canEditSettings\)/);
+});
+
+test("a failed read while remote access is settling retries instead of sticking", () => {
+  assert.match(
+    SUMMARY,
+    /\.catch\(\(\) => \{[\s\S]*?if \(settling\) \{\s*timer = window\.setTimeout\(readRemote/,
+  );
+});
+
+test("the keyless note shows beside a public address too, since LAN callers stay keyless", () => {
+  const lan = readSrc("features/settings/components/lan-access-section.tsx");
+  assert.doesNotMatch(lan, /keylessLanEligible &&\s*status\.publicUrls\.length === 0/);
+  assert.equal(lan.match(/\{keylessNote\}/g)?.length, 2);
 });

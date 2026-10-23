@@ -131,8 +131,7 @@ def test_cancellation_while_executor_busy_leaves_no_claim(monkeypatch, download)
 
         def transport(use_xet, **kwargs):
             nonlocal blocker
-            # Earlier preparation awaits have finished. Occupy the only thread so
-            # the next offloaded operation is queued when the request is cancelled.
+            # Occupy the only executor thread so the next offload is queued at cancel time.
             blocker = loop.run_in_executor(None, release.wait, 15)
             loop.call_soon(task.cancel)
             return original_transport(use_xet, **kwargs)
@@ -174,8 +173,7 @@ def test_cancel_stops_worker_registered_after_initial_lookup(monkeypatch, downlo
         if first:
             first = False
             assert proc is None
-            # The launch thread registers after cancel reads None but before it
-            # arms pending cancellation. Registration cannot see the future flag.
+            # Launch thread registers after cancel reads None but before pending cancellation is armed.
             assert registry.register_process(key, download.proc)
         return proc
 
@@ -211,11 +209,7 @@ def test_a_failed_token_resolution_downloads_anonymously(monkeypatch, download):
 
 @pytest.mark.parametrize("cancel_download", [False, True])
 def test_launch_failure_preserves_download_cancellation(monkeypatch, download, cancel_download):
-    """The launch still runs in a thread, so a failure there has to settle the claim either way.
-
-    The failure is injected at the spawn rather than at token resolution: resolution is the ambient
-    fallback and no longer raises, so a launch failure is what reaches this path now.
-    """
+    """A launch failure must still settle the download claim, so the failure is injected at the spawn."""
     from fastapi import HTTPException
     from hub.schemas.downloads import CancelDownloadRequest, CancelDatasetDownloadRequest
 
@@ -327,8 +321,6 @@ def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failu
         )
 
     if failure_at in (None, "token"):
-        # A failed ambient lookup is not a spawn failure: the worker starts anonymously and, having
-        # started, owns its manifest.
         assert spawn() is proc
         assert len(created) == 1
         assert created[0].exists(), "a started worker must retain its manifest"

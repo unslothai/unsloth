@@ -25,18 +25,13 @@ from utils.preview_sharing_settings import (
 )
 
 
-# ── Rate limiter ─────────────────────────────────────────────────────────────
-
-
 def test_rate_limit_per_key(monkeypatch):
     monkeypatch.setattr(rl, "_MAX_REQUESTS", 3)
     rl.reset()
     assert rl.check_rate_limit("ip1") == 0
     assert rl.check_rate_limit("ip1") == 0
     assert rl.check_rate_limit("ip1") == 0
-    # 4th request over the ceiling -> positive retry-after seconds.
     assert rl.check_rate_limit("ip1") > 0
-    # A different client is unaffected.
     assert rl.check_rate_limit("ip2") == 0
 
 
@@ -47,27 +42,21 @@ def test_rate_limit_window_rolls_off(monkeypatch):
     t = {"now": 1000.0}
     monkeypatch.setattr(rl.time, "monotonic", lambda: t["now"])
     assert rl.check_rate_limit("ip") == 0
-    assert rl.check_rate_limit("ip") > 0  # immediately over
-    t["now"] += 11.0  # window elapsed
+    assert rl.check_rate_limit("ip") > 0
+    t["now"] += 11.0
     assert rl.check_rate_limit("ip") == 0
 
 
 def test_rate_limit_eviction_does_not_reset_active_bucket(monkeypatch):
-    # A flood of distinct keys must not cycle the table and clear a live limit.
     monkeypatch.setattr(rl, "_MAX_REQUESTS", 1)
     monkeypatch.setattr(rl, "_MAX_BUCKETS", 2)
     rl.reset()
     assert rl.check_rate_limit("a") == 0
-    assert rl.check_rate_limit("a") > 0  # 'a' throttled (active)
-    assert rl.check_rate_limit("b") == 0
-    assert rl.check_rate_limit("b") > 0  # 'b' throttled; table now full of actives
-    # A new key can't evict an active bucket -> denied (fail closed)...
-    assert rl.check_rate_limit("c") > 0
-    # ...and the flood did not reset 'a'.
     assert rl.check_rate_limit("a") > 0
-
-
-# ── Client IP ────────────────────────────────────────────────────────────────
+    assert rl.check_rate_limit("b") == 0
+    assert rl.check_rate_limit("b") > 0
+    assert rl.check_rate_limit("c") > 0
+    assert rl.check_rate_limit("a") > 0
 
 
 class _Req:
@@ -82,7 +71,6 @@ class _Req:
 
 def test_client_ip_uses_socket_peer_by_default(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
-    # Forwarded header is ignored unless the operator opts in.
     req = _Req("203.0.113.9", {"x-forwarded-for": "198.51.100.7"})
     assert client_ip(req) == "203.0.113.9"
     assert client_ip(None) == "_unknown"
@@ -90,21 +78,18 @@ def test_client_ip_uses_socket_peer_by_default(monkeypatch):
 
 def test_client_ip_uses_rightmost_forwarded_when_trusted(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_TRUST_FORWARDED", "1")
-    # Leftmost is client-spoofable; the trusted proxy appends the real peer on the
-    # right, so the rightmost hop is the one we key on.
+    # Leftmost is client-spoofable; key on the rightmost hop the trusted proxy appended.
     req = _Req("127.0.0.1", {"x-forwarded-for": "1.2.3.4, 198.51.100.7"})
     assert client_ip(req) == "198.51.100.7"
 
 
 def test_client_ip_uses_cf_connecting_ip_on_loopback(monkeypatch):
-    # Managed Cloudflare tunnel terminates at loopback; key by the real visitor.
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     req = _Req("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
     assert client_ip(req) == "198.51.100.7"
 
 
 def test_client_ip_ignores_cf_header_from_non_loopback(monkeypatch):
-    # A direct (non-loopback) caller can't spoof CF-Connecting-IP to skew the limit.
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     req = _Req("203.0.113.9", {"cf-connecting-ip": "198.51.100.7"})
     assert client_ip(req) == "203.0.113.9"
@@ -113,9 +98,6 @@ def test_client_ip_ignores_cf_header_from_non_loopback(monkeypatch):
 def test_client_ip_loopback_without_cf_returns_peer(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     assert client_ip(_Req("127.0.0.1")) == "127.0.0.1"
-
-
-# ── Kill-switch setting ──────────────────────────────────────────────────────
 
 
 def test_sharing_defaults_enabled_and_coerces():

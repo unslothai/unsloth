@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the server session log + native-crash capture in run.py.
-
-Field regression: Unsloth "terminates without a warning" -- a native crash in
-the GPU runtime kills the process with no Python traceback, and a desktop-
-shortcut console closes before anything can be read. The server must tee its
-console output to disk and aim faulthandler at the same file so even hard
-crashes leave evidence.
-"""
+"""Teed console and faulthandler share one log file, so native crashes leave evidence."""
 
 from __future__ import annotations
 
@@ -31,7 +24,7 @@ class TestTeeStream:
         tee = run_mod._TeeStream(console, log)
         n = tee.write("hello")
         assert console.getvalue() == "hello" == log.getvalue()
-        assert n == 5  # delegate's return value, console contract unchanged
+        assert n == 5
 
     def test_log_failure_never_breaks_console(self):
         class Broken:
@@ -44,25 +37,23 @@ class TestTeeStream:
         console = io.StringIO()
         tee = run_mod._TeeStream(console, Broken())
         assert tee.write("still works") == len("still works")
-        tee.flush()  # must not raise
+        tee.flush()
         assert console.getvalue() == "still works"
 
     def test_attribute_proxy(self):
         console, log = io.StringIO(), io.StringIO()
         tee = run_mod._TeeStream(console, log)
-        # isatty / encoding probes must see the original stream's answers.
         assert tee.isatty() == console.isatty()
 
     def test_missing_console_is_a_null_sink(self):
-        # Production never builds this, but _TeeStream(None, ...) must not crash.
         log = io.StringIO()
         tee = run_mod._TeeStream(None, log)
-        assert tee.write("hello") == len("hello")  # text-stream write contract
+        assert tee.write("hello") == len("hello")
         tee.flush()
         tee.close()
         assert log.getvalue() == "hello"
-        assert not log.closed  # the tee does not own the log handle
-        run_mod._harden_console_close(None)  # must not raise
+        assert not log.closed
+        run_mod._harden_console_close(None)
 
 
 class TestNormalizeStandardStreams:
@@ -78,7 +69,6 @@ class TestNormalizeStandardStreams:
                 stream = getattr(sys, name)
                 assert stream is not None
                 assert getattr(sys, f"__{name}__") is not None
-                # uvicorn's default formatter probes isatty(); logging needs write().
                 assert stream.isatty() is False
                 assert stream.encoding
                 assert stream.fileno() >= 0
@@ -96,14 +86,12 @@ class TestNormalizeStandardStreams:
         monkeypatch.setattr(sys, "stdout", console)
         monkeypatch.setattr(sys, "stderr", console)
         run_mod._normalize_standard_streams()
-        # Identity, not truthiness: replacing a live console would break Colab
-        # (ipykernel OutStream), Tauri's stdout protocol and pytest capture.
+        # Identity, not truthiness: replacing a live console breaks Colab OutStream, Tauri stdout and pytest capture.
         assert sys.stdout is console
         assert sys.stderr is console
 
     def test_runs_before_the_logger_import(self):
-        # structlog binds `from sys import stdout` at import time, so normalizing
-        # after the loggers import leaves None captured forever.
+        # structlog binds `from sys import stdout` at import, so normalizing must happen before loggers import.
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
         call = "\n_normalize_standard_streams()"
         assert call in src, "run.py never calls _normalize_standard_streams()"
@@ -120,8 +108,6 @@ class TestSetupServerDiskLogging:
 
         monkeypatch.delenv("UNSLOTH_STUDIO_NO_FILE_LOG", raising = False)
         monkeypatch.delenv("PYTHONFAULTHANDLER", raising = False)
-        # Both resolution paths (utils.paths.studio_root and the env
-        # fallback) honor UNSLOTH_STUDIO_HOME, so this redirects the log dir.
         monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
         orig_out, orig_err = sys.stdout, sys.stderr
         was_enabled = faulthandler.is_enabled()
@@ -130,7 +116,6 @@ class TestSetupServerDiskLogging:
             assert log_path is not None
             assert Path(log_path).is_file()
             assert "logs" in str(log_path)
-            # faulthandler armed at the file; children inherit the env switch.
             assert faulthandler.is_enabled()
             import os
 
@@ -155,16 +140,7 @@ class TestSetupServerDiskLogging:
         )
 
     def test_structlog_is_configured_after_the_tee_and_before_the_first_line(self):
-        """Order, not presence, is the invariant.
-
-        ``LogConfig.setup_logging`` hands structlog a
-        ``PrintLoggerFactory(file = sys.stdout)``, which snapshots the stream it is given,
-        and ``cache_logger_on_first_use`` then freezes that snapshot into any logger that
-        has already emitted a line. Configure before the tee and this module's ``logger``
-        is pinned to the console for the rest of the process -- every later run.py line
-        goes missing from the session log. Configure after it and the whole session,
-        starting with the first line, renders one way into both.
-        """
+        """Configure structlog after the tee, or cache_logger_on_first_use freezes the console stream in."""
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
         body = src.index("def run_server")
         tee_idx = src.index("_setup_server_disk_logging()", body)
@@ -179,18 +155,12 @@ class TestSetupServerDiskLogging:
         ), "configuring structlog at import time pins it to the pre-tee sys.stdout"
 
     def test_run_py_does_not_import_a_loggers_submodule_at_module_scope(self):
-        """`loggers` must be a real package for `loggers.config` to resolve.
-
-        run.py is loaded by tests that stand a bare ``types.ModuleType`` in for it
-        (tests/studio/install/test_selection_logic.py). A bare module has no ``__path__``,
-        so a module-scope submodule import fails during collection and takes every test in
-        that file with it. Import it where it is used instead.
-        """
+        """Import loggers.config where it is used: a bare ModuleType stand-in for run.py has no __path__."""
         import ast
 
         tree = ast.parse((Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8"))
         offenders = []
-        for node in tree.body:  # module scope only
+        for node in tree.body:
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("loggers."):
                 offenders.append(f"line {node.lineno}: from {node.module} import ...")
             elif isinstance(node, ast.Import):

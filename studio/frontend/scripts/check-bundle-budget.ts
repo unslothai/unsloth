@@ -365,22 +365,40 @@ export const BUDGET = {
   // Shortcut fixes (#14597): stop action, isModEnter, zoom guard and strings in the eager locales:
   // +3,339 B raw / +1,727 B transfer (6,881,936 -> 6,885,275 B raw,
   // 2,073,188 -> 2,074,915 B transfer against b2ba86a514, Node 26, 98 chunks). Raised by that.
+  // Run settings save state and Advanced groups (#14589) merged with main at 8bcbf837bd: 6,725.4 KB raw /
+  // 2,026.7 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // #14590 (eager locale strings, help entry, API buttons, update card close) merged with main at 356721b31e:
   // 6,729.6 KB raw / 2,027.3 KB transfer (Node 24, 98 chunks). Raised to that plus about 200 B.
   // Passive Settings update check: +24 B raw / +43 B transfer against e24fa71e1b
   // (6,891,238 -> 6,891,262 raw, 2,076,088 -> 2,076,131 transfer, Node 26). Raised by that.
+  // Local addresses in the desktop browser panel (#14290): the grant, per-tab bookkeeping and agent check live in
+  // the eager browser store, executor and panel: +1,808 B raw / +551 B transfer (6,891,248 -> 6,893,056 B raw,
+  // 2,076,155 -> 2,076,706 B transfer against c2f75c486, one machine and build). Raised to that plus the same margin.
+  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate):
+  // +1,514 B raw / +418 B transfer over main (6,891,262 -> 6,892,776 B raw, 2,076,131 -> 2,076,549 B transfer
+  // merged at c2f75c4, Node 24, 98 chunks). Raised by that, on top of the above.
+  // #14592 + #14601 (system polling, floating panels) merged with main at 0c001fceb: 6,907,598 B raw /
+  // 2,080,708 B transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Settings API / Remote / LAN strings (#14596) merged with main at 870f37741: 6,907,886 B raw / 2,080,818 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Apple unified-memory fit hint (#14598) merged with main at a29487c52: 6,909,320 B raw / 2,081,284 B
+  // transfer (Node 26, 98 chunks). Raised to that plus about 200 B.
+  // Desktop Chat only upgrade (#14593), incl. the Train row opening the full install dialog, merged with main
+  // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
+  // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
+  // (a CI build measured about 100 B over a local one). Raised by that.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at 9dfba3be3). The GRPO prompt preview reading
+  // budget, which keeps main's margin (re-added on top of main at c764e1385). The GRPO prompt preview reading
   // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
   // The reward editor and the stepped Train page (#14074) add 14,122 B raw / 5,047 B transfer over #12601 at
   // 0be041016 (6,871,896 -> 6,886,018 B raw, 2,069,487 -> 2,074,534 B transfer, one machine and build, 96 chunks):
   // the editor, wizard and explanation strings join the eager English catalog and the step state sits in the
   // eager training store. Raised to the measured build plus a 160 B raw / 189 B transfer margin.
-  transferBytes: 2_089_979,
-  rawBytes: 6_933_647,
+  transferBytes: 2_098_482,
+  rawBytes: 6_963_144,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

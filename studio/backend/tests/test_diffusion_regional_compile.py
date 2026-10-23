@@ -145,7 +145,7 @@ def test_hidream_unpicked_expert_overflow_adds_zero_not_nan():
     x = torch.randn(6, 16)
     idx = torch.tensor([[0, 1]] * 6).view(-1)
     weights = torch.full((12, 1), 0.5)
-    moe.experts[3].forward = lambda t: torch.full_like(t, float("inf"))  # never picked
+    moe.experts[3].forward = lambda t: torch.full_like(t, float("inf"))
     with torch.no_grad():
         out = moe.moe_infer(x, idx, weights)
     assert torch.isfinite(out).all()

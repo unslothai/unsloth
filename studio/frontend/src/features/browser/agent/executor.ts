@@ -13,7 +13,8 @@ import { unwrapRedirect } from "../address";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
-import { callNative, useNativeBrowser } from "../native-support";
+import { isLoopbackUrl } from "../address";
+import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
@@ -583,10 +584,32 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   };
 }
 
+// By its entry, not the page shown: a granted page can show a data: or about:blank document.
+function onGrantedOrigin(tab: BrowserTab): boolean {
+  const entry = currentEntry(tab);
+  return entry.kind === "web" && localOriginGranted(tab.id, entry.url);
+}
+
+function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
+  return useBrowserStore.getState().tabs.find((tab) => tab.chat === chat && localOriginGranted(tab.id, url));
+}
+
+function moveRun(context: Run, tabId: string): void {
+  const previous = agentChat(context.session.chat).tabId;
+  if (previous && previous !== tabId) releaseBackground(previous);
+  patchAgentChat(context.session.chat, { tabId });
+  context.session.trail = [];
+  context.session.at = -1;
+}
+
 async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const store = useBrowserStore.getState();
-  const existing = agentTab(context);
+  const agent = agentTab(context);
+  const existing = isLoopbackUrl(url)
+    ? agent && localOriginGranted(agent.id, url) ? agent : grantedLocalTab(url, context.session.chat)
+    : agent && !onGrantedOrigin(agent) ? agent : undefined;
   if (existing) {
+    if (agentChat(context.session.chat).tabId !== existing.id) moveRun(context, existing.id);
     store.navigate(existing.id, { url }, { replace: false });
     showTab(existing, context);
     return waitForLoad(existing.id, context.signal);
@@ -596,9 +619,7 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   if (!tabId) return null;
   // Off screen the view opens a beat later: loading until it reports in, so the wait below doesn't read the blank view.
   if (!chatOnScreen(context)) store.updateTab(tabId, { loading: true });
-  patchAgentChat(context.session.chat, { tabId });
-  context.session.trail = [];
-  context.session.at = -1;
+  moveRun(context, tabId);
   const tab = findTab(tabId);
   if (tab) showTab(tab, context);
   return waitForLoad(tabId, context.signal);
@@ -667,6 +688,15 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
 
   if (action.op === "navigate") {
     const url = redirectEnd(action.url ?? "");
+    if (isLoopbackUrl(url) && !grantedLocalTab(url, chat)) {
+      const { host } = new URL(url);
+      return {
+        ok: false,
+        error: useNativeBrowser.getState().enabled
+          ? `${host} is on the user's computer, and the browser panel opens a local address only in the tab where the user types it in this chat's address bar. Ask the user to open it there first.`
+          : `${host} is a local address, and the browser only opens public sites.`,
+      };
+    }
     const gate = gateNavigation(url, navigationContext(action, context));
     const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };

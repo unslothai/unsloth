@@ -14,7 +14,11 @@ from auth.authentication import (
     authenticated_via_api_key,
     require_ui_session_for_local_commands,
 )
-from core.data_recipe.service import build_mcp_providers, recipe_has_stdio_mcp
+from core.data_recipe.service import (
+    build_mcp_providers,
+    recipe_has_stdio_mcp,
+    require_ui_session_for_host_env_credentials,
+)
 from loggers import get_logger
 from models.data_recipe import (
     McpToolsListRequest,
@@ -38,6 +42,7 @@ def list_mcp_tools(
     # Caller-supplied and probed immediately, so gate before any is built.
     if recipe_has_stdio_mcp({"mcp_providers": payload.mcp_providers}):
         require_ui_session_for_local_commands(via_api_key)
+    require_ui_session_for_host_env_credentials(payload.mcp_providers, via_api_key)
     try:
         from data_designer.engine.mcp import io as mcp_io
     except ImportError as exc:

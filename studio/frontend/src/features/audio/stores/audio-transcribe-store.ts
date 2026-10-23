@@ -16,6 +16,7 @@ interface AudioTranscribeState {
   timestamps: boolean;
   speakers: boolean;
   view: TranscriptView;
+  connectionModel: string | null;
 }
 
 export const useAudioTranscribeStore = create<AudioTranscribeState>()(
@@ -26,6 +27,7 @@ export const useAudioTranscribeStore = create<AudioTranscribeState>()(
       timestamps: false,
       speakers: true,
       view: "text",
+      connectionModel: null,
     }),
     { name: AUDIO_TRANSCRIBE_STORAGE_KEY, version: 1 },
   ),
