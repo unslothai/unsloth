@@ -77,8 +77,20 @@ def _stream(ctx: NodeContext) -> dict:
 
 async def embed(ctx: NodeContext, texts: list[str]) -> Optional[list[list[float]]]:
     """Vectors from Studio's local embedding model, or None (the blocks then rank by keywords)."""
+    got = await _embed(ctx, texts)
+    return None if got is None else got[0]
+
+
+def _set_vectors(records: list[dict], vectors: Optional[list], model: Optional[str]) -> None:
+    for record, vec in zip(records, vectors or []):
+        record["embedding"] = vec
+        record["embed_model"] = model
+
+
+async def _embed(ctx: NodeContext, texts: list[str]) -> Optional[tuple[list, Optional[str]]]:
+    """Vectors plus the name of the model that made them, so a stream can tell when the model changed."""
     if not texts:
-        return []
+        return [], None
     try:
         answer = await ctx.call(
             "POST", "/v1/embeddings", json = {"model": EMBED_MODEL, "input": texts}
@@ -93,19 +105,31 @@ async def embed(ctx: NodeContext, texts: list[str]) -> Optional[list[list[float]
     vectors = [
         mem.round_vector(r.get("embedding")) for r in sorted(rows, key = lambda r: r.get("index", 0))
     ]
-    return None if any(v is None for v in vectors) else vectors
+    if any(v is None for v in vectors):
+        return None
+    model = answer.get("model")
+    return vectors, model if isinstance(model, str) else None
 
 
 async def _embed_missing(
     ctx: NodeContext, records: list[dict], queries: list[str]
 ) -> Optional[list]:
-    """One embedding call for the queries plus any record still without a vector; fills records in place."""
+    """One embedding call for the queries plus any record still without a vector; fills records in place.
+
+    Vectors from a different embedding model live in another space, so those records are embedded again."""
     missing = [r for r in records if not isinstance(r.get("embedding"), list)]
-    vectors = await embed(ctx, queries + [r["text"] for r in missing])
-    if vectors is None:
+    got = await _embed(ctx, queries + [r["text"] for r in missing])
+    if got is None:
         return None
-    for record, vec in zip(missing, vectors[len(queries) :]):
-        record["embedding"] = vec
+    vectors, model = got
+    _set_vectors(missing, vectors[len(queries) :], model)
+    dim = len(vectors[0]) if vectors else 0
+    stale = [r for r in records if r.get("embed_model") != model or len(r["embedding"]) != dim]
+    if stale:
+        again = await _embed(ctx, [r["text"] for r in stale])
+        if again is None or again[1] != model:
+            return None
+        _set_vectors(stale, again[0], model)
     return vectors[: len(queries)]
 
 
@@ -168,9 +192,9 @@ async def add(ctx: NodeContext) -> dict:
         for it in items
     ]
     if ctx.params.get("embed", True):
-        vectors = await embed(ctx, [r["text"] for r in added])
-        for record, vec in zip(added, vectors or []):
-            record["embedding"] = vec
+        got = await _embed(ctx, [r["text"] for r in added])
+        if got is not None:
+            _set_vectors(added, *got)
     stream["records"].extend(added)
     stream["since_reflection"] += sum(r["importance"] for r in added)
     mem.cap(stream, int(ctx.params.get("max_records") or 500))
@@ -210,7 +234,9 @@ def _retrieve(
     for i in mem.top(records, scores, k):
         if touch:
             records[i]["t_access"] = now
-        row = {key: val for key, val in records[i].items() if key != "embedding"}
+        row = {
+            key: val for key, val in records[i].items() if key not in ("embedding", "embed_model")
+        }
         picked.append({**row, **{f"score_{n}": round(v, 4) for n, v in scores[i].items()}})
     return picked
 
@@ -312,9 +338,9 @@ async def reflect(ctx: NodeContext) -> dict:
                 )
             )
     if new:
-        vecs = await embed(ctx, [r["text"] for r in new])
-        for record, vec in zip(new, vecs or []):
-            record["embedding"] = vec
+        got = await _embed(ctx, [r["text"] for r in new])
+        if got is not None:
+            _set_vectors(new, *got)
         stream["records"].extend(new)
     # Reflections reset the counter even when the model wrote none, so a dull stream does not ask again every step.
     stream["since_reflection"] = 0.0
@@ -396,7 +422,10 @@ def clean_plan(raw: Any, places: list[str], chunks: int) -> list[dict]:
         place = str(entry.get("place") or "")
         if places and place not in places:
             continue
-        minutes = max(5, min(720, int(entry.get("minutes") or 60)))
+        try:
+            minutes = max(5, min(720, int(entry.get("minutes") or 60)))
+        except (TypeError, ValueError):
+            continue
         plan.append(
             {
                 "start": f"{hh:02d}:{mm:02d}",
@@ -419,7 +448,8 @@ async def plan(ctx: NodeContext) -> dict:
         if p
     ]
     chunks = int(ctx.params.get("chunks") or 6)
-    start = int(ctx.params.get("start_hour") or 8)
+    start_hour = ctx.params.get("start_hour")
+    start = 8 if start_hour is None else int(start_hour)
     summary_text = as_text(ctx.inputs.get("summary")).strip()
     recent = as_text(ctx.inputs.get("context")).strip()
     raw = await ctx.llm_json(

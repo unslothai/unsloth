@@ -116,6 +116,16 @@ def test_cap_keeps_cited_records_and_drops_the_least_important():
     assert [r["id"] for r in s["records"]] == ["m0", "m1", "m3"]
 
 
+def test_cap_frees_evidence_of_reflections_it_drops():
+    s = stream_of(("a", 9, 0.0), ("b", 9, 0.0), ("c", 9, 0.0))
+    for _ in range(2):
+        s["records"].append(
+            mem.new_record(s, "insight", "reflection", 1, 1.0, cites = ["m0", "m1", "m2"])
+        )
+    mem.cap(s, 2)
+    assert len(s["records"]) == 2
+
+
 def test_as_stream_accepts_a_record_list_and_continues_ids():
     s = mem.as_stream([{"id": "m4", "text": "x"}])
     assert s["next_id"] == 5 and s["kind"] == mem.STREAM_KIND
@@ -233,6 +243,45 @@ def test_plan_keeps_known_places_in_time_order():
     out = run(nodes.plan(ctx))
     assert [e["activity"] for e in out["plan"]] == ["easy run", "lunch"]
     assert out["text"].splitlines()[0] == "07:30 (45 min) easy run at park"
+
+
+def test_plan_starts_at_midnight_and_drops_unreadable_durations():
+    ctx = Ctx("agent.plan", {"summary": "Maya.", "places": []}, name = "Maya", start_hour = 0)
+    ctx.answers = [
+        {
+            "plan": [
+                {"start": "00:00", "minutes": "one hour", "activity": "read", "place": ""},
+                {"start": "01:00", "minutes": 30, "activity": "sleep", "place": ""},
+            ]
+        }
+    ]
+    out = run(nodes.plan(ctx))
+    assert "from 00:00" in ctx.prompts[0]
+    assert [e["activity"] for e in out["plan"]] == ["sleep"]
+
+
+def test_recall_reembeds_records_from_another_embedding_model():
+    s = stream_of(("ran hills, knee hurts", 5, 0.0), ("ate oatmeal for breakfast", 5, 0.0))
+    for r in s["records"]:
+        r["embedding"], r["embed_model"] = [0.5, 0.5], "old-model"
+
+    class NewModel(Ctx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **_,
+        ):
+            answer = await super().call(method, path, json = json)
+            return {**answer, "model": "new-model"}
+
+    ctx = NewModel("memory.retrieve", {"memory": s, "query": "is my knee ok", "now": 3.0}, top_k = 1)
+    out = run(nodes.retrieve(ctx))
+    assert [r["text"] for r in out["records"]] == ["ran hills, knee hurts"]
+    assert ctx.calls == ["/v1/embeddings", "/v1/embeddings"]
+    assert {r["embed_model"] for r in out["memory"]["records"]} == {"new-model"}
+    assert "embed_model" not in out["records"][0]
 
 
 def test_plan_schema_limits_places_to_the_list():

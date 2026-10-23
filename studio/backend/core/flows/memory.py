@@ -163,15 +163,18 @@ def top(records: list[dict], scores: list[dict], k: int) -> list[int]:
 def cap(stream: dict, max_records: int) -> None:
     """Drop the least important, least recently used records past the cap; a record a reflection cites stays."""
     records = stream["records"]
-    if len(records) <= max_records:
-        return
-    cited = {c for r in records for c in r.get("cites") or []}
-    removable = sorted(
-        (r for r in records if r["id"] not in cited),
-        key = lambda r: (r.get("importance") or 0, float(r.get("t_access") or 0)),
-    )
-    drop = {r["id"] for r in removable[: len(records) - max_records]}
-    stream["records"] = [r for r in records if r["id"] not in drop]
+    # Dropping a reflection frees what it cited, so protection is recomputed until the cap holds.
+    while len(records) > max_records:
+        cited = {c for r in records for c in r.get("cites") or []}
+        removable = sorted(
+            (r for r in records if r["id"] not in cited),
+            key = lambda r: (r.get("importance") or 0, float(r.get("t_access") or 0)),
+        )
+        if not removable:
+            break
+        drop = {r["id"] for r in removable[: len(records) - max_records]}
+        records = [r for r in records if r["id"] not in drop]
+    stream["records"] = records
 
 
 def context_text(records: Iterable[dict]) -> str:
