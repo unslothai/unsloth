@@ -679,6 +679,8 @@ export const en = {
       "This chat won't appear in your history and isn't saved. It disappears when you leave.",
   },
   picker: {
+    unifiedTightFit: "Tight fit",
+    unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -1127,29 +1129,31 @@ export const en = {
     },
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
+      intro: "To change a shortcut, select the key combination, and then type the new keys",
       searchPlaceholder: "Search shortcuts…",
       keystrokePlaceholder: "Press shortcut to search",
       searchByKeystrokes: "Search by keystrokes",
       searchByName: "Search by name",
       noResults: "No shortcuts match that search.",
-      unassigned: "Unassigned",
-      recording: "Press keys…",
-      recordingHint: "Press the new chord, or Esc to cancel.",
+      unassigned: "none",
+      recording: "Press key sequence",
       needsModifier: "Add ⌘, Ctrl or Alt. A bare key would swallow typing.",
       conflict: "Also used by another shortcut",
       conflictShadowed: "Another shortcut has this chord and runs instead",
       edit: "Change shortcut",
-      clear: "Remove shortcut",
       reset: "Restore default",
-      resetAll: "Reset all to defaults",
-      primarySlot: "Shortcut",
-      alternateSlot: "Alternate shortcut",
+      resetAll: "Restore defaults",
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
       metaUnsupported: "The Windows key can't be used in shortcuts.",
       altGraphUnsupported: "AltGr chords can't be used as shortcuts.",
       desktopOnly: "Desktop app only",
-      builtInKey: "Built in: {key}",
+      groups: {
+        composer: "Composer",
+        chat: "Chat",
+        navigation: "Navigation",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Find in page",
@@ -1339,6 +1343,10 @@ export const en = {
           label: "Attach photos and files",
           description: "Add an attachment to the composer",
         },
+        openComposerMenu: {
+          label: "Open + menu",
+          description: "Open the composer's + menu of tools and attachments",
+        },
         sendMessage: {
           label: "Send message",
           description: "Send what is in the composer",
@@ -1366,10 +1374,6 @@ export const en = {
         decreaseReasoningEffort: {
           label: "Decrease reasoning effort",
           description: "Lower reasoning effort one level",
-        },
-        toggleFastMode: {
-          label: "Toggle Fast mode",
-          description: "Turn Fast mode on or off",
         },
         renameChat: {
           label: "Rename chat",
@@ -2064,6 +2068,18 @@ export const en = {
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
       },
+      fullInstall: {
+        label: "Install type",
+        description:
+          "Chat only (GGUF). The full install adds training, export, video, safetensors models and additional image generation features.",
+        action: "Upgrade to full install",
+        confirmTitle: "Upgrade to the full install?",
+        confirmDescription:
+          "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+        confirmAction: "Upgrade",
+        keywords:
+          "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",
+      },
       repairInstall: {
         label: "Repair installation",
         description:
@@ -2072,6 +2088,8 @@ export const en = {
         confirmTitle: "Repair this installation?",
         confirmDescription:
           "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU at the newest supported release. Chats and settings are kept. This can take several minutes.",
+        confirmDescriptionChatOnly:
+          "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
       },
       resetPreferences: {
@@ -3134,7 +3152,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI- and Anthropic-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
@@ -3179,6 +3197,7 @@ export const en = {
       relativeNever: "never",
       relativeJustNow: "just now",
       expired: "expired",
+      expiredStatus: "Expired",
       today: "today",
       created: "Created {value}",
       used: "Used {value}",
@@ -4754,5 +4773,46 @@ export const en = {
     cantRun: "Could not run",
     failed: "Error {status}",
     invalidJson: "The request body is not valid JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Loaded models",
+      countOne: "{count} model loaded",
+      countMany: "{count} models loaded",
+      pillLabel: "{count}. Show details, or drag to move",
+      dragToMove: "Drag to move",
+      dragHandleLabel: "Drag to move",
+      collapse: "Collapse",
+      collapseLabel: "Collapse loaded models",
+      close: "Close",
+      closeLabel: "Close loaded models",
+      backOnNextLoad: "Back on the next model load",
+      ejectToFree: "Eject to free memory",
+      ejectLabel: "Eject {model}",
+      openTarget: "Open {target}",
+      rowLabel: "{model}. Open {target}",
+      loading: "Loading",
+      ejecting: "Ejecting",
+      stillInMemory: "Still in memory",
+      alsoServing: "Also serving",
+      noneLoaded: "No models loaded",
+      noneLoadedDetail: "Models you load will show here.",
+      otherAccount: "In use by another account",
+      otherAccountDetail: "Memory is held by a model you cannot see",
+      toastStillResident:
+        "\"{model}\" was loaded while ejecting, so it is still using memory. Eject again to release it.",
+      toastUnverified:
+        "{model} was asked to unload, but its runtime did not confirm. Check the card in a moment.",
+      toastAlreadyFree: "{model} was no longer loaded.",
+      toastReplaced:
+        "{model} is no longer loaded. \"{resident}\" took its place and was left alone.",
+      toastEjected: "Ejected {model}",
+      toastFailed: "Failed to eject {model}",
+    },
+    monitor: {
+      dragHandleLabel:
+        "Move the live monitor. Arrow keys nudge it, double-click resets it.",
+      reconnecting: "Reconnecting...",
+    },
   },
 } as const;

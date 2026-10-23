@@ -172,7 +172,7 @@ export function MediaGenerationPresetControl({
                     changeOpen(false);
                   }}
                   className={cn(
-                    "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                    "flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                     isActive && "bg-muted font-medium",
                   )}
                 >
@@ -213,14 +213,14 @@ export function MediaGenerationPresetControl({
               placeholder="Preset name"
               maxLength={80}
               autoComplete="off"
-              className="h-9 min-w-0 rounded-lg bg-background"
+              className="h-9 min-w-0 rounded-full bg-background"
             />
             <Button
               type="button"
               size="sm"
               disabled={!canSave}
               onClick={() => save().catch(() => undefined)}
-              className="h-9 shrink-0 rounded-lg px-3"
+              className="h-9 shrink-0 rounded-full px-3"
             >
               {saveLabel}
             </Button>
@@ -233,7 +233,7 @@ export function MediaGenerationPresetControl({
                 changeOpen(false);
                 onImportFromImage();
               }}
-              className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               <ImageUp className="size-3.5" />
               Load settings from an image
@@ -247,7 +247,7 @@ export function MediaGenerationPresetControl({
                 changeOpen(false);
                 onPasteParameters();
               }}
-              className="mt-1 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="mt-1 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               <ClipboardPaste className="size-3.5" />
               Paste generation parameters
@@ -258,7 +258,7 @@ export function MediaGenerationPresetControl({
               type="button"
               disabled={saving}
               onClick={() => remove().catch(() => undefined)}
-              className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-full text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               <Trash2 className="size-3.5" />
               Delete preset

@@ -297,7 +297,7 @@ export function TranscriptGallery({
             >
               <span className="min-w-0 flex-1 truncate">{record.title}</span>
               {recordBadge(record) ? (
-                <span className="shrink-0 rounded-4xl bg-muted px-1.5 text-ui-11 text-muted-foreground">
+                <span className="shrink-0 rounded-full bg-muted px-1.5 text-ui-11 text-muted-foreground">
                   {recordBadge(record)}
                 </span>
               ) : null}

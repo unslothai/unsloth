@@ -626,6 +626,8 @@ export const ja = {
     temporaryChatDescription: "このチャットは履歴に表示されず、保存されません。離れると消えます。",
   },
   picker: {
+    unifiedTightFit: "ぎりぎり",
+    unifiedTightFitHint: "この Mac では短いコンテキストで読み込まれるか、動作が遅くなる可能性があります。",
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
     retry: "再試行",
@@ -1071,6 +1073,7 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
+      intro: "ショートカットを変更するには、キーの組み合わせを選択してから新しいキーを入力します",
       searchPlaceholder: "ショートカットを検索…",
       keystrokePlaceholder: "ショートカットを押して検索",
       searchByKeystrokes: "キー入力で検索",
@@ -1078,22 +1081,23 @@ export const ja = {
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
-      recordingHint: "新しいキーの組み合わせを押すか、Esc でキャンセルします。",
       needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
       conflict: "別のショートカットでも使われています",
       conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",
       edit: "ショートカットを変更",
-      clear: "ショートカットを削除",
       reset: "既定値に戻す",
       resetAll: "すべて既定値に戻す",
-      primarySlot: "ショートカット",
-      alternateSlot: "代替ショートカット",
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       metaUnsupported: "Windows キーはショートカットに使用できません。",
       altGraphUnsupported: "AltGr の組み合わせはショートカットに使用できません。",
       desktopOnly: "デスクトップアプリのみ",
-      builtInKey: "組み込み: {key}",
+      groups: {
+        composer: "入力欄",
+        chat: "チャット",
+        navigation: "ナビゲーション",
+        app: "アプリ",
+      },
       actions: {
         findInPage: {
           label: "ページ内検索",
@@ -1283,6 +1287,10 @@ export const ja = {
           label: "写真とファイルを添付",
           description: "入力欄に添付ファイルを追加します",
         },
+        openComposerMenu: {
+          label: "+ メニューを開く",
+          description: "入力欄のツールと添付ファイルの + メニューを開く",
+        },
         sendMessage: {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
@@ -1310,10 +1318,6 @@ export const ja = {
         decreaseReasoningEffort: {
           label: "思考の深さを下げる",
           description: "思考の深さを 1 段階下げます",
-        },
-        toggleFastMode: {
-          label: "Fast モードの切り替え",
-          description: "Fast モードをオンまたはオフにします",
         },
         renameChat: {
           label: "チャット名を変更",
@@ -1969,6 +1973,18 @@ export const ja = {
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
       },
+      fullInstall: {
+        label: "インストールの種類",
+        description:
+          "チャット専用 (GGUF)。フルインストールでは、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が追加されます。",
+        action: "フルインストールにアップグレード",
+        confirmTitle: "フルインストールにアップグレードしますか？",
+        confirmDescription:
+          "このチャット専用インストールは GGUF モデルを実行します。フルインストールでは、このマシンの GPU 向けの PyTorch が追加され、トレーニング、エクスポート、動画、safetensors モデル、その他の画像生成機能が使えるようになります。数 GB（5 GB 以上のディスク容量）をダウンロードしてサーバーを再起動します。チャット、モデル、設定は保持されます。数分かかる場合があります。",
+        confirmAction: "アップグレード",
+        keywords:
+          "full install upgrade インストールの種類 フルインストール アップグレード チャット専用 chat only gguf add training トレーニング 学習 train fine-tune pytorch torch エクスポート 動画 画像生成 safetensors",
+      },
       repairInstall: {
         label: "インストールを修復",
         description:
@@ -1977,6 +1993,8 @@ export const ja = {
         confirmTitle: "このインストールを修復しますか？",
         confirmDescription:
           "サーバーを停止してインストーラーを再実行し、このマシンの GPU に合わせて PyTorch を再インストールします。チャットと設定は保持されます。数分かかる場合があります。",
+        confirmDescriptionChatOnly:
+          "サーバーを停止してインストーラーを再実行します。これはチャット専用インストールのため、インストーラーは PyTorch を含むフルインストールにもアップグレードします (合計数 GB)。チャットと設定は保持されます。数分かかる場合があります。",
         confirmAction: "今すぐ修復",
       },
       resetPreferences: {
@@ -3094,6 +3112,7 @@ export const ja = {
       relativeNever: "なし",
       relativeJustNow: "たった今",
       expired: "期限切れ",
+      expiredStatus: "期限切れ",
       today: "今日",
       created: "作成日時 {value}",
       used: "使用日時 {value}",
@@ -4634,5 +4653,42 @@ export const ja = {
     cantRun: "実行できませんでした",
     failed: "エラー {status}",
     invalidJson: "リクエストのボディが有効な JSON ではありません。",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "読み込み済みモデル",
+      countOne: "{count} 件のモデルを読み込み済み",
+      countMany: "{count} 件のモデルを読み込み済み",
+      pillLabel: "{count}。詳細を表示、またはドラッグして移動",
+      dragToMove: "ドラッグして移動",
+      dragHandleLabel: "読み込み済みモデルを移動します。矢印キーで少しずつ動かせます。",
+      collapse: "折りたたむ",
+      collapseLabel: "読み込み済みモデルを折りたたむ",
+      close: "閉じる",
+      closeLabel: "読み込み済みモデルを閉じる",
+      backOnNextLoad: "次にモデルを読み込むと再表示されます",
+      ejectToFree: "取り出してメモリを解放",
+      ejectLabel: "{model} を取り出す",
+      openTarget: "{target} を開く",
+      rowLabel: "{model}。{target} を開く",
+      loading: "読み込み中",
+      ejecting: "取り出し中",
+      stillInMemory: "まだメモリ上にあります",
+      alsoServing: "他にも提供中",
+      noneLoaded: "読み込み済みのモデルはありません",
+      noneLoadedDetail: "読み込んだモデルはここに表示されます。",
+      otherAccount: "別のアカウントが使用中",
+      otherAccountDetail: "表示できないモデルがメモリを保持しています",
+      toastStillResident: "取り出し中に「{model}」が読み込まれたため、まだメモリを使用しています。もう一度取り出すと解放されます。",
+      toastUnverified: "{model} のアンロードを要求しましたが、ランタイムから確認が取れませんでした。しばらくしてからカードを確認してください。",
+      toastAlreadyFree: "{model} はすでに読み込まれていませんでした。",
+      toastReplaced: "{model} は読み込まれていません。代わりに「{resident}」が読み込まれており、そのままにしています。",
+      toastEjected: "{model} を取り出しました",
+      toastFailed: "{model} を取り出せませんでした",
+    },
+    monitor: {
+      dragHandleLabel: "ライブモニターを移動します。矢印キーで少しずつ動かせ、ダブルクリックで位置をリセットします。",
+      reconnecting: "再接続中...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

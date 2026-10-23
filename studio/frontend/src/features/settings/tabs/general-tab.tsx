@@ -71,6 +71,7 @@ import {
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
+import { DesktopInstallTypeControl } from "../components/full-install-dialog";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import { DeveloperModeSection } from "../components/developer-mode-section";
@@ -523,7 +524,7 @@ export function GeneralTab() {
         </p>
       </header>
 
-      {/* Desktop-only, and self-gating: outside the desktop app both render
+      {/* Desktop-only, and self-gating: outside the desktop app these render
           nothing and the section keeps just the version rows. */}
       <StudioVersionSection>
         {isTauri ? (
@@ -532,6 +533,7 @@ export function GeneralTab() {
             <DesktopUpdateNote />
           </div>
         ) : null}
+        <DesktopInstallTypeControl />
       </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
@@ -590,7 +592,7 @@ export function GeneralTab() {
               <button
                 type="button"
                 onClick={() => setShowToken((s) => !s)}
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
                 aria-label={
                   showToken
                     ? t("settings.general.hideToken")
@@ -793,7 +795,7 @@ export function GeneralTab() {
             variant="outline"
             size="sm"
             onClick={() => setRevokePreviewOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.previewSharing.revokeAction")}
           </Button>
@@ -897,7 +899,7 @@ export function GeneralTab() {
             variant="outline"
             size="sm"
             onClick={() => setConfirmOpen(true)}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+            className="text-destructive hover:text-destructive"
           >
             {t("settings.general.resetPreferences.action")}
           </Button>

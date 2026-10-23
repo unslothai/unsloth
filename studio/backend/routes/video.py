@@ -917,6 +917,9 @@ async def video_status(
         owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
         visible = owner is None or owner == current_account_id()
         status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
+    if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
+        from core.inference.gpu_residency import media_owner_held_mib
+        status_dict = {**status_dict, "resident_mib": media_owner_held_mib("video")}
     # This route answers long after the request that resolved the reference ended, so there is
     # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)

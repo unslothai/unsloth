@@ -1933,11 +1933,15 @@ def _agent_api_key(
             "or set UNSLOTH_API_KEY."
         )
     # Older releases could mint for a managed account, which cannot see the owner's model.
+    listed = _http_json(
+        "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
+    ).get("api_keys", [])
+    # A server reporting purposes only lets stamped keys reach saved Connections: re-mint unstamped ones.
+    stamped = any("purpose" in entry for entry in listed)
     owned = {
         entry.get("key_prefix")
-        for entry in _http_json(
-            "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
-        ).get("api_keys", [])
+        for entry in listed
+        if not stamped or entry.get("purpose") == "unsloth_start"
     }
     for key in _cached_keys(cache, base, "minted"):
         if key[len("sk-unsloth-") :][:8] in owned and _key_accepted(base, key):
@@ -2167,6 +2171,11 @@ def _resident_runtime_payload(status: dict, payload: dict) -> dict:
         if value is None:
             continue
         carried[load_field] = value
+    offload = status.get("mlx_offload") or {}
+    for part, load_field in (("ple", "mlx_ple_offload"), ("experts", "mlx_expert_offload")):
+        requested = (offload.get(part) or {}).get("requested")
+        if load_field not in payload and requested is not None:
+            carried[load_field] = requested
     return carried
 
 

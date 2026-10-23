@@ -199,3 +199,15 @@ def test_the_strict_csp_is_exactly_the_reviewed_policy():
         "http://localhost:* http://127.0.0.1:*; "
         "sandbox allow-scripts"
     )
+
+
+def test_annotation_factory_is_served_before_the_document_can_add_a_meta_csp():
+    from routes.browser import _ANNOTATE_JS
+
+    response = asyncio.run(inf_mod.artifact_preview_frame())
+    shell = response.body.decode()
+    assert _ANNOTATE_JS in shell
+    assert "/* ANNOTATE_JS */" not in shell
+    assert shell.index("const annotationFactory") < shell.index("document.write(html)")
+    assert "annotation = annotationFactory(postAnnotation)" in shell
+    assert "__unslothInstallAnnotation" not in shell

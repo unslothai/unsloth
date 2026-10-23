@@ -608,7 +608,9 @@ def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_sho
         encoding = "utf-8"
     )
     at = src.index("releasable_mib = resident_group_mib(state.pipe)")
-    assert "if guard_condition_pixels > 0 and extra_mib > releasable_mib:" in src[at : at + 200]
+    # conditioned requests: priced condition pixels, or a reference the guard cannot price (FLUX.2 Klein's source image)
+    assert "guard_condition_pixels > 0 or guard_unpriced_refs" in src[at : at + 200]
+    assert ") and extra_mib > releasable_mib:" in src[at : at + 250]
     assert "hook_resident_denoiser(state.pipe," in src[at : at + 600]
     assert (
         src.index("restore_resident = release_resident_groups(state.pipe, extra_mib, logger)") > at
@@ -803,6 +805,29 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
         assert on_device() == ["cuda"] * 6
         assert dm.denoisers_pinned_resident(types.SimpleNamespace(transformer = net))
         assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
+    """The encode release streams groups and pins them back on every new prompt. It leaves the freed blocks cached:
+    an encoder allocation that needs the room gets it back from the allocator itself. An empty_cache per prompt cost a
+    device sync plus fresh cudaMallocs for the encoder on every render."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1
+    flushes = {"n": 0}
+    real = torch.cuda.empty_cache
+
+    def counted():
+        flushes["n"] += 1
+        real()
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", counted)
+    for _ in range(3):
+        enc(torch.randn(2, 8, device = "cuda"))
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2  # the release still ran
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert flushes["n"] == 0
 
 
 def test_encode_release_restores_after_a_failed_encode(monkeypatch):
