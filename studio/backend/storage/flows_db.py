@@ -132,6 +132,8 @@ def delete_flow(flow_id: str) -> None:
     try:
         conn.execute("DELETE FROM flows WHERE id = ?", (flow_id,))
         conn.execute("DELETE FROM flow_sessions WHERE flow_id = ?", (flow_id,))
+        conn.execute("DELETE FROM flow_capabilities WHERE flow_id = ?", (flow_id,))
+        conn.execute("DELETE FROM flow_triggers WHERE flow_id = ?", (flow_id,))
         # Run history goes too; its events and node results cascade.
         conn.execute("DELETE FROM flow_runs WHERE flow_id = ?", (flow_id,))
         conn.execute(
@@ -444,6 +446,148 @@ def delete_session(flow_id: str, slot: str) -> None:
     conn = get_connection()
     try:
         conn.execute("DELETE FROM flow_sessions WHERE flow_id = ? AND slot = ?", (flow_id, slot))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# Approved capabilities
+
+
+def get_capabilities(flow_id: str) -> dict:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT approved_json FROM flow_capabilities WHERE flow_id = ?", (flow_id,)
+        ).fetchone()
+        return json.loads(row["approved_json"]) if row else {}
+    finally:
+        conn.close()
+
+
+def set_capabilities(flow_id: str, approved: dict) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO flow_capabilities (flow_id, approved_json, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(flow_id) DO UPDATE SET approved_json = excluded.approved_json, "
+            "updated_at = excluded.updated_at",
+            (flow_id, json.dumps(approved), now_ms()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# Triggers
+
+
+def _trigger_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "flow_id": row["flow_id"],
+        "node_id": row["node_id"],
+        "kind": row["kind"],
+        "config": json.loads(row["config_json"]),
+        "token": row["token"],
+        "last_fired_at": row["last_fired_at"],
+    }
+
+
+def list_triggers(flow_id: Optional[str] = None) -> list[dict]:
+    conn = get_connection()
+    try:
+        if flow_id is None:
+            rows = conn.execute("SELECT * FROM flow_triggers").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM flow_triggers WHERE flow_id = ?", (flow_id,)
+            ).fetchall()
+        return [_trigger_from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def replace_triggers(flow_id: str, wanted: list[dict], new_token: Any) -> None:
+    """Make the flow's trigger rows match ``wanted`` ({node_id, kind, config}); kept rows keep their secret and last
+    fire time, new webhook rows get ``new_token()``."""
+    conn = get_connection()
+    try:
+        old = {
+            r["node_id"]: r
+            for r in conn.execute("SELECT * FROM flow_triggers WHERE flow_id = ?", (flow_id,))
+        }
+        keep = {w["node_id"] for w in wanted}
+        for node_id in set(old) - keep:
+            conn.execute(
+                "DELETE FROM flow_triggers WHERE flow_id = ? AND node_id = ?", (flow_id, node_id)
+            )
+        for w in wanted:
+            prev = old.get(w["node_id"])
+            token = prev["token"] if prev is not None and prev["kind"] == w["kind"] else None
+            if w["kind"] == "webhook" and not token:
+                token = new_token()
+            if w["kind"] != "webhook":
+                token = None
+            conn.execute(
+                "INSERT INTO flow_triggers (flow_id, node_id, kind, config_json, token, token_hash, last_fired_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(flow_id, node_id) DO UPDATE SET kind = excluded.kind, "
+                "config_json = excluded.config_json, token = excluded.token, token_hash = excluded.token_hash",
+                (
+                    flow_id,
+                    w["node_id"],
+                    w["kind"],
+                    json.dumps(w["config"]),
+                    token,
+                    _token_hash(token) if token else None,
+                    prev["last_fired_at"] if prev is not None else None,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _token_hash(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def trigger_by_token(token: str) -> Optional[dict]:
+    import hmac
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM flow_triggers WHERE token_hash = ? AND kind = 'webhook'",
+            (_token_hash(token),),
+        ).fetchone()
+        if row is None or not hmac.compare_digest(str(row["token"] or ""), token):
+            return None
+        return _trigger_from_row(row)
+    finally:
+        conn.close()
+
+
+def rotate_trigger_token(flow_id: str, node_id: str, token: str) -> bool:
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE flow_triggers SET token = ?, token_hash = ? WHERE flow_id = ? AND node_id = ? "
+            "AND kind = 'webhook'",
+            (token, _token_hash(token), flow_id, node_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_trigger_fired(flow_id: str, node_id: str, at_ms: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE flow_triggers SET last_fired_at = ? WHERE flow_id = ? AND node_id = ?",
+            (at_ms, flow_id, node_id),
+        )
         conn.commit()
     finally:
         conn.close()

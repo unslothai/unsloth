@@ -191,6 +191,8 @@ export interface NodeSpec {
   requires?: string[];
   /** Holds the Studio-wide GPU lease while it runs (measurements). */
   exclusive_gpu?: boolean;
+  /** Runs only for the owner, once approved: python | http | mcp | provider | trigger. */
+  requires_approval?: string[];
 }
 
 export interface NodeCategory {
