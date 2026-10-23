@@ -28,7 +28,6 @@ export function hasModelSearchFilters(filters: ModelSearchFilters): boolean {
   );
 }
 
-/** True when a filter asks the Hub about each row: its config.json or its owner. */
 export function needsModelMetadata(filters: ModelSearchFilters): boolean {
   const uploaders = filters.uploaders;
   return (
@@ -118,7 +117,6 @@ export async function* filterModelListing(
   filters: ModelSearchFilters,
   fetchJson: JsonFetch,
   pinnedModel?: Promise<unknown | null>,
-  /** False for a row the list hides anyway, so it costs no metadata request. */
   keep?: (raw: unknown) => boolean,
 ): AsyncGenerator<unknown> {
   const owners = new Map<string, Promise<boolean>>();

@@ -1129,7 +1129,7 @@ export function useHubModelSearch(
     ],
   );
   const needsMetadata = !!filters && needsModelMetadata(filters);
-  // Only a row the list can show is worth a per-row Hub request; Recommended hides most Hub rows.
+  // Only a row the list can show is worth a per-row Hub request.
   const keepRow = useMemo(
     () =>
       needsMetadata

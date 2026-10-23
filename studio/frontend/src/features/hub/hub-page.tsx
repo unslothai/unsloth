@@ -983,8 +983,7 @@ export function ModelsPage() {
     };
   }, [liveListChannel, widenRecommendedChannel]);
 
-  // The list's format test, so a row it hides costs no per-row filter lookup. checkpointQuantFormats
-  // holds every diffusion format too, so this never skips a row the list shows.
+  // checkpointQuantFormats is a superset of diffusionQuantFormats, so this never skips a row the list shows.
   const searchBrowsing = debouncedQuery.trim() === "";
   // Keyed by contents: a system poll hands out a new array, which would restart the search.
   const quantFormatsKey = checkpointQuantFormats.join(",");

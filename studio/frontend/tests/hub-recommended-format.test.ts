@@ -120,7 +120,6 @@ test("image and video models skip the likes rules and list full-precision checkp
     page,
     /isDiffusionRow\(row\) \? diffusionQuantFormats : checkpointQuantFormats/,
   );
-  // The search's skip test classes a result the same way the list classes its row.
   assert.match(
     page,
     /searchBrowsing,\s*isDiffusionResult\(result\),\s*quantFormats,/,
@@ -144,7 +143,6 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
     page,
     /const quantFormatsKey = checkpointQuantFormats\.join\(","\);[\s\S]{0,600}\[effectiveDiscoverFormat, searchBrowsing, quantFormatsKey\]/,
   );
-  // Browsing means no typed search, for the list and for the search's own skip test.
   assert.match(
     page,
     /matchesDiscoverFormat\(\s*row\.result,\s*effectiveDiscoverFormat,\s*!hasQuery,\s*isDiffusionRow\(row\),/,
