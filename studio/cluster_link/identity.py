@@ -17,7 +17,7 @@ from typing import Iterator, List, Optional, Tuple
 
 from . import tls
 from .model import LocalIdentity, Peer
-from .paths import private_dir, state_dir, write_private
+from .paths import lock_fd, private_dir, state_dir, unlock_fd, write_private
 
 ROOT_DAYS = 3650
 MASTER_CERT_DAYS = 3650
@@ -212,11 +212,15 @@ def _create_master_identity() -> LocalIdentity:
     node_id = secrets.token_hex(8)
     key = ec.generate_private_key(ec.SECP256R1())
     cert = _leaf(key.public_key(), ca_key, ca_cert, node_id, "master", MASTER_CERT_DAYS)
-    d = private_dir(_identity_dir())
-    write_private(d / "key.pem", _key_pem(key))
-    write_private(d / "cert.pem", _cert_pem(cert))
-    write_private(d / "root.pem", _cert_pem(ca_cert))
     meta = {"node_id": node_id, "role": "master", "cluster_id": cluster_id}
+    return _write_identity(meta, _key_pem(key), _cert_pem(cert), _cert_pem(ca_cert))
+
+
+def _write_identity(meta: dict, key_pem: bytes, cert_pem: bytes, root_pem: bytes) -> LocalIdentity:
+    d = private_dir(_identity_dir())
+    write_private(d / "key.pem", key_pem)
+    write_private(d / "cert.pem", cert_pem)
+    write_private(d / "root.pem", root_pem)
     write_private(d / "identity.json", json.dumps(meta).encode("utf-8"))
     return _local_identity(meta)
 
@@ -237,15 +241,10 @@ def save_worker_identity(
     root_pem: bytes,
     agent_port: Optional[int] = None,
 ) -> LocalIdentity:
-    d = private_dir(_identity_dir())
-    write_private(d / "key.pem", key_pem)
-    write_private(d / "cert.pem", cert_pem)
-    write_private(d / "root.pem", root_pem)
     meta = {"node_id": node_id, "role": "worker", "cluster_id": cluster_id}
     if agent_port:
         meta["agent_port"] = int(agent_port)
-    write_private(d / "identity.json", json.dumps(meta).encode("utf-8"))
-    return _local_identity(meta)
+    return _write_identity(meta, key_pem, cert_pem, root_pem)
 
 
 def worker_agent_port() -> Optional[int]:
@@ -258,14 +257,13 @@ def worker_agent_port() -> Optional[int]:
 
 
 def new_worker_key_and_csr() -> Tuple[bytes, bytes]:
-    x509, hashes, _, ec, _, name_oid = _x509()
+    x509, hashes, serialization, ec, _, name_oid = _x509()
     key = ec.generate_private_key(ec.SECP256R1())
     csr = (
         x509.CertificateSigningRequestBuilder()
         .subject_name(x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, "unsloth worker")]))
         .sign(key, hashes.SHA256())
     )
-    _, _, serialization, _, _, _ = _x509()
     return _key_pem(key), csr.public_bytes(serialization.Encoding.PEM)
 
 
@@ -309,19 +307,24 @@ def own_cert_pem() -> bytes:
     return (_identity_dir() / "cert.pem").read_bytes()
 
 
-def forget_identity() -> None:
-    """Drop this node's identity and registry (``unsloth cluster leave`` on a worker)."""
-    for path in (
-        _identity_dir() / "identity.json",
-        _identity_dir() / "key.pem",
-        _identity_dir() / "cert.pem",
-        _identity_dir() / "root.pem",
-        state_dir() / "peers.json",
-    ):
+def _unlink(*paths: Path) -> None:
+    for path in paths:
         try:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def forget_identity() -> None:
+    """Drop this node's identity and registry (``unsloth cluster leave`` on a worker)."""
+    d = _identity_dir()
+    _unlink(
+        d / "identity.json",
+        d / "key.pem",
+        d / "cert.pem",
+        d / "root.pem",
+        state_dir() / "peers.json",
+    )
 
 
 @contextlib.contextmanager
@@ -334,11 +337,7 @@ def identity_lock() -> Iterator[None]:
 def forget_master() -> None:
     """Drop a master's identity, its cluster root and registry."""
     forget_identity()
-    for path in (_ca_dir() / "root_key.pem", _ca_dir() / "root.pem"):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+    _unlink(_ca_dir() / "root_key.pem", _ca_dir() / "root.pem")
 
 
 @contextlib.contextmanager
@@ -347,24 +346,12 @@ def _locked(path: Path) -> Iterator[None]:
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_fd(fd)
         except OSError as exc:
             raise RuntimeError(f"could not lock {path}: {exc}") from None
         yield
     finally:
-        try:
-            if os.name == "nt":
-                import msvcrt
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
-        os.close(fd)
+        unlock_fd(fd)
 
 
 class Registry:

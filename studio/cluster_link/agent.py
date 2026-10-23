@@ -31,17 +31,21 @@ from . import (
     tls,
 )
 from .model import LocalIdentity
-from .paths import run_dir, state_dir
+from .paths import lock_fd, run_dir, state_dir, unlock_fd
 import socket
 
 from .splice import (
     STREAM_LIMIT,
     SpliceSession,
+    authorized_async,
     close_writer,
+    drop_socket,
     is_private_address,
     socket_splice,
     splice,
     threaded_sessions,
+    until_unauthorized,
+    watch_authorized,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,12 +116,7 @@ def _die_with_agent_launch() -> Tuple[List[str], Optional[Callable[[], None]]]:
 def _lock_rpc_port(port: int) -> int:
     fd = os.open(str(run_dir() / f"rpc-server-{port}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd(fd, blocking = False)
     except OSError:
         os.close(fd)
         raise RuntimeError(
@@ -128,16 +127,8 @@ def _lock_rpc_port(port: int) -> int:
 
 
 def _unlock(fd: Optional[int]) -> None:
-    if fd is None:
-        return
-    try:
-        if os.name == "nt":
-            import msvcrt
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    except OSError:
-        pass
-    os.close(fd)
+    if fd is not None:
+        unlock_fd(fd)
 
 
 def _reap_rpc_record(path: Path) -> None:
@@ -187,12 +178,13 @@ def _listen(host: str, port: int) -> socket.socket:
     return sock
 
 
-def _drop(sock: socket.socket) -> None:
-    for step in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
-        try:
-            step()
-        except (OSError, ValueError):
-            pass
+async def _terminate(proc: asyncio.subprocess.Process) -> None:
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), 5.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
 
 
 class Agent:
@@ -264,10 +256,6 @@ class Agent:
         self._slot_lock = threading.Lock()
         self._raw: set = set()
         self._sessions: set = set()
-
-    @property
-    def rpc_endpoint(self) -> str:
-        return f"{self._rpc_target[0]}:{self._rpc_target[1]}"
 
     @property
     def rpc_up(self) -> bool:
@@ -355,9 +343,7 @@ class Agent:
                     self._server.close()
                     self._server = None
                 self._close_listener()
-                _unlock(self._port_lock)
-                _unlock(self._native_port_lock)
-                self._port_lock = self._native_port_lock = None
+                self._release_port_locks()
                 raise
             self._supervisor = asyncio.ensure_future(self._supervise())
 
@@ -377,9 +363,12 @@ class Agent:
         try:
             await self._stop()
         finally:
-            _unlock(self._port_lock)
-            _unlock(self._native_port_lock)
-            self._port_lock = self._native_port_lock = None
+            self._release_port_locks()
+
+    def _release_port_locks(self) -> None:
+        _unlock(self._port_lock)
+        _unlock(self._native_port_lock)
+        self._port_lock = self._native_port_lock = None
 
     async def _stop(self) -> None:
         self._stopping = True
@@ -397,7 +386,7 @@ class Agent:
             for session in list(self._sessions):
                 session.abort()
             for sock in list(self._raw):
-                _drop(sock)
+                drop_socket(sock)
             if self._accept_thread is not None:
                 await asyncio.to_thread(self._accept_thread.join, 2.0)
                 self._accept_thread = None
@@ -469,35 +458,25 @@ class Agent:
                 _unlock(fd)
 
     def _rpc_argv(self) -> list:
-        if self.mode == "native":
-            # TLS 1.3 on the LAN: only a client whose certificate chains to the cluster root AND whose
-            # fingerprint is in the allowlist (the one master that asked) gets a byte through.
+        if self.mode != "native":
             return [
                 str(self.rpc_binary),
                 "-H",
-                self.host or "0.0.0.0",
+                "127.0.0.1",
                 "-p",
-                str(self.native_port),
+                str(self.rpc_port),
                 "-c",
-                "--tls-cert",
-                self.identity.certfile,
-                "--tls-key",
-                self.identity.keyfile,
-                "--tls-ca",
-                self.identity.rootfile,
-                "--tls-allow",
-                str(native.allowlist_path(self.native_port)),
                 *self.rpc_args,
             ]
+        # TLS 1.3 on the LAN: only a client whose certificate chains to the cluster root AND whose
+        # fingerprint is in the allowlist (the one master that asked) gets a byte through.
+        ident = self.identity
         return [
-            str(self.rpc_binary),
-            "-H",
-            "127.0.0.1",
-            "-p",
-            str(self.rpc_port),
-            "-c",
+            str(self.rpc_binary), "-H", self.host or "0.0.0.0", "-p", str(self.native_port), "-c",
+            "--tls-cert", ident.certfile, "--tls-key", ident.keyfile, "--tls-ca", ident.rootfile,
+            "--tls-allow", str(native.allowlist_path(self.native_port)),
             *self.rpc_args,
-        ]
+        ]  # fmt: skip
 
     @property
     def _probe_target(self) -> Tuple[str, int]:
@@ -574,12 +553,7 @@ class Agent:
         proc, self._proc = self._proc, None
         if proc is None or proc.returncode is not None:
             return
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), 5.0)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+        await _terminate(proc)
         self._forget_rpc()
 
     def _native_client(self) -> bool:
@@ -615,6 +589,14 @@ class Agent:
             },
         }
 
+    def _reply(self, kind: Any) -> Dict[str, Any]:
+        """The answer to a ping, a status request or an unknown request."""
+        if kind == "ping":
+            return {"type": "pong", "version": PROTOCOL_VERSION}
+        if kind == "status":
+            return self.status()
+        return {"type": "error", "error": "unknown request"}
+
     async def _restart_rpc(self) -> bool:
         if self.rpc_binary is None:
             return True
@@ -623,12 +605,7 @@ class Agent:
         proc = self._proc
         if proc is not None and proc.returncode is None:
             self._planned_restart = True
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), 5.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+            await _terminate(proc)
         return await self.wait_rpc_ready(RPC_READY_TIMEOUT_S)
 
     async def _enter_native(self, pid: tls.PeerIdentity) -> Dict[str, Any]:
@@ -686,11 +663,7 @@ class Agent:
             pid = self._native_master
             if pid is None or self.mode != "native":
                 return
-            try:
-                ok = bool(await asyncio.to_thread(self._authorize, pid))
-            except Exception:
-                ok = False
-            if not ok:
+            if not await authorized_async(self._authorize, pid):
                 logger.warning(
                     "cluster agent: the master is no longer paired; closing its TLS session"
                 )
@@ -705,43 +678,30 @@ class Agent:
         await self._leave_native()
         return {"type": "ok"}
 
+    def _on_loop(self, make: Callable[[], Any]) -> Any:
+        """Run the coroutine ``make()`` on the agent's loop from a session thread; None once it closed."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return None
+        return asyncio.run_coroutine_threadsafe(make(), loop).result(RPC_READY_TIMEOUT_S + 15)
+
     def _control_native_threaded(
         self, kind: str, pid: Optional[tls.PeerIdentity]
     ) -> Dict[str, Any]:
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            return {"type": "error", "error": "agent is stopping"}
-        return asyncio.run_coroutine_threadsafe(self._control_native(kind, pid), loop).result(
-            RPC_READY_TIMEOUT_S + 15
-        )
+        reply = self._on_loop(lambda: self._control_native(kind, pid))
+        return reply if reply is not None else {"type": "error", "error": "agent is stopping"}
 
     def _leave_native_threaded(self) -> None:
-        if self.mode != "native":
-            return
-        loop = self._loop
-        if loop is not None and not loop.is_closed():
-            asyncio.run_coroutine_threadsafe(self._leave_native(), loop).result(
-                RPC_READY_TIMEOUT_S + 15
-            )
+        if self.mode == "native":
+            self._on_loop(self._leave_native)
 
     async def _revoke_when_unauthorized(
         self, pid: Any, master: asyncio.StreamWriter, rpc: asyncio.StreamWriter
     ) -> None:
-        while True:
-            await asyncio.sleep(REVALIDATE_S)
-            try:
-                ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
-            except Exception:
-                ok = False
-            if not ok:
-                logger.warning("cluster agent: the master is no longer paired; closing its session")
-                master.transport.abort()
-                rpc.transport.abort()
-                return
-
-    def _admit(self, writer: asyncio.StreamWriter) -> bool:
-        peer = writer.get_extra_info("peername")
-        return self._admit_peer(str(peer[0]) if peer else "", writer.get_extra_info("ssl_object"))
+        await until_unauthorized(self._authorize, pid, REVALIDATE_S)
+        logger.warning("cluster agent: the master is no longer paired; closing its session")
+        master.transport.abort()
+        rpc.transport.abort()
 
     def _admit_peer(self, source: str, ssl_object: Any) -> bool:
         if not self._source_allowed(source):
@@ -800,11 +760,7 @@ class Agent:
                 return
             msg = framing.recv_frame(sock, timeout = HANDSHAKE_TIMEOUT_S)
             kind = msg.get("type")
-            if kind == "ping":
-                framing.send_frame(sock, {"type": "pong", "version": PROTOCOL_VERSION})
-            elif kind == "status":
-                framing.send_frame(sock, self.status())
-            elif kind in ("native_rpc", "native_close"):
+            if kind in ("native_rpc", "native_close"):
                 framing.send_frame(
                     sock, self._control_native_threaded(kind, tls.peer_identity(sock))
                 )
@@ -815,7 +771,7 @@ class Agent:
                 self._leave_native_threaded()
                 self._open_rpc_threaded(sock)
             else:
-                framing.send_frame(sock, {"type": "error", "error": "unknown request"})
+                framing.send_frame(sock, self._reply(kind))
         except (framing.FrameError, OSError, ssl.SSLError, ValueError):
             pass
         finally:
@@ -870,28 +826,18 @@ class Agent:
             self.stats["rpc_streams"] += 1
             self.stats["threaded_streams"] = self.stats.get("threaded_streams", 0) + 1
             framing.send_frame(sock, {"type": "rpc_ok"})
-            pid = tls.peer_identity(sock)
             session = SpliceSession()
             self._sessions.add(session)
             ended = threading.Event()
 
-            def watch() -> None:
-                while not ended.wait(REVALIDATE_S):
-                    try:
-                        ok = pid is not None and bool(self._authorize(pid))
-                    except Exception:
-                        ok = False
-                    if not ok:
-                        logger.warning(
-                            "cluster agent: the master is no longer paired; closing its session"
-                        )
-                        session.abort()
-                        return
+            def revoked() -> None:
+                logger.warning("cluster agent: the master is no longer paired; closing its session")
+                session.abort()
 
-            watcher = threading.Thread(
-                target = watch, name = "unsloth-cluster-agent-revalidate", daemon = True
-            )
-            watcher.start()
+            watch_authorized(
+                self._authorize, tls.peer_identity(sock), REVALIDATE_S, ended, revoked,
+                "unsloth-cluster-agent-revalidate",
+            )  # fmt: skip
             try:
                 socket_splice(
                     sock,
@@ -912,16 +858,15 @@ class Agent:
         self._conns.add(writer)
         self.stats["connections"] += 1
         try:
-            if not self._admit(writer):
+            peer = writer.get_extra_info("peername")
+            if not self._admit_peer(
+                str(peer[0]) if peer else "", writer.get_extra_info("ssl_object")
+            ):
                 self.stats["rejected"] += 1
                 return
             msg = await framing.read_frame(reader, timeout = HANDSHAKE_TIMEOUT_S)
             kind = msg.get("type")
-            if kind == "ping":
-                await framing.write_frame(writer, {"type": "pong", "version": PROTOCOL_VERSION})
-            elif kind == "status":
-                await framing.write_frame(writer, self.status())
-            elif kind in ("native_rpc", "native_close"):
+            if kind in ("native_rpc", "native_close"):
                 pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
                 await framing.write_frame(writer, await self._control_native(kind, pid))
             elif kind == "open_rpc":
@@ -931,7 +876,7 @@ class Agent:
                 await self._leave_native()
                 await self._open_rpc(reader, writer)
             else:
-                await framing.write_frame(writer, {"type": "error", "error": "unknown request"})
+                await framing.write_frame(writer, self._reply(kind))
         except (framing.FrameError, OSError, ssl.SSLError, asyncio.TimeoutError):
             pass
         finally:

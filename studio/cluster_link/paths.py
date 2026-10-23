@@ -72,6 +72,28 @@ def private_dir(path: Path) -> Path:
     return path
 
 
+def lock_fd(fd: int, blocking: bool = True) -> None:
+    """An exclusive lock on ``fd``: waits for it, or raises OSError at once when not ``blocking``."""
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+
+
+def unlock_fd(fd: int) -> None:
+    """Release lock_fd's lock and close ``fd``."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    os.close(fd)
+
+
 def write_private(path: Path, data: bytes) -> None:
     """Atomic replace, created 0600: a reader never sees a half-written key or registry."""
     private_dir(path.parent)
