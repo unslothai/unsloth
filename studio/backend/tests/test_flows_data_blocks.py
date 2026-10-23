@@ -127,6 +127,9 @@ def test_merge_modes():
         {"id": 2, "who": "A", "sku": "x"},
         {"id": 2, "who": "A", "sku": "y"},
     ]
+    # A right-hand row without the key is unmatched, so it is kept like any other unmatched row.
+    assert merge(left, [{"y": "N"}], mode = "by_key", key = "id") == [*left, {"y": "N"}]
+    assert merge(left, [{"y": "N"}], mode = "by_key", key = "id", keep_unmatched = False) == []
     with pytest.raises(FlowNodeError, match = "at most"):
         merge(list(range(transform.MAX_ITEMS + 1)), [1], mode = "combine")
 

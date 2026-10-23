@@ -185,9 +185,12 @@ async def merge_data(ctx: NodeContext) -> dict:
         keep = ctx.params.get("keep_unmatched", True)
         # Every right row per key: an order joined with its line items keeps all of them.
         index: dict[str, list[dict]] = {}
+        keyless: list[dict] = []
         for row in right:
             if isinstance(row, dict) and key in row:
                 index.setdefault(json.dumps(row[key], sort_keys = True, default = str), []).append(row)
+            elif isinstance(row, dict):
+                keyless.append(row)
         used: set[str] = set()
         out = []
         for row in left:
@@ -206,6 +209,7 @@ async def merge_data(ctx: NodeContext) -> dict:
             for k, rows in index.items():
                 if k not in used:
                     out.extend(rows)
+            out.extend(keyless)
         if len(out) > MAX_ITEMS:
             raise FlowNodeError(f"The join made more than {MAX_ITEMS} items")
         return {"value": out}
