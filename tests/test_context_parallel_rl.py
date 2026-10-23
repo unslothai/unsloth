@@ -593,7 +593,7 @@ def _dapo_count_worker(rank, world, init_file, queue):
             7: (lambda: (["p"], completion_ids, tool_mask, ["c"], gather(tool_lengths).sum(), None, {}), 4, 4 * world),
             # TRL 1.7 - 1.11: the 7 above plus images, tool_images
             9: (lambda: (["p"], completion_ids, None, ["c"], gather(lengths).sum(), None, {}, None, None), 4, 8 * world),
-            # TRL >= 1.12 counts after _generate returns: nothing to fix
+            # TRL >= 1.9 counts after _generate returns: nothing to fix
             8: (lambda: (["p"], completion_ids, None, ["c"], None, {}, None, None), None, None),
         }
         for size, (generate, index, expected) in layouts.items():

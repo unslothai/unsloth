@@ -1184,8 +1184,9 @@ def _check_rl_eval_entry(self, kind: str, dataset) -> None:
 
 
 def _recount_completion_tokens(trainer, result):
-    """TRL 0.24 - 1.11 return the DAPO token count from _generate, gathered from every rank's own completions
-    before CP peers adopted rank 0's: recount it from the adopted ones (TRL >= 1.12 counts after _generate)."""
+    """TRL 0.24 - 1.8 return the DAPO token count from _generate (index 2 of 5 in 0.24 / 0.25, index 4 of
+    7 or 9 in 0.26 - 1.8), gathered from every rank's own completions before CP peers adopted rank 0's:
+    recount it from the adopted ones. TRL >= 1.9 returns 8 items and counts after _generate."""
     if not isinstance(result, tuple) or len(result) not in (5, 7, 9):
         return result
     index = 2 if len(result) == 5 else 4
