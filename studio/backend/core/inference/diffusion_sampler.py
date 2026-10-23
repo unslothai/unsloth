@@ -215,6 +215,92 @@ def _marker_overrides(keys: Any) -> dict[str, Any]:
     return overrides
 
 
+# Root single-file marker reads off the Hub, kept per (repo, snapshot commit) so a later cache-only load
+# (a restore at startup, HF_HUB_OFFLINE) of the same staged snapshot samples the way the online one did.
+_MARKS_FILE = "diffusion_prediction_markers.json"
+_MAX_RECORDED_MARKS = 512
+
+
+def _marks_record_path() -> Any:
+    try:
+        from utils.paths.storage_roots import cache_root
+        return cache_root() / _MARKS_FILE
+    except Exception:  # noqa: BLE001 - no Studio cache root: nothing is recorded
+        return None
+
+
+def _snapshot_commit(root: Optional[str], repo_id: str, revision: Optional[str]) -> Optional[str]:
+    """Commit of the Hub snapshot a pipeline loads from: the staged ``snapshots/<commit>`` folder, else
+    the cached ``model_index.json`` of ``repo_id``. None when neither names one."""
+    from pathlib import Path
+
+    try:
+        if root:
+            folder = Path(str(root))
+            if folder.parent.name == "snapshots" and folder.name:
+                return folder.name
+        from huggingface_hub import try_to_load_from_cache
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        hit = try_to_load_from_cache(
+            repo_id,
+            "model_index.json",
+            cache_dir = active_hf_hub_cache(),
+            revision = revision,
+        )
+    except Exception:  # noqa: BLE001 - no cache view: nothing to key on
+        return None
+    return Path(hit).parent.name if isinstance(hit, str) else None
+
+
+def _marks_key(repo_id: str, commit: str) -> str:
+    return f"{repo_id.strip().lower()}@{commit}"
+
+
+def _recorded_marks(repo_id: str, commit: Optional[str]) -> list[dict[str, Any]]:
+    import json
+
+    path = _marks_record_path()
+    if not commit or path is None:
+        return []
+    try:
+        hit = json.loads(path.read_text()).get(_marks_key(repo_id, commit))
+    except Exception:  # noqa: BLE001 - absent / unreadable record: nothing recorded
+        return []
+    if not isinstance(hit, list) or not all(isinstance(m, dict) for m in hit):
+        return []
+    return [_marker_overrides(set(m.get("markers") or ())) for m in hit]
+
+
+def _record_marks(repo_id: str, commit: Optional[str], markers: list[list[str]]) -> None:
+    import json
+    import os
+    import threading
+
+    path = _marks_record_path()
+    if not commit or path is None:
+        return
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        try:
+            record = json.loads(path.read_text())
+            if not isinstance(record, dict):
+                record = {}
+        except Exception:  # noqa: BLE001 - absent / corrupt: start over
+            record = {}
+        key = _marks_key(repo_id, commit)
+        record.pop(key, None)
+        while len(record) >= _MAX_RECORDED_MARKS:
+            record.pop(next(iter(record)))
+        record[key] = [{"markers": sorted(m)} for m in markers]
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(record))
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - a read-only cache only costs the next offline load the markers
+        return
+
+
 def _root_single_marks(
     root: Optional[str],
     repo_id: Optional[str] = None,
@@ -241,40 +327,47 @@ def _root_single_marks(
     if singles:
         return [checkpoint_prediction_overrides(str(p)) for p in singles]
     rid = (repo_id or "").strip()
-    if not allow_network or rid.count("/") != 1:
+    if rid.count("/") != 1:
         return []
     try:
         if Path(rid).expanduser().exists():
             return []
-        from huggingface_hub import HfApi
-
         from .diffusion_families import pinned_revision_kwargs
+
+        rev = pinned_revision_kwargs(rid)
+        commit = _snapshot_commit(root, rid, rev.get("revision"))
+    except Exception:  # noqa: BLE001 - odd id: the shipped scheduler config stands
+        return []
+    if not allow_network:
+        # A cache-only load of a snapshot an online load already read keeps that read's verdict.
+        return _recorded_marks(rid, commit)
+    try:
+        from huggingface_hub import HfApi
 
         from hub.utils.hf_tokens import normalize_token
 
         # One normalisation for every Hub call here: False (anonymous) never becomes None (ambient).
         hf_token = normalize_token(hf_token)
         api = HfApi()
-        rev = pinned_revision_kwargs(rid)
         names = sorted(
             f
             for f in api.list_repo_files(rid, token = hf_token, **rev)
             if "/" not in f and f.lower().endswith(".safetensors")
         )
-        return [
-            _marker_overrides(
-                {
-                    k
-                    for k in api.parse_safetensors_file_metadata(
-                        rid, name, token = hf_token, **rev
-                    ).tensors
-                    if "." not in k
-                }
+        markers = [
+            sorted(
+                k
+                for k in api.parse_safetensors_file_metadata(
+                    rid, name, token = hf_token, **rev
+                ).tensors
+                if k in ("v_pred", "ztsnr")
             )
             for name in names
         ]
-    except Exception:  # noqa: BLE001 - offline / gated / odd: the shipped scheduler config stands
-        return []
+    except Exception:  # noqa: BLE001 - offline / gated / odd: an earlier read of this snapshot, else the config
+        return _recorded_marks(rid, commit)
+    _record_marks(rid, commit, markers)
+    return [_marker_overrides(set(m)) for m in markers]
 
 
 def pipeline_prediction_overrides(

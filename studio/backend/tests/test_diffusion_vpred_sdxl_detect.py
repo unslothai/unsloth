@@ -71,6 +71,12 @@ def _write_safetensors(path: Path, keys) -> Path:
     return path
 
 
+@pytest.fixture(autouse = True)
+def _private_studio_cache(tmp_path, monkeypatch):
+    """Recorded marker reads land in a per-test Studio cache, never the real one."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+
+
 @pytest.fixture
 def hub_cache(tmp_path, monkeypatch):
     """An empty HF hub cache root, pinned as the live one; ``put`` caches a repo file."""
@@ -567,6 +573,115 @@ def test_a_staged_pipeline_snapshot_reads_the_root_markers_off_the_hub(tmp_path,
     # A cache-only load never reaches the Hub; the shipped config stands.
     seen.clear()
     assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(root), NOOB, None, False) == {}
+    assert seen == []
+
+
+def _stub_noob_hub(monkeypatch, keys, seen):
+    import huggingface_hub
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        seen.append("list")
+        return ["model_index.json", NOOB_FILE]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        seen.append("header")
+        if keys is None:
+            raise OSError("offline")
+        return types.SimpleNamespace(tensors = {k: None for k in keys}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+
+
+def _staged_snapshot(hub_cache, commit = SHA) -> Path:
+    # A staged pipeline snapshot: model_index.json + scheduler config, no root single file.
+    hub_cache.put(NOOB, "model_index.json", payload = SDXL_INDEX)
+    target = hub_cache.put(NOOB, "scheduler/scheduler_config.json", payload = NOOB_SCHEDULER)
+    snap = target.parent.parent
+    if commit != SHA:
+        renamed = snap.parent / commit
+        snap.rename(renamed)
+        (snap.parent.parent / "refs" / "main").write_text(commit)
+        snap = renamed
+    return snap
+
+
+VPRED = {
+    "prediction_type": "v_prediction",
+    "rescale_betas_zero_snr": True,
+    "timestep_spacing": "trailing",
+}
+
+
+def test_a_cache_only_reload_of_a_staged_snapshot_keeps_the_online_marker_read(
+    hub_cache, monkeypatch
+):
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference.diffusion_sampler import apply_pipeline_prediction_type
+
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    assert seen == ["list", "header"]
+    # A later cache-only load (startup restore, HF_HUB_OFFLINE) never reaches the Hub but samples alike,
+    # through the staged snapshot folder or through the repo id resolved against the cache.
+    seen.clear()
+    _stub_noob_hub(monkeypatch, None, seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == VPRED
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, None, NOOB, None, False) == VPRED
+    assert seen == []
+    pipe = types.SimpleNamespace(
+        scheduler = diffusers.EulerDiscreteScheduler.from_config(NOOB_SCHEDULER)
+    )
+    assert apply_pipeline_prediction_type(pipe, str(snap), repo_id = NOOB, allow_network = False)
+    cfg = pipe.scheduler.config
+    assert (cfg.prediction_type, cfg.rescale_betas_zero_snr, cfg.timestep_spacing) == (
+        "v_prediction",
+        True,
+        "trailing",
+    )
+
+
+def test_a_failed_online_marker_read_falls_back_to_the_recorded_one(hub_cache, monkeypatch):
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    _stub_noob_hub(monkeypatch, None, seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+
+
+def test_a_recorded_marker_read_is_per_snapshot_commit(hub_cache, monkeypatch):
+    snap = _staged_snapshot(hub_cache)
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], [])
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    other = snap.parent / ("f" * 40)
+    other.mkdir()
+    # Another commit of the repo was never read: its shipped config stands offline.
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(other), NOOB, None, False) == {}
+    # An online read that finds no markers replaces the record, so an eps re-release stays eps offline.
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS, [])
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == {}
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
+
+
+def test_an_unrecorded_cache_only_load_keeps_the_shipped_config(hub_cache, monkeypatch):
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
     assert seen == []
 
 
