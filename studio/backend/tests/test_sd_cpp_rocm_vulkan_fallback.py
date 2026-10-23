@@ -3051,3 +3051,51 @@ def test_trademark_marks_do_not_split_a_card_name():
     ) == sd_cpp_backend._normalized_card_name("Intel Arc B580")
     # Only the marks go: a model letter R or TM inside a word stays.
     assert sd_cpp_backend._normalized_card_name("Radeon R9") == "radeonr9"
+
+
+def test_an_absent_rocm_runtime_diverts_before_the_rocm_bundle_is_fetched(fake_settings, monkeypatch):
+    """No host ROCm 7 userspace: the ROCm prebuilt can only die at exec, so the first load goes to Vulkan."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "vulkan"
+    assert _noted_accelerators(fake_settings) == ["rocm"]
+
+
+def test_a_loadable_or_unknown_rocm_runtime_keeps_rocm(fake_settings, monkeypatch):
+    from core.inference import sd_cpp_backend
+
+    for verdict in (True, None):
+        monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda v = verdict: v)
+        assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+    assert _noted_accelerators(fake_settings) == []
+
+
+def test_an_unlaunchable_rocm_build_without_its_runtime_is_proven_at_once(fake_settings, monkeypatch):
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "rocm")
+    monkeypatch.setattr(sd_cpp_backend, "rocm_runtime_resolvable", lambda: False)
+    sd_cpp_backend.note_unlaunchable_accelerator_build("/opt/sd/rocm/sd-server")
+    assert _noted_accelerators(fake_settings) == ["rocm"], "exit 127 with the runtime missing is not ambiguous"
+
+
+def test_the_rocm_runtime_is_probed_in_a_fresh_process(monkeypatch):
+    """In-process ctypes finds torch's own libamdhip64.so.7 by soname; sd-cli never sees it."""
+    import subprocess
+
+    from core.inference import sd_cpp_backend
+
+    if sd_cpp_backend.os.name != "posix" or sd_cpp_backend.sys.platform == "darwin":
+        pytest.skip("POSIX non-macOS only")
+    calls = []
+
+    def _run(cmd, **_kw):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode = 0, stdout = "libhipblas.so.3\nlibrocblas.so.5\n")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    monkeypatch.setattr(sd_cpp_backend, "_rocm_missing_memo", None)
+    assert sd_cpp_backend.rocm_runtime_missing_sonames() == ["libhipblas.so.3", "librocblas.so.5"]
+    assert sd_cpp_backend.rocm_runtime_resolvable() is False
+    assert len(calls) == 1 and "-I" in calls[0], "one isolated probe, memoised"

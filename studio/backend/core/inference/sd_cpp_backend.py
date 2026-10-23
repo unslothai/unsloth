@@ -1334,46 +1334,61 @@ _ROCM_RUNTIME_SONAMES: tuple[str, ...] = (
 )
 
 
+_ROCM_SONAME_PROBE = (
+    "import ctypes, sys\n"
+    "for name in sys.argv[1:]:\n"
+    "    try:\n"
+    "        ctypes.CDLL(name)\n"
+    "    except OSError:\n"
+    "        print(name)\n"
+)
+_rocm_missing_memo: Optional[tuple[Optional[list[str]]]] = None
+
+
+def _rocm_missing_sonames_fresh() -> Optional[list[str]]:
+    """The ROCm sonames a fresh process cannot load. Not ``ctypes`` in this process: torch's ROCm
+    wheel has already loaded its own libamdhip64.so.7 here, so a lookup by soname succeeds while
+    sd-cli, a separate process that never sees torch's lib dir, still dies at exec (exit 127)."""
+    global _rocm_missing_memo
+    if os.name != "posix" or sys.platform == "darwin":
+        return None
+    if _rocm_missing_memo is not None:
+        return _rocm_missing_memo[0]
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", _ROCM_SONAME_PROBE, *_ROCM_RUNTIME_SONAMES],
+            capture_output = True,
+            text = True,
+            timeout = 20,
+        )
+        result = (
+            [line for line in proc.stdout.split() if line in _ROCM_RUNTIME_SONAMES]
+            if proc.returncode == 0
+            else None
+        )
+    except Exception:  # noqa: BLE001 - a probe that cannot run establishes nothing
+        result = None
+    _rocm_missing_memo = (result,)
+    return result
+
+
 def rocm_runtime_resolvable() -> Optional[bool]:
-    """Whether this host can load the ROCm runtime the prebuilt needs. None when it cannot be asked.
+    """Whether a process launched from here can load the ROCm runtime the prebuilt needs. None when it cannot be asked.
 
     Uses the real loader (``ctypes``), NOT ``ldconfig -p``: on a gfx1151 runner the cache omitted
     hipblas and rocblas that the loader resolved from /opt/rocm. Not Windows, where the exit status
     (0xC0000135) already decides."""
-    if os.name != "posix" or sys.platform == "darwin":
-        return None
-    try:
-        import ctypes
-    except Exception:  # noqa: BLE001 - no ctypes, so nothing can be established
-        return None
-    for soname in _ROCM_RUNTIME_SONAMES:
-        try:
-            ctypes.CDLL(soname)
-        except OSError:
-            return False
-        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
-            return None
-    return True
+    missing = _rocm_missing_sonames_fresh()
+    return None if missing is None else not missing
 
 
 def rocm_runtime_missing_sonames() -> Optional[list[str]]:
     """The ROCm runtime libraries the loader cannot open here: [] when all load, None when it cannot be asked
-    (Windows, macOS, no ctypes, an unexpected loader error), which says nothing either way."""
-    if os.name != "posix" or sys.platform == "darwin":
-        return None
-    try:
-        import ctypes
-    except Exception:  # noqa: BLE001
-        return None
-    missing = []
-    for soname in _ROCM_RUNTIME_SONAMES:
-        try:
-            ctypes.CDLL(soname)
-        except OSError:
-            missing.append(soname)
-        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
-            return None
-    return missing
+    (Windows, macOS, an unexpected probe failure), which says nothing either way."""
+    missing = _rocm_missing_sonames_fresh()
+    return None if missing is None else list(missing)
 
 
 ACCELERATOR_FALLBACK_CLEAR_HINT = (
@@ -2084,13 +2099,31 @@ def output_shows_decisive_accelerator_failure(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _ACCELERATOR_DECISIVE_FAILURE_MARKERS)
 
 
+def _note_absent_rocm_runtime(klass: str, card: Optional[str]) -> None:
+    if klass != "rocm" or not fallback_accelerator_for(klass):
+        return
+    try:
+        if accelerator_runtime_failed(klass, card) or rocm_runtime_resolvable() is not False:
+            return
+        logger.warning(
+            "sd_cpp.rocm_runtime_absent: %s; using the %s build",
+            accelerator_fallback_reason(klass),
+            fallback_accelerator_for(klass),
+        )
+        note_accelerator_runtime_failure(klass, proven = True, card = card)
+    except Exception as exc:  # noqa: BLE001 - a failed preflight leaves the ladder as it was
+        logger.debug("ROCm runtime preflight failed: %s", exc)
+
+
 def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None) -> str:
     """``accelerator``, or its fallback once shown unrunnable here. Applied at the TOP of an ensure ladder, so a crashed build is not installed and probed again.
 
-    A function of the stored record only, never of the live host: the loader preflight is applied
-    where the runtime verdict is interpreted, so this stays reproducible."""
+    A function of the stored record, plus one live preflight that only ever WRITES that record: a
+    ROCm runtime the loader cannot find is recorded as a proven failure before the 300 MB ROCm
+    bundle is fetched, replacing a working build, only to die at exec."""
     chosen = accelerator or "auto"
     klass = _accelerator_class_of(accelerator) or chosen
+    _note_absent_rocm_runtime(klass, card)
     seen: set[str] = set()
     # Walk the ladder (rocm -> vulkan -> cpu) past every rung already shown unrunnable.
     while klass not in seen:
@@ -2560,7 +2593,10 @@ def note_unlaunchable_accelerator_build(
             accelerator,
             fallback_accelerator_for(accelerator),
         )
-        note_accelerator_runtime_failure(accelerator, proven = False, card = card)
+        # Proven when the loader shows the ROCm runtime absent: that alone explains the failed launch.
+        note_accelerator_runtime_failure(
+            accelerator, proven = accelerator_probe_failure_is_decisive(accelerator), card = card
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 

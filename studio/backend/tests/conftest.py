@@ -144,6 +144,15 @@ def _forget_embedding_device_setting():
 
 
 @pytest.fixture(autouse = True)
+def _no_host_rocm_runtime_probe(monkeypatch):
+    # The sd.cpp ROCm preflight asks a fresh process for the host loader's answer; pin "cannot tell"
+    # so results do not follow the test machine. Tests of the preflight patch it back.
+    backend = sys.modules.get("core.inference.sd_cpp_backend")
+    if backend is not None:
+        monkeypatch.setattr(backend, "_rocm_missing_memo", (None,), raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _no_background_sandbox_probes(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
 
