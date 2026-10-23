@@ -121,3 +121,34 @@ def test_per_card_shares_need_a_provable_device_order(tmp_path, monkeypatch, ord
     backend._arch_gate_survivors = lambda binary = None: []
     margins = _r7._margins(_r7._dspark(backend, gguf, tmp_path))
     assert (len(margins) == 2) is per_card
+
+
+def _owned_head_margins(tmp_path, monkeypatch, head_gib):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(_lc, "_sidecar_borrows_output", lambda path: False)
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    _r7._three_block_drafter(backend)
+    backend._n_layers = 1
+    read = backend._tensor_spill_layout
+
+    def layout(path, **kw):
+        if "dspark" in str(path):
+            return SimpleNamespace(complete = True, lm_head_bytes = int(head_gib * 1024**3))
+        return read(path, **kw)
+
+    backend._tensor_spill_layout = layout
+    return _r7._margins(_r7._dspark(backend, gguf, tmp_path, extra_args = ["--tensor-split", "3,2"]))
+
+
+def test_an_owned_head_is_reserved_on_its_output_card(tmp_path, monkeypatch):
+    """A 3:2 split puts the three draft blocks on card 0 and the draft's own output layer on
+    card 1, so its head's bytes move there; the total stays the same."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    no_head = _owned_head_margins(tmp_path / "a", monkeypatch, 0)
+    head = _owned_head_margins(tmp_path / "b", monkeypatch, 2)
+    assert head[1] - no_head[1] >= 2000
+    assert no_head[0] - head[0] >= 2000

@@ -34643,10 +34643,30 @@ class LlamaCppBackend:
                                 if any(f > 0 for f in _spawn_shares)
                                 else len(_spawn_shares) - 1
                             )
+                            # A draft's own output head is placed with its output layer, not
+                            # spread by the block shares.
+                            _spawn_head = 0
+                            if (
+                                _sidecar_owns_output
+                                and len(_spawn_shares) > 1
+                                and not _draft_share_unknown
+                            ):
+                                _head_layout = self._tensor_spill_layout(
+                                    _sidecar_reserve_path, all_shards = True
+                                )
+                                if _head_layout is not None and _head_layout.complete:
+                                    _spawn_head = min(
+                                        _spawn_body,
+                                        math.ceil(_head_layout.lm_head_bytes / (1024 * 1024)),
+                                    )
+                                    _spawn_body -= _spawn_head
+                                else:
+                                    # Unread head: cover the whole body on the output card too.
+                                    _spawn_head = _spawn_body
                             _spawn_per_device = [
                                 math.ceil(_spawn_body * f)
                                 + (_sidecar_compute_mib if f > 0 or i == _last else 0)
-                                + (_spawn_graph if i == _last else 0)
+                                + (_spawn_graph + _spawn_head if i == _last else 0)
                                 for i, f in enumerate(_spawn_shares)
                             ]
                             _spawn_reserve = max(_spawn_per_device)
