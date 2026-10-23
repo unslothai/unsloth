@@ -3645,6 +3645,11 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+# Windows, transformers 5.0 - 5.16: read shards with pread, not a copy-on-write mmap charged to commit (os error 1455).
+from ._windows_safetensors import patch_windows_safetensors_pread
+
+patch_windows_safetensors_pread()
+
 # Faster safetensors loads on UMA GPUs; the lazy gate keeps this import fork-safe (no CUDA init). No-op off-UMA, opt out with UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
 from ._uma_safetensors import patch_unified_memory_safetensors_load
 
