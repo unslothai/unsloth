@@ -57,6 +57,14 @@ def _worker(rank, world, port, out, case):
             # Identical non-finite weights on every rank (tiny Llama4 ships some) are not a mismatch.
             for m in (model, first):
                 next(p for n, p in m.named_parameters() if p.requires_grad).data.view(-1)[0] = float("nan")
+        if case in ("permuted", "nan_elsewhere") and rank == 1:
+            # Same sum and L1 norm as rank 0, different contents: the elements reversed.
+            w = next(p for n, p in model.named_parameters() if p.requires_grad).data.view(-1)
+            w.copy_(w.flip(0))
+        if case == "nan_elsewhere":
+            # A shared NaN must not hide a difference in the other elements.
+            for m in (model, first):
+                next(p for n, p in m.named_parameters() if p.requires_grad).data.view(-1)[0] = float("nan")
         want = {n: p.detach().clone() for n, p in first.named_parameters() if p.requires_grad}
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -121,3 +129,15 @@ def test_identical_non_finite_weights_are_not_a_mismatch():
     for rank, r in _run("nan").items():
         assert r["max_diff"] == 0.0, (rank, r)
         assert not r["message"], (rank, r)
+
+
+def test_a_permuted_adapter_is_not_mistaken_for_the_same():
+    for rank, r in _run("permuted").items():
+        assert r["max_diff"] == 0.0, (rank, r)
+        assert r["message"] or rank != 0, (rank, r)
+
+
+def test_a_shared_nan_does_not_hide_other_differences():
+    for rank, r in _run("nan_elsewhere").items():
+        assert r["max_diff"] == 0.0, (rank, r)
+        assert r["message"] or rank != 0, (rank, r)

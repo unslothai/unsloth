@@ -1249,11 +1249,32 @@ def _mesh_broadcast_from_first(tensor, mesh, dist):
         dist.broadcast(tensor, src = dist.get_global_rank(group, 0), group = group)
 
 
+_FINGERPRINT_CHUNK = 1 << 24
+
+
+def _content_fingerprint(p):
+    """Four float64 numbers that tell two ranks' copies of a tensor apart: sum, L1 norm, a sum weighted
+    by a position-dependent cos(i * golden ratio) (so a permutation such as [1, -1] vs [-1, 1] differs),
+    and the count of non-finite elements. Non-finite values are mapped to fixed finite stand-ins first,
+    so a NaN cannot hide the other elements while identical NaN patterns still agree. Chunked, so no
+    float64 copy of a large weight is made."""
+    flat = p.detach().reshape(-1)
+    out = torch.zeros(4, dtype = torch.float64, device = flat.device)
+    for start in range(0, flat.numel(), _FINGERPRINT_CHUNK):
+        chunk = flat[start : start + _FINGERPRINT_CHUNK].to(torch.float64)
+        bad = ~torch.isfinite(chunk)
+        chunk = torch.nan_to_num(chunk, nan = 3.0, posinf = 5.0, neginf = -7.0)
+        index = torch.arange(start, start + chunk.numel(), dtype = torch.float64, device = chunk.device)
+        weight = torch.cos(index * 0.6180339887498949)
+        out += torch.stack((chunk.sum(), chunk.abs().sum(), (chunk * weight).sum(), bad.sum().double()))
+    return out
+
+
 def _sync_trainable_from_first_rank(model, dist, device, mesh = None):
     """Every rank must start from the same trainable weights. DDP broadcasts rank 0's parameters when
     it wraps the model; fully_shard keeps each rank's own slice instead, so a weight initialised
     without a seed on each rank (a LoRA adapter whose loader ignored random_state, a fresh head) became
-    a mix of the ranks' values, and the ranks trained different models. Compares a checksum per
+    a mix of the ranks' values, and the ranks trained different models. Compares a content fingerprint per
     trainable tensor over the ranks of `mesh` and broadcasts the first rank's values of the tensors
     that differ (only those, so a full finetune is not re-sent). Returns how many were synced."""
     params = [
@@ -1264,24 +1285,10 @@ def _sync_trainable_from_first_rank(model, dist, device, mesh = None):
     from .fsdp2_save import mesh_all_reduce
 
     with torch.no_grad():
-        local = torch.stack(
-            [
-                # float64 accumulation without a float64 copy of the weight (a full finetune's
-                # embedding can be billions of elements).
-                torch.stack(
-                    (
-                        p.detach().sum(dtype = torch.float64),
-                        torch.linalg.vector_norm(p.detach(), 1, dtype = torch.float64),
-                    )
-                ).to(device)
-                for p in params
-            ]
-        )
+        local = torch.stack([_content_fingerprint(p).to(device) for p in params])
         first = local.clone()
         _mesh_broadcast_from_first(first, mesh, dist)
-        # NaN-aware: a checkpoint with non-finite weights (tiny Llama4) is still the same on every rank.
-        same = (local == first) | (local.isnan() & first.isnan())
-        differs = (~same).any(dim = 1).to(torch.int32)
+        differs = (local != first).any(dim = 1).to(torch.int32)
         mesh_all_reduce(differs, mesh, dist)
         index = [i for i, n in enumerate(differs.tolist()) if n]
         for i in index:
