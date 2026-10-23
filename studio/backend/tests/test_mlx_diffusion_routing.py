@@ -989,3 +989,136 @@ def test_a_unified_memory_refusal_of_the_fallback_keeps_its_error_code(rig):
     assert unified_memory_refusal_code(excinfo.value) == UNIFIED_OVERSIZE_REFUSAL_CODE
     # MLX is restored as for any other failed fallback.
     assert rig.engine.status()["engine_routing"]["resident"] == ["mlx"]
+
+
+# The shipped Tongyi-MAI/Z-Image-Turbo scheduler config, and the undistilled base's (shift 6, ComfyUI samples at 3).
+_Z_TURBO_SCHEDULER = {
+    "_class_name": "FlowMatchEulerDiscreteScheduler",
+    "_diffusers_version": "0.36.0.dev0",
+    "num_train_timesteps": 1000,
+    "use_dynamic_shifting": False,
+    "shift": 3.0,
+}
+_Z_BASE_SCHEDULER = {**_Z_TURBO_SCHEDULER, "shift": 6.0}
+
+
+def _cache_base(monkeypatch, tmp_path, repo: str, files: dict) -> None:
+    """``files`` as the only cached snapshot of ``repo`` in a fresh hub cache (nothing else on disk)."""
+    import json
+
+    from huggingface_hub import constants
+
+    import utils.hf_cache_settings as cache_settings
+
+    root = tmp_path / "hub"
+    folder = root / f"models--{repo.replace('/', '--')}"
+    snapshot = folder / "snapshots" / ("0" * 40)
+    for name, content in files.items():
+        path = snapshot / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps(content), encoding = "utf-8")
+    (folder / "refs").mkdir(parents = True, exist_ok = True)
+    (folder / "refs" / "main").write_text("0" * 40, encoding = "utf-8")
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: str(root))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(root))
+
+
+def _expected_shift_control(config: dict) -> Optional[dict]:
+    """What diffusers' status reports: shift_control on the loaded scheduler after the load-time ComfyUI shift."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    from core.inference.diffusion_flow_shift import apply_comfy_flow_shift, shift_control
+
+    pipe = SimpleNamespace(scheduler = FlowMatchEulerDiscreteScheduler.from_config(config))
+    apply_comfy_flow_shift(pipe, 3.0)
+    return shift_control("sd3", pipe.scheduler)
+
+
+def _z_image_rig(rig, monkeypatch):
+    z_image = next(f for f in families._FAMILIES if f.name == "z-image")
+    monkeypatch.setattr(rig.engine, "_family", lambda: z_image)
+    return z_image
+
+
+@pytest.mark.parametrize("config", [_Z_TURBO_SCHEDULER, _Z_BASE_SCHEDULER], ids = ["turbo", "base"])
+def test_status_offers_the_fallback_shift_control_from_the_cached_scheduler(
+    rig, monkeypatch, tmp_path, config
+):
+    # A request with a shift routes to diffusers, so the Images page must show the Shift control diffusers serves.
+    pytest.importorskip("diffusers")
+    _z_image_rig(rig, monkeypatch)
+    _cache_base(
+        monkeypatch,
+        tmp_path,
+        "Tongyi-MAI/Z-Image-Turbo",
+        {
+            "scheduler/scheduler_config.json": config,
+            "model_index.json": {"_class_name": "ZImagePipeline"},
+        },
+    )
+    status = rig.engine.status()
+    assert status["engine"] == "mlx"
+    expected = _expected_shift_control(config)
+    assert expected == {"node": "sd3", "shift": 3.0}
+    assert status["shift_control"] == expected
+    assert _txt2img(rig.engine, shift = 3.0)["engine"] == "diffusers"
+
+
+def test_fallback_shift_control_reads_a_local_base_dir(rig, monkeypatch, tmp_path):
+    pytest.importorskip("diffusers")
+    import json
+
+    z_image = _z_image_rig(rig, monkeypatch)
+    (tmp_path / "scheduler").mkdir()
+    (tmp_path / "scheduler" / "scheduler_config.json").write_text(json.dumps(_Z_BASE_SCHEDULER))
+    status = {"repo_id": "unsloth/Z-Image-GGUF", "base_repo": str(tmp_path)}
+    assert routing.fallback_shift_control(z_image, status) == _expected_shift_control(
+        _Z_BASE_SCHEDULER
+    )
+
+
+def test_status_hides_shift_when_the_scheduler_config_is_not_cached(rig, monkeypatch, tmp_path):
+    # Status never downloads: an uncached base keeps the control hidden, as before.
+    _z_image_rig(rig, monkeypatch)
+    _cache_base(monkeypatch, tmp_path, "Tongyi-MAI/Z-Image-Turbo", {"model_index.json": {}})
+    assert rig.engine.status().get("shift_control") is None
+
+
+def test_status_hides_shift_when_the_base_ships_a_sampling_grid(rig, monkeypatch, tmp_path):
+    _z_image_rig(rig, monkeypatch)
+    _cache_base(
+        monkeypatch,
+        tmp_path,
+        "Tongyi-MAI/Z-Image-Turbo",
+        {
+            "scheduler/scheduler_config.json": _Z_TURBO_SCHEDULER,
+            "model_index.json": {"sample_sigmas": [1.0, 0.75, 0.5, 0.25]},
+        },
+    )
+    assert rig.engine.status().get("shift_control") is None
+
+
+def test_an_mlx_reported_shift_control_is_kept(rig, monkeypatch, tmp_path):
+    _z_image_rig(rig, monkeypatch)
+    _cache_base(
+        monkeypatch,
+        tmp_path,
+        "Tongyi-MAI/Z-Image-Turbo",
+        {"scheduler/scheduler_config.json": _Z_TURBO_SCHEDULER},
+    )
+    real_status = rig.mlx.status
+    own = {"node": "sd3", "shift": 5.0}
+    monkeypatch.setattr(rig.mlx, "status", lambda: {**real_status(), "shift_control": own})
+    assert rig.engine.status()["shift_control"] == own
+
+
+def test_no_fallback_no_shift_control(rig, monkeypatch, tmp_path):
+    _z_image_rig(rig, monkeypatch)
+    _cache_base(
+        monkeypatch,
+        tmp_path,
+        "Tongyi-MAI/Z-Image-Turbo",
+        {"scheduler/scheduler_config.json": _Z_TURBO_SCHEDULER},
+    )
+    monkeypatch.setattr(families, "family_pipeline_available", lambda _f: False)
+    assert rig.engine.status().get("shift_control") is None

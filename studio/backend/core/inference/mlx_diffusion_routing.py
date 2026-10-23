@@ -16,6 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
 from core.inference.generation_ticket import bind_generation_cancel
@@ -281,6 +282,83 @@ def _diffusers_capabilities(family: Any) -> dict[str, Any]:
             family
         ),
     }
+
+
+_SCHEDULER_CONFIG = "scheduler/scheduler_config.json"
+
+
+def _cached_base_file(base: str, filename: str) -> Optional[Path]:
+    """``filename`` from the base repo the diffusers fallback would build from, only if already on disk."""
+    local = Path(base).expanduser()
+    if local.is_dir():
+        candidate = local / filename
+        return candidate if candidate.is_file() else None
+    from huggingface_hub import constants, try_to_load_from_cache
+
+    from core.inference.diffusion_families import (
+        mirror_repo,
+        pinned_revision_kwargs,
+        prefer_ungated_mirror,
+    )
+    from utils.hf_cache_settings import active_hf_hub_cache
+
+    repos = (prefer_ungated_mirror(base), base, mirror_repo(base))
+    for repo in dict.fromkeys(r for r in repos if r):
+        revision = pinned_revision_kwargs(repo).get("revision")
+        for cache_dir in dict.fromkeys((active_hf_hub_cache(), constants.HF_HUB_CACHE)):
+            hit = try_to_load_from_cache(repo, filename, cache_dir = cache_dir, revision = revision)
+            if isinstance(hit, str):
+                return Path(hit)
+    return None
+
+
+def fallback_shift_control(family: Any, status: dict[str, Any]) -> Optional[dict]:
+    """The ``shift_control`` diffusers reports once it loads this pick, built from the cached base scheduler config
+    with the same load-time ComfyUI shift. None when the config is not on disk (status never downloads)."""
+    import json
+
+    from core.inference.diffusion_content import content_variant_hint
+    from core.inference.diffusion_families import comfy_flow_shift_for, comfy_shift_node_for
+    from core.inference.diffusion_flow_shift import (
+        SAMPLE_SIGMAS_KEY,
+        apply_comfy_flow_shift,
+        shift_control,
+        valid_sample_sigmas,
+    )
+
+    repo_id, gguf_filename = status.get("repo_id"), status.get("gguf_filename")
+    display_repo_id, base = status.get("display_repo_id"), status.get("base_repo")
+    node = comfy_shift_node_for(family, gguf_filename, repo_id, display_repo_id, base)
+    if node is None or not base:
+        return None
+    index_path = _cached_base_file(base, "model_index.json")
+    if index_path is not None:
+        index = json.loads(index_path.read_text(encoding = "utf-8"))
+        # A shipped sampling grid: diffusers keeps its scheduler and hides the control.
+        if isinstance(index, dict) and valid_sample_sigmas(index.get(SAMPLE_SIGMAS_KEY)):
+            return None
+    config_path = _cached_base_file(base, _SCHEDULER_CONFIG)
+    if config_path is None:
+        return None
+    config = json.loads(config_path.read_text(encoding = "utf-8"))
+    import diffusers
+
+    scheduler_cls = getattr(diffusers, str(config.get("_class_name") or ""), None)
+    if scheduler_cls is None:
+        return None
+    pipe = SimpleNamespace(scheduler = scheduler_cls.from_config(config))
+    apply_comfy_flow_shift(
+        pipe,
+        comfy_flow_shift_for(
+            family,
+            gguf_filename,
+            content_variant_hint(repo_id, gguf_filename),
+            repo_id,
+            display_repo_id,
+            base,
+        ),
+    )
+    return shift_control(node, pipe.scheduler)
 
 
 # Taken from the fallback only when the MLX variant drops CFG; one that applies it keeps its own thresholds.
@@ -793,6 +871,16 @@ class RoutedMlxEngine:
             logger.info("mlx_routing.capabilities_unavailable: %s", exc)
             return {}
 
+    def _fallback_shift_control(self, family: Any, status: dict[str, Any]) -> Optional[dict]:
+        """A request with a shift routes to diffusers, so the Images page offers the Shift control diffusers serves."""
+        if not self._fallback_available(family):
+            return None
+        try:
+            return fallback_shift_control(family, status)
+        except Exception as exc:  # noqa: BLE001 -- an unreadable config just keeps the control hidden
+            logger.info("mlx_routing.shift_control_unavailable: %s", exc)
+            return None
+
     def routing_status(self) -> dict[str, Any]:
         resident = [
             name
@@ -824,11 +912,16 @@ class RoutedMlxEngine:
         else:
             out = dict(self._mlx().status())
             if out.get("loaded"):
-                caps = self._fallback_capabilities(self._family())
+                family = self._family()
+                caps = self._fallback_capabilities(family)
                 if out.get("supports_guidance"):
                     for key in _GUIDANCE_KEYS:
                         caps.pop(key, None)
                 out.update(caps)
+                if out.get("shift_control") is None:
+                    shift = self._fallback_shift_control(family, out)
+                    if shift is not None:
+                        out["shift_control"] = shift
         out["engine_routing"] = self.routing_status()
         return out
 
