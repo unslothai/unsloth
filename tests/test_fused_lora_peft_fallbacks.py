@@ -39,12 +39,7 @@ if has_real_cuda():
     CASES += [("cuda", torch.float32, path) for path in _paths("cuda")]
 
 
-def _run(
-    fn,
-    model,
-    X0,
-    autocast_dtype = None,
-):
+def _run(fn, model, X0, autocast_dtype = None):
     model.zero_grad(set_to_none = True)
     torch.manual_seed(7)
     X = X0.detach().clone().requires_grad_()
@@ -55,25 +50,14 @@ def _run(
             out = fn(X * 1)
     outs = out if isinstance(out, tuple) else (out,)
     gen = torch.Generator(device = "cpu").manual_seed(11)
-    loss = sum(
-        (o.double() * torch.randn(o.shape, generator = gen, dtype = torch.float64).to(o.device)).sum()
-        for o in outs
-    )
+    loss = sum((o.double() * torch.randn(o.shape, generator = gen, dtype = torch.float64).to(o.device)).sum() for o in outs)
     loss.backward()
     grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
     model.zero_grad(set_to_none = True)
     return [o.detach() for o in outs], X.grad.clone(), grads
 
 
-def _assert_falls_back_to_peft(
-    monkeypatch,
-    model,
-    block,
-    path,
-    X0,
-    autocast_dtype = None,
-    exact = True,
-):
+def _assert_falls_back_to_peft(monkeypatch, model, block, path, X0, autocast_dtype = None, exact = True):
     spy = _Spy(monkeypatch)
     fused = _run(PATHS[path][0](block), model, X0, autocast_dtype)
     assert spy.calls == [], "a fused LoRA Function ran"
@@ -114,6 +98,7 @@ def test_real_peft_variant_runs_peft_forward(monkeypatch, dropout):
         pytest.skip("PEFT without KaSA")
     from peft import LoraConfig, get_peft_model
 
+
     torch.manual_seed(3407)
     cfg = LoraConfig(
         r = 4,
@@ -137,9 +122,7 @@ def test_real_peft_variant_runs_peft_forward(monkeypatch, dropout):
 @pytest.mark.parametrize("device,dtype,path", CASES)
 @pytest.mark.parametrize("state", ["disabled", "merged"])
 @pytest.mark.parametrize("dropout,lora_bias", CONFIGS)
-def test_disabled_or_merged_adapter_backward_matches_peft(
-    monkeypatch, device, dtype, path, state, dropout, lora_bias
-):
+def test_disabled_or_merged_adapter_backward_matches_peft(monkeypatch, device, dtype, path, state, dropout, lora_bias):
     if state == "merged" and lora_bias:
         pytest.skip("PEFT refuses to merge a lora_B bias into a base layer without one")
     model, block = _peft_block(device, dtype, dropout, lora_bias)
@@ -154,9 +137,7 @@ def test_disabled_or_merged_adapter_backward_matches_peft(
 
 @pytest.mark.parametrize("device,dtype,path", CASES)
 @pytest.mark.parametrize("dropout,lora_bias", CONFIGS)
-def test_trainable_base_weight_gets_its_gradient(
-    monkeypatch, device, dtype, path, dropout, lora_bias
-):
+def test_trainable_base_weight_gets_its_gradient(monkeypatch, device, dtype, path, dropout, lora_bias):
     model, block = _peft_block(device, dtype, dropout, lora_bias)
     for p in model.parameters():
         p.requires_grad_(True)
@@ -170,15 +151,9 @@ def test_trainable_base_weight_gets_its_gradient(
 @pytest.mark.parametrize("dropout,lora_bias", CONFIGS)
 @pytest.mark.parametrize(
     "x_dtype,autocast_dtype",
-    [
-        (torch.float16, torch.bfloat16),
-        (torch.bfloat16, torch.float16),
-        (torch.float32, torch.float16),
-    ],
+    [(torch.float16, torch.bfloat16), (torch.bfloat16, torch.float16), (torch.float32, torch.float16)],
 )
-def test_autocast_dtype_other_than_input_runs_peft(
-    monkeypatch, path, dropout, lora_bias, x_dtype, autocast_dtype
-):
+def test_autocast_dtype_other_than_input_runs_peft(monkeypatch, path, dropout, lora_bias, x_dtype, autocast_dtype):
     model, block = _peft_block("cuda", torch.bfloat16, dropout, lora_bias)
     X0 = torch.randn(2, 5, H, device = "cuda", dtype = x_dtype)
     _assert_falls_back_to_peft(monkeypatch, model, block, path, X0, autocast_dtype)
@@ -218,17 +193,13 @@ def _disable_or_merge(model, block, state):
 @pytest.mark.parametrize("state", ["disabled", "merged"])
 @pytest.mark.parametrize("grad_mode", ["no_grad", "inference_mode", "grad_frozen_input"])
 @pytest.mark.parametrize("dropout", [0.0, 0.3])
-def test_disabled_or_merged_adapter_without_grad_stays_fused(
-    monkeypatch, device, dtype, path, state, grad_mode, dropout
-):
+def test_disabled_or_merged_adapter_without_grad_stays_fused(monkeypatch, device, dtype, path, state, grad_mode, dropout):
     # The reference forward: no gradient flows, so the fused base matmul runs and equals PEFT bitwise.
     model, block = _peft_block(device, dtype, dropout)
     _disable_or_merge(model, block, state)
     X = torch.randn(2, 5, H, device = device, dtype = dtype)
     spy = _Spy(monkeypatch)
-    ctx = {"no_grad": torch.no_grad, "inference_mode": torch.inference_mode}.get(
-        grad_mode, torch.enable_grad
-    )
+    ctx = {"no_grad": torch.no_grad, "inference_mode": torch.inference_mode}.get(grad_mode, torch.enable_grad)
     with ctx():
         fused = PATHS[path][0](block)(X)
     assert [name for name, _ in spy.calls] == FUSED_NAMES[path]
@@ -244,9 +215,7 @@ def test_disabled_or_merged_adapter_without_grad_stays_fused(
     # Each projection is PEFT's base_layer(X) bitwise; the MLP's Triton SwiGLU rounds its float32
     # activation 1 ulp differently from torch's SiLU * up.
     tol = {} if path == "mlp" else dict(rtol = 0, atol = 0)
-    for a, b in zip(
-        fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)
-    ):
+    for a, b in zip(fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)):
         assert not a.requires_grad
         torch.testing.assert_close(a, b, **tol)
 
@@ -261,17 +230,10 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
         def __init__(self):
             super().__init__()
             for name, (i, o) in {
-                "q_proj": (H, H),
-                "k_proj": (H, H),
-                "v_proj": (H, H),
-                "o_proj": (H, H),
-                "gate_proj": (H, 96),
-                "up_proj": (H, 96),
-                "down_proj": (96, H),
+                "q_proj": (H, H), "k_proj": (H, H), "v_proj": (H, H), "o_proj": (H, H),
+                "gate_proj": (H, 96), "up_proj": (H, 96), "down_proj": (96, H),
             }.items():
-                layer = bnb.nn.Linear4bit(
-                    i, o, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4"
-                )
+                layer = bnb.nn.Linear4bit(i, o, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
                 layer.weight = bnb.nn.Params4bit(
                     layer.weight.data.to(torch.bfloat16), requires_grad = False, quant_type = "nf4"
                 )
@@ -280,9 +242,7 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
 
     torch.manual_seed(3407)
     base = _Block4bit().to("cuda")
-    cfg = LoraConfig(
-        r = 4, lora_alpha = 8, lora_dropout = 0.1, target_modules = TARGETS, init_lora_weights = False
-    )
+    cfg = LoraConfig(r = 4, lora_alpha = 8, lora_dropout = 0.1, target_modules = TARGETS, init_lora_weights = False)
     model = get_peft_model(base, cfg)
     for name, p in model.named_parameters():
         if "lora_" in name:
@@ -297,9 +257,7 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
         fused = PATHS[path][0](block)(X)
         ref = PATHS[path][1](block)(X)
     assert [name for name, _ in spy.calls] == FUSED_NAMES[path]
-    for a, b in zip(
-        fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)
-    ):
+    for a, b in zip(fused if isinstance(fused, tuple) else (fused,), ref if isinstance(ref, tuple) else (ref,)):
         torch.testing.assert_close(a, b, rtol = 0, atol = 0)
 
 
@@ -326,19 +284,10 @@ def test_routing_compiles_without_graph_breaks(monkeypatch):
     def fn(X):
         return fast_lora.apply_lora_o(block, X), fast_lora.apply_lora_qkv(block, X)
 
-    def check(
-        X,
-        autocast_dtype = None,
-        grad = True,
-    ):
+    def check(X, autocast_dtype = None, grad = True):
         torch._dynamo.reset()
         compiled = torch.compile(fn, backend = "eager", fullgraph = True)
-        with (
-            torch.set_grad_enabled(grad),
-            torch.autocast(
-                "cpu", dtype = autocast_dtype or torch.bfloat16, enabled = autocast_dtype is not None
-            ),
-        ):
+        with torch.set_grad_enabled(grad), torch.autocast("cpu", dtype = autocast_dtype or torch.bfloat16, enabled = autocast_dtype is not None):
             got = compiled(X)
             want = fn(X)
         torch.testing.assert_close(got[0], want[0])

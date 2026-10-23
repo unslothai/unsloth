@@ -152,16 +152,10 @@ def _autocast_dtype_mismatch(X):
     # in X's dtype (in-place ops are not autocast), so a different autocast dtype cannot be fused.
     # Mode flags only, no tensor work. Eager first asks whether any autocast is on (a private query, so not
     # under Dynamo, which traces the public calls below as constants).
-    if (
-        _is_any_autocast_enabled is not None
-        and not _is_compiling()
-        and not _is_any_autocast_enabled()
-    ):
+    if _is_any_autocast_enabled is not None and not _is_compiling() and not _is_any_autocast_enabled():
         return False
     device_type = "cuda" if X.is_cuda else X.device.type
-    return (
-        torch.is_autocast_enabled(device_type) and torch.get_autocast_dtype(device_type) != X.dtype
-    )
+    return torch.is_autocast_enabled(device_type) and torch.get_autocast_dtype(device_type) != X.dtype
 
 
 def _is_plain_lora(proj):
