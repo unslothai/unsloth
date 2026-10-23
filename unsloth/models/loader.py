@@ -480,7 +480,7 @@ DISABLE_COMPILE_MODEL_NAMES = [
 ]
 
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the flash-linear-attention Triton kernels, so no install is needed; transformers falls back to the much slower pure PyTorch path only when they cannot be enabled.
-FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
+FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "kimi_k3", "olmo_hybrid")
 _fla_advised = False
 
 
@@ -2279,7 +2279,7 @@ class FastModel(FastBaseModel):
         # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
-        if "kimi_linear" in model_types_all or getattr(model_config, "model_type", None) == "kimi_linear":
+        if "kimi_linear" in model_types_all or getattr(model_config, "model_type", None) in ("kimi_linear", "kimi_k3"):
             try:
                 _kimi_cls = resolve_model_class(auto_model, model_config, **_probe_hub_kwargs)
                 if _kimi_cls is not None:
@@ -2336,7 +2336,7 @@ class FastModel(FastBaseModel):
             **kwargs,
         )
 
-        if "kimi_linear" in model_types_all or getattr(model_config, "model_type", None) == "kimi_linear":
+        if "kimi_linear" in model_types_all or getattr(model_config, "model_type", None) in ("kimi_linear", "kimi_k3"):
             try:
                 from unsloth.distributed.kda_cp import patch_kimi_model
 

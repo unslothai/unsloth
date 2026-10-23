@@ -72,17 +72,22 @@ def _kda_gate(
     f_g: torch.Tensor,
     A_log: torch.Tensor,
     dt_bias: torch.Tensor | None,
+    lower_bound: float | None = None,
 ) -> torch.Tensor:
     """Compute KDA per-channel log-decay gate ``[B, T, H_local, K]`` in float32."""
-    # Exact analytical gate: g = -exp(A_log) * softplus(f_g + dt_bias).
+    # Exact analytical gate, matching fla's naive_kda_gate / naive_kda_lowerbound_gate:
+    #   default:      g = -exp(A_log) * softplus(f_g + dt_bias)
+    #   lower_bound:  g = lower_bound * sigmoid(exp(A_log) * (f_g + dt_bias))   (Kimi K3)
     # Works across all fla versions (both old g_bias and new dt_bias signatures)
     # and on both CUDA and CPU with full autograd support.
     h_local, k_dim = f_g.shape[-2], f_g.shape[-1]
-    a = -A_log.reshape(1, 1, h_local, 1).float().exp()
+    a = A_log.reshape(1, 1, h_local, 1).float().exp()
     g_in = f_g.float()
     if dt_bias is not None:
         g_in = g_in + dt_bias.reshape(1, 1, h_local, k_dim).float()
-    return a * F.softplus(g_in)
+    if lower_bound is not None:
+        return lower_bound * torch.sigmoid(a * g_in)
+    return -a * F.softplus(g_in)
 
 
 def _torch_chunk_kda(
@@ -254,7 +259,7 @@ def kda_forward_with_cp(
 
     A_local = self.A_log.reshape(-1)[h_slice]
     dt_local = self.dt_bias.reshape(-1)[g_chan_slice] if getattr(self, "dt_bias", None) is not None else None
-    g = _kda_gate(f_g, A_local, dt_local)
+    g = _kda_gate(f_g, A_local, dt_local, getattr(self, "gate_lower_bound", None))
     beta = beta.float().sigmoid()
     if getattr(self, "allow_neg_eigval", False):
         beta = beta * 2.0
@@ -366,13 +371,19 @@ def patch_kimi_model(model) -> None:
     except ImportError:
         pass
 
+    # Kimi K3 ships a trainable MoE (``moe_train``) with latent experts
+    # (routed_expert_down/up_proj); the Kimi-Linear replacements below would drop them.
+    native_train_moe = any(
+        type(m).__name__ == "KimiSparseMoeBlock" and hasattr(type(m), "moe_train")
+        for m in model.modules()
+    )
     for module in model.modules():
         cls_name = type(module).__name__
         if cls_name == "KimiRMSNorm":
             type(module).forward = _kimi_rmsnorm_forward
-        elif cls_name == "KimiMoEGate":
+        elif cls_name == "KimiMoEGate" and not native_train_moe:
             type(module).forward = _kimi_moe_gate_forward
-        elif cls_name == "KimiSparseMoeBlock":
+        elif cls_name == "KimiSparseMoeBlock" and not native_train_moe:
             type(module).forward = _kimi_sparse_moe_forward
         elif cls_name == "KimiDeltaAttention":
             if getattr(module, "_cp_original_forward", None) is None:

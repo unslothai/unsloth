@@ -331,11 +331,13 @@ def _tiny_gemma4():
     return model
 
 
-def _tiny_kimi_linear():
+def _tiny_kimi_linear(k3 = False):
     from types import SimpleNamespace
     import torch.nn as nn
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-    from unsloth.distributed.kda_cp import patch_kimi_model
+    import importlib
+
+    patch_kimi_model = importlib.import_module(f"{P.__package__}.kda_cp").patch_kimi_model
 
     class _ShortConv(nn.Conv1d):
         def __init__(self, hidden_size, kernel_size, activation = "silu"):
@@ -396,8 +398,18 @@ def _tiny_kimi_linear():
             self.f_b_proj = nn.Linear(self.head_dim, proj, bias = False)
             self.dt_bias = nn.Parameter(torch.zeros(proj))
             self.b_proj = nn.Linear(self.hidden_size, self.num_heads, bias = False)
-            self.g_a_proj = nn.Linear(self.hidden_size, self.head_dim, bias = False)
-            self.g_b_proj = nn.Linear(self.head_dim, proj, bias = False)
+            self.use_full_rank_gate = cfg.linear_attn_config.get("use_full_rank_gate", False)
+            self.gate_lower_bound = cfg.linear_attn_config.get("gate_lower_bound", None)
+            if self.use_full_rank_gate:
+                self.g_proj = nn.Linear(self.hidden_size, proj, bias = False)
+            else:
+                self.g_a_proj = nn.Linear(self.hidden_size, self.head_dim, bias = False)
+                self.g_b_proj = nn.Linear(self.head_dim, proj, bias = False)
+            if k3:
+                # non-trivial values so per-rank slicing of A_log / dt_bias is actually exercised
+                with torch.no_grad():
+                    self.A_log.copy_(torch.randn(1, 1, self.num_heads, 1) * 0.5)
+                    self.dt_bias.copy_(torch.randn(proj) * 0.5)
             self.o_norm = _RMSNormGated(self.head_dim, eps = cfg.rms_norm_eps)
             self.o_proj = nn.Linear(proj, self.hidden_size, bias = False)
 
@@ -418,7 +430,16 @@ def _tiny_kimi_linear():
             self.scaling = self.q_head_dim ** -0.5
             self.attention_dropout = 0.0
             self.is_causal = True
-            self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.q_head_dim, bias = False)
+            self.q_lora_rank = getattr(cfg, "q_lora_rank", None)
+            if self.q_lora_rank is not None:
+                self.q_a_proj = nn.Linear(self.hidden_size, self.q_lora_rank, bias = False)
+                self.q_a_layernorm = KimiRMSNorm(self.q_lora_rank)
+                self.q_b_proj = nn.Linear(self.q_lora_rank, self.num_heads * self.q_head_dim, bias = False)
+            else:
+                self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.q_head_dim, bias = False)
+            self.use_output_gate = getattr(cfg, "mla_use_output_gate", False)
+            if self.use_output_gate:
+                self.g_proj = nn.Linear(self.hidden_size, self.num_heads * self.v_head_dim, bias = False)
             self.kv_a_proj_with_mqa = nn.Linear(
                 self.hidden_size, self.kv_lora_rank + self.qk_rope_head_dim, bias = False
             )
@@ -432,7 +453,12 @@ def _tiny_kimi_linear():
 
         def forward(self, hidden_states, attention_mask = None, **kwargs):
             bsz, seq_len, _ = hidden_states.shape
-            q = self.q_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.q_head_dim).transpose(1, 2)
+            q_states = (
+                self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden_states)))
+                if self.q_lora_rank is not None
+                else self.q_proj(hidden_states)
+            )
+            q = q_states.view(bsz, seq_len, self.num_heads, self.q_head_dim).transpose(1, 2)
             q_pass, q_rot = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim = -1)
             ckv = self.kv_a_proj_with_mqa(hidden_states)
             k_pass, k_rot = torch.split(ckv, [self.kv_lora_rank, self.qk_rope_head_dim], dim = -1)
@@ -451,7 +477,10 @@ def _tiny_kimi_linear():
             )
             if self.config._attn_implementation == "flash_attention_2" and self.q_head_dim != self.v_head_dim:
                 out = out[:, :, :, : self.v_head_dim]
-            return self.o_proj(out.reshape(bsz, seq_len, -1).contiguous())
+            out = out.reshape(bsz, seq_len, -1).contiguous()
+            if self.use_output_gate:
+                out = out * self.g_proj(hidden_states).sigmoid()
+            return self.o_proj(out)
 
     class KimiBlockSparseMLP(nn.Module):
         def __init__(self, hidden_dim, ffn_dim):
@@ -483,18 +512,46 @@ def _tiny_kimi_linear():
             self.config = cfg
             self.ep_rank = 0
             self.experts_per_rank = cfg.num_experts
+            self.moe_hidden = getattr(cfg, "routed_expert_hidden_size", None) or cfg.hidden_size
             self.experts = nn.ModuleList(
-                [KimiBlockSparseMLP(cfg.hidden_size, cfg.moe_intermediate_size) for _ in range(cfg.num_experts)]
+                [KimiBlockSparseMLP(self.moe_hidden, cfg.moe_intermediate_size) for _ in range(cfg.num_experts)]
             )
             self.gate = KimiMoEGate(cfg)
             self.shared_experts = KimiBlockSparseMLP(cfg.hidden_size, cfg.moe_intermediate_size)
+            if self.moe_hidden != cfg.hidden_size:
+                self.routed_expert_down_proj = nn.Linear(cfg.hidden_size, self.moe_hidden, bias = False)
+                self.routed_expert_up_proj = nn.Linear(self.moe_hidden, cfg.hidden_size, bias = False)
+
+    class KimiSparseMoeBlockK3(KimiSparseMoeBlock):
+        # K3 ships its own trainable MoE; patch_kimi_model must leave it alone.
+        def moe_train(self, x, topk_ids, topk_weight):
+            full = torch.zeros(x.shape[0], len(self.experts), dtype = topk_weight.dtype).scatter(
+                1, topk_ids, topk_weight
+            )
+            y = torch.zeros_like(x)
+            for e, expert in enumerate(self.experts):
+                y = y + expert(x) * full[:, e : e + 1].to(x.dtype)
+            return y
+
+        def forward(self, hidden_states):
+            shape = hidden_states.shape
+            flat = hidden_states.reshape(-1, shape[-1])
+            scores = torch.sigmoid(flat.float() @ self.gate.weight.float().T)
+            _, topk_ids = torch.topk(scores + self.gate.e_score_correction_bias, self.gate.top_k, dim = -1)
+            topk_weight = scores.gather(1, topk_ids)
+            topk_weight = topk_weight / (topk_weight.sum(-1, keepdim = True) + 1e-20)
+            x = self.routed_expert_down_proj(flat) if hasattr(self, "routed_expert_down_proj") else flat
+            y = self.moe_train(x, topk_ids, topk_weight * self.gate.routed_scaling_factor)
+            if hasattr(self, "routed_expert_up_proj"):
+                y = self.routed_expert_up_proj(y)
+            return y.view(shape) + self.shared_experts(hidden_states)
 
     class KimiDecoderLayer(nn.Module):
         def __init__(self, cfg, idx):
             super().__init__()
             self.is_linear_attn = idx == 0
             self.self_attn = KimiDeltaAttention(cfg, idx) if self.is_linear_attn else KimiMLAAttention(cfg, idx)
-            self.block_sparse_moe = KimiSparseMoeBlock(cfg)
+            self.block_sparse_moe = (KimiSparseMoeBlockK3 if k3 else KimiSparseMoeBlock)(cfg)
             self.input_layernorm = KimiRMSNorm(cfg.hidden_size)
             self.post_attention_layernorm = KimiRMSNorm(cfg.hidden_size)
 
@@ -544,7 +601,13 @@ def _tiny_kimi_linear():
             "short_conv_kernel_size": 4,
             "head_dim": 16,
             "num_heads": 4,
+            **({"use_full_rank_gate": True, "gate_lower_bound": -5.0} if k3 else {}),
         },
+        **(
+            dict(q_lora_rank = 24, mla_use_output_gate = True, routed_expert_hidden_size = 48)
+            if k3
+            else {}
+        ),
         _attn_implementation = "sdpa",
         use_cache = False,
     )
@@ -552,6 +615,10 @@ def _tiny_kimi_linear():
     model = KimiLinearForCausalLM(cfg).float()
     patch_kimi_model(model)
     return model
+
+
+def _tiny_kimi_k3():
+    return _tiny_kimi_linear(k3 = True)
 
 
 def _generic_worker(rank, world, port, seq, out, builder):
@@ -580,6 +647,7 @@ def _generic_worker(rank, world, port, seq, out, builder):
         _tiny_minimax_m2,
         _tiny_gemma4,
         _tiny_kimi_linear,
+        _tiny_kimi_k3,
     ],
 )
 def test_deepseek_cp_matches_single_process(builder):
@@ -614,6 +682,7 @@ if __name__ == "__main__":
         _tiny_minimax_m2,
         _tiny_gemma4,
         _tiny_kimi_linear,
+        _tiny_kimi_k3,
     ):
         test_deepseek_cp_matches_single_process(b)
         print(f"test_deepseek_cp_matches_single_process({b.__name__}): PASS")
