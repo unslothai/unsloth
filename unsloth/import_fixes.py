@@ -7253,6 +7253,85 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def fix_inductor_reduction_readback_race():
+    """
+    torch < 2.14 Inductor: a looped reduction that stores a buffer in one loop and reloads it in
+    a later loop of the same kernel has no barrier in between. Triton's coalesce pass may give the
+    store and the reload different thread layouts, so one warp reads what another has not written
+    yet: silently wrong gradients (Qwen3.5 q-norm + RoPE backward at R0_BLOCK 256, about 3% of rows,
+    2.5e4x grad norms). pytorch/pytorch#198562, triton-lang/triton#10924.
+
+    Backports pytorch/pytorch#190519 (torch 2.14): emit tl.debug_barrier() before loading a buffer
+    whose store left the CSE cache, in the buffer the load itself goes to.
+    """
+    try:
+        import torch
+        from torch._inductor.codegen import triton as triton_codegen
+        from torch._inductor import config as inductor_config
+        from torch._inductor.virtualized import V
+    except Exception:
+        return
+    kernel = getattr(triton_codegen, "TritonKernel", None)
+    deferred_line = getattr(triton_codegen, "DeferredLine", None)
+    if kernel is None or deferred_line is None or not hasattr(kernel, "get_load_buffer"):
+        return
+    if getattr(kernel.load, "_unsloth_readback_barrier", False):
+        return
+    try:
+        if "invalidated_stores" in inspect.getsource(kernel.load):
+            return
+    except Exception:
+        return
+
+    original_load = kernel.load
+    original_get_load_buffer = kernel.get_load_buffer
+
+    @functools.wraps(original_load)
+    def load(self, name, index, *args, **kwargs):
+        previous = self.__dict__.get("_unsloth_readback_name")
+        self._unsloth_readback_name = name
+        try:
+            return original_load(self, name, index, *args, **kwargs)
+        finally:
+            self._unsloth_readback_name = previous
+
+    @functools.wraps(original_get_load_buffer)
+    def get_load_buffer(self, indexing):
+        buffer = original_get_load_buffer(self, indexing)
+        name = self.__dict__.get("_unsloth_readback_name")
+        if name is not None and name in self.cse.invalidated_stores:
+            try:
+                device = V.graph.get_current_device_or_throw().type
+            except Exception:
+                device = None
+            if device != "cpu":
+                buffer.writeline(deferred_line(name, "tl.debug_barrier()"))
+                self._unsloth_readback_name = None
+        return buffer
+
+    load._unsloth_readback_barrier = True
+    kernel.load = load
+    kernel.get_load_buffer = get_load_buffer
+    # A warm FX graph / AOTAutograd cache would hand back kernels compiled without the barrier:
+    # a no-op post-grad pass's uuid joins the cache key.
+    try:
+        from torch._inductor.custom_graph_pass import CustomGraphPass
+        class ReadbackBarrierCacheKey(CustomGraphPass):
+            def __call__(self, graph):
+                return None
+
+            def uuid(self):
+                return "unsloth-inductor-readback-barrier-v1"
+
+        if getattr(inductor_config, "post_grad_custom_post_pass", None) is None:
+            inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+    except Exception:
+        pass
+    logger.info(
+        "Unsloth: Patched Inductor to sync before re-reading a buffer stored in a reduction loop."
+    )
+
+
 def fix_dynamo_config_thread_visibility():
     """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
     (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
