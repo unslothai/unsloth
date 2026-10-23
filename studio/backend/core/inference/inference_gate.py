@@ -58,9 +58,12 @@ def pauses_background_embedding(fn):
 
     @functools.wraps(fn)
     def call(*args, **kwargs):
-        from core.rag.conversation_archive import _pause_prewarm
-        _pause_prewarm()
-        return fn(*args, **kwargs)
+        from core.rag.conversation_archive import _busy
+
+        # Held across the start, so a stream ending meanwhile cannot restart the worker before the job publishes
+        # the state the busy probe reads.
+        with _busy(restart = False):
+            return fn(*args, **kwargs)
 
     return call
 

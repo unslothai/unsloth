@@ -1848,6 +1848,55 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     assert start() is False
 
 
+def test_a_job_start_keeps_the_gap_closed_until_it_returns(conn, monkeypatch):
+    """A stream ending while a load validates (before it publishes its busy state) must not restart the worker."""
+    from core.inference.inference_gate import pauses_background_embedding
+
+    thread_id = "start-thread"
+    conversation_archive.note_branch(thread_id, _gap_thread(thread_id, 3, tag = "start"))
+    calls = _counting_encoder(monkeypatch)
+
+    @pauses_background_embedding
+    def begin_load():
+        with conversation_archive.inference_running():
+            pass
+        worker = conversation_archive._prewarm_worker
+        return worker is not None and worker.is_alive()
+
+    assert begin_load() is False
+    assert calls == []
+
+
+def test_a_cancelled_transcription_holds_the_gap_until_its_thread_ends(conn, monkeypatch):
+    """Cancelling the request task returns at once; the speech thread it started keeps running."""
+    import asyncio
+    import threading
+
+    from core.inference.inference_gate import holds_inference
+
+    started, finish = threading.Event(), threading.Event()
+
+    def transcribe():
+        started.set()
+        finish.wait(5)
+
+    async def route():
+        task = asyncio.ensure_future(asyncio.to_thread(holds_inference(transcribe)))
+        await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        held = conversation_archive._inference_depth
+        finish.set()
+        return held
+
+    # asyncio.run joins the executor on exit, so the thread has ended by then.
+    assert asyncio.run(route()) == 1
+    assert conversation_archive._inference_depth == 0
+
+
 def test_api_passthrough_clients_hold_the_gap_closed_until_closed(conn, monkeypatch):
     """OpenAI / Anthropic / managed-engine passthroughs talk to the engine over their own per-request client."""
     import asyncio

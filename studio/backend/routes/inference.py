@@ -27378,12 +27378,16 @@ async def _transcribe_audio_result(
         )
         load_options = {"on_phase": on_phase} if on_phase is not None else {}
         if source_path is not None and timestamps:
-            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
+            await asyncio.to_thread(
+                holds_inference(sidecar.ensure_aligner), model, on_phase, cancel_event
+            )
             # Started with its aligner now, or transcribe_path would restart it.
             load_options["timestamps"] = True
         await asyncio.to_thread(
-            functools.partial(
-                load_stt, model, serving_engine, cancel_event, device = device, **load_options
+            holds_inference(
+                functools.partial(
+                    load_stt, model, serving_engine, cancel_event, device = device, **load_options
+                )
             )
         )
         loaded = getattr(sidecar, "loaded_model", None)
@@ -27391,19 +27395,21 @@ async def _transcribe_audio_result(
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
         if source_path is not None:
             result = await asyncio.to_thread(
-                functools.partial(
-                    sidecar.transcribe_path,
-                    source_path,
-                    model,
-                    language,
-                    timestamps = timestamps,
-                    cancel_event = cancel_event,
-                    on_phase = on_phase,
+                holds_inference(
+                    functools.partial(
+                        sidecar.transcribe_path,
+                        source_path,
+                        model,
+                        language,
+                        timestamps = timestamps,
+                        cancel_event = cancel_event,
+                        on_phase = on_phase,
+                    )
                 )
             )
         elif on_progress is not None and serving_engine in ("transformers", "mtmd"):
             result = await asyncio.to_thread(
-                transcribe,
+                holds_inference(transcribe),
                 raw,
                 model,
                 language,
@@ -27412,10 +27418,12 @@ async def _transcribe_audio_result(
                 on_progress = on_progress,
             )
         elif cancel_event is None:
-            result = await asyncio.to_thread(transcribe, raw, model, language, fast)
+            result = await asyncio.to_thread(
+                holds_inference(transcribe), raw, model, language, fast
+            )
         else:
             result = await asyncio.to_thread(
-                transcribe,
+                holds_inference(transcribe),
                 raw,
                 model,
                 language,
