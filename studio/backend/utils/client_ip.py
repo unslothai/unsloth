@@ -52,6 +52,14 @@ def _normalize_addr(value: str | None) -> str | None:
         return None
 
 
+def header_fields(headers, name: str) -> str:
+    """All fields of a repeated header, comma-joined (``get`` returns only the first; HAProxy appends a field)."""
+    getlist = getattr(headers, "getlist", None)
+    if getlist is not None:
+        return ",".join(getlist(name))
+    return headers.get(name, "") or ""
+
+
 def client_ip(request) -> str:
     """Best-effort client IP, or ``"_unknown"`` when it can't be determined."""
     if request is None:
@@ -59,7 +67,7 @@ def client_ip(request) -> str:
     peer = request.client.host if request.client else None
     if _trust_forwarded_for():
         # Rightmost hop = what the trusted proxy saw; the leftmost is spoofable.
-        xff = request.headers.get("x-forwarded-for", "")
+        xff = header_fields(request.headers, "x-forwarded-for")
         if xff:
             normalized = _normalize_addr(xff.rsplit(",", 1)[-1])
             if normalized:
@@ -107,6 +115,18 @@ def _host_header_is_loopback(host_header: str | None) -> bool:
         host = host.split(":", 1)[0]
     host = host.lower().rstrip(".")
     return host == "localhost" or _is_loopback_ip(host)
+
+
+# Hop headers a proxy adds without naming the client (Apache's X-Forwarded-Server, an nginx block that
+# only sets X-Forwarded-Proto). Kept apart because Colab's tolerated-header check walks the tuple above.
+_PROXY_HOP_HEADERS = ("via", "x-forwarded-port", "x-forwarded-proto", "x-forwarded-server")
+
+
+def names_a_forwarded_client(request) -> bool:
+    """Whether a proxy or tunnel marked this request as relayed."""
+    return any(
+        request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS + _PROXY_HOP_HEADERS
+    )
 
 
 def is_direct_local_request(request) -> bool:

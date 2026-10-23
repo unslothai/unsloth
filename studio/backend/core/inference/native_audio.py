@@ -353,6 +353,39 @@ def _higgs_tts3_codec_target(model_name: str, hf_token: Optional[str] = None) ->
     return HIGGS_TTS3_CODEC_REPO
 
 
+def _moss_local_audio_tokenizer_target(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[str]:
+    """The codec ``audio_tokenizer_config.json`` names; the processor loads it by itself."""
+    audio_tokenizer_config = _read_audio_metadata(
+        model_name, "audio_tokenizer_config.json", hf_token, reject_oversized = True
+    )
+    candidate = audio_tokenizer_config.get("audio_tokenizer_name_or_path")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return None
+
+
+_CURATED_AUDIO_COMPANIONS = frozenset(
+    repo for repos in NATIVE_AUDIO_COMPANION_REPOS.values() for repo in repos
+)
+
+
+def _companion_adapter_base(companion: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """The base ``from_pretrained`` loads in place of a companion that is a PEFT adapter."""
+    if companion in _CURATED_AUDIO_COMPANIONS:
+        return None
+    local = Path(companion).expanduser()
+    if local.is_dir() and (local / "config.json").is_file():
+        # Transformers only swaps a local folder for its base when it has no config.json.
+        return None
+    adapter_config = _read_audio_metadata(
+        companion, "adapter_config.json", hf_token, reject_oversized = True
+    )
+    base = adapter_config.get("base_model_name_or_path")
+    return base.strip() if isinstance(base, str) and base.strip() else None
+
+
 def native_audio_type_from_local_path(model_name: str) -> Optional[str]:
     """Recognize a local native-audio checkpoint from bounded metadata files."""
     normalized = str(model_name or "").strip()
@@ -434,12 +467,20 @@ def native_audio_security_targets(
     resolved_type = audio_type or _native_audio_type(model_name)
     if resolved_type == "moss_tts_local":
         targets.append(_moss_local_codec_target(model_name, hf_token))
+        audio_tokenizer = _moss_local_audio_tokenizer_target(model_name, hf_token)
+        if audio_tokenizer and audio_tokenizer not in targets:
+            targets.append(audio_tokenizer)
     elif resolved_type == "higgs_tts2":
         targets.append(_higgs_tts2_codec_target(model_name, hf_token))
     elif resolved_type == "higgs_tts3":
         targets.append(_higgs_tts3_codec_target(model_name, hf_token))
     else:
         targets.extend(NATIVE_AUDIO_COMPANION_REPOS.get(resolved_type, ()))
+    # A companion that is only an adapter loads its base instead, so the gates must see that base.
+    for companion in targets[1:]:
+        base = _companion_adapter_base(companion, hf_token)
+        if base and base not in targets:
+            targets.append(base)
     return targets
 
 

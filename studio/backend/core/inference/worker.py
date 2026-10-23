@@ -430,9 +430,19 @@ def _ensure_ssm_kernels(
                 else []
             )
             if stale:
+                from utils.ssm_runtime import REMOVED_PREFIX
+
+                # "removed mamba_ssm" entries mark an uninstall, which changes the kernels as much
+                # as an install does; say which happened.
+                changes = ", ".join(
+                    f"Removed {name[len(REMOVED_PREFIX):]}"
+                    if name.startswith(REMOVED_PREFIX)
+                    else f"Installed {name}"
+                    for name in installed
+                )
                 logger.info(
-                    "Installed %s after %s was imported; restarting the worker to pick it up",
-                    ", ".join(installed),
+                    "%s after %s was imported; restarting the worker to pick it up",
+                    changes,
                     ", ".join(stale),
                 )
                 _send_response(
@@ -441,8 +451,8 @@ def _ensure_ssm_kernels(
                         "type": "loaded",
                         "success": False,
                         "message": (
-                            f"Installed {', '.join(installed)} for this model; "
-                            "restarting the model worker to use it."
+                            f"{changes} for this model; restarting the model worker to "
+                            "pick up the change."
                         ),
                         "error_kind": SSM_RESTART_REQUIRED,
                     },
@@ -805,11 +815,19 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
+                load_kwargs["offload"] = tuple(config.get("mlx_offload") or (None, None))
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
                 load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
+            from utils.security.file_security import escaping_weight_references
+
+            # Right before the load: the folder may have been edited since the route checked it.
+            lora_base = getattr(mc, "base_model", None) if mc.is_lora else None
+            for folder in (config["model_name"], lora_base):
+                if folder and escaping_weight_references(folder):
+                    raise ValueError("This model's weight index names files outside its folder.")
             success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
@@ -886,6 +904,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
+            # MLX serves a vision config mlx-lm built as text; the parent must stop accepting images.
+            if model_info["is_mlx"] and _entry.get("is_vision") is False:
+                model_info["is_vision"] = False
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
@@ -902,6 +923,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_int8_prefill",
                         "mlx_int8_prefill_requested",
                         "mlx_int8_prefill_reason",
+                        "mlx_offload",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                         "speculative_type",
@@ -1195,7 +1217,7 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
             raise RuntimeError("The loaded backend does not read video.")
         gen_kwargs["video"] = cmd["video_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
-    for raw in ("prompt_ids", "penalty_window", "grammar"):
+    for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
             gen_kwargs[raw] = cmd[raw]
 
@@ -1279,6 +1301,7 @@ _COMPLETION_OPTIONS = (
     "stop",
     "penalty_window",
     "grammar",
+    "n_probs",
 )
 
 

@@ -73,6 +73,9 @@ dependencies = [
     # module level, so every command needs it. typer still pulls rich, but it
     # pulled click too until 0.26.0 dropped it: same shape, so declare it.
     "rich",
+    # CA trust store floor: 2026.10.19 removes the distrusted emSign ECC Root CA - G3, and an
+    # existing older certifi is upgraded in place by pip install unsloth.
+    "certifi>=2026.10.19",
 ]
 
 [project.scripts]

@@ -14,10 +14,15 @@ export const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/80",
-        dark: "bg-foreground text-background hover:bg-foreground/85 dark:bg-foreground dark:text-background",
+        default: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        dark: "bg-action text-background hover:bg-action/85",
+        primary: "bg-primary text-primary-foreground hover:bg-primary/80",
+        // Filled, not bordered: a border is reserved for fields and value pickers (`picker`).
         outline:
-          "border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",
+          "btn-fill hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",
+        // A menu trigger that shows the current value, dressed as a select trigger.
+        picker:
+          "border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:text-foreground",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
@@ -27,7 +32,7 @@ export const buttonVariants = cva(
         muted: "bg-muted text-foreground hover:bg-muted/80",
         destructive:
           "bg-destructive/10 hover:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/20 text-destructive focus-visible:border-destructive/40 dark:hover:bg-destructive/30",
-        link: "text-primary underline-offset-4 hover:underline",
+        link: "text-foreground underline-offset-4 hover:underline",
       },
       size: {
         default:
@@ -39,10 +44,9 @@ export const buttonVariants = cva(
         "icon-xs": "size-6 [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-8",
         "icon-lg": "size-10",
-        // Full-window screen actions (startup, update): taller than `lg`, and squared
-        // off rather than pill-shaped, so they read as page-level rather than in-line.
+        // Full-window screen actions (startup, update): taller than `lg`.
         // Height is left to the padding, so the label sets it.
-        hero: "h-auto rounded-lg px-5 py-2.5",
+        hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
     defaultVariants: {

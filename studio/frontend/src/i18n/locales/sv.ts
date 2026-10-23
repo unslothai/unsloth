@@ -48,8 +48,15 @@ export const sv = {
     removeFromMessage: "Ta bort från meddelandet",
   },
   browser: {
+    drafts: {
+      title: "Ladda ur en sida med inmatad text?",
+      description: "För att hålla chatten responsiv fortsätter bara tre dolda sidor med inmatad text att köras. Om du fortsätter laddas {pages} ur och osparad text kan gå förlorad. Avbryt återgår till föregående flik.",
+      confirm: "Ladda ur och fortsätt",
+    },
     agentSettings: {
       title: "Webbläsaranvändning",
+      docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen om webbläsaranvändning",
       enable: "Låt modeller använda webbläsaren",
       enableDescription: "Modeller öppnar sidor i en egen webbläsarflik, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
       history: "Webbhistorik",
@@ -98,6 +105,24 @@ export const sv = {
         script: "Låta Unsloth köra det här skriptet på {host}?",
         pointer: "Låta Unsloth klicka på omärkta delar av {host}, till exempel en rityta?",
       },
+      step: {
+        open: "Öppnar {detail}",
+        back: "Går tillbaka",
+        forward: "Går framåt",
+        reload: "Laddar om sidan",
+        read: "Läser sidan",
+        find: "Letar efter ”{detail}”",
+        click: "Klickar på ”{detail}”",
+        type: "Skriver i ”{detail}”",
+        select: "Väljer ”{detail}”",
+        press: "Trycker på {detail}",
+        scroll: "Rullar",
+        screenshot: "Tar en skärmbild",
+        evaluate: "Kör ett skript på sidan",
+        history: "Läser din webbhistorik",
+        move: "Flyttar musen",
+        drag: "Drar",
+      },
     },
     title: "Webbläsare",
     tabs: "Webbläsarflikar",
@@ -111,6 +136,7 @@ export const sv = {
     reload: "Läs in igen",
     more: "Mer",
     addressPlaceholder: "Sök eller ange en URL",
+    local: "Lokal",
     suggested: "Förslag",
     suggestedMenu: {
       open: "Öppna",
@@ -221,7 +247,7 @@ export const sv = {
     importBookmarksDoneOne: "Importerade {count} bokmärke.",
     importBookmarksDoneMany: "Importerade {count} bokmärken.",
     importBookmarksNone: "Inga nya bokmärken i den filen.",
-    importBookmarksPartial: "Importerade {count}, men {leftOut} till fick inte plats: Studio sparar högst {max} bokmärken.",
+    importBookmarksPartial: "Importerade {count}, men {leftOut} till fick inte plats: Unsloth sparar högst {max} bokmärken.",
     importBookmarksFailed: "Det gick inte att läsa filen. Välj en HTML-fil med bokmärken som exporterats från en webbläsare.",
     downloadsTitle: "Hämtade filer",
     askWhereToSaveSetting: "Fråga var varje fil ska sparas",
@@ -273,7 +299,7 @@ export const sv = {
     annotationScreenshotsNever: "Ta aldrig med",
     clearDataSetting: "Rensa webbdata",
     clearDataSettingDescription:
-      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar cookies och webbplatsdata bara tills Studio laddas om.",
+      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar cookies och webbplatsdata bara tills Unsloth laddas om.",
     manage: "Hantera",
     fullView: {
       enter: "Öppna helvy",
@@ -487,6 +513,8 @@ export const sv = {
       notMarked: "{name} sparades men kunde inte markeras som nedladdad från internet, så systemet varnar inte innan den öppnas.",
       blocked:
         "Den här adressen kan inte öppnas i webbläsarpanelen. Den öppnar bara offentliga webbplatser.",
+      blockedLocal: "Den här lokala adressen kan inte öppnas här. Skriv den i adressfältet för att öppna den.",
+      studioAddress: "Det här är Unsloths egen adress, så den kan inte öppnas i webbläsarpanelen.",
       clearDataSettingDescription:
         "Rensa webbhistorik, hämtningshistorik, cachade sidor samt de cookies och webbplatsdata som sidor sparar, vilket loggar ut dig från webbplatser.",
       clearDataDescription:
@@ -529,7 +557,7 @@ export const sv = {
     seedHelp: "Anger motorns slumpfrö. Samtidiga chattar kan fortfarande ändra samplade svar.",
     default: "Standard",
     installRequired: "installation krävs",
-    ownerRequired: "Be Studio-ägaren att installera den här motorn.",
+    ownerRequired: "Be Unsloth-ägaren att installera den här motorn.",
     cancelInstall: "Avbryt installationen",
     installed: "Installerad {version}",
     repair: "Reparera",
@@ -543,8 +571,8 @@ export const sv = {
     confirm: "Installera {engine} {version}? Detta kan hämta flera GB.",
     confirmSized: "Installera {engine} {version}? Cirka {size} att hämta.",
     wslSetup:
-      "I Windows körs {engine} i en privat WSL2-miljö som Studio konfigurerar. Räkna med en administratörsfråga och eventuellt en omstart.",
-    wslReady: "I Windows körs {engine} inuti Studios privata WSL2-miljö.",
+      "I Windows körs {engine} i en privat WSL2-miljö som Unsloth konfigurerar. Räkna med en administratörsfråga och eventuellt en omstart.",
+    wslReady: "I Windows körs {engine} inuti Unsloths privata WSL2-miljö.",
     wslRestart:
       "Starta om Windows för att slutföra aktiveringen av WSL2 och klicka sedan på Installera igen.",
     background: "Installeras i bakgrunden.",
@@ -720,6 +748,8 @@ export const sv = {
       "Den här chatten visas inte i din historik och sparas inte. Den försvinner när du lämnar den.",
   },
   picker: {
+    unifiedTightFit: "Snäv passform",
+    unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -824,6 +854,8 @@ export const sv = {
       returnToChat: "Tillbaka till chatten",
       returnToChats: "Tillbaka till {count} chattar",
       chatGenerating: "Genererar",
+      chatAwaitingApproval: "Väntar på godkännande",
+      chatUnread: "Oläst",
       compare: "Jämför",
       search: "Sök",
       projects: "Projekt",
@@ -939,6 +971,7 @@ export const sv = {
       byProject: "Efter projekt",
       inOneList: "I en lista",
       sortChatsBy: "Sortera chattar efter",
+      projectsHome: "Projektöversikt",
       lastUpdated: "Senast uppdaterad",
       manualOrder: "Manuell ordning",
       switchedToManual: "Manuell sortering: dra rader för att ändra ordning",
@@ -1176,6 +1209,7 @@ export const sv = {
     },
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
+      intro: "Om du vill ändra en genväg markerar du tangentkombinationen och skriver sedan de nya tangenterna",
       searchPlaceholder: "Sök genvägar …",
       keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
       searchByKeystrokes: "Sök efter tangenttryckningar",
@@ -1183,21 +1217,25 @@ export const sv = {
       noResults: "Inga genvägar matchar sökningen.",
       unassigned: "Ej tilldelad",
       recording: "Tryck på tangenter …",
-      recordingHint:
-        "Tryck på den nya tangentkombinationen eller Esc för att avbryta.",
       needsModifier:
         "Lägg till ⌘, Ctrl eller Alt. En ensam tangent skulle fånga upp textinmatning.",
       conflict: "Används också av en annan genväg",
       conflictShadowed:
         "En annan genväg har denna tangentkombination och körs i stället",
       edit: "Ändra genväg",
-      clear: "Ta bort genväg",
       reset: "Återställ standard",
       resetAll: "Återställ alla till standard",
-      primarySlot: "Genväg",
-      alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
+      metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
+      altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
+      desktopOnly: "Endast i skrivbordsappen",
+      groups: {
+        composer: "Meddelandefält",
+        chat: "Chatt",
+        navigation: "Navigering",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Sök på sidan",
@@ -1387,6 +1425,10 @@ export const sv = {
           label: "Bifoga foton och filer",
           description: "Lägg till en bilaga i skrivfältet",
         },
+        openComposerMenu: {
+          label: "Öppna +-menyn",
+          description: "Öppna meddelandefältets +-meny med verktyg och bilagor",
+        },
         sendMessage: {
           label: "Skicka meddelande",
           description: "Skicka det som finns i skrivfältet",
@@ -1399,6 +1441,10 @@ export const sv = {
           label: "Styr svaret",
           description: "Stoppa det aktuella svaret och skicka utkastet härnäst",
         },
+        stopGeneration: {
+          label: "Stoppa genereringen",
+          description: "Stoppa svaret som skrivs",
+        },
         cycleReasoningEffort: {
           label: "Växla resonemangsnivå",
           description: "Stega genom nivåerna för resonemang",
@@ -1410,10 +1456,6 @@ export const sv = {
         decreaseReasoningEffort: {
           label: "Minska resonemangsnivå",
           description: "Sänk resonemangsnivån ett steg",
-        },
-        toggleFastMode: {
-          label: "Växla snabbt läge",
-          description: "Aktivera eller inaktivera snabbt läge",
         },
         renameChat: {
           label: "Byt namn på chatt",
@@ -1544,7 +1586,8 @@ export const sv = {
       lineCount: "{count} rader",
       filteredLineCount: "{shown} av {total} rader",
       wrapLines: "Radbryt",
-      jumpToLatest: "Hoppa till senaste",
+      jumpToLatest: "Senaste",
+      resizeLog: "Dra för att ändra loggens storlek",
       noMatches: "Inga rader matchar filtret.",
       mode: "Läge",
       modeLive: "Direkt",
@@ -1589,15 +1632,15 @@ export const sv = {
       dictation: {
         audioUploadTitle: "Diktera med en inspelning",
         audioUploadDescription:
-          "Din webbläsare kräver en säker anslutning (HTTPS) för att spela in direkt i Studio. På den här HTTP-anslutningen kan du använda telefonens inspelningsapp eller välja en sparad inspelning i stället. Din Studio-server transkriberar ljudet och lägger till texten i ditt meddelande.",
+          "Din webbläsare kräver en säker anslutning (HTTPS) för att spela in direkt i Unsloth. På den här HTTP-anslutningen kan du använda telefonens inspelningsapp eller välja en sparad inspelning i stället. Din Unsloth-server transkriberar ljudet och lägger till texten i ditt meddelande.",
         audioUploadChooseFile: "Välj inspelning",
         audioUploadRecord: "Spela in ljud",
         audioUploadIphoneHint:
           "På iPhone sparar du en inspelning från Röstmemon eller en annan inspelningsapp och väljer den sedan här.",
         audioUploadServerModelNote:
-          "Den här inspelningen använder den lokala modellen som visas ovan på Studio-servern, även om vanlig diktering använder en annan motor.",
+          "Den här inspelningen använder den lokala modellen som visas ovan på Unsloth-servern, även om vanlig diktering använder en annan motor.",
         audioUploadAutomatic: "Automatisk",
-        audioUploadModelReady: "Redo på den här Studio-servern",
+        audioUploadModelReady: "Redo på den här Unsloth-servern",
         audioUploadRetryTitle: "Det gick inte att transkribera {file}",
         audioUploadRetry: "Försök transkribera igen",
         audioUploadChooseModel:
@@ -1975,23 +2018,14 @@ export const sv = {
       },
       notifications: {
         sectionTitle: "Aviseringar",
-        showLlamaUpdates: "Uppdateringsaviseringar för llama.cpp",
-        showLlamaUpdatesDescription:
-          "Avisera när en nyare llama.cpp-version finns för att köra nya modeller. Stäng av om du endast tränar.",
-        showLoadedModels: "Indikator för inlästa modeller",
-        showLoadedModelsDescription:
-          "Visa ett litet kort i nedre högra hörnet med alla modeller som för närvarande finns i minnet (chatt, tal, bild, video), med en knapp för att mata ut var och en.",
-        showWhisperUpdates: "Aviseringar om whisper.cpp-uppdateringar",
-        showWhisperUpdatesDescription:
-          "Avisera när en nyare whisper.cpp-version finns för tal-till-text-modeller. Stäng av om du aldrig transkriberar ljud.",
-        showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
-        showAudioCppUpdatesDescription:
-          "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
-        showUnslothUpdates: "Uppdateringsaviseringar för Unsloth",
-        showUnslothUpdatesDescription:
-          "Meddela när en nyare version av Unsloth finns att installera.",
+        showLoadedModels: "Kort för inlästa modeller",
+        showLoadedModelsDescription: "Ett hörnkort med varje inläst modell, mata ut med ett klick.",
+        updateReminders: "Uppdateringspåminnelser",
+        updateRemindersDescription: "Hur ofta en ny version erbjuds när den är klar.",
+        llamaHint: "Chatt- och GGUF-modeller",
+        audioHint: "Tal, musik och transkribering",
         frequency: {
-          always: "Alltid",
+          always: "Så fort den finns",
           daily: "En gång om dagen",
           weekly: "En gång i veckan",
           biweekly: "Varannan vecka",
@@ -2144,7 +2178,7 @@ export const sv = {
         menuSubtitle: "Används för filsökning",
         device: "Enhet för inbäddning",
         deviceDescription:
-          "Var inbäddningsmodellen körs, för alla modeller. GPU indexerar stora dokumentmängder snabbare men håller en del VRAM upptaget tills Studio startas om.",
+          "Var inbäddningsmodellen körs, för alla modeller. GPU indexerar stora dokumentmängder snabbare men håller en del VRAM upptaget tills Unsloth startas om.",
         deviceAuto: "Automatiskt",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2161,6 +2195,18 @@ export const sv = {
         openError: "Det gick inte att öppna katalogen",
         copyError: "Det gick inte att kopiera sökvägen",
       },
+      fullInstall: {
+        label: "Installationstyp",
+        description:
+          "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        action: "Uppgradera till fullständig installation",
+        confirmTitle: "Uppgradera till den fullständiga installationen?",
+        confirmDescription:
+          "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmAction: "Uppgradera",
+        keywords:
+          "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
+      },
       repairInstall: {
         label: "Reparera installationen",
         description:
@@ -2169,6 +2215,8 @@ export const sv = {
         confirmTitle: "Reparera den här installationen?",
         confirmDescription:
           "Stoppar servern och kör installationsprogrammet igen, vilket installerar om PyTorch för den här datorns GPU i den senaste versionen som stöds. Chattar och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionChatOnly:
+          "Stoppar servern och kör installationsprogrammet igen. Det här är en installation med endast chatt, så installationsprogrammet uppgraderar den även till den fullständiga installationen med PyTorch, flera gigabyte totalt. Chattar och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Reparera nu",
       },
       resetPreferences: {
@@ -2230,9 +2278,9 @@ export const sv = {
         longestStreak: "Längsta svit",
         activityTitle: "Tokenaktivitet",
         activityDescription: {
-          daily: "{total} under de senaste {weeks}",
-          weekly: "Toppvecka {total} · senaste {weeks}",
-          cumulative: "{total} sammanlagt under de senaste {weeks}",
+          daily: "{total} sedan {since}",
+          weekly: "Mest aktiva veckan {total} · sedan {since}",
+          cumulative: "{total} totalt sedan {since}",
         },
         mode: {
           daily: "Dagligen",
@@ -2241,8 +2289,9 @@ export const sv = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "Veckan som börjar {date} · {tokens}",
-        chartToggle: "Diagram",
-        chartToggleHint: "Visa Veckovis och Kumulativt som ett diagram med märkta axlar",
+        emptyDayTooltip: "{date} · Ingen aktivitet",
+        apiRequests: "{count} via API",
+        cumulativeTooltip: "Till veckan {date} · {tokens} totalt",
         less: "Mindre",
         more: "Mer",
         insightsTitle: "Aktivitetsinsikter",
@@ -2574,6 +2623,9 @@ export const sv = {
           "När en modell läses in avlastas aldrig en annan. En modell som inte får plats läses inte in. Avlastning efter inaktivitet och träning frigör fortfarande minne.",
         multiModelHint:
           "Gäller chatt-, tal-, bild- och videomodeller. Varje inläst chattmodell besvarar de förfrågningar som anger den. Med flera GPU:er försöker Unsloth placera en ny modell på en GPU som ingen annan modell använder. ”När de får plats” lämnar ungefär 1 GB ledigt. ”När de får plats” och ”Alltid” avlastar aldrig en modell på en annan GPU.",
+        allowOversizedLoad: "Tillåt inläsning av för stora modeller",
+        allowOversizedLoadDescription: "Läs in bild- och videomodeller även när minneskontrollen säger att de inte får plats.",
+        allowOversizedLoadHint: "Gäller när CPU och GPU delar ett minne (Apple Silicon, integrerade GPU:er). Unsloth vägrar en inläsning när uppskattningen av modellvikterna är större än minnet som finns kvar efter reserven för operativsystemet. Med detta påslaget görs inläsningen ändå. Uppskattningen kan fela åt båda hållen: en för stor inläsning kan misslyckas, ta slut på minnet, få datorn att swappa kraftigt eller sluta svara, eller stoppa Unsloth. Av som standard.",
         mediaIdleUnloadDescription:
           "Frigör VRAM genom att avlasta bild- och videomodeller efter så många inaktiva sekunder. 0 behåller dem inlästa; minst 60.",
         mlockVetoed:
@@ -2898,6 +2950,10 @@ export const sv = {
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
+      showReplyTimes: "Svarstider",
+      showReplyTimesDescription: "Visa under varje svar när det blev klart.",
+      showReplyTimesKeywords:
+        "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
@@ -2954,6 +3010,22 @@ export const sv = {
         visibility: "Resonemang",
         visibilityDescription:
           "Hur resonemang öppnas. Du kan fortfarande fälla ut eller ihop valfritt block själv.",
+      },
+      memory: {
+        title: "Minne",
+        description: "Anteckningar som varje chatt läser, för alla modeller, lokala eller i molnet. Chattar i ett projekt läser också projektets AGENTS.md.",
+        enable: "Använd minne i chattar",
+        enableDescription: "Skicka de här anteckningarna med varje chatt.",
+        locked: "Avstängt för den här installationen av UNSLOTH_STUDIO_AGENTS_MD.",
+        editor: "Minnesanteckningar",
+        placeholder: "Till exempel:\n- Jag skriver Python och använder uv.\n- Svara kort.",
+        hint: "Sparas i {path}. Du kan också redigera filen i valfri textredigerare.",
+        size: "{used} / {max} KB",
+        save: "Spara",
+        saved: "Minnet sparat",
+        loadError: "Det gick inte att läsa in minnet.",
+        saveError: "Det gick inte att spara minnet.",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md minne komma ihåg anpassning profil anteckningar",
       },
       currentDate: {
         label: "Berätta dagens datum för modellen",
@@ -3041,7 +3113,7 @@ export const sv = {
       importFailed: "Importen misslyckades.",
       importFromSource: "Importera från {source}",
       importFromSourceDescription:
-        "Kopiera dina {source}-konversationer till Studio, grupperade efter projektet de hör till.",
+        "Kopiera dina {source}-konversationer till Unsloth, grupperade efter projektet de hör till.",
       importingAction: "Importerar...",
       importedSourceOneChat: "Importerade 1 konversation från {source}.",
       importedSourceChatCount: "Importerade {count} konversationer från {source}.",
@@ -3284,12 +3356,13 @@ export const sv = {
       usageNoModel:
         "Läs in eller hämta en modell för att se exempel som går att köra. Den här servern har ännu ingen modell att ange.",
       usageTools: "Verktyg",
-      exampleCurlTools: "curl + verktyg",
-      examplePythonTools: "Python + verktyg",
-      exampleJavaScriptTools: "JavaScript + verktyg",
-      exampleCurlAdvanced: "curl + avancerat",
-      examplePythonAdvanced: "Python + avancerat",
-      exampleJavaScriptAdvanced: "JavaScript + avancerat",
+      exampleLanguage: "Språk",
+      exampleRequest: "Förfrågan",
+      examplePlatform: "Plattform",
+      requestPlain: "Grundläggande",
+      requestTools: "Med verktyg",
+      requestAdvanced: "Avancerad sampling",
+      exampleKind: "Exempel",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "Säker HTTPS",
@@ -3299,17 +3372,16 @@ export const sv = {
       copySnippet: "Kopiera kodstycke",
       copy: "Kopiera",
       copied: "Kopierat",
-      setupDocs: "Installationsdokumentation:",
       codingAgents: "Kodagenter",
       codingAgentsHint:
         "Starta en kodagent mot den här servern. Den använder den inlästa modellen; en lokal server skapar automatiskt en API-nyckel, medan en fjärrserver inkluderar den i kommandot.",
+      openAgentsTab: "Öppna i Agenter",
       codingAgentsSwap:
         "Byt ut claude mot codex, openclaw, opencode eller hermes.",
-      codingAgentDetected: "Installerad på den här datorn",
-      codingAgentsDetectedHint: "Identifierade på den här datorn: {agents}.",
       relativeNever: "aldrig",
       relativeJustNow: "just nu",
       expired: "har löpt ut",
+      expiredStatus: "Har löpt ut",
       today: "i dag",
       created: "Skapad {value}",
       used: "Senast använd {value}",
@@ -3339,6 +3411,14 @@ export const sv = {
         autoSwitchOff:
           "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
         useViaApi: "Använd via API",
+      },
+      mediaApi: {
+        title: "API för bild och video",
+        description: "Skapa bilder och videor från din egen kod med de OpenAI-kompatibla slutpunkterna.",
+        images: "Bilder",
+        video: "Video",
+        placeholderModel: "Modellen som visas är ett exempel. Läs in en modell på sidan Bilder eller Video och öppna det här från dess API-knapp för att fylla i den.",
+        autoSwitchOff: "Automatiskt mediabyte är av, så förfrågningar körs på modellen som sidan har läst in, oavsett vilken de anger.",
       },
       decisionApi: {
         title: "Decision API",
@@ -3424,8 +3504,27 @@ export const sv = {
       desktopAppVersionUnavailable: "Inte tillgänglig",
       llamaCppVersion: "llama.cpp-version",
       audioCppVersion: "audio.cpp-version",
+      whisperCppVersion: "whisper.cpp-version",
+      engines: {
+        title: "Motorer",
+        description: "Körmiljöerna som Unsloth använder för att köra modeller. Uppdateringar installeras i bakgrunden, utan omstart.",
+        updatesLabel: "Motoruppdateringar",
+        notInstalled: "Inte installerad",
+        available: "{version} tillgänglig",
+        upToDate: "Uppdaterad",
+        updatesAvailable: "Uppdateringar tillgängliga",
+        checking: "Söker efter uppdateringar...",
+        checkFailed: "Det gick inte att söka efter uppdateringar. Försök igen senare.",
+        unsupported: "Den här installationens motorer hanteras utanför Unsloth.",
+        checkForUpdates: "Sök efter uppdateringar",
+        update: "Uppdatera",
+        updating: "Uppdaterar...",
+        updated: "Motorerna har uppdaterats.",
+        updateFailed: "Uppdateringen misslyckades: {error}",
+      },
       hardware: "Maskinvara",
       gpu: "GPU",
+      gpuIntegrated: "integrerad",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3484,7 +3583,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Studio-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -3508,6 +3607,9 @@ export const sv = {
         docsUpdating: "Uppdatering",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4076,7 +4178,7 @@ export const sv = {
         decisionColumnsMissing:
           "Beslutsmodeller behöver kolumnerna state, questions och gold (eller answers). Saknas: {columns}.",
         decisionOwnerOnly:
-          "Endast ägaren av Studio kan finjustera beslutsmodeller.",
+          "Endast ägaren av Unsloth kan finjustera beslutsmodeller.",
         hfDatasetRequired: "Välj först en Hugging Face-datauppsättning.",
         hfDatasetSplitRequired: "Välj eller ange först en träningsdelning.",
         localDatasetRequired: "Välj först en lokal datauppsättning.",
@@ -4904,5 +5006,42 @@ export const sv = {
     cantRun: "Kunde inte köras",
     failed: "Fel {status}",
     invalidJson: "Begärans body är inte giltig JSON.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "Inlästa modeller",
+      countOne: "{count} modell inläst",
+      countMany: "{count} modeller inlästa",
+      pillLabel: "{count}. Visa detaljer eller dra för att flytta",
+      dragToMove: "Dra för att flytta",
+      dragHandleLabel: "Flytta inlästa modeller. Piltangenterna flyttar den lite i taget.",
+      collapse: "Fäll ihop",
+      collapseLabel: "Fäll ihop inlästa modeller",
+      close: "Stäng",
+      closeLabel: "Stäng inlästa modeller",
+      backOnNextLoad: "Visas igen vid nästa modellinläsning",
+      ejectToFree: "Mata ut för att frigöra minne",
+      ejectLabel: "Mata ut {model}",
+      openTarget: "Öppna {target}",
+      rowLabel: "{model}. Öppna {target}",
+      loading: "Läser in",
+      ejecting: "Matar ut",
+      stillInMemory: "Finns kvar i minnet",
+      alsoServing: "Betjänar även",
+      noneLoaded: "Inga modeller inlästa",
+      noneLoadedDetail: "Modeller du läser in visas här.",
+      otherAccount: "Används av ett annat konto",
+      otherAccountDetail: "Minnet hålls av en modell som du inte kan se",
+      toastStillResident: "”{model}” lästes in under utmatningen och använder därför fortfarande minne. Mata ut den igen för att frigöra det.",
+      toastUnverified: "{model} ombads att laddas ur, men körmiljön bekräftade inte. Kontrollera kortet om en stund.",
+      toastAlreadyFree: "{model} var inte längre inläst.",
+      toastReplaced: "{model} är inte längre inläst. ”{resident}” tog dess plats och lämnades orörd.",
+      toastEjected: "{model} utmatad",
+      toastFailed: "Det gick inte att mata ut {model}",
+    },
+    monitor: {
+      dragHandleLabel: "Flytta liveövervakaren. Piltangenterna flyttar den lite i taget, dubbelklick återställer den.",
+      reconnecting: "Återansluter …",
+    },
   },
 } as const;

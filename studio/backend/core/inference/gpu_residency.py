@@ -87,6 +87,16 @@ def media_held_mib() -> dict[int, int]:
         return {}
 
 
+def media_owner_held_mib(owner: str) -> Optional[int]:
+    """MiB admitted for one resident media owner across its GPUs, or None when unpriced. Never raises."""
+    try:
+        need = _media_records().get(owner)
+        total = sum(int(mib) for mib in need.values()) if need else 0
+        return total or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def media_unallocated_mib() -> dict[int, int]:
     """{physical GPU id: MiB} of the media price live free VRAM still shows as free: an idle resident's generation
     headroom, or all of a resident still loading. Never raises."""
@@ -206,6 +216,7 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     from core.inference.diffusion import (
         DiffusionBackend as DB,
         _image_variant_hint,
+        _single_file_fp8_upcast,
         resolve_model_kind,
     )
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
@@ -261,8 +272,9 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
             return None
         whole = getattr(fam, "single_file_is_pipeline", False)
         if kind == "single_file":
-            fp8 = not whole and "fp8" in str(name).lower()
-            weights = estimate_safetensors_dense_mib(file_size_mib(path), fp8_upcast = fp8)
+            weights = estimate_safetensors_dense_mib(
+                file_size_mib(path), fp8_upcast = _single_file_fp8_upcast(path, fam)
+            )
         elif whole:
             weights = whole_pipeline_gguf_resident_mib(path) or estimate_gguf_resident_mib(
                 file_size_mib(path)

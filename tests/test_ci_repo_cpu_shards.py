@@ -3,6 +3,7 @@
 
 """Each tests/ directory is claimed by exactly one Repo tests (CPU) shard, the third a catch-all."""
 
+import fnmatch
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ def _shards() -> dict:
         index = 0
         while index < len(tokens):
             token = tokens[index]
-            if token.startswith("--ignore="):
+            if token.startswith(("--ignore=", "--ignore-glob=")):
                 ignores.append(token.split("=", 1)[1].rstrip("/"))
             elif token == "--deselect":
                 index += 1  # a test id, not a path
@@ -53,6 +54,8 @@ def _shards() -> dict:
 
 
 def _covers(prefix: str, path: str) -> bool:
+    if "*" in prefix:  # a shell-expanded root or an --ignore-glob, matched like pytest does
+        return fnmatch.fnmatch(path, prefix)
     prefix = prefix.rstrip("/")
     return path == prefix or path.startswith(prefix + "/")
 

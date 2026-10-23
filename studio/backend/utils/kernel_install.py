@@ -614,7 +614,7 @@ def install_kernel(
     if name == "mamba_ssm" and sys.platform == "win32" and not _loads("import triton", run):
         return skip(
             "Unsloth: skipping mamba_ssm, which needs Triton on Windows; "
-            "install triton-windows first (Studio setup does), then re-run."
+            "install triton-windows first (Unsloth Studio setup does), then re-run."
         )
     # UNSLOTH_PYTORCH_MIRROR may carry credentials, and notebook output gets shared.
     shown = redact_url_credentials(url)

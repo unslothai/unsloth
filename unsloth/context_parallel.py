@@ -537,6 +537,53 @@ def _install_fsdp2_parallelism_config(state, manager) -> None:
     _INSTALLED_PARALLELISM_CONFIG[:] = [previous, pc]
 
 
+def _save_model_checks_parallelism_config_first() -> bool:
+    # transformers < 5 Trainer.save_model takes any non-None parallelism_config before FSDP.
+    try:
+        import transformers
+        from packaging.version import Version
+        return Version(transformers.__version__).major < 5
+    except Exception:
+        return False
+
+
+def _fsdp2_units_of(trainer):
+    from .models.fsdp2_save import fsdp2_units
+    return fsdp2_units(getattr(trainer, "model", None))
+
+
+def _gathered_save_model(trainer, original_save_model, args, kwargs):
+    """save_model under Unsloth's CP config on transformers < 5, which hands every rank to `_save`
+    without a state dict. Gather like Unsloth's FSDP2 save: an adapter save gathers only trainable and
+    still-saved frozen parameters, never the frozen base model (Accelerator.get_state_dict would), and a
+    SHARDED_STATE_DICT plugin still exports (clearing the config made the FSDP branch skip it)."""
+    from .models.fsdp2_save import fsdp2_gathered
+    from .save import _fsdp2_peft_saved_frozen
+
+    try:
+        from peft import PeftModel
+    except ImportError:
+        PeftModel = None
+    model = trainer.model
+    adapter = PeftModel is not None and isinstance(getattr(model, "_orig_mod", model), PeftModel)
+    include = _fsdp2_peft_saved_frozen(model, {}) if adapter else None
+    with fsdp2_gathered(model, trainable_only = adapter, include = include) as writer:
+        if writer is not False:
+            return original_save_model(trainer, *args, **kwargs)
+        # Rank 0 writes the gathered weights; the others still run save_model (a push_to_hub save is
+        # collective again) but must not write their shards.
+        missing = object()
+        previous = trainer.__dict__.get("_save", missing)
+        trainer._save = lambda *a, **k: None
+        try:
+            return original_save_model(trainer, *args, **kwargs)
+        finally:
+            if previous is missing:
+                trainer.__dict__.pop("_save", None)
+            else:
+                trainer._save = previous
+
+
 def _restore_parallelism_config(state) -> None:
     if _INSTALLED_PARALLELISM_CONFIG and (
         getattr(state, "parallelism_config", None) is _INSTALLED_PARALLELISM_CONFIG[1]
@@ -814,8 +861,10 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         installed = _INSTALLED_PARALLELISM_CONFIG[1] if _INSTALLED_PARALLELISM_CONFIG else None
         if installed is None or getattr(state, "parallelism_config", None) is not installed:
             return original_save_model(self, *args, **kwargs)
-        # transformers < 5 takes any non-None parallelism_config before FSDP and skips the FSDP2 state
-        # dict gather, so save without one; even a user dp_shard config would take that branch.
+        if _save_model_checks_parallelism_config_first() and _fsdp2_units_of(self):
+            return _gathered_save_model(self, original_save_model, args, kwargs)
+        # Otherwise (transformers >= 5 checks FSDP first, or nothing FSDP2-sharded) save without the
+        # config; on transformers < 5 even a user dp_shard config would skip the FSDP branch.
         state.parallelism_config = None
         try:
             return original_save_model(self, *args, **kwargs)

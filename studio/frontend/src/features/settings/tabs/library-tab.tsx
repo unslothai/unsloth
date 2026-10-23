@@ -184,7 +184,7 @@ function StorageSection() {
             <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>
           )}
           {storage.categories.length > 0 && (
-            <div className="mb-3 flex flex-col overflow-hidden rounded-xl border border-border/60">
+            <div className="mb-3 flex flex-col overflow-hidden rounded-lg border border-border/60">
               {storage.categories.map((entry) => (
                 <button
                   key={entry.category}

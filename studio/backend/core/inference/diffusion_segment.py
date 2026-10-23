@@ -13,9 +13,18 @@ SAM 3 and transformers' post-processing (ComfyUI drops the presence term, and th
 picture, "elephant" in a living room, masks the sofa at 0.72; with it every absent concept scores below 0.02 and no
 present one changes), and ComfyUI's optional crop-and-refine pass through the tracker's SAM decoder is not run.
 
-Weights are the official transformers-format ``facebook/sam3`` checkpoint (gated: the license is accepted on Hugging
-Face). SAM 3.1 ships only an original-format multiplex checkpoint with no transformers integration, so it is not
-loaded here; ``UNSLOTH_SAM3_PATH`` points at any local transformers-format SAM 3 directory instead.
+Weights come from a small table of variants (SEGMENTER_VARIANTS). The default is SAM 3.1: Meta ships it only as an
+original-format multiplex checkpoint, so it is the SAM 3.1 detector converted with transformers' own SAM 3 converter
+into a BF16 ``Sam3Model`` repository (ungated, SAM License). The official transformers-format ``facebook/sam3``
+(gated: the license is accepted on Hugging Face) stays selectable with ``UNSLOTH_SAM3_VARIANT=sam3``, and is used
+when it is already downloaded and SAM 3.1 is not. ``UNSLOTH_SAM3_PATH`` points at any local transformers-format SAM 3
+directory instead.
+
+SAM 3.1 also ships pre-quantized detector files (FP8, INT8, INT8-ConvRot; diffusion_segment_quant). On a CUDA card
+``UNSLOTH_SAM3_PRECISION`` (auto / bf16 / fp8 / int8) picks one; auto loads only a file that passed the accuracy gate
+(INT8, the ConvRot build unless ``UNSLOTH_SAM3_INT8_CONVROT=0``). The download fetches that one weights file with the
+configs and tokenizer, and bf16 when the file is not published; the CPU and Apple's MPS run bf16 weights (a quantized
+file that is the only one on disk is dequantized there).
 
 The model is auxiliary to the image model, like the FLUX.3 prompt upsampler: loaded on the first request, kept for
 a short keep-alive, unloaded right after a call when the accelerator is tight, and dropped whenever the GPU arbiter
@@ -44,12 +53,9 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 # ── weights ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-SEGMENTER_ID = "sam3"
-SEGMENTER_REPO = "facebook/sam3"
-SEGMENTER_LICENSE_URL = "https://huggingface.co/facebook/sam3"
 SEGMENTER_WEIGHTS_FILE = "model.safetensors"
-# Only what Sam3Model and its tokenizer read: the repo also holds sam3.pt, the same weights in the original format.
-SEGMENTER_FILES = (
+# Only what Sam3Model and its tokenizer read: facebook/sam3 also holds sam3.pt, the same weights in the original format.
+SEGMENTER_CONFIG_FILES = (
     "config.json",
     "processor_config.json",
     "tokenizer.json",
@@ -57,10 +63,93 @@ SEGMENTER_FILES = (
     "special_tokens_map.json",
     "vocab.json",
     "merges.txt",
-    SEGMENTER_WEIGHTS_FILE,
 )
+SEGMENTER_FILES = SEGMENTER_CONFIG_FILES + (SEGMENTER_WEIGHTS_FILE,)
+
+
+@dataclass(frozen = True)
+class SegmenterPrequant:
+    """One pre-quantized detector file of a variant (scripts/build_segmenter_prequant_checkpoint.py): it replaces
+    model.safetensors, next to the same configs and tokenizer. ``tag`` names its download spec."""
+
+    precision: str
+    filename: str
+    size_bytes: int
+    rotated: bool = False
+
+    @property
+    def tag(self) -> str:
+        return self.precision + ("-convrot" if self.rotated else "")
+
+
+@dataclass(frozen = True)
+class SegmenterVariant:
+    """One downloadable transformers-format SAM 3 checkpoint. ``revision`` is a full commit sha, or "main" for a repo
+    whose pin is not set yet (the download then records the commit it resolved)."""
+
+    id: str
+    label: str
+    repo: str
+    revision: str
+    size_bytes: int
+    gated: bool
+    license_url: str
+    files: tuple = SEGMENTER_FILES
+    # Pre-quantized detector files and the commit that holds them (with the configs and tokenizer); "main" until
+    # that commit is pinned. A file not on the Hub there yet reads as absent, and bf16 is used.
+    prequant: tuple = ()
+    prequant_revision: Optional[str] = None
+
+
+# SAM 3.1's detector in transformers' Sam3Model format, BF16 (converted from facebook/sam3.1's sam3.1_multiplex.pt).
+SAM31_REPO = "unsloth/sam3.1"
+# The unsloth/sam3.1 commit the files below were verified at.
+SAM31_REVISION = "6cfffd097f83c94fdedf56e8d09d4f89174b733e"
+# 1_680_935_372 bytes of bf16 safetensors plus the configs and tokenizer.
+SAM31_CONFIG_BYTES = 5_037_537
+SAM31_SIZE_BYTES = 1_680_935_372 + SAM31_CONFIG_BYTES
+# The commit of unsloth/sam3.1 that holds the pre-quantized files (with the configs and tokenizer). None offers no
+# pre-quantized download and every load uses bf16 unless a file is already on disk; a file missing at this commit
+# downloads bf16 instead.
+SAM31_PREQUANT_REVISION: Optional[str] = "6cfffd097f83c94fdedf56e8d09d4f89174b733e"
+# Built by scripts/build_segmenter_prequant_checkpoint.py from the bf16 model.safetensors above; accuracy gate,
+# exclusions and the auto rule in diffusion_segment_quant. int8 is the ConvRot build unless UNSLOTH_SAM3_INT8_CONVROT=0.
+SAM31_PREQUANT = (
+    SegmenterPrequant("int8", "sam3.1-INT8-ConvRot.safetensors", 1_047_746_476, rotated = True),
+    SegmenterPrequant("int8", "sam3.1-INT8.safetensors", 992_371_564),
+    SegmenterPrequant("fp8", "sam3.1-FP8.safetensors", 1_047_320_804),
+)
+
+SAM3_REPO = "facebook/sam3"
+SAM3_REVISION = "3c879f39826c281e95690f02c7821c4de09afae7"
 # fp32 safetensors as published (half of it once loaded in bf16 / fp16), plus the tokenizer and configs.
-SEGMENTER_SIZE_BYTES = 3_439_938_512 + 5_060_000
+SAM3_SIZE_BYTES = 3_439_938_512 + 5_060_000
+
+SEGMENTER_VARIANTS: dict[str, SegmenterVariant] = {
+    "sam3.1": SegmenterVariant(
+        id = "sam3.1",
+        label = "SAM 3.1",
+        repo = SAM31_REPO,
+        revision = SAM31_REVISION,
+        size_bytes = SAM31_SIZE_BYTES,
+        gated = False,
+        license_url = f"https://huggingface.co/{SAM31_REPO}/blob/main/LICENSE",
+        prequant = SAM31_PREQUANT,
+        prequant_revision = SAM31_PREQUANT_REVISION,
+    ),
+    "sam3": SegmenterVariant(
+        id = "sam3",
+        label = "SAM 3",
+        repo = SAM3_REPO,
+        revision = SAM3_REVISION,
+        size_bytes = SAM3_SIZE_BYTES,
+        gated = True,
+        license_url = f"https://huggingface.co/{SAM3_REPO}",
+    ),
+}
+DEFAULT_VARIANT = "sam3.1"
+ENV_VARIANT = "UNSLOTH_SAM3_VARIANT"
+
 ENV_PATH_OVERRIDE = "UNSLOTH_SAM3_PATH"
 ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
 
@@ -155,12 +244,20 @@ def _override_dir() -> Optional[str]:
     if not value:
         return None
     path = Path(value).expanduser()
+    # Only the variant the override is reported (and loaded) as: another variant's file would plan no weights.
+    variant = SEGMENTER_VARIANTS[requested_variant_id() or DEFAULT_VARIANT]
     has = lambda *names: any((path / name).is_file() for name in names)  # noqa: E731
     complete = (
         has("config.json")
         and (
             has(SEGMENTER_WEIGHTS_FILE)
             or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json"))
+            # or only a pre-quantized detector file the precision setting may load (dequantized where it cannot
+            # run quantized); one the setting rejects (fp8 under auto, any under bf16) is not a loadable model
+            or any(
+                _loadable(variant, a) and has(a.filename) and not _broken(str(path), a)
+                for a in variant.prequant
+            )
         )
         # AutoTokenizer (CLIPTokenizer for sam3) loads tokenizer.json, else needs vocab.json and merges.txt together.
         and (has("tokenizer.json") or (has("vocab.json") and has("merges.txt")))
@@ -180,13 +277,76 @@ def _shards_complete(index: Path) -> bool:
     return all(isinstance(name, str) and (index.parent / name).is_file() for name in shards)
 
 
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def _commit(revision: Optional[str]) -> Optional[str]:
+    return revision if _COMMIT_SHA.fullmatch(revision or "") else None
+
+
+def pinned_revision(variant: SegmenterVariant) -> Optional[str]:
+    """The variant's commit pin, or None while it is a branch ("main"): the download then pins what it resolves."""
+    return _commit(variant.revision)
+
+
+# A pre-quantized file's download spec id: "<variant>@<tag>", e.g. "sam3.1@int8-convrot".
+_SPEC_SEP = "@"
+
+
+def prequant_spec_id(variant: SegmenterVariant, artifact: SegmenterPrequant) -> str:
+    return f"{variant.id}{_SPEC_SEP}{artifact.tag}"
+
+
+def split_spec_id(model_id: str) -> tuple[SegmenterVariant, Optional[SegmenterPrequant]]:
+    """(variant, pre-quantized file or None) for a variant id or a pre-quantized spec id; KeyError when unknown."""
+    variant_id, _, tag = str(model_id).partition(_SPEC_SEP)
+    variant = SEGMENTER_VARIANTS[variant_id]
+    if not tag:
+        return variant, None
+    for artifact in variant.prequant:
+        if artifact.tag == tag:
+            return variant, artifact
+    raise KeyError(model_id)
+
+
+def variant_artifact(variant: SegmenterVariant, precision: str) -> Optional[SegmenterPrequant]:
+    """The file ``precision`` loads for ``variant``, or None: int8 is the ConvRot build unless
+    UNSLOTH_SAM3_INT8_CONVROT=0 picks the plain one (never the other as a stand-in)."""
+    from core.inference.diffusion_segment_quant import PRECISION_INT8, int8_convrot_enabled
+
+    rotated = int8_convrot_enabled() if precision == PRECISION_INT8 else False
+    for artifact in variant.prequant:
+        if artifact.precision == precision and artifact.rotated == rotated:
+            return artifact
+    return None
+
+
+def requested_variant_id() -> Optional[str]:
+    """The variant UNSLOTH_SAM3_VARIANT names (its id or repo, any case), else None. An unknown name is logged and
+    ignored, so a typo falls back to the default instead of breaking the status route."""
+    value = (os.environ.get(ENV_VARIANT) or "").strip().lower()
+    if not value:
+        return None
+    for variant in SEGMENTER_VARIANTS.values():
+        if value in (variant.id, variant.repo.lower()):
+            return variant.id
+    logger.warning(
+        "images.segment: unknown %s=%r (choices: %s), using the default",
+        ENV_VARIANT,
+        value,
+        ", ".join(SEGMENTER_VARIANTS),
+    )
+    return None
+
+
 def _cached_snapshot(
-    model_id: str = SEGMENTER_ID,
+    model_id: str = DEFAULT_VARIANT,
     *,
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """The snapshot directory holding every SEGMENTER_FILES at one revision (the recorded one first), else None."""
+    """The snapshot directory holding every file of ``model_id`` (a variant's bf16 files, or a pre-quantized spec's
+    configs and file) at one revision (the pin first, then the recorded one, then any cached commit), else None."""
     try:
         from huggingface_hub import hf_hub_download
 
@@ -196,23 +356,21 @@ def _cached_snapshot(
             _read_revision_record,
         )
 
+        spec = SEGMENTER_SPECS[model_id]
         root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
         if revision is not None:
             revisions = [revision]
         else:
-            recorded = _read_revision_record(SEGMENTER_REPO)
-            revisions = ([recorded] if recorded else []) + [
-                rev
-                for rev in _fallback_revisions(SEGMENTER_REPO, hub_cache = root)
-                if rev != recorded
-            ]
+            candidates = [_commit(spec.revision), _read_revision_record(spec.repo)]
+            candidates += _fallback_revisions(spec.repo, hub_cache = root)
+            revisions = list(dict.fromkeys(rev for rev in candidates if rev))
         for rev in revisions:
             paths = []
-            for filename in SEGMENTER_FILES:
+            for filename in spec.files:
                 try:
                     paths.append(
                         hf_hub_download(
-                            repo_id = SEGMENTER_REPO,
+                            repo_id = spec.repo,
                             filename = filename,
                             revision = rev,
                             local_files_only = True,
@@ -229,11 +387,65 @@ def _cached_snapshot(
     return None
 
 
+# Pre-quantized files that failed to load even dequantized (corrupt, truncated, built for another rule) in this
+# process. They stop counting as downloaded, so status and the download route offer the bf16 file instead.
+_BROKEN_PREQUANT: set[str] = set()
+
+
+def _prequant_key(folder: str, artifact: SegmenterPrequant) -> str:
+    return os.path.realpath(os.path.join(folder, artifact.filename))
+
+
+def _broken(folder: Optional[str], artifact: SegmenterPrequant) -> bool:
+    return folder is not None and _prequant_key(folder, artifact) in _BROKEN_PREQUANT
+
+
+def _variant_snapshot(variant_id: str) -> Optional[str]:
+    """A cached snapshot of variant ``variant_id`` that Sam3Model can load: its bf16 files, else a pre-quantized file
+    with the configs and tokenizer."""
+    path = _cached_snapshot(variant_id)
+    if path is not None:
+        return path
+    variant = SEGMENTER_VARIANTS[variant_id]
+    for artifact in variant.prequant:
+        if not _loadable(variant, artifact):
+            continue
+        path = _cached_snapshot(prequant_spec_id(variant, artifact))
+        if path is not None and not _broken(path, artifact):
+            return path
+    return None
+
+
+def _resolve_active() -> tuple[SegmenterVariant, Optional[str]]:
+    """(the active variant, its cached snapshot or None). UNSLOTH_SAM3_VARIANT decides when set; else the default,
+    unless only another variant is already downloaded (an install that fetched facebook/sam3 keeps using it). With
+    UNSLOTH_SAM3_PATH set the cache is never read: the chosen (or default) variant is reported, with no snapshot."""
+    chosen = requested_variant_id()
+    if (os.environ.get(ENV_PATH_OVERRIDE) or "").strip():
+        return SEGMENTER_VARIANTS[chosen or DEFAULT_VARIANT], None
+    if chosen is not None:
+        return SEGMENTER_VARIANTS[chosen], _variant_snapshot(chosen)
+    default = SEGMENTER_VARIANTS[DEFAULT_VARIANT]
+    path = _variant_snapshot(default.id)
+    if path is None:
+        for variant in SEGMENTER_VARIANTS.values():
+            if variant.id != default.id:
+                other = _variant_snapshot(variant.id)
+                if other is not None:
+                    return variant, other
+    return default, path
+
+
+def active_variant() -> SegmenterVariant:
+    return _resolve_active()[0]
+
+
 def model_dir() -> Optional[str]:
-    """The env override when set (a typo'd override is not silently replaced by the cache), else the cached repo."""
+    """The env override when set (a typo'd override is not silently replaced by the cache), else the active
+    variant's cached snapshot."""
     if (os.environ.get(ENV_PATH_OVERRIDE) or "").strip():
         return _override_dir()
-    return _cached_snapshot()
+    return _resolve_active()[1]
 
 
 @dataclass(frozen = True)
@@ -241,21 +453,57 @@ class _SegmenterSpec:
     repo: str
     files: tuple
     label: str
+    # A commit sha pins the download; "main" resolves (and records) the newest commit.
+    revision: Optional[str] = None
     model_file: str = SEGMENTER_WEIGHTS_FILE
     mmproj_file: str = "config.json"
+    # Downloaded instead when a file of this spec is not on the Hub at its revision (a pre-quantized file not
+    # published yet): the variant's bf16 spec.
+    fallback: Optional[str] = None
 
 
-SEGMENTER_SPEC = _SegmenterSpec(repo = SEGMENTER_REPO, files = SEGMENTER_FILES, label = "SAM 3 segmenter")
+def _build_specs() -> dict:
+    specs = {}
+    for variant in SEGMENTER_VARIANTS.values():
+        specs[variant.id] = _SegmenterSpec(
+            repo = variant.repo,
+            files = variant.files,
+            label = f"{variant.label} segmenter",
+            revision = variant.revision,
+        )
+        for artifact in variant.prequant:
+            specs[prequant_spec_id(variant, artifact)] = _SegmenterSpec(
+                repo = variant.repo,
+                files = SEGMENTER_CONFIG_FILES + (artifact.filename,),
+                label = f"{variant.label} {artifact.precision.upper()} segmenter",
+                revision = variant.prequant_revision,
+                model_file = artifact.filename,
+                fallback = variant.id,
+            )
+    return specs
+
+
+SEGMENTER_SPECS = _build_specs()
 
 
 def _resolve_segmenter_id(model_id: Optional[str]) -> str:
-    if (model_id or SEGMENTER_ID) != SEGMENTER_ID:
+    """A variant id (the active one when None) or a pre-quantized spec id."""
+    if model_id is None:
+        return active_variant().id
+    if model_id not in SEGMENTER_SPECS:
         raise ValueError(f"Unknown segmenter '{model_id}'.")
-    return SEGMENTER_ID
+    return model_id
 
 
-def describe_download_error(_model_id: str, error: object) -> Optional[str]:
-    """A gated-repo refusal names the license to accept; anything else keeps the generic message."""
+def describe_download_error(model_id: str, error: object) -> Optional[str]:
+    """A gated variant's refusal names the license to accept; anything else (and any ungated variant, which needs no
+    token) keeps the generic message."""
+    try:
+        variant = split_spec_id(model_id)[0]
+    except KeyError:
+        return None
+    if not variant.gated:
+        return None
     name = type(error).__name__
     text = str(error)
     if (
@@ -266,7 +514,7 @@ def describe_download_error(_model_id: str, error: object) -> Optional[str]:
         or "awaiting a review" in text
     ):
         return (
-            f"{SEGMENTER_REPO} is gated on Hugging Face. Accept the SAM 3 license at {SEGMENTER_LICENSE_URL} "
+            f"{variant.repo} is gated on Hugging Face. Accept the {variant.label} license at {variant.license_url} "
             "with your account, add a Hugging Face token in Settings, then download again."
         )
     return None
@@ -292,17 +540,22 @@ def _get_download_state():
         if _download_state is None:
             from core.inference.stt_mtmd_sidecar import _MtmdDownloadState
             _download_state = _MtmdDownloadState(
-                specs = {SEGMENTER_ID: SEGMENTER_SPEC},
+                specs = SEGMENTER_SPECS,
                 cached_paths = _cached_download_paths,
                 resolve = _resolve_segmenter_id,
-                label = "SAM 3 segmenter",
+                label = "Mask segmenter",
                 describe_error = describe_download_error,
             )
         return _download_state
 
 
-def start_download(hf_token: Optional[str] = None) -> str:
-    return _get_download_state().start(SEGMENTER_ID, hf_token)
+def start_download(hf_token: Optional[str] = None, variant: Optional[str] = None) -> str:
+    """Download ``variant`` (the active one when None) in the background: the configs, the tokenizer and the one
+    weights file this host would run (download_plan), else the bf16 files."""
+    model_id = _resolve_segmenter_id(variant)
+    if _SPEC_SEP not in model_id:
+        model_id = download_plan(SEGMENTER_VARIANTS[model_id])["spec"]
+    return _get_download_state().start(model_id, hf_token)
 
 
 def download_status() -> dict:
@@ -310,14 +563,184 @@ def download_status() -> dict:
 
 
 def cancel_download(download_id: Optional[str] = None) -> bool:
-    return _get_download_state().cancel(SEGMENTER_ID, download_id)
+    return _get_download_state().cancel(None, download_id)
+
+
+# ── precision ──────────────────────────────────────────────────────────────────────────────────────────────────────
+@dataclass(frozen = True)
+class WeightsPlan:
+    """Which weights a load uses. ``weights`` is a pre-quantized file (None: the bf16 model.safetensors in
+    ``model_dir``); ``dequantize`` loads that file as dense weights (no bf16 file on disk, and the device cannot run
+    it quantized, or its quantized load failed)."""
+
+    precision: str
+    model_dir: Optional[str]
+    weights: Optional[str] = None
+    artifact: Optional[SegmenterPrequant] = None
+    reason: str = ""
+    dequantize: bool = False
+
+
+def _loadable(variant: SegmenterVariant, artifact: SegmenterPrequant) -> bool:
+    """``artifact`` is a file the current UNSLOTH_SAM3_PRECISION may load: the file its precision loads here, and
+    under auto one that passed the accuracy gate, under fp8 / int8 that precision's, under bf16 none. Anything else
+    on disk is ignored (not used, not even dequantized), so the selection's own file is offered for download."""
+    from core.inference.diffusion_segment_quant import (
+        PRECISION_AUTO,
+        PRECISION_BF16,
+        auto_may_load,
+        requested_precision,
+    )
+
+    from core.inference.prequant_safetensors import safetensors_prequant_supported
+
+    if artifact != variant_artifact(variant, artifact.precision):
+        return False
+    # An install that cannot read the files (no torchao, or the Windows ROCm stub) cannot even dequantize them.
+    if not safetensors_prequant_supported():
+        return False
+    requested = requested_precision()
+    if requested == PRECISION_AUTO:
+        return auto_may_load(artifact.tag)
+    return requested != PRECISION_BF16 and artifact.precision == requested
+
+
+def _has_dense_weights(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    folder = Path(path)
+    return (folder / SEGMENTER_WEIGHTS_FILE).is_file() or _shards_complete(
+        folder / (SEGMENTER_WEIGHTS_FILE + ".index.json")
+    )
+
+
+def _local_artifacts(
+    variant: SegmenterVariant, path: Optional[str], *, use_cache: bool
+) -> list[tuple[SegmenterPrequant, str]]:
+    """(file, its folder) for every pre-quantized file of ``variant`` beside ``path`` or, with ``use_cache``, in its
+    own cached snapshot (which may be another commit than the bf16 one)."""
+    found = []
+    for artifact in variant.prequant:
+        if path and (Path(path) / artifact.filename).is_file():
+            if not _broken(path, artifact):
+                found.append((artifact, path))
+        elif use_cache:
+            snapshot = _cached_snapshot(prequant_spec_id(variant, artifact))
+            if snapshot is not None and not _broken(snapshot, artifact):
+                found.append((artifact, snapshot))
+    return found
+
+
+def plan_weights(
+    path: Optional[str],
+    device: str,
+    dtype: Any = None,
+    *,
+    variant: Optional[SegmenterVariant] = None,
+    use_cache: bool = True,
+) -> WeightsPlan:
+    """The weights a load on ``device`` uses: the precision UNSLOTH_SAM3_PRECISION asks for (auto: the gated order
+    in diffusion_segment_quant) when its file is on disk and the device runs it, else bf16. bf16 with no bf16 file
+    on disk dequantizes a pre-quantized one the selection may load (never one it rejected)."""
+    from core.inference.diffusion_segment_quant import PRECISION_BF16, resolve_precision
+
+    variant = variant or active_variant()
+    local = _local_artifacts(variant, path, use_cache = use_cache)
+    usable: dict = {}
+    for artifact, folder in local:
+        if _loadable(variant, artifact):
+            usable.setdefault(artifact.precision, (artifact, folder))
+    precision, why = resolve_precision(device, dtype, available = tuple(usable))
+    if precision != PRECISION_BF16:
+        artifact, folder = usable[precision]
+        return WeightsPlan(precision, folder, str(Path(folder) / artifact.filename), artifact, why)
+    if _has_dense_weights(path) or not usable:
+        return WeightsPlan(PRECISION_BF16, path, reason = why)
+    artifact, folder = next(iter(usable.values()))
+    return WeightsPlan(
+        PRECISION_BF16,
+        folder,
+        str(Path(folder) / artifact.filename),
+        artifact,
+        f"{why}; no bf16 file on disk, {artifact.filename} is dequantized",
+        dequantize = True,
+    )
+
+
+def _host_device() -> str:
+    """The device a call would most likely use, for planning without a call: the current CUDA card, else Metal,
+    else the CPU. Reads properties only (no CUDA context)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return f"cuda:{torch.cuda.current_device()}"
+        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:  # noqa: BLE001
+        pass
+    return "cpu"
+
+
+def download_plan(variant: SegmenterVariant, device: Optional[str] = None) -> dict:
+    """What a download of ``variant`` fetches on this host: the spec id, the precision it runs, why, and the bytes.
+    A pre-quantized file only when the variant publishes them (a pinned or "main" prequant revision) and the host
+    would run it; its spec falls back to bf16 when the file is not on the Hub yet."""
+    from core.inference.diffusion_segment_quant import PRECISION_BF16, resolve_precision
+
+    offered = {}
+    if variant.prequant_revision:
+        for artifact in variant.prequant:
+            # A cached copy that already failed to load would only be "downloaded" again: offer bf16 instead.
+            if _loadable(variant, artifact) and not _broken(
+                _cached_snapshot(prequant_spec_id(variant, artifact)), artifact
+            ):
+                offered.setdefault(artifact.precision, artifact)
+    precision, why = resolve_precision(device or _host_device(), available = tuple(offered))
+    if precision == PRECISION_BF16:
+        return {
+            "spec": variant.id,
+            "precision": precision,
+            "reason": why,
+            "file": SEGMENTER_WEIGHTS_FILE,
+            "size_bytes": variant.size_bytes,
+        }
+    artifact = offered[precision]
+    config_bytes = SAM31_CONFIG_BYTES if variant.id == "sam3.1" else 0
+    return {
+        "spec": prequant_spec_id(variant, artifact),
+        "precision": precision,
+        "reason": why,
+        "file": artifact.filename,
+        "size_bytes": artifact.size_bytes + config_bytes,
+    }
+
+
+def variant_summary(variant: SegmenterVariant) -> dict:
+    """What the status and download routes report about a variant."""
+    return {
+        "variant": variant.id,
+        "label": variant.label,
+        "repo": variant.repo,
+        "revision": variant.revision,
+        "gated": variant.gated,
+        "license_url": variant.license_url,
+        "size_bytes": variant.size_bytes,
+    }
 
 
 def status() -> dict:
-    """The status route body: can it run, is it downloaded, is it loaded (and where), and the download progress."""
+    """The status route body: can it run, which variant, is it downloaded, is it loaded (and where), and the download
+    progress."""
     supported = transformers_supports_sam3()
-    path = model_dir() if supported else None
+    override = bool((os.environ.get(ENV_PATH_OVERRIDE) or "").strip())
+    if supported:
+        variant, path = _resolve_active()
+        if override:
+            path = _override_dir()
+    else:
+        variant, path = SEGMENTER_VARIANTS[requested_variant_id() or DEFAULT_VARIANT], None
     segmenter = _segmenter
+    precision = _precision_summary(variant, path, segmenter, supported = supported, override = override)
     return {
         "supported": supported,
         "reason": None
@@ -326,13 +749,56 @@ def status() -> dict:
         "downloaded": path is not None,
         "loaded": bool(segmenter is not None and segmenter.loaded),
         "device": segmenter.device if segmenter is not None and segmenter.loaded else None,
-        "repo": SEGMENTER_REPO,
-        "gated": True,
-        "license_url": SEGMENTER_LICENSE_URL,
-        "size_bytes": SEGMENTER_SIZE_BYTES,
-        "override": bool((os.environ.get(ENV_PATH_OVERRIDE) or "").strip()),
+        **variant_summary(variant),
+        **precision,
+        "override": override,
         "download": download_status(),
     }
+
+
+def _precision_summary(
+    variant: SegmenterVariant,
+    path: Optional[str],
+    segmenter: Optional["MaskSegmenter"],
+    *,
+    supported: bool,
+    override: bool,
+) -> dict:
+    """The status route's precision fields: what runs (the loaded model), else what a load on this host would use
+    (on disk), else what a download would fetch. ``size_bytes`` is that download's size until it is on disk."""
+    from core.inference.diffusion_segment_quant import requested_precision
+
+    body = {"precision_requested": requested_precision()}
+    try:
+        if segmenter is not None and segmenter.loaded and segmenter.precision:
+            body.update(
+                precision = segmenter.precision,
+                precision_reason = segmenter.precision_reason,
+                weights_file = segmenter.weights_file,
+            )
+        elif not supported:
+            body.update(precision = None, precision_reason = None, weights_file = None)
+        elif path is not None:
+            plan = plan_weights(path, _host_device(), variant = variant, use_cache = not override)
+            body.update(
+                precision = plan.precision,
+                precision_reason = plan.reason,
+                weights_file = os.path.basename(plan.weights)
+                if plan.weights
+                else SEGMENTER_WEIGHTS_FILE,
+            )
+        else:
+            plan = download_plan(variant)
+            body.update(
+                precision = plan["precision"],
+                precision_reason = plan["reason"],
+                weights_file = plan["file"],
+                size_bytes = plan["size_bytes"],
+            )
+    except Exception as exc:  # noqa: BLE001 -- the status route must answer
+        logger.debug("images.segment: precision summary failed: %s", exc)
+        body.update(precision = None, precision_reason = None, weights_file = None)
+    return body
 
 
 # ── device choice ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -436,6 +902,7 @@ class SegmentResult:
     concepts: list[dict] = field(default_factory = list)
     device: str = "cpu"
     elapsed_ms: float = 0.0
+    precision: Optional[str] = None
 
     def to_json(self) -> dict:
         return {
@@ -452,6 +919,7 @@ class SegmentResult:
             ],
             "prompts": self.concepts,
             "device": self.device,
+            "precision": self.precision,
             "elapsed_ms": round(self.elapsed_ms, 1),
         }
 
@@ -562,8 +1030,17 @@ class MaskSegmenter:
         self._model = None
         self._tokenizer = None
         self._path: Optional[str] = None
+        self._weights_key: Optional[tuple] = None
         self.device: Optional[str] = None
         self._dtype = None
+        # What the loaded model runs: "bf16" / "fp8" / "int8", why, and the weights file it came from.
+        self.precision: Optional[str] = None
+        self.precision_reason: Optional[str] = None
+        self.weights_file: Optional[str] = None
+        # Why the last pre-quantized load fell back to bf16, if one did.
+        self.last_prequant_failure: Optional[str] = None
+        # Planning reads the Hub cache only for the active variant's own snapshot, not an explicit folder.
+        self._use_cache = True
         self._timer: Optional[threading.Timer] = None
         self._release_pending = False
         self._release_epoch = 0
@@ -584,29 +1061,26 @@ class MaskSegmenter:
 
     # -- lifecycle -------------------------------------------------------------------------------------------------
     def _load(self, path: str, device: str, dtype: Any) -> None:
+        plan = plan_weights(path, device, dtype, use_cache = self._use_cache)
+        key = (plan.model_dir, plan.weights, plan.dequantize)
         if (
             self._model is not None
             and self._path == path
+            and self._weights_key == key
             and self.device == device
             and self._dtype == dtype
         ):
             return
         if self._model is not None:
             self._unload_locked("reload")
-        from transformers import AutoTokenizer, Sam3Model
+        from transformers import AutoTokenizer
 
         started = time.perf_counter()
         # The tokenizer first: a broken one fails before any weights are placed on the device.
-        tokenizer = AutoTokenizer.from_pretrained(path)
+        tokenizer = AutoTokenizer.from_pretrained(plan.model_dir or path)
         model = None
         try:
-            if device.startswith("cuda"):
-                # Straight onto the card: about a third faster than loading on the CPU and moving it.
-                model = Sam3Model.from_pretrained(path, dtype = dtype, device_map = device)
-            else:
-                model = Sam3Model.from_pretrained(path, dtype = dtype)
-                model.to(device)
-            model.eval()
+            model, plan = self._load_weights(plan, path, device, dtype)
         except BaseException:
             # Weights placed before the failure are referenced nowhere else: drop them and their cached blocks.
             model = None
@@ -614,13 +1088,102 @@ class MaskSegmenter:
             raise
         self._model, self._tokenizer = model, tokenizer
         self._path, self.device, self._dtype = path, device, dtype
+        self._weights_key = key
+        self.precision, self.precision_reason = plan.precision, plan.reason
+        self.weights_file = (
+            os.path.basename(plan.weights) if plan.weights else SEGMENTER_WEIGHTS_FILE
+        )
         logger.info(
-            "images.segment: loaded %s on %s (%s) in %.1fs",
-            path,
+            "images.segment: loaded %s on %s (%s, precision %s from %s: %s) in %.1fs",
+            plan.model_dir or path,
             device,
             str(dtype).replace("torch.", ""),
+            plan.precision,
+            self.weights_file,
+            plan.reason,
             time.perf_counter() - started,
         )
+
+    def _load_weights(
+        self, plan: WeightsPlan, path: str, device: str, dtype: Any
+    ) -> tuple[Any, WeightsPlan]:
+        """(model, the plan that loaded). A pre-quantized file that fails to load falls back to the bf16 file, else
+        to the same file dequantized; nothing is left half-placed on the device."""
+        from transformers import Sam3Model
+
+        from core.inference.diffusion_segment_quant import (
+            PRECISION_BF16,
+            load_prequantized_segmenter,
+        )
+
+        variant = active_variant()
+        base = variant.repo
+        if plan.weights is not None and not plan.dequantize:
+            try:
+                model, _info = load_prequantized_segmenter(
+                    plan.model_dir,
+                    plan.weights,
+                    scheme = plan.artifact.precision,
+                    rotated = plan.artifact.rotated,
+                    device = device,
+                    dtype = dtype,
+                    base_model_id = base,
+                )
+                self.last_prequant_failure = None
+                return model, plan
+            except Exception as exc:  # noqa: BLE001 -- bf16 is slower and bigger, never wrong
+                self.last_prequant_failure = f"{type(exc).__name__}: {str(exc)[:200]}"
+                logger.warning(
+                    "images.segment: pre-quantized %s file %s did not load (%s); using bf16",
+                    plan.precision,
+                    os.path.basename(plan.weights),
+                    self.last_prequant_failure,
+                )
+                _free_device_cache(device)
+                why = f"{plan.artifact.filename} did not load"
+                if _has_dense_weights(path):
+                    plan = WeightsPlan(PRECISION_BF16, path, reason = why)
+                else:
+                    plan = WeightsPlan(
+                        PRECISION_BF16,
+                        plan.model_dir,
+                        plan.weights,
+                        plan.artifact,
+                        f"{why}; dequantized",
+                        dequantize = True,
+                    )
+        if plan.weights is not None:
+            try:
+                model, _info = load_prequantized_segmenter(
+                    plan.model_dir,
+                    plan.weights,
+                    scheme = plan.artifact.precision,
+                    rotated = plan.artifact.rotated,
+                    device = device,
+                    dtype = dtype,
+                    base_model_id = base,
+                    dequantize = True,
+                )
+            except Exception as exc:
+                # Not a quantized-kernel problem: the file itself does not load. Stop counting it as downloaded so
+                # the next status offers the bf16 download rather than failing every request on the same file.
+                _BROKEN_PREQUANT.add(_prequant_key(plan.model_dir, plan.artifact))
+                _free_device_cache(device)
+                raise RuntimeError(
+                    f"{plan.artifact.filename} could not be loaded ({type(exc).__name__}: {str(exc)[:200]}); "
+                    f"download the {variant.label} BF16 weights from the Mask from text panel"
+                ) from exc
+            return model, plan
+        if device.startswith("cuda"):
+            # Straight onto the card: about a third faster than loading on the CPU and moving it.
+            model = Sam3Model.from_pretrained(
+                plan.model_dir or path, dtype = dtype, device_map = device
+            )
+        else:
+            model = Sam3Model.from_pretrained(plan.model_dir or path, dtype = dtype)
+            model.to(device)
+        model.eval()
+        return model, plan
 
     def _unload_locked(self, reason: str) -> bool:
         with self._state_lock:
@@ -633,8 +1196,10 @@ class MaskSegmenter:
         self._model = None
         self._tokenizer = None
         self._path = None
+        self._weights_key = None
         self.device = None
         self._dtype = None
+        self.precision = self.precision_reason = self.weights_file = None
         _free_device_cache(device)
         logger.info("images.segment: unloaded from %s (%s)", device, reason)
         return True
@@ -746,10 +1311,12 @@ class MaskSegmenter:
             raise SegmenterUnavailableError(
                 "This install's transformers has no SAM 3. It needs transformers 5 (Python 3.10 or newer)."
             )
+        self._use_cache = path is None and not (os.environ.get(ENV_PATH_OVERRIDE) or "").strip()
         path = path or model_dir()
         if path is None:
+            variant = active_variant()
             raise SegmenterNotDownloadedError(
-                f"The SAM 3 segmenter is not downloaded. Download {SEGMENTER_REPO} first."
+                f"The {variant.label} segmenter is not downloaded. Download {variant.repo} first."
             )
         queued_at = self._handover_epoch
         with self._run_lock:
@@ -889,6 +1456,7 @@ class MaskSegmenter:
             instances = instances,
             concepts = summary,
             device = device,
+            precision = self.precision,
         )
 
 
@@ -1016,12 +1584,15 @@ def segment_image(
 __all__ = [
     "Concept",
     "DEFAULT_THRESHOLD",
+    "DEFAULT_VARIANT",
     "MaskSegmenter",
-    "SEGMENTER_REPO",
+    "SEGMENTER_VARIANTS",
+    "SegmenterVariant",
     "SegmenterBusyError",
     "SegmenterNotDownloadedError",
     "SegmenterReleaseTimeoutError",
     "SegmenterUnavailableError",
+    "active_variant",
     "get_segmenter",
     "parse_prompt",
     "release_segmenter",

@@ -63,6 +63,7 @@ from core.inference.stt_sidecar import (
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
+    QWEN3_ASR_LANGUAGE_NAMES,
     normalize_whisper_language,
 )
 
@@ -83,6 +84,7 @@ class MtmdSttModel:
     transcript_marker: Optional[str] = None
 
 
+# Every entry takes Qwen3-ASR's assistant-prefill language hint; see _post_transcribe before adding another family.
 MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
     "qwen3-asr-0.6b": MtmdSttModel(
         repo = "unslothai/Qwen3-ASR-0.6B-GGUF",
@@ -313,6 +315,12 @@ def is_model_downloaded(model_id: str) -> bool:
     return downloaded
 
 
+def _hub_entry_missing(exc: BaseException) -> bool:
+    """The Hub answered that this file (or revision) does not exist, as opposed to a network, auth or gate error."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return bool(names & {"EntryNotFoundError", "RemoteEntryNotFoundError", "RevisionNotFoundError"})
+
+
 class _MtmdDownloadState:
     """Tracks the two-file download of one mtmd dictation model.
 
@@ -507,12 +515,38 @@ class _MtmdDownloadState:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             selected: list[_SelectedHubFile] = []
-            revision: Optional[str] = None
+            # A spec may pin a commit (the segmenter's variants); none, or a branch such as "main", resolves the newest.
+            pinned = getattr(spec, "revision", None)
+            revision: Optional[str] = (
+                pinned if isinstance(pinned, str) and _HF_COMMIT_SHA.fullmatch(pinned) else None
+            )
             for filename in getattr(spec, "files", None) or (spec.model_file, spec.mmproj_file):
-                meta = get_hf_file_metadata(
-                    hf_hub_url(spec.repo, filename, revision = revision),
-                    token = normalize_token(hf_token),
-                )
+                try:
+                    meta = get_hf_file_metadata(
+                        hf_hub_url(spec.repo, filename, revision = revision),
+                        token = normalize_token(hf_token),
+                    )
+                except Exception as exc:
+                    fallback = getattr(spec, "fallback", None)
+                    if not fallback or not _hub_entry_missing(exc):
+                        raise
+                    # A spec whose file is not published (yet) at its revision downloads its fallback instead:
+                    # the segmenter's pre-quantized file falls back to the bf16 one.
+                    logger.info(
+                        "%s: %s is not on %s at %s (%s); downloading %s instead",
+                        self._label,
+                        filename,
+                        spec.repo,
+                        revision or "main",
+                        type(exc).__name__,
+                        fallback,
+                    )
+                    with self._lock:
+                        if self._cancelled:
+                            return
+                        self._model_id = fallback
+                    self._run(fallback, hf_token, hub_cache)
+                    return
                 if revision is None:
                     revision = meta.commit_hash
                     if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
@@ -1123,8 +1157,8 @@ class MtmdSttSidecar:
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
-        ``fast`` has no effect: decoding is greedy and the model picks the
-        language itself.
+        ``fast`` has no effect: decoding is greedy. A supported ``language``
+        prefills the assistant turn; otherwise the model auto-detects it.
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
@@ -1165,6 +1199,7 @@ class MtmdSttSidecar:
                 model_id,
                 wav_bytes,
                 audio_seconds,
+                language = language,
                 cancel_event = cancel_event,
                 **({"api_key": api_key} if api_key else {}),
                 **({"on_progress": on_progress} if on_progress is not None else {}),
@@ -1198,6 +1233,7 @@ class MtmdSttSidecar:
         wav_bytes: bytes,
         audio_seconds: Optional[float] = None,
         *,
+        language: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
         api_key: Optional[str] = None,
@@ -1223,6 +1259,13 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
+        forced_language = QWEN3_ASR_LANGUAGE_NAMES.get(normalize_whisper_language(language) or "")
+        assistant_prefix = ""
+        if forced_language:
+            assistant_prefix = f"language {forced_language}<asr_text>"
+            payload["messages"].append({"role": "assistant", "content": assistant_prefix})
+            # Explicit, so a server-wide --no-prefill-assistant cannot close the prefix as a finished turn.
+            payload.update({"continue_final_message": True, "add_generation_prompt": False})
         if on_progress is not None:
             payload["stream"] = True
         connection = http.client.HTTPConnection(
@@ -1249,7 +1292,8 @@ class MtmdSttSidecar:
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:
-                    text = ""
+                    # llama-server does not echo the prefill, so seed it to publish progress from the first token.
+                    text = assistant_prefix
                     finished = False
                     for line in response:
                         if cancel_event is not None and cancel_event.is_set():

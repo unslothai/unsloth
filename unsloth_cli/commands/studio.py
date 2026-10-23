@@ -32,6 +32,12 @@ from typer.core import TyperCommand
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
+from studio.backend.utils.pid_records import (
+    RecordedStart,
+    pid_reuse_proven,
+    pid_start_matches,
+    recorded_start,
+)
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
@@ -50,9 +56,10 @@ _CMD_SHIM_MAX_BYTES = 8192
 
 
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
-    """Sentinel (share/studio.conf, or our own bin/unsloth.cmd) so a dev venv named
-    unsloth_studio is not taken for a custom root. It must be OUR shim: the dir is on PATH."""
-    if (candidate / "share" / "studio.conf").is_file():
+    # Default POSIX installs keep studio.conf outside the install tree.
+    if (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "share" / "studio_install_id"
+    ).is_file():
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -91,10 +98,7 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
             legacy = Path.home() / ".unsloth" / "studio"
-        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
-        # launcher at the legacy root while setup puts the runtimes under the master root:
-        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
-        # install that is right there. The master root wins only when it HAS an install.
+        # Preserve legacy installs until a managed install exists at the master root.
         if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
             if _looks_like_installer_managed_studio_home(legacy):
                 return legacy, False
@@ -1840,9 +1844,9 @@ def _engine_install_notice(engine: str, row: dict) -> Optional[str]:
     if wsl.get("state") == "restart_required":
         return "Restart Windows to finish turning on WSL2, then run this command again."
     if wsl.get("state") == "ready" and wsl.get("distro"):
-        return f"On Windows, {engine} runs inside Studio's private WSL2 environment."
+        return f"On Windows, {engine} runs inside Unsloth Studio's private WSL2 environment."
     return (
-        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn "
+        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Unsloth Studio will turn "
         "on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux "
         "distributions are not touched. Windows will show one administrator (UAC) prompt, and "
         "may ask you to restart before the installation can finish. Nothing changes unless you "
@@ -1880,7 +1884,7 @@ def _export_models_dirs(models_dir: Optional[List[Path]]) -> None:
         if os.pathsep in resolved_path:
             typer.echo(
                 f"Error: --models-dir {raw} contains '{os.pathsep}', which cannot be passed "
-                "to Studio. Rename the folder or add it from Custom Folders in the model picker.",
+                "to Unsloth Studio. Rename the folder or add it from Custom Folders in the model picker.",
                 err = True,
             )
             raise typer.Exit(2)
@@ -1981,7 +1985,7 @@ def studio_default(
     models_dir: Optional[List[Path]] = typer.Option(
         None,
         "--models-dir",
-        help = "Add a folder of local models to Studio (repeatable). It is saved as a "
+        help = "Add a folder of local models to Unsloth Studio (repeatable). It is saved as a "
         "Custom Folder, so its models show up in the Chat and Train model pickers on this "
         "and later launches; remove it from Custom Folders in the model picker.",
     ),
@@ -2581,9 +2585,11 @@ def run(
         rich_help_panel = _RUN_PANEL_SERVER,
         help = (
             "llama-server parallel decode slots. N requests share one "
-            "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Unsloth "
-            "run settings (Parallel Slots) can override it per load."
+            "loaded model and one KV cache of the full context "
+            "(--kv-unified), so a single request can use all of it. "
+            "llama.cpp builds without --kv-unified fall back to one slot. "
+            "The Unsloth run settings (Parallel Slots) can override it per "
+            "load."
         ),
     ),
     cloudflare: Optional[bool] = typer.Option(
@@ -2624,7 +2630,7 @@ def run(
         "--engine",
         rich_help_panel = _RUN_PANEL_MODEL,
         help = (
-            "Serve a safetensors model with vLLM or SGLang instead of Studio's default "
+            "Serve a safetensors model with vLLM or SGLang instead of Unsloth Studio's default "
             "backend. Installed on first use after a confirmation (--yes skips it); "
             "Linux NVIDIA, or Windows through WSL2."
         ),
@@ -2666,7 +2672,7 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Comma-separated GPU indices to load the model on, for example 0,1 (the "
-            "Studio GPU picker). Default: automatic selection."
+            "Unsloth Studio GPU picker). Default: automatic selection."
         ),
     ),
 ):
@@ -2847,7 +2853,7 @@ def run(
         typer.echo(
             f"Error: re-launched through {studio_venv_dir} but still running from "
             f"{sys.prefix}, so not re-launching again. Check that UNSLOTH_STUDIO_HOME "
-            "points at the Studio install, or re-run: unsloth studio setup",
+            "points at the Unsloth Studio install, or re-run: unsloth studio setup",
             err = True,
         )
         raise typer.Exit(1)
@@ -3215,11 +3221,13 @@ def _pid_alive(pid: int) -> bool:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
-            ).stdout
+            )
         except Exception:
             # Cannot determine; assume alive, taskkill no-ops if already gone.
             return True
-        return f'"{int(pid)}"' in out
+        if out.returncode != 0:
+            return True
+        return f'"{int(pid)}"' in out.stdout
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -3229,7 +3237,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _parse_pid_record(text: str) -> "tuple[int, float | None, str | None] | None":
+def _parse_pid_record(text: str) -> "tuple[int, RecordedStart, str | None] | None":
     lines = text.splitlines()
     if not lines or not lines[0].strip().isdigit():
         return None
@@ -3241,18 +3249,13 @@ def _parse_pid_record(text: str) -> "tuple[int, float | None, str | None] | None
     # kill(0) signals our whole process group; kill(1) is init. Never either.
     if pid < 2:
         return None
-    created = None
-    if len(lines) > 1:
-        try:
-            created = float(lines[1].strip())
-        except ValueError:
-            created = None
+    created = recorded_start(lines)
     # Third line: the addresses run.py bound, absent in a legacy record.
     address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
     return pid, created, address
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
+def _read_pid_record(path: Path) -> "tuple[int, RecordedStart, str | None] | None":
     try:
         text = path.read_text(encoding = "utf-8")
     except (OSError, UnicodeDecodeError):
@@ -3281,11 +3284,11 @@ def _report_unreadable(paths: "list[Path]") -> None:
 
 def _pid_file_entries(
     unreadable: "list[Path] | None" = None,
-) -> "list[tuple[int, list[float | None], list[Path]]]":
+) -> "list[tuple[int, list[RecordedStart], list[Path]]]":
     """(pid, create_times, files) per recorded server, including the legacy studio.pid. Grouped by
     PID: a second SIGTERM would hard-kill a server mid-shutdown. Every recorded time is kept, so a
     stale file cannot veto a live server."""
-    by_pid: "dict[int, tuple[list[float | None], list[Path]]]" = {}
+    by_pid: "dict[int, tuple[list[RecordedStart], list[Path]]]" = {}
     try:
         paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
     except OSError:
@@ -3315,18 +3318,8 @@ def _pid_file_entries(
     return [(pid, times, files) for pid, (times, files) in by_pid.items()]
 
 
-def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """False only when a recorded start time proves this PID is a different process. Untimed records
-    are trusted and must not cancel a timed one: every server writes both."""
-    known = [c for c in created_times if c is not None]
-    if not known:
-        return True
-    try:
-        import psutil
-        actual = psutil.Process(pid).create_time()
-    except Exception:
-        return True
-    return any(abs(actual - c) < 1.0 for c in known)
+def _pid_is_studio_server(pid: int, created_times: "Sequence[RecordedStart]" = ()) -> bool:
+    return pid_start_matches(pid, created_times)
 
 
 def _graceful_shutdown_on_sigterm() -> None:
@@ -3376,11 +3369,22 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    signalled, failed = [], []
+    signalled, failed, unverified = [], [], []
     for pid, created_times, paths in entries:
-        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created_times):
+        if not _pid_alive(pid):
             for path in paths:
                 _unlink_quietly(path)
+            continue
+        if not _pid_is_studio_server(pid, created_times):
+            if pid_reuse_proven(pid, created_times):
+                for path in paths:
+                    _unlink_quietly(path)
+                continue
+            unverified.append(pid)
+            typer.echo(
+                f"Could not verify Unsloth server identity (PID {pid}); kept its PID files.",
+                err = True,
+            )
             continue
         error = _signal_stop(pid)
         if error is not None:
@@ -3391,6 +3395,8 @@ def stop():
         signalled.append((pid, paths))
 
     if not signalled and not failed:
+        if unverified:
+            raise typer.Exit(1)
         if unreadable:
             _report_unreadable(unreadable)
             raise typer.Exit(1)
@@ -3416,7 +3422,7 @@ def stop():
         typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
     if unreadable:
         _report_unreadable(unreadable)
-    if failed or unreadable:
+    if failed or unreadable or unverified:
         raise typer.Exit(1)
 
 
@@ -4983,7 +4989,7 @@ def _managed_llama_runtime_is_the_active_one() -> bool:
     return _llama_runtime_to_grade() is not None
 
 
-def _llama_runtime_to_grade() -> Path | None:
+def _llama_runtime_to_grade() -> Optional[Path]:
     """The llama.cpp tree preflight should grade, or None when the runtime the
     backend would load is one the user chose and this PR does not grade.
 

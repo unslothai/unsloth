@@ -29,7 +29,6 @@ function optsIntoHitTesting(node: Node): boolean {
   return /(^|;)\s*pointer-events\s*:\s*auto\s*(;|$)/.test(node.style.cssText);
 }
 
-/** Simulates independent scrollbar hit-test and layout widths. */
 function fakeDocument({
   railPx,
   layoutPx,
@@ -43,7 +42,6 @@ function fakeDocument({
 }) {
   const vars = new Map<string, string>();
   const bodyChildren: Node[] = [];
-  // Mutable so a test can make a later sweep unreadable.
   const knobs = { contentReachable };
   const documentElement = {
     style: {
@@ -154,12 +152,11 @@ test("one unreadable sweep does not drop a gutter already in use", () => {
 
   assert.equal(applyOverlayScrollbarGutter(doc), 21);
 
-  // Same scrollbar, unreadable sweep: rows that reserved the strip must hold.
+  // Unreadable sweep: rows that reserved the strip must hold.
   knobs.contentReachable = false;
   assert.equal(applyOverlayScrollbarGutter(doc), 21);
   assert.equal(vars.get(OVERLAY_SCROLLBAR_GUTTER_VAR), "21px");
 
-  // A readable sweep still retires the gutter when the scrollbar really goes.
   const { doc: gone, vars: goneVars } = fakeDocument({
     railPx: 0,
     layoutPx: 0,
@@ -250,7 +247,6 @@ test("regaining focus re-measures, so a changed scrollbar setting is picked up",
 
 test("right-edge action lists reserve the gutter they publish", async () => {
   const css = await readSrcAsync("index.css");
-  // The utility must read the variable written by the probe.
   assert.match(
     css,
     new RegExp(
@@ -261,8 +257,7 @@ test("right-edge action lists reserve the gutter they publish", async () => {
   const pickers = await readSrcAsync(
     "features/model-picker/components/model-selector/pickers.tsx",
   );
-  // Every model row sits inside the list's gutter wrapper, which gives way only for the part of
-  // the gutter the list's reach into the panel padding leaves uncovered.
+  // Rows yield only the gutter part the list's reach into panel padding leaves uncovered.
   assert.match(
     pickers,
     /"model-list-scroll[^"]*overflow-y-auto[^"]*"[\s\S]{0,800}"model-list-gutter",/,
@@ -277,7 +272,6 @@ test("right-edge action lists reserve the gutter they publish", async () => {
   const apiKeysTab = await readSrcAsync(
     "features/settings/tabs/api-keys-tab.tsx",
   );
-  // Preserve classic padding and move every API-key row into the gutter.
   assert.match(
     apiKeysTab,
     /"hover-scrollbar[^"]*overflow-y-auto[^"]*\bpr-1\b[^"]*"[\s\S]{0,200}<div className="overlay-scrollbar-gutter">[\s\S]{0,300}<ApiKeyRow/,
@@ -286,7 +280,6 @@ test("right-edge action lists reserve the gutter they publish", async () => {
   const projectSourceDropzone = await readSrcAsync(
     "features/rag/components/project-source-dropzone.tsx",
   );
-  // Keep staged-source remove actions inside the gutter.
   assert.match(
     projectSourceDropzone,
     /<ul className="[^"]*overlay-scrollbar-gutter[^"]*max-h-52[^"]*overflow-y-auto[^"]*">[\s\S]{0,1000}aria-label={`Remove \${entry\.name}`}/,
