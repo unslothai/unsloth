@@ -209,7 +209,8 @@ _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
 _CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
-_CLAUDE_COMPACT_BUFFER = 13_000
+# Claude Code 2.1.307-2.1.309 compact one token past window - min(max output, 20k) - 3k, in the TUI and -p alike.
+_CLAUDE_COMPACT_BUFFER = 3_000
 # claude 2.1 ignores a smaller CLAUDE_CODE_AUTO_COMPACT_WINDOW and warns about it on every launch.
 _CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
@@ -3271,7 +3272,7 @@ def _claude_local_env(
             str(int(window)) if int(window) >= _CLAUDE_MIN_AUTO_COMPACT_WINDOW else ""
         )
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
-        # claude reserves min(max output, 20k) + 13k before compacting, so its 32k default output leaves a 32k window nothing; above 20k the cap gains no room.
+        # claude reserves min(max output, 20k) + 3k before compacting, so its 32k default output would take 20k of a 32k window; above 20k the cap gains no room.
         output = opencode_output_limit(int(window))
         if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(output)
@@ -5377,7 +5378,7 @@ def _agent_compacts_at(
     max_tokens: Optional[int] = None,
 ) -> int:
     if agent == "claude":
-        # The env _claude_local_env writes: a 90% override, but never past min(max output, 20k) + 13k of headroom.
+        # The env _claude_local_env writes: a 90% override, but never past min(max output, 20k) + 3k of headroom.
         output = min(opencode_output_limit(window), _CLAUDE_COMPACT_OUTPUT_RESERVE)
         return min(window * 9 // 10, window - output - _CLAUDE_COMPACT_BUFFER)
     return window - opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))

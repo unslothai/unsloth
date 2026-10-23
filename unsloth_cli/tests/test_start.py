@@ -7719,7 +7719,8 @@ _AGENT_ARGS = {"claude": ["-p", "hi"], "opencode": ["run", "hi"]}
     [
         ("claude", 8_192, "too few", 65536),
         ("claude", 16_384, "too few", 65536),
-        ("claude", 32_768, "too few", 65536),
+        ("claude", 24_576, "too few", 65536),
+        ("claude", 32_768, "tight", 65536),
         ("claude", 40_960, "tight", 65536),
         ("claude", 65_536, "ok", None),
         ("opencode", 8_192, "too few", 32768),
@@ -7788,10 +7789,17 @@ def test_agent_context_check_ignores_an_unknown_window(capsys):
 
 @pytest.mark.parametrize(
     "window, compacts_at",
-    [(32_768, 11_576), (40_960, 17_720), (65_536, 36_152), (131_072, 98_072)],
+    [
+        (16_384, 9_288),
+        (24_576, 15_432),
+        (32_768, 21_576),
+        (40_960, 27_720),
+        (65_536, 46_152),
+        (131_072, 108_072),
+    ],
 )
 def test_claude_compaction_point_matches_claude_code(window, compacts_at):
-    # Measured on Claude Code 2.1.308 with the env _claude_local_env writes: one token past this compacts.
+    # Measured on Claude Code 2.1.307-2.1.309 (TUI and -p) with the env _claude_local_env writes: compaction starts within 256 tokens past this.
     assert start._agent_compacts_at("claude", window) == compacts_at
 
 
@@ -7844,11 +7852,14 @@ def test_agent_context_retry_restarts_the_model_after_fitting(
     server = SimpleNamespace(pid = 999, poll = lambda: None)
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
 
-    def serve(base, model, load, server_options = None):
+    def serve(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started.append((model, load))
-        fake_studio.state["models"] = [
-            {"id": model, "context_length": load.max_seq_length or 8192}
-        ]
+        fake_studio.state["models"] = [{"id": model, "context_length": load.max_seq_length or 8192}]
         start._auto_served_server = server
         return base, server
 
