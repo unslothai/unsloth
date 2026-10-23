@@ -143,7 +143,7 @@ export function SharedRunConfigReview({
             {reviewTitle(keys.length > 0, model, ggufVariant)}
           </span>
           {keys.length > 0 && (
-            <span className="shrink-0 rounded-full bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium tabular-nums text-muted-foreground dark:bg-muted">
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium tabular-nums text-muted-foreground dark:bg-muted">
               {keys.length}
             </span>
           )}

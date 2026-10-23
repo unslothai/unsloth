@@ -217,7 +217,7 @@ function ModelSelectorTrigger({
           // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
             "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
-          // Header rows: same pill and hover wash as the icon buttons beside it.
+          // Header rows: same corners and hover wash as the icon buttons beside it.
           variant === "ghost" &&
             "rounded-[10px] hover:bg-nav-surface-hover has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&

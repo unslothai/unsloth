@@ -553,7 +553,7 @@ test("capability glyph tags are the vision badge's pill, each in its own colour"
     return PICKERS.slice(start, PICKERS.indexOf("\n}", start));
   };
   for (const name of ["VisionBadge", "CapabilityIcons"]) {
-    assert.match(body(name), /h-\[18px\] shrink-0 items-center justify-center rounded-full border border-border px-1\.5/);
+    assert.match(body(name), /h-\[18px\] shrink-0 items-center justify-center rounded-md border border-border px-1\.5/);
   }
   assert.ok(!body("CapabilityIcons").includes("text-muted-foreground"), "no grey glyphs left");
   const list = PICKERS.slice(PICKERS.indexOf("const CAPABILITY_BADGES"), PICKERS.indexOf("const CapabilityScope"));

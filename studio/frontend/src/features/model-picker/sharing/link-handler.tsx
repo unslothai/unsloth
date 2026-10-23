@@ -59,7 +59,7 @@ export function SharedRunConfigLinkHandler({
           dismissLabel="Dismiss"
           onDismiss={() => runConfigInbox.clear(pending.id)}
           testId="shared-run-settings-unavailable"
-          className="fixed bottom-4 right-4 z-50 max-w-sm rounded-2xl border bg-background p-4"
+          className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border bg-background p-4"
         />
       }
     >
