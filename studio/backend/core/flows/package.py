@@ -30,9 +30,11 @@ MAX_ENTRIES = schema.MAX_ASSETS + 8
 MAX_RATIO = 200
 FIXED_ENTRIES = ("flow.json", "preview.png", "README.md")
 _ASSET_NAME = re.compile(r"^assets/([0-9a-f]{64})\.([a-z0-9]{2,5})$")
+# A credential term ending the key, also after a prefix: openai_api_key, aws_secret_access_key, x-api-key.
 _SECRET_KEY = re.compile(
-    r"^(api[_-]?key(_env)?|(hf|access|auth|bearer|refresh|github)[_-]?token|token|secret|client[_-]?secret"
-    r"|password|authorization|credentials?|provider[_-]?id|extra[_-]?headers)$",
+    r"(^|[_-])(api[_-]?key(_env)?|secret([_-]?(access[_-]?)?key)?|access[_-]?key|private[_-]?key|password|passwd"
+    r"|credentials?|(hf|access|auth|bearer|refresh|github|api|session)[_-]?token|token|client[_-]?secret"
+    r"|authorization|provider[_-]?id|extra[_-]?headers)$",
     re.I,
 )
 _SECRET_VALUE = re.compile(

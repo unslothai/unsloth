@@ -272,3 +272,19 @@ def test_a_json_asset_that_is_not_json_is_refused():
     name = f"assets/{hashlib.sha256(blob).hexdigest()}.json"
     with pytest.raises(PackageError, match = "not valid JSON"):
         read_package(_zip({"flow.json": _flow(), name: blob}))
+
+
+def test_scrub_drops_prefixed_credential_keys_and_keeps_ordinary_ones():
+    from core.flows.package import scrub
+    out = scrub(
+        {
+            "openai_api_key": "plain-value-1",
+            "aws_secret_access_key": "plain-value-2",
+            "x-api-key": "plain-value-3",
+            "my_hf_token": "plain-value-4",
+            "max_tokens": 512,
+            "token_count": 3,
+            "prompt": "hello",
+        }
+    )
+    assert out == {"max_tokens": 512, "token_count": 3, "prompt": "hello"}

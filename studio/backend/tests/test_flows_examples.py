@@ -22,7 +22,7 @@ def _example(name: str) -> dict:
 
 
 def test_there_are_eleven_examples():
-    assert len(BUILT) == 11
+    assert len(BUILT) == 18
 
 
 @pytest.mark.parametrize("name", IDS)
