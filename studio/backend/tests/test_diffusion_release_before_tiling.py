@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A tile verdict streams the still-resident offload groups again and re-checks before tiling the VAE.
+"""A tile verdict with offload groups still resident streams them at the decode, not before the denoise.
 
 Seen on a 15 GB T4 (Qwen-Image-2.1 fp16, edit at 1024x1024): with 5374 MiB of the text encoder resident, the request
 guard streamed only the MiB the request was priced at, the verdict then said "tile", and the edit decoded in 40-latent
 tiles (PSNR 52.6 dB, max abs 27/255 against the same edit with the encoder streamed, which decoded untiled). Every text
 encoder and transformer output was bit-identical between the two; the first differing module was the decoder input.
-CPU-only: the guard, the snapshot and the group release are stubbed.
+Streaming the groups before the denoise made every step stream them too, so the tiling now waits for the decode:
+the denoise keeps the groups resident, the decode streams the shortfall, decodes untiled and pins them back.
+CPU-only: the decode figures, the snapshot and the group release are stubbed.
 """
 
 from __future__ import annotations
@@ -23,9 +25,11 @@ from core.inference.diffusion_memory import (
     ImageActivationVerdict,
 )
 
+UNTILED_NEED = 9000  # MiB the whole-frame decode needs, past FREE_FRACTION
+
 
 class _Card:
-    """Free MiB a guard re-check sees, raised by a release."""
+    """Free MiB the decode-time check sees, raised by a release."""
 
     def __init__(self, free_mib: int, resident_mib: int) -> None:
         self.free = free_mib
@@ -60,117 +64,32 @@ def card(monkeypatch):
 
         return restore
 
-    def verdict(**kw):
-        # untiled needs 9000 MiB, tiled 5000: what the edit guard priced on the T4
-        free = kw["device_memory"]
-        if free >= 9000:
-            return ImageActivationVerdict(ACTIVATION_RUN)
-        if free >= 5000:
-            return ImageActivationVerdict(ACTIVATION_TILE)
-        raise ValueError("refused")
-
     monkeypatch.setattr(diffusion, "resident_group_mib", lambda pipe: c.resident)
     monkeypatch.setattr(diffusion, "release_resident_groups", release)
-    monkeypatch.setattr(diffusion, "reclaimable_snapshot_device_memory", lambda target: c.free)
-    monkeypatch.setattr(diffusion, "raise_on_image_activation_shortfall", verdict)
+    monkeypatch.setattr(
+        diffusion, "_untiled_decode_shortfall_mib", lambda vae, z: UNTILED_NEED - c.free
+    )
     monkeypatch.delenv(diffusion.RELEASE_BEFORE_TILING_ENV, raising = False)
     return c
 
 
-TARGET = types.SimpleNamespace(torch_device = "cuda:0")
+def _decide(card):
+    return diffusion._release_for_untiled_decode(object(), None, "z", "cuda:0", None)
 
 
-def test_tile_verdict_streams_resident_groups_and_keeps_the_decode_untiled(card):
-    tile = ImageActivationVerdict(ACTIVATION_TILE)
-    verdict, restore = diffusion._untiled_after_release(
-        object(), tile, TARGET, {"device_memory": 6000}, None
-    )
-    assert verdict.action == ACTIVATION_RUN  # the untiled decode now fits: no tiling
-    assert card.releases == [(4283, "an untiled VAE decode")]
-    assert restore is not None and card.resident == 0
-    restore()
-    assert card.resident == 4283 and card.restored == 1  # pinned back after the render
-
-
-def test_still_tiled_after_the_release_restores_and_keeps_the_tile_verdict(card):
-    card.resident = 1000  # 6000 + 1000 < 9000: the untiled decode still does not fit
-    tile = ImageActivationVerdict(ACTIVATION_TILE)
-    verdict, restore = diffusion._untiled_after_release(
-        object(), tile, TARGET, {"device_memory": 6000}, None
-    )
-    assert verdict is tile and restore is None
-    assert card.resident == 1000 and card.restored == 1  # nothing left streamed for a tiled render
-
-
-def test_nothing_resident_or_not_a_tile_verdict_changes_nothing(card):
-    run = ImageActivationVerdict(ACTIVATION_RUN)
-    assert diffusion._untiled_after_release(object(), run, TARGET, {}, None) == (run, None)
-    card.resident = 0
-    tile = ImageActivationVerdict(ACTIVATION_TILE)
-    assert diffusion._untiled_after_release(object(), tile, TARGET, {}, None) == (tile, None)
-    overridden = ImageActivationVerdict(ACTIVATION_TILE, overridden = True)
-    assert diffusion._untiled_after_release(object(), overridden, TARGET, {}, None) == (
-        overridden,
-        None,
-    )
-    assert card.releases == []
-
-
-def test_kill_switch_tiles_as_before(card, monkeypatch):
-    monkeypatch.setenv(diffusion.RELEASE_BEFORE_TILING_ENV, "0")
-    tile = ImageActivationVerdict(ACTIVATION_TILE)
-    assert diffusion._untiled_after_release(object(), tile, TARGET, {}, None) == (tile, None)
-    assert card.releases == []
-
-
-def test_a_failing_recheck_restores_and_keeps_the_tile_verdict(card, monkeypatch):
-    def boom(**kw):
-        raise RuntimeError("probe broke")
-
-    monkeypatch.setattr(diffusion, "raise_on_image_activation_shortfall", boom)
-    tile = ImageActivationVerdict(ACTIVATION_TILE)
-    verdict, restore = diffusion._untiled_after_release(object(), tile, TARGET, {}, None)
-    assert verdict is tile and restore is None and card.restored == 1
-
-
-def test_chained_restore_runs_the_later_release_first_then_the_request_one():
-    order: list = []
-    chained = diffusion._chain_restores(
-        lambda: order.append("untiled"), lambda: order.append("request")
-    )
-    chained()
-    assert order == ["untiled", "request"]
-    only = lambda: None  # noqa: E731
-    assert diffusion._chain_restores(None, only) is only
-    assert diffusion._chain_restores(only, None) is only
-    assert diffusion._chain_restores(None, None) is None
-
-
-def test_generate_calls_the_release_before_tiling():
-    import inspect
-
-    src = inspect.getsource(diffusion.DiffusionBackend.generate)
-    assert src.index("_untiled_after_release(") < src.index("restore_vae = _tile_for_verdict(")
-    assert "_chain_restores(restore_untiled, restore_resident)" in src
-
-
-def _priced(free: int) -> ImageActivationVerdict:
-    # untiled: 6952 MiB of activations + the 2048 MiB fixed overhead = the 9000 MiB the stub guard wants
-    return ImageActivationVerdict(
-        ACTIVATION_TILE, needed_mib = 6952, tiled_needed_mib = 2952, budget_mib = free
-    )
-
-
-def test_a_priced_verdict_streams_only_the_shortfall(card):
-    verdict, restore = diffusion._untiled_after_release(
-        object(), _priced(6000), TARGET, {"device_memory": 6000}, None
-    )
-    assert verdict.action == ACTIVATION_RUN
+def test_the_shortfall_streams_and_the_decode_runs_untiled(card):
+    untiled, restore = _decide(card)
     # short 3000 MiB, plus a quarter for the budget's reserve and 256 MiB: 4006 of the 4283 resident
-    assert card.releases == [(4006, "an untiled VAE decode")]
+    assert untiled and card.releases == [(4006, "an untiled VAE decode")]
     assert card.resident == 277
     restore()
-    assert card.resident == 4283
+    assert card.resident == 4283 and card.restored == 1
+
+
+def test_a_frame_that_already_fits_decodes_untiled_without_streaming(card):
+    card.free = 9500
+    assert _decide(card) == (True, None)
+    assert card.releases == []
 
 
 def test_a_short_first_release_streams_the_rest_once(card, monkeypatch):
@@ -180,30 +99,31 @@ def test_a_short_first_release_streams_the_rest_once(card, monkeypatch):
         "release_resident_groups",
         lambda pipe, need, *a, **k: real(pipe, need if card.releases else need // 4, *a, **k),
     )
-    verdict, restore = diffusion._untiled_after_release(
-        object(), _priced(6000), TARGET, {"device_memory": 6000}, None
-    )
-    assert verdict.action == ACTIVATION_RUN
-    assert len(card.releases) == 2 and card.resident == 0
+    untiled, restore = _decide(card)
+    assert untiled and len(card.releases) == 2 and card.resident == 0
     restore()
     assert card.resident == 4283 and card.restored == 2
 
 
+def test_still_short_after_every_group_pins_back_and_tiles(card, monkeypatch):
+    monkeypatch.setattr(diffusion, "_untiled_decode_shortfall_mib", lambda vae, z: 1)
+    assert _decide(card) == (False, None)
+    assert card.resident == 4283 and card.restored >= 1
+
+
 def test_a_shortfall_past_every_resident_group_streams_nothing(card):
     card.resident = 2000  # short 3000 MiB: even all of it leaves the decode tiled
-    tile = _priced(6000)
-    assert diffusion._untiled_after_release(object(), tile, TARGET, {}, None) == (tile, None)
+    assert _decide(card) == (False, None)
     assert card.releases == []
 
 
-def test_a_vae_on_another_card_streams_nothing(card, monkeypatch):
-    monkeypatch.setattr(diffusion, "_vae_on_other_card", lambda pipe, target: "cuda:1")
-    tile = ImageActivationVerdict(ACTIVATION_TILE)
-    assert diffusion._untiled_after_release(object(), tile, TARGET, {}, None) == (tile, None)
+def test_unknown_decode_figures_tile_without_streaming(card, monkeypatch):
+    monkeypatch.setattr(diffusion, "_untiled_decode_shortfall_mib", lambda vae, z: None)
+    assert _decide(card) == (False, None)
     assert card.releases == []
 
 
-def test_a_broken_release_keeps_the_tile_verdict_and_pins_back(card, monkeypatch):
+def test_a_broken_release_tiles_and_pins_back(card, monkeypatch):
     calls = {"n": 0}
     real = diffusion.release_resident_groups
 
@@ -214,19 +134,202 @@ def test_a_broken_release_keeps_the_tile_verdict_and_pins_back(card, monkeypatch
         return real(pipe, need // 4, *a, **k)
 
     monkeypatch.setattr(diffusion, "release_resident_groups", flaky)
-    tile = _priced(6000)
-    verdict, restore = diffusion._untiled_after_release(object(), tile, TARGET, {}, None)
-    assert verdict is tile and restore is None
+    assert _decide(card) == (False, None)
     assert card.resident == 4283 and card.restored == 1
 
 
 def test_a_cancel_mid_release_pins_back_and_propagates(card, monkeypatch):
-    def cancel(**kw):
-        raise KeyboardInterrupt
+    real = diffusion._untiled_decode_shortfall_mib
+    calls = {"n": 0}
 
-    monkeypatch.setattr(diffusion, "raise_on_image_activation_shortfall", cancel)
+    def cancel(vae, z):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return real(vae, z)
+
+    monkeypatch.setattr(diffusion, "_untiled_decode_shortfall_mib", cancel)
     with pytest.raises(KeyboardInterrupt):
-        diffusion._untiled_after_release(
-            object(), ImageActivationVerdict(ACTIVATION_TILE), TARGET, {}, None
-        )
+        _decide(card)
     assert card.resident == 4283 and card.restored == 1
+
+
+def test_chained_restore_runs_the_later_release_first():
+    order: list = []
+    chained = diffusion._chain_restores(
+        lambda: order.append("later"), lambda: order.append("first")
+    )
+    chained()
+    assert order == ["later", "first"]
+    only = lambda: None  # noqa: E731
+    assert diffusion._chain_restores(None, only) is only
+    assert diffusion._chain_restores(only, None) is only
+    assert diffusion._chain_restores(None, None) is None
+
+
+def test_generate_defers_the_tiling_to_the_decode():
+    import inspect
+
+    src = inspect.getsource(diffusion.DiffusionBackend.generate)
+    # the request keeps its tiling engagement (and its refusals) and hands the tiling to the decode
+    assert src.index("restore_vae = _tile_for_verdict(") < src.index("_defer_tiling_to_decode(")
+    assert "release_for_untiled_decode" not in src  # nothing streams before the denoise
+
+
+def test_the_untiled_decode_shortfall_uses_the_wide_tile_rule(monkeypatch):
+    import core.inference.diffusion_vae_tiling as tiling
+
+    monkeypatch.setattr(tiling, "_free_mib", lambda vae, z: (1000.0, 1.0))
+    monkeypatch.setattr(tiling, "_geometry", lambda vae: (16, 32, 4))
+    monkeypatch.setattr(tiling, "_fused", lambda vae: True)
+    z = types.SimpleNamespace(shape = (1, 16, 1, 64, 64), dim = lambda: 5)
+    vae = types.SimpleNamespace(use_slicing = True)
+    per_latent = tiling.decode_mib_per_latent(16, True, "SimpleNamespace")
+    want = 64 * 64 * per_latent / tiling.FREE_FRACTION - 1000
+    assert abs(diffusion._untiled_decode_shortfall_mib(vae, z) - want) <= 1
+    monkeypatch.setattr(tiling, "_free_mib", lambda vae, z: None)
+    assert diffusion._untiled_decode_shortfall_mib(vae, z) is None
+
+
+class _Vae:
+    """A VAE whose decode records the tiling and the resident MiB it ran with."""
+
+    def __init__(
+        self,
+        card: _Card,
+        fail: BaseException | None = None,
+        encode_oom: int = 0,
+    ) -> None:
+        self.card = card
+        self.use_tiling = True  # what engage_vae_tiling left
+        self.fail = fail
+        self.encode_oom = encode_oom
+        self.decodes: list = []
+        self.encodes: list = []
+
+    def decode(self, z):
+        self.decodes.append((self.use_tiling, self.card.resident))
+        if self.fail is not None:
+            raise self.fail
+        return z
+
+    def encode(self, x):
+        self.encodes.append(self.use_tiling)
+        if self.encode_oom:
+            self.encode_oom -= 1
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return x
+
+    def disable_tiling(self):
+        self.use_tiling = False
+
+
+def _priced(free: int) -> ImageActivationVerdict:
+    # untiled: 6952 MiB of activations + the 2048 MiB fixed overhead = 9000 MiB
+    return ImageActivationVerdict(
+        ACTIVATION_TILE, needed_mib = 6952, tiled_needed_mib = 2952, budget_mib = free
+    )
+
+
+TARGET = types.SimpleNamespace(torch_device = "cuda:0")
+
+
+def _armed(
+    card,
+    vae,
+    verdict = None,
+):
+    pipe = types.SimpleNamespace(vae = vae)
+    undone: list = []
+
+    def restore_vae():
+        undone.append(True)
+        vae.disable_tiling()
+
+    restore = diffusion._defer_tiling_to_decode(
+        pipe, pipe, verdict or _priced(6000), TARGET, {}, restore_vae, None
+    )
+    return restore, undone
+
+
+def test_the_denoise_keeps_the_groups_and_the_decode_streams_them_untiled(card):
+    vae = _Vae(card)
+    restore, undone = _armed(card, vae)
+    assert vae.use_tiling is False and card.releases == []  # nothing streamed before the denoise
+    assert vae.encode("x") == "x" and vae.encodes == [False]  # the edit's encode runs untiled too
+    assert vae.decode("z") == "z"
+    assert vae.decodes == [(False, 277)]  # the shortfall streamed, the decode untiled
+    assert (
+        card.resident == 4283 and card.restored == 1
+    )  # pinned back as soon as the decode returned
+    stats = vae.__dict__[diffusion.RELEASE_BEFORE_TILING_STATS]
+    assert stats["untiled"] == 1 and stats["tiled"] == 0 and stats["released_mib"] == 4006
+    restore()
+    assert "decode" not in vae.__dict__ and "encode" not in vae.__dict__  # the wrappers are gone
+    assert undone == [True] and vae.use_tiling is False
+
+
+def test_every_decode_of_a_request_streams_and_pins_back_on_its_own(card):
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    vae.decode("a")
+    vae.decode("b")
+    assert vae.decodes == [(False, 277), (False, 277)] and card.restored == 2
+    restore()
+
+
+def test_a_decode_that_still_does_not_fit_tiles_as_before(card, monkeypatch):
+    vae = _Vae(card)
+    restore, _ = _armed(card, vae)
+    monkeypatch.setattr(diffusion, "_untiled_decode_shortfall_mib", lambda vae, z: 1)
+    vae.decode("z")
+    assert vae.decodes == [(True, 4283)] and vae.use_tiling is False
+    assert vae.__dict__[diffusion.RELEASE_BEFORE_TILING_STATS]["tiled"] == 1
+    restore()
+
+
+def test_a_failing_or_cancelled_decode_pins_the_groups_back(card):
+    for exc in (RuntimeError("decode broke"), KeyboardInterrupt()):
+        vae = _Vae(card, fail = exc)
+        restore, _ = _armed(card, vae)
+        with pytest.raises(type(exc)):
+            vae.decode("z")
+        assert card.resident == 4283 and vae.use_tiling is False
+        restore()
+
+
+def test_an_untiled_encode_out_of_memory_retries_tiled(card):
+    vae = _Vae(card, encode_oom = 1)
+    restore, _ = _armed(card, vae)
+    assert vae.encode("x") == "x"
+    assert vae.encodes == [False, True] and vae.use_tiling is False
+    assert vae.__dict__[diffusion.RELEASE_BEFORE_TILING_STATS]["encode_oom"] == 1
+    restore()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["kill", "run", "overridden", "nothing_resident", "hopeless", "split", "not_engaged"],
+)
+def test_cases_that_do_not_stream_keep_the_request_tiling(card, monkeypatch, case):
+    verdict = _priced(6000)
+    vae = _Vae(card)
+    if case == "kill":
+        monkeypatch.setenv(diffusion.RELEASE_BEFORE_TILING_ENV, "0")
+    elif case == "run":
+        verdict = ImageActivationVerdict(ACTIVATION_RUN)
+    elif case == "overridden":
+        verdict = ImageActivationVerdict(ACTIVATION_TILE, overridden = True)
+    elif case == "nothing_resident":
+        card.resident = 0
+    elif case == "hopeless":
+        card.resident = 2000  # the request is short 3000 MiB
+    elif case == "split":
+        monkeypatch.setattr(diffusion, "_vae_on_other_card", lambda pipe, target: "cuda:1")
+    elif case == "not_engaged":
+        vae.use_tiling = False
+    pipe = types.SimpleNamespace(vae = vae)
+    restore_vae = vae.disable_tiling
+    out = diffusion._defer_tiling_to_decode(pipe, pipe, verdict, TARGET, {}, restore_vae, None)
+    assert out is restore_vae and "decode" not in vae.__dict__ and "encode" not in vae.__dict__
+    assert card.releases == []

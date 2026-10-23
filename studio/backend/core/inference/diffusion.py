@@ -2536,6 +2536,17 @@ def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
 
 
 RELEASE_BEFORE_TILING_ENV = "UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING"
+RELEASE_BEFORE_TILING_LAYER = "release_before_tiling"
+RELEASE_BEFORE_TILING_STATS = "_unsloth_release_before_tiling_stats"
+
+
+def _release_before_tiling_off() -> bool:
+    return os.environ.get(RELEASE_BEFORE_TILING_ENV, "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def _untiled_shortfall_mib(verdict: Any, guard_kwargs: dict) -> Optional[int]:
@@ -2551,77 +2562,68 @@ def _untiled_shortfall_mib(verdict: Any, guard_kwargs: dict) -> Optional[int]:
     return int(needed) + max(0, int(overhead or 0)) - int(budget)
 
 
-def _untiled_after_release(
-    pipe: Any,
-    verdict: Any,
-    guard_target: Any,
-    guard_kwargs: dict,
-    logger: Any,
-    decode_pipe: Any = None,
-) -> tuple[Any, Optional[Callable[[], None]]]:
-    """A tile verdict while offload groups are still resident: stream them again and re-check before tiling. Tiling
-    changes the decoded pixels; streaming the groups again only costs transfer time, which is the order the decode's
-    OOM recovery takes too (``diffusion_vae_oom``: free the card first, tile last). Streams the shortfall first (text
-    encoders before the denoiser, as ``release_resident_groups`` orders them) and the rest only when that re-check
-    still says tile. Nothing streams when even every resident group could not cover the shortfall, or when the VAE
-    decodes on another card of a split (the primary's verdict never tiles it). Returns ``(verdict, restore)``: the
-    passing re-check and the restore that pins the groups back after the render, or the original verdict and None.
-    ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0`` tiles as before."""
-    if (
-        verdict is None
-        or verdict.action != ACTIVATION_TILE
-        or verdict.overridden
-        or os.environ.get(RELEASE_BEFORE_TILING_ENV, "").strip().lower()
-        in ("0", "false", "no", "off")
-    ):
-        return verdict, None
-    resident = resident_group_mib(pipe)
-    if resident <= 0:
-        return verdict, None
-    short = _untiled_shortfall_mib(verdict, guard_kwargs)
-    if short is not None and short > resident:
-        # a freed MiB raises the budget by at most a MiB: streaming every group would still leave it tiled
-        return verdict, None
+def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
+    """MiB the free VRAM is short by, now, for decoding ``z`` in one piece: the rule the wide-tile decode picks its
+    tile by (``decode_tile_budget``: per-latent decode peak within ``FREE_FRACTION`` of the free memory), applied to
+    the whole frame. A whole-frame tile is the untiled decode. None off CUDA or when the VAE's figures are unknown."""
+    from .diffusion_vae_tiling import (
+        FREE_FRACTION,
+        _free_mib,
+        _fused,
+        _geometry,
+        decode_mib_per_latent,
+    )
     try:
-        if (
-            _vae_on_other_card(decode_pipe if decode_pipe is not None else pipe, guard_target)
-            is not None
-        ):
-            return verdict, None
-    except Exception:  # noqa: BLE001 - unreadable split: the primary's card decodes
-        pass
-    device = getattr(guard_target, "torch_device", None)
-    # the shortfall plus the budget's reserve on what is freed, then everything still resident
-    first = resident if short is None or short <= 0 else min(resident, short + short // 4 + 256)
+        free = _free_mib(vae, z)
+        if free is None:
+            return None
+        mib, scale = free
+        frames = int(z.shape[2]) if z.dim() == 5 else 1
+        batch = 1 if bool(getattr(vae, "use_slicing", False)) else int(z.shape[0])
+        per_latent = decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__)
+        need = batch * frames * int(z.shape[-2]) * int(z.shape[-1]) * per_latent * scale
+        return int(-(-(need / FREE_FRACTION - mib) // 1))
+    except Exception:  # noqa: BLE001 - unknown figures: decode as planned (tiled)
+        return None
+
+
+def _release_for_untiled_decode(
+    state_pipe: Any, vae: Any, z: Any, device: Any, logger: Any
+) -> tuple[bool, Optional[Callable[[], None]]]:
+    """At the decode of a tile verdict: whether ``z`` decodes untiled, and the restore pinning back what was streamed
+    for it. Already fits: untiled, nothing streams. Otherwise the shortfall streams first (plus a quarter for the
+    budget's reserve and 256 MiB; text encoders before the denoiser, as ``release_resident_groups`` orders them), then
+    the rest once if that still falls short. Nothing streams when even every resident group could not cover it (a
+    freed MiB raises the free memory by at most a MiB). A decode that still does not fit pins back and tiles."""
+    short = _untiled_decode_shortfall_mib(vae, z)
+    if short is None:
+        return False, None
+    if short <= 0:
+        return True, None
+    resident = resident_group_mib(state_pipe)
+    if short > resident:
+        return False, None
     restore: Optional[Callable[[], None]] = None
     try:
-        for need in (first, None):
+        for need in (min(resident, short + short // 4 + 256), None):
             if need is None:
-                need = resident_group_mib(pipe)
+                need = resident_group_mib(state_pipe)
                 if need <= 0:
                     break
             step = release_resident_groups(
-                pipe, need, logger, reason = "an untiled VAE decode", device = device
+                state_pipe, need, logger, reason = "an untiled VAE decode", device = device
             )
             if step is None:
                 break
             restore = _chain_restores(step, restore)
-            try:
-                again = raise_on_image_activation_shortfall(
-                    **{
-                        **guard_kwargs,
-                        "device_memory": reclaimable_snapshot_device_memory(guard_target),
-                    }
-                )
-            except Exception:  # noqa: BLE001 - a refusal or a broken probe: keep the tiled plan
-                break
-            if again is not None and again.action == ACTIVATION_RUN:
-                return again, restore
+            again = _untiled_decode_shortfall_mib(vae, z)
+            if again is not None and again <= 0:
+                return True, restore
             if need >= resident:
                 break
-    except Exception as exc:  # noqa: BLE001 - a broken release keeps the tiled plan, which the caller still applies
+    except Exception as exc:  # noqa: BLE001 - a broken release keeps the tiled decode
         if logger is not None:
-            logger.warning("diffusion.memory: streaming before tiling failed (%s)", exc)
+            logger.warning("diffusion.memory: streaming before the decode failed (%s)", exc)
     except BaseException:
         # a cancel between a release and its handover: pin back before propagating
         if restore is not None:
@@ -2629,7 +2631,132 @@ def _untiled_after_release(
         raise
     if restore is not None:
         restore()
-    return verdict, None
+    return False, None
+
+
+def _defer_tiling_to_decode(
+    pipe: Any,
+    state_pipe: Any,
+    verdict: Any,
+    guard_target: Any,
+    guard_kwargs: dict,
+    restore_vae: Any,
+    logger: Any,
+) -> Any:
+    """A tile verdict while offload groups are resident: the tiling this request just engaged waits for the decode,
+    so the denoise keeps every resident group (ComfyUI frees model weights right before the VAE decode as well). At
+    each decode ``_release_for_untiled_decode`` decides on the latents it got and the memory free then: untiled when
+    the frame fits (streaming the shortfall first if needed), the groups pinned back as soon as the decode returns,
+    raises or is cancelled; tiled as before otherwise. Tiling changes pixels, streaming only costs transfer time.
+    The VAE encode (edits) runs untiled as well and tiles only if it runs out of memory. Both wrappers sit on the
+    public ``decode`` / ``encode`` slots, above the OOM scope and outside every compiled or captured region. Returns
+    the request's VAE restore extended to drop them. Changes nothing for a verdict that would not stream (not tile,
+    overridden, nothing resident, hopeless, a split that decodes on another card, the kill switch
+    ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0``) or a tiling that did not engage."""
+    vae = getattr(pipe, "vae", None)
+    if (
+        vae is None
+        or restore_vae is None
+        or verdict is None
+        or verdict.action != ACTIVATION_TILE
+        or verdict.overridden
+        or _release_before_tiling_off()
+        or not bool(getattr(vae, "use_tiling", False))
+        or not callable(getattr(vae, "decode", None))
+    ):
+        return restore_vae
+    resident = resident_group_mib(state_pipe)
+    if resident <= 0:
+        return restore_vae
+    short = _untiled_shortfall_mib(verdict, guard_kwargs)
+    if short is not None and short > resident:
+        return restore_vae  # hopeless: even every resident group would leave the request tiled
+    try:
+        if _vae_on_other_card(pipe, guard_target) is not None:
+            return restore_vae
+    except Exception:  # noqa: BLE001 - unreadable split: the primary's card decodes
+        pass
+    from . import decode_layers
+    from .diffusion_vae_oom import _compiling, clear_partial_decode, drop_tracebacks, is_oom
+
+    device = getattr(guard_target, "torch_device", None)
+    stats = {"decodes": 0, "untiled": 0, "tiled": 0, "release_s": 0.0, "restore_s": 0.0,
+             "released_mib": 0, "encode_oom": 0}  # fmt: skip
+    vae.__dict__[RELEASE_BEFORE_TILING_STATS] = stats
+
+    def make_decode(inner: Callable, layer: Any) -> Callable:
+        depth = [0]
+
+        def decode(*args: Any, **kwargs: Any) -> Any:
+            if depth[0] or _compiling():
+                return inner(*args, **kwargs)
+            depth[0] += 1
+            restore = None
+            untiled = False
+            try:
+                z = args[0] if args else kwargs.get("z")
+                t0 = time.perf_counter()
+                before = resident_group_mib(state_pipe)
+                untiled, restore = _release_for_untiled_decode(state_pipe, vae, z, device, logger)
+                stats["decodes"] += 1
+                stats["release_s"] += time.perf_counter() - t0
+                stats["untiled" if untiled else "tiled"] += 1
+                if restore is not None:
+                    stats["released_mib"] += max(0, before - resident_group_mib(state_pipe))
+                vae.use_tiling = not untiled
+                return inner(*args, **kwargs)
+            finally:
+                vae.use_tiling = False
+                if restore is not None:
+                    t1 = time.perf_counter()
+                    try:
+                        restore()
+                    except Exception as exc:  # noqa: BLE001 - the groups keep streaming
+                        if logger is not None:
+                            logger.warning(
+                                "diffusion.memory: re-residency after the decode failed: %s", exc
+                            )
+                    stats["restore_s"] += time.perf_counter() - t1
+                depth[0] -= 1
+
+        return decode
+
+    def make_encode(inner: Callable, layer: Any) -> Callable:
+        def encode(*args: Any, **kwargs: Any) -> Any:
+            if _compiling() or bool(getattr(vae, "use_tiling", False)):
+                return inner(*args, **kwargs)
+            try:
+                return inner(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if not is_oom(exc):
+                    raise
+                drop_tracebacks(exc)
+            stats["encode_oom"] += 1
+            clear_partial_decode(vae, args[0] if args else None)
+            vae.use_tiling = True
+            try:
+                return inner(*args, **kwargs)
+            finally:
+                vae.use_tiling = False
+
+        return encode
+
+    layers = [decode_layers.wrap(vae, "decode", RELEASE_BEFORE_TILING_LAYER, make_decode)]
+    if callable(getattr(vae, "encode", None)):
+        layers.append(decode_layers.wrap(vae, "encode", RELEASE_BEFORE_TILING_LAYER, make_encode))
+    vae.use_tiling = False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: VAE tiling waits for the decode; resident groups stay resident for the denoise"
+        )
+
+    def restore_all() -> None:
+        for layer in reversed(layers):
+            decode_layers.unwrap(layer)
+        vae.use_tiling = True  # what the request's tiling left, for its own undo
+        restore_vae()
+
+    return restore_all
 
 
 def _chain_restores(
@@ -13372,14 +13499,22 @@ class DiffusionBackend:
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
                     _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
-                    # stream resident groups again before tiling: tiling changes pixels, streaming only costs time
-                    verdict, restore_untiled = _untiled_after_release(
-                        state.pipe, verdict, guard_target, guard_kwargs, logger, decode_pipe = pipe
-                    )
-                    restore_resident = _chain_restores(restore_untiled, restore_resident)
+                    tiled_before = bool(getattr(getattr(pipe, "vae", None), "use_tiling", False))
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
                     )
+                    # tiling changes pixels, streaming resident groups only costs time: the denoise keeps them
+                    # resident, the decode streams the shortfall and runs untiled when that fits
+                    if not tiled_before:
+                        restore_vae = _defer_tiling_to_decode(
+                            pipe,
+                            state.pipe,
+                            verdict,
+                            guard_target,
+                            guard_kwargs,
+                            restore_vae,
+                            logger,
+                        )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
                 except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe
