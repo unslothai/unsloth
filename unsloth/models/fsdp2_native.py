@@ -1160,20 +1160,33 @@ _FLOAT8 = tuple(
 )
 
 
+def _is_torchao_weight(t):
+    """A torchao tensor subclass weight (load_in_fp8's Float8Tensor, other torchao quantized tensors). It
+    reports the high precision dtype (bfloat16), not float8, and implements only the ops its linear needs:
+    fully_shard's sharding (aten.new_zeros) and DDP's flattening broadcast (reshape to [-1]) fail on it."""
+    return any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__)
+
+
 def _float8_params(model):
     """FP8 weights: FSDP2's mixed precision would cast them to the gather dtype (a floating dtype), dropping
-    the scale semantics. Frozen ones stay replicated in float8; trainable ones are refused."""
-    found = [(n, p) for n, p in model.named_parameters() if p.dtype in _FLOAT8]
+    the scale semantics, and a torchao Float8Tensor (load_in_fp8) cannot be sharded at all. Frozen ones stay
+    replicated (every rank loads the same weights); trainable ones are refused."""
+    found = [
+        (n, p)
+        for n, p in model.named_parameters()
+        if p.dtype in _FLOAT8 or _is_torchao_weight(p)
+    ]
     trainable = [n for n, p in found if p.requires_grad]
     if trainable:
         raise NotImplementedError(
             f"Unsloth: native FSDP2 cannot shard trainable float8 parameters (e.g. {trainable[0]}); FSDP2's "
-            "gather would cast them. Train LoRA on a frozen FP8 base, or load in 16-bit."
+            "gather would cast them, and torchao's Float8Tensor (load_in_fp8) has no FSDP2 support. Train "
+            "LoRA on a frozen FP8 base, or load in 16-bit."
         )
     if found:
         _print_rank0(
             f"Unsloth: native FSDP2 keeps {len(found)} frozen float8 weights replicated (FSDP2 would cast them "
-            "to the gather dtype)."
+            "to the gather dtype, or cannot shard torchao's Float8Tensor)."
         )
     return {p for _, p in found}
 
