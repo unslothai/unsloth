@@ -11,6 +11,7 @@ import {
   readImageComponents,
   readImageModel,
   recalledComponentFiles,
+  reconcileRememberedComponents,
   rememberImageComponents,
   rememberLoadedImageComponents,
   rememberImageModel,
@@ -312,8 +313,8 @@ test("an upgrade seeds the map from the last-model slot, so picking that model k
   assert.deepEqual(initial, zFiles);
   assert.deepEqual(readImageComponents(zImage), zFiles);
   // Untouched fields (they show the seeded files) re-picked on the same model keep them; another model clears them.
-  assert.deepEqual(componentFilesForModel(zFiles, initial, zImage), { files: zFiles, replaced: true });
-  assert.deepEqual(componentFilesForModel(zFiles, initial, flux), { files: {}, replaced: true });
+  assert.deepEqual(componentFilesForModel(zFiles, initial, zImage).files, zFiles);
+  assert.deepEqual(componentFilesForModel(zFiles, initial, flux).files, {});
   // An existing entry wins over the slot and is not rewritten.
   rememberImageComponents(zImage, { vaeFile: "newer.safetensors" });
   assert.deepEqual(seedImageComponents(remembered), { vaeFile: "newer.safetensors" });
@@ -374,4 +375,105 @@ test("a resumed load the page did not start keeps the saved files it engages; a 
     source,
     /const files = rememberLoadedImageComponents\(lastLoad\.current, loaded\);\s*if \(files\) componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(/,
   );
+});
+
+test("the encoder and VAE fields are owned separately, so editing one does not carry the other to another model", () => {
+  store.clear();
+  const fluxFiles = { textEncoderFiles: ["clip_l.safetensors", "t5xxl.safetensors"], vaeFile: "flux_ae.safetensors" };
+  rememberImageComponents(flux, fluxFiles);
+  rememberImageComponents(zImage, zFiles);
+  // Z-Image filled both; the user then changed only the VAE.
+  const typed = { textEncoderFiles: zFiles.textEncoderFiles, vaeFile: "mine.safetensors" };
+  const pick = componentFilesForModel(typed, zFiles, flux);
+  // The untouched encoder gives way to flux's; the edited VAE rides along as the user's.
+  assert.deepEqual(pick.files, { textEncoderFiles: fluxFiles.textEncoderFiles, vaeFile: "mine.safetensors" });
+  // The edit stays an edit until a load takes it, so a further pick still sends it.
+  assert.deepEqual(pick.owner, { textEncoderFiles: fluxFiles.textEncoderFiles, vaeFile: zFiles.vaeFile });
+  assert.deepEqual(componentFilesForModel(pick.files, pick.owner, zImage).files, {
+    textEncoderFiles: zFiles.textEncoderFiles,
+    vaeFile: "mine.safetensors",
+  });
+  // Untouched or all edited: as before.
+  assert.deepEqual(componentFilesForModel(zFiles, zFiles, flux).files, fluxFiles);
+  assert.deepEqual(componentFilesForModel({ textEncoderFiles: ["a"], vaeFile: "b" }, zFiles, flux).files, {
+    textEncoderFiles: ["a"],
+    vaeFile: "b",
+  });
+  // After a load, each field the build loaded with and still shows belongs to it.
+  assert.deepEqual(
+    componentFieldsOwnerAfterLoad(
+      { textEncoderFiles: zFiles.textEncoderFiles, vaeFile: "edited-during-load" },
+      zFiles,
+      { vaeFile: "old" },
+    ),
+    { textEncoderFiles: zFiles.textEncoderFiles, vaeFile: "old" },
+  );
+});
+
+test("the first loaded status forgets the remembered model's stale files and clears the untouched fields", () => {
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  const resident = { loaded: true, repo_id: zImage.repoId, model_kind: "gguf", gguf_filename: zImage.filename };
+  // Same model, rebuilt on diffusers without the overrides: stale.
+  assert.equal(reconcileRememberedComponents(zImage, { ...resident, engine: "diffusers", component_files: {} }), true);
+  assert.equal(readImageComponents(zImage), null);
+  // Same model with the same files, a native build, another model, or nothing loaded: kept.
+  const kept: Parameters<typeof reconcileRememberedComponents>[1][] = [
+    { ...resident, component_files: { text_encoder: "qwen_3_4b.safetensors", vae: "ae.safetensors" } },
+    { ...resident, engine: "sd_cpp", component_files: null },
+    { ...resident, gguf_filename: "z-Q8_0.gguf", component_files: {} },
+    { loaded: false },
+  ];
+  for (const status of kept) {
+    rememberImageComponents(zImage, zFiles);
+    assert.equal(reconcileRememberedComponents(zImage, status), false);
+    assert.deepEqual(readImageComponents(zImage), zFiles);
+  }
+
+  const source = readSrc("features/images/images-page.tsx");
+  const tree = ts.createSourceFile("images-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declarations: Record<string, string> = {};
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ["pickComponentFiles", "reconcileInitialComponents"].includes(node.name.getText(tree)))
+      declarations[node.name.getText(tree)] = `const ${node.getText(tree)};`;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(declarations.reconcileInitialComponents);
+  const { outputText } = ts.transpileModule(
+    `${declarations.pickComponentFiles}\n${declarations.reconcileInitialComponents}\nreturn reconcileInitialComponents;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  );
+  const open = (fields: { te: string; vae: string }, status: object) => {
+    const state = { ...fields };
+    const scope = {
+      useCallback: (fn: unknown) => fn,
+      textEncoderFiles: fields.te,
+      vaeFile: fields.vae,
+      componentFieldsOwner: { current: zFiles },
+      componentsReconciled: { current: false },
+      rememberedModel: { ...zImage },
+      splitComponentFileList,
+      componentFilesForModel,
+      reconcileRememberedComponents,
+      setTextEncoderFiles: (v: string) => (state.te = v),
+      setVaeFile: (v: string) => (state.vae = v),
+    };
+    const reconcile = new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+    reconcile(status);
+    reconcile(status);
+    return { state, scope };
+  };
+  const stale = { ...resident, engine: "diffusers", component_files: {} };
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  const untouched = open({ te: zFiles.textEncoderFiles[0], vae: zFiles.vaeFile }, stale);
+  assert.deepEqual(untouched.state, { te: "", vae: "" });
+  assert.deepEqual(untouched.scope.componentFieldsOwner.current, {});
+  assert.equal(untouched.scope.componentsReconciled.current, true);
+  // A field the user already changed stays.
+  rememberImageComponents(zImage, zFiles);
+  const edited = open({ te: zFiles.textEncoderFiles[0], vae: "mine.safetensors" }, stale);
+  assert.deepEqual(edited.state, { te: "", vae: "mine.safetensors" });
+  assert.match(source, /useEffect\(\(\) => \{\s*if \(status\?\.loaded\) reconcileInitialComponents\(status\);\s*\}, \[status, reconcileInitialComponents\]\);/);
 });

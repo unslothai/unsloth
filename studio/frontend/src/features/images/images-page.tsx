@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, recalledComponentFiles, rememberLoadedImageComponents, seedImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, seedImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -1907,15 +1907,25 @@ export function ImagesPage({
   const pickComponentFiles = useCallback(
     (model: ImageModelKey): ImageComponentFiles => {
       const typed = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
-      // Another model's files must not ride along: no entry clears the fields.
-      const { files: saved, replaced } = componentFilesForModel(typed, componentFieldsOwner.current, model);
-      if (!replaced) return saved;
-      componentFieldsOwner.current = saved;
-      setTextEncoderFiles((saved.textEncoderFiles ?? []).join("\n"));
-      setVaeFile(saved.vaeFile ?? "");
-      return saved;
+      // Another model's files must not ride along, field by field: no entry clears an untouched field.
+      const pick = componentFilesForModel(typed, componentFieldsOwner.current, model);
+      componentFieldsOwner.current = pick.owner;
+      if (pick.replaceEncoders) setTextEncoderFiles((pick.files.textEncoderFiles ?? []).join("\n"));
+      if (pick.replaceVae) setVaeFile(pick.files.vaeFile ?? "");
+      return pick.files;
     },
     [textEncoderFiles, vaeFile],
+  );
+  // Once, on the first loaded status: the fields started on the remembered model's saved files before status was
+  // known, and a resident build of that model without them (another client reloaded it) makes them stale.
+  const componentsReconciled = useRef(false);
+  const reconcileInitialComponents = useCallback(
+    (loaded: DiffusionStatus) => {
+      if (componentsReconciled.current) return;
+      componentsReconciled.current = true;
+      if (rememberedModel && reconcileRememberedComponents(rememberedModel, loaded)) pickComponentFiles(rememberedModel);
+    },
+    [rememberedModel, pickComponentFiles],
   );
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
@@ -1952,6 +1962,9 @@ export function ImagesPage({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  useEffect(() => {
+    if (status?.loaded) reconcileInitialComponents(status);
+  }, [status, reconcileInitialComponents]);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // A connection is not bound by the resident model's size grid or presets.
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;

@@ -150,15 +150,32 @@ export function readImageComponents(model: ImageModelKey): ImageComponentFiles |
   return files.textEncoderFiles || files.vaeFile ? files : null;
 }
 
-/** What a load of `model` sends from the Advanced fields: fields still holding `owner` (what was filled in or loaded
- *  last) are not the user's edit, so they give way to the model's own saved files, and no entry sends none. */
+const sameEncoders = (a: ImageComponentFiles, b: ImageComponentFiles): boolean =>
+  (cleanComponentFiles(a).textEncoderFiles ?? []).join("\n") === (cleanComponentFiles(b).textEncoderFiles ?? []).join("\n");
+const sameVae = (a: ImageComponentFiles, b: ImageComponentFiles): boolean =>
+  cleanComponentFiles(a).vaeFile === cleanComponentFiles(b).vaeFile;
+
+/** What a load of `model` sends from the Advanced fields, the encoder and VAE field each on its own: a field still
+ *  holding `owner`'s value (what was filled in or loaded last) is not the user's edit, so it gives way to the model's
+ *  own saved file, and no entry sends none. `owner` is the new owner (an edited field keeps its old one, so it stays an
+ *  edit until a load takes it); `replaceEncoders` / `replaceVae` say which fields to refill. */
 export function componentFilesForModel(
   typed: ImageComponentFiles,
   owner: ImageComponentFiles,
   model: ImageModelKey,
-): { files: ImageComponentFiles; replaced: boolean } {
-  if (!sameComponentFiles(typed, owner)) return { files: typed, replaced: false };
-  return { files: readImageComponents(model) ?? {}, replaced: true };
+): { files: ImageComponentFiles; owner: ImageComponentFiles; replaceEncoders: boolean; replaceVae: boolean } {
+  const replaceEncoders = sameEncoders(typed, owner);
+  const replaceVae = sameVae(typed, owner);
+  if (!replaceEncoders && !replaceVae) return { files: typed, owner, replaceEncoders, replaceVae };
+  const saved = readImageComponents(model) ?? {};
+  const pick = (encoders: ImageComponentFiles, vae: ImageComponentFiles) =>
+    cleanComponentFiles({ textEncoderFiles: encoders.textEncoderFiles, vaeFile: vae.vaeFile });
+  return {
+    files: pick(replaceEncoders ? saved : typed, replaceVae ? saved : typed),
+    owner: pick(replaceEncoders ? saved : owner, replaceVae ? saved : owner),
+    replaceEncoders,
+    replaceVae,
+  };
 }
 
 /** The files a recalled model loads with: its per-model entry (which keeps what a native load strips from the
@@ -189,6 +206,25 @@ export function forgetStaleImageComponents(
   if (saved && !componentFilesMatch(saved, status.component_files)) rememberImageComponents(model, {});
 }
 
+/** On the first loaded status: forget the remembered model's saved files when that same model is resident on a
+ *  build that does not use them (another client reloaded it without them), so the page does not reload them as
+ *  untouched fields. True when an entry was dropped. */
+export function reconcileRememberedComponents(
+  model: ImageModelKey,
+  status: {
+    loaded: boolean;
+    repo_id?: string | null;
+    model_kind?: string | null;
+    gguf_filename?: string | null;
+    engine?: string | null;
+    component_files?: Record<string, string> | null;
+  },
+): boolean {
+  if (!status.loaded || !matchesRememberedModel(model, status) || !readImageComponents(model)) return false;
+  forgetStaleImageComponents(model, status);
+  return readImageComponents(model) === null;
+}
+
 /** Record a finished load's files: a load this page started stores what it asked for (`fieldFiles`, which a native
  *  load strips from the request), and returns them. A load it only resumed (re-entered mid-load, so `lastLoad` is the
  *  resident descriptor) carries no request, so the saved entry is kept if the build engages it and forgotten if not. */
@@ -204,14 +240,17 @@ export function rememberLoadedImageComponents(
   return load.fieldFiles;
 }
 
-/** Who owns the fields after a load finished: that load, only while they show its files. A load that never touched
+/** Who owns the fields after a load finished, field by field: that load, only while the field shows its file. A load that never touched
  *  them (an adapter deploy, a recalled generation) leaves them with the model that filled them. */
 export function componentFieldsOwnerAfterLoad(
   shown: ImageComponentFiles,
   loaded: ImageComponentFiles,
   owner: ImageComponentFiles,
 ): ImageComponentFiles {
-  return sameComponentFiles(shown, loaded) ? loaded : owner;
+  return cleanComponentFiles({
+    textEncoderFiles: (sameEncoders(shown, loaded) ? loaded : owner).textEncoderFiles,
+    vaeFile: (sameVae(shown, loaded) ? loaded : owner).vaeFile,
+  });
 }
 
 /** Store the paths a load succeeded with; a load with none forgets the model's entry. */
