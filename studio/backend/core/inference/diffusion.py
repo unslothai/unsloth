@@ -2946,6 +2946,10 @@ def _record_peak_probe(
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
             return
+        if getattr(probe, "decode_released", False):
+            # the decode streamed lent groups out, so its peak is net of their bytes: a sample would under-size the
+            # bucket (the placement that lent them already held a sample covering this decode)
+            return
         if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
             return
@@ -13552,6 +13556,9 @@ class DiffusionBackend:
                             )
                             if restore is not None:
                                 decode_restores.append(restore)
+                                if peak_probe is not None:
+                                    # the decode ran with fewer weights than the probe's baseline: its peak understates
+                                    peak_probe.decode_released = True
                             marked = False
                             for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                                 with _hold_off_cuda_graph_capture() as clear:

@@ -1017,6 +1017,25 @@ def _metal_working_set_mib() -> tuple[Optional[int], int]:
     return (working_set, in_use) if working_set > 0 else (None, 0)
 
 
+def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
+    """Bytes inside ``memory_reserved() - memory_allocated()`` that ordinary allocations cannot reuse: the CUDA graph
+    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part)."""
+    held = 0
+    try:
+        # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
+        from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
+        held += int(_block_graph_pool_bytes(device))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # The whole-step graphs' shared pool: only its unallocated part sits inside the difference.
+        from .diffusion_cuda_graph import live_pool_free_bytes
+        held += int(live_pool_free_bytes())
+    except Exception:  # noqa: BLE001 -- no graph layer: nothing held
+        pass
+    return held
+
+
 def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     """``snapshot_device_memory`` with the caching allocator's RECLAIMABLE bytes credited back as free,
     without flushing it.
@@ -1053,21 +1072,10 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
         return snapshot
     try:
-        # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
-        from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
-        try:
-            device = torch.cuda.current_device()
-        except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
-            device = None
-        reclaimable -= _block_graph_pool_bytes(device)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        # The whole-step graphs' shared pool: only its unallocated part sits inside the difference above.
-        from .diffusion_cuda_graph import live_pool_free_bytes
-        reclaimable -= live_pool_free_bytes()
-    except Exception:  # noqa: BLE001 -- no graph layer: nothing held
-        pass
+        device = torch.cuda.current_device()
+    except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
+        device = None
+    reclaimable -= _graph_held_cache_bytes(device)
     if reclaimable <= 0:
         return snapshot
     free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)
@@ -4103,7 +4111,7 @@ def release_for_decode(
     device: Any = None,
     logger: Any = None,
 ) -> Optional[Callable[[], None]]:
-    """If free memory (driver + allocator cache) is short of the learned decode peak x margin, stream the shortfall of
+    """If free memory (driver + the allocator cache outside CUDA graph pools) is short of the learned decode peak x margin, stream the shortfall of
     lent groups again (text encoders first) and return the restore; else None. Mirrors ComfyUI's
     ``load_models_gpu(memory_required=...)``. The decode is untouched, so output is bit-identical."""
     lend = getattr(pipe, DECODE_LEND_ATTR, None)
@@ -4119,8 +4127,12 @@ def release_for_decode(
             dev = torch.device("cuda", torch.cuda.current_device())
         need = decode_need_mib(lend, width = width, height = height, batch_size = batch_size)
         free = int(torch.cuda.mem_get_info(dev)[0])
+        # only the cache an ordinary decode allocation can reuse: a CUDA graph pool's free blocks are not
         cached = max(
-            0, int(torch.cuda.memory_reserved(dev)) - int(torch.cuda.memory_allocated(dev))
+            0,
+            int(torch.cuda.memory_reserved(dev))
+            - int(torch.cuda.memory_allocated(dev))
+            - _graph_held_cache_bytes(dev.index),
         )
         short = need + _DECODE_SLACK_MIB - ((free + cached) >> 20)
     except Exception as exc:  # noqa: BLE001 - unreadable: the decode's OOM retry still frees the card

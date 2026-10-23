@@ -492,3 +492,53 @@ def test_cfg_off_edit_request_reads_its_cfg_off_workflow_key(qwen_pipe):
     assert dm.measured_request_extra_mib(qwen_pipe, **kw, cfg = False) == 9216 - 7168
     # a CFG request is not covered by the guidance-off sample
     assert dm.measured_request_extra_mib(qwen_pipe, **kw, cfg = True) == 0
+
+
+def test_decode_headroom_does_not_credit_cuda_graph_pool_cache(monkeypatch):
+    # a graph pool's free blocks sit inside reserved - allocated yet an ordinary VAE allocation cannot reuse them
+    import core.inference.diffusion_cuda_graph as cg
+
+    calls = []
+    monkeypatch.setattr(
+        dm,
+        "release_resident_groups",
+        lambda pipe, need, logger = None, reason = "", device = None, **kw: calls.append(need)
+        or (lambda: None),
+    )
+    pipe = types.SimpleNamespace(_unsloth_decode_lend = (4040, 5900, 1024 * 1024, False))
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 2000 << 20)
+    monkeypatch.setitem(
+        sys.modules, "torch", _GuardTorch(free_mib = 6000, reserved_mib = 3000, allocated_mib = 1000)
+    )
+    assert dm.release_for_decode(pipe, width = 1024, height = 1024, device = "cuda:0") is not None
+    assert calls == [6785 + dm._DECODE_SLACK_MIB - 6000]
+
+
+def test_render_whose_decode_released_lent_groups_records_nothing(store, monkeypatch):
+    # the decode ran net of the streamed groups' bytes: its peak (and whole-render peak) would under-size the bucket
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    monkeypatch.setattr(diffusion, "_attention_scaling_known", lambda target, engaged = None: True)
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = (KEY["family"], KEY["quant"], "default"))
+    state = types.SimpleNamespace(pipe = pipe, speed_mode = "default")
+    finished = []
+
+    class _Probe:
+        device = "cuda:0"
+        failed_captures = 0
+        window_pad = 0
+        decode_released = True
+        phase_peaks = {mp.PHASE_PRE_DECODE: 2000, mp.PHASE_DECODE: 2000}
+
+        def finish(self):
+            finished.append(1)
+            return 2000
+
+    diffusion._record_peak_probe(
+        state, _Probe(), width = 1024, height = 1024, batch_size = 1, workflow = "txt2img"
+    )
+    assert finished == [1]  # the probe's window still closes
+    assert mp.lookup(**KEY) is None
+    assert mp.lookup(**KEY, phase = mp.PHASE_DECODE_UNPADDED) is None
