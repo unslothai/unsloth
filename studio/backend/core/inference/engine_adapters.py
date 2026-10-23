@@ -443,7 +443,6 @@ def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
     # A slice without a memory reading, or ids that cannot be translated, keep the nvidia-smi query.
     try:
         from utils.hardware import mig
-
         slices = mig.rows_for(gpu_ids)
     except Exception:
         slices = None
@@ -452,6 +451,7 @@ def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
             (float(r["memory_total_mib"]), float(r.get("memory_free_mib") or 0)) for r in slices
         ]
     from utils.hardware.nvidia import _nvidia_smi_executable
+
     result = subprocess.run(
         [
             _nvidia_smi_executable(),

@@ -81,7 +81,6 @@ def _child_cuda_mask(gpu_ids: list[int]) -> str:
     the published map cannot translate keep the numeric mask, as before."""
     try:
         from utils.hardware import mig
-
         pinned = mig.mask_for(gpu_ids)
     except Exception:
         pinned = None

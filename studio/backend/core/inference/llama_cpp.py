@@ -20836,7 +20836,6 @@ class LlamaCppBackend:
         the exact instance UUIDs the parent sized. Anything else (CPU "", UUIDs, other hosts) as is."""
         if gpu and all(token.strip().isdigit() for token in gpu.split(",")):
             from utils.hardware import mig
-
             return mig.mask_for([int(token) for token in gpu.split(",")]) or gpu
         return gpu
 

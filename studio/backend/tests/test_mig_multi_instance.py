@@ -701,7 +701,6 @@ def test_diffusion_gemma_pins_the_instance_uuid_not_a_numeric_id():
 
 def test_diffusion_gemma_launch_uses_the_pinned_token():
     import inspect
-
     assert "gpu = self._mig_pinned_gpu_token(gpu)" in inspect.getsource(lc)
 
 
@@ -811,7 +810,6 @@ def test_untranslatable_optional_engine_ids_keep_the_physical_behaviour(monkeypa
 
 def test_a_slice_without_a_memory_reading_budgets_through_nvidia_smi():
     from core.inference import engine_adapters
-
     with host() as probe:
         assert len(B._get_gpu_memory()) == 3
         probe["source"] = "failed"

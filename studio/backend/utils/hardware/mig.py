@@ -5,6 +5,7 @@
 A physical card index and a CUDA device ordinal are separate namespaces. Keep the
 UUID with each ordinal so a worker can reproduce exactly the set that was sized.
 """
+
 import json
 import os
 import re
@@ -68,8 +69,13 @@ def rows_from_payload(payload):
         if row is None or key in seen:
             return None  # never guess an ordinal-to-UUID mapping
         seen.add(key)
-        rows.append({**row, "physical_index": row["index"],
-                     "index": str(ids[ordinal] if ids is not None else ordinal)})
+        rows.append(
+            {
+                **row,
+                "physical_index": row["index"],
+                "index": str(ids[ordinal] if ids is not None else ordinal),
+            }
+        )
     return rows
 
 
@@ -90,7 +96,7 @@ def _mig_instances(listing):
     return nvidia.get_mig_gpu_indices_or_none()
 
 
-def visible_devices(*, fresh=False, listing=False):
+def visible_devices(*, fresh = False, listing = False):
     """Bounded out-of-process probe, gated off ordinary hosts; cache identities only.
 
     Memory callers request a fresh sample. Failed probes back off and retire at the
@@ -130,8 +136,12 @@ _MISS = object()
 
 
 def _current_key():
-    return (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"),
-            gpu_query._static_gen, os.environ.get("UNSLOTH_NVIDIA_PROBE"))
+    return (
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("CUDA_DEVICE_ORDER"),
+        gpu_query._static_gen,
+        os.environ.get("UNSLOTH_NVIDIA_PROBE"),
+    )
 
 
 def _cached_answer(key, fresh):
@@ -155,13 +165,20 @@ def _probe():
     """(rows, answered). ``answered`` is False when the probe child gave no NVML answer."""
     try:
         from utils.prebuilt.update_flow import find_installer_script
-        script = find_installer_script(env_var="UNSLOTH_NVIDIA_PROBE", script_name="nvidia_probe.py")
+
+        script = find_installer_script(
+            env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py"
+        )
         if script is None:
             return None, False
         result = subprocess.run(
             [sys.executable, "-I", str(script), "--json"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            env=utf8_child_env(child_env_without_native_path_secret()),
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            env = utf8_child_env(child_env_without_native_path_secret()),
             **windows_hidden_subprocess_kwargs(),
         )
         if result.returncode != 0:
@@ -172,7 +189,11 @@ def _probe():
         answered = isinstance(payload, dict) and payload.get("source") == "nvml"
         if answered and not isinstance(payload.get("cuda_devices"), list):
             match = re.match(r"(\d+)\.", str(payload.get("driver_version") or ""))
-            if match and int(match[1]) >= 570 and any(r.get("mig") for r in payload.get("devices") or []):
+            if (
+                match
+                and int(match[1]) >= 570
+                and any(r.get("mig") for r in payload.get("devices") or [])
+            ):
                 answered = False
         return rows_from_payload(payload), answered
     except Exception:
@@ -199,8 +220,10 @@ def _refresh(key, raw):
         return rows
     if rows is not None:
         os.environ[_ENV] = json.dumps(
-            {"key": [raw, os.environ.get("CUDA_DEVICE_ORDER")],
-             "uuids": {str(r["index"]): r["uuid"] for r in rows}}
+            {
+                "key": [raw, os.environ.get("CUDA_DEVICE_ORDER")],
+                "uuids": {str(r["index"]): r["uuid"] for r in rows},
+            }
         )
     else:
         os.environ.pop(_ENV, None)
@@ -211,7 +234,10 @@ def _inherited_uuids():
     """The parent's map when it was made under this process's own mask and order, else None."""
     try:
         data = json.loads(os.environ.get(_ENV) or "null")
-        if data["key"] != [os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")]:
+        if data["key"] != [
+            os.environ.get("CUDA_VISIBLE_DEVICES"),
+            os.environ.get("CUDA_DEVICE_ORDER"),
+        ]:
             return None
         return {int(k): str(v) for k, v in data["uuids"].items()}
     except Exception:
@@ -229,7 +255,7 @@ def mask_for(gpu_ids):
 def rows_for(gpu_ids):
     """The current MIG rows for these CUDA device ids, in order, or None when this is not an R570+
     MIG host. Raises ValueError for an id outside the visible set."""
-    rows = visible_devices(fresh=True)
+    rows = visible_devices(fresh = True)
     if rows is None:
         return None
     by_id = {int(r["index"]): r for r in rows}
