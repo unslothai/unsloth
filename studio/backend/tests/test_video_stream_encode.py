@@ -100,6 +100,40 @@ def test_streamed_frames_are_the_exported_frames(patch, tmp_path):
     assert "decode" not in vars(pipe.vae) and not pipe.vae.decoder._forward_hooks
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_a_compiled_decode_runs_the_chunk_hook_as_one_eager_island(device):
+    """UNSLOTH_DIFFUSION_COMPILE_VAE=1 compiles ``vae.decode`` (fullgraph=False, dynamic=True): Dynamo must not trace
+    into the hook's thread, queue and CUDA stream code, and the streamed frames are still the exported ones."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    from torch._dynamo.utils import counters
+
+    torch._dynamo.reset()
+    counters.clear()
+    pipe = _Pipe(_vae().to(device))
+    z = torch.randn(1, 4, 4, 8, 8, device = device)
+    with torch.inference_mode():
+        reference = pipe.video_processor.postprocess_video(
+            pipe.vae.decode(z, return_dict = False)[0], output_type = "np"
+        )[0]
+    pipe.vae.decode = torch.compile(
+        pipe.vae.decode, backend = "eager", fullgraph = False, dynamic = True
+    )
+    try:
+        for _ in range(2):
+            session = vse.StreamEncode(pipe.vae, pipe.video_processor, 8)
+            frames = _render(pipe, session, z)
+            assert len(session.chunks) == 4
+            assert np.array_equal(frames.cpu().numpy(), (reference * 255).round().astype(np.uint8))
+            assert session.take(frames, 8) is not None
+        reasons = {k.splitlines()[0] for k in counters["graph_break"]}
+        assert all("torch.compiler.disable" in r for r in reasons), reasons
+        assert sum(counters["graph_break"].values()) <= 2
+    finally:
+        del pipe.vae.decode
+        torch._dynamo.reset()
+
+
 def test_tiled_decode_falls_back():
     vae = _vae()
     vae.enable_tiling(tile_sample_min_height = 32, tile_sample_min_width = 32)
