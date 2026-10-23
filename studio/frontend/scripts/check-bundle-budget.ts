@@ -389,12 +389,16 @@ export const BUDGET = {
   // (a CI build measured about 100 B over a local one). Raised by that.
   // Install Training button under the greyed Train row's hint: +424 B raw / +141 B transfer against ee55c3c9a
   // (6,920,512 -> 6,920,936 B raw, 2,084,382 -> 2,084,523 B transfer, Node 24, 97 chunks). Raised by that.
+  // MOSS-Image (#14552): its two image catalog groups, family label and generation defaults sit in the eager
+  // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
+  // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
+  // at 97). Raised by that growth so main's margin stays where it was.
   // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
-  // adopt-only pick in the chat runtime, +1,962 B raw / +667 B transfer (6,921,127 -> 6,923,089 B raw,
-  // 2,084,602 -> 2,085,269 B transfer against ca7b16716, Node 24, 97 chunks), plus about 300 B raw / 100 B
-  // transfer (a CI build measured about 100 B over a local one). Raised by that.
-  transferBytes: 2_085_604,
-  rawBytes: 6_923_507,
+  // adopt-only pick in the chat runtime, +1,970 B raw / +627 B transfer (6,922,858 -> 6,924,828 B raw,
+  // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24), plus about 300 B raw / 100 B transfer
+  // (a CI build measured about 100 B over a local one). Raised by that.
+  transferBytes: 2_085_745,
+  rawBytes: 6_924_813,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

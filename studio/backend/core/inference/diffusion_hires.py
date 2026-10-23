@@ -57,6 +57,9 @@ class HiresPass:
     cancel: threading.Event
     preflight: Optional[Callable[[dict], None]] = None
     source: Any = None
+    # Base pass: return the sampler's latents (``output_type="latent"``), not decoded images (latent upscaler).
+    latent_output: bool = False
+    # Refine pass: this image's base latents, ``(1, C, h, w)``, upscaled in latent space as the img2img input.
     latent_from: Any = None
     # The base pass leaves a pending background compile for after the refine pass (else the refine pass waits on it).
     defer_bg_kick: bool = False
@@ -480,61 +483,18 @@ def sd_cpp_payload(
     }
 
 
-def _vae_execution_device(pipe: Any, vae: Any, param: Any) -> Any:
-    """Where the VAE computes. Under CPU offload its weights sit on the host (model offload) or on ``meta``
-    (sequential offload) and the hook moves them to the card for the call, so the input must go to the card."""
-    import torch
-
-    hook_device = getattr(getattr(vae, "_hf_hook", None), "execution_device", None)
-    if hook_device is not None:
-        if isinstance(hook_device, int):
-            return torch.device("cuda", hook_device)
-        return torch.device(hook_device)
-    if param.device.type not in ("cpu", "meta"):
-        # Resident (or placed on its own card by a split): the weights are where it runs.
-        return param.device
-    try:
-        exec_device = getattr(pipe, "_execution_device", None)
-    except Exception:  # noqa: BLE001 - a duck-typed pipe; fall back to the weights
-        exec_device = None
-    if exec_device is not None and torch.device(exec_device).type != "meta":
-        return torch.device(exec_device)
-    return param.device
-
-
-def encode_upscaled_latents(pipe: Any, base_image: Any, target: tuple[int, int]) -> Any:
-    """VAE-encode as StableDiffusionXLImg2ImgPipeline.prepare_latents does, then interpolate nearest-exact."""
+def upscale_latents(pipe: Any, latents: Any, target: tuple[int, int]) -> Any:
+    """ComfyUI ``LatentUpscale``: ``common_upscale(samples, w // 8, h // 8, "nearest-exact", crop="disabled")`` on the
+    sampler's own latents. No VAE round trip: nearest-exact commutes with the per-channel latent scaling."""
     import torch
     import torch.nn.functional as F
 
-    vae = pipe.vae
-    param = next(vae.parameters())
-    device, dtype = _vae_execution_device(pipe, vae, param), param.dtype
-    x = pipe.image_processor.preprocess(base_image).to(device = device, dtype = dtype)
-    upcast = bool(getattr(vae.config, "force_upcast", False)) and dtype == torch.float16
+    if not isinstance(latents, torch.Tensor) or latents.ndim != 4:
+        raise TypeError("The latent upscaler needs the base pass's latents, (1, C, h, w).")
+    tw, th = target
+    factor = int(getattr(pipe, "vae_scale_factor", SDXL_LATENT_FACTOR) or SDXL_LATENT_FACTOR)
     with torch.inference_mode():
-        if upcast:
-            vae.to(dtype = torch.float32)
-            x = x.float()
-        try:
-            lat = vae.encode(x).latent_dist.mode()
-        finally:
-            if upcast:
-                vae.to(dtype = dtype)
-        lat = lat.to(dtype)
-        mean = getattr(vae.config, "latents_mean", None)
-        std = getattr(vae.config, "latents_std", None)
-        sf = float(vae.config.scaling_factor)
-        if mean is not None and std is not None:
-            m = torch.tensor(mean, device = device, dtype = dtype).view(1, -1, 1, 1)
-            s = torch.tensor(std, device = device, dtype = dtype).view(1, -1, 1, 1)
-            lat = (lat - m) * sf / s
-        else:
-            lat = lat * sf
-        tw, th = target
-        factor = int(getattr(pipe, "vae_scale_factor", SDXL_LATENT_FACTOR) or SDXL_LATENT_FACTOR)
-        lat = F.interpolate(lat, size = (th // factor, tw // factor), mode = "nearest-exact")
-    return lat
+        return F.interpolate(latents, size = (th // factor, tw // factor), mode = "nearest-exact")
 
 
 def _rearm_cancel(backend: Any, cancel: threading.Event) -> None:
@@ -680,7 +640,13 @@ def run_hires(
         _plan()
         # A model upscaler also runs on the GPU after the base pass, so a background compile waits for it too.
         defer_kick = refine or upscalers.is_model_upscaler(params.upscaler)
-        ctx = HiresPass(cancel = cancel, preflight = _preflight, defer_bg_kick = defer_kick)
+        ctx = HiresPass(
+            cancel = cancel,
+            preflight = _preflight,
+            defer_bg_kick = defer_kick,
+            # The latent upscaler needs no pixels: the base pass skips its VAE decode and the refine its encode.
+            latent_output = refine and params.upscaler == upscalers.LATENT,
+        )
         base = generate(backend, **kwargs, _hires_pass = ctx)
         if defer_kick:
             # The base pass left a compile pending: start it once the passes after it end, also when one fails or is
@@ -709,9 +675,9 @@ def run_hires(
             t_up = time.perf_counter()
             latent_from = None
             if params.upscaler == upscalers.LATENT:
-                # Placeholder at the hires size: the refine call reads only its size; the latents replace it.
+                # Placeholder at the hires size: the refine call reads only its size; the base latents replace it.
                 source = Image.new("RGB", target)
-                latent_from = image
+                latent_from = image  # this image's (1, C, h, w) base latents
             elif params.upscaler == upscalers.LANCZOS:
                 source = image.convert("RGB").resize(target, Image.LANCZOS)
             else:

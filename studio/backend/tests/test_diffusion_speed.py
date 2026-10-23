@@ -646,6 +646,7 @@ def test_cudnn_benchmark_opt_out_image_families():
         "flux.2-klein",
         "z-image",
         "sdxl",
+        "moss-image",
     }
 
 

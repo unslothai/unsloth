@@ -340,8 +340,10 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
 
 def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
     """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3)."""
-    if image_fam is not None and not image_fam.pipeline_only:
-        return True
+    if image_fam is not None:
+        return not (
+            image_fam.pipeline_only or getattr(image_fam, "native_transformer_files_only", False)
+        )
     if video_fam is None or video_fam.is_moe:
         return False
     if not getattr(video_fam, "modular_workflow", None):

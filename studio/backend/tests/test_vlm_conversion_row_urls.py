@@ -361,3 +361,28 @@ def test_string_rows_naming_a_network_share_never_touch_it(monkeypatch):
     with pytest.raises((OSError, ValueError)) as err:
         convert_to_vlm_format(ds, instruction = "Describe.", text_column = "caption")
     assert "touched" not in str(err.value)
+
+
+def test_guard_applies_when_datasets_loads_after_this_module():
+    """Startup imports this module without datasets; the guard must still land on first use."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    snippet = (
+        "import sys\n"
+        "import utils.datasets.remote_images\n"
+        "assert 'datasets' not in sys.modules, 'importing remote_images loaded datasets'\n"
+        "from datasets.features import image\n"
+        "assert getattr(image.Image.decode_example, '_unsloth_guarded', False)\n"
+        "print('GUARDED_LAZILY')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        cwd = Path(__file__).resolve().parents[1],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "GUARDED_LAZILY" in result.stdout
