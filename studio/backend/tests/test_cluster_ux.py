@@ -78,6 +78,7 @@ def test_lost_connection_names_the_workers_of_the_split(monkeypatch):
         assert f"`unsloth worker` is still running on {_WORKERS}" in text
         assert "reload the model" in text
         assert "tls://" not in text and "RPC0" not in text
+        assert len(text) <= 200  # the chat error bubble shows two lines
 
 
 def test_a_model_too_big_for_the_cluster_is_refused_in_plain_words(monkeypatch):

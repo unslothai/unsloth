@@ -129,8 +129,7 @@ def lost_connection_message() -> Optional[str]:
     named = _join(workers)
     return (
         f"Lost connection to the model, which is split across {_join(_machines(state, plan))}. "
-        f"A worker may have stopped or dropped off the network: check that `unsloth worker` is "
-        f"still running on {named} ({_LIST_HINT}), then reload the model."
+        f"Check that `unsloth worker` is still running on {named}, then reload the model."
     )
 
 
