@@ -4189,10 +4189,8 @@ def install_encode_release(
             restore = release_resident_groups(
                 owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
             )
+            # No empty_cache: the allocator frees cached segments and retries on OOM; flushing per prompt cost a sync.
             pending.append(restore)
-            if restore is not None and torch.cuda.is_available():
-                # freed blocks sit in the default stream's pool; the encoder onloads on the copy stream
-                torch.cuda.empty_cache()
 
         def _after(module: Any, args: Any, output: Any) -> None:
             if not pending:
