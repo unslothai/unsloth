@@ -209,3 +209,15 @@ test("the app's Run waits for every media upload to finish", async () => {
   assert.match(source, /data-testid="flows-app-run"/);
   assert.match(source, /disabled=\{uploadingAny\}/);
 });
+
+test("the app page resets on another flow, shows an empty text as empty, and history shows output blocks", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (path: string) =>
+    readFileSync(new URL(path, import.meta.url), "utf8");
+  const page = read("../src/features/flows/app/flow-app-page.tsx");
+  assert.match(page, /let alive = true;[\s\S]{0,200}setDoc\(null\);[\s\S]{0,80}setRun\(IDLE\);\s*setRunId\(null\);/);
+  assert.doesNotMatch(page, /JSON\.stringify\(value \?\? ""\)/);
+  assert.match(page, /value == null\s*\?\s*""/);
+  const inspector = read("../src/features/flows/editor/inspector.tsx");
+  assert.match(inspector, /Object\.keys\(viewed\)\.map\(\(id\) => \(\{ id, label: id \}\)\)/);
+});

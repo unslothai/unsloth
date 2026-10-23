@@ -235,7 +235,11 @@ function InspectorImpl() {
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
               Earlier output
             </h3>
-            {spec.outputs.map((port) =>
+            {(spec.outputs.length > 0
+              ? spec.outputs
+              : // Output blocks declare no ports but store what they showed.
+                Object.keys(viewed).map((id) => ({ id, label: id }))
+            ).map((port) =>
               port.id in viewed ? (
                 <div key={port.id} className="flex flex-col gap-1">
                   <span className="text-[11px] text-zinc-500">

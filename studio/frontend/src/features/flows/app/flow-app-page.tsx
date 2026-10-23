@@ -153,7 +153,11 @@ function FieldInput({
           className={FIELD}
           rows={field.kind === "json" ? 5 : 3}
           value={
-            typeof value === "string" ? value : JSON.stringify(value ?? "")
+            typeof value === "string"
+              ? value
+              : value == null
+                ? ""
+                : JSON.stringify(value)
           }
           onChange={(e) => onChange(e.target.value)}
         />
@@ -169,10 +173,18 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [run, setRun] = useState<AppRunState>(IDLE);
   const [runId, setRunId] = useState<string | null>(null);
+  const [uploads, setUploads] = useState<Record<string, boolean>>({});
   const follower = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let alive = true;
+    // Another flow in the same page: nothing of the last one may show or run under this id.
+    setDoc(null);
+    setFailed(null);
+    setValues({});
+    setRun(IDLE);
+    setRunId(null);
+    setUploads({});
     void getFlow(flowId)
       .then((record) => {
         if (!alive) return;
@@ -183,8 +195,10 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
           ),
         );
       })
-      .catch((error) =>
-        setFailed(error instanceof Error ? error.message : "Not found"),
+      .catch(
+        (error) =>
+          alive &&
+          setFailed(error instanceof Error ? error.message : "Not found"),
       );
     return () => {
       alive = false;
@@ -195,7 +209,6 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
   const fields = useMemo(() => (doc ? appFields(doc) : []), [doc]);
   const outputs = useMemo(() => (doc ? appOutputs(doc) : []), [doc]);
   const running = run.status === "running" || run.status === "queued";
-  const [uploads, setUploads] = useState<Record<string, boolean>>({});
   const uploadingAny = Object.values(uploads).some(Boolean);
 
   const start = useCallback(async () => {
