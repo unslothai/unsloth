@@ -228,6 +228,7 @@ import {
 } from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
+import { LoadedPlacementRow } from "./loaded-placement-row";
 import type { ModelPickTarget } from "./model-selector/types";
 import type { ModelConfigFocus } from "../model-config/model-config-handoff";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
@@ -4019,6 +4020,7 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
+        {isActiveModel && target.isGguf && !audioRuntimeGguf ? <LoadedPlacementRow /> : null}
         {target.isGguf && !audioRuntimeGguf && (
           <>
             <GgufContextLengthSetting

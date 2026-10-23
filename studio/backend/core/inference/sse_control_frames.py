@@ -43,6 +43,7 @@ _CONTROL_TYPES = frozenset(
         "diffusion_frame",
         "reasoning_summary",
         "context_usage",
+        "generation_progress",
     }
 )
 

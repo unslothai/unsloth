@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatGiB } from "../../../lib/memory/format";
+import type { LoadedPlacement } from "../stores/chat-runtime-store";
 import { CPU_FALLBACK_MESSAGE } from "../utils/mmproj-fallback";
 
 // React-free so node:test can import it; shared by every model load path.
@@ -96,4 +98,69 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
     titleSuffix: ", partly on CPU",
     description: `${offloaded} of ${total} layers are on the GPU. The rest run on CPU, so generation will be slower. A smaller quantization or a shorter context may let more of it fit on the GPU.`,
   };
+}
+
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function mibAsGiB(mib: number): string {
+  return formatGiB(mib / 1024);
+}
+
+/** The placement fields of the inference status, or null when it reported none (not a GGUF).
+ * --fit reports its own expert spill; a Manual load says it through n_cpu_moe instead. */
+export function loadedPlacementFrom(response: {
+  is_gguf?: boolean | null;
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  overflow_layers?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
+  expert_cache_mib?: number | null;
+  gpu_memory_mode?: string | null;
+  n_cpu_moe?: number | null;
+}): LoadedPlacement | null {
+  if (response.is_gguf === false) return null;
+  const manualExperts =
+    response.gpu_memory_mode === "manual" ? count(response.n_cpu_moe) : null;
+  const placement: LoadedPlacement = {
+    offloaded: count(response.offloaded_layers),
+    total: count(response.offload_total_layers),
+    overflowLayers: count(response.overflow_layers) ?? (manualExperts ? manualExperts : null),
+    gpuWeightsMib: count(response.gpu_weights_mib),
+    hostWeightsMib: count(response.host_weights_mib),
+    expertCacheMib: count(response.expert_cache_mib) || null,
+  };
+  return placement.total === null && placement.gpuWeightsMib === null && placement.hostWeightsMib === null
+    ? null
+    : placement;
+}
+
+/** Two short lines for the Run settings readout: where the layers are, and how much memory each side holds.
+ * Both memory figures are shown: token embeddings stay in RAM even when every layer is on the GPU. */
+export function describePlacement(p: LoadedPlacement): { layers: string | null; memory: string | null } {
+  const { offloaded, total, overflowLayers, gpuWeightsMib, hostWeightsMib, expertCacheMib } = p;
+  let layers: string | null = null;
+  if (offloaded !== null && total !== null && total > 0) {
+    if (offloaded <= 0) {
+      layers = `All ${total} layers on the CPU`;
+    } else if (offloaded < total) {
+      layers = `${offloaded} of ${total} layers on the GPU, ${total - offloaded} on the CPU`;
+    } else if (expertCacheMib !== null && expertCacheMib > 0) {
+      layers = `All ${total} layers on the GPU, all experts in RAM (${mibAsGiB(expertCacheMib)} cache on the GPU)`;
+    } else if (overflowLayers !== null && overflowLayers > 0) {
+      layers = `All ${total} layers on the GPU, ${overflowLayers} with their experts in RAM`;
+    } else {
+      layers = `All ${total} layers on the GPU`;
+    }
+  }
+  const parts: string[] = [];
+  if (gpuWeightsMib !== null && gpuWeightsMib > 0) {
+    parts.push(`${mibAsGiB(gpuWeightsMib)} in VRAM`);
+  }
+  if (hostWeightsMib !== null && hostWeightsMib > 0) {
+    parts.push(`${mibAsGiB(hostWeightsMib)} in RAM`);
+  }
+  return { layers, memory: parts.length > 0 ? parts.join(" · ") : null };
 }

@@ -1,0 +1,257 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Where llama.cpp put a model's weights, and load progress that sees weights headed for VRAM."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+from core.inference.llama_cpp import (  # noqa: E402
+    LlamaCppBackend,
+    _extra_weight_file_bytes,
+    parse_weight_placement,
+)
+
+# Gemma 4 26B A4B Q8_0 on a 24 GB RTX 3090 under --fit on (trimmed from a real llama-server log).
+_MOE_SPILL_LOG = """\
+0.00.997.437 I common_params_fit_impl: filling dense-only layers back-to-front:
+0.01.282.617 I common_params_fit_impl:   - CUDA0 (NVIDIA GeForce RTX 3090): 31 layers,   5550 MiB used,  18347 MiB free
+0.02.623.039 I common_params_fit_impl:   - CUDA0 (NVIDIA GeForce RTX 3090): 31 layers ( 8 overflowing),  22815 MiB used,   1082 MiB free
+0.02.623.041 I common_fit_params: successfully fit params to free device memory
+0.03.897.106 I load_tensors: offloading output layer to GPU
+0.03.897.109 I load_tensors: offloading 29 repeating layers to GPU
+0.03.897.109 I load_tensors: offloaded 31/31 layers to GPU
+0.03.897.113 I load_tensors:        CUDA0 model buffer size = 20709.15 MiB
+0.03.897.113 I load_tensors:    CUDA_Host model buffer size =  5639.40 MiB
+0.23.263.171 I llama_kv_cache:      CUDA0 KV buffer size =   160.00 MiB
+""".splitlines()
+
+
+def test_moe_spill_is_read_from_fit_not_from_the_layer_count():
+    assert parse_weight_placement(_MOE_SPILL_LOG) == {
+        "gpu_mib": 20709.2,
+        "host_mib": 5639.4,
+        "overflow_layers": 8,
+        "all_experts_in_ram": False,
+        "expert_cache_mib": None,
+    }
+
+
+def test_dense_model_fully_on_gpu():
+    lines = [
+        "0.00.365.476 I load_tensors: offloaded 41/41 layers to GPU",
+        "0.00.365.484 I load_tensors:        CUDA0 model buffer size =  8161.75 MiB",
+        "0.00.365.484 I load_tensors:    CUDA_Host model buffer size =   417.30 MiB",
+    ]
+    assert parse_weight_placement(lines) == {
+        "gpu_mib": 8161.8,
+        "host_mib": 417.3,
+        "overflow_layers": None,
+        "all_experts_in_ram": False,
+        "expert_cache_mib": None,
+    }
+
+
+def test_dry_run_and_drafter_blocks_do_not_count():
+    lines = [
+        # --fit's no-alloc pass logs the same block with nothing allocated.
+        "I load_tensors: offloaded 31/31 layers to GPU",
+        "I load_tensors:        CUDA0 model buffer size =     0.00 MiB",
+        "I load_tensors:    CUDA_Host model buffer size =     0.00 MiB",
+        "I load_tensors: offloaded 31/31 layers to GPU",
+        "I load_tensors:   CPU_Mapped model buffer size = 13986.81 MiB",
+        "I load_tensors:        CUDA0 model buffer size = 13258.54 MiB",
+        # A drafter logs its own, smaller block after the main model.
+        "I load_tensors: offloaded 3/3 layers to GPU",
+        "I load_tensors:        CUDA0 model buffer size =   600.00 MiB",
+    ]
+    assert parse_weight_placement(lines) == {
+        "gpu_mib": 13258.5,
+        "host_mib": 13986.8,
+        "overflow_layers": None,
+        "all_experts_in_ram": False,
+        "expert_cache_mib": None,
+    }
+
+
+def test_multi_gpu_extra_layer_overflows_to_the_next_gpu_not_ram():
+    lines = [
+        "I common_params_fit_impl: filling dense-only layers back-to-front:",
+        "I common_params_fit_impl: converting dense-only layers to full layers and filling them front-to-back with overflow to next device/system memory:",
+        # Device 0 took one extra partial layer; it overflows into CUDA1, not into RAM.
+        "I common_params_fit_impl: set ngl_per_device[0].(n_layer, n_part, overflow_type)=(20, 1, GATE), id_dense_start=1",
+        "I common_params_fit_impl:   - CUDA0 (A): 20 layers ( 1 overflowing),  23000 MiB used,   900 MiB free",
+        "I common_params_fit_impl:   - CUDA1 (B): 11 layers ( 4 overflowing),  15000 MiB used,   800 MiB free",
+        "I load_tensors: offloaded 31/31 layers to GPU",
+        "I load_tensors:        CUDA0 model buffer size = 20000.00 MiB",
+        "I load_tensors:        CUDA1 model buffer size = 12000.00 MiB",
+        "I load_tensors:          CPU model buffer size =  4000.00 MiB",
+    ]
+    out = parse_weight_placement(lines)
+    assert (out["gpu_mib"], out["host_mib"], out["overflow_layers"]) == (32000.0, 4000.0, 4)
+
+
+def test_moe_fit_that_stops_after_the_dense_only_fill_has_every_gpu_layer_spilled():
+    """The dense-only lines carry no count, but every GPU layer there holds dense weights only."""
+    lines = [
+        "I common_params_fit_impl: filling dense-only layers back-to-front:",
+        "I common_params_fit_impl:   - CUDA0 (NVIDIA GeForce RTX 5060 Ti): 60 layers,  15000 MiB used,    900 MiB free",
+        "I load_tensors: offloaded 60/95 layers to GPU",
+        "I load_tensors:        CUDA0 model buffer size = 14000.00 MiB",
+        "I load_tensors:    CUDA_Host model buffer size = 120000.00 MiB",
+    ]
+    # One device, so it is also the last: its output layer carries no experts.
+    assert parse_weight_placement(lines)["overflow_layers"] == 59
+    dense = [line.replace("dense-only layers", "dense layers") for line in lines]
+    assert parse_weight_placement(dense)["overflow_layers"] == 0, "a dense model's layers are full"
+
+
+def test_moe_cache_auto_puts_every_expert_in_ram():
+    lines = [
+        "I common_params_fit_impl: moe cache auto: all routed experts in host RAM, cache 6144 MiB (margin 1024 MiB)",
+        "I common_fit_params: successfully fit params to free device memory",
+        "I load_tensors: offloaded 31/31 layers to GPU",
+        "I load_tensors:        CUDA0 model buffer size =  3900.00 MiB",
+        "I load_tensors:    CUDA_Host model buffer size = 22400.00 MiB",
+    ]
+    out = parse_weight_placement(lines)
+    assert out["all_experts_in_ram"] is True
+    assert out["expert_cache_mib"] == 6144.0
+    assert (
+        out["overflow_layers"] is None
+    ), "no per-device line on this path; the backend supplies the MoE layer count"
+
+
+def test_cpu_repack_buffers_count_as_ram_and_remote_buffers_parse():
+    lines = [
+        "I load_tensors: offloaded 0/49 layers to GPU",
+        "I load_tensors:          AMX model buffer size =  9000.00 MiB",
+        "I load_tensors:   CPU_Mapped model buffer size =   500.00 MiB",
+        "I load_tensors: RPC0[192.168.1.2:50052] model buffer size =  1000.00 MiB",
+    ]
+    out = parse_weight_placement(lines)
+    assert (out["gpu_mib"], out["host_mib"]) == (1000.0, 9500.0)
+
+
+def test_no_buffer_lines_means_nothing_to_report():
+    assert parse_weight_placement(["I srv load_model: loading model"]) is None
+
+
+def test_projector_and_drafter_on_the_command_line_count_toward_the_load(tmp_path):
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"x" * 1000)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x" * 300)
+    argv = [
+        "llama-server",
+        "-m",
+        "model.gguf",
+        "--mmproj",
+        str(projector),
+        "-md",
+        str(drafter),
+        "--port",
+        "1",
+    ]
+    assert _extra_weight_file_bytes(argv) == 1300
+    assert _extra_weight_file_bytes(None) == 0
+    assert (
+        _extra_weight_file_bytes(["llama-server", "--mmproj", str(tmp_path / "missing.gguf")]) == 0
+    )
+
+
+@pytest.mark.skipif(not Path("/proc").exists(), reason = "live /proc test is Linux-only")
+def test_load_progress_follows_bytes_read_when_rss_stays_flat(tmp_path):
+    """A server that streams its weights to VRAM reads every byte but keeps little resident:
+    progress must follow the reads (it froze at the RSS share before)."""
+    weights = tmp_path / "model.gguf"
+    weights.write_bytes(os.urandom(64 * 1024 * 1024))
+    script = tmp_path / "reader.py"
+    script.write_text(
+        "import sys, time\n"
+        "with open(sys.argv[1], 'rb') as f:\n"
+        "    while f.read(1 << 20):\n"
+        "        pass\n"
+        "print('read', flush=True)\n"
+        "time.sleep(10)\n"
+    )
+    proc = subprocess.Popen([sys.executable, str(script), str(weights)], stdout = subprocess.PIPE)
+    try:
+        assert proc.stdout.readline().strip() == b"read"
+        inst = LlamaCppBackend.__new__(LlamaCppBackend)
+        inst._process = proc
+        inst._gguf_path = str(weights)
+        inst._healthy = False
+        rss = LlamaCppBackend._read_rss_bytes(proc.pid)
+        assert rss is not None and rss < 64 * 1024 * 1024, "the reader never holds the file"
+        out = inst.load_progress()
+        assert out is not None
+        assert out["bytes_total"] == 64 * 1024 * 1024
+        assert out["fraction"] == 1.0, out
+    finally:
+        proc.kill()
+        proc.wait(timeout = 5)
+
+
+def _fake_load(tmp_path, size):
+    weights = tmp_path / "model.gguf"
+    weights.write_bytes(b"\0" * size)
+    inst = LlamaCppBackend.__new__(LlamaCppBackend)
+    inst._process = type("P", (), {"pid": 4242, "args": []})()
+    inst._gguf_path = str(weights)
+    inst._healthy = False
+    return inst
+
+
+def test_windows_load_progress_follows_bytes_read_alone(tmp_path, monkeypatch):
+    """A Windows working set takes in the buffers llama.cpp allocates before reading a byte (DevLab:
+    9.1 of 9.0 GB a second into the load, reads still at 0.01 GB), so only the read counter counts."""
+    inst = _fake_load(tmp_path, 1000)
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: None))
+    monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: 250))
+    assert inst.load_progress()["fraction"] == 0.25
+
+
+def test_no_load_signal_reports_no_figure(tmp_path, monkeypatch):
+    inst = _fake_load(tmp_path, 1000)
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: None))
+    monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: None))
+    assert inst.load_progress() is None
+
+
+def test_each_os_reads_its_own_load_counter(monkeypatch):
+    """Windows: psutil read bytes. macOS: the larger of disk bytes read (a cold memory-mapped Metal
+    load) and physical footprint (a copy into Metal or CPU buffers); RSS stays at ~20% of a Metal load."""
+    import core.inference.llama_cpp as llama_cpp
+
+    calls = []
+
+    class _Process:
+        def __init__(self, pid):
+            calls.append(pid)
+
+        def io_counters(self):
+            return type("C", (), {"read_bytes": 123})()
+
+    monkeypatch.setitem(sys.modules, "psutil", type("M", (), {"Process": _Process}))
+    monkeypatch.setattr(llama_cpp.os.path, "isdir", lambda path: False)
+    monkeypatch.setattr(LlamaCppBackend, "_darwin_rusage", staticmethod(lambda pid: (700, 300)))
+    monkeypatch.setattr(llama_cpp.sys, "platform", "win32")
+    assert LlamaCppBackend._read_load_bytes(7) == 123
+    monkeypatch.setattr(llama_cpp.sys, "platform", "darwin")
+    assert LlamaCppBackend._read_load_bytes(7) == 700
+    monkeypatch.setattr(LlamaCppBackend, "_darwin_rusage", staticmethod(lambda pid: None))
+    assert LlamaCppBackend._read_load_bytes(7) is None
+    monkeypatch.setattr(llama_cpp.sys, "platform", "freebsd14")
+    assert LlamaCppBackend._read_load_bytes(7) is None
+    assert calls == [7]

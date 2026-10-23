@@ -90,7 +90,9 @@ export {
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
-export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export { formatPrefillDetails, prefillPercent } from "./lib/generation-progress";
+export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
