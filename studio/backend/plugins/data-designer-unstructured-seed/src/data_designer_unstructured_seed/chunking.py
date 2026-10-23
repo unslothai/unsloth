@@ -69,6 +69,22 @@ def build_multi_file_preview_rows(
     chunk_size: int | None,
     chunk_overlap: int | None,
 ) -> list[dict[str, str]]:
+    return build_multi_file_preview(
+        file_entries = file_entries,
+        preview_size = preview_size,
+        chunk_size = chunk_size,
+        chunk_overlap = chunk_overlap,
+    )[0]
+
+
+def build_multi_file_preview(
+    *,
+    file_entries: list[tuple[Path, str]],
+    preview_size: int,
+    chunk_size: int | None,
+    chunk_overlap: int | None,
+) -> tuple[list[dict[str, str]], int]:
+    """Preview rows plus the total chunk count, from one materialization."""
     cs = _to_int(chunk_size, DEFAULT_CHUNK_SIZE)
     co = _to_int(chunk_overlap, DEFAULT_CHUNK_OVERLAP)
     _, rows = materialize_multi_file_unstructured_seed(
@@ -76,7 +92,7 @@ def build_multi_file_preview_rows(
         chunk_size = cs,
         chunk_overlap = co,
     )
-    return _round_robin_preview(rows, preview_size)
+    return _round_robin_preview(rows, preview_size), len(rows)
 
 
 def _round_robin_preview(rows: list[dict[str, str]], preview_size: int) -> list[dict[str, str]]:

@@ -123,7 +123,7 @@ function EditInputs({
               ? "Listening to the recording…"
               : "What the recording says. It fills in once you add one."
           }
-          className="min-h-16"
+          className="min-h-16 rounded-lg"
         />
         {transcriber.error ? (
           <p

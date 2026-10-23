@@ -182,11 +182,16 @@ def test_heuristic_shrunk_dx_is_not_stepped(ac, monkeypatch):
     assert (dx.BLOCK_SIZE_K, dx.num_stages) == (128, 4)
 
 
-@pytest.mark.parametrize("smem", [None, 65536])
-def test_heuristic_unknown_or_tiny_smem_keeps_config(ac, monkeypatch, smem):
-    # Unknown limit, or one the step-down does not fit either (81,920 B): keep today's config.
-    _device(ac, monkeypatch, (8, 9), smem)
+def test_heuristic_unknown_smem_keeps_config(ac, monkeypatch):
+    _device(ac, monkeypatch, (8, 9), None)
     assert _tiles(ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048)) == OLD_HEURISTIC
+
+
+def test_heuristic_tiny_smem_steps_down_until_it_fits(ac, monkeypatch):
+    _device(ac, monkeypatch, (8, 9), 65536)
+    configs = ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048)
+    for kind, c in zip(("fwd", "dX", "dW"), configs):
+        assert ac._estimate_smem(kind, c, 2, 2, (8, 9)) <= 65536
 
 
 def test_default_configs_not_stepped(ac, monkeypatch):
