@@ -6,6 +6,8 @@ need NVIDIA CUDA, Triton and torchao (they force the lever on, so an arch outsid
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from core.inference import diffusion_convrot_quant as cq
@@ -1275,3 +1277,158 @@ def test_swiglu_mlp_without_the_prologue_still_shares_the_gate_value_quant(h16_r
         assert cq.rotquant_call_count() == before + 3
         assert torch.equal(out, ref)
     g8.uninstall(torch.nn.Sequential(ff))
+
+
+def test_hooked_linear_is_not_shared():
+    """A forward hook or pre-hook (module-level or global) on a swapped Linear must see its call, so the shared QKV /
+    SwiGLU paths, which run the GEMM without calling the module, decline it and the per-module call runs instead."""
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._REC] = ("v2", 64, True, lin.weight, False)
+    lin.__dict__[g8._MARK] = True
+    lin.forward = types.MethodType(g8._linear_forward, lin)
+    assert g8._swapped_rec(lin) is not None
+    noop = lambda *a, **k: None  # noqa: E731
+    for register in (
+        lin.register_forward_hook,
+        lin.register_forward_pre_hook,
+        lambda f: lin.register_forward_hook(f, with_kwargs = True),
+        torch.nn.modules.module.register_module_forward_hook,
+        torch.nn.modules.module.register_module_forward_pre_hook,
+    ):
+        handle = register(noop)
+        try:
+            assert g8._swapped_rec(lin) is None
+        finally:
+            handle.remove()
+        assert g8._swapped_rec(lin) is not None
+
+
+def test_replaced_linear_forward_is_not_shared():
+    """An instance ``forward`` assigned over the installed ``_linear_forward`` (adapter / instrumentation code) is
+    what a module call runs, so the shared paths, which skip the call, decline it; restoring it re-enables them."""
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._REC] = ("v2", 64, True, lin.weight, False)
+    lin.__dict__[g8._MARK] = True
+    installed = types.MethodType(g8._linear_forward, lin)
+    lin.forward = installed
+    assert g8._swapped_rec(lin) is not None
+    lin.forward = lambda t: t
+    assert g8._swapped_rec(lin) is None
+    lin.forward = types.MethodType(lambda self, t: t, lin)
+    assert g8._swapped_rec(lin) is None
+    del lin.forward
+    assert g8._swapped_rec(lin) is None
+    lin.forward = installed
+    assert g8._swapped_rec(lin) is not None
+
+
+def test_hooked_activation_declines_the_swiglu_fusion(monkeypatch):
+    """The fused SwiGLU path never calls ``activation_fn``: a hook (module-level or global) or an instance
+    ``forward`` on it has to see the call, so the MLP takes ``out(act(gate) * value)`` instead."""
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    fused = object()
+    monkeypatch.setattr(g8, "shared_rotq_linears", lambda x, linears: None)
+    monkeypatch.setattr(g8, "_swiglu_down", lambda down, gate, value: fused)
+    x = torch.randn(3, 8)
+    assert g8._swiglu_ff_forward(ff, x) is fused
+    seen = []
+    for register in (
+        lambda f: ff.activation_fn.register_forward_hook(lambda m, a, o: seen.append(1)),
+        lambda f: ff.activation_fn.register_forward_pre_hook(lambda m, a: seen.append(1)),
+        lambda f: torch.nn.modules.module.register_module_forward_hook(
+            lambda m, a, o: seen.append(1)
+        ),
+    ):
+        handle = register(None)
+        try:
+            seen.clear()
+            y = g8._swiglu_ff_forward(ff, x)
+            assert y is not fused and seen
+            ref = ff.out(torch.nn.functional.silu(ff.gate_layer(x)) * ff.proj(x))
+            assert torch.equal(y, ref)
+        finally:
+            handle.remove()
+        assert g8._swiglu_ff_forward(ff, x) is fused
+    ff.activation_fn.forward = lambda t: t  # an instance override replacing the activation
+    assert g8._swiglu_ff_forward(ff, x) is not fused
+
+
+def test_replaced_activation_declines_the_swiglu_fusion(monkeypatch):
+    """The fused prologue hard-codes SiLU: an ``activation_fn`` swapped after install for GELU, a custom module or a
+    ``SiLU`` subclass (no hooks, no instance ``forward``) has to run itself, and restoring a plain SiLU fuses again."""
+
+    class _SiLUSub(torch.nn.SiLU):
+        def forward(self, t):
+            return torch.nn.functional.silu(t) * 2
+
+    class _Custom(torch.nn.Module):
+        def forward(self, t):
+            return t * 3
+
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    fused = object()
+    monkeypatch.setattr(g8, "shared_rotq_linears", lambda x, linears: None)
+    monkeypatch.setattr(g8, "_swiglu_down", lambda down, gate, value: fused)
+    x = torch.randn(3, 8)
+    assert g8._swiglu_ff_forward(ff, x) is fused
+    for act in (torch.nn.GELU(), torch.nn.GELU(approximate = "tanh"), _SiLUSub(), _Custom()):
+        ff.activation_fn = act
+        y = g8._swiglu_ff_forward(ff, x)
+        assert y is not fused
+        assert torch.equal(y, ff.out(act(ff.gate_layer(x)) * ff.proj(x)))
+    ff.activation_fn = torch.nn.SiLU()
+    assert g8._swiglu_ff_forward(ff, x) is fused
+
+
+def test_codes_close_rejects_non_finite_scales():
+    """NaN compares false against every tolerance: a NaN / inf scale on one row (e.g. the probe's all-zero row) must
+    still fail, on either side."""
+    rq = torch.randint(-120, 120, (64, 1024), dtype = torch.int8)
+    rs = torch.rand(64) + 0.5
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        s = rs.clone()
+        s[1] = bad
+        assert not cq.codes_close(rq, s, rq, rs)
+        assert not cq.codes_close(rq, rs, rq, s)
+
+
+@needs_cuda
+def test_h16_probe_covers_the_one_pass_branch_and_rejects_nan_scales(forced):
+    """The per-device probe runs both ``rotq_h16`` branches (one pass, two pass) on v1 / v2, and a kernel that returns
+    a NaN scale on one row is refused."""
+    index = torch.cuda.current_device()
+    real = cq._h16_launch
+    seen = set()
+
+    def recording(x, kind, *a, **k):
+        seen.add((cq._h16_plan(x.shape[-1] // 256)[3], kind))
+        return real(x, kind, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cq, "_h16_launch", recording)
+        if not cq._h16_probe(index):
+            pytest.skip("rotq_h16 probe refused this device")
+    assert seen == {(True, "v1"), (True, "v2"), (False, "v1"), (False, "v2")}
+
+    def nan_row(x, kind, *a, **k):
+        q, s = real(x, kind, *a, **k)
+        s = s.clone()
+        s[1] = float("nan")  # the probe's all-zero row
+        return q, s
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cq, "_h16_launch", nan_row)
+        assert cq._h16_probe(index) is False
+        assert cq._swiglu_probe(index) is False

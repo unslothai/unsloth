@@ -851,6 +851,14 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
 
 # (M, K): ragged M, one-group rows, 21 groups (a ragged row count per tile), 56 and 128 groups (two rows / one row).
 _ROTQ_PROBE_SHAPES = ((257, 256 * 3), (33, 256 * 21), (130, 256 * 56), (17, 256 * 128))
+# rotq_h16: the dense shapes and long rows (two-pass) plus 16 and 4 groups (K 4096 / 1024: the one-pass branch)
+_H16_PROBE_SHAPES = _ROTQ_PROBE_SHAPES + (
+    (19, 256 * 48),
+    (5, 256 * 160),
+    (65, 256 * 16),
+    (9, 256 * 4),
+)
+_SWIGLU_PROBE_SHAPES = ((257, 256 * 3), (130, 256 * 48), (33, 256 * 21), (65, 256 * 16))
 
 
 def _rotq_probe(index: int, cfg: tuple) -> bool:
@@ -895,6 +903,8 @@ def codes_close(q: Any, s: Any, rq: Any, rs: Any) -> bool:
 
     if q.shape != rq.shape or q.dtype != rq.dtype or s.shape != rs.shape or s.dtype != rs.dtype:
         return False
+    if not (bool(torch.isfinite(s).all()) and bool(torch.isfinite(rs).all())):
+        return False  # NaN compares false against every tolerance below
     dq = (q.to(torch.int16) - rq.to(torch.int16)).abs()
     if q.numel() and int(dq.max()) > 2:
         return False
@@ -922,7 +932,7 @@ def _h16_probe(index: int) -> Any:
         g = torch.Generator(device = "cpu").manual_seed(3)
         try:
             ok = True
-            for m, k in _ROTQ_PROBE_SHAPES + ((19, 256 * 48), (5, 256 * 160)):
+            for m, k in _H16_PROBE_SHAPES:
                 x = _probe_input(m, k, g).to(dev)
                 for kind in ("v1", "v2"):
                     q, s = _h16_launch(x, kind, tf32x3 = mode == "tf32x3")
@@ -948,7 +958,7 @@ def _swiglu_probe(index: int) -> bool:
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(4)
     try:
-        for m, k in ((257, 256 * 3), (130, 256 * 48), (33, 256 * 21)):
+        for m, k in _SWIGLU_PROBE_SHAPES:
             gate = (_probe_input(m, k, g).float() * 0.05).to(torch.bfloat16).to(dev)
             gate[0, :7] = torch.tensor([-90.0, -20.0, -1e-3, 0.0, 1e-3, 20.0, 90.0])
             value = _probe_input(m, k, g).to(dev)

@@ -587,8 +587,7 @@ def stock_gemm(xq: Any, wq: Any, xs: Any, ws: Any, bias: Any) -> Any:
 
 
 def _payload(kind: str, weight: Any) -> tuple:
-    """(int8 [N, K], scale [N]) off the live parameter, never a cached alias: a moved weight must not leave a stale
-    device or pin a copy."""
+    """(int8 [N, K], scale [N]) off the live parameter, never a cached alias (a moved weight must not go stale)."""
     if kind == "v1":
         impl = weight.original_weight_tensor.tensor_impl
         return impl.int_data, impl.scale.reshape(-1)
@@ -639,14 +638,32 @@ def _linear_forward(self: Any, x: Any) -> Any:
     return y.reshape(*lead, y.shape[-1])
 
 
+def _hooked(module: Any) -> bool:
+    """A forward (pre-)hook, own or global, or an instance ``forward``: a fused path skipping ``module`` would bypass it."""
+    import torch
+
+    d = module.__dict__
+    if "forward" in d or d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
+        return True
+    nn_module = torch.nn.modules.module
+    return bool(nn_module._global_forward_hooks or nn_module._global_forward_pre_hooks)
+
+
 def _swapped_rec(module: Any) -> Optional[tuple]:
-    """The record of a Linear this module swapped, holding its install-time weight and no offload hook, else None: a
-    diffusers / accelerate hook on the Linear itself (leaf-level streaming) has to see the call, and a replaced weight
-    takes the stock path. Plain dict lookups only (no bound-method identity test, which dynamo does not fold the same
-    way on every torch)."""
+    """Record of a Linear we swapped with its install-time weight and no offload / forward hook or override, else None:
+    the shared paths run the GEMM without calling the module, so any of those would be bypassed."""
+    import torch
+
     d = module.__dict__
     rec = d.get(_REC)
     if rec is None or _MARK not in d or "_diffusers_hook" in d or "_hf_hook" in d:
+        return None
+    if getattr(d.get("forward"), "__func__", None) is not _linear_forward:
+        return None
+    if d.get("_forward_hooks") or d.get("_forward_pre_hooks"):
+        return None
+    nn_module = torch.nn.modules.module
+    if nn_module._global_forward_hooks or nn_module._global_forward_pre_hooks:
         return None
     if module.weight is not rec[3]:
         return None
@@ -720,6 +737,12 @@ def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
     return y.reshape(*gate.shape[:-1], y.shape[-1])
 
 
+def _plain_silu(act: Any) -> bool:
+    """``act`` is an exact, unhooked ``nn.SiLU`` (the fused prologue hard-codes SiLU); ``type() is`` avoids a graph break."""
+    from torch import nn
+    return type(act) is nn.SiLU and not _hooked(act)
+
+
 def _swiglu_ff_forward(self: Any, hidden_states: Any) -> Any:
     """``QwenImage21SwiGLUFeedForward.forward`` on the shared and SwiGLU-fused quants."""
     pair = shared_rotq_linears(hidden_states, (self.gate_layer, self.proj))
@@ -727,7 +750,7 @@ def _swiglu_ff_forward(self: Any, hidden_states: Any) -> Any:
         gate, value = self.gate_layer(hidden_states), self.proj(hidden_states)
     else:
         gate, value = pair
-    y = _swiglu_down(self.out, gate, value)
+    y = _swiglu_down(self.out, gate, value) if _plain_silu(self.activation_fn) else None
     if y is None:
         return self.out(self.activation_fn(gate) * value)
     return y
@@ -746,7 +769,8 @@ def _swiglu_ff_eligible(module: Any) -> bool:
     parts = [getattr(module, n, None) for n in ("gate_layer", "proj", "out")]
     if any(p is None or _REC not in p.__dict__ for p in parts):
         return False
-    if type(getattr(module, "activation_fn", None)) is not nn.SiLU:
+    act = getattr(module, "activation_fn", None)
+    if type(act) is not nn.SiLU or "forward" in act.__dict__:
         return False
     # only a rotated down projection on the fused rotation kernel gains (its input is the product)
     return bool(parts[2].__dict__[_REC][2])

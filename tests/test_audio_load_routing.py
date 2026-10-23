@@ -17,6 +17,7 @@ from unsloth.models._utils import (  # noqa: E402
 )
 from unsloth.models.loader import (  # noqa: E402
     _resolve_audio_lm_auto_model,
+    _resolve_non_vlm_auto_model,
     _resolve_omni_auto_model,
     _resolve_speech_seq2seq_auto_model,
 )
@@ -100,3 +101,26 @@ def test_audio_lm_routing_never_takes_text_or_vision_models():
             continue
         assert _resolve_audio_lm_auto_model(config_class()) is None
         assert _audio_lm_class(transformers.AutoModelForCausalLM, config_class()) is None
+
+
+def test_config_without_architectures_loads_its_speech_seq2seq_class():
+    """moonshine-ai/moonshine-streaming-* ship a config with no `architectures`, and no causal-LM class maps it."""
+    config_class = getattr(transformers, "MoonshineStreamingConfig", None)
+    if config_class is None:
+        pytest.skip("this transformers has no Moonshine Streaming")
+    config = config_class()
+    assert not getattr(config, "architectures", None)
+    assert _resolve_non_vlm_auto_model(config) is transformers.AutoModelForSpeechSeq2Seq
+
+
+@pytest.mark.parametrize(
+    "config, expected",
+    [
+        (lambda: transformers.LlamaConfig(), "AutoModelForCausalLM"),
+        (lambda: transformers.WhisperConfig(), "AutoModelForCausalLM"),
+        (lambda: transformers.Wav2Vec2Config(), "AutoModelForCausalLM"),
+        (lambda: transformers.Wav2Vec2Config(architectures = ["Wav2Vec2ForCTC"]), "AutoModelForCTC"),
+    ],
+)
+def test_non_vlm_routing_keeps_every_other_route(config, expected):
+    assert _resolve_non_vlm_auto_model(config()).__name__ == expected

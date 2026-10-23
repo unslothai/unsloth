@@ -357,7 +357,6 @@ export function ResourcesTab() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
-
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
     const ramTotal = systemInfo.memory?.total_gb ?? 0;
@@ -748,7 +747,6 @@ export function ResourcesTab() {
           description={t(
             "settings.resources.liveMonitor.detailedViewDescription",
           )}
-          className="border-t border-border/60"
         >
           <Switch
             aria-label={t("settings.resources.liveMonitor.detailedView")}
@@ -1144,7 +1142,7 @@ export function ResourcesTab() {
                     ? t("settings.resources.storage.openAction")
                     : t("settings.resources.storage.copyAction")
                 }
-                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
               >
                 {isTauri ? (
                   <FolderOpenIcon className="size-3.5" />

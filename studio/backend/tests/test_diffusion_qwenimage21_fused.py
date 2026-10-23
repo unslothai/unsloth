@@ -277,3 +277,118 @@ def test_int8_gemm_path_rotates_each_shared_input_once(monkeypatch):
     cos = torch.nn.functional.cosine_similarity(out.float().flatten(), ref.float().flatten(), dim = 0)
     assert cos > 0.9999
     g8.uninstall(blk)
+
+
+def test_shared_qkv_reported_and_gated_on_the_transformer_cards(monkeypatch):
+    """The shared-QKV helper installs when a card holding the transformer (every visible card while it is off the
+    GPU) is one the int8 GEMM swap covers, whatever the current card is, and its count is reported even though the
+    fused-QKV module path declines on such a card."""
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    calls = []
+    swap_cards = {
+        1
+    }  # cuda:1 holds the transformer and is swap-covered; the current card cuda:0 is not
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(mod, "_swap_covers", lambda index: index in swap_cards)
+    monkeypatch.setattr(mod, "install_shared_qkv", lambda t, logger = None: calls.append(t) or 2)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 2, "out": 0}
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: (1,))
+    monkeypatch.setattr(mod, "install_modules", lambda r, logger = None: {"fused_qkv": 0, "out": 0})
+    assert mod.install(model) == {"fused_qkv": 2, "out": 0}
+    assert calls == [model, model]
+    swap_cards.clear()  # every card on the stock path: the helper is not installed
+    assert mod.install(model) == {"fused_qkv": 0, "out": 0}
+    assert calls == [model, model]
+
+
+@pytest.mark.parametrize("rocm", ["hip", "tag"])
+def test_rocm_cards_are_not_swap_covered(monkeypatch, rocm):
+    """ROCm: ``torch.cuda.is_available()`` and a CUDA-like capability, but the int8 GEMM swap declines it, so no card
+    counts as swap-covered and the process-global QKV helper is not installed or reported."""
+    import core.inference.diffusion_int8_gemm as g8
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    calls = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (9, 0))
+    monkeypatch.setattr(g8, "_gates", lambda cap: (True, True))
+    monkeypatch.setattr(g8, "int8_gemm_mode", lambda: "auto")
+    monkeypatch.setattr(mod, "install_shared_qkv", lambda t, logger = None: calls.append(t) or 2)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+    assert mod._swap_card_present(model)  # NVIDIA with the swap gated in: covered
+    if rocm == "hip":
+        monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+    else:
+        monkeypatch.setattr(torch, "__version__", "2.9.0+rocm6.4")
+    assert not mod._swap_card_present(model)
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 0, "out": 0}
+    assert calls == []
+
+
+def test_swap_probe_failure_is_not_swap_covered(monkeypatch):
+    import core.inference.diffusion_int8_gemm as g8
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+
+    def boom(index = None):
+        raise RuntimeError("no device")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", boom)
+    monkeypatch.setattr(g8, "int8_gemm_mode", lambda: "auto")
+    assert not mod._swap_card_present(model)
+
+
+@pytest.mark.parametrize(
+    "env", ["UNSLOTH_DIFFUSION_INT8_ROTQUANT", "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT", "probe"]
+)
+def test_shared_qkv_needs_the_rotation_kernel_not_just_the_fused_gemm(monkeypatch, env):
+    """A fused-GEMM arch with ``rotq_i8`` switched off (or failed its per-device probe): ``shared_rotq_linears``
+    declines every record (``not r[2]``), so the helper is neither installed nor counted."""
+    import core.inference.diffusion_convrot_quant as cq
+    import core.inference.diffusion_int8_gemm as g8
+    import core.inference.diffusion_qwenimage21_fused as mod
+
+    model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()
+    calls = []
+    for name in (
+        "UNSLOTH_DIFFUSION_INT8_ROTQUANT",
+        "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT",
+        "UNSLOTH_DIFFUSION_INT8_GEMM",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (8, 9))
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(g8, "int8_gemm_mode", lambda: "auto")
+    monkeypatch.setattr(mod, "install_shared_qkv", lambda t, logger = None: calls.append(t) or 2)
+    monkeypatch.setattr(i8f, "resident_cuda_cards", lambda m: ())
+    monkeypatch.delitem(cq._ROTQ_DEVICE, 0, raising = False)
+    assert g8._gates((8, 9)) == (True, True)
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 2, "out": 0}  # control: engaged
+    assert calls == [model]
+    calls.clear()
+    qf.uninstall()
+    if env == "probe":
+        monkeypatch.setitem(
+            cq._ROTQ_DEVICE, 0, None
+        )  # rotq_i8 failed its bit-exact probe on cuda:0
+    else:
+        monkeypatch.setenv(env, "0")
+        assert g8._gates((8, 9)) == (True, False)
+    assert not mod._swap_card_present(model)
+    assert mod.install(model, offload_active = True) == {"fused_qkv": 0, "out": 0}
+    assert calls == []
