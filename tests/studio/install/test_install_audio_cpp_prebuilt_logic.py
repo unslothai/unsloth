@@ -153,9 +153,14 @@ def test_driver_cuda_version_keeps_no_failed_answer(monkeypatch, tmp_path):
     # A driver that did not answer can recover without a restart (in-app update): ask again.
     exe = tmp_path / "nvidia-smi"
     exe.write_text("")
-    outputs = ["NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver", "CUDA Version: 12.8"]
+    outputs = [
+        "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver",
+        "CUDA Version: 12.8",
+    ]
     monkeypatch.setattr(M.shutil, "which", lambda name: str(exe))
-    monkeypatch.setattr(M.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": outputs.pop(0)})())
+    monkeypatch.setattr(
+        M.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": outputs.pop(0)})()
+    )
     assert M.nvidia_driver_cuda_version() is None
     assert M.nvidia_driver_cuda_version() == (12, 8)
 
