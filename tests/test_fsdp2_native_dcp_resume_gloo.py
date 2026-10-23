@@ -537,6 +537,60 @@ def _case_amsgrad(native, dist, rank, tmp):
     return res
 
 
+def _case_unstepped(native, dist, rank, tmp):
+    """One trainable parameter never got a gradient before the save (an unused expert or branch), so
+    the saved optimizer holds no state for it; a fresh optimizer's target does."""
+
+    def _new(seed):
+        model = native.shard_model(_model(seed), native.FSDP2Config(param_dtype = torch.float32))
+        return model, torch.optim.AdamW(model.parameters(), lr = 1e-2, foreach = False)
+
+    def _skip(model):
+        return model.model.layers[0].post_attention_layernorm.weight
+
+    model, opt = _new(1)
+    for step in (1, 2):
+        model(**_batch(step, rank)).loss.backward()
+        _skip(model).grad = None
+        opt.step()
+        opt.zero_grad(set_to_none = True)
+    ckpt = os.path.join(tmp, "ckpt")
+    os.makedirs(ckpt, exist_ok = True)
+    native.native_save_optimizer(
+        model, opt, os.path.join(ckpt, "optimizer.pt"), should_save = rank == 0
+    )
+    native.native_save_optimizer_sharded(model, opt, os.path.join(ckpt, "optimizer_dcp"))
+    state = native.native_full_state_dict(model)
+    if rank == 0:
+        model.save_pretrained(ckpt, state_dict = state, safe_serialization = True)
+    dist.barrier()
+    res = {"saved_has_state": _skip(model) in opt.state}
+    # The uninterrupted run's next step is what a resume has to reproduce.
+    arms = {"ref": {"has_state": False, "loss": _step(model, opt, 3, rank).item(),
+                    "after": _full_model(model), "optim": _full_optim(model, opt)}}
+    for arm, src in (("old", "optimizer.pt"), ("new", "optimizer_dcp")):
+        m, o = _new(2)
+        native.native_load_model_checkpoint(m, ckpt)
+        try:
+            native.native_load_optimizer(m, o, os.path.join(ckpt, src))
+            arms[arm] = {
+                "has_state": _skip(m) in o.state and bool(o.state[_skip(m)]),
+                "loss": _step(m, o, 3, rank).item(),
+                "after": _full_model(m),
+                "optim": _full_optim(m, o),
+            }
+        except BaseException as exc:  # CheckpointException is a BaseException
+            res[f"{arm}_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    if "new" in arms:
+        res["has_state"] = arms["new"]["has_state"]
+        res["loss"] = [arms["ref"]["loss"], arms["new"]["loss"]]
+        res["after_diff"] = _diff_models(arms["ref"]["after"], arms["new"]["after"])
+        res["optim_diff"] = [
+            str(d)[:200] for d in _diff_optims(arms["ref"]["optim"], arms["new"]["optim"])
+        ]
+    return res
+
+
 def _case_reshard(native, dist, rank, tmp, phase):
     """Save with one world size, resume with another: the weights (sharded read) and the
     optimizer_dcp directory both come back equal to the saver's full state."""
@@ -571,7 +625,7 @@ def _case_reshard(native, dist, rank, tmp, phase):
     return res
 
 
-_SHORT_TIMEOUT_CASES = ("amsgrad",)
+_SHORT_TIMEOUT_CASES = ("amsgrad", "unstepped")
 
 
 def _worker(rank, world, port, out, case, tmp):
@@ -589,6 +643,8 @@ def _worker(rank, world, port, out, case, tmp):
             res = _case_diverge(native, dist, rank, tmp, case[len("diverge_") :])
         elif case == "amsgrad":
             res = _case_amsgrad(native, dist, rank, tmp)
+        elif case == "unstepped":
+            res = _case_unstepped(native, dist, rank, tmp)
         elif case.startswith("reshard_"):
             res = _case_reshard(native, dist, rank, tmp, case[len("reshard_") :])
         else:
@@ -743,3 +799,15 @@ def test_sharded_resume_on_another_world_size(save_world, load_world, tmp_path):
         ), r  # sharded read
         assert r["model_diff"] == [], r["model_diff"]
         assert r["optim_diff"] == [], r["optim_diff"]
+
+
+def test_sharded_optimizer_resumes_a_parameter_never_stepped(tmp_path):
+    pytest.importorskip("transformers")
+    for rank, r in _run("unstepped", str(tmp_path), timeout = 600).items():
+        assert r["saved_has_state"] is False, r
+        # The optimizer.pt path refuses this checkpoint in torch's strict set_optimizer_state_dict
+        # (a separate, older limitation); the sharded one restores it.
+        assert "new_error" not in r, r
+        assert r["has_state"] is False, r  # still without state, as when saved
+        assert r["loss"][0] == r["loss"][1], r
+        assert r["after_diff"] == [] and r["optim_diff"] == [], r

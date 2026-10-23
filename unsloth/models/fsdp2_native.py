@@ -2149,23 +2149,47 @@ def native_load_optimizer_sharded(model, optimizer, directory):
     options = StateDictOptions(full_state_dict = False)
     # The target layout: this rank's shards (empty optimizer state is initialised first).
     state = get_optimizer_state_dict(root, optimizer, options = options)
-    _add_saved_optimizer_keys(state, directory)
+    unstepped = _match_saved_optimizer_keys(state, directory)
     dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
+    if unstepped:
+        # Parameters the saved optimizer held but never stepped: listed in its (now loaded) param
+        # groups, without state. Anything else without state is not this optimizer's checkpoint.
+        saved = {f for g in state.get("param_groups", []) for f in (g.get("params") or [])}
+        unknown = [f for f in unstepped if f not in saved]
+        if unknown:
+            raise RuntimeError(
+                f"Unsloth: {directory} has no optimizer entry for {unknown[0]} "
+                f"({len(unknown)} parameters), so it was not saved from this model's optimizer."
+            )
+        # torch's strict check refuses a trainable parameter without state; these were never stepped.
+        options = StateDictOptions(full_state_dict = False, strict = False)
     set_optimizer_state_dict(root, optimizer, state, options = options)
     return state
 
 
-def _add_saved_optimizer_keys(state, directory):
-    """dcp.load only fills the keys of its target, and the target comes from this optimizer's own
-    (fresh) state: a per-parameter tensor the saved run kept and this one does not (AMSGrad's
-    max_exp_avg_sq when the saved group had amsgrad = True) would be dropped, and the next step
-    would miss it once the saved hyperparameters are restored. Add those keys, shaped from the
-    checkpoint metadata: like the parameter's other state (same sharding) when the global shape
-    matches, else a plain tensor read whole."""
+def _match_saved_optimizer_keys(state, directory):
+    """dcp.load fills exactly the keys of its target, and the target comes from this optimizer's own
+    (fresh) state, which get_optimizer_state_dict initialises for every trainable parameter. Match it
+    to the checkpoint in both directions:
+    - a parameter the saved run never stepped (no gradient yet: an unused expert or branch) has no
+      saved state, so its entries are dropped and it stays without state, as it was when saved;
+    - a per-parameter tensor the saved run kept and this one does not (AMSGrad's max_exp_avg_sq when
+      the saved group had amsgrad = True) is added, shaped from the checkpoint metadata: like the
+      parameter's other state (same sharding) when the global shape matches, else a plain tensor
+      read whole.
+    Returns the parameters left without state."""
     from torch.distributed.checkpoint import FileSystemReader
 
     metadata = FileSystemReader(os.fspath(directory)).read_metadata().state_dict_metadata
     per_param = state.get("state", {})
+    unstepped = []
+    for fqn in list(per_param):
+        entry = per_param[fqn]
+        for name in [n for n in entry if f"state.{fqn}.{n}" not in metadata]:
+            del entry[name]
+        if not entry:
+            del per_param[fqn]
+            unstepped.append(fqn)
     for fqn, entry in per_param.items():
         prefix = f"state.{fqn}."
         like = next(
@@ -2184,6 +2208,7 @@ def _add_saved_optimizer_keys(state, directory):
                 entry[name] = torch.empty_like(like, dtype = dtype)
             else:
                 entry[name] = torch.empty(tuple(size), dtype = dtype)
+    return unstepped
 
 
 def _hf_reader_class():
