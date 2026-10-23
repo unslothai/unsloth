@@ -282,7 +282,12 @@ def test_sdxl_legacy_config_pools_at_eos_not_added_token(monkeypatch):
     plain = [[49406, 4, 5, 49407, 49407, 49407], [49406, 4, 5, 49407, 0, 0]]
     base = _pooled(pipe, plain)
 
-    applied = de.apply(pipe, de.KIND_SDXL, {"prompt": "EasyNegXL x"}, entries = [_entry("EasyNegXL", kind = de.KIND_SDXL)])
+    applied = de.apply(
+        pipe,
+        de.KIND_SDXL,
+        {"prompt": "EasyNegXL x"},
+        entries = [_entry("EasyNegXL", kind = de.KIND_SDXL)],
+    )
     assert applied.used == ["EasyNegXL"]
     # Prompts without the added tokens pool exactly as before.
     assert all(torch.equal(a, b) for a, b in zip(_pooled(pipe, plain), base))
@@ -309,6 +314,11 @@ def test_current_clip_config_pooling_left_alone(monkeypatch):
     pipe = _random_sdxl_encoders(eos_token_id = 49407)
     fixture = {"clip_l": torch.randn(2, 8), "clip_g": torch.randn(2, 12)}
     monkeypatch.setattr(de, "_read_tensors", lambda path: fixture)
-    applied = de.apply(pipe, de.KIND_SDXL, {"prompt": "EasyNegXL"}, entries = [_entry("EasyNegXL", kind = de.KIND_SDXL)])
+    applied = de.apply(
+        pipe,
+        de.KIND_SDXL,
+        {"prompt": "EasyNegXL"},
+        entries = [_entry("EasyNegXL", kind = de.KIND_SDXL)],
+    )
     assert _pool_owner(pipe.text_encoder_2).eos_token_id == 49407
     applied.restore()
