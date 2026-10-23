@@ -2965,7 +2965,8 @@ class TestDesktopBackendVersionConstraint:
         spec, calls = self._spec(
             tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}, full = True
         )
-        assert spec == ("unsloth>=2026.8.15", "unsloth-zoo")
+        # The zoo the probe resolved is a floor, so a --no-deps install cannot go below it.
+        assert spec == ("unsloth>=2026.8.15", "unsloth-zoo>=2026.10.3")
         assert calls == 1, "an index that has the release answers the one probe"
 
     def test_spec_bare_when_env_unset(self, tmp_path):
@@ -3019,7 +3020,7 @@ class TestDesktopBackendVersionConstraint:
             floors = {"2026.10.6": "2026.10.3"},
             full = True,
         )
-        assert spec == ("unsloth>=2026.10.6", "unsloth-zoo")
+        assert spec == ("unsloth>=2026.10.6", "unsloth-zoo>=2026.10.3")
         assert calls == 1
         assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
 
