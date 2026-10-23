@@ -406,8 +406,11 @@ export const BUDGET = {
   // unchanged at 98). Raised by +278 B raw / +129 B transfer so main's margin stays where it was.
   // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +298 B transfer (6,925,028 ->
   // 6,926,117 B raw, 2,086,327 -> 2,086,625 B transfer against 394aff8545, Node 26, 99 chunks). Raised by that.
-  transferBytes: 2_087_057,
-  rawBytes: 6_927_757,
+  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
+  // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
+  // that plus about 300 B raw / 100 B transfer, as for #14568.
+  transferBytes: 2_087_890,
+  rawBytes: 6_930_250,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

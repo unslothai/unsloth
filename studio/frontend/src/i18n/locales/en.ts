@@ -804,6 +804,8 @@ export const en = {
       returnToChat: "Return to Chat",
       returnToChats: "Return to {count} Chats",
       chatGenerating: "Generating",
+      chatAwaitingApproval: "Waiting for approval",
+      chatUnread: "Unread",
       compare: "Compare",
       search: "Search",
       projects: "Projects",

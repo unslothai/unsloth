@@ -282,6 +282,15 @@ class ToolCallDecision:
     def tool_start_event(self) -> dict[str, Any]:
         return {"type": "tool_start", **self.tool_start_payload()}
 
+    def tool_approved_event(self, approval_id: str) -> dict[str, Any]:
+        """Tells the run's other followers the parked call was allowed, ahead of tool_end."""
+        return {
+            "type": "tool_approved",
+            "tool_name": self.tool_name,
+            "tool_call_id": self.card_id,
+            "approval_id": approval_id,
+        }
+
     def as_assistant_tool_call(self) -> dict[str, Any]:
         """Return an OpenAI-style tool_call with normalized arguments."""
         fragment = self.unparsed_fragment

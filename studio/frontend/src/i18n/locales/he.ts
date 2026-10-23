@@ -836,6 +836,8 @@ export const he = {
       returnToChat: "חזרה לצ'אט",
       returnToChats: "חזרה ל-{count} צ'אטים",
       chatGenerating: "מייצר תשובה",
+      chatAwaitingApproval: "ממתין לאישור",
+      chatUnread: "לא נקרא",
       compare: "השוואה",
       search: "חיפוש",
       projects: "פרויקטים",
