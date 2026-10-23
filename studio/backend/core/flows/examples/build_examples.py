@@ -1365,7 +1365,7 @@ def sticker_pack() -> B:
     return b
 
 
-MUSIC = {"repo": "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF", "variant": None}
+BACKING = {"repo": "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF", "variant": None}
 
 
 def meme_maker() -> B:
@@ -1484,12 +1484,12 @@ def social_clip() -> B:
             "kind": "audio",
             "note": "Small Stable Audio music model; any music model works.",
             "optional": False,
-            **MUSIC,
+            **BACKING,
         }
     )
     b.n("clip", "input.video", 0, 0.5, label = "Your video")
     b.n("vibe", "input.text", 0, 1.6, value = "upbeat lo-fi hip hop beat, warm, 90 bpm")
-    b.n("track", "audio.music", 1, 1.6, model = MUSIC, mode = "song", duration_s = 12)
+    b.n("track", "audio.music", 1, 1.6, model = BACKING, mode = "song", duration_s = 12)
     b.e("vibe.text", "track.prompt")
     b.n("cut", "video.edit", 2, 1, start_s = 0, end_s = 10, speed = 1.25)
     b.e("clip.video", "cut.video")
