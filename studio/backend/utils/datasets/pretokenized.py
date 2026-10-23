@@ -95,16 +95,19 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
     lengths = pc.list_value_length(ids)
     needs_trimming = False
     if "attention_mask" in table.column_names:
-        bounds = pc.min_max(pc.list_flatten(table.column("attention_mask"))).as_py()
-        if bounds["min"] is not None and (bounds["min"] < 0 or bounds["max"] > 1):
+        flat_mask = pc.list_flatten(table.column("attention_mask"))
+        # Exact membership, not a range: a float mask such as [0.5, 1.0] sits inside [0, 1] yet is neither value.
+        if pc.any(pc.and_(pc.not_equal(flat_mask, 0), pc.not_equal(flat_mask, 1))).as_py():
             mask = table.column("attention_mask").combine_chunks()
             flat = pc.list_flatten(mask)
-            bad = pc.or_(pc.less(flat, 0), pc.greater(flat, 1))
+            bad = pc.and_(pc.not_equal(flat, 0), pc.not_equal(flat, 1))
             _raise_bad_mask_values(pc.filter(pc.list_parent_indices(mask), bad)[0].as_py())
+        bounds = pc.min_max(flat_mask).as_py()
         # Only a mask with zeros changes what trains (TRL rebuilds all-one masks); an all-ones mask is left as is.
         needs_trimming = bounds["min"] == 0
-    # Trimming slices every token column at the mask's boundaries, so each must line up with input_ids.
-    for column in _TOKEN_COLUMNS[1:] if needs_trimming else ("labels",):
+    # Trimming slices every token column at the mask's boundaries and TRL applies the supervision masks position by
+    # position, so each must line up with input_ids whether or not a row is trimmed.
+    for column in _TOKEN_COLUMNS[1:]:
         if (
             column in table.column_names
             and not pc.all(pc.equal(lengths, pc.list_value_length(table.column(column)))).as_py()
@@ -129,6 +132,10 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
 def _trim_row(row_index, columns, values):
     """Drops the leading/trailing attention_mask==0 positions of one row from every token column. TRL's collators
     rebuild the mask as all ones (padding-free ones drop it), so trimming is the only way a pad stays unattended."""
+    width = len(values[columns.index("input_ids")])
+    for column, value in zip(columns, values):
+        if value is not None and len(value) != width:
+            _raise_length_mismatch(column)
     mask = values[columns.index("attention_mask")] if "attention_mask" in columns else None
     if mask is None:
         return values
@@ -136,10 +143,6 @@ def _trim_row(row_index, columns, values):
         _raise_bad_mask_values(row_index)
     if 0 not in mask:
         return values
-    width = len(values[columns.index("input_ids")])
-    for column, value in zip(columns, values):
-        if value is not None and len(value) != width:
-            _raise_length_mismatch(column)
     if 1 not in mask:
         raise ValueError(
             f"Pre-tokenized dataset: row {row_index} has an all-zero 'attention_mask', so it has no tokens "

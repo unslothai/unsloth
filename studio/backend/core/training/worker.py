@@ -3465,6 +3465,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
+    eval_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -3538,6 +3539,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             for message in info.get("run_warnings", []):
                 _send("warning", message = message)
             dataset_final_format = str(info.get("final_format", "") or "").lower()
+            eval_final_format = dataset_final_format
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -3552,6 +3554,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
+                    # A separately supplied eval split is detected on its own and may not be pre-tokenized.
+                    eval_final_format = str(ev.get("final_format", "") or "").lower()
                     if hasattr(eval_dataset, "__len__") and len(eval_dataset) == 0:
                         _send(
                             "warning",
@@ -3597,6 +3601,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
         else:
             dataset, eval_dataset = split_result
+            eval_final_format = dataset_final_format
 
     if dataset_final_format == "pretokenized":
         # zoo's MLX batcher reads input_ids / labels and ignores attention_mask, so masked padding is trimmed here as
@@ -3604,7 +3609,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
 
         dataset = prepare_pretokenized_dataset(dataset, max_seq_length = None)
-        if eval_dataset is not None:
+        if eval_dataset is not None and eval_final_format == "pretokenized":
             eval_dataset = prepare_pretokenized_dataset(eval_dataset, max_seq_length = None)
 
     requested_max_steps = config.get("max_steps", 0) or 0

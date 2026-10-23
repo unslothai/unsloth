@@ -212,6 +212,9 @@ def test_prepare_trims_then_truncates_and_is_idempotent():
         # A negative minimum or no zero at all must not skip the value check.
         ([-1, 0, 1, 1], "row 1 has 'attention_mask' values other than 0 and 1"),
         ([1, 2, 1, 1], "row 1 has 'attention_mask' values other than 0 and 1"),
+        # Fractional values sit inside [0, 1], so only an exact {0, 1} check catches them.
+        ([0.5, 1.0, 1.0, 1.0], "row 1 has 'attention_mask' values other than 0 and 1"),
+        ([0.0, 0.5, 1.0, 1.0], "row 1 has 'attention_mask' values other than 0 and 1"),
     ],
 )
 def test_prepare_refuses_masks_it_cannot_trim(mask, match, streaming):
@@ -241,6 +244,21 @@ def test_prepare_refuses_masks_it_cannot_trim(mask, match, streaming):
     ],
 )
 def test_prepare_refuses_a_padded_mask_of_another_length(rows, column, streaming):
+    ds = Dataset.from_dict(rows)
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    with pytest.raises(ValueError, match = f"'{column}' must have the same length"):
+        list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("column", ["completion_mask", "assistant_masks", "token_type_ids"])
+@pytest.mark.parametrize("with_mask", [True, False])
+def test_prepare_refuses_an_unpadded_token_column_of_another_length(column, with_mask, streaming):
+    # No zero in the mask (or no mask) means nothing is trimmed, but TRL still reads these columns per position.
+    rows = {"input_ids": [[1, 2, 3], [4, 5]], column: [[0, 1, 1], [0, 1, 1]]}
+    if with_mask:
+        rows["attention_mask"] = [[1, 1, 1], [1, 1]]
     ds = Dataset.from_dict(rows)
     if streaming:
         ds = ds.to_iterable_dataset()
@@ -307,6 +325,40 @@ def test_mlx_training_prepares_pretokenized_train_and_eval_rows():
     )
     assert set(prepared) == {"dataset", "eval_dataset"}
     assert max(prepared.values()) < trainer_line
+
+
+def test_mlx_training_prepares_eval_only_when_it_is_pretokenized():
+    # A separately supplied eval split is formatted on its own and may resolve to text, with no input_ids to prepare.
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_mlx_training"
+    )
+    parents = {child: node for node in ast.walk(fn) for child in ast.iter_child_nodes(node)}
+    call = next(
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "prepare_pretokenized_dataset"
+        and node.args[0].id == "eval_dataset"
+    )
+    guard = parents[call]
+    while not isinstance(guard, ast.If):
+        guard = parents[guard]
+    assert "eval_final_format" in {n.id for n in ast.walk(guard.test) if isinstance(n, ast.Name)}
+    # Set from the eval formatter's own result, not copied from the training split.
+    assigned = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "eval_final_format" for t in node.targets)
+    ]
+    assert any("ev" in {n.id for n in ast.walk(a.value) if isinstance(n, ast.Name)} for a in assigned)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
