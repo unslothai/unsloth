@@ -305,3 +305,39 @@ def test_decision_notebooks_stay_in_colab():
     assert entry["category"] == "decision" and entry["studio_task"] is None
     doc, report = notebook_import.read_notebook(SFT, "Qwen3_5_(4B)-Decision.ipynb")
     assert doc is None and any("decision" in line for line in report["unsupported"])
+
+
+def test_load_in_4bit_is_sent_only_when_off_and_orpheus_trains_16bit():
+    assert "load_in_4bit" not in _start_body({})
+    assert _start_body({"load_in_4bit": False})["load_in_4bit"] is False
+    doc = next(d for d in build_examples.build() if d["id"] == "notebook-tts-sft")
+    assert _tune(doc)["load_in_4bit"] is False
+    imported, _ = notebook_import.read_notebook(
+        _nb(
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-0.6B', load_in_4bit = False)",
+            "dataset = load_dataset('imdb', split = 'train')",
+        ),
+        "x.ipynb",
+    )
+    assert _tune(imported)["load_in_4bit"] is False
+
+
+def test_bundled_embedding_templates_do_not_stream():
+    # The training route refuses streaming for embedding models.
+    for doc in build_examples.build():
+        for n in doc["nodes"]:
+            p = n.get("params") or {}
+            if n["type"] == "train.finetune" and p.get("task") == "embedding":
+                assert not p.get("dataset_streaming"), doc["id"]
+
+
+def test_no_step_or_epoch_setting_keeps_the_trainers_three_epochs():
+    doc, _ = notebook_import.read_notebook(
+        _plain(
+            "dataset = load_dataset('imdb', split = 'train')",
+            "args = SFTConfig(learning_rate = 2e-4)",
+        ),
+        "x.ipynb",
+    )
+    tune = _tune(doc)
+    assert "max_steps" not in tune and tune["num_epochs"] == 3

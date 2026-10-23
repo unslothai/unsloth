@@ -111,3 +111,11 @@ def test_transient_hf_offline_guard_still_fetches(monkeypatch, fresh_cache):
     with force_hf_offline():
         files = {entry["notebook_file"] for entry in catalog.build_notebook_catalog()}
     assert files == {"Gemma4_(E2B)-Vision.ipynb", "Llama3.1_(8B)-Alpaca.ipynb"}
+
+
+@pytest.mark.parametrize(
+    "name", ["Mistral_v0.3_(7B)-CPT.ipynb", "Llama3.2_(1B)-Text_Completion.ipynb"]
+)
+def test_continued_pretraining_is_labelled_and_colab_only(name):
+    assert catalog._category(name) == "cpt"
+    assert catalog.STUDIO_TASKS.get("cpt") is None

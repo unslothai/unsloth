@@ -161,6 +161,8 @@ class _Reader(ast.NodeVisitor):
                 seq = self.kw(node, "max_seq_length")
                 if isinstance(seq, int):
                     self.tune["max_seq_length"] = seq
+                if self.kw(node, "load_in_4bit") is False:
+                    self.tune["load_in_4bit"] = False
         elif fn == "get_peft_model":
             self.found["peft"] = True
             r = self.kw(node, "r")
@@ -264,6 +266,8 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         tune.pop("num_epochs", None)
     else:
         tune.pop("max_steps", None)
+        # Neither set: the trainer's own default is 3 epochs, not the block's 60 steps.
+        tune.setdefault("num_epochs", 3)
     epochs = tune.get("num_epochs")
     if isinstance(epochs, float) and not epochs.is_integer():
         tune["num_epochs"] = max(1, round(epochs))

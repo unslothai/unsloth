@@ -1465,6 +1465,8 @@ def tts_sft() -> B:
         dataset = "Etherll/kaira",
         tune = {
             "base_model": "unsloth/orpheus-3b-0.1-ft",
+            # The notebook trains a 16-bit LoRA.
+            "load_in_4bit": False,
             "task": "audio",
             "max_steps": 60,
             "learning_rate": 0.0002,
@@ -1484,8 +1486,11 @@ def embedding_sft() -> B:
         "notebook-embedding",
         "Notebook: EmbeddingGemma retrieval fine-tune",
         "EmbeddingGemma_(300M).ipynb",
-        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for medical retrieval, then export to GGUF.",
-        dataset = "tomaarsen/miriad-4.4M-split",
+        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
+        "retrieval, then export to GGUF.",
+        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
+        # so this uses a 40 MB set of the same question and passage shape.
+        dataset = "sentence-transformers/natural-questions",
         tune = {
             "base_model": "unsloth/embeddinggemma-300m",
             "task": "embedding",
@@ -1495,8 +1500,6 @@ def embedding_sft() -> B:
             "max_seq_length": 1024,
             "batch_size": 64,
             "gradient_accumulation_steps": 2,
-            # The notebook's dataset has 4.4M rows; stream the first 20k instead of downloading it all.
-            "dataset_streaming": True,
             "dataset_slice_end": 19999,
         },
         export = {"format": "gguf", "quant": "q4_k_m"},

@@ -46,6 +46,8 @@ _CATEGORY_RULES = (
     # Decision fine-tunes need the Train page's decision wiring, which a Flow Fine-tune block does not have yet.
     ("decision", ("_decision",)),
     ("preference", ("_dpo", "_orpo", "_kto")),
+    # Continued pretraining trains on raw text, an objective the Flow Fine-tune block does not run.
+    ("cpt", ("_cpt", "continued_pretraining", "text_completion")),
     ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
     ("audio", ("audio", "tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),
     ("embedding", ("embedding", "minilm", "bge", "modernbert")),

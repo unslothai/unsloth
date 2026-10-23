@@ -63,6 +63,9 @@ async def finetune(ctx: NodeContext) -> dict:
             config[key] = int(ctx.params[key])
     if ctx.params.get("dataset_streaming"):
         config["dataset_streaming"] = True
+    # Sent only when off, so flows saved before this setting start exactly as they did.
+    if ctx.params.get("load_in_4bit") is False:
+        config["load_in_4bit"] = False
     if ctx.params.get("weight_decay") not in (None, ""):
         config["weight_decay"] = float(ctx.params["weight_decay"])
     mapping = ctx.params.get("custom_format_mapping")

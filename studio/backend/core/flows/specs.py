@@ -816,6 +816,7 @@ NODE_SPECS: list[dict] = [
             ),
             P("custom_format_mapping", "json", None, "Column mapping (optional)"),
             P("dataset_streaming", "bool", False, "Stream the dataset (large Hub datasets)"),
+            P("load_in_4bit", "bool", True, "Load in 4-bit (QLoRA; off = 16-bit LoRA)"),
             P(
                 "dataset_slice_end",
                 "int",
