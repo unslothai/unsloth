@@ -239,3 +239,17 @@ def test_rag_paths_open_to_flows_only():
                  "/api/rag/jobs/../reembed"):  # fmt: skip
         with pytest.raises(RuntimeError):
             caller.checked_path(url(path), "POST")
+
+
+def test_knowledge_examples_name_only_studios_local_models():
+    from core.flows.examples.build_examples import build
+    from core.rag import config
+
+    ask = next(d for d in build() if d["id"] == "ask-documents")
+    needs = {m["kind"]: m for m in ask["requirements"]["models"]}
+    assert needs["embedding"]["repo"] == config.DEFAULT_EMBEDDING_MODEL
+    # No provider, endpoint or model field: the blocks only call Studio's own RAG routes (checked in _Rag.call).
+    from core.flows.specs import SPECS_BY_TYPE
+
+    for spec_type in ("doc.load", "kb.add", "kb.search"):
+        assert not any(p["kind"] in ("model", "json") for p in SPECS_BY_TYPE[spec_type]["params"])

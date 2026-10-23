@@ -902,7 +902,7 @@ NODE_SPECS: list[dict] = [
         "Add to Knowledge Base",
         "knowledge",
         "Add a document to one of your knowledge bases (the same ones chat searches), creating it if needed. "
-        "Waits until the document is indexed.",
+        "Parsed and embedded locally with Studio's embedding model; waits until the document is indexed.",
         inputs = [inp("file", "any", "Document")],
         outputs = [out("knowledge_base", "text"), out("chunks", "number")],
         params = [

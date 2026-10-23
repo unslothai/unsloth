@@ -33,6 +33,14 @@ REQ = {
         **IMAGE,
     },
     "video": {"ref": "director", "kind": "video", "note": "5B text+image to video.", **VIDEO},
+    "embedding": {
+        "ref": "embedder",
+        "kind": "embedding",
+        "note": "Studio's local embedding model for knowledge bases (Settings can change it); runs offline once "
+        "downloaded.",
+        "repo": "unsloth/bge-small-en-v1.5",
+        "variant": None,
+    },
     "tts": {
         "ref": "voice",
         "kind": "tts",
@@ -1427,7 +1435,7 @@ def ask_documents() -> B:
         "that match it, with the sources cited.",
         tags = ["documents", "knowledge base", "rag", "llm"],
         seed = 13,
-    ).need("chat")
+    ).need("chat", "embedding")
     b.n("doc", "input.file", 0, 0.5, label = "Your document")
     b.n("add", "kb.add", 1, 0.5, knowledge_base = "Flows")
     b.e("doc.file", "add.file")
@@ -1453,7 +1461,8 @@ def ask_documents() -> B:
     b.e("answer.text", "show.value")
     b.note(
         "tip",
-        "Upload a document, then Run. Later runs can drop the first two blocks and search what is already indexed.",
+        "Upload a document, then Run. Parsing, embedding and search all run locally on Studio's own models, "
+        "offline once they are downloaded. Later runs can drop the first two blocks and search what is indexed.",
         0,
         2.5,
         1.8,
