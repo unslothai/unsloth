@@ -253,17 +253,33 @@ def video_frame(
     source = av.open(io.BytesIO(data))
     chosen = None
     try:
-        for frame in source.decode(source.streams.video[0]):
+        vstream = source.streams.video[0]
+        # Start from the keyframe before the wanted spot, not the top of a long upload.
+        target = (
+            at_s
+            if which == "time"
+            else (source.duration or 0) / 1_000_000 - 2
+            if which == "last"
+            else 0
+        )
+        if target > 0 and vstream.time_base:
+            source.seek(int(target / vstream.time_base), stream = vstream, backward = True)
+        decoded = 0
+        for frame in source.decode(vstream):
+            decoded += 1
+            if decoded > 2 * MAX_VIDEO_FRAMES:
+                raise FlowNodeError("The video is too long to read a frame from")
             if which == "time" and chosen is not None and float(frame.time or 0.0) > at_s:
                 break
-            chosen = frame.to_ndarray(format = "rgb24")
+            chosen = frame
             if which == "first":
                 break
+        image = chosen.to_ndarray(format = "rgb24") if chosen is not None else None
     finally:
         source.close()
-    if chosen is None:
+    if image is None:
         raise FlowNodeError("The video has no frames")
-    return _png(Image.fromarray(chosen))
+    return _png(Image.fromarray(image))
 
 
 def _slice_audio(data: bytes, start_s: float, end_s: float) -> Optional[bytes]:

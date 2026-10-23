@@ -197,3 +197,14 @@ def test_a_trimmed_sound_holds_only_its_own_span(monkeypatch):
     monkeypatch.setattr(mu, "MAX_AUDIO_S", 0.5)
     with pytest.raises(FlowNodeError):
         mu._slice_audio(clip, 1.0, 3.0)
+
+
+def test_video_frame_seeks_near_the_end_instead_of_decoding_everything(monkeypatch):
+    clip = _clip(frames = 96, fps = 12)
+    first = _open(mu.video_frame(clip, "first", 0.0)).convert("RGB")
+    assert first.getpixel((5, 5))[0] < 20
+    # Only a short decode budget: reading the last frame of an 8 s clip must seek, not walk from the top.
+    monkeypatch.setattr(mu, "MAX_VIDEO_FRAMES", 20)
+    last = _open(mu.video_frame(clip, "last", 0.0)).convert("RGB")
+    assert last.getpixel((5, 5))[0] > 200
+    assert _open(mu.video_frame(clip, "time", 1.0)).convert("RGB").getpixel((5, 5))[0] > 100
