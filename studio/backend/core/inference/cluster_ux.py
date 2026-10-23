@@ -75,6 +75,9 @@ def _split_plan(state: Any) -> Any:
 def split_summary() -> Optional[str]:
     """ "Split across this machine and ux-worker." for the served (or loading) split, else None."""
     state = _state()
+    if getattr(state, "_passthrough", False):
+        # A load the cluster left alone: the plan still held is the previous model's split.
+        return None
     plan = _split_plan(state)
     if plan is None:
         return None

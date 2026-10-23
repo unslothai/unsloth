@@ -46,6 +46,18 @@ def test_load_progress_says_what_a_split_load_is_doing(monkeypatch):
     assert cluster_ux.split_summary() == f"Split across this machine, {_WORKERS}."
 
 
+@pytest.mark.parametrize("bypass", [{"alongside": True}, {"engine": "vllm"}])
+def test_a_pass_through_load_does_not_claim_the_served_split(monkeypatch, bypass):
+    _out, backend = _loaded_split(monkeypatch)
+    run(ss.after_load(backend, 4))
+    assert cluster_ux.split_summary() == f"Split across this machine, {_WORKERS}."
+
+    # The next load bypasses planning: the served split's plan stays, but this model is not on it.
+    run(ss.before_load(_request(model_path = "/models/other.gguf", **bypass), 4))
+    assert cs.state()._passthrough
+    assert cluster_ux.split_summary() is None
+
+
 def test_a_load_that_stays_on_this_machine_gets_no_cluster_wording(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 10 * GIB)
     run(ss.before_load(_request(), 4))
