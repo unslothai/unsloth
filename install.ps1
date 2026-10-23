@@ -4576,17 +4576,15 @@ function Install-UnslothStudio {
                 $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
             }
             # uv's discovery: UV_CONFIG_FILE alone (even with UV_NO_CONFIG); relative paths from --directory.
-            # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
-            $uvTrue = @('1', 't', 'true', 'y', 'yes', 'on')
             $files = @("$env:APPDATA\uv\uv.toml")
-            if ($uvTrue -notcontains "$env:UV_NO_SYSTEM_CONFIG".Trim().ToLowerInvariant()) { $files += "$env:ProgramData\uv\uv.toml" }
+            if (-not (Test-UvEnvFlag 'UV_NO_SYSTEM_CONFIG')) { $files += "$env:ProgramData\uv\uv.toml" }
             $dir = (Get-Location -PSProvider FileSystem).ProviderPath
             $workDir = if ($env:UV_WORKING_DIR) { $env:UV_WORKING_DIR } else { $env:UV_WORKING_DIRECTORY }
             if ($workDir) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $workDir)) }
             $configFile = if ($env:UV_CONFIG_FILE) { [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_CONFIG_FILE)) }
             if ($env:UV_PROJECT) { $dir = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($dir, $env:UV_PROJECT)) }
             if ($configFile) { $files = @($configFile); $dir = $null }
-            elseif ($uvTrue -contains "$env:UV_NO_CONFIG".Trim().ToLowerInvariant()) { $files = @(); $dir = $null }
+            elseif (Test-UvEnvFlag 'UV_NO_CONFIG') { $files = @(); $dir = $null }
             while ($dir) {
                 $pyproject = Join-Path $dir 'pyproject.toml'
                 if (Test-Path -LiteralPath (Join-Path $dir 'uv.toml') -PathType Leaf) { $files += Join-Path $dir 'uv.toml'; break }
