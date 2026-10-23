@@ -141,8 +141,7 @@ class SdCppUpscaleParams:
 
 
 # Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
-# Q8_0 only: there MMQ's 8-bit activations dominate the error (Z-Image Turbo Q8_0 vs BF16, B200: LPIPS 0.0148 -> 0.0052);
-# for k-quants / 4-bit the weight error dominates, so keep MMQ. Ada, consumer Ampere, Orin keep MMQ (int8 is 2x faster).
+# Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})

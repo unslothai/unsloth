@@ -733,8 +733,7 @@ def torch_cuda_compute_capability(
 def _torch_cuda_capabilities(
     ordinal: Optional[int], *, timeout_s: Optional[float] = None
 ) -> list[tuple[int, int]]:
-    """Capability of ``ordinal``, or of every visible card when None (sd.cpp may pick any). Bounded like
-    torch_cuda_compute_capability: a stalled driver call reads as unknown (keeps MMQ), not a hung load."""
+    """Capability of ``ordinal`` (None = every visible card); a stalled driver call reads as unknown, not a hang."""
     import threading
 
     result: list = []
