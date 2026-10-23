@@ -31378,7 +31378,7 @@ async def _proxy_to_external_provider(
                 payload,
                 tools = _external_fit_tools,
                 branch = _request_branch,
-                tool_loop = run_studio_tool_loop,
+                tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):
