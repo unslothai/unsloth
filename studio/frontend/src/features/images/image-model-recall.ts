@@ -397,14 +397,21 @@ function readPendingImageLoad(): PendingImageLoad | null {
 }
 
 /** The descriptor a finished load reconciles with, consuming the pending one: the page's own load when it carries its
- *  request, else (a load resumed after a reload) the pending load when the now-resident build is that model. */
+ *  request, else (a load resumed after a reload) the pending load when the now-resident build is that model with its
+ *  files. A build of the same model on other files (another client reloaded it) is not that load, so the descriptor
+ *  is dropped and the saved entry is left to the reconcilers; a native (sd_cpp) build reports none of them. */
 export function finishedLoadTarget<T extends ImageModelKey & { fieldFiles?: ImageComponentFiles }>(
   current: T | null,
-  status: Parameters<typeof matchesRememberedModel>[1],
+  status: Parameters<typeof matchesRememberedModel>[1] & Parameters<typeof forgetStaleImageComponents>[1],
 ): T | PendingImageLoad | null {
   const pending = readPendingImageLoad();
   clearPendingImageLoad();
   if (current?.fieldFiles) return current;
-  if (pending && matchesRememberedModel(pending, status)) return pending;
+  if (
+    pending &&
+    matchesRememberedModel(pending, status) &&
+    (status.engine === "sd_cpp" || componentFilesMatch(pending.fieldFiles ?? {}, status.component_files))
+  )
+    return pending;
   return current;
 }

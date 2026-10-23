@@ -139,3 +139,33 @@ test("the mount probe publishes the finished build's status before the reconcile
   forgetStaleResidentComponents(oldBuild);
   assert.equal(readImageComponents(zImage), null);
 });
+
+test("a pending load whose files the resident build does not use keeps the saved entry", () => {
+  // Saved: the VAE the resident build uses. Pending: a load of the same checkpoint on another VAE, left when the page
+  // closed; another client then reloaded the checkpoint on the saved VAE.
+  const working = { vaeFile: "/models/working-ae.safetensors" };
+  const other = { vaeFile: "/models/other-ae.safetensors" };
+  const resident = { ...ready, component_files: { vae: "working-ae.safetensors" } };
+  store.clear();
+  rememberLoadedImageComponents({ ...zImage, fieldFiles: working }, resident);
+  rememberPendingImageLoad({ ...zImage, ...other, fieldFiles: other });
+  const resumed = finishedLoadTarget(null, resident);
+  assert.equal(resumed, null);
+  assert.equal(finishedLoadTarget(null, resident), null, "consumed");
+  forgetStaleResidentComponents(resident);
+  assert.deepEqual(readImageComponents(zImage), working);
+
+  // The poll path with a resumed descriptor (no request) keeps that descriptor, which reconciles without overwriting.
+  const own = { ...zImage };
+  rememberPendingImageLoad({ ...zImage, fieldFiles: other });
+  assert.equal(finishedLoadTarget(own, resident), own);
+  assert.equal(rememberLoadedImageComponents(own, resident), null);
+  assert.deepEqual(readImageComponents(zImage), working);
+
+  // Matching files (status basenames vs full paths) still resume, and a native build, which reports none, does too.
+  rememberPendingImageLoad({ ...zImage, fieldFiles: working });
+  assert.deepEqual(finishedLoadTarget(null, resident)?.fieldFiles, working);
+  const native = { ...ready, engine: "sd_cpp", component_files: {} };
+  rememberPendingImageLoad({ ...zImage, fieldFiles: other });
+  assert.deepEqual(finishedLoadTarget(null, native)?.fieldFiles, other);
+});
