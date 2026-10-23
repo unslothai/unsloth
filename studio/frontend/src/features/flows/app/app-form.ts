@@ -136,6 +136,8 @@ export function applyAppValues(
   const nodeValues = new Map<string, unknown>();
   for (const field of fields) {
     if (!(field.key in values)) continue;
+    // An untouched field sends nothing: the flow keeps its own value (and a seed block its randomize setting).
+    if (Object.is(values[field.key], field.initial)) continue;
     let value = values[field.key];
     // The JSON box edits text; a Flow Input of type json is not coerced server-side, so send the parsed value.
     if (field.kind === "json" && typeof value === "string") {

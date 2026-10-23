@@ -175,9 +175,13 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
   const [runId, setRunId] = useState<string | null>(null);
   const [uploads, setUploads] = useState<Record<string, boolean>>({});
   const follower = useRef<AbortController | null>(null);
+  // Bumped on every flow load: a request or upload begun for the last flow must not land in this one.
+  const generation = useRef(0);
+  const loaded = generation.current;
 
   useEffect(() => {
     let alive = true;
+    generation.current += 1;
     // Another flow in the same page: nothing of the last one may show or run under this id.
     setDoc(null);
     setFailed(null);
@@ -217,9 +221,11 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
     const controller = new AbortController();
     follower.current = controller;
     const { doc: filled, params } = applyAppValues(doc, fields, values);
+    const started = generation.current;
     setRun({ ...IDLE, status: "queued" });
     try {
       const { run_id } = await startRun(flowId, { doc: filled, params });
+      if (started !== generation.current) return;
       setRunId(run_id);
       const ids = new Set(outputs.map((n) => n.id));
       await followRunEvents(
@@ -230,6 +236,7 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
         controller.signal,
       );
     } catch (error) {
+      if (started !== generation.current) return;
       setRun((state) => ({
         ...state,
         status: "failed",
@@ -292,9 +299,11 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
                   field={field}
                   value={values[field.key]}
                   onChange={(value) =>
+                    loaded === generation.current &&
                     setValues((prev) => ({ ...prev, [field.key]: value }))
                   }
                   onUploading={(busy) =>
+                    loaded === generation.current &&
                     setUploads((prev) => ({ ...prev, [field.key]: busy }))
                   }
                 />

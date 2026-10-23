@@ -221,3 +221,21 @@ test("the app page resets on another flow, shows an empty text as empty, and his
   const inspector = read("../src/features/flows/editor/inspector.tsx");
   assert.match(inspector, /Object\.keys\(viewed\)\.map\(\(id\) => \(\{ id, label: id \}\)\)/);
 });
+
+test("an untouched seed with no stored value keeps randomizing, and stale flow loads are ignored", async () => {
+  const d = doc([node("s", "input.seed", [0, 0], { randomize: true })]);
+  const fields = appFields(d as never);
+  const untouched = Object.fromEntries(fields.map((f) => [f.key, f.initial]));
+  const { doc: filled } = applyAppValues(d as never, fields, untouched);
+  assert.deepEqual(
+    (filled as { nodes: { params: unknown }[] }).nodes[0].params,
+    { randomize: true },
+  );
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(
+    new URL("../src/features/flows/app/flow-app-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(page, /if \(started !== generation\.current\) return;\s*setRunId\(run_id\);/);
+  assert.match(page, /loaded === generation\.current &&\s*setValues/);
+});
