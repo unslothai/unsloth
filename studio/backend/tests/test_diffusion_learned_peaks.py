@@ -1329,9 +1329,9 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
         encoding = "utf-8"
     )
     at = src.index("pipe._unsloth_phase_seeds = (")
+    window = " ".join(src[at : at + 300].split())  # the formatter may wrap the expression
     assert (
-        "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None"
-        in src[at : at + 200]
+        "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None" in window
     )
 
 
