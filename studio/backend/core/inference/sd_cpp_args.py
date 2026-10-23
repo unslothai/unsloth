@@ -151,18 +151,66 @@ def native_speed_flags(
     speed_mode: Optional[str],
     backend_args: Optional[Sequence[str]] = None,
     accelerator: Optional[str] = None,
+    binary: Optional[str] = None,
 ) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
-    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None."""
+    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
+    ``binary``: when its ``--help`` lists ``--conv-direct`` (master-963+), a rejected direct conv is sent as an
+    explicit ``--conv-direct off``: on those builds an omitted flag means auto, which turns direct conv on for
+    implicit-GEMM backends (HIP MMA, Vulkan when its probe wins) regardless of the policy here."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        if not conv_direct_wanted(backend_args or (), accelerator):
+        args = backend_args or ()
+        if not conv_direct_wanted(args, accelerator):
+            user_set = any(f in _CONV_DIRECT_FLAGS for f in args)
+            if not user_set and binary and sd_cpp_supports_conv_direct_mode(binary):
+                return ["--diffusion-fa", "--conv-direct", "off"]
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+# Flags that already decide direct conv; a user-supplied one wins over the policy.
+_CONV_DIRECT_FLAGS = ("--conv-direct", "--diffusion-conv-direct", "--vae-conv-direct")
+# Valued speed flags: the value travels with its flag when de-duplicating against offload.
+_VALUED_SPEED_FLAGS = ("--conv-direct",)
+
+
+def speed_flags_without(speed: Sequence[str], offload: Sequence[str]) -> list[str]:
+    """``speed`` minus flags already in ``offload``, keeping a valued flag and its value together."""
+    out: list[str] = []
+    i = 0
+    while i < len(speed):
+        flag = speed[i]
+        width = 2 if flag in _VALUED_SPEED_FLAGS and i + 1 < len(speed) else 1
+        if flag not in offload:
+            out += list(speed[i : i + width])
+        i += width
+    return out
+
+
+def sd_cpp_supports_conv_direct_mode(binary: str) -> bool:
+    """True when ``binary --help`` lists ``--conv-direct``. Fails closed (older builds reject the unknown flag)."""
+    import os
+
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return False
+    return _conv_direct_in_help(str(binary), st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize = 16)
+def _conv_direct_in_help(binary: str, size: int, mtime_ns: int) -> bool:
+    import re
+
+    from core.inference.sd_cpp_backend import _sd_cpp_probe_output
+
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and re.search(r"(?<![\w-])--conv-direct\b", text) is not None
 
 
 # Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
@@ -930,9 +978,9 @@ def build_sd_cpp_server_command(
     # De-dup speed flags against offload (may already include --diffusion-fa).
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
-    cmd += [
-        f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload
-    ]
+    cmd += speed_flags_without(
+        native_speed_flags(native_speed, backend_args, accelerator, binary), offload
+    )
     cmd += placement
     cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
