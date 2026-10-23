@@ -27,6 +27,10 @@ H16 ROTATION (``rotq_h16``, default where ``rotq_i8`` passed): ``H256 = H16 (x) 
 everywhere. A different fp32 summation order: ~1 code in 10^6 differs by one step, scales equal; the probe gates it per
 device at that tolerance (``codes_close``). ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16=0`` keeps the bit-identical dense kernel.
 
+UNLISTED ARCHS (sm86, sm87, sm90, sm100, sm103, sm121, ...: no ``_ROTQ_CONFIG`` entry, so no dense tile to probe):
+``rotq_h16`` needs no tile, so ``unlisted_device_ok`` probes it there directly, then a latency check against the two
+kernels it replaces (see below). Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED=0``.
+
 SwiGLU PROLOGUE (``rotq_h16`` only): the down projection's codes come straight from the gate / value halves, the
 product computed in-kernel like the compiled stock MLP; the [M, hidden] HBM round trip was ConvRot's largest cost over
 plain int8 at Qwen-Image-2.1 1024px. Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``.
@@ -1007,3 +1011,129 @@ def convrot_swiglu_act_quant(g2d: Any, v2d: Any, group: int, v2: bool) -> Option
     if not _h16_ok(g2d, group, v2d):
         return None
     return _SWIGLU_HANDLE(g2d, v2d, group, v2)
+
+
+# ---- unlisted archs: rotq_h16 without a dense tile ----
+#
+# Main runs the ConvRot rotation on every arch outside ``_ROTQ_CONFIG`` as a dense 256x256 bf16 GEMM through cuBLAS,
+# then a separate act quant (the Qwen-Image-2.1 / Z-Image stock fusions in ``diffusion_int8_fused``). On GA102 (RTX
+# 30xx, A6000, A10) bf16 with fp32 accumulate runs at 1/8 of the int8 rate, so that GEMM costs a large share of every
+# int8 Linear. ``rotq_h16`` needs no tile table: on an arch with no entry it is probed (``_h16_probe``, ``codes_close``)
+# and then latency-checked on the card: it must not be slower than the rotation GEMM + the caller's act quant kernel,
+# both timed from CUDA-graph replays (the compiled denoiser replays its kernels; host launch cost must not count). A
+# card that fails either keeps main's path. ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED=0`` keeps it (read per load);
+# ``=1`` skips the latency check (the probe still runs); ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16=0``,
+# ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0`` and ``UNSLOTH_DIFFUSION_INT8_GEMM=0`` turn it off too.
+INT8_ROTQUANT_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED"
+# device index -> True (rotq_h16 serves it) / False, filled once per device by ``unlisted_device_ok``.
+_UNLISTED_DEVICE: dict = {}
+# device index -> {"h16": us, "stock": us} of the latency check, for the load log.
+_UNLISTED_TIMING: dict = {}
+_UNLISTED_LATENCY_SHAPES = ((2048, 4096), (1024, 12288))
+
+
+def unlisted_mode() -> str:
+    """'off', 'force' or 'auto'."""
+    if rotquant_mode() == "off" or not rotquant_h16_enabled():
+        return "off"
+    return _env_mode(INT8_ROTQUANT_UNLISTED_ENV)
+
+
+def unlisted_wanted(capability: Optional[tuple], mode: Optional[str] = None) -> bool:
+    """True on a CUDA sm80+ arch with no dense ``rotq_i8`` tile (the listed archs keep their probed path)."""
+    mode = unlisted_mode() if mode is None else mode
+    if mode == "off" or capability is None:
+        return False
+    cap = (int(capability[0]), int(capability[1]))
+    return cap >= (8, 0) and rotquant_config(cap) is None
+
+
+def _unlisted_latency(
+    index: int,
+    tf32x3: bool,
+    stock_quant: Any = None,
+) -> dict:
+    """{"h16": us, "stock": us} over ``_UNLISTED_LATENCY_SHAPES``: each arm captured in a CUDA graph (two passes)
+    and replayed, best of seven interleaved rounds. Stock = the rotation GEMM, then ``stock_quant`` of its output when
+    given, else the GEMM alone (a lower bound)."""
+    import torch
+    from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
+
+    dev = torch.device("cuda", index)
+    xs = [torch.randn(m, k, device = dev).to(torch.bfloat16) for m, k in _UNLISTED_LATENCY_SHAPES]
+    h = build_convrot_hadamard(256, device = dev, dtype = torch.bfloat16)
+
+    def stock(x):
+        r = rotate_convrot_activation(x, h, 256)
+        return r if stock_quant is None else stock_quant(r)
+
+    fns = {"h16": lambda x: _h16_launch(x, "v2", tf32x3 = tf32x3), "stock": stock}
+    reps = 2
+    graphs = {}
+    with torch.cuda.device(dev):
+        side = torch.cuda.Stream(dev)
+        side.wait_stream(torch.cuda.current_stream(dev))
+        with torch.cuda.stream(side):
+            for fn in fns.values():
+                for x in xs:
+                    fn(x)  # compile / autotune outside the capture
+        torch.cuda.current_stream(dev).wait_stream(side)
+        torch.cuda.synchronize(dev)
+        for name, fn in fns.items():
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                for _ in range(reps):
+                    for x in xs:
+                        fn(x)
+            graphs[name] = graph
+        for graph in graphs.values():
+            graph.replay()
+        torch.cuda.synchronize(dev)
+        start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+        best = {name: float("inf") for name in graphs}
+        for _ in range(7):
+            for name, graph in graphs.items():
+                start.record()
+                graph.replay()
+                end.record()
+                end.synchronize()
+                best[name] = min(best[name], start.elapsed_time(end) * 1000.0 / reps)
+        del graphs
+    return best
+
+
+def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
+    """Once per device (outside any trace / capture): arch gate, ``_h16_probe``, latency check. On success the card's
+    second-stage mode lands in ``_H16_DEVICE`` and ``_ROTQ_HANDLE`` is published, so ``convrot_act_quant`` / the
+    ``convrot_act_quant_int8`` op serve it with ``rotq_h16``."""
+    global _ROTQ_HANDLE
+    if unlisted_mode() == "off":  # read per load: the switches act without a restart
+        return False
+    if index in _UNLISTED_DEVICE:
+        return _UNLISTED_DEVICE[index]
+    ok = False
+    try:
+        import torch
+        if (
+            torch.cuda.is_available()
+            and not is_rocm_torch(torch)
+            and _triton_ok()
+            and unlisted_wanted(torch.cuda.get_device_capability(index))
+            and _kernels() is not None
+            and _rotq_op() is not None
+        ):
+            mode = _h16_probe(index)
+            if mode:
+                ok = True
+                if unlisted_mode() != "force":
+                    timing = _unlisted_latency(index, mode == "tf32x3", stock_quant)
+                    _UNLISTED_TIMING[index] = {k: round(v, 2) for k, v in timing.items()}
+                    ok = timing["h16"] <= timing["stock"]
+                if ok:
+                    _H16_DEVICE[index] = mode
+    except Exception:  # noqa: BLE001 - main's path stays
+        ok = False
+    _UNLISTED_DEVICE[index] = ok
+    if ok:
+        _ROTQ_HANDLE = _rotq_op()
+    return ok
