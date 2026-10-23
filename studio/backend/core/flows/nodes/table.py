@@ -341,10 +341,8 @@ def chart(
     _require(table, [x] + y + ([group] if group else []) + ([error] if error else []), "Chart")
     if group and len(y) > 1:
         raise FlowNodeError("Pick one y column when grouping into series")
-    xs: list[Any] = []
-    for row in table["rows"]:
-        if row.get(x) not in xs:
-            xs.append(row.get(x))
+    # Insertion order without a list scan per row (a 100k-row table would be quadratic).
+    xs: list[Any] = list(dict.fromkeys(row.get(x) for row in table["rows"]))
     by_id = {c["id"]: c for c in table["columns"]}
     series = []
     names = (

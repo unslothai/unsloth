@@ -281,3 +281,9 @@ def test_chart_refuses_repeated_x_instead_of_dropping_trials():
     t = _t([{"ctx": 1, "tps": 10}, {"ctx": 1, "tps": 12}, {"ctx": 2, "tps": 8}])
     with pytest.raises(FlowNodeError, match = "Aggregate"):
         T.chart(t, "ctx", ["tps"], kind = "line", group = None, error = None)
+
+
+def test_chart_x_keeps_first_seen_order_on_a_large_table():
+    rows = [{"i": i, "v": float(i)} for i in range(50_000)]
+    c = T.chart(_t(rows), "i", ["v"], kind = "line", group = None, error = None)
+    assert c["x"][:3] == [0, 1, 2] and len(c["x"]) == 50_000
