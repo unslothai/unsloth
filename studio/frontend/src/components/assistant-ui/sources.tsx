@@ -153,7 +153,7 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
       <HoverCardContent
         side="top"
         align="start"
-        className="!bg-(--tooltip-bg) !text-(--tooltip-fg) !w-72 !p-3 !rounded-xl !shadow-(--tooltip-shadow) !ring-0 !duration-0"
+        className="!bg-(--tooltip-bg) !text-(--tooltip-fg) !w-72 !p-3 !rounded-2xl !shadow-(--tooltip-shadow) !ring-0 !duration-0"
         style={{ animation: "none" }}
       >
         <div className="flex gap-2.5">

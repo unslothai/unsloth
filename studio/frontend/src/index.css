@@ -2796,7 +2796,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.tooltip-compact {
-		@apply rounded-xl border-transparent bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-(--tooltip-fg) shadow-(--tooltip-shadow);
+		@apply rounded-[11px] border-transparent bg-(--tooltip-bg) px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-(--tooltip-fg) shadow-(--tooltip-shadow);
 	}
 	.tooltip-compact .text-muted-foreground {
 		color: var(--tooltip-muted) !important;
@@ -2815,11 +2815,13 @@ html[data-chat-font] .aui-root {
 
 	/* Rich tooltip — used for the context-usage and token-counter
 	   popups (multi-row metric breakdowns). Same surface as the
-	   compact tooltips so chat-area popovers feel like one family, with
-	   the menu radius. Uses the heading font with tracking for the
-	   structured content. */
+	   compact tooltips so chat-area popovers feel like one family.
+	   Corner radius matches the user-profile dropdown in the left
+	   sidebar (14px) so panel-level menu surfaces share a single
+	   roundness. Uses the heading font with tracking for the structured
+	   content. */
 	.tooltip-rich {
-		@apply rounded-xl border-transparent bg-(--tooltip-bg) px-4 py-3 font-heading tracking-wide text-(--tooltip-fg) shadow-(--tooltip-shadow-rich);
+		@apply rounded-[16px] border-transparent bg-(--tooltip-bg) px-4 py-3 font-heading tracking-wide text-(--tooltip-fg) shadow-(--tooltip-shadow-rich);
 	}
 	.tooltip-rich .text-muted-foreground {
 		color: var(--tooltip-muted) !important;
