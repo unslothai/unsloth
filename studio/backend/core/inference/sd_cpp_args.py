@@ -156,9 +156,8 @@ def native_speed_flags(
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
     ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None.
-    ``binary``: when its ``--help`` lists ``--conv-direct`` (master-963+), a rejected direct conv is sent as an
-    explicit ``--conv-direct off``: on those builds an omitted flag means auto, which turns direct conv on for
-    implicit-GEMM backends (HIP MMA, Vulkan when its probe wins) regardless of the policy here."""
+    ``binary``: on builds listing ``--conv-direct`` (master-963+) a rejected direct conv is sent as ``--conv-direct off``,
+    since an omitted flag means auto there (direct conv on for HIP MMA / Vulkan regardless of this policy)."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
@@ -175,7 +174,6 @@ def native_speed_flags(
 
 # Flags that already decide direct conv; a user-supplied one wins over the policy.
 _CONV_DIRECT_FLAGS = ("--conv-direct", "--diffusion-conv-direct", "--vae-conv-direct")
-# Valued speed flags: the value travels with its flag when de-duplicating against offload.
 _VALUED_SPEED_FLAGS = ("--conv-direct",)
 
 
