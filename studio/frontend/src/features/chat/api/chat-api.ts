@@ -1952,7 +1952,8 @@ export async function* streamChatCompletions(
             parsed.type === "tool_end" ||
             parsed.type === "tool_output" ||
             parsed.type === "tool_args" ||
-            parsed.type === "tool_model_note")
+            parsed.type === "tool_model_note" ||
+            parsed.type === "tool_approved")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);

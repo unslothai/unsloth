@@ -120,6 +120,7 @@ import {
   type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import { adoptFirstTurnConfirmations } from "../utils/adopt-first-turn-confirmations";
 import type { MmprojFallbackReason } from "../types/api";
 import type {
   ResearchMcpSource,
@@ -2373,12 +2374,17 @@ type ChatRuntimeStore = {
    *  it does not leave the menu frozen. */
   bypassConfirmOpen: boolean;
   alwaysAllowToolsBySession: Map<string, Set<string>>;
+  /** Calls paused for allow/deny, keyed by scoped frontend tool-call id. Each carries the
+   *  backend `approvalId` and the run's `sessionId` so the exact call resolves;
+   *  `autoAllowKey` scopes "Always allow" per chat; `threadId` names the asking chat ("" for a
+   *  run with no saved chat yet). Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
     {
       approvalId: string;
       sessionId: string;
       autoAllowKey: string;
+      threadId: string;
       imageDisclosure?: ImageDisclosure;
     }
   >;
@@ -2598,6 +2604,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    threadId: string,
     imageDisclosure?: ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
@@ -4653,6 +4660,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.activeDiffusionCanvasByThreadId,
         "activeDiffusionCanvasByThreadId",
       );
+      // Its parked calls too, or the row never trades its spinner for the approval mark.
+      if (moved.runningByThreadId) {
+        const confirmations = adoptFirstTurnConfirmations(
+          state.toolConfirmations,
+          threadId,
+        );
+        if (confirmations) moved.toolConfirmations = confirmations;
+      }
       return Object.keys(moved).length > 0 ? moved : state;
     }),
   runKeyForOwner: (fallbackKey, owner) => {
@@ -5479,12 +5494,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     approvalId,
     sessionId,
     autoAllowKey,
+    threadId,
     imageDisclosure,
   ) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
+        [toolCallId]: {
+          approvalId,
+          sessionId,
+          autoAllowKey,
+          threadId,
+          imageDisclosure,
+        },
       },
     })),
   clearToolConfirmation: (toolCallId) =>

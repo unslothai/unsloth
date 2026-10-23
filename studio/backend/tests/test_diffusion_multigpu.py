@@ -2413,6 +2413,46 @@ def test_router_stays_on_the_source_for_a_forced_eager_render_and_the_compile_th
     assert torch.equal(out, reference) and router.stats["replica_calls"] == 3
 
 
+def test_router_keeps_the_forward_signature_callers_filter_on():
+    """FLUX.3's modular denoise step filters kwargs by forward's signature; a bare router dropped img_ids/txt_ids."""
+    import inspect
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(4, 4)
+
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states = None,
+            timestep = None,
+            img_ids = None,
+            txt_ids = None,
+            return_dict = True,
+        ):
+            assert img_ids is not None and txt_ids is not None, "the ids were filtered out"
+            return (self.lin(hidden_states) + img_ids.sum() + txt_ids.sum(),)
+
+    dit = Dit()
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu")
+    dit.forward = router
+    fields = {"img_ids": torch.zeros(2, 4), "txt_ids": torch.zeros(3, 4), "guidance_hint": 1.0}
+    # the call diffusers' modular_pipelines/flux3/denoise.py makes
+    accepted = set(inspect.signature(dit.forward).parameters)
+    kwargs = {k: v for k, v in fields.items() if k in accepted}
+    assert sorted(kwargs) == ["img_ids", "txt_ids"]
+    x = torch.randn(1, 4)
+    out = dit(
+        hidden_states = x,
+        encoder_hidden_states = None,
+        timestep = torch.ones(1),
+        return_dict = False,
+        **kwargs,
+    )[0]
+    assert torch.equal(out, dit.lin(x))
+
+
 def test_replica_blocks_get_their_own_compile_guard():
     from core.inference.diffusion_speed import guard_compiled_blocks
 

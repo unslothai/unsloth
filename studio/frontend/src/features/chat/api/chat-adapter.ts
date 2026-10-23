@@ -7301,6 +7301,25 @@ export function createOpenAIStreamAdapter(
                   if (deepResearchHandoff.question !== null) break;
                   continue;
                 }
+                // Answered in another tab or device: clear the prompt now, not at tool_end.
+                if (toolEvent.type === "tool_approved") {
+                  const approvedBackendId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const approvedId = toolEvent.approval_id;
+                  const confirmationId =
+                    toolConfirmationIdsByBackendId.get(approvedBackendId) ??
+                    (typeof approvedId === "string" && approvedId
+                      ? toolCallParts.find(
+                          (p) => p.toolApprovalId === approvedId,
+                        )?.toolCallId
+                      : undefined);
+                  if (confirmationId) {
+                    useChatRuntimeStore
+                      .getState()
+                      .clearToolConfirmation(confirmationId);
+                  }
+                  continue;
+                }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
@@ -7593,6 +7612,8 @@ export function createOpenAIStreamAdapter(
                     } as PositionedToolCallPart);
                   }
                   if (awaitingConfirmation) {
+                    // The run's key now, not at send: a first turn adopted mid-run files its calls under the chat.
+                    const confirmationThreadKey = liveThreadKey(serverCancel);
                     useChatRuntimeStore
                       .getState()
                       .setToolConfirmation(
@@ -7600,6 +7621,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
+                        confirmationThreadKey === "__default" ? "" : confirmationThreadKey,
                         toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }

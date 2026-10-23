@@ -85,7 +85,8 @@ export function normalizeChatGenerationChunkPayload(
       frameType === "tool_end" ||
       frameType === "tool_output" ||
       frameType === "tool_args" ||
-      frameType === "tool_model_note"
+      frameType === "tool_model_note" ||
+      frameType === "tool_approved"
     ) {
       // The consumer accumulates tool events by tag, so keep the frame whole.
       return { _toolEvent: payload } as unknown as OpenAIChatChunk;

@@ -271,3 +271,34 @@ def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica():
     torch.cuda.synchronize()
     assert router.stats["replica_rebuilds"] == 1
     assert torch.equal(out, reference)
+
+
+def test_a_step_graph_on_the_second_card_records_its_forward():
+    # Regression: cuda:1 captured on torch's cuda:0 default capture stream, so replays returned the recording's output.
+    from core.inference import diffusion_cuda_graph as cg
+
+    def graphed_steps(card):
+        torch.manual_seed(0)
+        dit = _Dit().cuda(card)
+        handle = cg.GraphedForward(dit).enable()
+        outs, refs = [], []
+        with torch.cuda.device(card), torch.inference_mode():
+            for value in (1.0, 2.0, 3.0):
+                x = torch.full((2, 4), value, device = f"cuda:{card}")
+                t = torch.tensor(value, device = f"cuda:{card}")
+                e = torch.randn(3, 4, device = f"cuda:{card}")
+                refs.append(dit.__class__.forward(dit, x, t, e)[0].clone())
+                outs.append(
+                    handle(hidden_states = x, timestep = t, encoder_hidden_states = e, return_dict = False)[
+                        0
+                    ]
+                )
+            torch.cuda.synchronize()
+        return handle, outs, refs
+
+    first, outs0, refs0 = graphed_steps(0)
+    second, outs1, refs1 = graphed_steps(1)
+    for handle in (first, second):
+        assert handle.stats["captures"] == 1 and handle.stats["replays"] == 3, handle.stats
+    for out, ref in zip(outs0 + outs1, refs0 + refs1):
+        assert torch.equal(out.cpu(), ref.cpu())
