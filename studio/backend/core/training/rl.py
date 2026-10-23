@@ -466,6 +466,7 @@ def _allows_null(schema: Any) -> bool:
         or (isinstance(kind, list) and "null" in kind)
         or schema.get("nullable") is True
         or None in (schema.get("enum") or ())
+        or ("const" in schema and schema["const"] is None)
         or any(_allows_null(s) for k in ("anyOf", "oneOf") for s in schema.get(k) or ())
     )
 
