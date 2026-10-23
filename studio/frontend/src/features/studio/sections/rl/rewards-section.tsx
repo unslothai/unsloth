@@ -374,7 +374,12 @@ export function RewardsSection(): ReactElement {
   const removeFromLibrary = async (name: string) => {
     try {
       await deleteReward(name);
-      setRewards(rewards.filter((r) => r.name !== name));
+      // The selection may have changed while the request ran: filter the latest one.
+      setRewards(
+        useTrainingConfigStore
+          .getState()
+          .grpoRewards.filter((r) => r.name !== name),
+      );
       await refreshLibrary();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
