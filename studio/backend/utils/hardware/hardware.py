@@ -467,6 +467,9 @@ def _gfx_candidates_key() -> Optional[tuple]:
         binaries = (shutil.which("rocminfo"), shutil.which("amd-smi"))
     except Exception:
         return None
+    topology = _linux_amd_pci_topology()
+    if topology is None:
+        return None  # an unreadable walk cannot tell a swapped card apart: probe every pass, as before
     # The runner object, as gpu_query keys it, so a swapped fake never shares an answer.
     return (
         subprocess.run,
@@ -475,18 +478,20 @@ def _gfx_candidates_key() -> Optional[tuple]:
         tuple(os.environ.get(name) for name in _GFX_CANDIDATE_ENV),
         # Per-device overrides (HSA_OVERRIDE_GFX_VERSION_<n>) change what rocminfo reports too.
         tuple(sorted((k, v) for k, v in os.environ.items() if k.startswith("HSA_OVERRIDE_GFX_VERSION_"))),
-        _linux_amd_pci_topology(),
+        topology,
     )
 
 
-def _linux_amd_pci_topology(root: str = "/sys/class/drm") -> tuple:
+def _linux_amd_pci_topology(root: str = "/sys/class/drm") -> "tuple | None":
     """(PCI address, device id) of every AMD card DRM has bound, sorted. A card attached, removed or swapped
     beside one that stays changes it, which hardware re-detection (a GPU / no-GPU flip) would not notice.
-    sysfs reads only; an unreadable walk returns a fresh object so the cache is never hit on it."""
+    sysfs reads only; () with no DRM class (not Linux), None when the walk could not be read."""
     try:
         entries = os.listdir(root)
+    except FileNotFoundError:
+        return ()
     except OSError:
-        return (object(),)
+        return None
     found = []
     for entry in entries:
         if not re.fullmatch(r"card\d+", entry):
@@ -501,7 +506,7 @@ def _linux_amd_pci_topology(root: str = "/sys/class/drm") -> tuple:
         except FileNotFoundError:
             continue
         except OSError:
-            return (object(),)
+            return None
         found.append((os.path.basename(os.path.realpath(device)), device_id))
     return tuple(sorted(found))
 

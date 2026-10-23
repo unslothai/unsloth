@@ -381,24 +381,28 @@ def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
 
 _HIP_ID_MAP_NONE_TTL_S = 300.0
 _hip_id_map_lock = threading.Lock()
-_hip_id_map_cache: Optional[tuple[float, Optional[dict[int, int]], Optional[int]]] = None
+_hip_id_map_cache: Optional[tuple[float, Optional[dict[int, int]], Optional[int], Optional[tuple]]] = None
 
 
 def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
     """{amd-smi gpu id: HIP device id}, or None when the mapping is not readable. Two index spaces, one number: amd-smi's gpu id is an enumeration index in discovery order over its KFD/sysfs view, while HIP's is what ``HIP_VISIBLE_DEVICES`` names and what torch reports as ``cuda:N``, derived from the KFD node id instead (``hip_id = node_id - smallest_node_id``). They coincide on most hosts and not on all of them, so the number cannot be carried from one space to the other without this call. ``amd-smi list -e`` is the mapping AMD publishes for exactly this ("mapping physical-to-logical GPU IDs"), added in ROCm 6.4.0. None when any device lacks a usable id (an older CLI rejects ``-e`` outright, and ``hip_id`` reads "N/A" when the library cannot reach the device's KFD node) so callers decline rather than assume the identity mapping. Cached until hardware re-detection; an unreadable answer is retried after five minutes."""
     global _hip_id_map_cache
     static_gen = _static_generation()
+    topology = _amd_pci_topology()
     with _hip_id_map_lock:
         cached = _hip_id_map_cache
         if (
             cached is None
             or cached[2] != static_gen
+            # A card attached, removed or swapped beside one that stays; an unreadable walk keeps the map.
+            or (topology is not None and cached[3] is not None and cached[3] != topology)
             or (cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S)
         ):
             cached = _hip_id_map_cache = (
                 time.monotonic(),
                 _read_hip_id_by_gpu_index(),
                 static_gen,
+                topology,
             )
     return None if cached[1] is None else dict(cached[1])
 
@@ -409,6 +413,16 @@ def _static_generation() -> Optional[int]:
         from utils.hardware import gpu_query
 
         return gpu_query._static_gen
+    except Exception:
+        return None
+
+
+def _amd_pci_topology() -> Optional[tuple]:
+    """hardware's sysfs view of the bound AMD cards, or None when it cannot be read."""
+    try:
+        from utils.hardware.hardware import _linux_amd_pci_topology
+
+        return _linux_amd_pci_topology()
     except Exception:
         return None
 

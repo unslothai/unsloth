@@ -210,6 +210,39 @@ def test_hardware_redetection_reads_the_hip_id_map_again(rocm_cli):
     assert _count(rocm_cli, "amd-smi", "list", "-e") == 2
 
 
+def test_an_amd_card_attached_beside_another_reads_the_hip_id_map_again(rocm_cli, monkeypatch):
+    topology = [(("0000:03:00.0", "0x744c"),)]
+    monkeypatch.setattr(hw, "_linux_amd_pci_topology", lambda *a, **k: topology[0])
+    monkeypatch.setattr(amd, "_hip_id_map_cache", None)
+    amd.get_hip_id_by_gpu_index()
+    amd.get_hip_id_by_gpu_index()
+    assert _count(rocm_cli, "amd-smi", "list", "-e") == 1
+    topology[0] = (("0000:03:00.0", "0x744c"), ("0000:0c:00.0", "0x7550"))
+    amd.get_hip_id_by_gpu_index()
+    assert _count(rocm_cli, "amd-smi", "list", "-e") == 2
+
+
+def test_an_unreadable_topology_keeps_the_hip_id_map(rocm_cli, monkeypatch):
+    topology = [(("0000:03:00.0", "0x744c"),)]
+    monkeypatch.setattr(hw, "_linux_amd_pci_topology", lambda *a, **k: topology[0])
+    monkeypatch.setattr(amd, "_hip_id_map_cache", None)
+    amd.get_hip_id_by_gpu_index()
+    topology[0] = None
+    amd.get_hip_id_by_gpu_index()
+    assert _count(rocm_cli, "amd-smi", "list", "-e") == 1
+
+
+def test_an_unreadable_topology_probes_the_gfx_target_every_pass(rocm_cli, monkeypatch):
+    monkeypatch.setattr(hw, "_linux_amd_pci_topology", lambda *a, **k: None)
+    hw._linux_amd_gfx_candidates()
+    hw._linux_amd_gfx_candidates()
+    assert _count(rocm_cli, "rocminfo") == 2
+
+
+def test_no_drm_class_is_no_cards(tmp_path):
+    assert hw._linux_amd_pci_topology(str(tmp_path / "missing")) == ()
+
+
 def test_live_vram_reads_still_run_every_time(rocm_cli):
     hw._linux_amd_gfx_candidates()
     amd.get_hip_id_by_gpu_index()
