@@ -30419,6 +30419,7 @@ def _fit_external_context(
     *,
     tools: Optional[list[dict]] = None,
     branch: Optional[list[dict]] = None,
+    tool_loop: bool = False,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation, so recall
     queries the user's turn rather than a controller re-prompt the loop appended."""
@@ -30514,7 +30515,7 @@ def _fit_external_context(
                 context_length,
                 max_tokens,
                 truncation.get("prompt_tokens_after") or 0,
-                reply_returns = bool(tools),
+                reply_returns = tool_loop,
             ),
             count_tokens = _count,
         )
@@ -31375,6 +31376,7 @@ async def _proxy_to_external_provider(
                 payload,
                 tools = _external_fit_tools,
                 branch = _request_branch,
+                tool_loop = run_studio_tool_loop,
             )
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):

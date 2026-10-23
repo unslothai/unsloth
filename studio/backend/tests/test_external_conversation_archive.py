@@ -224,3 +224,28 @@ def test_a_tool_loop_refit_recalls_for_the_users_turn_not_a_loop_reprompt(
     ri._fit_external_context(loop, _payload(THREAD), branch = branch)
 
     assert seen == ["Was there a phone number on the report?"]
+
+
+def test_caller_owned_tools_do_not_halve_the_recall_budget(archive_ready, monkeypatch):
+    from core.inference import context_window
+
+    messages = _chat()
+    _persist(THREAD, messages)
+    seen = []
+    real = context_window.retrieval_budget
+
+    def spy(
+        *args,
+        reply_returns = False,
+        **kwargs,
+    ):
+        seen.append(reply_returns)
+        return real(*args, reply_returns = reply_returns, **kwargs)
+
+    monkeypatch.setattr(context_window, "retrieval_budget", spy)
+    caller_tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+
+    ri._fit_external_context(messages, _payload(THREAD), tools = caller_tools)
+    ri._fit_external_context(messages, _payload(THREAD), tools = caller_tools, tool_loop = True)
+
+    assert seen == [False, True]
