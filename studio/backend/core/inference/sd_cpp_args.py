@@ -41,6 +41,7 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     # Qwen3-VL-4B through --llm, as qwen-image-2.1.
     "flux.3-klein": ("--llm",),
     "flux.3-klein-base": ("--llm",),
+    "krea-2": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
     "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
@@ -70,6 +71,7 @@ class SdCppModelFiles:
     llm: Optional[str] = None
     llm_vision: Optional[str] = None
     qwen2vl: Optional[str] = None
+    tokenizer: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -668,6 +670,7 @@ def build_sd_cpp_command(
         ("--llm", files.llm),
         ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
+        ("--tokenizer", files.tokenizer),
     ):
         if value:
             cmd += [flag, value]
@@ -767,6 +770,8 @@ def build_sd_cpp_video_command(
     cmd += ["--llm", files.llm]
     if files.llm_vision:
         cmd += ["--llm_vision", files.llm_vision]
+    if files.tokenizer:
+        cmd += ["--tokenizer", files.tokenizer]
     # Reject incompatible partitions before loading the model.
     if (params.init_img or params.end_img) and (
         params.ref_images or params.ref_videos or params.ref_audios
@@ -905,6 +910,7 @@ def build_sd_cpp_server_command(
         ("--llm", files.llm),
         ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
+        ("--tokenizer", files.tokenizer),
     ):
         if value:
             cmd += [flag, value]
@@ -959,6 +965,7 @@ def build_img_gen_request(
     ref_images: Optional[list[str]] = None,
     qwen_image_layers: Optional[int] = None,
     custom_sigmas: Optional[list[float]] = None,
+    hires: Optional[dict] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -1009,6 +1016,8 @@ def build_img_gen_request(
         req["ref_images"] = list(ref_images)
     if qwen_image_layers is not None:
         req["qwen_image_layers"] = int(qwen_image_layers)
+    if hires:
+        req["hires"] = dict(hires)
     return req
 
 

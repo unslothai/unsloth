@@ -1011,6 +1011,81 @@ def test_an_online_hit_on_a_hub_snapshot_is_revalidated_against_the_moved_main(
     assert C.lookup(fam, scheme, base_repo = "org/tiny") == path
 
 
+def _share_blob(tmp_path: Path, link: str) -> str:
+    """Move ``link``'s repo blob into the huggingface_hub >= 1.32 shared store: ``<repo>/blobs/<etag>`` becomes a
+    relative link to ``<cache>/blobs/<xx>/<xet hash>``, so the chain ends on a 64-hex name that is not the etag."""
+    import hashlib
+
+    blob = Path(os.path.dirname(link), os.readlink(link))
+    hub = tmp_path / "hub"
+    xet_hash = hashlib.sha256(b"xet" + blob.read_bytes()).hexdigest()
+    try:
+        from huggingface_hub.utils._shared_blobs import publish_blob_to_shared_store
+    except ImportError:
+        publish_blob_to_shared_store = None
+    if publish_blob_to_shared_store is not None:
+        assert publish_blob_to_shared_store(
+            blob_path = str(blob),
+            xet_hash = xet_hash,
+            cache_dir = str(hub),
+            expected_size = blob.stat().st_size,
+        )
+    else:  # older hub: the same layout by hand
+        store = hub / "blobs" / xet_hash[:2] / xet_hash
+        store.parent.mkdir(parents = True)
+        os.replace(blob, store)
+        os.symlink(os.path.relpath(store, blob.parent), blob)
+    assert blob.is_symlink() and os.path.basename(os.path.realpath(link)) == xet_hash
+    return xet_hash
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_a_shared_blob_store_snapshot_is_judged_by_its_repo_blob_etag(
+    env, tmp_path, scheme, monkeypatch, relative
+):
+    import huggingface_hub
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    link, blob = _hub_snapshot(tmp_path, base)
+    if relative:  # the hub's own snapshot links are relative
+        target = os.readlink(link)
+        os.unlink(link)
+        os.symlink(os.path.relpath(target, os.path.dirname(link)), link)
+    xet_hash = _share_blob(tmp_path, link)
+    assert C._hub_coords(link)[2] == blob != xet_hash
+    monkeypatch.setattr(C, "source_shards", lambda *_a, **_k: [link])
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    remote = {"etag": blob}
+    monkeypatch.setattr(
+        huggingface_hub,
+        "get_hf_file_metadata",
+        lambda url, **_k: types.SimpleNamespace(etag = remote["etag"]),
+    )
+    fam = _fam(base)
+    path = C.save_runtime_quant(model, fam, base_repo = "org/tiny")
+    assert path and C.lookup(fam, scheme, base_repo = "org/tiny") == path  # main unchanged: a hit
+    C._REMOTE_MEMO.clear()
+    remote["etag"] = "f" * 64  # main moved to new weights
+    assert C.lookup(fam, scheme, base_repo = "org/tiny") is None
+
+
+def test_hub_coords_of_legacy_and_copied_snapshots_keep_their_names(tmp_path):
+    base = tmp_path / "base" / "transformer"
+    base.mkdir(parents = True)
+    (base / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    link, blob = _hub_snapshot(tmp_path, tmp_path / "base")
+    assert C._hub_coords(link) == (
+        "org/tiny",
+        "transformer/diffusion_pytorch_model.safetensors",
+        blob,
+        "c" * 40,
+    )
+    copy = _copy_snapshot(tmp_path, tmp_path / "base")
+    assert C._hub_coords(copy)[2] == "diffusion_pytorch_model.safetensors"
+
+
 def test_the_freshness_check_of_a_gated_base_carries_the_loads_token(env, monkeypatch):
     import huggingface_hub
 

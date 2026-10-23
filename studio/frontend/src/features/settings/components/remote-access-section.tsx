@@ -32,6 +32,7 @@ import {
   type TunnelMode,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
+  remoteAccessErrorMessage,
   remoteAccessPollDelay,
   remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
@@ -187,6 +188,7 @@ function StatusMessage({
 }
 
 function RemoteUrlPanel({ url }: { url: string | null }) {
+  const multi = useLoginMode() === "multi";
   if (!url) {
     return null;
   }
@@ -203,7 +205,13 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
         {url}
       </code>
       <span className="text-xs text-muted-foreground leading-snug">
-        Anyone with this URL and the remote password can sign in.
+        {multi
+          ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
+          : "Anyone with this URL reaches the sign-in page. Signing in gives full control, including running code on this computer through tools. API keys also work here."}
+      </span>
+      <span className="text-xs text-muted-foreground leading-snug">
+        While remote access is on, MCP servers that run local commands are
+        paused.
       </span>
     </div>
   );
@@ -428,14 +436,14 @@ export function RemoteAccessSection() {
       <StatusMessage
         message={
           requestError ??
-          blockMessage ??
-          status?.error ??
+          remoteAccessErrorMessage(status?.error) ??
           (status?.configurationError
             ? namedTunnelErrorMessage(status.configurationError, t)
             : null)
         }
-        destructive={!blockMessage}
+        destructive={true}
       />
+      <StatusMessage message={blockMessage} />
       <RemoteUrlPanel url={status?.url ?? null} />
 
       <div className="border-t border-border/60 px-4 py-1">

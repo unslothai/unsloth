@@ -49,7 +49,8 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
-import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
+import { FullInstallDialog } from "@/features/settings";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -271,12 +272,13 @@ export function ExportPage() {
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
-  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
-  const repair = useTauriRepairController();
+  const fullInstall = useFullInstallUpgrade();
+  const canUpgrade = fullInstall !== null;
+  const [fullInstallOpen, setFullInstallOpen] = useState(false);
   const exportUnsupportedMessage = exportUnsupportedText(
     hardware.exportUnsupportedReason,
     hardware.exportUnsupportedMessage,
-    repair !== null && !repair.isExternalServer,
+    canUpgrade,
   );
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
@@ -1652,8 +1654,22 @@ export function ExportPage() {
                   <AlertTitle>Export unavailable</AlertTitle>
                   <AlertDescription>
                     {exportUnsupportedMessage}
+                    {fullInstall && (
+                      <div className="mt-2">
+                        <Button size="xs" onClick={() => setFullInstallOpen(true)}>
+                          Install Training
+                        </Button>
+                      </div>
+                    )}
                   </AlertDescription>
                 </Alert>
+              )}
+              {fullInstall && (
+                <FullInstallDialog
+                  open={fullInstallOpen}
+                  onOpenChange={setFullInstallOpen}
+                  onConfirm={() => void fullInstall.repairInstall()}
+                />
               )}
 
               <MethodPicker
