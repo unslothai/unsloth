@@ -18,6 +18,7 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "linux-rocm": "rocm",
     "windows-hip": "rocm",
     "windows-rocm": "rocm",
+    "linux-sycl": "sycl",
     "linux-vulkan": "vulkan",
     "windows-vulkan": "vulkan",
     "windows-arm64-vulkan": "vulkan",
@@ -36,6 +37,7 @@ REQUESTABLE_BACKENDS = ("auto", "cpu", "cuda", "rocm", "vulkan")
 # Longest-token-first, so "cuda13-older" cannot read as something else.
 _ASSET_BACKEND_TOKENS = (
     ("vulkan", "vulkan"),
+    ("sycl", "sycl"),
     ("cuda", "cuda"),
     ("rocm", "rocm"),
     ("hip", "rocm"),
@@ -51,7 +53,7 @@ def normalize_backend(value: Any) -> Optional[str]:
     backend = value.strip().lower()
     if backend == "hip":
         return "rocm"
-    if backend in REQUESTABLE_BACKENDS or backend == "metal":
+    if backend in REQUESTABLE_BACKENDS or backend in ("metal", "sycl"):
         return backend
     return None
 
