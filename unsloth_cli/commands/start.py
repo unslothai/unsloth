@@ -6237,10 +6237,21 @@ _JSONC_COMMENT = re.compile(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', re.S)
 _JSONC_TRAILING_COMMA = re.compile(r'("(?:\\.|[^"\\])*")|,(?=\s*[\]}])')
 
 
-def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+def _load_app_config(
+    path: Path,
+    text: Optional[str],
+    *,
+    allow_json5: bool = False,
+) -> Optional[dict]:
     if text is None or not text.strip():
         return {}
-    if path.suffix == ".toml":
+    if allow_json5:
+        import json5
+
+        # Parse the raw document: JSONC's comment stripping does not recognize
+        # single-quoted JSON5 strings containing // or /* ... */.
+        data = json5.loads(text)
+    elif path.suffix == ".toml":
         try:
             import tomllib  # novermin
         except ImportError:
@@ -6253,7 +6264,7 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
         import yaml
         data = yaml.safe_load(text)
     else:
-        # OpenCode reads JSONC and OpenClaw JSON5, so accept comments and trailing commas in either.
+        # OpenCode reads JSONC; OpenClaw explicitly opts into JSON5 above.
         text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
         data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
     if not isinstance(data, dict):
@@ -6261,9 +6272,14 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
     return data
 
 
-def _parse_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+def _parse_app_config(
+    path: Path,
+    text: Optional[str],
+    *,
+    allow_json5: bool = False,
+) -> Optional[dict]:
     try:
-        return _load_app_config(path, text)
+        return _load_app_config(path, text, allow_json5 = allow_json5)
     except Exception:
         _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
 
@@ -6318,8 +6334,14 @@ def _splice_jsonc(text: str, keys: tuple, value) -> str:
     return text[:last] + f"\n{indent}{member}\n" + "  " * depth + text[close:]
 
 
-def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[str]:
-    config = _parse_app_config(path, text)
+def _set_app_values(
+    text: Optional[str],
+    path: Path,
+    updates: list,
+    *,
+    allow_json5: bool = False,
+) -> Optional[str]:
+    config = _parse_app_config(path, text, allow_json5 = allow_json5)
     before = json.dumps(config, sort_keys = True)
     for keys, value in updates:
         if value is _APP_DELETE:
@@ -6343,13 +6365,13 @@ def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[
         parent[keys[-1]] = value
     if json.dumps(config, sort_keys = True) == before:
         return text
-    if path.suffix != ".yaml":
+    if allow_json5 or path.suffix != ".yaml":
         candidate = text
         with contextlib.suppress(Exception):
             if candidate and candidate.strip():
                 for keys, value in updates:
                     candidate = _splice_jsonc(candidate, keys, value)
-                if _load_app_config(path, candidate) == config:
+                if _load_app_config(path, candidate, allow_json5 = allow_json5) == config:
                     return candidate
         return json.dumps(config, indent = 2, ensure_ascii = False) + "\n"
     import yaml
@@ -6456,6 +6478,8 @@ def _open_app_config(
     if state.get("path") != str(target.path):
         state = {}
     text = _read_app_file(target.path)
+    if target.agent == "openclaw":
+        parse = functools.partial(_parse_app_config, allow_json5 = True)
     parse(target.path, text)
     key, key_id = _app_api_key(target, base, explicit_key, state)
     return state_path, state, text, key, key_id
@@ -6502,7 +6526,10 @@ def _add_app_provider(
     try:
         state_path, state, text, key, key_id = _open_app_config(target, base, explicit_key)
         new_text = _set_app_values(
-            text, target.path, target.updates(text, target.path, base, key, entry)
+            text,
+            target.path,
+            target.updates(text, target.path, base, key, entry),
+            allow_json5 = target.agent == "openclaw",
         )
         new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
         _save_app_config(target, state_path, state, new_state, text, new_text)
@@ -6778,7 +6805,7 @@ def _openclaw_app_updates(
     entry,
     max_tokens = None,
 ) -> list:
-    config = _parse_app_config(path, text) or {}
+    config = _parse_app_config(path, text, allow_json5 = True) or {}
     agents = config.get("agents")
     defaults = agents.get("defaults") if isinstance(agents, dict) else None
     defaults = defaults if isinstance(defaults, dict) else {}

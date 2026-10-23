@@ -457,6 +457,62 @@ def test_opencode_app_reenables_a_disabled_unsloth(studio, monkeypatch):
     assert "unsloth-studio" in data["provider"]
 
 
+@pytest.mark.parametrize(
+    "original",
+    [
+        "{ agents: { defaults: { workspace: '~/work' } }, marker: 'keep me' }",
+        "{ 'agents': { 'defaults': { 'workspace': '~/work' } }, 'marker': 'keep me' }",
+        "{ agents: { defaults: { workspace: '~/work' } }, marker: 'https://example.test/a//b' }",
+        "{ /* mine */ agents: { defaults: { workspace: '~/work', }, }, marker: '/* literal */', }",
+    ],
+)
+def test_openclaw_app_preserves_json5_values_and_original_backup(studio, original):
+    import json5
+
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text(original)
+    expected = json5.loads(original)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json5.loads(config.read_text())
+    assert data["agents"] == expected["agents"]
+    assert data["marker"] == expected["marker"]
+    assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
+    assert config.with_name("openclaw.json.unsloth-backup").read_text() == original
+    updated = config.read_text()
+    assert CliRunner().invoke(start.start_app, ["openclaw", "--app"]).exit_code == 0
+    assert config.read_text() == updated
+
+
+@pytest.mark.parametrize("name", ["custom.settings", "custom.yaml", "custom.toml"])
+def test_openclaw_json5_format_is_selected_by_agent(studio, tmp_path, name):
+    import json5
+
+    config = tmp_path / name
+    config.write_text("{ marker: 'keep', agents: { defaults: {} } }")
+    target = start._AppTarget("openclaw", "OpenClaw app", config, start._openclaw_app_updates)
+    start._add_app_provider(target, BASE, APP_KEY, MODEL)
+    data = json5.loads(config.read_text())
+    assert data["marker"] == "keep"
+    assert "unsloth" in data["models"]["providers"]
+
+
+def test_opencode_app_does_not_accept_json5_as_jsonc(studio, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
+    config = studio["home"] / ".config/opencode/opencode.json"
+    config.parent.mkdir(parents = True)
+    original = "{ theme: 'dark' }"
+    config.write_text(original)
+    result = CliRunner().invoke(start.start_app, ["opencode", "--app"])
+    assert result.exit_code == 1
+    assert "Couldn't parse" in result.output
+    assert config.read_text() == original
+
+
 def test_openclaw_app_reads_a_commented_config(studio):
     config = studio["home"] / ".openclaw" / "openclaw.json"
     config.parent.mkdir()
@@ -558,13 +614,14 @@ def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
 def test_app_refuses_a_config_it_cannot_parse(studio):
     config = studio["home"] / ".openclaw" / "openclaw.json"
     config.parent.mkdir()
-    config.write_text("{ // json5 comment\n  agents: {} }\n")
+    original = "{ // json5 comment\n  agents: { broken } }\n"
+    config.write_text(original)
 
     result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
 
     assert result.exit_code == 1
     assert "Couldn't parse" in result.output
-    assert config.read_text() == "{ // json5 comment\n  agents: {} }\n"
+    assert config.read_text() == original
     assert studio["minted"] == 0
 
 
