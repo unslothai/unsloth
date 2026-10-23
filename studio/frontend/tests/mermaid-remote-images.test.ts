@@ -81,6 +81,11 @@ test("a `@{` or `}` inside a quoted label does not hide a later shape data block
   for (const [source, kept] of [
     [`flowchart LR\n  A["@{"] --> B@{ ${img} }`, 'flowchart LR\n  A["@{"] --> B@{ "w":10,"h":10 }'],
     [`flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ ${img} }`, 'flowchart LR\n  A["x @{ y"] --> C["}"] --> B@{ "w":10,"h":10 }'],
+    // A `}` inside the real block's quoted label must not close the label's `@{`.
+    [
+      `flowchart LR\n  A["@{"] --> B@{ label: "}", img: "https://attacker.example/x" }`,
+      'flowchart LR\n  A["@{"] --> B@{ "label":"}" }',
+    ],
     // Accessibility text takes the rest of its line, quotes included.
     [`flowchart LR\n  accTitle: A " title\n  B@{ ${img} }`, 'flowchart LR\n  accTitle: A " title\n  B@{ "w":10,"h":10 }'],
   ]) {
@@ -93,6 +98,13 @@ test("a `@{` or `}` inside a quoted label does not hide a later shape data block
 test("an unterminated `@{` is text and the diagram passes through", () => {
   const source = "sequenceDiagram\n  Alice->>Bob: show @{ img: foo";
   assert.equal(stripRemoteDiagramImages(source), source);
+});
+
+test("two readings of `@{` that overlap are both made inert, keeping the text", () => {
+  const source = "sequenceDiagram\n  Alice->>Bob: x @{\n  Bob->>Alice: y @{ img: https://attacker.example/z }";
+  const out = stripRemoteDiagramImages(source);
+  assert.equal(out, "sequenceDiagram\n  Alice->>Bob: x #64;{\n  Bob->>Alice: y #64;{ img: https://attacker.example/z }");
+  assert.equal(stripRemoteDiagramImages(out), out);
 });
 
 test("a style statement after a semicolon cannot fetch either", () => {

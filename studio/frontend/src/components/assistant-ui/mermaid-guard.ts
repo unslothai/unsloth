@@ -54,15 +54,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The `id@{ ... }` shape data blocks, as mermaid's lexer ends them: at the first `}` outside a "string".
- * Every `@{` is tried, since whether one is text (a quoted label, accessibility text) depends on lexer
- * state; one that never closes is text there too, so the scan moves on past it instead of stopping.
+ * Every `@{` that closes, with the block it would open: up to the first `}` outside a "string", as
+ * mermaid's lexer ends shape data. Whether a given `@{` is shape data or text (a quoted label,
+ * accessibility text, a sequence message) depends on lexer state, so each one is read on its own and
+ * the blocks may overlap.
  */
 function shapeDataBlocks(source: string): { start: number; end: number; body: string }[] {
   const blocks: { start: number; end: number; body: string }[] = [];
   if (!source.includes("@{")) return blocks;
   // The first `}` outside a string when a scan starts at i outside one (closeFrom) or inside one
-  // (quotedFrom), built once from the end so many unclosed openers still cost linear time.
+  // (quotedFrom), built once from the end so many `@{` markers still cost linear time.
   const closeFrom = new Int32Array(source.length + 1).fill(-1);
   const quotedFrom = new Int32Array(source.length + 1).fill(-1);
   for (let index = source.length - 1; index >= 0; index--) {
@@ -75,18 +76,42 @@ function shapeDataBlocks(source: string): { start: number; end: number; body: st
       quotedFrom[index] = quotedFrom[index + 1];
     }
   }
-  let from = 0;
-  for (;;) {
-    const open = source.indexOf("@{", from);
-    if (open < 0) return blocks;
+  for (let open = source.indexOf("@{"); open >= 0; open = source.indexOf("@{", open + 2)) {
     const close = closeFrom[open + 2];
-    if (close < 0) {
-      from = open + 2;
-      continue;
-    }
-    blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
-    from = close + 1;
+    if (close >= 0) blocks.push({ start: open, end: close + 1, body: source.slice(open + 2, close) });
   }
+  return blocks;
+}
+
+// Mermaid's own entity for `@`: it shows as `@` in text and never opens shape data.
+const INERT_OPENER = "#64;{";
+
+/**
+ * Each `@{` read as a block that would name a remote image gets that image taken out. When two such
+ * readings overlap, which one mermaid takes depends on lexer state, so both openers are made inert.
+ * A rewrite can change how a neighbouring `@{` reads, so the result is vetted again until it is stable.
+ */
+function withoutRemoteShapeImages(source: string): string {
+  let current = source;
+  for (let pass = 0; pass < 8; pass++) {
+    // Comments are blanked to the same length, so a `@{` or `"` in one cannot hide a later block.
+    const scanned = current.replace(COMMENT_LINE, (line) => " ".repeat(line.length));
+    const fetching: { start: number; end: number; replaced: string }[] = [];
+    for (const block of shapeDataBlocks(scanned)) {
+      const replaced = withoutRemoteImage(block.body);
+      if (replaced !== null) fetching.push({ start: block.start, end: block.end, replaced });
+    }
+    if (fetching.length === 0) return current;
+    const overlap = fetching.some((block, index) => index > 0 && block.start < fetching[index - 1].end);
+    let out = "";
+    let at = 0;
+    for (const block of fetching) {
+      out += current.slice(at, block.start) + (overlap ? INERT_OPENER : block.replaced);
+      at = overlap ? block.start + 2 : block.end;
+    }
+    current = out + current.slice(at);
+  }
+  return current.replaceAll("@{", INERT_OPENER);
 }
 
 /** A shape data block without a remote `img`, or null when it carries none and stays as written. */
@@ -145,17 +170,8 @@ function withoutFetchingStyle(line: string, midLine: boolean): string {
 
 /** The diagram source with every image or style that would load from elsewhere taken out. */
 export function stripRemoteDiagramImages(source: string): string {
-  let out = "";
-  let at = 0;
-  // Comments are blanked to the same length, so a `@{` or `"` in one cannot hide a later block.
+  let out = withoutRemoteShapeImages(source);
   const scanned = source.replace(COMMENT_LINE, (line) => " ".repeat(line.length));
-  for (const block of shapeDataBlocks(scanned)) {
-    const replaced = withoutRemoteImage(block.body);
-    if (replaced === null) continue;
-    out += source.slice(at, block.start) + replaced;
-    at = block.end;
-  }
-  out += source.slice(at);
   if (SEQUENCE.test(scanned)) out = out.replace(DETAILS_LINE, "");
   // Mermaid reads the diagram type after dropping directives: `%%{init}%%stateDiagram` counts.
   const midLine = MIDLINE_STYLE.test(scanned.replace(DIRECTIVE, ""));
