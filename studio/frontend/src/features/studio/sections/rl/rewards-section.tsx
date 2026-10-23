@@ -529,15 +529,19 @@ export function RewardsSection(): ReactElement {
     previewPending ? "rl.rewardEditor.scoring" : "rl.rewardEditor.run",
   );
 
-  const addToRun = (names: string[]) =>
+  // Read from the store, not this render: saves and imports finish after later edits.
+  const addToRun = (names: string[]) => {
+    const current = useTrainingConfigStore.getState().grpoRewards;
+    const taken = new Set(current.map((r) => r.name));
     setRewards(
       [
-        ...rewards,
+        ...current,
         ...names
-          .filter((name) => !selectedNames.has(name))
+          .filter((name) => !taken.has(name))
           .map((name) => ({ name, weight: 1 })),
       ].slice(0, 16),
     );
+  };
 
   const copyReward = async (name: string) => {
     try {
