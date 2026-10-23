@@ -3,7 +3,20 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { stripTypeScriptTypes } from "node:module";
 import { resolveHubSection } from "../src/features/model-picker/components/model-selector/hub-section.ts";
+import { readSrc } from "./helpers/kit.ts";
+
+const selector = readSrc("features/model-picker/components/model-selector.tsx");
+const defaultSectionSource = selector.slice(
+  selector.indexOf("function defaultHubSection("),
+  selector.indexOf("const HUB_SECTION_TABS"),
+);
+const defaultSection = new Function(
+  "loadLastHubSection",
+  "hasDownloadedModels",
+  stripTypeScriptTypes(defaultSectionSource) + "\nreturn defaultHubSection;",
+);
 
 const savedDevice = {
   section: "downloaded" as const,
@@ -11,6 +24,16 @@ const savedDevice = {
   hasDeviceModels: null,
   sectionChosenThisOpen: false,
 };
+
+test("saved Device survives cold caches until scoped inventory settles", () => {
+  const initialSection = defaultSection(() => "downloaded", () => false)();
+  for (const hasDeviceModels of [null, true, false]) {
+    assert.equal(
+      resolveHubSection({ ...savedDevice, section: initialSection, hasDeviceModels }),
+      hasDeviceModels === false ? "recommended" : "downloaded",
+    );
+  }
+});
 
 test("a saved Device tab falls back when this task's inventory is empty", () => {
   assert.equal(resolveHubSection(savedDevice), "downloaded");

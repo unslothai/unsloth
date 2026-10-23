@@ -346,12 +346,14 @@ function saveLastHubSection(section: HubSection): void {
     // Ignore unavailable storage.
   }
 }
-// A saved On Device preference is useful only while there are models on device.
+// Preserve saved choices until the task-scoped inventory settles.
 function defaultHubSection(hasAdditionalOnDeviceModels = false): HubSection {
-  if (!hasDownloadedModels() && !hasAdditionalOnDeviceModels) {
-    return "recommended";
-  }
-  return loadLastHubSection() ?? "downloaded";
+  return (
+    loadLastHubSection() ??
+    (hasDownloadedModels() || hasAdditionalOnDeviceModels
+      ? "downloaded"
+      : "recommended")
+  );
 }
 
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
