@@ -216,6 +216,15 @@ def _fresh_adapter_dirs(model, save_directory, started, selected = None):
     return out
 
 
+def _drop_stale_head(folder):
+    """A reused adapter folder's earlier head would be re-attached to an adapter it was not trained with."""
+    from ..save import _is_main_rank
+
+    stale = os.path.join(folder, "mtp_head.safetensors")
+    if _is_main_rank() and os.path.isfile(stale):
+        os.remove(stale)
+
+
 def _wrap_save_pretrained(model):
     """Plain `save_pretrained` keeps the trained head too: beside a LoRA adapter, else in the checkpoint."""
     original = model.save_pretrained
@@ -255,15 +264,24 @@ def _wrap_save_pretrained(model):
         result = original(save_directory, *args, **kwargs)
         if internal or not os.path.isdir(save_directory):
             return result
-        adapter_dirs = _fresh_adapter_dirs(
-            model, save_directory, started, _selected_adapters(original, save_directory, args, kwargs)
-        )
+        selected = _selected_adapters(original, save_directory, args, kwargs)
+        if selected is not None and not list(selected):
+            # PEFT saved no adapter: there is nothing to put the head beside, and no checkpoint to stitch.
+            return result
+        adapter_dirs = _fresh_adapter_dirs(model, save_directory, started, selected)
         if adapter_dirs:
             files = []
             # The head trained against the active adapter; an inactive one must not inherit it.
             active = _active_adapters(model) if getattr(model, "peft_config", None) else None
+            combined = active is not None and len(active) > 1
+            if combined:
+                print(
+                    f"Unsloth: adapters {sorted(active)} are active together, so the trained MTP head "
+                    "belongs to their combination and is not saved beside any single adapter."
+                )
             for name, folder in adapter_dirs:
-                if active is not None and name not in active:
+                if combined or (active is not None and name not in active):
+                    _drop_stale_head(os.path.join(save_directory, folder))
                     continue
                 if _save_mtp_head_beside_adapter(model, os.path.join(save_directory, folder)):
                     files.append(

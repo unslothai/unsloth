@@ -720,7 +720,8 @@ def _two_adapter_model(torch, active):
     object.__setattr__(model, "active_adapter", active)
 
     def peft_save(save_directory, safe_serialization = True, selected_adapters = None, **kwargs):
-        for name in selected_adapters or ("default", "task"):
+        # PEFT saves every adapter only when `selected_adapters` is None; [] saves none.
+        for name in ("default", "task") if selected_adapters is None else selected_adapters:
             folder = Path(save_directory) / ("" if name == "default" else name)
             folder.mkdir(parents = True, exist_ok = True)
             (folder / "adapter_config.json").write_text(json.dumps({"name": name}))
@@ -759,3 +760,38 @@ def test_head_is_written_only_beside_the_active_adapter(save_module, tmp_path):
     model.save_pretrained(str(out), selected_adapters = ["default"])
     assert (out / "adapter_config.json").is_file()
     assert not list(out.rglob("mtp_head.safetensors"))
+
+
+def test_an_empty_adapter_selection_saves_no_head(save_module, tmp_path, monkeypatch):
+    """`selected_adapters = []` saves nothing: no head, no `default` fallback, no checkpoint stitch."""
+    import torch
+    import unsloth.save as save
+
+    model = _two_adapter_model(torch, active = "default")
+    # Fresh `default` adapter config from a save a moment earlier, not part of this one.
+    (tmp_path / "adapter_config.json").write_text("{}")
+    monkeypatch.setattr(
+        save, "_stitch_mtp_head", lambda *a, **k: pytest.fail("stitched an adapter save")
+    )
+    model.save_pretrained(str(tmp_path), selected_adapters = [])
+    assert not list(tmp_path.rglob("mtp_head.safetensors"))
+    assert not (tmp_path / "task").exists()
+
+
+def test_a_combined_adapter_head_is_not_split_into_sidecars(save_module, tmp_path, capsys):
+    """Trained with several adapters active at once, the head belongs to none of them alone."""
+    import torch
+
+    model = _two_adapter_model(torch, active = ["default", "task"])
+    # A head left in the folder by an earlier single-adapter save must not survive either.
+    (tmp_path / "task").mkdir()
+    (tmp_path / "task" / "mtp_head.safetensors").write_bytes(b"stale")
+    model.save_pretrained(str(tmp_path))
+    assert (tmp_path / "task" / "adapter_config.json").is_file()
+    assert not list(tmp_path.rglob("mtp_head.safetensors"))
+    assert "active together" in capsys.readouterr().out
+    # Back to one active adapter: that adapter gets the head again.
+    object.__setattr__(model, "active_adapter", "task")
+    model.save_pretrained(str(tmp_path / "single"))
+    assert (tmp_path / "single" / "task" / "mtp_head.safetensors").is_file()
+    assert not (tmp_path / "single" / "mtp_head.safetensors").exists()
