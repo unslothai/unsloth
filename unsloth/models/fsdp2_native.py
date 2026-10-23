@@ -2016,10 +2016,13 @@ def native_save_optimizer(
 
 
 def native_load_optimizer(model, optimizer, path_or_state):
-    """Collective: every rank reads the full optimizer state (CPU) and keeps only its own shards."""
+    """Collective: every rank reads the full optimizer state (CPU) and keeps only its own shards. A
+    directory written by native_save_optimizer_sharded is read sharded instead (each rank its slice)."""
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_optimizer_state_dict
 
     state = path_or_state
+    if isinstance(state, (str, os.PathLike)) and _is_dcp_dir(state):
+        return native_load_optimizer_sharded(model, optimizer, state)
     if not isinstance(state, dict):
         state = torch.load(state, map_location = "cpu", weights_only = True)
     set_optimizer_state_dict(
@@ -2029,6 +2032,245 @@ def native_load_optimizer(model, optimizer, path_or_state):
         options = StateDictOptions(full_state_dict = True),
     )
     return state
+
+
+# Sharded (torch.distributed.checkpoint) resume. The optimizer directory is opt-in
+# (UNSLOTH_FSDP2_DCP_OPTIM=1): only a native FSDP2 run can read it back, while the full optimizer.pt
+# also loads into a plain (single GPU) Trainer resume, which would silently skip a directory it does
+# not know. Every resume reads both formats, whichever the checkpoint holds.
+_OPTIMIZER_DCP_DIR = "optimizer_dcp"
+
+
+def _env_on(name, default):
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in ("0", "false", "no", "off")
+
+
+def _is_dcp_dir(path):
+    return os.path.isdir(path) and os.path.isfile(os.path.join(path, ".metadata"))
+
+
+def _dcp_group(root):
+    """(process group for torch.distributed.checkpoint, usable): the world (None) when the model's mesh
+    spans it, the mesh's own group for a 1-D sub-mesh. A multi-dimensional sub-mesh has no single
+    group, so the sharded paths are not used for it."""
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return None, False
+    from torch.distributed.tensor import DTensor
+
+    mesh = next(
+        (p.device_mesh for p in root.parameters() if isinstance(p, DTensor)),
+        None,
+    )
+    if mesh is None or mesh.size() == dist.get_world_size():
+        return None, True
+    if mesh.ndim == 1:
+        return mesh.get_group(0), True
+    return None, False
+
+
+def _all_ranks_agree(flag, group):
+    """Collective: True only when `flag` holds on every rank of `group` (files and checkpoint
+    metadata are read per rank; every rank must take the same load path)."""
+    import torch.distributed as dist
+
+    backend = str(dist.get_backend(group))
+    device = "cpu"
+    if "gloo" not in backend and "nccl" in backend:
+        device = torch.device("cuda", torch.cuda.current_device())
+    t = torch.tensor([1 if flag else 0], dtype = torch.int32, device = device)
+    dist.all_reduce(t, op = dist.ReduceOp.MIN, group = group)
+    return bool(t.item())
+
+
+def native_save_optimizer_sharded(model, optimizer, directory):
+    """Collective: every rank writes only its own optimizer shards to `directory` with
+    torch.distributed.checkpoint (get_optimizer_state_dict(full_state_dict = False) + dcp.save), so no
+    rank holds the full optimizer state. Read back with native_load_optimizer(model, opt, directory);
+    DCP reshards to another world size."""
+    import torch.distributed.checkpoint as dcp
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_optimizer_state_dict
+
+    root = _native_root(model)
+    group, usable = _dcp_group(root)
+    if not usable:
+        raise RuntimeError(
+            "Unsloth: the sharded optimizer checkpoint needs a process group spanning the model's mesh."
+        )
+    state = get_optimizer_state_dict(
+        root,
+        _inner_optimizer(optimizer),
+        options = StateDictOptions(full_state_dict = False),
+    )
+    dcp.save(state, checkpoint_id = os.fspath(directory), process_group = group)
+    return state
+
+
+def native_load_optimizer_sharded(model, optimizer, directory):
+    """Collective: each rank reads only its own slices of a native_save_optimizer_sharded directory."""
+    import torch.distributed.checkpoint as dcp
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        get_optimizer_state_dict,
+        set_optimizer_state_dict,
+    )
+
+    root = _native_root(model)
+    optimizer = _inner_optimizer(optimizer)
+    group, usable = _dcp_group(root)
+    if not usable:
+        raise RuntimeError(
+            f"Unsloth: {directory} is a sharded optimizer checkpoint, which needs a process group "
+            "spanning the model's mesh."
+        )
+    options = StateDictOptions(full_state_dict = False)
+    # The target layout: this rank's shards (empty optimizer state is initialised first).
+    state = get_optimizer_state_dict(root, optimizer, options = options)
+    dcp.load(state, checkpoint_id = os.fspath(directory), process_group = group)
+    set_optimizer_state_dict(root, optimizer, state, options = options)
+    return state
+
+
+def _hf_reader_class():
+    """torch >= 2.9 HuggingFaceStorageReader(path, thread_count) (2.8's public one has another
+    signature, 2.7's is private), probed by feature; None when absent or switched off
+    (UNSLOTH_FSDP2_DCP_RESUME=0)."""
+    if not _env_on("UNSLOTH_FSDP2_DCP_RESUME", True):
+        return None
+    try:
+        import inspect
+        import torch.distributed.checkpoint as dcp
+
+        reader = getattr(dcp, "HuggingFaceStorageReader", None)
+        if reader is None or "thread_count" not in inspect.signature(reader.__init__).parameters:
+            return None
+    except Exception:
+        return None
+    return reader
+
+
+def _hf_safetensors_files(checkpoint):
+    """The safetensors files the full-model load would read (same precedence as
+    _read_checkpoint_weights), or None when that load would read something else (an adapter, a .bin).
+    The HF reader lists every *.safetensors in the directory, so a stray one also means None."""
+    import json
+
+    files = None
+    for name in _WEIGHT_FILES:
+        if os.path.isfile(os.path.join(checkpoint, name)):
+            files = [name] if name == "model.safetensors" else None
+            break
+    else:
+        index = os.path.join(checkpoint, "model.safetensors.index.json")
+        if not os.path.isfile(index):
+            return None
+        with open(index, encoding = "utf-8") as f:
+            files = sorted(set(json.load(f)["weight_map"].values()))
+    if not files:
+        return None
+    present = sorted(
+        f
+        for f in os.listdir(checkpoint)
+        if f.endswith(".safetensors") and os.path.isfile(os.path.join(checkpoint, f))
+    )
+    return files if present == files else None
+
+
+def _clean_fqn(name):
+    # get_model_state_dict drops these wrapper segments from its keys.
+    skip = ("_orig_mod", "_checkpoint_wrapped_module", "_fsdp_wrapped_module")
+    return ".".join(part for part in name.split(".") if part not in skip)
+
+
+def _match_hf_state(root, state, metadata):
+    """`state` (get_model_state_dict, sharded) restricted to what the checkpoint holds, or None when
+    the checkpoint does not match the model one to one (different key names, as a transformers weight
+    conversion would write; a parameter it lacks; a shape or dtype that differs; a non-tensor entry).
+    Tied parameters are read once, under a name the checkpoint has; a buffer the checkpoint lacks
+    keeps its value (as the full load does)."""
+    groups = {}
+    for name, param in root.named_parameters(remove_duplicate = False):
+        groups.setdefault(id(param), []).append(_clean_fqn(name))
+    param_keys = set()
+    for names in groups.values():
+        keys = [k for k in dict.fromkeys(names) if k in state]
+        param_keys.update(keys)
+        if len(keys) < 2:
+            continue
+        keep = next((k for k in keys if k in metadata), None)
+        if keep is None:
+            return None
+        for k in keys:
+            if k != keep:
+                state.pop(k)
+    for key in list(state):
+        if key not in metadata:
+            if key in param_keys:
+                return None
+            state.pop(key)
+            continue
+        value = state[key]
+        md = metadata[key]
+        properties = getattr(md, "properties", None)
+        if (
+            not isinstance(value, torch.Tensor)
+            or getattr(md, "size", None) is None
+            or tuple(md.size) != tuple(value.shape)
+            or getattr(properties, "dtype", None) != value.dtype
+        ):
+            return None
+    return state if state else None
+
+
+def _native_load_hf_sharded(root, checkpoint):
+    """Collective: a full-model safetensors checkpoint whose keys, shapes and dtypes equal the model's
+    sharded state dict is read with dcp.load + HuggingFaceStorageReader, so each rank reads only its
+    own slices (no rank holds the full model on the host). Returns the number of tensors loaded, or
+    None, on every rank alike, when the full load must run instead. Not for PEFT or quantized models."""
+    reader_cls = _hf_reader_class()
+    if reader_cls is None or _is_peft(root):
+        return None
+    if any(_is_quantized_param(p) for p in root.parameters()):
+        return None
+    group, usable = _dcp_group(root)
+    if not usable:
+        return None
+    state = reader = None
+    try:
+        if _hf_safetensors_files(checkpoint) is not None:
+            from torch.distributed.checkpoint.state_dict import (
+                StateDictOptions,
+                get_model_state_dict,
+            )
+
+            reader = reader_cls(checkpoint, thread_count = max(1, min(4, os.cpu_count() or 1)))
+            metadata = reader.read_metadata().state_dict_metadata
+            state = get_model_state_dict(root, options = StateDictOptions(full_state_dict = False))
+            state = _match_hf_state(root, state, metadata)
+    except Exception:
+        state = None
+    if not _all_ranks_agree(state is not None, group):
+        return None
+    import torch.distributed.checkpoint as dcp
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+
+    try:
+        dcp.load(state, storage_reader = reader, process_group = group)
+    except Exception as exc:
+        # dcp.load gathers every rank's outcome, so all ranks fall back together; the full load
+        # rewrites every tensor this one may have touched.
+        _print_rank0(
+            f"Unsloth: native FSDP2 sharded resume from {checkpoint} failed "
+            f"({type(exc).__name__}); loading the full checkpoint on every rank instead."
+        )
+        return None
+    n_loaded = len(state)
+    set_model_state_dict(root, state, options = StateDictOptions(full_state_dict = False, strict = False))
+    return n_loaded
 
 
 _WEIGHT_FILES = (
@@ -2160,6 +2402,12 @@ def native_load_model_checkpoint(model, checkpoint):
     from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
     root = _native_root(model)
+    n_loaded = _native_load_hf_sharded(root, checkpoint)
+    if n_loaded is not None:
+        _print_rank0(
+            f"Unsloth: native FSDP2 resumed {n_loaded} tensors from {checkpoint} (sharded read)."
+        )
+        return n_loaded
     adapters = []
     active = getattr(root, "active_adapters", None)
     if isinstance(active, (list, tuple)):
@@ -2376,12 +2624,27 @@ def _install_trainer_hooks():
         if not is_native_fsdp2(model) or getattr(self, "is_fsdp_enabled", False):
             return original_save_optimizer(self, output_dir)
         # Collective full optimizer state (the original saves rank 0's shards only), then the scheduler.
-        native_save_optimizer(
-            model,
-            self.optimizer,
-            os.path.join(output_dir, _OPTIMIZER_NAME),
-            should_save = self.args.should_save,
-        )
+        # UNSLOTH_FSDP2_DCP_OPTIM=1: each rank writes its own shards instead. A stale file of the
+        # other format in a reused directory is removed, so a resume cannot read it.
+        sharded = _env_on("UNSLOTH_FSDP2_DCP_OPTIM", False) and _dcp_group(_native_root(model))[1]
+        stale = os.path.join(output_dir, _OPTIMIZER_NAME if sharded else _OPTIMIZER_DCP_DIR)
+        if self.args.should_save and os.path.lexists(stale):
+            if os.path.isdir(stale) and not os.path.islink(stale):
+                import shutil
+                shutil.rmtree(stale)
+            else:
+                os.remove(stale)
+        if sharded:
+            native_save_optimizer_sharded(
+                model, self.optimizer, os.path.join(output_dir, _OPTIMIZER_DCP_DIR)
+            )
+        else:
+            native_save_optimizer(
+                model,
+                self.optimizer,
+                os.path.join(output_dir, _OPTIMIZER_NAME),
+                should_save = self.args.should_save,
+            )
         scheduler = getattr(self, "lr_scheduler", None)
         if self.args.should_save and scheduler is not None:
             torch.save(scheduler.state_dict(), os.path.join(output_dir, _SCHEDULER_NAME))
@@ -2391,15 +2654,23 @@ def _install_trainer_hooks():
     @functools.wraps(original_load_optimizer)
     def _load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
         model = getattr(self, "model", None)
+        sharded = checkpoint is not None and _is_dcp_dir(
+            os.path.join(checkpoint, _OPTIMIZER_DCP_DIR)
+        )
         if (
             checkpoint is None
             or not is_native_fsdp2(model)
             or getattr(self, "is_fsdp_enabled", False)
-            or not os.path.isfile(os.path.join(checkpoint, _OPTIMIZER_NAME))
+            or not (sharded or os.path.isfile(os.path.join(checkpoint, _OPTIMIZER_NAME)))
             or not os.path.isfile(os.path.join(checkpoint, _SCHEDULER_NAME))
         ):
             return original_load_optimizer(self, checkpoint, *args, **kwargs)
-        native_load_optimizer(model, self.optimizer, os.path.join(checkpoint, _OPTIMIZER_NAME))
+        # Whichever format the checkpoint holds (the sharded directory when both are present).
+        native_load_optimizer(
+            model,
+            self.optimizer,
+            os.path.join(checkpoint, _OPTIMIZER_DCP_DIR if sharded else _OPTIMIZER_NAME),
+        )
         self.lr_scheduler.load_state_dict(
             torch.load(os.path.join(checkpoint, _SCHEDULER_NAME), weights_only = True)
         )
