@@ -626,10 +626,10 @@ def _sharded(trainer, fsdp = False, zero3 = False):
     return trainer
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_fsdp_low_precision_peft_raises(dtype, monkeypatch):
-    # FSDP keeps TRL's in-place merge_adapter + unmerge_adapter on the sharded weights: in fp16 / bf16
-    # that drifts the frozen base every sync, so refuse instead.
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_fsdp_peft_raises(dtype, monkeypatch):
+    # TRL calls merge_adapter before it gathers the FSDP shards, so the full-size deltas meet sharded
+    # base weights (and the in-place round trip drifts a 16-bit base): refuse instead.
     monkeypatch.delenv(_STALE_ENV, raising = False)
     trainer, rec, model = _lora_trainer("colocate", dtype)
     _sharded(trainer, fsdp = True)
@@ -638,14 +638,78 @@ def test_fsdp_low_precision_peft_raises(dtype, monkeypatch):
     assert rec.loaded == [] and rec.resets == 0
 
 
-def test_fsdp_fp32_and_zero3_keep_trl_body():
-    # fp32 FSDP: TRL's round trip moves the base by fp32 rounding only. ZeRO-3: TRL merges inside
-    # GatheredParameters(modifier_rank = None), whose in-place edits are discarded on exit.
-    trainer, rec, model = _lora_trainer("colocate", torch.float32)
-    _sharded(trainer, fsdp = True)
-    assert _patched_method()(trainer) is None
-    assert trainer._unsloth_vllm_sync_kind == "trl" and "0.weight" in rec.loaded
+def test_zero3_keeps_trl_body():
+    # ZeRO-3: TRL merges inside GatheredParameters(modifier_rank = None), whose in-place edits are
+    # discarded on exit.
     trainer, rec, model = _lora_trainer("colocate", torch.bfloat16)
     _sharded(trainer, zero3 = True)
     assert _patched_method()(trainer) is None
     assert trainer._unsloth_vllm_sync_kind == "trl" and "0.weight" in rec.loaded
+
+
+def test_lora_on_a_shared_base_weight_raises(monkeypatch):
+    # Tied input / output weights both adapted: one vLLM name cannot carry two different deltas.
+    peft = pytest.importorskip("peft")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    base = _base_mlp()
+    base.append(torch.nn.Linear(16, 16, bias = False))
+    base[2].weight = base[0].weight
+    model = peft.get_peft_model(
+        base, peft.LoraConfig(r = 2, target_modules = ["0", "2"], init_lora_weights = False)
+    )
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "one base weight adapted at"):
+        _patched_method()(trainer)
+    assert rec.loaded == []
+
+
+def test_inactive_unsupported_adapter_does_not_block_sync():
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(
+        _base_mlp(), peft.LoraConfig(r = 2, target_modules = ["0"], init_lora_weights = False)
+    )
+    if "alora_invocation_tokens" not in peft.LoraConfig.__dataclass_fields__:
+        pytest.skip("this PEFT has no aLoRA")
+    other = peft.LoraConfig(
+        r = 2, target_modules = ["0"], alora_invocation_tokens = [5], init_lora_weights = False
+    )
+    model.add_adapter("other", other)
+    model.set_adapter("default")
+    trainer, rec = _peft_trainer(model)
+    assert _patched_method()(trainer) is None
+    assert trainer._unsloth_vllm_sync_kind == "peft_merged" and "0.weight" in rec.loaded
+
+
+@pytest.mark.parametrize("kind", ["ln_tuning", "poly"])
+def test_peft_without_a_static_merge_raises(kind, monkeypatch):
+    # LN tuning swaps the module on merge, POLY routes per task: neither has one merged weight.
+    peft = pytest.importorskip("peft")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    if kind == "ln_tuning":
+        base = torch.nn.Sequential(torch.nn.Linear(16, 16), torch.nn.LayerNorm(16))
+        config = peft.LNTuningConfig(target_modules = ["1"])
+    else:
+        base = _base_mlp()
+        config = peft.PolyConfig(r = 2, target_modules = ["0"], n_tasks = 2)
+    model = peft.get_peft_model(base, config)
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "no static merge"):
+        _patched_method()(trainer)
+    assert rec.loaded == []
+
+
+def test_block_swapped_model_raises(monkeypatch):
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    trainer, rec, model = _lora_trainer("colocate", torch.bfloat16)
+    model.base_model.model._unsloth_block_swap = object()
+    with pytest.raises(RuntimeError, match = "offload_layers"):
+        _patched_method()(trainer)
+    assert rec.loaded == []
+
+
+def test_legacy_trl_without_name_fixer_still_syncs():
+    # TRL < 0.20 has no _fix_param_name_to_vllm and sends the names as they are.
+    trainer, rec, model = _lora_trainer("colocate", torch.bfloat16)
+    del trainer._fix_param_name_to_vllm
+    assert _patched_method()(trainer) is None
+    assert sorted(dict(rec.tensors)) == ["0.weight", "1.bias", "1.weight"]
