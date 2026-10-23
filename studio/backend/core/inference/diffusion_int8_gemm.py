@@ -33,14 +33,11 @@ rotated Linears are swapped and their GEMM is cuBLAS ``_int_mm`` with torchao's 
 ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
 
 Rotated Linears that read the SAME activation (Q / K / V, a SwiGLU's gate / value) share one rotation + act quant
-(``shared_rotq_linears``): the fused kernel is an opaque custom op, and Inductor does not merge identical opaque calls
-in an inference graph, so each Linear used to rotate and quantize the shared input again (7 kernels per Qwen-Image-2.1
-block for 4 distinct inputs). Same codes, so the outputs are bit-identical to the separate calls.
+(``shared_rotq_linears``): Inductor does not merge identical opaque custom-op calls in an inference graph (7 kernels
+per Qwen-Image-2.1 block for 4 distinct inputs). Outputs are bit-identical to the separate calls.
 
-A Qwen-Image-2.1 SwiGLU MLP whose three Linears are all swapped here also gets its down projection's codes straight
-from the gate / value halves (``convrot_swiglu_act_quant``): the bf16 ``silu(gate) * value`` product is never written
-to HBM and read back for the rotation. Same ops as the stock MLP otherwise (the gate / value GEMMs, the down GEMM);
-kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``.
+A fully swapped Qwen-Image-2.1 SwiGLU MLP takes its down projection's codes straight from the gate / value halves
+(``convrot_swiglu_act_quant``); kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``.
 
 A block-streamed denoiser installs against its onload device (``install(..., device = ...)``): group offload's
 ``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
@@ -657,8 +654,7 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
 
 
 def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
-    """``[m(x) for m in linears]`` for rotated swapped Linears that share the input: ONE fused rotation + act quant of
-    ``x``, then each Linear's own GEMM. None when any of them is not on that path (the caller runs each Linear)."""
+    """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered."""
     import torch
 
     if x.dtype != torch.bfloat16 or not x.is_cuda or x.numel() < _MIN_ROWS * x.shape[-1]:
@@ -690,8 +686,7 @@ def shared_rotq_linears(x: Any, linears: tuple) -> Optional[list]:
 
 
 def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
-    """``down(silu(gate) * value)`` for a swapped rotated ``down``, its codes from the fused SwiGLU rotation + quant;
-    None when anything is not covered (the caller computes the stock product)."""
+    """``down(silu(gate) * value)`` via the fused SwiGLU rotation + quant, else None."""
     import torch
 
     rec = _swapped_rec(down)
@@ -726,8 +721,7 @@ def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
 
 
 def _swiglu_ff_forward(self: Any, hidden_states: Any) -> Any:
-    """``QwenImage21SwiGLUFeedForward.forward``: ``out(silu(gate_layer(x)) * proj(x))``: one rotation + act quant of
-    ``x`` for both halves, and the down projection fed by the fused SwiGLU rotation + act quant."""
+    """``QwenImage21SwiGLUFeedForward.forward`` on the shared and SwiGLU-fused quants."""
     pair = shared_rotq_linears(hidden_states, (self.gate_layer, self.proj))
     if pair is None:
         gate, value = self.gate_layer(hidden_states), self.proj(hidden_states)
@@ -759,8 +753,7 @@ def _swiglu_ff_eligible(module: Any) -> bool:
 
 
 def _install_swiglu_ff(transformer: Any, index: int) -> int:
-    """Patch the eligible SwiGLU MLPs on card ``index``: shared gate / value quant always, the SwiGLU prologue where
-    ``convrot_swiglu_act_quant`` covers the call (it returns None elsewhere and the stock product runs)."""
+    """Patch the eligible SwiGLU MLPs on card ``index``."""
     count = 0
     for module in transformer.modules():
         if _FF_MARK in module.__dict__:

@@ -5,9 +5,8 @@
 
 Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
 for bit. The fused QKV Linear: only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm90,
-sm100), resident only. Where it swaps them (fused rotation kernel on), the same patched QKV helper hands Q / K / V to
-``diffusion_int8_gemm.shared_rotq_linears`` instead: one rotation + act quant of the shared input, three GEMMs (the
-opaque kernel is not merged by Inductor, so the stock helper rotated the same input three times); resident or streamed.
+sm100), resident only. Where it swaps them, the patched helper routes Q / K / V through
+``diffusion_int8_gemm.shared_rotq_linears`` (Inductor does not merge the opaque kernel); resident or streamed.
 Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
 """
 
@@ -193,8 +192,7 @@ def _patch_prepare(logger: Any = None) -> bool:
 
 
 def _rotated_attention(root: Any) -> list:
-    """(attention module, [to_q, to_k, to_v]) for every Qwen-Image-2.1 attention whose Q / K / V share one ConvRot
-    group on one device."""
+    """(attention, [to_q, to_k, to_v]) whose Q / K / V share one ConvRot group on one device."""
     todo = []
     for _name, module in root.named_modules():
         if type(module).__name__ != "QwenImage21Attention":
@@ -209,9 +207,8 @@ def _rotated_attention(root: Any) -> list:
 
 
 def install_shared_qkv(transformer: Any, logger: Any = None) -> int:
-    """The patched QKV helper for the int8 GEMM path (any placement): Q / K / V that ``diffusion_int8_gemm`` swapped
-    onto the fused rotation kernel share one rotation + act quant. Checked per call, so the order against the int8
-    GEMM install does not matter. Returns the rotated attention count (0: not patched)."""
+    """Patch the QKV helper for the int8 GEMM path (checked per call, so install order does not matter); returns the
+    rotated attention count."""
     n = len(_rotated_attention(transformer))
     if not n or not _patch_prepare(logger):
         return 0

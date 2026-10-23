@@ -22,22 +22,14 @@ Per-arch gate (``_ROTQ_CONFIG``): measured archs only; ``UNSLOTH_DIFFUSION_INT8_
 ``UNSLOTH_DIFFUSION_INT8_GEMM=1``) also enables it on an unmeasured sm80+ part, still probe-gated. Kill switch
 ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``; ``UNSLOTH_DIFFUSION_INT8_GEMM=0`` turns off the whole int8 Linear swap.
 
-H16 ROTATION (``rotq_h16``, default on a device whose ``rotq_i8`` probe passed): ``H256 = H16 (x) H16``, so a group
-rotates as ``H16 . X . H16`` with X its 16 x 16 view: one bf16 tensor-core dot (16-term sums of exact products) and one
-fp32 dot (FMAs, or tf32x3 on the datacenter parts), 32 multiply-adds per element instead of the dense GEMM's 256. ``rotq_i8`` spends more tensor-core time
-than the act quant spends moving bytes on parts whose bandwidth outruns their bf16 throughput; this one is
-bandwidth-bound everywhere (one read of x, int8 out, like the plain act quant). NUMERICS: a different fp32 summation
-order than the dense GEMM, so the rotated value can land on the other side of a bf16 rounding boundary: measured ~1 code
-in 10^6 differs by one step, scales equal (the dense GEMM's own fp32 sums are no closer to the exact rotation). The
-probe gates it per device against the stock path at that tolerance. ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16=0`` keeps
-the dense, bit-identical kernel.
+H16 ROTATION (``rotq_h16``, default where ``rotq_i8`` passed): ``H256 = H16 (x) H16``, so a group rotates as
+``H16 . X . H16`` (one bf16 tensor-core dot, one fp32 dot): 32 multiply-adds per element instead of 256, bandwidth-bound
+everywhere. A different fp32 summation order: ~1 code in 10^6 differs by one step, scales equal; the probe gates it per
+device at that tolerance (``codes_close``). ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16=0`` keeps the bit-identical dense kernel.
 
-SwiGLU PROLOGUE (``convrot_swiglu_act_quant``, on ``rotq_h16`` only): the rotated down projection of a
-``silu(gate) * value`` MLP gets its codes straight from the two bf16 halves, the product computed in the kernel as the
-compiled stock MLP does it (``x * sigmoid(x)`` in fp32, bf16, times value, bf16). The stock path writes that
-[M, hidden] product to HBM and reads it back for the rotation; at Qwen-Image-2.1 1024px that round trip was the largest
-single cost of ConvRot over plain int8. Probed against the eager ATen product (``codes_close``). Kill switch
-``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``.
+SwiGLU PROLOGUE (``rotq_h16`` only): the down projection's codes come straight from the gate / value halves, the
+product computed in-kernel like the compiled stock MLP; the [M, hidden] HBM round trip was ConvRot's largest cost over
+plain int8 at Qwen-Image-2.1 1024px. Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_SWIGLU=0``.
 """
 
 from __future__ import annotations
@@ -82,26 +74,21 @@ _ROTQ_DEVICE_K: dict = {}
 _ROTQ_CALLS = [0]
 # Set once a device passed the probe; read by traced forwards (dynamo must not trace into the lru_cache'd registration).
 _ROTQ_HANDLE: Any = None
-# device index -> the rotq_h16 second-stage mode that passed its probe there ("ieee" / "tf32x3"; absent / False = the
-# dense rotq_i8), and whether the SwiGLU prologue did.
+# device index -> passing rotq_h16 mode ("ieee" / "tf32x3"; falsy = dense rotq_i8) / SwiGLU probe result
 _H16_DEVICE: dict = {}
 _SWIGLU_DEVICE: dict = {}
 _H16_CALLS = [0]
 _SWIGLU_CALLS = [0]
 _SWIGLU_HANDLE: Any = None
-# rotq_h16 tile: 16 rows of the [M * K / 256, 256] group view per program, the fastest or within 2% of it on L4
-# (Qwen-Image-2.1 shapes, M 4096 / 16384); a 128-row tile did not fit 100 KB of shared memory. One pass at 4 warps
-# when a row is a power-of-two count of groups up to 16 (K <= 4096), else two passes at 8 warps. Measured and
-# dropped: one row per program in a single masked pass at K 12288 (A100: 1.2x slower with the SwiGLU prologue, 4 warps
-# spilled on B200).
+# 16 group rows per program: fastest (within 2%) on L4; 128 rows overflow 100 KB smem. One masked row per program at
+# K 12288 was 1.2x slower on A100 and spilled on B200.
 _H16_TILE_ROWS = 16
 _H16_WARPS = 4
 _H16_WARPS_TWO_PASS = 8
-# Second stage (fp32 16-term dot): IEEE FMAs on CUDA cores, or tf32x3 (three tf32 tensor-core passes, fp32-level
-# error) on the datacenter parts whose fp32 FMA rate is a fraction of their tf32 rate. A100: tf32x3 1.2x faster than
-# FMAs at K 4096 and K 12288 (SwiGLU); sm89 / sm86 / sm120 run fp32 FMAs at their tf32 rate, so three passes cost more.
+# Second stage: tf32x3 (fp32-level error) where fp32 FMA rate is a fraction of tf32 (A100: 1.2x faster); sm89 / sm86 /
+# sm120 run fp32 FMAs at their tf32 rate, so they keep IEEE FMAs.
 _H16_TF32X3_ARCHS = ((8, 0), (9, 0), (10, 0), (10, 3))
-# chunks per row up to which both passes of the two-pass plan unroll (an unrolled long row overflows sm100 TMEM)
+# max chunks per row to unroll (a longer unrolled row overflows sm100 TMEM)
 _H16_UNROLL_MAX = 4
 
 
@@ -187,9 +174,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _swiglu_bf16(g, v):
-        # the compiled stock MLP's ``silu(g) * v`` (Inductor: x * sigmoid(x) in fp32, bf16 under
-        # emulate_precision_casts), times v in fp32, bf16. ATen's x / (1 + expf(-x)) with an IEEE divide matched
-        # eager bit for bit but made the kernel compute-bound (1.5-2.3x slower on B200).
+        # Inductor's silu(g) * v rounding. ATen's IEEE-divide form matched eager bitwise but was 1.5-2.3x slower on B200.
         gf = g.to(tl.float32)
         silu = _rbf16(gf * tl.sigmoid(gf))
         return (silu * v.to(tl.float32)).to(tl.bfloat16)
@@ -262,9 +247,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         SWIGLU: tl.constexpr,
         TF32X3: tl.constexpr,
     ):
-        # TM groups [TM, 256] -> x @ blockdiag(H256), bf16-rounded like the stock rotation's output. Group view
-        # X[a, b] = x[16 a + b]: Y = X . H16 on tensor cores (bf16 x, H16 entries +-1/4: exact products, 16-term fp32
-        # sums), then Z = H16 . Y as an fp32 FMA dot (Z[c, d] lands at 16 c + d).
+        # X[a, b] = x[16 a + b]; Y = X . H16 on tensor cores (H16 entries +-1/4: exact products), Z = H16 . Y in fp32.
         offs = tl.arange(0, 256)
         ptrs = gidx[:, None] * 256 + offs[None, :]
         x = tl.load(x_ptr + ptrs, mask = live[:, None], other = 0.0)
@@ -370,10 +353,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         EPS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
     ):
-        # one program = ROWS activation rows, CG of each row's NG groups per chunk. ONE_PASS (CG == NG): rotate,
-        # amax, quantize from registers. Otherwise an amax pass over the NCH chunks, then a recompute + quant pass
-        # (the second read of a row comes from L2; the rotation is cheap enough to do twice). UNROLL (few chunks)
-        # unrolls both passes; a long row keeps a loop (an unrolled one overflows sm100's tensor memory).
+        # ONE_PASS: rotate, amax, quantize from registers. Else an amax pass, then recompute + quant (row re-read from L2).
         TM: tl.constexpr = ROWS * CG
         pid = tl.program_id(0)
         t = tl.arange(0, TM)
@@ -905,10 +885,8 @@ def _probe_input(m: int, k: int, g: Any) -> Any:
 
 
 def codes_close(q: Any, s: Any, rq: Any, rs: Any) -> bool:
-    """``rotq_h16``'s acceptance against the stock codes: same dtypes and shapes; every code within two steps (v1 rounds
-    ``z / s`` to bf16, whose step is 0.5 near the top of the int8 range, so one bf16 step of z can move a code by two);
-    at most 1 in 10^4 codes (and 8) off on rows whose scale matches; a row whose amax rounded the other way at most one
-    bf16 step off in scale, and at most 1% of rows (and 1) like that. A broken kernel misses by far more."""
+    """``rotq_h16`` vs stock codes: every code within two steps (v1's bf16 ``z / s`` has step 0.5 near 127); <= 1 in
+    10^4 codes (and 8) off on scale-matched rows; <= 1% of rows (and 1) one bf16 step off in scale."""
     import torch
 
     if q.shape != rq.shape or q.dtype != rq.dtype or s.shape != rs.shape or s.dtype != rs.dtype:
