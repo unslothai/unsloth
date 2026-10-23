@@ -48,12 +48,14 @@ export function endSaveSession(): void {
   if (current.timer) {
     clearTimeout(current.timer);
     current.timer = null;
-    // Snapshot now: by the time an in-flight save settles the store may hold the next flow.
-    const state = useDocStore.getState();
-    const doc =
-      state.flowId === current.flowId ? documentFromState(state) : null;
+  }
+  // Snapshot now, even with no timer: a save queued behind an in-flight one is skipped once the next flow loads,
+  // and by the time it would run the store may hold that flow. saveClosing skips an unchanged document.
+  const state = useDocStore.getState();
+  const doc = state.flowId === current.flowId ? documentFromState(state) : null;
+  if (doc) {
     current.inflight = (current.inflight ?? Promise.resolve()).then(() =>
-      doc ? saveClosing(current, doc) : undefined,
+      saveClosing(current, doc),
     );
   }
   void (current.inflight ?? Promise.resolve()).finally(() => {

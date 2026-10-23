@@ -14,7 +14,7 @@ import json
 import re
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from core.flows import assets as asset_store
@@ -101,6 +101,19 @@ def strip_think(text: str) -> str:
     return _THINK.sub("", text or "").strip()
 
 
+def visible_so_far(text: str) -> str:
+    """What a streamed reply can show yet: closed think blocks dropped, an open one cut, a half-sent tag held back."""
+    shown = _THINK.sub("", text)
+    lowered = shown.lower()
+    cut = lowered.find("<think>")
+    if cut >= 0:
+        return shown[:cut]
+    for n in range(min(len("<think>") - 1, len(shown)), 0, -1):
+        if "<think>".startswith(lowered[-n:]):
+            return shown[:-n]
+    return shown
+
+
 def first_json(text: str) -> Any:
     """The first JSON object or array in ``text`` (models often wrap JSON in prose or fences)."""
     text = strip_think(text)
@@ -148,6 +161,34 @@ def gallery_media(kind: str, row: dict, **extra: Any) -> dict:
             value[key] = row[key]
     value.update({k: v for k, v in extra.items() if v is not None})
     return value
+
+
+def gallery_media_present(value: Any) -> bool:
+    """False when a value holds an image, clip or video whose gallery entry is gone (the user deleted it)."""
+    from core.inference import audio_gallery, image_gallery, video_gallery
+
+    owned = {
+        "image": image_gallery.owned_image_path,
+        "audio": audio_gallery.owned_audio_path,
+        "video": video_gallery.owned_video_path,
+    }
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            ref = item.get("ref")
+            kind, _, media_id = ref.partition(":") if isinstance(ref, str) else ("", "", "")
+            if (
+                kind in owned
+                and media_id
+                and item.get("kind") == kind
+                and owned[kind](media_id) is None
+            ):
+                return False
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
 
 
 async def media_bytes(ctx: Any, media: Any) -> tuple[bytes, str]:
@@ -377,7 +418,7 @@ async def llm_text(
             payload = await ctx.call("POST", "/v1/chat/completions", json = body)
         return strip_think(_message_text(payload))
     parts: list[str] = []
-    in_think = False
+    shown = 0
     try:
         with tools_force_disabled():
             async for chunk in flow_caller.stream_sse(ctx.caller, "/v1/chat/completions", body):
@@ -390,13 +431,11 @@ async def llm_text(
                     if not isinstance(piece, str) or not piece:
                         continue
                     parts.append(piece)
-                    # Hide inline thinking from the live preview.
-                    if "<think>" in piece:
-                        in_think = True
-                    if not in_think:
-                        ctx.text_delta(stream_port, piece)
-                    if "</think>" in piece:
-                        in_think = False
+                    # Hide inline thinking from the live preview, even when a tag is split across pieces.
+                    visible = visible_so_far("".join(parts))
+                    if len(visible) > shown:
+                        ctx.text_delta(stream_port, visible[shown:])
+                        shown = len(visible)
     except flow_caller.RouteError as exc:
         raise FlowNodeError(exc.detail, status = exc.status) from None
     return strip_think("".join(parts))
@@ -413,6 +452,76 @@ def _message_text(payload: Any) -> str:
     return content or ""
 
 
+class JsonFieldStream:
+    """The decoded value of one top-level string field, read from JSON as it streams in.
+
+    ``feed(text_so_far)`` returns what the field gained since the last call, so a reply's text can be shown while the
+    rest of the object (items, quests) is still being written. An escape cut off at the end waits for the next chunk.
+    """
+
+    _ESCAPES = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+
+    def __init__(self, field: str):
+        self._key = re.compile(r'[{,]\s*"' + re.escape(field) + r'"\s*:\s*"')
+        self._start: Optional[int] = None
+        self._pos = 0
+        self._done = False
+        self._pending_high: Optional[int] = None
+
+    def feed(self, text: str) -> str:
+        if self._done:
+            return ""
+        if self._start is None:
+            found = self._key.search(text)
+            if found is None:
+                return ""
+            self._start = self._pos = found.end()
+        out: list[str] = []
+        i = self._pos
+        while i < len(text):
+            ch = text[i]
+            if ch == '"':
+                self._done = True
+                i += 1
+                break
+            if ch != "\\":
+                out.append(ch)
+                i += 1
+                continue
+            if i + 1 >= len(text):
+                break
+            code = text[i + 1]
+            if code == "u":
+                if i + 6 > len(text):
+                    break
+                try:
+                    value = int(text[i + 2 : i + 6], 16)
+                except ValueError:
+                    value = 0xFFFD
+                i += 6
+                if 0xD800 <= value < 0xDC00:
+                    self._pending_high = value
+                    continue
+                if 0xDC00 <= value < 0xE000 and self._pending_high is not None:
+                    value = 0x10000 + ((self._pending_high - 0xD800) << 10) + (value - 0xDC00)
+                self._pending_high = None
+                out.append(chr(value) if not 0xD800 <= value < 0xE000 else "\ufffd")
+                continue
+            out.append(self._ESCAPES.get(code, code))
+            i += 2
+        self._pos = i
+        return "".join(out)
+
+
 async def llm_json(
     ctx: Any,
     *,
@@ -424,7 +533,9 @@ async def llm_json(
     max_tokens: int = 4096,
     seed: Optional[int] = None,
     images: Optional[list[dict]] = None,
+    on_text: Optional[Callable[[str], None]] = None,
 ) -> Any:
+    """``on_text`` streams the answer: it is called with the raw JSON written so far after every chunk."""
     from state.tool_policy import tools_force_disabled
 
     kind = "vision" if images else "chat"
@@ -438,13 +549,15 @@ async def llm_json(
         images = images,
         thinking = False,
         seed = seed,
-        stream = False,
+        stream = on_text is not None,
     )
     body["response_format"] = {
         "type": "json_schema",
         "json_schema": {"name": "flow_output", "schema": schema, "strict": True},
     }
     try:
+        if on_text is not None:
+            return first_json(await _stream_text(ctx, body, on_text))
         with tools_force_disabled():
             payload = await ctx.call("POST", "/v1/chat/completions", json = body)
         return first_json(_message_text(payload))
@@ -462,9 +575,33 @@ async def llm_json(
     body["cancel_id"] = f"flow-{uuid.uuid4().hex[:24]}"
     # The retry is a new request, so Stop needs its id too.
     _register_chat_cancel(ctx, body["cancel_id"])
+    if on_text is not None:
+        return first_json(await _stream_text(ctx, body, on_text))
     with tools_force_disabled():
         payload = await ctx.call("POST", "/v1/chat/completions", json = body)
     return first_json(_message_text(payload))
+
+
+async def _stream_text(ctx: Any, body: dict, on_text: Callable[[str], None]) -> str:
+    from core.flows import caller as flow_caller
+    from state.tool_policy import tools_force_disabled
+
+    body["stream"] = True
+    parts: list[str] = []
+    try:
+        with tools_force_disabled():
+            async for chunk in flow_caller.stream_sse(ctx.caller, "/v1/chat/completions", body):
+                ctx.check_cancelled()
+                if isinstance(chunk.get("error"), dict):
+                    raise FlowNodeError(str(chunk["error"].get("message") or "The model failed"))
+                for choice in chunk.get("choices") or []:
+                    piece = ((choice or {}).get("delta") or {}).get("content")
+                    if isinstance(piece, str) and piece:
+                        parts.append(piece)
+                        on_text("".join(parts))
+    except flow_caller.RouteError as exc:
+        raise FlowNodeError(exc.detail, status = exc.status) from None
+    return strip_think("".join(parts))
 
 
 async def generate_image(
@@ -748,6 +885,7 @@ async def speak(
     voice: str = "",
     instructions: str = "",
     reference: Optional[dict] = None,
+    reference_text: str = "",
     seed: Optional[int] = None,
 ) -> dict:
     await ensure_model(ctx, "tts", model)
@@ -756,6 +894,8 @@ async def speak(
     body: dict[str, Any] = {"workflow": "clone" if reference else "speak", "text": text}
     if reference:
         body["inputs"] = {"reference": await audio_ref(ctx, reference)}
+        if reference_text.strip():
+            body["inputs"]["reference_text"] = reference_text.strip()[:4000]
     if voice and not reference:
         body["options"] = {"voice": voice}
     if instructions:

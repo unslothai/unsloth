@@ -3,6 +3,8 @@
 
 import asyncio
 
+import pytest
+
 from core.flows import engine as engine_mod
 from core.flows import package
 from core.flows.compiler import CompileError, compile_flow, parse_document
@@ -138,6 +140,44 @@ def test_finetune_trains_on_a_data_recipe_dataset(monkeypatch):
     assert uploaded.decode().count("\n") == 2
 
 
+def test_finetune_waits_out_a_trainer_that_is_still_shutting_down(monkeypatch):
+    monkeypatch.setattr(training, "POLL_S", 0)
+    starts = []
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            starts.append(body)
+            if len(starts) < 3:
+                # The route's refusal names the run that is still active, not a new one.
+                return {"job_id": "old", "status": "error", "error": "Training already active"}
+            raise RuntimeError("started")
+        raise AssertionError(path)
+
+    ctx = _Ctx(routes)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.progress = lambda *a, **k: None
+    ctx.check_cancelled = lambda: None
+    try:
+        asyncio.run(training.finetune(ctx))
+    except RuntimeError as exc:
+        assert str(exc) == "started"
+    assert len(starts) == 3
+
+
+def test_finetune_reports_other_start_errors_instead_of_polling_another_job():
+    from core.flows.registry import FlowNodeError
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "old", "status": "error", "message": "No GPU memory", "error": "oom"}
+        raise AssertionError(path)
+
+    ctx = _Ctx(routes)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    with pytest.raises(FlowNodeError, match = "No GPU memory"):
+        asyncio.run(training.finetune(ctx))
+
+
 def test_edit_image_falls_back_when_the_family_has_no_instruction_editing():
     from core.flows.nodes import image
     from core.flows.registry import FlowNodeError
@@ -268,6 +308,49 @@ def test_transcribe_retries_without_timestamps_on_501(monkeypatch):
     ctx = Ctx()
     assert asyncio.run(audio.transcribe(ctx))["text"] == "hello"
     assert ctx.formats == ["verbose_json", "json"]
+
+
+def test_transcribe_downloads_a_missing_speech_model_once(monkeypatch):
+    from core.flows.nodes import audio
+    from core.flows.registry import FlowNodeError
+    from studio_mcp.tools import audio as mcp_audio
+
+    async def fake_bytes(ctx, media):
+        return b"RIFF", "audio/wav"
+
+    downloads = []
+
+    async def fake_download(caller, ctx, model):
+        downloads.append(model)
+
+    monkeypatch.setattr(audio, "media_bytes", fake_bytes)
+    monkeypatch.setattr(mcp_audio, "_download_then_retry", fake_download)
+
+    class Ctx:
+        params = {"translate": False, "speakers": False}
+        inputs = {"audio": {"kind": "audio", "ref": "audio:1"}}
+        caller = object()
+        calls = 0
+
+        def progress(self, *a, **kw):
+            pass
+
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            data = None,
+            **kw,
+        ):
+            self.calls += 1
+            if not downloads:
+                raise FlowNodeError("STT model 'x' is not downloaded yet.", status = 409)
+            return {"text": "hello"}
+
+    ctx = Ctx()
+    assert asyncio.run(audio.transcribe(ctx))["text"] == "hello"
+    assert downloads == [None] and ctx.calls == 2
 
 
 def test_finishing_an_item_quest_takes_that_item():
@@ -608,3 +691,133 @@ async def test_for_each_keeps_null_results_in_place():
 def test_captions_never_draw_missing_glyphs():
     from core.flows.nodes.image import _ASCII_PUNCT
     assert "first \u2014 even\u2026".translate(_ASCII_PUNCT) == "first - even..."
+
+
+def test_cached_media_the_user_deleted_is_not_served(monkeypatch):
+    from core.flows.nodes import _common
+    from core.inference import audio_gallery, image_gallery, video_gallery
+
+    present = {"keep"}
+    for mod, fn in (
+        (image_gallery, "owned_image_path"),
+        (audio_gallery, "owned_audio_path"),
+        (video_gallery, "owned_video_path"),
+    ):
+        monkeypatch.setattr(mod, fn, lambda media_id: "/x" if media_id in present else None)
+    kept = {"images": [{"kind": "image", "ref": "image:keep"}], "text": "hi"}
+    gone = {"clip": {"kind": "audio", "ref": "audio:gone"}}
+    assert _common.gallery_media_present(kept)
+    assert not _common.gallery_media_present(gone)
+    # Embedded flow assets and plain values are not gallery entries.
+    assert _common.gallery_media_present({"image": {"kind": "image", "ref": "sha256:abc"}, "n": 3})
+
+
+class _UpscaleCtx:
+    def __init__(self, png: bytes, error: str):
+        self.inputs = {"image": {"kind": "image", "ref": "a" * 64}}
+        self.params = {"factor": "2"}
+        self.seed, self.error, self.png, self.logs, self.saved = 1, error, png, [], []
+
+    async def generate_image(self, **kwargs):
+        raise FlowNodeError(self.error)
+
+    async def media_bytes(self, value):
+        return self.png, "image/png"
+
+    def log(
+        self,
+        message,
+        level = "info",
+    ):
+        self.logs.append((level, message))
+
+    async def save_asset(
+        self,
+        data,
+        mime,
+        kind = None,
+    ):
+        self.saved.append(data)
+        return {"kind": "image", "ref": "b" * 64}
+
+
+def _png_bytes(w, h):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), "red").save(buf, format = "PNG")
+    return buf.getvalue()
+
+
+def test_upscale_resizes_when_the_loaded_model_cannot_upscale():
+    import io
+
+    from PIL import Image
+
+    from core.flows.nodes.image import upscale
+
+    ctx = _UpscaleCtx(
+        _png_bytes(64, 40), "upscale is not supported for the 'flux.2-klein' model family."
+    )
+    out = asyncio.run(upscale(ctx))
+    assert out["image"]["kind"] == "image"
+    assert Image.open(io.BytesIO(ctx.saved[0])).size == (128, 80)
+    assert ctx.logs and ctx.logs[0][0] == "warning"
+
+
+def test_upscale_still_raises_other_errors():
+    from core.flows.nodes.image import upscale
+    ctx = _UpscaleCtx(_png_bytes(8, 8), "CUDA out of memory")
+    with pytest.raises(FlowNodeError):
+        asyncio.run(upscale(ctx))
+
+
+def test_speak_sends_the_reference_transcript_for_cloning(monkeypatch):
+    from core.flows.nodes import _common
+
+    sent = []
+
+    async def fake_run(ctx, body):
+        sent.append(body)
+        return [{"kind": "audio", "ref": "audio:x"}]
+
+    async def fake_ensure(ctx, kind, model):
+        return None
+
+    monkeypatch.setattr(_common, "audio_run", fake_run)
+    monkeypatch.setattr(_common, "ensure_model", fake_ensure)
+    clip = {"kind": "audio", "ref": "audio:abc"}
+    asyncio.run(
+        _common.speak(
+            object(), model = None, text = "Hola", reference = clip, reference_text = " Hello there "
+        )
+    )
+    asyncio.run(
+        _common.speak(object(), model = None, text = "Hola", reference_text = "ignored without a clip")
+    )
+    assert sent[0]["workflow"] == "clone" and sent[0]["inputs"]["reference_text"] == "Hello there"
+    assert sent[1]["workflow"] == "speak" and "inputs" not in sent[1]
+    # The body must pass the route's own request model (extra fields are refused there).
+    from models.inference import AudioRunRequest
+
+    sent[0]["inputs"]["reference"] = {"clip_id": "abc"}
+    AudioRunRequest.model_validate(sent[0])
+    assert any(p["id"] == "reference_text" for p in SPECS_BY_TYPE["audio.speak"]["inputs"])
+
+
+def test_streamed_text_hides_thinking_split_across_pieces():
+    from core.flows.nodes._common import visible_so_far
+
+    pieces = ["<th", "ink>plan the ", "reply</thi", "nk>Hello", " there <", "b>x"]
+    shown, text = "", ""
+    for piece in pieces:
+        text += piece
+        visible = visible_so_far(text)
+        assert visible.startswith(shown), (shown, visible)
+        shown = visible
+    assert shown == "Hello there <b>x"
+    assert "plan" not in shown and "<th" not in shown
+    # A closing tag and the answer in one piece: the answer is shown.
+    assert visible_so_far("<think>x</think>Answer") == "Answer"
