@@ -247,6 +247,26 @@ def _router_declines_now() -> bool:
         return False
 
 
+def _routed_now(slots: dict) -> bool:
+    """Whether an active CFG-parallel router holds the forward slot and would pair the halves now."""
+    router = slots.get("_unsloth_cfg_router")
+    return (
+        router is not None
+        and slots.get("forward") is router
+        and getattr(router, "disabled_reason", None) is None
+        and not _router_declines_now()
+    )
+
+
+def _eager_now(pipe: Any, denoiser: Any, slots: dict) -> bool:
+    """compiled_only with nothing compiled or graphed and no active router: the render stays batched (split on OOM)."""
+    return (
+        bool(slots.get(_COMPILED_ONLY_ATTR))
+        and not _graphs_engaged(pipe, denoiser)
+        and not _routed_now(slots)
+    )
+
+
 def _static_skip_state(slots: dict) -> Optional[tuple]:
     skip = slots.get("_unsloth_static_skip")
     if skip is None or not hasattr(skip, "ordinal"):
@@ -289,12 +309,7 @@ def _make_call(orig_call: Any) -> Any:
                 stats["batched"] += 1
             return orig_call(self, *args, **kwargs)
         router = slots.get("_unsloth_cfg_router")
-        routed = (
-            router is not None
-            and slots.get("forward") is router
-            and getattr(router, "disabled_reason", None) is None
-            and not _router_declines_now()
-        )
+        routed = _routed_now(slots)
         # A CFG-parallel router needs the halves even eager: it cannot pair one batched call.
         if slots.get(_EAGER_ATTR) and not slots.get(_OOM_ATTR) and not routed:
             # Eager: one batched call is faster; two calls at half the activations only when it does not fit.
@@ -458,7 +473,7 @@ def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:
     if not isinstance(slots, dict) or not slots.get(_ARMED_ATTR) or zimage_cfg_split_disabled():
         return False
     try:
-        if slots.get(_COMPILED_ONLY_ATTR) and not _graphs_engaged(pipe, denoiser):
+        if _eager_now(pipe, denoiser, slots):
             return False
         return _declined_now(denoiser) is None
     except Exception:  # noqa: BLE001 - unknown: sized as the batched call
@@ -482,8 +497,9 @@ def render(pipe: Any, samples: int):
     if not armed:
         yield
         return
-    # Eager (compiled_only, nothing compiled or graphed): batched, split only after the batched call ran out of memory.
-    eager = bool(slots.get(_COMPILED_ONLY_ATTR)) and not _graphs_engaged(pipe, denoiser)
+    # Eager (compiled_only, nothing compiled or graphed, no active router): batched, split only after the batched call
+    # ran out of memory. Decided once per render, as the request guard priced it: routed at entry splits throughout.
+    eager = _eager_now(pipe, denoiser, slots)
     denoiser.__dict__[_SAMPLES_ATTR] = int(samples)
     if eager:
         denoiser.__dict__[_EAGER_ATTR] = True

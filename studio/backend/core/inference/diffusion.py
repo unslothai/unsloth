@@ -13045,6 +13045,16 @@ class DiffusionBackend:
                     from .diffusion_autoopt.runtime import auto_cache_steps
                     cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
                     auto_step_cache_on = auto_step_cache_mode(cache_steps) is not None
+                    if not auto_step_cache_on:
+                        # Disengage now, so the guard sees the uncached denoiser; a failed disable keeps the marker
+                        # and the doubled price. The toggle below is then a no-op that updates status.
+                        maybe_toggle_step_cache(
+                            state.pipe,
+                            steps = cache_steps,
+                            quant_active = state.cache_quant_active,
+                            threshold = state.cache_threshold,
+                            logger = logger,
+                        )
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
 

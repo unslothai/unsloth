@@ -705,3 +705,47 @@ def test_compiled_only_honours_the_background_compile_eager_gate():
     with zs.render(pipe, 1):
         _run(model, *args)
     assert zs.zimage_cfg_split_status(pipe)["split"] == 1
+
+
+def test_eager_render_behind_an_active_router_is_priced_and_run_split():
+    """An eager compiled_only denoiser behind an active CFG-parallel router splits through run_pair: priced at the
+    guidance-off batch, and it keeps splitting for the render even if the router gives up mid-render."""
+    from core.inference import diffusion_bg_compile as bg
+    from core.inference.diffusion_multigpu import CfgParallelRouter
+
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    router = CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    model.__dict__["forward"] = router
+    model.__dict__["_unsloth_cfg_router"] = router
+    args = _guided_args(_latent(17), torch.tensor([0.4]), 9, 12, 17)
+    try:
+        assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+        with bg.force_eager():
+            assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+        with zs.render(pipe, 1):
+            _run(model, *args)
+            router.disabled_reason = "replica failed"
+            _run(model, *args)
+        assert zs.zimage_cfg_split_status(pipe)["split"] == 2
+        assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    finally:
+        model.__dict__.pop("forward", None)
+        model.__dict__.pop("_unsloth_cfg_router", None)
+
+
+def test_studio_guard_disengages_a_pending_auto_cache_before_pricing():
+    """A cache the AUTO toggle will turn off is disengaged before the guard, so the split is not priced as declined."""
+    source = _diffusion_source()
+    predict = source.index("auto_step_cache_on = auto_step_cache_mode(cache_steps)")
+    guard = source.index("guard_cfg, extra_mib = split_aware_request_extra(")
+    early = source.index("maybe_toggle_step_cache(", predict)
+    assert predict < early < guard
+    assert "if not auto_step_cache_on:" in source[predict:early]
+
+
+def _diffusion_source():
+    import pathlib
+    return pathlib.Path(zs.__file__).with_name("diffusion.py").read_text()
