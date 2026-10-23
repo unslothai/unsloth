@@ -752,6 +752,7 @@ async def unload_media(caller: Caller, kind: str) -> UnloadResult:
             return UnloadResult(kind = kind, unloaded = False)
         # Read just before the unload goes out: a POST finishing while it runs may register after it.
         pending = [job for job in stopped if job.post in posts and not job.post.done()]
+        _mark_media_unloaded(kind)
         after = await route_json("POST", routes["unload"], caller = caller)
     except asyncio.CancelledError:
         # The caller went away before this unload went out: unload each stopped load once its POST is back.
@@ -783,10 +784,23 @@ def _unload_after_posts(caller: Caller, kind: str, jobs: list[LoadJob]) -> bool:
 
 
 # Media load requests this process made, per slot: the last number taken, the highest whose POST
-# answered (a load registered for it), and those whose outcome is not known yet.
+# answered (a load registered for it), the highest registered when an unload of the slot went out
+# (that unload ended it), and those whose outcome is not known yet.
 _MEDIA_GENERATIONS: dict[str, int] = {}
 _MEDIA_REGISTERED: dict[str, int] = {}
+_MEDIA_UNLOADED: dict[str, int] = {}
 _MEDIA_OUTCOMES: dict[str, dict[int, asyncio.Future]] = {}
+
+
+def _mark_media_unloaded(kind: str) -> None:
+    # Called with no await before the unload POST: every load registered so far is ended by it.
+    _MEDIA_UNLOADED[kind] = max(_MEDIA_UNLOADED.get(kind, 0), _MEDIA_REGISTERED.get(kind, 0))
+
+
+def _newer_media_registered(kind: str, generation: int) -> bool:
+    """Whether a request newer than ``generation`` registered a load no unload has ended since."""
+    registered = _MEDIA_REGISTERED.get(kind, 0)
+    return registered > generation and registered > _MEDIA_UNLOADED.get(kind, 0)
 
 
 def _take_media_generation(kind: str, job: LoadJob) -> asyncio.Future:
@@ -837,19 +851,20 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
             if newer:
                 await asyncio.wait(newer)
                 continue
-            if _MEDIA_REGISTERED.get(kind, 0) > job.generation:
-                return  # A newer load registered: it is what the caller wants now.
+            if _newer_media_registered(kind, job.generation):
+                return  # A newer load registered and is still current: it is what the caller wants now.
             progress = as_dict(await route_json("GET", routes["progress"], caller = caller))
             status = as_dict(await route_json("GET", routes["status"], caller = caller))
             # Rechecked with no await before the unload, so it never cancels a newer request's load.
             if _newer_media_outcomes(kind, job.generation):
                 continue
-            if _MEDIA_REGISTERED.get(kind, 0) > job.generation:
+            if _newer_media_registered(kind, job.generation):
                 return
             phase = opt_text(progress.get("phase"))
             in_flight = phase not in (None, "ready", "error")
             if not in_flight and not _resident_matches(status, job.model):
                 return  # Gone or replaced: not a load this job can be shown to own.
+            _mark_media_unloaded(kind)
             await route_json("POST", routes["unload"], caller = caller)
             return
     except Exception:

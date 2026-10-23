@@ -1103,6 +1103,37 @@ def test_a_late_media_unload_leaves_a_replacement_that_finished_first_alone(
     assert state["unloads"] == [0]
 
 
+def test_a_late_media_unload_still_runs_after_the_replacement_is_unloaded(
+    monkeypatch, fast_polls
+):
+    # The retry registers, then is explicitly unloaded before the stopped POST is back: that
+    # registration was ended, so it no longer defers the stopped load's late unload.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.5, 0.05))
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        retry = await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        assert retry.loaded is True
+        await loading.unload_media(caller, "video")
+        assert state["unloads"] == [0, 1]
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0, 1, 2]
+
+
 def test_a_stopped_post_that_returns_while_the_unload_runs_is_unloaded_after(
     monkeypatch, fast_polls
 ):
