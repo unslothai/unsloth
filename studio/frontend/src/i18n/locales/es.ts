@@ -1075,6 +1075,7 @@ export const es = {
     },
     keyboardShortcuts: {
       title: "Atajos de teclado",
+      intro: "Para cambiar un atajo, selecciona la combinación de teclas y pulsa las nuevas teclas",
       searchPlaceholder: "Buscar atajos…",
       keystrokePlaceholder: "Pulsa un atajo para buscar",
       searchByKeystrokes: "Buscar por pulsación",
@@ -1082,22 +1083,23 @@ export const es = {
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",
-      recordingHint: "Pulsa la nueva combinación, o Esc para cancelar.",
       needsModifier: "Añade ⌘, Ctrl o Alt. Una tecla suelta se tragaría lo que escribes.",
       conflict: "También lo usa otro atajo",
       conflictShadowed: "Otro atajo tiene esta combinación y se ejecuta en lugar de este",
       edit: "Cambiar atajo",
-      clear: "Quitar atajo",
       reset: "Restaurar el valor predeterminado",
       resetAll: "Restablecer todo",
-      primarySlot: "Atajo",
-      alternateSlot: "Atajo alternativo",
       browserReserved:
         "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
       metaUnsupported: "La tecla Windows no se puede usar en atajos.",
       altGraphUnsupported: "Las combinaciones con AltGr no se pueden usar como atajos.",
       desktopOnly: "Solo en la app de escritorio",
-      builtInKey: "Integrado: {key}",
+      groups: {
+        composer: "Redactor",
+        chat: "Chat",
+        navigation: "Navegación",
+        app: "Aplicación",
+      },
       actions: {
         findInPage: {
           label: "Buscar en la página",
@@ -1287,6 +1289,10 @@ export const es = {
           label: "Adjuntar fotos y archivos",
           description: "Añadir un adjunto al redactor",
         },
+        openComposerMenu: {
+          label: "Abrir menú +",
+          description: "Abrir el menú + del redactor con herramientas y adjuntos",
+        },
         sendMessage: {
           label: "Enviar mensaje",
           description: "Enviar lo que hay en el redactor",
@@ -1314,10 +1320,6 @@ export const es = {
         decreaseReasoningEffort: {
           label: "Reducir esfuerzo de razonamiento",
           description: "Bajar un nivel el esfuerzo de razonamiento",
-        },
-        toggleFastMode: {
-          label: "Alternar modo Fast",
-          description: "Activar o desactivar el modo Fast",
         },
         renameChat: {
           label: "Renombrar chat",

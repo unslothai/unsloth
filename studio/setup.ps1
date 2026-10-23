@@ -1194,7 +1194,7 @@ function Invoke-MirrorFallback {
     $minBps = 1MB
     $useUv = -not (Test-MirrorConfigured -Tool uv)
     $usePip = -not (Test-MirrorConfigured -Tool pip)
-    $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
+    $uvWheel = 'packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
     $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
     $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
     $artifact = @{
@@ -1202,7 +1202,7 @@ function Invoke-MirrorFallback {
         'torch' = "https://download-r2.pytorch.org/$torchWheel"; 'cernet-torch' = "$cernet/pytorch/$torchWheel"
         'node' = "https://nodejs.org/dist/$nodeTarball"; 'npmmirror-node' = "$npmMirror/-/binary/node/$nodeTarball"
         'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
-        'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
+        'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz'
     }
     $hosts = [ordered]@{}
     if ($useUv -or $usePip) { $hosts['pypi'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
@@ -7729,14 +7729,14 @@ function Assert-VenvActivated {
 # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # Bumping the version means bumping all 3 hashes, and each Wheel/WheelSha256 as in install.ps1:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
-$UvPinnedVersion = "0.12.1"
+$UvPinnedVersion = "0.13.5"
 $UvPinnedAssets = @{
-    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A"
-                  Wheel = "packages/0d/a4/467c99c76fefa8b1259a1d382a5e49f73068f38a2d58db401504a783ed2c/uv-0.12.1-py3-none-win_amd64.whl"; WheelSha256 = "BD02F2DA212E6A983115DC64A6FC94E9256C2D60E056D6B669DE0A6025AAEC05" }
-    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568"
-                  Wheel = "packages/68/80/ec1acbf8e22dc4866f9070c30b064728cc0da73bedc30f2fbfdc0c5901a7/uv-0.12.1-py3-none-win_arm64.whl"; WheelSha256 = "EAD7AD064F291A5DF358C3FFA8FFAB347A32BD5A75A6A068CA22254C2539A829" }
-    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97"
-                  Wheel = "packages/fd/02/f73e4867c0748eaa3dea90cdfeb73d15bab0f04802c5c20bb37fc14918fe/uv-0.12.1-py3-none-win32.whl"; WheelSha256 = "173EE216F17D89FC39F65339D311A53584FC7DE4918D27C0F3C7EDAFABC6B54D" }
+    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "A38B8D1902B7CFBC76B423BA1BB456F623F42064CDC72628B6075B89AFD1019A"
+                  Wheel = "packages/32/ea/771744a784b16aa21d195cb5d5d5a2878d72fa00fc26f11ea3f9646994fe/uv-0.13.5-py3-none-win_amd64.whl"; WheelSha256 = "1FB29FC46BA12033E2EF95A95AC79D649E71BBB1358419BBBCBD19D86026EF2F" }
+    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "09F47EDF90726084A70F9426F6E3CA4F46E9BF7CBF23B1716EC64D60B055FAE3"
+                  Wheel = "packages/52/67/1f31243f75ece410f2db1afdfc9a9f9722fdee2385e4a347c3ca1dee6d13/uv-0.13.5-py3-none-win_arm64.whl"; WheelSha256 = "0548460D46C8667488B1F089E936F29F0EDFB1CC753F9152FFBD8BC84A46AA20" }
+    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "96228420D0A89A64757AFBA59932C1E58C4977E4122F2CC9F8615A51BA2D3084"
+                  Wheel = "packages/00/7c/e38b312abaae1bd59ff5886126f48e9e223fbb9a8edf9e236ede976f67cb/uv-0.13.5-py3-none-win32.whl"; WheelSha256 = "F4E55A6E2A1089FE74ED50FBDF2DF0F6F336EE148AD232B05932DB5DEEE8007E" }
 }
 
 # Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
@@ -8028,12 +8028,9 @@ function Find-InstalledUv {
 }
 
 # The floor a found uv has to clear: install.ps1's UvMinVersion, so reuse accepts exactly what
-# the Windows installer accepts. It is not install.sh's 0.9.3, and deliberately: that number is
-# about uv's managed-Python manifest topping out at a CPython that cannot import torch, and
-# nothing here asks uv for an interpreter -- the one uv command this file runs is
-# `uv pip install --python <the venv's python>`. install.ps1 keeps 3.13.8 out with its own
-# $PythonSkip instead.
-$SetupUvMinVersion = "0.8.16"
+# the Windows installer accepts. Below 0.13.4 uv's bundled roots still trust the compromised
+# emSign CAs (GHSA-hq85-5cpj-mr62).
+$SetupUvMinVersion = "0.13.4"
 
 function Test-SetupUvVersionAtLeast {
     # "uv 0.12.1 (abcdef0 2026-01-01)" -> $true when 0.12.1 is at least $Minimum. Unparseable is
@@ -8068,17 +8065,42 @@ function Get-InstalledUvVerdict {
 }
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
+# A uv on PATH below the floor is passed over like an installed one, and kept only when the
+# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
+# never downloads: it keeps the old uv, as before, behind the Windows trust store.
+function Get-SetupPathUvTooOld {
+    $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $pathUv) { return $null }
+    # Timed: a uv that hangs on --version must not stall every setup before the pinned one installs.
+    $verdict = @(Get-SetupUvExecutableVerdict -Path $pathUv.Source)[-1]
+    if ($verdict -ne "ok") { return $pathUv.Source }
+    $line = $script:SetupUvVersionLine
+    if ("$line" -notmatch '^\s*uv\s' -or
+        -not (Test-SetupUvVersionAtLeast -VersionLine "$line" -Minimum $SetupUvMinVersion)) {
+        return $pathUv.Source
+    }
+    return $null
+}
+
 $UseUv = $false
 $installedUvDir = $null
-if (Get-Command uv -ErrorAction SilentlyContinue) {
+$pathUvOld = Get-SetupPathUvTooOld
+if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
     $UseUv = $true
 } elseif (($installedUvDir = Find-InstalledUv)) {
     # Read-only reuse, fine under a stage root. Appended: a python.exe beside uv must not
     # step in front of the staged interpreter.
     $env:PATH = "$env:PATH;$installedUvDir"
+    if ($pathUvOld) {
+        # Re-entering the venv restores the pre-venv PATH first, so it goes before the current uv
+        # is put in front of the old one, right behind the venv's Scripts.
+        Enter-StudioVenv
+        $env:PATH = (Join-Path $VenvDir "Scripts") + ";$installedUvDir;$env:PATH"
+    }
     substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true
 } elseif (-not $StageRoot) {
+    if (-not $script:InstalledUvTooOld) { $script:InstalledUvTooOld = $pathUvOld }
     if ($script:InstalledUvTooOld) {
         substep "the uv at $($script:InstalledUvTooOld) is older than $SetupUvMinVersion; installing the pinned release"
     } elseif ($script:InstalledUvProbeMiss) {
@@ -8118,6 +8140,25 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         }
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
+    # No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
+    if ($pathUvOld -and -not $UseUv -and (Get-Command uv -ErrorAction SilentlyContinue)) { $UseUv = $true }
+    # Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the
+    # Windows store decides instead. A download that failed while online lands here too.
+    if ($UseUv -and -not $script:UvPinnedInstalled) {
+        $activeUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($activeUv) {
+            $null = Get-SetupUvExecutableVerdict -Path $activeUv.Source
+            if (-not (Test-SetupUvVersionAtLeast -VersionLine "$($script:SetupUvVersionLine)" -Minimum $SetupUvMinVersion)) {
+                if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
+                if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
+            }
+        }
+    }
+} elseif ($pathUvOld) {
+    # Staged runs never download: the old uv on PATH still beats pip, behind the Windows store.
+    $UseUv = $true
+    if (-not $env:UV_SYSTEM_CERTS) { $env:UV_SYSTEM_CERTS = "1" }
+    if (-not $env:UV_NATIVE_TLS) { $env:UV_NATIVE_TLS = "1" }
 }
 # Refresh-Environment rebuilt PATH from the registry, and the re-activation meant to put the venv
 # back sits inside a catch that swallows everything -- including a dot-source that died after

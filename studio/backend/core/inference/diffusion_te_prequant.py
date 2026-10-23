@@ -150,6 +150,13 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
             "flux-3-image-klein-base-text_encoder-INT8-ConvRot.safetensors",
         ),
     },
+    # MOSS-Image Qwen3.5-9B: MLP + full-attention Linears int8; gated-delta, embeddings, vision stay bf16.
+    "moss-image": {
+        "text_encoder": (
+            "unsloth/MOSS-Image-SFT-FP8",
+            "MOSS-Image-SFT-text_encoder-INT8-ConvRot.safetensors",
+        ),
+    },
 }
 
 # family -> lowercased variant base -> {component: (repo_id, filename)}, for a variant whose encoder is a different
@@ -298,6 +305,8 @@ _TE_INT8_CONVROT_BUDGET_SCALES = {
     "krea-2": 0.60,
     "flux.3-klein": 0.60,
     "flux.3-klein-base": 0.60,
+    # MOSS-Image's 11,488,171,720-byte file against its 15.9 GB table price (0.723), rounded up.
+    "moss-image": 0.73,
     **{
         name: 0.62
         for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b")
@@ -654,6 +663,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
         {
             "black-forest-labs/flux.2-klein-9b",
             "black-forest-labs/flux.2-klein-base-9b",
+        }
+    ),
+    # MOSS-Image SFT and Base share identical text_encoder shards (LFS sha256).
+    frozenset(
+        {
+            "openmoss-team/moss-image-sft",
+            "openmoss-team/moss-image-base",
         }
     ),
 )

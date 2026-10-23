@@ -7109,6 +7109,22 @@ const ComposerToolsMenu: FC<{
     }
   }, []);
 
+  const [plusOpen, setPlusOpen] = useState(false);
+  const setPlusMenuOpen = (open: boolean) => {
+    setPlusOpen(open);
+    if (open) void refreshRecentPrompts();
+  };
+  useShortcut(
+    "openComposerMenu",
+    () => {
+      // The open menu inerts the composer, so closing skips the gate.
+      if (plusOpen) return setPlusMenuOpen(false);
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      setPlusMenuOpen(true);
+    },
+    { enabled: chatActive },
+  );
+
   const runPromptList = useCallback(
     (items: string[], fromDialog = false) => {
       // A queue started while recording would swallow the held transcript send.
@@ -7372,15 +7388,12 @@ const ComposerToolsMenu: FC<{
       }}
       onRunList={(items) => runPromptList(items, true)}
     />
-    <DropdownMenu
-      onOpenChange={(open) => {
-        if (open) void refreshRecentPrompts();
-      }}
-    >
+    <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
           aria-label="Tools and attachments"
+          data-pill-label="Add files and more"
           className="unsloth-composer-plus"
           data-tour="chat-plus-menu"
         >

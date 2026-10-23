@@ -1071,6 +1071,7 @@ export const ko = {
     },
     keyboardShortcuts: {
       title: "키보드 단축키",
+      intro: "단축키를 변경하려면 키 조합을 선택한 다음 새 키를 입력하세요",
       searchPlaceholder: "단축키 검색…",
       keystrokePlaceholder: "단축키를 눌러 검색",
       searchByKeystrokes: "키 입력으로 검색",
@@ -1078,22 +1079,23 @@ export const ko = {
       noResults: "검색과 일치하는 단축키가 없습니다.",
       unassigned: "지정 안 됨",
       recording: "키를 누르세요…",
-      recordingHint: "새 조합을 누르거나 Esc로 취소하세요.",
       needsModifier: "⌘, Ctrl 또는 Alt를 추가하세요. 단독 키는 입력을 가로챕니다.",
       conflict: "다른 단축키도 이 조합을 사용합니다",
       conflictShadowed: "다른 단축키가 이 조합을 차지하고 있어 그쪽이 실행됩니다",
       edit: "단축키 변경",
-      clear: "단축키 제거",
       reset: "기본값 복원",
       resetAll: "모두 기본값으로 초기화",
-      primarySlot: "단축키",
-      alternateSlot: "대체 단축키",
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       metaUnsupported: "Windows 키는 단축키에 사용할 수 없습니다.",
       altGraphUnsupported: "AltGr 조합은 단축키로 사용할 수 없습니다.",
       desktopOnly: "데스크톱 앱 전용",
-      builtInKey: "기본 제공: {key}",
+      groups: {
+        composer: "입력창",
+        chat: "채팅",
+        navigation: "탐색",
+        app: "앱",
+      },
       actions: {
         findInPage: {
           label: "페이지에서 찾기",
@@ -1283,6 +1285,10 @@ export const ko = {
           label: "사진 및 파일 첨부",
           description: "입력창에 첨부 파일을 추가합니다",
         },
+        openComposerMenu: {
+          label: "+ 메뉴 열기",
+          description: "입력창의 도구 및 첨부 파일 + 메뉴 열기",
+        },
         sendMessage: {
           label: "메시지 보내기",
           description: "입력창의 내용을 보냅니다",
@@ -1310,10 +1316,6 @@ export const ko = {
         decreaseReasoningEffort: {
           label: "추론 강도 낮추기",
           description: "추론 강도를 한 단계 내립니다",
-        },
-        toggleFastMode: {
-          label: "Fast 모드 토글",
-          description: "Fast 모드를 켜거나 끕니다",
         },
         renameChat: {
           label: "채팅 이름 바꾸기",
