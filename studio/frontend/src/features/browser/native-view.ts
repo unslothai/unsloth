@@ -163,6 +163,14 @@ const loadingPages = new Set<string>();
 function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
   const fresh = pageEntries.get(tabId) !== entry;
   pageEntries.set(tabId, entry);
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === tabId);
+  if (tab && tab.chat !== store.chat) {
+    // A chat not on screen: its page navigating on its own (a timer, a script) is not beside the shown chat.
+    const own = entry.temporary === true;
+    temporaryPages.set(tabId, fresh ? own : (temporaryPages.get(tabId) ?? own));
+    return;
+  }
   const kept = fresh ? entry.temporary === true : loadingPages.has(tabId) && temporaryPages.get(tabId) === true;
   temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
 }
