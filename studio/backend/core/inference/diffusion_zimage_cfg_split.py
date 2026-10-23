@@ -187,6 +187,33 @@ def _empty_cache() -> None:
         pass
 
 
+def _static_skip_state(slots: dict) -> Optional[tuple]:
+    skip = slots.get("_unsloth_static_skip")
+    if skip is None or not hasattr(skip, "ordinal"):
+        return None
+    counters = getattr(skip, "counters", None)
+    stats = getattr(skip, "stats", None)
+    return (
+        skip,
+        skip.ordinal,
+        dict(counters) if isinstance(counters, dict) else None,
+        dict(stats) if isinstance(stats, dict) else None,
+    )
+
+
+def _restore_static_skip(slots: dict, state: Optional[tuple]) -> None:
+    if state is None:
+        return
+    skip, ordinal, counters, stats = state
+    if slots.get("_unsloth_static_skip") is not skip:
+        return
+    skip.ordinal = ordinal
+    if counters is not None:
+        skip.counters = counters
+    if stats is not None:
+        skip.stats = stats
+
+
 def _make_call(orig_call: Any) -> Any:
     def __call__(self, *args, **kwargs):
         slots = getattr(self, "__dict__", {})
@@ -206,12 +233,15 @@ def _make_call(orig_call: Any) -> Any:
         # A CFG-parallel router needs the halves even eager: it cannot pair one batched call.
         if slots.get(_EAGER_ATTR) and not slots.get(_OOM_ATTR) and not routed:
             # Eager: one batched call is faster; two calls at half the activations only when it does not fit.
+            skip_state = _static_skip_state(slots)
             try:
                 return orig_call(self, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001 - reraised unless an OOM
                 if not _is_oom(exc):
                     raise
                 _drop_tracebacks(exc)
+                # The failed call consumed a static-skip ordinal; the halves must land under this step's keys.
+                _restore_static_skip(slots, skip_state)
             # Outside the handler, so the failed call's frames are gone before the split runs.
             self.__dict__[_OOM_ATTR] = True
             _empty_cache()

@@ -455,3 +455,54 @@ def test_compiled_only_eager_oom_retries_split_for_the_render(monkeypatch):
     )
     with pytest.raises(ValueError), zs.render(pipe, 1):
         _run(model, *args)
+
+
+def test_eager_oom_split_keeps_static_skip_branch_keys(monkeypatch):
+    """A batched eager call that runs out of memory consumed a static-skip ordinal; the two halves still key cond as
+    ``#0`` and uncond as ``#1``, so a later skipped step reuses each branch's own prediction."""
+    from core.inference import diffusion_step_skip as ss
+
+    class ZImageTransformer2DModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fail_batched = False
+            self.batches = []
+
+        def forward(
+            self,
+            x,
+            t,
+            cap,
+            return_dict = False,
+        ):
+            self.batches.append(len(x))
+            if self.fail_batched and len(x) == 2:
+                raise torch.OutOfMemoryError("CUDA out of memory")
+            return ([torch.full_like(item, float(c.item())) for item, c in zip(x, cap)],)
+
+    monkeypatch.setattr(zs, "_empty_cache", lambda: None)
+    model = ZImageTransformer2DModel().eval()
+    pipe = types.SimpleNamespace(transformer = model)
+    ss.install_static_step_skip(pipe)
+    try:
+        zs.install_zimage_cfg_split(pipe, offload_policy = "none", compiled_only = True)
+        ss.reset_static_step_skip(pipe, 12, step_signal = True)
+        skip = model._unsloth_static_skip
+        outputs = []
+        with zs.render(pipe, 1), torch.no_grad():
+            for step in range(4):
+                model.fail_batched = step == 2
+                out = model(
+                    [torch.zeros(1), torch.zeros(1)],
+                    torch.tensor([1.0 - step / 12] * 2),
+                    [torch.tensor([10.0]), torch.tensor([-10.0])],
+                    return_dict = False,
+                )[0]
+                outputs.append([x.item() for x in out])
+                ss.mark_step_end(pipe)
+        assert not skip.plan[3] and skip.stats["skipped"] > 0
+        assert outputs == [[10.0, -10.0]] * 4
+        assert zs.zimage_cfg_split_status(pipe)["oom_split"] == 1
+    finally:
+        zs.uninstall_zimage_cfg_split(pipe)
+        ss.uninstall_static_step_skip(pipe)
