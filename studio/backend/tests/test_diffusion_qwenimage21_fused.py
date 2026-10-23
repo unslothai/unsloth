@@ -213,3 +213,64 @@ def test_model_unload_restores_the_process_global_patch(monkeypatch):
     monkeypatch.setattr(qmod, qf._PREPARE, fake)
     d._uninstall_fused_dit_patches()
     assert getattr(qmod, qf._PREPARE) is sentinel
+
+
+def _gemm_path_ready() -> bool:
+    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        return False
+    try:
+        from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+        Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False)
+    except Exception:  # noqa: BLE001
+        return False
+    return torch.cuda.get_device_capability() >= (8, 0)
+
+
+@pytest.mark.skipif(not _gemm_path_ready(), reason = "needs NVIDIA sm80+ CUDA and torchao Int8Tensor")
+def test_int8_gemm_path_rotates_each_shared_input_once(monkeypatch):
+    """Where diffusion_int8_gemm swaps the rotated Linears (forced here on any sm80+ part): Q / K / V and the SwiGLU
+    gate / value each quantize their shared input ONCE (4 fused rotation calls per block instead of 7), Q / K / V
+    bit-identical to the stock helper on the same swapped Linears, the block within the int8 rounding of it."""
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as g8
+    from core.inference.diffusion_convrot import rotate_linears_, warm_rotation_cache
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    monkeypatch.setenv(g8.INT8_GEMM_ENV, "1")
+    index = torch.cuda.current_device()
+    g8._DEVICE_CFG.pop(index, None)
+    cq._ROTQ_DEVICE.pop(index, None)
+    if g8.device_config(index) is None or cq.rotquant_device_config(index) is None:
+        pytest.skip("int8 GEMM / fused rotation probe refused this device")
+    assert not qf.arch_ok()
+    torch.manual_seed(0)
+    blk = qmod.QwenImage21TransformerBlock(DIM, HEADS, HEAD_DIM).cuda().to(torch.bfloat16).eval()
+    for p in blk.parameters():
+        p.data.normal_(0, 0.05)
+    names = [n for n, m in blk.named_modules() if isinstance(m, torch.nn.Linear)]
+    rotate_linears_(blk, names, 256)
+    warm_rotation_cache(blk, "cuda", torch.bfloat16)
+    quantize_(
+        blk,
+        Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False),
+        filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear),
+    )
+    assert g8.install(blk) == 7
+    x = _x()
+    stock_prepare = getattr(qmod, qf._PREPARE)
+    with torch.no_grad():
+        before = cq.rotquant_call_count()
+        ref_qkv = stock_prepare(blk.attn, x, None, None, None, None)
+        assert cq.rotquant_call_count() == before + 3
+        ref = blk(x, mod_params(x), rotary_emb = _rope(x.shape[1]))
+        assert qf.install_shared_qkv(blk) == 1
+        before = cq.rotquant_call_count()
+        qkv = getattr(qmod, qf._PREPARE)(blk.attn, x, None, None, None, None)
+        assert cq.rotquant_call_count() == before + 1
+        assert all(torch.equal(a, b) for a, b in zip(qkv[:3], ref_qkv[:3])) and qkv[3] == ref_qkv[3]
+        before = cq.rotquant_call_count()
+        out = blk(x, mod_params(x), rotary_emb = _rope(x.shape[1]))
+        assert cq.rotquant_call_count() == before + 4
+    cos = torch.nn.functional.cosine_similarity(out.float().flatten(), ref.float().flatten(), dim = 0)
+    assert cos > 0.9999
+    g8.uninstall(blk)
