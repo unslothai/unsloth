@@ -124,10 +124,13 @@ _INERT_START_RE = re.compile(
     + _TAG_BODY,
     re.IGNORECASE,
 )
-# Inside a template: its close, a nested one, or what holds text (a comment, a raw-text element).
+# Inside a template: its close, a nested one, what holds text (a comment, a raw-text element), or any
+# other tag, taken whole so "<script>" in a quoted attribute is not read as one.
 _TEMPLATE_SCAN_RE = re.compile(
     r"<!--|</template(?=[\s/>])"
     r"|<(template|script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)(?=[\s/>])"
+    + _TAG_BODY
+    + r"|</?[a-z][^\s/<>]*"
     + _TAG_BODY,
     re.IGNORECASE,
 )
@@ -1889,6 +1892,8 @@ def _template_close(page: str, start: int) -> "Optional[re.Match[str]]":
             at = match.end()
         elif name == "template":
             depth += 1
+            at = match.end()
+        elif not name:
             at = match.end()
         elif name == "plaintext":
             return None

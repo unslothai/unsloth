@@ -378,6 +378,9 @@ def test_custom_elements_named_like_raw_text_ones_are_not_inert():
         '<script>const s = "<template>";</script>',
         "<!-- <template> -->",
         "<textarea><template></textarea>",
+        # Tag syntax in an ordinary element's quoted attribute is the attribute's text.
+        '<div title="<script>"></div>',
+        "<a data-x='<template>'>x</a><template-card></template-card>",
         # A real nested template still nests.
         "<template><base href='https://evil.example/'></template>",
     ],
@@ -407,6 +410,7 @@ def test_prepare_page_is_linear_on_unclosed_tags():
     start = time.monotonic()
     # 23 s quadratic, a few ms linear: room for a loaded CI box without losing the regression.
     browser_mod._prepare_page("<meta<base" * 80_000, "https://example.com/")
+    browser_mod._prepare_page("<template>" + "<meta<base" * 80_000, "https://example.com/")
     assert time.monotonic() - start < 5
 
 
