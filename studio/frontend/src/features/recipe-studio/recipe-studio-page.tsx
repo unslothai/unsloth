@@ -10,6 +10,7 @@ import {
   Background,
   BackgroundVariant,
   type Edge,
+  getNodesBounds,
   type EdgeTypes,
   type Node,
   type NodeChange,
@@ -668,8 +669,11 @@ export function RecipeStudioPage({
         if (!nodeIds) {
           return getFitViewTargetNodes(nodes);
         }
-        const wanted = new Set(nodeIds);
-        return nodes.filter((node) => wanted.has(node.id));
+        const byId = new Map(nodes.map((node) => [node.id, node]));
+        return nodeIds.flatMap((id) => {
+          const node = byId.get(id);
+          return node ? [node] : [];
+        });
       };
 
       /** Execute fitView on the current primary workflow nodes. */
@@ -679,11 +683,24 @@ export function RecipeStudioPage({
           return;
         }
         viewportMovedSinceAutoFitRef.current = false;
+        // When the whole group won't fit at minZoom, centre the first target
+        // at minZoom instead of letting a clamped fit push it off screen.
+        const box = flowContainerRef.current?.getBoundingClientRect();
+        const bounds = getNodesBounds(targets);
+        const fitZoom = box
+          ? Math.min(
+              box.width / (bounds.width * (1 + 2 * FIT_VIEW_PADDING)),
+              box.height / (bounds.height * (1 + 2 * FIT_VIEW_PADDING)),
+            )
+          : Number.POSITIVE_INFINITY;
+        const centreFirst = minZoom !== undefined && fitZoom < minZoom;
         reactFlowInstance.fitView({
           duration: FIT_VIEW_DURATION_MS,
-          maxZoom: FIT_VIEW_MAX_ZOOM,
+          maxZoom: centreFirst ? minZoom : FIT_VIEW_MAX_ZOOM,
           padding: FIT_VIEW_PADDING,
-          nodes: targets.map((n) => ({ id: n.id })),
+          nodes: (centreFirst ? targets.slice(0, 1) : targets).map((n) => ({
+            id: n.id,
+          })),
           ...(minZoom ? { minZoom } : {}),
         });
       };
