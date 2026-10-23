@@ -797,6 +797,11 @@ def test_speak_sends_the_reference_transcript_for_cloning(monkeypatch):
     asyncio.run(
         _common.speak(object(), model = None, text = "Hola", reference_text = "ignored without a clip")
     )
-    assert sent[0]["workflow"] == "clone" and sent[0]["reference_text"] == "Hello there"
-    assert sent[1]["workflow"] == "speak" and "reference_text" not in sent[1]
+    assert sent[0]["workflow"] == "clone" and sent[0]["inputs"]["reference_text"] == "Hello there"
+    assert sent[1]["workflow"] == "speak" and "inputs" not in sent[1]
+    # The body must pass the route's own request model (extra fields are refused there).
+    from models.inference import AudioRunRequest
+
+    sent[0]["inputs"]["reference"] = {"clip_id": "abc"}
+    AudioRunRequest.model_validate(sent[0])
     assert any(p["id"] == "reference_text" for p in SPECS_BY_TYPE["audio.speak"]["inputs"])

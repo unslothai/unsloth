@@ -884,7 +884,7 @@ async def speak(
     if reference:
         body["inputs"] = {"reference": await audio_ref(ctx, reference)}
         if reference_text.strip():
-            body["reference_text"] = reference_text.strip()
+            body["inputs"]["reference_text"] = reference_text.strip()[:4000]
     if voice and not reference:
         body["options"] = {"voice": voice}
     if instructions:
