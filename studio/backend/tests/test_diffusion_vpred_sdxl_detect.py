@@ -635,8 +635,7 @@ def test_a_cache_only_reload_of_a_staged_snapshot_keeps_the_online_marker_read(
     _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
     assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
     assert seen == ["list", "header"]
-    # A later cache-only load (startup restore, HF_HUB_OFFLINE) never reaches the Hub but samples alike,
-    # through the staged snapshot folder or through the repo id resolved against the cache.
+    # Offline loads (by snapshot path or repo id) reuse the recorded markers.
     seen.clear()
     _stub_noob_hub(monkeypatch, None, seen)
     assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == VPRED

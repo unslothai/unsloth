@@ -215,8 +215,7 @@ def _marker_overrides(keys: Any) -> dict[str, Any]:
     return overrides
 
 
-# Root single-file marker reads off the Hub, kept per (repo, snapshot commit) so a later cache-only load
-# (a restore at startup, HF_HUB_OFFLINE) of the same staged snapshot samples the way the online one did.
+# Hub marker reads cached per (repo, snapshot commit) so later offline loads sample the same way.
 _MARKS_FILE = "diffusion_prediction_markers.json"
 _MAX_RECORDED_MARKS = 512
 
@@ -230,8 +229,7 @@ def _marks_record_path() -> Any:
 
 
 def _snapshot_commit(root: Optional[str], repo_id: str, revision: Optional[str]) -> Optional[str]:
-    """Commit of the Hub snapshot a pipeline loads from: the staged ``snapshots/<commit>`` folder, else
-    the cached ``model_index.json`` of ``repo_id``. None when neither names one."""
+    """Snapshot commit from a ``snapshots/<commit>`` path, else the cached ``model_index.json``."""
     from pathlib import Path
 
     try:
