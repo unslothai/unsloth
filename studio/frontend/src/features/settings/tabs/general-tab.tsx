@@ -792,7 +792,7 @@ export function GeneralTab() {
           description={t("settings.general.previewSharing.revokeDescription")}
         >
           <Button
-            variant="outline"
+            variant="destructive"
             size="sm"
             onClick={() => setRevokePreviewOpen(true)}
             className="text-destructive hover:text-destructive"
@@ -926,7 +926,7 @@ export function GeneralTab() {
             </Button>
             <Button
               onClick={resetAllPrefs}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              variant="destructive"
             >
               {t("settings.general.resetPreferences.confirmAction")}
             </Button>
@@ -952,9 +952,9 @@ export function GeneralTab() {
               {t("common.cancel")}
             </Button>
             <Button
+              variant="destructive"
               onClick={() => void revokePreviewLinks()}
               disabled={isRevokingPreview}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
             >
               {isRevokingPreview
                 ? t("settings.general.previewSharing.revoking")

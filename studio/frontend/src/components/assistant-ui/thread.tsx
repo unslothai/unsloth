@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { createPortal } from "react-dom";
 import {
   canQueueTextAttachment,
@@ -438,7 +439,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  ChevronDownIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
   HeadphonesIcon,
@@ -2030,8 +2030,7 @@ const ForkContinuationRule: FC = () => {
           }}
           className={cn(
             labelClass,
-            // An answer link's colour, underlined on hover only.
-            "cursor-pointer rounded-sm text-primary underline decoration-transparent underline-offset-2 transition-colors hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+            "cursor-pointer rounded-sm text-foreground underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           )}
         >
           {label}
@@ -6511,7 +6510,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
               </span>
             ) : null}
-            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
+            <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         )}
       >
@@ -7740,7 +7739,7 @@ const ComposerRightControls: FC<{
             }
             side="bottom"
             type="submit"
-            variant="default"
+            variant="primary"
             size="icon"
             // Stay clickable while docs index so a click can queue the send;
             // disabled only once a send is parked.
@@ -7764,7 +7763,7 @@ const ComposerRightControls: FC<{
               tooltip="Resume queue"
               side="bottom"
               type="button"
-              variant="default"
+              variant="primary"
               size="icon"
               onClick={onResumeClick}
               className="aui-composer-send ml-1.5 size-9 rounded-full"
@@ -7776,7 +7775,7 @@ const ComposerRightControls: FC<{
           ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
               type="button"
-              variant="default"
+              variant="primary"
               size="icon"
               className="aui-composer-cancel ml-1.5 size-9 rounded-full"
               aria-label="Stop queued message"
@@ -7789,7 +7788,7 @@ const ComposerRightControls: FC<{
               tooltip={followUpTooltip}
               side="bottom"
               type="button"
-              variant="default"
+              variant="primary"
               size="icon"
               disabled={disabled || queueDisabled}
               onClick={onQueueClick}
@@ -7804,7 +7803,7 @@ const ComposerRightControls: FC<{
       {isResearchActive ? (
         <Button
           type="button"
-          variant="default"
+          variant="primary"
           size="icon"
           className="aui-composer-cancel ml-1.5 size-9 rounded-full"
           aria-label={researchStopping ? "Stopping research" : "Stop research"}
@@ -7825,7 +7824,7 @@ const ComposerRightControls: FC<{
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
-                variant="default"
+                variant="primary"
                 size="icon"
                 className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
@@ -7841,7 +7840,7 @@ const ComposerRightControls: FC<{
                 tooltip={followUpTooltip}
                 side="bottom"
                 type="button"
-                variant="default"
+                variant="primary"
                 size="icon"
                 onClick={onQueueClick}
                 className="aui-composer-send size-9 rounded-full"
@@ -8373,8 +8372,8 @@ const DiffusionCanvas: FC = () => {
   const stepLabel =
     canvas.total > 0 ? `step ${canvas.step + 1}/${canvas.total}` : "denoising";
   return (
-    <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-primary/20 bg-primary/[0.03]">
-      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-ui-11 font-medium text-primary/80">
+    <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-wash-20 bg-wash-3">
+      <div className="flex items-center gap-2 border-b border-wash-10 px-3 py-1.5 text-ui-11 font-medium text-foreground/80">
         <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
         <span>Denoising</span>
         <span className="opacity-60">

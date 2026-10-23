@@ -343,7 +343,7 @@ function RunDialogBody({
         <div className="grid grid-cols-2 gap-2">
           <Button
             type="button"
-            variant={kind === "preview" ? "default" : "outline"}
+            variant={kind === "preview" ? "dark" : "outline"}
             className="corner-squircle min-h-10 justify-center whitespace-normal px-3 text-center"
             aria-pressed={kind === "preview"}
             onClick={() => onKindChange("preview")}
@@ -352,7 +352,7 @@ function RunDialogBody({
           </Button>
           <Button
             type="button"
-            variant={kind === "full" ? "default" : "outline"}
+            variant={kind === "full" ? "dark" : "outline"}
             className="corner-squircle min-h-10 justify-center whitespace-normal px-3 text-center"
             aria-pressed={kind === "full"}
             onClick={() => onKindChange("full")}
@@ -693,6 +693,7 @@ function RunDialogBody({
           {validateLoading ? "Checking..." : "Check recipe"}
         </Button>
         <Button
+          variant="dark"
           type="button"
           onClick={onRun}
           disabled={loading || isFullRunNameMissing}

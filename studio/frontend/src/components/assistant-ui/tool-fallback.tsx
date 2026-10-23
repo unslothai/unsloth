@@ -3,6 +3,8 @@
 
 "use client";
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -43,7 +45,6 @@ import {
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
-  ChevronDownIcon,
   LoaderIcon,
   WrenchIcon,
   XCircleIcon,
@@ -271,7 +272,8 @@ function ToolFallbackTrigger({
           </span>
         )}
       </span>
-      <ChevronDownIcon
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
         data-slot="tool-fallback-trigger-chevron"
         className={cn(
           "aui-tool-fallback-trigger-chevron mr-1 size-3.5 shrink-0 self-center",

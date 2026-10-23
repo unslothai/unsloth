@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { consumeNativePathToken, useNativeFileDrop } from "@/features/native-intents";
 import {
-  CloudUploadIcon,
+  Alert02Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
-  Alert02Icon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -249,7 +249,7 @@ export function UnstructuredDropZone({
         // through to the window instead of saying the block is busy.
         className={`nodrag flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
-            ? "border-ring-strong bg-primary/5"
+            ? "border-ring-strong bg-wash-5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
         } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
         ref={dropRef}
@@ -257,7 +257,7 @@ export function UnstructuredDropZone({
         onClick={handleClick}
       >
         <HugeiconsIcon
-          icon={CloudUploadIcon}
+          icon={PlusSignIcon}
           className="text-muted-foreground mb-2 size-8"
         />
         <p className="text-muted-foreground text-sm">

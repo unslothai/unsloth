@@ -1349,8 +1349,8 @@ export function SeedDialog({
                         key={`row-${rowIdx}`}
                         className={cn(
                           rowHasExpandableText(row) &&
-                            "cursor-pointer hover:bg-primary/[0.06]",
-                          expandedPreviewRows[rowIdx] && "bg-primary/[0.05]",
+                            "cursor-pointer hover:bg-wash-6",
+                          expandedPreviewRows[rowIdx] && "bg-wash-5",
                         )}
                         onClick={() => {
                           const canExpand = rowHasExpandableText(row);

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
-  ArrowUp01Icon,
   Cancel01Icon,
   Clock01Icon,
   StarIcon,
@@ -306,13 +305,13 @@ export function NewTabPage({ tabId }: { tabId: string }) {
                 <div className="flex items-center gap-1">
                   <PageButton
                     label={t("browser.recentNewer")}
-                    icon={ArrowUp01Icon}
+                    icon={ChevronUpStandardIcon}
                     disabled={shownPage === 0}
                     onClick={() => setPage(shownPage - 1)}
                   />
                   <PageButton
                     label={t("browser.recentOlder")}
-                    icon={ArrowDown01Icon}
+                    icon={ChevronDownStandardIcon}
                     disabled={shownPage >= pages - 1}
                     onClick={() => setPage(shownPage + 1)}
                   />

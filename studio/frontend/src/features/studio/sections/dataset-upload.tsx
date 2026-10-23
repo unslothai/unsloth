@@ -21,6 +21,7 @@ import {
   CloudUploadIcon,
   FileAttachmentIcon,
   InformationCircleIcon,
+  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
@@ -77,7 +78,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
           <Spinner className="size-3.5 text-muted-foreground" />
         ) : (
           <HugeiconsIcon
-            icon={CloudUploadIcon}
+            icon={PlusSignIcon}
             strokeWidth={1.5}
             className="size-3.5 text-muted-foreground"
           />

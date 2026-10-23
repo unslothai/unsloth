@@ -15,7 +15,7 @@ import {
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
-import { Add01Icon, ArrowUpRight01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, ArrowUpRight01Icon, Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -177,7 +177,8 @@ function PermissionsTable() {
               }}
               className="h-8 flex-1"
             />
-            <Button type="submit" size="sm">
+            <Button variant="secondary" type="submit" size="sm">
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               {t("browser.agentSettings.add")}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)}>
