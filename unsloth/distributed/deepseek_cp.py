@@ -13,12 +13,14 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 import torch
 import torch.distributed as dist
 import torch.distributed.nn.functional as dist_nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from .seq_comm import SeqAllToAll4D
 
@@ -26,6 +28,73 @@ from .seq_comm import SeqAllToAll4D
 def _apply_rotary_fn(mod):
     module = sys.modules[type(mod).__module__]
     return module.apply_rotary_pos_emb
+
+
+def _attn_chunk() -> int:
+    return max(1, int(os.environ.get("UNSLOTH_CP_ATTN_CHUNK", "1024")))
+
+
+def _sink_attention_chunk(
+    q, kv, block_bias, sinks, q_start, full_seq, window, scaling, dropout_p, training
+):
+    """Sink-softmax attention for the query rows ``[q_start, q_start + q.shape[2])``.
+
+    q: [B, H, rows, D]; kv: [B, 1, full_seq + n_blocks, D] (K == V); block_bias: [B, 1, rows, n_blocks].
+    Returns [B, rows, H, D].
+    """
+    batch, _, rows, _ = q.shape
+    dtype = q.dtype
+    q_idx = torch.arange(q_start, q_start + rows, device = q.device)
+    k_idx = torch.arange(full_seq, device = q.device)
+    diff = q_idx[:, None] - k_idx[None, :]
+    keep = diff >= 0
+    if window is not None:
+        keep = keep & (diff < window)
+    mask = torch.zeros((1, 1, rows, full_seq), dtype = dtype, device = q.device)
+    mask.masked_fill_(~keep.view(1, 1, rows, full_seq), torch.finfo(dtype).min)
+    extra = kv.shape[2] - full_seq
+    if extra > 0:
+        if block_bias is not None:
+            mask = torch.cat([mask.expand(batch, -1, -1, -1), block_bias.to(dtype)], dim = -1)
+        else:
+            mask = F.pad(mask, (0, extra), value = 0.0)
+
+    logits = torch.matmul(q, kv.transpose(2, 3)) * scaling + mask
+    sink = sinks.reshape(1, -1, 1, 1).expand(batch, -1, rows, -1)
+    combined = torch.cat([logits, sink], dim = -1)
+    combined = combined - combined.max(dim = -1, keepdim = True).values
+    probs = F.softmax(combined, dim = -1, dtype = combined.dtype)[..., :-1]
+    probs = F.dropout(probs, p = dropout_p, training = training).to(kv.dtype)
+    return torch.matmul(probs, kv).transpose(1, 2).contiguous()
+
+
+def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, training):
+    """Query-chunked sink attention so the score matrix is [H/cp, chunk, S] rather than [H/cp, S, S].
+
+    Each chunk is recomputed in backward (checkpoint), so peak memory is O(chunk * S) per layer.
+    """
+    full_seq = q.shape[2]
+    chunk = _attn_chunk()
+    outs = []
+    for start in range(0, full_seq, chunk):
+        end = min(full_seq, start + chunk)
+        args = (
+            q[:, :, start:end],
+            kv,
+            block_bias[:, :, start:end] if block_bias is not None else None,
+            sinks,
+            start,
+            full_seq,
+            window,
+            scaling,
+            dropout_p,
+            training,
+        )
+        if torch.is_grad_enabled() and full_seq > chunk:
+            outs.append(checkpoint(_sink_attention_chunk, *args, use_reentrant = False))
+        else:
+            outs.append(_sink_attention_chunk(*args))
+    return outs[0] if len(outs) == 1 else torch.cat(outs, dim = 1)
 
 
 def deepseek_v4_attention_forward_with_cp(
@@ -75,7 +144,7 @@ def deepseek_v4_attention_forward_with_cp(
     # sums gradients across all head-partitioned ranks back to each rank's token shard.
     kv = torch.cat(dist_nn.all_gather(kv.contiguous(), group = group), dim = 2)
 
-    batch, local_heads, full_seq, _ = q.shape
+    local_heads = q.shape[1]
     block_bias = None
     if self.compressor is not None:
         full_hidden = torch.cat(
@@ -93,36 +162,16 @@ def deepseek_v4_attention_forward_with_cp(
         )
         kv = torch.cat([kv, compressed_kv], dim = 2)
 
-    idx = torch.arange(full_seq, device = q.device)
-    diff = idx[:, None] - idx[None, :]
-    keep = diff >= 0
-    if self.sliding_window is not None:
-        keep = keep & (diff < self.sliding_window)
-    full_mask = torch.zeros(
-        (batch, 1, full_seq, full_seq), dtype = q.dtype, device = q.device
+    attn_output = _sink_attention(
+        q,
+        kv,
+        block_bias,
+        self.sinks[rank * local_heads : (rank + 1) * local_heads],
+        self.sliding_window,
+        self.scaling,
+        0.0 if not self.training else self.attention_dropout,
+        self.training,
     )
-    full_mask.masked_fill_(~keep.view(1, 1, full_seq, full_seq), torch.finfo(q.dtype).min)
-
-    if kv.shape[2] > full_mask.shape[-1]:
-        if block_bias is not None:
-            full_mask = torch.cat([full_mask, block_bias.to(full_mask.dtype)], dim = -1)
-        else:
-            full_mask = F.pad(full_mask, (0, kv.shape[2] - full_mask.shape[-1]), value = 0.0)
-
-    key_states = kv.expand(-1, local_heads, -1, -1)
-    value_states = key_states
-    attn_weights = torch.matmul(q, key_states.transpose(2, 3)) * self.scaling
-    attn_weights = attn_weights + full_mask
-
-    sinks = self.sinks[rank * local_heads : (rank + 1) * local_heads]
-    sinks = sinks.reshape(1, -1, 1, 1).expand(batch, -1, full_seq, -1)
-    combined_logits = torch.cat([attn_weights, sinks], dim = -1)
-    combined_logits = combined_logits - combined_logits.max(dim = -1, keepdim = True).values
-    probs = F.softmax(combined_logits, dim = -1, dtype = combined_logits.dtype)
-    scores = probs[..., :-1]
-    dropout_p = 0.0 if not self.training else self.attention_dropout
-    attn_weights = F.dropout(scores, p = dropout_p, training = self.training).to(value_states.dtype)
-    attn_output = torch.matmul(attn_weights, value_states).transpose(1, 2).contiguous()
 
     # [B, S_full, H/cp, D] -> [B, S_local, H, D]
     attn_output = SeqAllToAll4D.apply(group, attn_output, 1, 2)
