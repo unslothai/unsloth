@@ -9,7 +9,8 @@ import json
 import sqlite3
 import time
 import uuid
-from typing import Callable, Optional
+from contextlib import contextmanager
+from typing import Callable, Iterator, Optional
 
 from storage.studio_db import (
     delete_chat_threads_in,
@@ -43,6 +44,23 @@ class TaskRunActive(Exception):
 _RUN_CHAT_NAMESPACE = uuid.UUID("5b0e7a1e-36a4-4a39-9c1f-2f6d3c8e9a41")
 
 
+@contextmanager
+def _connect(begin: Optional[str] = None) -> Iterator[sqlite3.Connection]:
+    """One connection: commits what the block wrote, rolls back on any exception."""
+    conn = get_connection()
+    try:
+        if begin:
+            conn.execute(begin)
+        yield conn
+        if conn.in_transaction:
+            conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -62,16 +80,8 @@ def discard_run_output_in(
 
 
 def discard_run_output(run_id: str, kept_chat_id: Optional[str]) -> None:
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _connect("BEGIN IMMEDIATE") as conn:
         discard_run_output_in(conn, run_id, kept_chat_id)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _task_from_row(row: sqlite3.Row) -> dict:
@@ -147,69 +157,73 @@ def _get_task(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
 
 
 def list_tasks() -> list[dict]:
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN")
+    with _connect("BEGIN") as conn:
         rows = conn.execute(
             "SELECT * FROM scheduled_tasks ORDER BY created_at DESC, rowid DESC"
         ).fetchall()
         return _with_last_run(conn, [_task_from_row(row) for row in rows])
-    finally:
-        conn.close()
 
 
 def get_task(task_id: str) -> Optional[dict]:
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN")
+    with _connect("BEGIN") as conn:
         return _get_task(conn, task_id)
-    finally:
-        conn.close()
+
+
+# The columns create and update both write, in _task_values order.
+_TASK_COLUMNS = (
+    "title",
+    "prompt",
+    "schedule_json",
+    "timezone",
+    "enabled",
+    "notify",
+    "named",
+    "model",
+    "reasoning_effort",
+    "allow_model_load",
+    "new_chat_each_run",
+    "archive_successful",
+    "project_id",
+    "next_run_at",
+)
+
+
+def _task_values(task: dict) -> tuple:
+    return (
+        task["title"],
+        task["prompt"],
+        json.dumps(task["schedule"]),
+        task["timezone"],
+        1 if task["enabled"] else 0,
+        task["notify"],
+        1 if task["named"] else 0,
+        task.get("model"),
+        task.get("reasoningEffort"),
+        1 if task.get("allowModelLoad") else 0,
+        0 if task.get("newChatEachRun") is False else 1,
+        1 if task.get("archiveSuccessful") else 0,
+        task.get("projectId"),
+        task["nextRunAt"],
+    )
 
 
 def create_task(task: dict) -> dict:
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _connect("BEGIN IMMEDIATE") as conn:
         (count,) = conn.execute("SELECT COUNT(*) FROM scheduled_tasks").fetchone()
         if count >= MAX_TASKS:
             raise TaskLimitReached()
         conn.execute(
-            """
-            INSERT INTO scheduled_tasks
-                (id, owner_subject, title, prompt, schedule_json, timezone, enabled, notify,
-                 named, model, reasoning_effort, allow_model_load, new_chat_each_run,
-                 archive_successful, project_id, next_run_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            f"INSERT INTO scheduled_tasks (id, owner_subject, created_at, {', '.join(_TASK_COLUMNS)},"
+            f" updated_at) VALUES ({', '.join('?' * (len(_TASK_COLUMNS) + 4))})",
             (
                 task["id"],
                 task["ownerSubject"],
-                task["title"],
-                task["prompt"],
-                json.dumps(task["schedule"]),
-                task["timezone"],
-                1 if task["enabled"] else 0,
-                task["notify"],
-                1 if task["named"] else 0,
-                task.get("model"),
-                task.get("reasoningEffort"),
-                1 if task.get("allowModelLoad") else 0,
-                0 if task.get("newChatEachRun") is False else 1,
-                1 if task.get("archiveSuccessful") else 0,
-                task.get("projectId"),
-                task["nextRunAt"],
                 task["createdAt"],
+                *_task_values(task),
                 task["updatedAt"],
             ),
         )
-        conn.commit()
         return _get_task(conn, task["id"])
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 # What decides when a task runs; any other change keeps its next run, an overdue one included.
@@ -222,12 +236,54 @@ def update_task(
     reschedule: Optional[Callable[[dict], Optional[int]]] = None,
 ) -> Optional[dict]:
     """Apply ``changes``; ``reschedule`` returns the next run time in the same transaction (raising rolls back)."""
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _connect("BEGIN IMMEDIATE") as conn:
         row = conn.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:
-            conn.rollback()
+            return None
+        stored = _task_from_row(row)
+        task = {**stored, **changes}
+        if reschedule is not None and any(task[key] != stored[key] for key in _TIMING_FIELDS):
+            task["nextRunAt"] = reschedule(task)
+        conn.execute(
+            f"UPDATE scheduled_tasks SET {', '.join(f'{column} = ?' for column in _TASK_COLUMNS)},"
+            " updated_at = ? WHERE id = ?",
+            (*_task_values(task), now_ms(), task_id),
+        )
+        return _get_task(conn, task_id)
+
+
+def create_task(task: dict) -> dict:
+    with _connect("BEGIN IMMEDIATE") as conn:
+        (count,) = conn.execute("SELECT COUNT(*) FROM scheduled_tasks").fetchone()
+        if count >= MAX_TASKS:
+            raise TaskLimitReached()
+        conn.execute(
+            f"INSERT INTO scheduled_tasks (id, owner_subject, created_at, {', '.join(_TASK_COLUMNS)},"
+            f" updated_at) VALUES ({', '.join('?' * (len(_TASK_COLUMNS) + 4))})",
+            (
+                task["id"],
+                task["ownerSubject"],
+                task["createdAt"],
+                *_task_values(task),
+                task["updatedAt"],
+            ),
+        )
+        return _get_task(conn, task["id"])
+
+
+# What decides when a task runs; any other change keeps its next run, an overdue one included.
+_TIMING_FIELDS = ("schedule", "timezone", "enabled")
+
+
+def update_task(
+    task_id: str,
+    changes: dict,
+    reschedule: Optional[Callable[[dict], Optional[int]]] = None,
+) -> Optional[dict]:
+    """Apply ``changes``; ``reschedule`` returns the next run time in the same transaction (raising rolls back)."""
+    with _connect("BEGIN IMMEDIATE") as conn:
+        row = conn.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
             return None
         stored = _task_from_row(row)
         task = {**stored, **changes}
@@ -261,32 +317,20 @@ def update_task(
                 task_id,
             ),
         )
-        conn.commit()
         return _get_task(conn, task_id)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def set_chat_thread(task_id: str, thread_id: str) -> None:
     """Record the chat a task's runs add to from now on. Leaves updated_at: not the user's edit."""
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         conn.execute(
             "UPDATE scheduled_tasks SET chat_thread_id = ? WHERE id = ?", (thread_id, task_id)
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def delete_task(task_id: str) -> bool:
     """Delete a task and its run history; finished runs' chats stay, an in-progress run's chat goes too."""
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _connect("BEGIN IMMEDIATE") as conn:
         running = conn.execute(
             "SELECT r.id, t.chat_thread_id FROM scheduled_task_runs r"
             " JOIN scheduled_tasks t ON t.id = r.task_id"
@@ -296,25 +340,16 @@ def delete_task(task_id: str) -> bool:
         for row in running:
             discard_run_output_in(conn, row["id"], row["chat_thread_id"])
         cursor = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
-        conn.commit()
         return cursor.rowcount > 0
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def request_run(task_id: str, allow_model_load: bool = False) -> Optional[dict]:
     """Queue a run now, outside the schedule. None when the task does not exist."""
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _connect("BEGIN IMMEDIATE") as conn:
         if (
             conn.execute("SELECT 1 FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
             is None
         ):
-            conn.rollback()
             return None
         active = conn.execute(
             f"SELECT 1 FROM scheduled_task_runs WHERE task_id = ? AND status IN {_ACTIVE}",
@@ -329,14 +364,8 @@ def request_run(task_id: str, allow_model_load: bool = False) -> Optional[dict]:
             " VALUES (?, ?, 'manual', 'queued', ?, ?)",
             (run_id, task_id, now_ms(), 1 if allow_model_load else 0),
         )
-        conn.commit()
         row = conn.execute("SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)).fetchone()
         return _run_from_row(row)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _has_claimable(conn: sqlite3.Connection, now: int) -> bool:
@@ -352,8 +381,7 @@ def claim_next(
     now: int, worker_id: str, next_run_after: Callable[[dict, int], Optional[int]]
 ) -> Optional[tuple[dict, dict]]:
     """Claim the next run (queued Run now first, then most overdue); missed occurrences collapse into one."""
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         # Read-only first, so an idle poll never takes the writer lock.
         if not _has_claimable(conn, now):
             return None
@@ -380,7 +408,6 @@ def claim_next(
                 (now,),
             ).fetchone()
             if task_row is None:
-                conn.rollback()
                 return None
             task = _task_from_row(task_row)
             try:
@@ -402,7 +429,6 @@ def claim_next(
                 "UPDATE scheduled_tasks SET next_run_at = ? WHERE id = ?",
                 (following, task["id"]),
             )
-        conn.commit()
         task_row = conn.execute(
             "SELECT * FROM scheduled_tasks WHERE id = ?", (task_row["id"],)
         ).fetchone()
@@ -410,24 +436,16 @@ def claim_next(
             "SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)
         ).fetchone()
         return _task_from_row(task_row), _run_from_row(run_row)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def release_claim(run_id: str, worker_id: str, claimed_next_run_at: Optional[int]) -> bool:
     """Undo a claim that will not run; False when the run is no longer this worker's to give back."""
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _connect("BEGIN IMMEDIATE") as conn:
         run = conn.execute(
             "SELECT * FROM scheduled_task_runs WHERE id = ? AND worker_id = ? AND status = 'running'",
             (run_id, worker_id),
         ).fetchone()
         if run is None:
-            conn.rollback()
             return False
         if run["source"] == "manual":
             conn.execute(
@@ -443,19 +461,12 @@ def release_claim(run_id: str, worker_id: str, claimed_next_run_at: Optional[int
                 " WHERE id = ? AND enabled = 1 AND next_run_at IS ?",
                 (run["scheduled_for"], run["task_id"], claimed_next_run_at),
             )
-        conn.commit()
         return True
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def next_due_at() -> Optional[int]:
     """When the next run should start: now for a queued one, else the earliest due task."""
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         if conn.execute(
             "SELECT 1 FROM scheduled_task_runs WHERE status = 'queued' LIMIT 1"
         ).fetchone():
@@ -465,33 +476,24 @@ def next_due_at() -> Optional[int]:
             f" WHERE t.enabled = 1 AND t.next_run_at IS NOT NULL AND {_NO_ACTIVE_RUN}"
         ).fetchone()
         return row[0]
-    finally:
-        conn.close()
 
 
 def heartbeat(run_id: str, worker_id: str) -> bool:
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         cursor = conn.execute(
             "UPDATE scheduled_task_runs SET heartbeat_at = ?"
             " WHERE id = ? AND worker_id = ? AND status = 'running'",
             (now_ms(), run_id, worker_id),
         )
-        conn.commit()
         return cursor.rowcount > 0
-    finally:
-        conn.close()
 
 
 def task_exists(task_id: str) -> bool:
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         return (
             conn.execute("SELECT 1 FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
             is not None
         )
-    finally:
-        conn.close()
 
 
 def _trim_history(conn: sqlite3.Connection, task_id: str) -> None:
@@ -521,9 +523,7 @@ def finish_run(
     discard_chat: bool = False,
 ) -> bool:
     """Settle a run this worker owns and trim history; ``discard_chat`` removes a failed run's chat atomically."""
-    conn = get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    with _connect("BEGIN IMMEDIATE") as conn:
         row = conn.execute(
             "SELECT r.task_id, t.chat_thread_id FROM scheduled_task_runs r"
             " JOIN scheduled_tasks t ON t.id = r.task_id"
@@ -531,7 +531,6 @@ def finish_run(
             (run_id, worker_id),
         ).fetchone()
         if row is None:
-            conn.rollback()
             return False
         if discard_chat:
             discard_run_output_in(conn, run_id, row["chat_thread_id"])
@@ -551,20 +550,13 @@ def finish_run(
             (status, now_ms(), thread_id, model, error_code, error, run_id),
         )
         _trim_history(conn, row["task_id"])
-        conn.commit()
         return True
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def recover_stale_runs(stale_before: int) -> int:
     """Fail runs whose heartbeat stopped before ``stale_before`` (Studio quit or crashed mid-run)."""
     stale = "status = 'running' AND COALESCE(heartbeat_at, started_at, created_at) < ?"
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         if (
             conn.execute(
                 f"SELECT 1 FROM scheduled_task_runs WHERE {stale} LIMIT 1", (stale_before,)
@@ -591,26 +583,17 @@ def recover_stale_runs(stale_before: int) -> int:
             discard_run_output_in(conn, row["id"], row["chat_thread_id"])
         for task_id in {row["task_id"] for row in rows}:
             _trim_history(conn, task_id)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
     return len(run_ids)
 
 
 def list_runs(task_id: str, limit: int = RUN_HISTORY_LIMIT) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM scheduled_task_runs WHERE task_id = ?"
             " ORDER BY created_at DESC, rowid DESC LIMIT ?",
             (task_id, limit),
         ).fetchall()
         return [_run_from_row(row) for row in rows]
-    finally:
-        conn.close()
 
 
 # Finished runs per answer; Run now is unbounded, so clients page via ``more``.
@@ -619,8 +602,7 @@ ACTIVITY_LIMIT = 200
 
 def activity(since: Optional[int]) -> dict:
     """Runs finished since ``since`` (oldest first, at most ACTIVITY_LIMIT, ``more`` pages), active count, next run."""
-    conn = get_connection()
-    try:
+    with _connect() as conn:
         # One snapshot, so a run settling between two reads is not missed by both.
         conn.execute("BEGIN")
         runs: list[dict] = []
@@ -653,5 +635,3 @@ def activity(since: Optional[int]) -> dict:
             "SELECT MIN(next_run_at) FROM scheduled_tasks WHERE enabled = 1"
         ).fetchone()
         return {"runs": runs, "more": more, "activeRuns": active, "nextRunAt": next_run_at}
-    finally:
-        conn.close()
