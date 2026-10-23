@@ -3009,6 +3009,11 @@ def gguf_kv_bytes_per_token(meta: Dict[str, Any]) -> Optional[float]:
 def serving_kv_gib_per_user(model: str, ctx: int) -> Dict[str, Any]:
     """`{"gib": float|None, "why": str}` -- the KV one user's full context costs."""
     path = osp.expanduser(model)
+    if not osp.isfile(path):
+        # A directory or cached HF repo holding one GGUF: read the header of the file it resolves to.
+        sized = model_size_report(model)
+        if str(sized.get("group") or "").startswith("gguf:") and sized.get("path"):
+            path = sized["path"]
     if not (osp.isfile(path) and path.endswith(".gguf")):
         return {"gib": None, "why": "KV per user is only read from a GGUF header"}
     per_token = gguf_kv_bytes_per_token(gguf_metadata(path))
