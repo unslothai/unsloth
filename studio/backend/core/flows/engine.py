@@ -1124,9 +1124,18 @@ class FlowEngine:
         forced = nid in set(rs.options.get("force_nodes") or [])
         pinned = (rs.options.get("pinned") or {}).get(nid)
         if isinstance(pinned, dict) and iteration is None and not forced:
-            # The editor pinned an earlier output of this node: downstream gets it as if it were cached.
-            self._finish(rs, nid, env, dict(pinned), "cached", iteration, message = "Pinned")
-            return
+            from core.flows.nodes._common import gallery_media_present
+
+            # The editor pinned an earlier output of this node: downstream gets it as if it were cached. One holding
+            # media the user has since deleted runs the node again instead, as a stale cache hit does.
+            try:
+                present = await asyncio.to_thread(gallery_media_present, pinned)
+            except Exception:
+                logger.debug("flows: pinned media check failed", exc_info = True)
+                present = False
+            if present:
+                self._finish(rs, nid, env, dict(pinned), "cached", iteration, message = "Pinned")
+                return
         baked = (rs.doc.get("baked") or {}).get(nid)
         if (
             baked

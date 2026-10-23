@@ -299,3 +299,26 @@ async def test_run_flow_keeps_a_declared_params_default():
     rs = await _run(eng, _caller_doc("moody", {}))
     assert rs.status == "completed", rs.error
     assert rs.outputs["got"] == {"answer": "feeling calm"}
+
+
+def test_a_pin_holding_deleted_media_runs_the_block_again(monkeypatch):
+    from core.flows.nodes import _common
+
+    calls = []
+
+    async def counted(ctx):
+        calls.append(1)
+        return {"text": "fresh"}
+
+    eng = _engine({**BASE, "input.text": counted})
+    d = doc(
+        [node("a", "input.text", value = "x"), node("out", "output.result", name = "r")],
+        [edge("a", "text", "out", "value")],
+    )
+    pin = {"a": {"text": {"ref": "image:gone", "kind": "image"}}}
+    monkeypatch.setattr(_common, "gallery_media_present", lambda value: False)
+    rs = asyncio.run(_run(eng, d, pinned = pin))
+    assert rs.outputs["r"] == "fresh" and calls == [1]
+    monkeypatch.setattr(_common, "gallery_media_present", lambda value: True)
+    rs = asyncio.run(_run(eng, d, pinned = pin))
+    assert rs.nodes["a"].status == "cached" and calls == [1]
