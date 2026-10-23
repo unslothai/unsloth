@@ -520,6 +520,35 @@ def mlx_load_blocker(
     )
 
 
+def _refuse_lora_fallback(
+    fam: DiffusionFamily,
+    choice: str,
+    *,
+    with_loras: bool,
+    model_kind: Optional[str],
+    gguf_filename: Optional[str],
+    engine: Optional[str],
+) -> None:
+    """ValueError, before anything is unloaded, when a FORCED MLX engine would serve this pick but for its LoRAs and
+    the engine the load falls back to cannot apply them either (diffusers on a GGUF, or a native family without
+    LoRA). In auto the LoRA load keeps the host's own engine and behaviour, as without MLX."""
+    if not with_loras or mlx_mode() != MLX_FORCE:
+        return
+    if not mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = engine)[0]:
+        return
+    from .diffusion_lora import supports_lora
+
+    if supports_lora(engine = choice, family = fam.name, model_kind = "gguf", transformer_quant = None):
+        return
+    via = (
+        "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine on a GGUF"
+    )
+    raise ValueError(
+        "LoRA adapters are not supported on the MLX engine yet, and this load would fall back to "
+        f"{via}, which cannot apply them here either. Load it without LoRA adapters."
+    )
+
+
 def _note_mlx_refusal(reason: Optional[str]) -> None:
     global _mlx_fallback_reason
     with _lock:
@@ -817,8 +846,17 @@ def select_and_activate_engine(
             else "forced (UNSLOTH_DIFFUSION_ENGINE=diffusers)",
         )
 
+    lora_guard = functools.partial(
+        _refuse_lora_fallback,
+        fam,
+        with_loras = with_loras,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+    )
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
+        lora_guard(ENGINE_DIFFUSERS)
         return _activate(ENGINE_DIFFUSERS, "native engine disabled (UNSLOTH_DIFFUSION_SD_CPP=0)")
 
     target = resolve_diffusion_device_target()
@@ -926,6 +964,7 @@ def select_and_activate_engine(
     choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
+    lora_guard(choice)
     if choice == ENGINE_SD_CPP:
         return _activate(ENGINE_SD_CPP, None)
 
@@ -1076,8 +1115,17 @@ def predict_engine(
     forced, sd_cpp_pref, mps_enabled = _engine_config(engine)
     if forced == ENGINE_DIFFUSERS:
         return ENGINE_DIFFUSERS
+    lora_guard = functools.partial(
+        _refuse_lora_fallback,
+        fam,
+        with_loras = with_loras,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+    )
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
+        lora_guard(ENGINE_DIFFUSERS)
         return ENGINE_DIFFUSERS
 
     backend = resolve_diffusion_device_target().backend
@@ -1086,6 +1134,7 @@ def predict_engine(
         gpu_ordinal = None
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     if not (policy_eligible and family_sd_cpp_supported(fam)):
+        lora_guard(ENGINE_DIFFUSERS)
         return ENGINE_DIFFUSERS
 
     # A permitted install counts as available only where selection would actually perform one.
@@ -1108,6 +1157,7 @@ def predict_engine(
         raise ValueError(
             "The native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable."
         )
+    lora_guard(choice)
     return choice
 
 

@@ -571,7 +571,7 @@ def test_auto_switch_planner_judges_mlx_with_the_picks_gguf(monkeypatch):
     assert media_locality.planners_for(DIFFUSION, pick) == [ENGINE_MLX]
 
 
-@pytest.mark.parametrize("value", [None, "auto", "1"])
+@pytest.mark.parametrize("value", [None, "auto"])
 @pytest.mark.parametrize("gguf", [_Q4, "z-image-turbo-Q4_K_M.gguf", "z-image-turbo-Q5_1.gguf"])
 def test_a_lora_load_declines_mlx_under_default_routing(monkeypatch, value, gguf):
     _apple(monkeypatch)
@@ -585,6 +585,52 @@ def test_a_lora_load_declines_mlx_under_default_routing(monkeypatch, value, gguf
     r.select_and_activate_engine(fam, **kw)
     assert r.active_engine_name() == ENGINE_DIFFUSERS
     assert "LoRA" in (r.annotate_status({})["mlx_fallback_reason"] or "")
+
+
+@pytest.mark.parametrize("sd_cpp_off", [False, True])
+def test_a_forced_mlx_lora_load_with_no_lora_capable_fallback_is_refused_before_the_switch(
+    monkeypatch, sd_cpp_off
+):
+    # UNSLOTH_DIFFUSION_MLX=1 with no native engine (absent, or UNSLOTH_DIFFUSION_SD_CPP=0): diffusers cannot apply
+    # LoRAs on a GGUF here, nor build a family its diffusers lacks, so the load is refused before the switch.
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    if sd_cpp_off:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = "z-image-turbo-Q4_K_M.gguf", with_loras = True)
+    r._active_engine_name = ENGINE_MLX
+    with pytest.raises(ValueError, match = "LoRA"):
+        r.predict_engine(fam, **kw)
+    with pytest.raises(ValueError, match = "LoRA"):
+        r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_MLX
+
+
+def test_a_forced_mlx_lora_load_keeps_a_lora_capable_sd_cpp(monkeypatch):
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: "/usr/bin/sd-cli")
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "v0"))
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = _Q4, with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_SD_CPP
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_SD_CPP
+
+
+@pytest.mark.parametrize("value", [None, "auto", "1"])
+def test_a_lora_load_off_apple_silicon_is_unchanged(monkeypatch, value):
+    _host(monkeypatch, system = "linux", machine = "x86_64")
+    _device(monkeypatch, "cpu")
+    if value is not None:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", value)
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = _Q4, with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_DIFFUSERS
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
 
 
 def test_a_lora_load_keeps_sd_cpp_under_default_routing_with_the_native_mps_knob(monkeypatch):
