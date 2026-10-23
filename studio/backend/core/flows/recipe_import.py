@@ -18,7 +18,9 @@ from typing import Any
 RECIPE_GRAPH_VERSION = 1
 COLUMN_TYPE = "recipe.column"
 # Jinja references like {{ topic }} or {{ topic.field }} name the columns a prompt reads.
-_REFERENCE = re.compile(r"\{\{-?\s*([A-Za-z_][A-Za-z0-9_-]*)")
+# Every {{ ... }} and {% ... %} block; any name inside one can be a column (`{{ a + b }}`, `{% if x %}`).
+_JINJA_BLOCK = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 _GRID = (320, 180)
 
 
@@ -40,17 +42,23 @@ def column_references(column: dict, names: set[str]) -> list[str]:
     for key in ("prompt", "system_prompt", "expr"):
         text = column.get(key)
         if isinstance(text, str):
-            for name in _REFERENCE.findall(text):
-                if name in names and name not in seen and name != column.get("name"):
-                    seen.append(name)
+            for block in _JINJA_BLOCK.finditer(text):
+                body = block.group(1) if block.group(1) is not None else block.group(2)
+                # Hyphenated column names are kept whole; `a-b` also counts its parts in case it is a subtraction.
+                for token in _NAME.findall(body):
+                    for name in (token, *token.split("-")):
+                        if name in names and name not in seen and name != column.get("name"):
+                            seen.append(name)
     for name in column.get("target_columns") or []:
         if isinstance(name, str) and name in names and name not in seen:
             seen.append(name)
     params = column.get("params")
-    if isinstance(params, dict) and isinstance(params.get("category"), str):
-        parent = params["category"]
-        if parent in names and parent not in seen:
-            seen.append(parent)
+    if isinstance(params, dict):
+        # A subcategory sampler reads its parent category; a timedelta sampler reads its datetime column.
+        for key in ("category", "reference_column_name"):
+            parent = params.get(key)
+            if isinstance(parent, str) and parent in names and parent not in seen:
+                seen.append(parent)
     return seen
 
 

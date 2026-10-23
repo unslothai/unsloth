@@ -9,7 +9,7 @@ import pytest
 
 from core.flows.nodes import data, training
 from core.flows.recipe_compile import RecipeCompileError, compile_recipe, normalise
-from core.flows.recipe_import import COLUMN_TYPE, import_recipe
+from core.flows.recipe_import import COLUMN_TYPE, import_recipe, column_references
 from core.flows.registry import FlowNodeError
 
 LEARNING = (
@@ -224,3 +224,22 @@ def test_compile_refuses_loops_and_duplicate_names():
     )
     with pytest.raises(RecipeCompileError, match = "share the name"):
         compile_recipe(twice)
+
+
+def test_every_column_an_expression_reads_is_a_dependency():
+    cols = {"seed", "x", "y", "when", "gap", "level"}
+    expr = {"name": "x", "expr": "{{ seed + y }} {% if level > 2 %}hi{% endif %}"}
+    assert column_references(expr, cols) == ["seed", "y", "level"]
+    timedelta = {"name": "gap", "params": {"reference_column_name": "when", "dt_min": 1}}
+    assert column_references(timedelta, cols) == ["when"]
+    loop = {
+        "recipe": {
+            "columns": [
+                {"name": "seed", "column_type": "expression", "expr": "1"},
+                {"name": "x", "column_type": "expression", "expr": "{{ seed + y }}"},
+                {"name": "y", "column_type": "expression", "expr": "{{ x }}"},
+            ]
+        }
+    }
+    with pytest.raises(RecipeCompileError, match = "loop"):
+        compile_recipe(import_recipe(loop))

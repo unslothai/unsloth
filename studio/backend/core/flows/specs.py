@@ -805,7 +805,14 @@ NODE_SPECS: list[dict] = [
         inputs = [inp("seed", "dataset", "Seed dataset", optional = True)],
         outputs = [out("dataset", "dataset"), out("preview", "json")],
         params = [
-            P("recipe_id", "text", "", "Recipe", options_from = "/api/data-recipe/recipes"),
+            P(
+                "recipe_id",
+                "text",
+                "",
+                "Recipe",
+                options_from = "/api/data-recipe/recipes",
+                options_path = "recipes[].id",
+            ),
             P("rows", "int", 50, "Rows", min = 1, max = 100000),
             P("mode", "select", "full", "Mode", options = ["preview", "full"]),
         ],
