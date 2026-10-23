@@ -149,6 +149,7 @@ function NotInstalledContent({
           To install Unsloth, click Get Started.
         </p>
         <Button
+          variant="dark"
           size="hero"
           onClick={getStarted}
           disabled={phase === "checking"}
@@ -210,7 +211,7 @@ function LongPathsExplainer({
             <Button variant="muted" size="hero" onClick={onSkip}>
               Skip
             </Button>
-            <Button size="hero" onClick={onContinue}>
+            <Button variant="dark" size="hero" onClick={onContinue}>
               Continue
             </Button>
           </div>
@@ -339,7 +340,9 @@ function InstallErrorContent({
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
+          <Button variant="dark" size="hero" onClick={onRetryInstall}>
+            Try Again
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -368,7 +371,9 @@ function RepairErrorContent({
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetry}>Retry</Button>
+          <Button variant="dark" size="hero" onClick={onRetry}>
+            Retry
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>
@@ -399,7 +404,7 @@ function NeedsElevationContent({
         </div>
         <div className="mt-4 flex gap-3">
           <Button variant="muted" size="hero" onClick={onRetryInstall}>Cancel</Button>
-          <Button size="hero" onClick={onApproveElevation}>Allow</Button>
+          <Button variant="dark" size="hero" onClick={onApproveElevation}>Allow</Button>
         </div>
       </div>
     </>
@@ -430,7 +435,9 @@ function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
       <div className="mt-8 flex flex-col items-center gap-2">
         <p className="text-sm font-medium text-foreground">Server stopped</p>
         <div className="mt-4">
-          <Button size="hero" onClick={onStartServer}>Start Server</Button>
+          <Button variant="dark" size="hero" onClick={onStartServer}>
+            Start Server
+          </Button>
         </div>
       </div>
     </>
@@ -455,7 +462,9 @@ function ErrorContent({
           <p className="max-w-md text-center text-xs text-muted-foreground">{error}</p>
         )}
         <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-          <Button size="hero" onClick={onRetry}>Retry</Button>
+          <Button variant="dark" size="hero" onClick={onRetry}>
+            Retry
+          </Button>
         </DiagnosticsCopyActions>
       </div>
     </>

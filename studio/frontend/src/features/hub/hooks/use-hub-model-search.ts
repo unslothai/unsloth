@@ -21,6 +21,7 @@ import { EMBEDDING_TAGS, estimateSizeFromDtypes } from "../lib/hf-model-meta";
 import { mergeTaskIterators } from "../lib/merge-task-iterators";
 import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
+import { ggufRepoParams } from "@/lib/model-size";
 import { type FreshRankable, rankFresh } from "../lib/fresh-ranking";
 import { type ProviderLogo, resolveOwnerProviderLogo } from "../lib/provider-logos";
 import {
@@ -29,6 +30,7 @@ import {
   providerSearchTerms,
 } from "../lib/provider-search";
 import { fetchWithTimeout } from "../lib/network";
+import { LruMap } from "../lib/lru-map";
 import {
   type UnslothSupport,
   type UnslothSupportStatus,
@@ -37,6 +39,7 @@ import {
 import {
   filterModelListing,
   hasModelSearchFilters,
+  needsModelMetadata,
   parameterRange,
   type ModelSearchFilters,
 } from "../lib/model-search-filters";
@@ -121,6 +124,7 @@ export interface HfModelResult {
 // HF rejects ascending order for trendingScore.
 const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
 const HF_SEARCH_TIMEOUT_MS = 15_000;
+const FILTER_METADATA_TTL_MS = 5 * 60 * 1000;
 
 // Append expand=gguf so GGUF repos report a param count even without a "<n>B" token.
 function withGgufExpand(input: Parameters<typeof fetch>[0]): string {
@@ -186,6 +190,7 @@ function makeMapModel(
   keepUnsupportedTags: boolean,
   idSuffix: string,
   deviceType: string | null,
+  hideEmptyUploads = false,
 ) {
   const suffixLower = idSuffix.toLowerCase();
   return (raw: unknown): HfModelResult | null => {
@@ -223,6 +228,15 @@ function makeMapModel(
     if (excludeGguf && isGguf) {
       return null;
     }
+    // The Hub derives gguf metadata and the "gguf" tag from uploaded files: neither means none yet.
+    if (
+      hideEmptyUploads &&
+      isGgufLike(m.name) &&
+      !m.gguf &&
+      !m.tags?.some((tag) => tag.toLowerCase() === "gguf")
+    ) {
+      return null;
+    }
     const pipelineTag = m.task ?? m.pipeline_tag;
     const quantMethod = m.config?.quantization_config?.quant_method;
     // Embeddings skip the gate: unsupported for chat but trainable.
@@ -255,7 +269,9 @@ function makeMapModel(
       likes: m.likes ?? 0,
       private: m.private,
       gated: m.gated,
-      totalParams: m.safetensors?.total ?? m.gguf?.total,
+      totalParams:
+        m.safetensors?.total ??
+        (m.gguf ? ggufRepoParams(m.name, m.gguf.total) : undefined),
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
       baseModel: detectBaseModel(m.tags),
@@ -840,8 +856,12 @@ export function useHubModelSearch(
     ownerScope?: "unsloth" | "all";
     enabled?: boolean;
     keepUnsupportedTags?: boolean;
+    /** Drop "-GGUF" repos with no GGUF files uploaded yet. The Hub page keeps them listed. */
+    hideEmptyUploads?: boolean;
     channel?: HfModelSearchChannel | null;
     filters?: ModelSearchFilters;
+    /** False for a result the caller hides anyway; such rows skip per-row filter lookups. */
+    keepResult?: (result: HfModelResult) => boolean;
   },
 ) {
   const {
@@ -855,8 +875,10 @@ export function useHubModelSearch(
     ownerScope = "all",
     enabled = true,
     keepUnsupportedTags = false,
+    hideEmptyUploads = false,
     channel = null,
     filters,
+    keepResult,
   } = options ?? {};
   const unslothOnly = ownerScope === "unsloth";
 
@@ -888,6 +910,16 @@ export function useHubModelSearch(
     [isPublisherQuery, trimmed],
   );
   const hfEndpoint = useHfEndpoint();
+  // Filter changes and retries reuse settled metadata; another Hub or token must not.
+  const filterMetadata = useMemo(
+    () =>
+      new LruMap<
+        string,
+        { data: Record<string, unknown> | null; expires: number }
+      >(2048),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hfEndpoint, accessToken],
+  );
   const hasFilters = !!filters && hasModelSearchFilters(filters);
   const filterRange = filters ? parameterRange(filters) : "";
   const createListing = useCallback(
@@ -1072,6 +1104,42 @@ export function useHubModelSearch(
     ],
   );
 
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const mapModel = useMemo(
+    () =>
+      makeMapModel(
+        excludeGguf,
+        keepUnsupportedTags,
+        channelIdSuffix,
+        deviceType,
+        hideEmptyUploads,
+      ),
+    [
+      excludeGguf,
+      keepUnsupportedTags,
+      channelIdSuffix,
+      deviceType,
+      hideEmptyUploads,
+    ],
+  );
+  const needsMetadata = !!filters && needsModelMetadata(filters);
+  // Only a row the list can show is worth a per-row Hub request.
+  const keepRow = useMemo(
+    () =>
+      needsMetadata
+        ? (raw: unknown) => {
+            try {
+              const result = mapModel(raw);
+              return result !== null && (keepResult?.(result) ?? true);
+            } catch {
+              // Pagination skips a row its mapper throws on; skip it here too, not the search.
+              return false;
+            }
+          }
+        : undefined,
+    [needsMetadata, mapModel, keepResult],
+  );
+
   const createIter = useCallback(
     (signal: AbortSignal) => {
       if (!filters || !hasFilters) return createListing(signal);
@@ -1080,6 +1148,8 @@ export function useHubModelSearch(
         Promise<Record<string, unknown> | null>
       >();
       const requestJson = async (path: string) => {
+        const cached = filterMetadata.get(path);
+        if (cached && cached.expires > Date.now()) return cached.data;
         const response = await fetchWithTimeout(
           `${hfEndpoint}${path}`,
           {
@@ -1090,14 +1160,24 @@ export function useHubModelSearch(
           },
           HF_SEARCH_TIMEOUT_MS,
         );
-        if ([401, 403, 404].includes(response.status)) return null;
-        if (!response.ok) {
+        if ([401, 403].includes(response.status)) return null;
+        if (!response.ok && response.status !== 404) {
           throw new Error(
             `Model filter metadata request failed (HTTP ${response.status})`,
           );
         }
-        // One repo's malformed config.json must not abort the whole search.
-        return response.json().catch(() => null);
+        try {
+          const data = response.status === 404 ? null : await response.json();
+          if (!signal.aborted) {
+            filterMetadata.set(path, {
+              data,
+              expires: Date.now() + FILTER_METADATA_TTL_MS,
+            });
+          }
+          return data;
+        } catch {
+          return null;
+        }
       };
       const fetchJson = (path: string) => {
         let request = metadata.get(path);
@@ -1108,7 +1188,7 @@ export function useHubModelSearch(
         return request;
       };
       const filterPriority: ModelListingTransform = (iterator) =>
-        filterModelListing(iterator, filters, fetchJson);
+        filterModelListing(iterator, filters, fetchJson, undefined, keepRow);
       const iterator = createListing(signal, filterPriority);
       const pinnedPromise =
         pinnedId &&
@@ -1124,7 +1204,13 @@ export function useHubModelSearch(
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }).catch(() => null)
           : undefined;
-      return filterModelListing(iterator, filters, fetchJson, pinnedPromise);
+      return filterModelListing(
+        iterator,
+        filters,
+        fetchJson,
+        pinnedPromise,
+        keepRow,
+      );
     },
     [
       createListing,
@@ -1137,25 +1223,11 @@ export function useHubModelSearch(
       channelQuery,
       hfEndpoint,
       accessToken,
+      filterMetadata,
+      keepRow,
     ],
   );
 
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const mapModel = useMemo(
-    () =>
-      makeMapModel(
-        excludeGguf,
-        keepUnsupportedTags,
-        channelIdSuffix,
-        deviceType,
-      ),
-    [
-      excludeGguf,
-      keepUnsupportedTags,
-      channelIdSuffix,
-      deviceType,
-    ],
-  );
   const search = useHubPaginatedSearch(createIter, mapModel, { enabled });
 
   // Stable-append contract: keep the sorted prefix and append only new pages, else late rows jump

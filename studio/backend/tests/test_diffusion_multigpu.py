@@ -482,6 +482,42 @@ def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
     assert pipe.device == before
 
 
+def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch):
+    """ModularPipeline reports its first component's card (the text encoder, on the secondary): step 0 device mismatch."""
+    monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
+    import importlib
+
+    try:
+        diffusers = importlib.import_module("diffusers")
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"diffusers is not importable here: {type(exc).__name__}")
+    ModularPipeline = getattr(diffusers, "ModularPipeline", None)
+    if ModularPipeline is None:
+        pytest.skip("this diffusers has no modular pipelines")
+
+    class Mod(torch.nn.Linear):
+        @property
+        def device(self):
+            return self.weight.device
+
+    class Pipe(ModularPipeline):
+        def __init__(self, text_encoder, transformer):
+            self._component_specs = {"text_encoder": None, "transformer": None}
+            self.text_encoder = text_encoder
+            self.transformer = transformer
+
+    text_encoder = Mod(1, 1).to("meta")  # the secondary card of the split
+    transformer = Mod(1, 1)  # the primary
+    pipe = Pipe(text_encoder, transformer)
+    assert pipe.device == torch.device("meta")  # stock: the first component's card
+    mg.install_execution_device_patch()
+    transformer._unsloth_split_home = torch.device("cpu")
+    assert pipe._execution_device == torch.device("cpu")
+    assert pipe.device == torch.device("cpu")
+    del transformer._unsloth_split_home
+    assert pipe.device == torch.device("meta")  # no split: diffusers' own answer again
+
+
 def test_place_split_and_fallback(monkeypatch):
     class Pipe:
         def __init__(self):

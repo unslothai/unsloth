@@ -83,7 +83,8 @@ export function MonitorLink(): ReactElement {
         />
       </button>
 
-      <div className="flex items-center justify-between gap-3 rounded-lg px-1 py-1">
+      {/* Where the panel's own "stop opening this" gets turned back on. */}
+      <div className="flex items-center justify-between gap-3 rounded-md px-1 py-1">
         <span className="flex min-w-0 flex-col">
           <span className="text-sm text-foreground">
             {t("settings.resources.liveMonitor.autoOpen")}

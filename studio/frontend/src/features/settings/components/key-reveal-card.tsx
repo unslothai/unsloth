@@ -56,7 +56,7 @@ export function KeyRevealCard({
       </div>
       <div
         className={cn(
-          "flex w-full items-center gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors",
+          "flex w-full items-center gap-3 rounded-full border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors",
           "has-[input:focus-visible]:ring-1 has-[input:focus-visible]:ring-ring",
           copied && "border-emerald-500/40 bg-emerald-500/10",
         )}

@@ -82,7 +82,7 @@ const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   // min-w-0: a grid item's automatic minimum is its content, so a long project line widened the card past its column.
-  "group/chat relative flex aspect-[8/7] min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-[calc(var(--radius-xl)-2px)] px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex aspect-[8/7] min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-2xl px-5 py-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
@@ -557,7 +557,7 @@ function ChatMenu({
 }
 
 const TILE =
-  "flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
+  "flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
 
 function ChatTile({
@@ -632,7 +632,7 @@ function modelLabel(
 }
 
 const CHIP =
-  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-sm text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 function ChatLocation({
   chat,
@@ -1079,7 +1079,7 @@ export function ChatRow({
           : actions.open(chat)
       }
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
         selected && "bg-muted dark:bg-muted/60",
       )}
@@ -1100,7 +1100,7 @@ export function ChatRow({
                 if (actions.selection.size > 0) actions.toggleSelected(chat.id, event.shiftKey);
                 else actions.open(chat);
               }}
-              className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {chatTitle(chat, t)}
             </button>
@@ -1218,7 +1218,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
 }
 
 const CARD_TITLE =
-  "block w-full rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded-md text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 export function GroupHeading({
   children,
@@ -1275,7 +1275,7 @@ export function CollectionHeader({
         <button
           type="button"
           onClick={onParent}
-          className="rounded text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {parent}
         </button>
@@ -1289,7 +1289,7 @@ export function CollectionHeader({
         </span>
       </nav>
       <div className="flex items-center gap-4">
-        <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+        <span className="flex size-13 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground/80">
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-6.5" />
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -1452,7 +1452,7 @@ export function ProjectRow({
     <div
       onClick={() => actions.viewProject(project.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >
@@ -1466,7 +1466,7 @@ export function ProjectRow({
                 event.stopPropagation();
                 actions.viewProject(project.id);
               }}
-              className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {project.name}
             </button>
@@ -1691,7 +1691,7 @@ export function SectionRow({
     <div
       onClick={() => actions.viewSection(section.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-md transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >
@@ -1704,7 +1704,7 @@ export function SectionRow({
               event.stopPropagation();
               actions.viewSection(section.id);
             }}
-            className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="truncate rounded-full text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {section.name}
           </button>
@@ -1782,7 +1782,7 @@ function FavoriteTile({
         aria-label={title}
         onClick={onOpen}
         className={cn(
-          "block w-full overflow-hidden rounded-[calc(var(--radius-xl)-2px)] text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "block w-full overflow-hidden rounded-2xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           FILE_CARD_SURFACE,
         )}
       >

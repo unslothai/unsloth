@@ -22,7 +22,7 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
     <div
       role={question ? "alertdialog" : "status"}
       aria-live="polite"
-      className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/70 bg-primary/5 px-3 py-1.5 text-ui-12"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/70 bg-wash-5 px-3 py-1.5 text-ui-12"
     >
       {question ? null : <Spinner className="size-3.5 text-primary" />}
       <div className="min-w-0 flex-[1_1_12rem]">
@@ -78,7 +78,7 @@ function ScriptPreview({ code, onRead }: { code: string; onRead: () => void }) {
     <pre
       ref={check}
       onScroll={(event) => check(event.currentTarget)}
-      className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1 font-mono text-ui-11 text-foreground"
+      className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted px-2 py-1 font-mono text-ui-11 text-foreground"
     >
       {code}
     </pre>

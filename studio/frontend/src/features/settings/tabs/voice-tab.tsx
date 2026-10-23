@@ -337,7 +337,8 @@ function SttModelPicker({
             </div>
           ) : (
             items.map((model) => {
-              // Not rounded-sm: the theme's --radius makes that 13.6px, too round at this height.
+              // A custom repo's name is its id: one-line rows keep a pill
+              // shape, two-line rows use the row radius.
               const twoLines = sttModelSource(model) !== sttModelName(model);
               const size = sttModelSize(model) || folderSizes.get(model);
               return (
@@ -347,7 +348,7 @@ function SttModelPicker({
                   onClick={() => void selectModel(model)}
                   aria-selected={model === value}
                   className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
-                    twoLines ? "rounded-[10px]" : "rounded-full"
+                    twoLines ? "rounded-md" : "rounded-full"
                   } ${model === value ? "bg-accent font-medium" : ""}`}
                 >
                   <span className="min-w-0 flex-1 truncate">

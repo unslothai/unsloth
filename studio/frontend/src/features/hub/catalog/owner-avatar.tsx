@@ -13,10 +13,10 @@ import {
 type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const SIZES: Record<AvatarSize, string> = {
-  xs: "size-5 rounded-[8px] text-ui-9",
-  sm: "size-7 rounded-[10px] text-ui-11",
-  md: "size-9 rounded-[12px] text-ui-13",
-  lg: "size-12 rounded-[15px] text-ui-16",
+  xs: "size-5 rounded-sm text-ui-9",
+  sm: "size-7 rounded-sm text-ui-11",
+  md: "size-9 rounded-md text-ui-13",
+  lg: "size-12 rounded-lg text-ui-16",
 };
 
 const UNSLOTH_OWNER_LOGO: ProviderLogo = {

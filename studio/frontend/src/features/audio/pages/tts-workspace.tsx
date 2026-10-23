@@ -213,7 +213,7 @@ export function TtsRailFields({
                 ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
                 : "Type the sentence to speak…"
             }
-            className="min-h-28 rounded-lg"
+            className="min-h-28"
           />
         </Field>
       )}
@@ -388,7 +388,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "default"}
+          variant={generationPresentation ? "outline" : "dark"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -436,7 +436,7 @@ function ClipBadge({ text }: { text: string | null | undefined }) {
   return (
     <span
       title={text}
-      className="max-w-[40%] shrink-0 truncate rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
+      className="max-w-[40%] shrink-0 truncate rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
     >
       {text}
     </span>
@@ -447,6 +447,7 @@ export function TtsOutput({
   clips,
   selectedClip,
   selectedClipSrc,
+  retryClipSrc,
   srcById,
   peaksById,
   handleDownloadClip,
@@ -483,6 +484,7 @@ export function TtsOutput({
   AudioGallery,
   | "srcById"
   | "peaksById"
+  | "retryClipSrc"
   | "handleDownloadClip"
   | "handleDeleteClip"
   | "fallbackClip"
@@ -628,7 +630,20 @@ export function TtsOutput({
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
-          <div className="flex w-full flex-col gap-2">
+          <div
+            className="flex w-full max-w-xl flex-col gap-2"
+            onErrorCapture={(event) => {
+              // Only this clip's link: source players and a previous selection's late errors are not ours to retry.
+              const media = event.target;
+              if (
+                selectedClipSrc &&
+                media instanceof HTMLMediaElement &&
+                media.getAttribute("src") === selectedClipSrc
+              ) {
+                retryClipSrc(selectedClip, selectedClipSrc);
+              }
+            }}
+          >
             <VariationChips
               siblings={siblings}
               selectedId={selectedClip.id}

@@ -563,7 +563,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       onClick={selectVariant}
       onKeyDown={handleKeyDown}
       className={cn(
-        "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
+        "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
         selected
           ? // Dark: --accent, the app's one selection colour.
             "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"

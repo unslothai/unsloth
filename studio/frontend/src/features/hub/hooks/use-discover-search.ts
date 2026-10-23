@@ -105,6 +105,7 @@ export function useDiscoverSearch({
   channel,
   ownerScope,
   filters,
+  keepResult,
   task,
 }: {
   debouncedQuery: string;
@@ -116,6 +117,7 @@ export function useDiscoverSearch({
   channel: HfModelSearchChannel | null;
   ownerScope: "unsloth" | "all";
   filters?: ModelSearchFilters;
+  keepResult?: (result: HfModelResult) => boolean;
   task?: HfTaskFilter;
 }): DiscoverSearch {
   const { phase, failure } = useHubAvailability();
@@ -134,6 +136,7 @@ export function useDiscoverSearch({
     ownerScope,
     enabled: canProbe && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
+    keepResult,
     channel,
     filters,
     task,

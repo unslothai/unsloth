@@ -80,7 +80,7 @@ export function DesktopUpdateControl(): ReactElement | null {
       {available && update.isExternalServer ? null : (
         <Button
           size="sm"
-          variant={available ? "default" : "outline"}
+          variant={available ? "dark" : "outline"}
           disabled={busy}
           aria-busy={busy}
           onClick={() => {

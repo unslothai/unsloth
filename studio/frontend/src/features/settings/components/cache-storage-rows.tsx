@@ -230,7 +230,7 @@ export function CacheStorageRows() {
               : t("settings.resources.storage.caches.detailsAction")}
           </Button>
           <Button
-            variant="outline"
+            variant="destructive"
             size="sm"
             className="h-8"
             disabled={
@@ -323,9 +323,9 @@ export function CacheStorageRows() {
               {t("common.cancel")}
             </Button>
             <Button
-              // A failed measurement is as unsafe as one still running.
+              variant="destructive"
+              // A failed measurement is the same hazard as one still running.
               disabled={loading || clearing || loadError !== null}
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
               onClick={() =>
                 void runPurge(
                   target?.kind === "single" ? [target.key] : bulkKeys,

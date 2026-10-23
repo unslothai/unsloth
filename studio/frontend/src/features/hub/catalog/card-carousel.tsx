@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn } from "@/lib/utils";
 import {
@@ -12,10 +14,6 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-} from "lucide-react";
 
 export const CARD_GAP_PX = 16;
 const CAROUSEL_TOP_PADDING_PX = 8;
@@ -48,9 +46,9 @@ export function CarouselArrow({
       )}
     >
       {side === "left" ? (
-        <ChevronLeftIcon strokeWidth={2} className="size-4" />
+        <HugeiconsIcon icon={ChevronLeftStandardIcon} strokeWidth={2} className="size-4" />
       ) : (
-        <ChevronRightIcon strokeWidth={2} className="size-4" />
+        <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-4" />
       )}
     </button>
   );

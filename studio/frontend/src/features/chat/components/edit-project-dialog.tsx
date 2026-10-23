@@ -176,7 +176,8 @@ export function EditProjectDialog({
             and manage source folders for document search.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+        {/* The same name field the create dialog uses. */}
+        <div className="flex items-stretch overflow-hidden rounded-full border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
           <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
             <HugeiconsIcon
               icon={Folder02Icon}
@@ -234,7 +235,7 @@ export function EditProjectDialog({
             disabled={busy || folderBusy}
             rows={4}
             placeholder="How should the model answer in this project?"
-            className="mt-0.5 resize-none rounded-[16px]"
+            className="mt-0.5 resize-none rounded-xl"
           />
         </div>
         <ProjectWorkingFolder

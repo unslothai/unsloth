@@ -247,7 +247,6 @@ const TABS: TabDef[] = [
     id: "browser",
     labelKey: "browser.settingsTitle",
     icon: InternetIcon,
-    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
@@ -484,9 +483,11 @@ export function SettingsDialog() {
           }}
           className={cn(
             "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
-            // Pin --radius to the light value so corners match in dark mode.
-            "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
-            // A plain h-dvh would win tailwind-merge and hang below the window. 0px on web.
+            // Soft shadow, no outline ring.
+            "shadow-border rounded-3xl ring-0",
+            // Same chrome-subtracted height the shared DialogContent uses at this
+            // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
+            // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
             "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
