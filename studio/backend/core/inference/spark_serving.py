@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import contextlib
 import getpass
 import fnmatch
 import glob
@@ -2288,6 +2289,10 @@ class SparkServing:
         self._confirm_teardown: Any = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
+        # The split's llama-server lost its rpc-server and has not reconnected to the replacement.
+        self.split_reload_pending: bool = False
+        # Set while the split's llama-server is restarted, so the supervisor does not read it as unloaded.
+        self._reloading_split: bool = False
         self._cancel_event: Any = None
         self.relaunch_log: List[Dict[str, Any]] = []
         self.peer_model_present: Optional[bool] = None
@@ -3064,7 +3069,7 @@ class SparkServing:
                 if backend is None:
                     return
                 if getattr(backend, "_process", None) is None:
-                    if self.load_in_progress:
+                    if self.load_in_progress or self._reloading_split:
                         continue
                     logger.info(
                         "spark serving: this node's llama-server was unloaded; tearing the peer down"
@@ -3157,9 +3162,73 @@ class SparkServing:
                     {"at": time.time(), "event": "relaunched but never healthy"}
                 )
                 continue
+            served = self._split_primary(process)
+            if served is not None:
+                # The llama-server keeps the dead connection and remote buffer ids: reconnect it.
+                self.split_reload_pending = True
+                if not await self._reload_split_primary(served):
+                    self.last_error = (
+                        "the rpc-server came back but the layer split's llama-server did not reload"
+                    )
+                    self.relaunch_log.append(
+                        {"at": time.time(), "event": "rpc-server back, model reload failed"}
+                    )
+                    continue
+                self.split_reload_pending = False
+                self.relaunch_log.append({"at": time.time(), "event": "split model reloaded"})
             self.relaunch_attempts = 0
             self.relaunch_log.append({"at": time.time(), "event": "recovered"})
             return
+
+    def _split_primary(self, process: Any) -> Any:
+        """The loaded llama-server computing through the rpc-server *process*, or None."""
+        if getattr(process, "name", "") != "ggml-rpc-server" or process is not self.peer_process:
+            return None
+        backend = self.attached_backend
+        served = getattr(backend, "_process", None)
+        if served is None or not getattr(backend, "is_loaded", False):
+            return None
+        if not self._argv_names_our_peer(list(getattr(served, "args", None) or [])):
+            return None
+        return served
+
+    async def _reload_split_primary(self, served: Any) -> bool:
+        """Restart the split's llama-server against the replaced rpc-server; True once it serves."""
+        backend = self.attached_backend
+        respawn = getattr(backend, "_respawn_if_dead", None)
+        if not callable(respawn):
+            return False
+
+        def _restart() -> bool:
+            with getattr(backend, "_respawn_lock", None) or contextlib.nullcontext():
+                if served is getattr(backend, "_process", None) and served.poll() is None:
+                    stop_watchdog = getattr(backend, "_stop_mtp_crash_watchdog", None)
+                    if callable(stop_watchdog):
+                        stop_watchdog()  # else it reads this kill as an MTP crash
+                    served.kill()
+                    try:
+                        served.wait(timeout = 10)
+                    except subprocess.TimeoutExpired:
+                        pass
+            return bool(respawn())
+
+        logger.warning(
+            "spark serving: restarting the layer split's llama-server so it reconnects to the "
+            "relaunched rpc-server"
+        )
+        self._reloading_split = True
+        try:
+            started = await asyncio.to_thread(_restart)
+        except Exception as exc:
+            logger.warning("spark serving: reloading the layer split failed: %s", exc)
+            started = False
+        finally:
+            self._reloading_split = False
+        if not started or self.attached_backend is not backend:
+            return False
+        self.attached_port = getattr(backend, "_port", None)
+        self.attached_process = getattr(backend, "_process", None)
+        return bool(getattr(backend, "is_loaded", False))
 
     async def _repoint_primary(self, backend: Any) -> None:
         """Follow this node's llama-server to a new port, once its load has finished."""
@@ -3310,6 +3379,7 @@ class SparkServing:
             self.attached_backend = None
             self.attached_port = None
             self.attached_process = None
+            self.split_reload_pending = False
             self.peer_keys = {}
             self.replica_binary = self.replica_port = None
             self.pipeline_groups, self.pipeline_groups_reason = 0, None
@@ -3343,6 +3413,7 @@ class SparkServing:
             "peer_process": self.peer_process.snapshot() if self.peer_process is not None else None,
             "relaunch_attempts": self.relaunch_attempts,
             "relaunch_gave_up": self.relaunch_gave_up,
+            "split_reload_pending": self.split_reload_pending,
             "relaunch_log": self.relaunch_log[-10:],
             "last_error": self.last_error,
         }

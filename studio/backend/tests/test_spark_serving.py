@@ -2186,6 +2186,113 @@ def test_a_relaunched_rpc_server_recovers_without_a_router(monkeypatch):
     assert state.relaunch_log[-1]["event"] == "recovered"
 
 
+def _split_relaunch_state(monkeypatch, respawn_ok):
+    """A live layer split whose rpc-server just exited, plus the calls made on its llama-server."""
+    import asyncio
+    import threading
+
+    state = ss.SparkServing()
+    calls = []
+
+    class _Rpc:
+        name, peer, returncode, remote_pid = "ggml-rpc-server", "peer", 1, 7
+        argv = ["/b/ggml-rpc-server", "-H", "peer", "-p", "50052"]
+        tail: list = []
+        started_at = 1.0
+        alive = True
+
+        async def stop(self, timeout = None):
+            calls.append("rpc stop")
+
+        async def start(self):
+            calls.append("rpc start")
+
+        def snapshot(self):
+            return {"name": self.name}
+
+    class _Child:
+        args = ["/l/llama-server", "-m", "/m.gguf", "--rpc", "peer:50052", "--port", "9000"]
+
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return 0 if self.killed else None
+
+        def kill(self):
+            self.killed = True
+            calls.append("llama kill")
+
+        def wait(self, timeout = None):
+            return 0
+
+    class _LlamaBackend:
+        is_loaded = True
+        _port = 9000
+
+        def __init__(self):
+            self._process = _Child()
+            self._respawn_lock = threading.Lock()
+
+        def _respawn_if_dead(self):
+            calls.append("llama respawn")
+            if not respawn_ok:
+                return False
+            self._process = _Child()
+            return True
+
+    async def _owns(
+        process,
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
+        return True
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
+    monkeypatch.setattr(ss, "wait_for_own_port", _owns)
+    backend = _LlamaBackend()
+    state.peer, state.peer_process = "peer", _Rpc()
+    state.attached_backend, state.topology = backend, "layer_split"
+    state.attached_port, state.attached_process = 9000, backend._process
+    return state, backend, calls
+
+
+def test_a_relaunched_rpc_server_reloads_the_split_it_serves(monkeypatch):
+    """Regression: a replaced rpc-server is not recovery until the llama-server reconnects to it."""
+    import asyncio
+
+    state, backend, calls = _split_relaunch_state(monkeypatch, respawn_ok = True)
+    first = backend._process
+
+    asyncio.run(state._relaunch_peer())
+
+    assert calls == ["rpc stop", "rpc start", "llama kill", "llama respawn"]
+    assert first.killed and backend._process is not first
+    assert state.attached_process is backend._process
+    events = [entry["event"] for entry in state.relaunch_log]
+    assert events[-2:] == ["split model reloaded", "recovered"]
+    assert not state.split_reload_pending and state.status()["split_reload_pending"] is False
+
+
+def test_a_split_that_cannot_reload_is_not_reported_recovered(monkeypatch):
+    import asyncio
+
+    state, _backend, calls = _split_relaunch_state(monkeypatch, respawn_ok = False)
+
+    asyncio.run(state._relaunch_peer())
+
+    events = [entry["event"] for entry in state.relaunch_log]
+    assert "recovered" not in events
+    assert "rpc-server back, model reload failed" in events
+    assert state.relaunch_gave_up and state.split_reload_pending
+    assert state.status()["split_reload_pending"] is True
+    assert calls.count("llama respawn") == len(ss.RELAUNCH_BACKOFF_S)
+
+
 def test_a_new_primary_on_the_same_port_resyncs_the_replica(monkeypatch, tmp_path):
     """Regression: crash recovery on the same port must resync a rotated key."""
     monkeypatch.chdir(tmp_path)
