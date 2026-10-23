@@ -123,13 +123,26 @@ def _expression_names(value: Any) -> list[str]:
     return out[:8]
 
 
+# Face cues that make an expression read at sprite size.
+_EXPRESSION_CUES = {
+    "happy": "a wide open-mouthed smile, raised cheeks, eyes crinkled with joy",
+    "sad": "drooping brows, a downturned mouth, glossy eyes looking down",
+    "angry": "lowered furrowed brows, narrowed eyes, a tight frown",
+    "worried": "brows raised and pinched together, a small downturned frown, eyes glancing to the side",
+    "surprised": "raised brows, wide eyes, an open round mouth",
+    "scared": "wide eyes, raised brows, a tense open mouth",
+    "embarrassed": "blushing cheeks, an awkward small smile, eyes looking away",
+    "thinking": "one brow raised, eyes looking up, lips pressed to one side",
+    "smug": "half-lidded eyes, one corner of the mouth raised in a smirk",
+    "neutral": "a relaxed calm face, mouth closed",
+}
+
+
 async def _expression_portraits(
     ctx: NodeContext,
     portrait: dict,
     *,
     name: str,
-    look: str,
-    style: str,
     expressions: list[str],
     seed: int,
     size: tuple[int, int],
@@ -142,10 +155,11 @@ async def _expression_portraits(
         ctx.check_cancelled()
         if progress:
             progress(i, expr)
-        prompt = _with_style(
-            f"the same character {name}, {look}, {expr} expression",
-            style,
-            "same outfit, same pose, upper body, facing the viewer, centered, plain light grey studio background",
+        # An instruction moves the face; a description of the character only redraws the reference as it was.
+        cue = _EXPRESSION_CUES.get(expr.lower().strip(), "clearly readable at a glance")
+        prompt = (
+            f"Change only {name}'s facial expression to {expr}: {cue}. Keep the same character, outfit, colors, "
+            "art style, framing and background."
         )
         imgs = await ctx.generate_image(
             model = ctx.params.get("model"),
@@ -182,8 +196,6 @@ async def story_expressions(ctx: NodeContext) -> dict:
         ctx,
         portrait,
         name = str(p.get("name") or "the character"),
-        look = str(p.get("look") or ""),
-        style = str(p.get("style") or ""),
         expressions = names,
         seed = ctx.seed,
         size = _size(p.get("size"), (768, 1024)),
@@ -291,8 +303,6 @@ async def story_illustrate(ctx: NodeContext) -> dict:
             ctx,
             base,
             name = c["name"],
-            look = c.get("look") or "",
-            style = style,
             expressions = todo_ex[c["id"]],
             seed = seed_from(ctx.seed, "char", c["id"]),
             size = (pw, ph),

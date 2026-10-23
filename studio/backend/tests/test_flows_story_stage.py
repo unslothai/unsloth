@@ -172,7 +172,8 @@ def test_expressions_block_uses_reference_workflow_with_one_seed():
     assert all(v["ref"].endswith("-cut") for v in out.values())
     assert [c["workflow"] for c in ctx.images] == ["reference", "reference"]
     assert all(c["init_image"] == base and c["seed"] == 5 for c in ctx.images)
-    assert "happy expression" in ctx.images[0]["prompt"]
+    assert "facial expression to happy" in ctx.images[0]["prompt"]
+    assert "smile" in ctx.images[0]["prompt"]
 
 
 def test_illustrate_makes_expression_portraits_from_the_uncut_base():
