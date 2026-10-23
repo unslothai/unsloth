@@ -592,14 +592,12 @@ def test_zimage_on_two_t4s_layer_split_fits_with_the_measured_activations(monkey
     assert d.one_card.estimates["calibrated_split_headroom_mib"] == act.headroom(False)
     assert d.plan.layer_split is not None and d.plan.layer_split.cards == (0, 1)
     assert _placement(d)["chosen"] == "layer_split"
-    # every card's plan fits its free memory after the reserve
     for ordinal, required in d.plan.layer_split.card_required_mib:
         assert required <= dict(d.plan.layer_split.card_limit_mib)[ordinal]
 
 
 def test_image_activation_estimate_scales_with_resolution():
-    # Load-time placement budgets the 1024x1024 default (the request size is unknown then); the generate-time guard
-    # re-prices the real request, which scales with the pixel count.
+    # Load time budgets 1024^2; the generate-time guard re-prices the real request size.
     hint = "z-image Tongyi-MAI/Z-Image-Turbo"
     at_1024 = dm.estimate_image_runtime_mib(width = 1024, height = 1024, family = hint)
     at_768 = dm.estimate_image_runtime_mib(width = 768, height = 768, family = hint)

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The newer image families resolve to their own measured activation rows, not the flat 8 GiB per megapixel default.
-
-ComfyUI prices these families with ``memory_usage_factor`` (Qwen-Image 2.1 6.0, MOSS-Image 14.6, FLUX.3 the Flux2
-hidden-size formula). Studio's equivalent is the per-phase table ``_MEASURED_IMAGE_ACTIVATION_MIB``, which the load
-plan reads through ``_calibrated_activation`` on NVIDIA. MOSS-Image and FLUX.3 Klein base had no row, so their load
-plans used the flat estimate. CPU only.
-"""
+"""The newer image families resolve to their own measured activation rows, not the flat 8 GiB per megapixel default. CPU only."""
 
 from __future__ import annotations
 
