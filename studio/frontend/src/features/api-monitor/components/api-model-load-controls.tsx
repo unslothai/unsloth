@@ -473,7 +473,9 @@ export function ApiModelLoadControls({
         placeholder="Load model"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className="h-9 max-w-full rounded-full sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
+        // Select trigger spacing (px-3.5) and a clear gap before the chevron, not the chat
+        // header's tucked-in one.
+        className="h-9 max-w-full rounded-full px-3.5 sm:max-w-[calc(28rem*var(--ui-space-scale,1))] [&>span:last-child]:ml-1"
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>

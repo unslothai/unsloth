@@ -24,6 +24,8 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
         "tool_output",
         "tool_args",
         "tool_status",
+        # A forged one would take another chat's Allow / Deny off screen.
+        "tool_approved",
         "diffusion_frame",
         "reasoning_summary",
         "context_usage",

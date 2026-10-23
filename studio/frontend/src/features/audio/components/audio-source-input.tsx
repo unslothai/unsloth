@@ -14,8 +14,8 @@ import {
   Alert02Icon,
   Cancel01Icon,
   Mic01Icon,
+  PlusSignIcon,
   StopIcon,
-  Upload04Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -215,7 +215,7 @@ export function AudioSourceInput({
         if (file) void source.pickFile(file);
       }}
       className={cn(
-        "corner-squircle grid gap-3 rounded-lg bg-card p-4 ring-1 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
+        "corner-squircle grid gap-3 rounded-2xl bg-card p-4 ring-1 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
         dragging
           ? "bg-accent ring-[color-mix(in_oklab,var(--foreground)_calc(40%*var(--contrast-edge-gain,1)),transparent)]"
           : "ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]",
@@ -269,6 +269,7 @@ export function AudioSourceInput({
               fileRef.current?.click();
             }}
           >
+            <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
             Add it again
           </Button>
         </div>
@@ -286,7 +287,7 @@ export function AudioSourceInput({
               {name}
             </span>
             {value ? (
-              <span className="shrink-0 rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground">
+              <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground">
                 {SOURCE_LABEL[value.kind]}
               </span>
             ) : null}
@@ -388,9 +389,9 @@ export function AudioSourceInput({
               type="button"
               disabled={disabled}
               onClick={() => fileRef.current?.click()}
-              className="flex min-h-[calc(88px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-[10px] border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex min-h-[calc(88px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border px-3 text-ui-12 text-muted-foreground transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <HugeiconsIcon icon={Upload04Icon} className="size-5" />
+              <HugeiconsIcon icon={PlusSignIcon} className="size-5" />
               <span>Drop an audio file here, or choose one</span>
               {hint ? <span className="text-ui-11p5">{hint}</span> : null}
             </button>

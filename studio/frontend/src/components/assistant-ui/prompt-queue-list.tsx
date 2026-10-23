@@ -168,7 +168,7 @@ export function PromptQueueList({
     // browsers paint scrollbars outside scroller radii, so this frame owns rounding and clipping.
     <div
       data-queue-frame=""
-      className="relative z-0 mx-3 mb-[calc(-8px*var(--ui-space-scale,1))] overflow-hidden rounded-t-[20px] border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"
+      className="relative z-0 mx-3 mb-[calc(-8px*var(--ui-space-scale,1))] overflow-hidden rounded-t-xl border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"
     >
       <div
         ref={listRef}
@@ -413,7 +413,7 @@ export function PromptQueueList({
                       align="end"
                       side="bottom"
                       sideOffset={6}
-                      className="w-56 rounded-2xl border border-border/60 p-1.5 shadow-lg"
+                      className="w-56 rounded-lg border border-border/60 p-1 shadow-lg"
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
                       // A queued send focuses the composer: stay open and take focus back, or Escape lands there.

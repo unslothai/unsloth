@@ -26,7 +26,6 @@ import { useCopyFeedback } from "@/features/hub/hooks/use-copy-feedback";
 import { formatBytes } from "@/features/hub";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { ChevronDownDoubleStandardIcon } from "@/lib/chevron-icons";
 import { stripAnsi } from "@/lib/strip-ansi";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -43,7 +42,10 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowDownIcon } from "lucide-react";
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useId,
@@ -92,6 +94,28 @@ const SOURCE_RESCAN_MS = 10_000;
 
 // how close to the bottom the pane must be scrolled for auto-follow to stay on
 const FOLLOW_THRESHOLD_PX = 40;
+
+const PANE_HEIGHT_STORAGE_KEY = "unsloth_debug_log_pane_height";
+const PANE_MIN_HEIGHT_PX = 160;
+const PANE_KEY_STEP_PX = 24;
+
+function maxPaneHeight(): number {
+  return Math.round(window.innerHeight * 0.85);
+}
+
+function readStoredPaneHeight(): number | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const stored = Number(window.localStorage.getItem(PANE_HEIGHT_STORAGE_KEY));
+    return Number.isFinite(stored) && stored >= PANE_MIN_HEIGHT_PX
+      ? stored
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 function readStoredMode(): RefreshMode {
   if (typeof window === "undefined") return DEFAULT_REFRESH_MODE;
@@ -186,6 +210,10 @@ export function DebuggingTab() {
   // new pane stays empty (in manual mode, for good).
   const inFlightRef = useRef<number | null>(null);
   const paneRef = useRef<HTMLPreElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [paneHeight, setPaneHeight] = useState<number | null>(
+    readStoredPaneHeight,
+  );
   const pinnedRef = useRef(true);
   const lastSourceScanRef = useRef(Date.now());
 
@@ -427,11 +455,76 @@ export function DebuggingTab() {
     setFollowing(true);
   }, []);
 
-  // wrap changes the scroll height without changing the text, so it re-pins too
+  // wrap and a resize change the scroll height without changing the text, so they re-pin too
   useEffect(() => {
     const pane = paneRef.current;
     if (pane && pinnedRef.current) pane.scrollTop = pane.scrollHeight;
-  }, [text, wrap]);
+  }, [text, wrap, paneHeight]);
+
+  const resizePane = useCallback((next: number | null) => {
+    const height =
+      next === null
+        ? null
+        : Math.round(
+            Math.min(Math.max(next, PANE_MIN_HEIGHT_PX), maxPaneHeight()),
+          );
+    setPaneHeight(height);
+    try {
+      if (height === null) {
+        window.localStorage.removeItem(PANE_HEIGHT_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(PANE_HEIGHT_STORAGE_KEY, String(height));
+      }
+    } catch {
+      // storage unavailable: the height still applies this visit
+    }
+  }, []);
+
+  const onResizeStart = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const frame = frameRef.current;
+      if (!frame || event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      const handle = event.currentTarget;
+      const startY = event.clientY;
+      const startHeight = frame.getBoundingClientRect().height;
+      handle.setPointerCapture(event.pointerId);
+      const move = (moveEvent: PointerEvent) =>
+        resizePane(startHeight + moveEvent.clientY - startY);
+      const end = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    },
+    [resizePane],
+  );
+
+  const onResizeKey = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      const frame = frameRef.current;
+      if (!frame) {
+        return;
+      }
+      const step =
+        event.key === "ArrowDown"
+          ? PANE_KEY_STEP_PX
+          : event.key === "ArrowUp"
+            ? -PANE_KEY_STEP_PX
+            : 0;
+      if (!step) {
+        return;
+      }
+      event.preventDefault();
+      resizePane(frame.getBoundingClientRect().height + step);
+    },
+    [resizePane],
+  );
 
   const onScroll = useCallback(() => {
     const pane = paneRef.current;
@@ -677,25 +770,6 @@ export function DebuggingTab() {
                     : t("settings.debugging.statusLive")}
               </span>
             )}
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-pressed={wrap}
-                  aria-label={t("settings.debugging.wrapLines")}
-                  onClick={() => setWrap((previous) => !previous)}
-                  className={cn(
-                    wrap ? "bg-muted text-foreground" : "text-muted-foreground",
-                  )}
-                >
-                  <HugeiconsIcon strokeWidth={1.75} icon={TextWrapIcon} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {t("settings.debugging.wrapLines")}
-              </TooltipContent>
-            </Tooltip>
           </div>
         </div>
 
@@ -725,39 +799,82 @@ export function DebuggingTab() {
         ) : null}
 
         <div className="relative">
-          {/* One text surface, not an element per line: this repaints on every
-              poll and 1000 nodes per tick is what makes a log pane feel broken. */}
-          <pre
-            ref={paneRef}
-            onScroll={onScroll}
-            data-testid="debug-log-pane"
+          {/* Border on the frame, scrolling inside it: keeps the scrollbar off the rounded corners. */}
+          <div
+            ref={frameRef}
+            style={paneHeight === null ? undefined : { height: paneHeight }}
             className={cn(
-              "h-[min(26rem,45vh)] w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 font-mono text-ui-11 leading-[1.55] text-foreground/90 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
-              wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
-              !text && "text-muted-foreground",
+              "flex rounded-lg border border-border/60 bg-muted/20 py-1 pr-0 pl-1 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              paneHeight === null && "h-[min(26rem,45vh)]",
             )}
           >
-            {text ||
-              (trimmedFilter && buffer.lines.length > 0
-                ? t("settings.debugging.noMatches")
-                : t("settings.debugging.empty"))}
-          </pre>
+            {/* One text surface, not an element per line: this repaints on every
+                poll and 1000 nodes per tick is what makes a log pane feel broken. */}
+            <pre
+              ref={paneRef}
+              onScroll={onScroll}
+              data-testid="debug-log-pane"
+              className={cn(
+                "h-full w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-md py-2 pr-11 pl-2.5 font-mono text-ui-11 leading-[1.55] text-foreground/90",
+                wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+                !text && "text-muted-foreground",
+              )}
+            >
+              {text ||
+                (trimmedFilter && buffer.lines.length > 0
+                  ? t("settings.debugging.noMatches")
+                  : t("settings.debugging.empty"))}
+            </pre>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-pressed={wrap}
+                aria-label={t("settings.debugging.wrapLines")}
+                onClick={() => setWrap((previous) => !previous)}
+                data-testid="debug-log-wrap"
+                className={cn(
+                  "absolute top-1.5 right-3.5 size-7 bg-background/80 shadow-sm backdrop-blur-sm hover:bg-background [&_svg]:size-3.5",
+                  wrap ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <HugeiconsIcon strokeWidth={1.75} icon={TextWrapIcon} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t("settings.debugging.wrapLines")}</TooltipContent>
+          </Tooltip>
           {!following && text ? (
             <Button
               size="xs"
               variant="dark"
               onClick={scrollToBottom}
               data-testid="debug-log-jump-to-latest"
-              className="absolute right-3 bottom-3 rounded-full shadow-md"
+              className="absolute right-4 bottom-3 rounded-full pr-2.5 pl-2 shadow-md"
             >
-              <HugeiconsIcon
-                strokeWidth={1.75}
-                icon={ChevronDownDoubleStandardIcon}
-              />
+              <ArrowDownIcon strokeWidth={2} />
               {t("settings.debugging.jumpToLatest")}
             </Button>
           ) : null}
         </div>
+        <button
+          // biome-ignore lint/a11y/useSemanticElements: a focusable drag splitter, which an <hr> cannot be
+          type="button"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label={t("settings.debugging.resizeLog")}
+          aria-valuemin={PANE_MIN_HEIGHT_PX}
+          aria-valuenow={paneHeight ?? undefined}
+          title={t("settings.debugging.resizeLog")}
+          onPointerDown={onResizeStart}
+          onKeyDown={onResizeKey}
+          onDoubleClick={() => resizePane(null)}
+          data-testid="debug-log-resize"
+          className="group/resize -mt-2.5 flex h-3 w-full cursor-row-resize touch-none items-center justify-center rounded-full focus-visible:outline-none"
+        >
+          <span className="h-1 w-10 rounded-full bg-border transition-colors group-hover/resize:bg-muted-foreground/50 group-focus-visible/resize:bg-ring" />
+        </button>
 
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <div className="flex min-w-0 flex-1 basis-48 items-center gap-1">
@@ -803,7 +920,7 @@ export function DebuggingTab() {
             </Button>
             <Button
               size="sm"
-              variant="ghost"
+              variant="muted"
               data-testid="debug-log-download-all"
               aria-busy={exporting}
               disabled={exporting}

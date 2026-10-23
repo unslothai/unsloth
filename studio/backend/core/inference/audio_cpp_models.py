@@ -2336,16 +2336,23 @@ def takes_seed(model: "AudioCppModel", workflow: str) -> bool:
 
 def ignored_options(model: "AudioCppModel", workflow: str, values: Optional[dict]) -> list[str]:
     """User-sent option names the request will not carry: not offered for ``workflow``, or left out
-    of a strict spec. ``voice`` travels top level and ``seed`` is the caller's to check."""
+    of a strict spec. ``voice`` travels top level and ``seed`` is the caller's to check. A renamed
+    option is judged under its legacy name, as ``filled_options`` sends it."""
     if not isinstance(values, dict):
         return []
     offered = {o["name"] for o in workflow_options(model, workflow)}
+    pairs = OPTION_RENAMES.get(model.family, ())
+    legacy = {canonical: old for old, canonical in pairs}
     keys = model.request_keys
+    if pairs and keys is not None:
+        keys = keys | {old for old, canonical in pairs if canonical in keys}
+
+    def dropped(name: str) -> bool:
+        name = legacy.get(name, name)
+        return name not in offered or (keys is not None and name not in keys)
+
     return sorted(
-        name
-        for name in map(str, values)
-        if name not in ("seed", "voice")
-        and (name not in offered or (keys is not None and name not in keys))
+        name for name in map(str, values) if name not in ("seed", "voice") and dropped(name)
     )
 
 
