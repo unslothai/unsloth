@@ -34,7 +34,9 @@ FP16_GRAD = 40000.0  # one GPU's scaled per-token output gradient: below the flo
 
 def _data(world):
     torch.manual_seed(0)
-    x = torch.rand(TOKENS, 8) * 1e-3  # small inputs: only the output gradient is near the float16 max
+    x = (
+        torch.rand(TOKENS, 8) * 1e-3
+    )  # small inputs: only the output gradient is near the float16 max
     weight = torch.randn(8, 8) * 0.1
     coef = FP16_GRAD * TOKENS / SCALE  # d(loss)/d(out) * SCALE == FP16_GRAD on one GPU
     return x, weight, coef
@@ -80,7 +82,11 @@ def _native(world, rank):
     out = model(x[rank * share : (rank + 1) * share].half())
     scaler.scale(_loss(out, coef, TOKENS, world)).backward()
     scaler.unscale_(opt)
-    found_inf = float(sum(v.item() for v in scaler._per_optimizer_states[id(opt)]["found_inf_per_device"].values()))
+    found_inf = float(
+        sum(
+            v.item() for v in scaler._per_optimizer_states[id(opt)]["found_inf_per_device"].values()
+        )
+    )
     scaler.step(opt)
     scaler.update()
     full = model.weight.full_tensor().detach().clone()
@@ -120,7 +126,9 @@ def test_native_fp16_takes_the_step_one_gpu_takes(ranks):
         assert not isinstance(res["native"], str), res["native"]
         found_inf, scale, weight = res["native"]
         assert found_inf == 0.0, "native FSDP2 overflowed where one GPU did not"
-        assert scale == SCALE / 2, scale  # one GPU scale over the data parallel size, not backed off
+        assert (
+            scale == SCALE / 2
+        ), scale  # one GPU scale over the data parallel size, not backed off
         _, one_gpu_weight = res["one_gpu"]
         torch.testing.assert_close(weight, one_gpu_weight, rtol = 1e-3, atol = 1e-6)
 

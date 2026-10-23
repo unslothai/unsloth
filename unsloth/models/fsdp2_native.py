@@ -2531,7 +2531,6 @@ def _data_parallel_size(model):
         pass
     try:
         import torch.distributed as dist
-
         if dist.is_available() and dist.is_initialized():
             return int(dist.get_world_size())
     except Exception:
