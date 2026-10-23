@@ -19,7 +19,9 @@ DEFAULT_WEIGHTS = {"recency": 0.5, "importance": 2.0, "relevance": 3.0}
 DEFAULT_DECAY = 0.995
 MAX_RECORDS = 5000
 
-_WORD = re.compile(r"[a-z0-9']+")
+_WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
+# Scripts written without spaces (Chinese, Japanese, Korean) also match on character pairs.
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 _STOP = frozenset(
     "a an the and or but if of to in on at by for with from as is are was were be been being it its this that "
     "these those i you he she they we me him her them us my your his their our what who whom which when where why "
@@ -43,6 +45,13 @@ def as_stream(value: Any) -> dict:
     next_id = value.get("next_id")
     if not isinstance(next_id, int) or next_id < len(records):
         next_id = max([len(records)] + [_id_number(r.get("id")) + 1 for r in records])
+    # Recall, Reflect and Agent Summary address records by id: a hand-written list may have none.
+    seen: set = set()
+    for r in records:
+        if not isinstance(r.get("id"), str) or not r["id"] or r["id"] in seen:
+            r["id"] = f"m{next_id}"
+            next_id += 1
+        seen.add(r["id"])
     return {
         "kind": STREAM_KIND,
         "records": records,
@@ -80,7 +89,10 @@ def new_record(
 
 
 def tokens(text: str) -> set[str]:
-    return {w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 1}
+    words = {w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 1}
+    for w in [w for w in words if _CJK.search(w)]:
+        words.update(w[i : i + 2] for i in range(len(w) - 1))
+    return words
 
 
 def keyword_relevance(query: str, text: str) -> float:
@@ -163,15 +175,18 @@ def top(records: list[dict], scores: list[dict], k: int) -> list[int]:
 def cap(stream: dict, max_records: int) -> None:
     """Drop the least important, least recently used records past the cap; a record a reflection cites stays."""
     records = stream["records"]
-    if len(records) <= max_records:
-        return
-    cited = {c for r in records for c in r.get("cites") or []}
-    removable = sorted(
-        (r for r in records if r["id"] not in cited),
-        key = lambda r: (r.get("importance") or 0, float(r.get("t_access") or 0)),
-    )
-    drop = {r["id"] for r in removable[: len(records) - max_records]}
-    stream["records"] = [r for r in records if r["id"] not in drop]
+    # Dropping a reflection frees what it cited, so protection is recomputed until the cap holds.
+    while len(records) > max_records:
+        cited = {c for r in records for c in r.get("cites") or []}
+        removable = sorted(
+            (r for r in records if r["id"] not in cited),
+            key = lambda r: (r.get("importance") or 0, float(r.get("t_access") or 0)),
+        )
+        if not removable:
+            break
+        drop = {r["id"] for r in removable[: len(records) - max_records]}
+        records = [r for r in records if r["id"] not in drop]
+    stream["records"] = records
 
 
 def context_text(records: Iterable[dict]) -> str:

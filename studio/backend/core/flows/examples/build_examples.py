@@ -1598,7 +1598,8 @@ def remembering_assistant() -> B:
         "Remembering Assistant",
         "pipeline",
         "An assistant with a memory stream (after Park et al. 2023, Generative Agents): it recalls what matters "
-        "for your message by recency, importance and meaning, answers with it, and remembers the exchange.",
+        "for your message by recency, importance and meaning, answers with it, and adds the answer to its memory. "
+        "Each run starts from the facts in What it already knows: add a line there to teach it something.",
         tags = ["memory", "agent", "chat"],
         seed = 41,
     ).need("chat")
@@ -1649,6 +1650,8 @@ def remembering_assistant() -> B:
     b.n("show", "output.preview", 5, 1)
     b.e("answer.text", "show.value")
     b.e("recall.records", "show.value")
+    b.n("stream", "output.preview", 5, 2, label = "Updated memory")
+    b.e("keep.memory", "stream.value")
     b.note(
         "tip",
         "Recall scores every memory by how recent, how important and how related it is to the message. "
