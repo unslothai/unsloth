@@ -46,6 +46,8 @@ export interface CompareContext {
   loras: ReadonlyArray<{ id: string; weight: number; label: string }>;
   sdControls?: CompareSdControls | null;
   controlnetEngaged: boolean;
+  // Hires CFG makes the refine pass read the negative prompt at any base CFG; no axis varies Hires, so it is grid-wide.
+  hiresEngagesNegative?: boolean;
 }
 
 type Value = number | string;
@@ -361,7 +363,7 @@ export function planCompare(
 }
 
 /** Combinations no cell may run: a Prompt S/R term a cell's text lacks once the earlier axes' substitutions ran
- *  (A1111 apply_prompt raises per cell; a negative prompt counts only where that cell's CFG engages it), or a
+ *  (A1111 apply_prompt raises per cell; a negative prompt counts only where that cell's CFG, or Hires CFG, engages it), or a
  *  Schedule type, from an axis or the form, the cell's sampler does not take (the backend would run Automatic under a
  *  Karras label). */
 function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null {
@@ -396,7 +398,10 @@ function cellProblem(plan: CompareGridPlan, ctx: CompareContext): string | null 
 }
 
 function negativeEngaged(ctx: CompareContext, guidance: number): boolean {
-  return ctx.negativeCapable && (ctx.negativeMinGuidance === null || guidance > ctx.negativeMinGuidance);
+  return (
+    ctx.negativeCapable &&
+    (ctx.negativeMinGuidance === null || guidance > ctx.negativeMinGuidance || ctx.hiresEngagesNegative === true)
+  );
 }
 
 /** The negative prompt the grid's recipe records: the form's text when any cell runs with it engaged. */
@@ -447,9 +452,7 @@ export function buildCellRequest(
   if (cell.steps !== undefined) req.steps = cell.steps;
   if (cell.guidance !== undefined) {
     req.guidance = cell.guidance;
-    const engaged =
-      ctx.negativeCapable && (ctx.negativeMinGuidance === null || cell.guidance > ctx.negativeMinGuidance);
-    req.negative_prompt = engaged ? ctx.negativePrompt.trim() || undefined : undefined;
+    req.negative_prompt = negativeEngaged(ctx, cell.guidance) ? ctx.negativePrompt.trim() || undefined : undefined;
   }
   if (cell.sampler !== undefined || cell.schedule !== undefined) {
     const sampler = cell.sampler ?? ctx.samplerChoice.sampler;

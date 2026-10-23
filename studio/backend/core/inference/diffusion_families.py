@@ -101,6 +101,8 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
+    # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
+    native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
     img2img_pipeline_class: Optional[str] = None
@@ -211,6 +213,8 @@ class DiffusionFamily:
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # (repo_id, filename) of a tokenizer.json for sd-cli --tokenizer (MOSS-Image requires it).
+    sd_cpp_tokenizer: Optional[tuple[str, str]] = None
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -386,6 +390,18 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
+MOSS_IMAGE_FAMILY_NAME = "moss-image"
+# MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
+_MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
+_MOSS_IMAGE_CONVROT_SUFFIXES = (
+    "proj.q",
+    "proj.k",
+    "proj.v",
+    "proj.o",
+    "proj.ffn_up_gate",
+    "proj.ffn_down",
+)
+
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -1299,6 +1315,69 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
     ),
+    # MOSS-Image: remote-code repos, so the pipeline is the in-tree port in diffusion_moss_image; encoder needs transformers >= 5.3.
+    DiffusionFamily(
+        name = MOSS_IMAGE_FAMILY_NAME,
+        label = "MOSS-Image",
+        # ComfyUI's MOSSImage is ModelType.FLOW (ModelSamplingDiscreteFlow, shift 5), the node ModelSamplingSD3 sets.
+        comfy_shift_node = "sd3",
+        profile = FamilyProfile(
+            quant_exclude_tokens = _MOSS_IMAGE_QUANT_KEEP,
+            # Required, not optional: plain int8 with the same keep-list scored 0.111 against ConvRot's 0.058 (SFT).
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _MOSS_IMAGE_CONVROT_SUFFIXES,
+                filename = "MOSS-Image-SFT-INT8-ConvRot.safetensors",
+                repo = "unsloth/MOSS-Image-SFT-FP8",
+                variant_repos = ("unsloth/MOSS-Image-Base-FP8",),
+                default_on = True,
+            ),
+            quant_names = ("moss-image-base",),
+            # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
+            auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
+            # NVFP4 scored LPIPS 0.383 vs bf16 (INT8-ConvRot 0.058); as FLUX.3, a passing gate record lifts it.
+            scheme_deny = frozenset({"nvfp4"}),
+            # Small-DiT rule: bf16 while it fits, INT8-ConvRot (LPIPS 0.058) when bf16 would offload.
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
+            preview_factors = "flux2",
+        ),
+        pipeline_class = "MOSSImagePipeline",
+        transformer_class = "MOSSImageTransformer",
+        base_repo = "OpenMOSS-Team/MOSS-Image-SFT",
+        named_variant_bases = ("OpenMOSS-Team/MOSS-Image-Base",),
+        prequant_repos = (
+            ("int8", "unsloth/MOSS-Image-SFT-FP8"),
+            ("fp8", "unsloth/MOSS-Image-SFT-FP8"),
+        ),
+        prequant_filenames = (
+            ("int8", "MOSS-Image-SFT-INT8.safetensors"),
+            ("fp8", "MOSS-Image-SFT-FP8.safetensors"),
+        ),
+        prequant_variant_repos = (
+            ("openmoss-team/moss-image-base", "int8", "unsloth/MOSS-Image-Base-FP8"),
+            ("openmoss-team/moss-image-base", "fp8", "unsloth/MOSS-Image-Base-FP8"),
+        ),
+        # Other schemes on Base quantise Base's own weights, never SFT's file.
+        prequant_excluded_bases = ("openmoss-team/moss-image-base",),
+        # Qwen3.5-9B int8 ConvRot: LPIPS 0.059 vs bf16; without the hosted file auto keeps bf16.
+        te_quant_auto = "int8",
+        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
+        prompt_hint = (
+            "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
+        ),
+        dimension_multiple = 16,
+        # ComfyUI lists bf16 / fp32 only for MOSS-Image; the residual stream overflows float16.
+        fp16_incompatible = True,
+        # cudnn.benchmark on the fp32 VAE decode took 254 s / 73 GiB and picked a 4x slower plan: keep the heuristic.
+        cudnn_benchmark = False,
+        native_transformer_files_only = True,
+        # MOSS's own small-decoder FLUX.2 VAE, not FLUX.2-dev's.
+        sd_cpp_vae = ("unsloth/MOSS-Image-SFT-FP8", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = (("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf", "llm"),),
+        sd_cpp_tokenizer = ("unsloth/MOSS-Image-SFT-FP8", "tokenizer/tokenizer.json"),
+        # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
+        sd_cpp_arch_marker = "MOSS-Image",
+    ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
@@ -1643,6 +1722,9 @@ _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-Edit", "unsloth/Qwen-Image-Edit-GGUF"),
     ("Qwen/Qwen-Image-Edit-2509", "unsloth/Qwen-Image-Edit-2509-GGUF"),
     ("Qwen/Qwen-Image-Layered", "unsloth/Qwen-Image-Layered-GGUF"),
+    # MOSS-Image, as FLUX.3: upstream diffusers folders are mirrored byte-identical into each variant's -FP8 repo.
+    ("OpenMOSS-Team/MOSS-Image-SFT", "unsloth/MOSS-Image-SFT-FP8"),
+    ("OpenMOSS-Team/MOSS-Image-Base", "unsloth/MOSS-Image-Base-FP8"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
     # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B is what
     # `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are offered directly as bf16
@@ -1702,6 +1784,8 @@ _ARTIFACT_MIRRORS: frozenset[str] = frozenset(
         "unsloth/qwen-image-edit-gguf",
         "unsloth/qwen-image-edit-2509-gguf",
         "unsloth/qwen-image-layered-gguf",
+        "unsloth/moss-image-sft-fp8",
+        "unsloth/moss-image-base-fp8",
     }
 )
 _ALL_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _MIRROR_PAIRS + _VIDEO_MIRROR_PAIRS
@@ -2119,6 +2203,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
+    # MOSS-Image: ComfyUI workflow, 50 steps at CFG 3.
+    ("moss-image", 50, 3.0),
+    ("moss_image", 50, 3.0),
+    ("mossimage", 50, 3.0),
     # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
     ("sdxl-turbo", 3, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
@@ -2429,6 +2517,12 @@ def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Opt
 
 
 _CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
+# Remote-code components loaded via an in-tree port, judged by the layout that port reads (else a config-only
+# MOSS-Image transformer/ would pass).
+_IN_TREE_PORT_LIBRARIES = {
+    ("pipeline_moss_image", "MOSSImageTransformer"): "diffusers",
+    ("pipeline_moss_image", "MOSSImageScheduler"): "diffusers",
+}
 # safetensors first, default variant only: the load uses variant=None, which cannot open *.fp16.safetensors.
 _LOCAL_PIPELINE_WEIGHT_FORMATS = (
     (("diffusion_pytorch_model", "model"), "safetensors"),
@@ -2497,6 +2591,7 @@ def _local_pipeline_component_is_complete(
 ) -> bool:
     if not component.is_dir():
         return False
+    library_name = _IN_TREE_PORT_LIBRARIES.get((library_name, class_name), library_name)
     if library_name not in {"diffusers", "transformers"}:
         return any(_nonempty_file(child) for child in component.iterdir())
     identity = class_name.replace("_", "").lower()
@@ -2623,6 +2718,46 @@ _PIPELINE_PROBE_FILES: dict[str, str] = {
     "Flux3ModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
     "Flux3DistilledModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
 }
+
+
+# In-tree pipelines: (diffusers VAE module, transformers floor, family label).
+_IN_TREE_PIPELINES: dict[str, tuple[str, str, str]] = {
+    "MOSSImagePipeline": ("models/autoencoders/autoencoder_kl_flux2.py", "5.3.0", "MOSS-Image"),
+}
+
+
+def in_tree_pipeline(pipeline_class: Optional[str]) -> bool:
+    """Whether ``pipeline_class`` is one of Studio's in-tree pipelines (no diffusers class of that name)."""
+    return str(pipeline_class or "") in _IN_TREE_PIPELINES
+
+
+def _installed_transformers_version() -> Optional[str]:
+    try:
+        from importlib.metadata import version
+        installed = version("transformers")
+    except Exception:  # noqa: BLE001 - not installed / unreadable metadata
+        return None
+    return installed.strip() if isinstance(installed, str) and installed.strip() else None
+
+
+def in_tree_pipeline_refusal(pipeline_class: str, family_name: str) -> Optional[str]:
+    """Why this environment cannot build the in-tree ``pipeline_class``, or None when it can. Import-free."""
+    vae_file, min_transformers, label = _IN_TREE_PIPELINES[pipeline_class]
+    installed = _installed_transformers_version()
+    if installed is None:
+        return f"'{family_name}' ({label}) needs transformers >= {min_transformers}, which is not installed."
+    if not _installed_at_least(installed, min_transformers):
+        return (
+            f"'{family_name}' ({label}) needs transformers >= {min_transformers} for its Qwen3.5 text encoder "
+            f"(transformers.Qwen3_5Model), but this environment has transformers {installed}. Update Unsloth Studio "
+            f"(or run: pip install -U 'transformers>={min_transformers}') and restart it."
+        )
+    if _diffusers_package_has_file(vae_file) is False:
+        return (
+            f"'{family_name}' ({label}) needs a diffusers with the FLUX.2 VAE (AutoencoderKLFlux2). "
+            f"{DIFFUSERS_UPDATE_REMEDY}"
+        )
+    return None
 
 
 def _diffusers_package_has_file(relative: str) -> Optional[bool]:
@@ -2809,6 +2944,11 @@ def assert_pipeline_class_available(
     except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
         pass
 
+    if in_tree_pipeline(pipeline_class):
+        reason = in_tree_pipeline_refusal(pipeline_class, family_name)
+        if reason is not None:
+            raise ValueError(reason)
+        return
     try:
         # diffusers' LTX-2 modules import a transformers class the pinned transformers lacks; see ltx2_import_compat.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
@@ -2939,6 +3079,8 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     # is False -- which would hide the model.
     if not name:
         return True
+    if in_tree_pipeline(name):
+        return in_tree_pipeline_refusal(name, getattr(fam, "name", name)) is None
     probe_file = _PIPELINE_PROBE_FILES.get(name)
     if probe_file is not None:
         has_file = _diffusers_package_has_file(probe_file)

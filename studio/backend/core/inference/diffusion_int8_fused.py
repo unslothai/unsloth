@@ -1596,6 +1596,37 @@ def install(
     return candidates
 
 
+def arm_linear(device: Any) -> bool:
+    """Arm ``int8_linear`` on ``device`` for a denoiser with no fused-MLP candidate (MOSS-Image calls it from its own
+    block forward): resolve torchao's ``safe_int_mm`` home and probe the act quant kernel. True when the probed kernel
+    serves this device; False keeps torchao's quant (``int8_linear`` still works, at the stock quant's speed)."""
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE, _LINEAR_OFF
+    if int8_fused_disabled():
+        _LINEAR_OFF = True
+        return False
+    _LINEAR_OFF = False
+    try:
+        import torch
+
+        intmm = _resolve_intmm()
+        if intmm is None:
+            return False
+        _INTMM_MODULE = intmm
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        if not _device_ok(index):
+            return False
+        actq = _act_quant_op() if _act_quant_device_ok(index) else None
+    except Exception:  # noqa: BLE001 - optimisation only
+        return False
+    with _LOCK:
+        if actq is None:
+            _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
+            return False
+        _ACTQ_HANDLE = actq
+        _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+    return True
+
+
 def _swiglu_candidate(module: Any) -> bool:
     return (
         _swiglu_spec(module) is not None or _split_spec(module) is not None

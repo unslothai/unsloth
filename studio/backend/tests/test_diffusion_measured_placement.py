@@ -807,6 +807,29 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
         assert torch.equal(net(x.cuda()).cpu(), ref)
 
 
+def test_encode_release_does_not_flush_the_allocator_per_prompt(monkeypatch):
+    """The encode release streams groups and pins them back on every new prompt. It leaves the freed blocks cached:
+    an encoder allocation that needs the room gets it back from the allocator itself. An empty_cache per prompt cost a
+    device sync plus fresh cudaMallocs for the encoder on every render."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    block_mib = 4
+    assert dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 2 * block_mib), None) == 1
+    flushes = {"n": 0}
+    real = torch.cuda.empty_cache
+
+    def counted():
+        flushes["n"] += 1
+        real()
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", counted)
+    for _ in range(3):
+        enc(torch.randn(2, 8, device = "cuda"))
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2  # the release still ran
+        assert on_device() == ["cuda"] * 6
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+    assert flushes["n"] == 0
+
+
 def test_encode_release_restores_after_a_failed_encode(monkeypatch):
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
     dm.install_encode_release(pipe, _whole_plan(1024, 0), None)

@@ -205,10 +205,14 @@ _SCALE_DEQUANT_MIN_NUMEL = 1 << 22
 
 
 def _scale_dequant_one_pass_ok(x, s, dtype):
-    # Eager NVIDIA e4m3fn only; compiled regions already fuse the torch expression.
+    # NVIDIA e4m3fn only; under compile only below sm89, where Inductor cannot emit fp8e4nv.
+    if torch.compiler.is_compiling():
+        if not _fp8_e4m3fn_unsupported_in_trace(x):
+            return False
+    elif x.numel() <= _SCALE_DEQUANT_MIN_NUMEL:
+        return False
     return (
-        x.numel() > _SCALE_DEQUANT_MIN_NUMEL
-        and x.is_cuda
+        x.is_cuda
         and torch.version.hip is None
         and x.dtype == torch.float8_e4m3fn
         and dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -218,11 +222,14 @@ def _scale_dequant_one_pass_ok(x, s, dtype):
         and not (torch.is_grad_enabled() and (x.requires_grad or s.requires_grad))
         # The kernel indexes dense rows, so a transposed view must be a dense transpose.
         and (x.is_contiguous() or (_is_transposed_view(x) and x.t().is_contiguous()))
-        and not torch.compiler.is_compiling()
     )
 
 
-def _scale_dequant_one_pass(x, s, dtype):
+@_opaque_under_compile(
+    "fp8_scale_dequant",
+    lambda x, s, dtype: torch.empty_like(x, dtype = dtype),
+)
+def _scale_dequant_one_pass(x: torch.Tensor, s: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     transposed = _is_transposed_view(x)
     if transposed:
         x = x.t()
@@ -762,6 +769,25 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
         and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
         and _fp8_device_lacks_kernel(tensor.device)
     )
+
+
+def _fp8_lacks_kernel_per_device():
+    try:
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        return tuple(_fp8_device_lacks_kernel(torch.device("cuda", i)) for i in range(count))
+    except Exception:
+        return ()
+
+
+# Read once: a capability query while tracing can graph-break a compiled region.
+_FP8_DEVICE_LACKS_KERNEL = _fp8_lacks_kernel_per_device()
+
+
+def _fp8_e4m3fn_unsupported_in_trace(tensor):
+    if not tensor.is_cuda or tensor.dtype != torch.float8_e4m3fn:
+        return False
+    index = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
+    return index < len(_FP8_DEVICE_LACKS_KERNEL) and _FP8_DEVICE_LACKS_KERNEL[index]
 
 
 @triton.jit
