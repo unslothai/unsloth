@@ -3350,6 +3350,7 @@ export const sv = {
       codingAgents: "Kodagenter",
       codingAgentsHint:
         "Starta en kodagent mot den här servern. Den använder den inlästa modellen; en lokal server skapar automatiskt en API-nyckel, medan en fjärrserver inkluderar den i kommandot.",
+      openAgentsTab: "Öppna i Agenter",
       codingAgentsSwap:
         "Byt ut claude mot codex, openclaw, opencode eller hermes.",
       relativeNever: "aldrig",

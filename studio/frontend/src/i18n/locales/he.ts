@@ -3250,6 +3250,7 @@ export const he = {
       codingAgents: "סוכני תכנות",
       codingAgentsHint:
         "הפעל סוכן תכנות מול שרת זה. הוא משתמש במודל הנטען; שרת מקומי מנפיק מפתח API אוטומטית, ושרת מרוחק כולל אותו בפקודה.",
+      openAgentsTab: "פתח בסוכנים",
       codingAgentsSwap: "החלף את claude ב-codex, openclaw, opencode או hermes.",
       relativeNever: "אף פעם",
       relativeJustNow: "זה עתה",

@@ -3176,6 +3176,7 @@ export const de = {
       codingAgents: "Coding-Agents",
       codingAgentsHint:
         "Starten Sie einen Coding-Agenten für diesen Server. Er verwendet das geladene Modell; ein lokaler Server erstellt automatisch einen API-Schlüssel, ein Remote-Server fügt ihn dem Befehl hinzu.",
+      openAgentsTab: "In Agenten öffnen",
       codingAgentsSwap:
         "Ersetzen Sie claude durch codex, openclaw, opencode oder hermes.",
       relativeNever: "nie",

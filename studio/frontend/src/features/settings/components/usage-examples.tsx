@@ -6,6 +6,8 @@ import {
   unslothDarkTheme,
   unslothLightTheme,
 } from "@/components/assistant-ui/code-themes";
+import { SegmentedPill } from "@/components/segmented-control";
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Select,
   SelectContent,
@@ -34,7 +36,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
-  ArrowUpRight01Icon,
+  ArrowRight01Icon,
   Copy01Icon,
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
@@ -42,6 +44,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -55,6 +58,7 @@ import type {
 } from "../api/keyless-api-access";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
   agentRunsOnActiveModel,
@@ -144,22 +148,13 @@ function exampleParts(type: ExampleType): [Language, Variant] {
 }
 
 /** A labelled control in the Agents tab's style: fixed-height header, then the control. */
-function Field({
-  label,
-  action,
-  children,
-}: {
-  label: string;
-  action?: ReactNode;
-  children: ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
-      <div className="flex h-5 items-center justify-between gap-3">
+      <div className="flex h-5 items-center">
         <span className="truncate text-xs font-medium text-foreground">
           {label}
         </span>
-        {action}
       </div>
       {children}
     </div>
@@ -620,6 +615,7 @@ export function UsageExamples({
   keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
+  const pillId = useId();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
@@ -629,6 +625,7 @@ export function UsageExamples({
   const setStoredAgent = useSettingsPanelPrefsStore(
     (s) => s.setApiExampleAgent,
   );
+  const setAgentsTabAgent = useSettingsPanelPrefsStore((s) => s.setAgentsAgent);
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [lang, setLang] = useState<ExampleType>(
@@ -638,14 +635,17 @@ export function UsageExamples({
       : "curl",
   );
   // an explicit pick wins, since the snippet may target another machine.
-  const [os, setOs] = useState<Os>(
+  const [osOverride, setOsOverride] = useState<Os | null>(
     storedPrefs.apiExampleOs === "windows" ||
       storedPrefs.apiExampleOs === "unix"
       ? storedPrefs.apiExampleOs
-      : deviceType === "windows"
-        ? "windows"
-        : "unix",
+      : null,
   );
+  // Anchor the match: a bare includes("win") would also match "darwin".
+  const [isWindowsClient] = useState(() => {
+    const p = getClientPlatform();
+    return p.startsWith("win") || p.includes("windows");
+  });
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
@@ -671,6 +671,13 @@ export function UsageExamples({
       : isTauri
         ? (serverUrl ?? origin)
         : origin;
+  // A loopback base is this machine, where deviceType tells WSL from Windows; otherwise
+  // the snippet is pasted where the user is, so the client platform is the guess.
+  const os: Os =
+    osOverride ??
+    ((isLoopbackUrl(base) ? deviceType === "windows" : isWindowsClient)
+      ? "windows"
+      : "unix");
   const localAgentDetection = canUseLocalAgentDetection(base);
   const loopbackBind = isLoopbackUrl(serverUrl);
   // isServedByLlamaCpp owns which store fields count; a context length is not among them,
@@ -1033,27 +1040,38 @@ export function UsageExamples({
             </Select>
           </Field>
           <Field label={t("settings.apiKeys.examplePlatform")}>
-            <Select
-              value={os}
-              onValueChange={(next) => {
-                setOs(next as Os);
-                setStoredOs(next as Os);
-              }}
-            >
-              <SelectTrigger
-                aria-label={t("settings.apiKeys.examplePlatform")}
-                className="w-full rounded-lg"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
+            {/* The Agents tab's shell toggle, stretched to the column. */}
+            <fieldset className="flex min-w-0">
+              <legend className="sr-only">
+                {t("settings.apiKeys.examplePlatform")}
+              </legend>
+              <div className="hub-tab-toggle flex h-9 w-full min-w-0 items-center rounded-full">
                 {OS_OPTIONS.map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    {t(option.labelKey)}
-                  </SelectItem>
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => {
+                      setOsOverride(option.id);
+                      setStoredOs(option.id);
+                    }}
+                    aria-pressed={os === option.id}
+                    className={cn(
+                      "relative inline-flex h-9 min-w-0 flex-auto items-center justify-center whitespace-nowrap rounded-full px-2.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      os === option.id
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {os === option.id && (
+                      <SegmentedPill group={`${pillId}-os`} />
+                    )}
+                    <span className="relative truncate">
+                      {t(option.labelKey)}
+                    </span>
+                  </button>
                 ))}
-              </SelectContent>
-            </Select>
+              </div>
+            </fieldset>
           </Field>
         </div>
       </div>
@@ -1085,31 +1103,30 @@ export function UsageExamples({
         </p>
       )}
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
-        <span className="text-xs font-medium text-foreground">
-          {t("settings.apiKeys.codingAgents")}
-        </span>
+        <div className="flex h-5 items-center justify-between gap-3">
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.apiKeys.codingAgents")}
+          </span>
+          {/* The Agents tab restores its agent from this pref when it mounts. */}
+          <button
+            type="button"
+            onClick={() => {
+              setAgentsTabAgent(agent);
+              useSettingsDialogStore.getState().setActiveTab("agents");
+            }}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.apiKeys.openAgentsTab")}
+            <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
+          </button>
+        </div>
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.codingAgentsHint")}
         </p>
+        {/* Picker in the first column, its command filling the other two. */}
         <div className="@container">
           <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
-            <Field
-              label={t("settings.agents.agent")}
-              action={
-                <a
-                  href={agentDetails.docsUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={t("settings.agents.agentDocs", {
-                    agent: agentDetails.name,
-                  })}
-                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  {t("settings.agents.docs")}
-                  <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-                </a>
-              }
-            >
+            <div className="min-w-0">
               <Select
                 value={agent}
                 onValueChange={(id) => {
@@ -1149,27 +1166,30 @@ export function UsageExamples({
                   })}
                 </SelectContent>
               </Select>
-            </Field>
+            </div>
+            <div className="relative min-w-0 @[34rem]:col-span-2">
+              <code
+                className="flex min-h-9 min-w-0 items-center whitespace-pre-wrap break-all rounded-lg border border-border bg-background/70 py-2 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+                data-reload-snapshot-sensitive={apiKey ? "" : undefined}
+              >
+                {agentCommand}
+              </code>
+              <button
+                type="button"
+                onClick={handleCopyAgent}
+                className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                aria-label={t("settings.apiKeys.copySnippet")}
+              >
+                <HugeiconsIcon
+                  icon={copiedAgent ? Tick02Icon : Copy01Icon}
+                  className={cn(
+                    "size-3.5",
+                    copiedAgent && "text-control-accent",
+                  )}
+                />
+              </button>
+            </div>
           </div>
-        </div>
-        <div className="relative min-w-0">
-          <code
-            className="block min-w-0 whitespace-pre-wrap break-all rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
-            data-reload-snapshot-sensitive={apiKey ? "" : undefined}
-          >
-            {agentCommand}
-          </code>
-          <button
-            type="button"
-            onClick={handleCopyAgent}
-            className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label={t("settings.apiKeys.copySnippet")}
-          >
-            <HugeiconsIcon
-              icon={copiedAgent ? Tick02Icon : Copy01Icon}
-              className={cn("size-3.5", copiedAgent && "text-control-accent")}
-            />
-          </button>
         </div>
         {agent === "vscode" && (
           <p className="text-ui-11 leading-relaxed text-muted-foreground">

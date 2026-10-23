@@ -17,9 +17,22 @@ test("Pi and Mistral Vibe docs open the unsloth start page", () => {
   }
 });
 
-test("the API tab's agent picker links the picked agent's docs, as the Agents tab does", () => {
+test("the API tab hands the picked agent to the Agents tab instead of linking out", () => {
   const src = readSrc("features/settings/components/usage-examples.tsx");
-  assert.match(src, /href=\{agentDetails\.docsUrl\}/);
+  assert.match(
+    src,
+    /setAgentsTabAgent\(agent\);\s*useSettingsDialogStore\.getState\(\)\.setActiveTab\("agents"\);/,
+  );
+  assert.doesNotMatch(src, /docsUrl/);
   assert.doesNotMatch(src, /const DOC_LINKS/);
   assert.doesNotMatch(src, /href: "https?:\/\//);
+});
+
+test("the API tab's platform follows the user's machine until they pick one", () => {
+  const src = readSrc("features/settings/components/usage-examples.tsx");
+  assert.match(
+    src,
+    /const os: Os =\s*osOverride \?\?\s*\(\(isLoopbackUrl\(base\) \? deviceType === "windows" : isWindowsClient\)/,
+  );
+  assert.match(src, /p\.startsWith\("win"\) \|\| p\.includes\("windows"\)/);
 });

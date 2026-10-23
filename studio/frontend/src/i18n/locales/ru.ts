@@ -3146,6 +3146,7 @@ export const ru = {
       codingAgents: "Кодинг-агенты",
       codingAgentsHint:
         "Запустите кодинг-агента, подключив его к этому серверу. Он будет использовать загруженную модель; локальный сервер автоматически создаст ключ API, а удалённый добавит его в команду.",
+      openAgentsTab: "Открыть в разделе «Агенты»",
       codingAgentsSwap: "Замените claude на codex, openclaw, opencode или hermes.",
       relativeNever: "никогда",
       relativeJustNow: "только что",

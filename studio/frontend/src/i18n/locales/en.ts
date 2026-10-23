@@ -3188,6 +3188,7 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
+      openAgentsTab: "Open in Agents",
       codingAgentsSwap: "Swap claude for codex, openclaw, opencode, or hermes.",
       relativeNever: "never",
       relativeJustNow: "just now",

@@ -3080,6 +3080,7 @@ export const it = {
       codingAgents: "Agenti di programmazione",
       codingAgentsHint:
         "Avvia un agente di programmazione configurato per usare questo server. Usa il modello caricato; un server locale genera automaticamente una chiave API, mentre uno remoto la include nel comando.",
+      openAgentsTab: "Apri in Agenti",
       codingAgentsSwap:
         "Sostituisci claude con codex, openclaw, opencode o hermes.",
       relativeNever: "mai",
