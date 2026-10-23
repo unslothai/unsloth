@@ -230,7 +230,7 @@ export function RecentDictationsView({
 
       {selected ? (
         <div className="flex min-h-0 flex-col gap-4">
-          <article className="rounded-lg border border-border/60 bg-muted/20 p-4">
+          <article className="rounded-xl border border-border/60 bg-muted/20 p-4">
             <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground select-text">
               {selected.text}
             </p>

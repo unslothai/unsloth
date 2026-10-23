@@ -168,7 +168,7 @@ export function MediaApiExamples({
       <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
         {t("settings.apiKeys.mediaApi.description")}
       </p>
-      <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
+      <div className="min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-muted/20">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-border px-2 py-1.5">
           <div className="isolate flex min-w-0 flex-wrap items-center gap-0.5">
             {MEDIA_API_KINDS.map((id) => (

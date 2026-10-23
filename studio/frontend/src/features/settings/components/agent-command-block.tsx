@@ -67,8 +67,11 @@ export function AgentIcon({
   const markSize = compact ? "size-4" : "size-5";
   if (logo) {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
-        <ApiProviderLogo providerType={logo} className={cn(markSize, "rounded")} />
+      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-sm">
+        <ApiProviderLogo
+          providerType={logo}
+          className={cn(markSize, "rounded-sm")}
+        />
       </span>
     );
   }
@@ -78,12 +81,16 @@ export function AgentIcon({
       ? `${import.meta.env.BASE_URL}agent-logos/${darkIcon}`
       : null;
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
+      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-sm">
         <img
           src={iconSrc}
           alt=""
           aria-hidden={true}
-          className={cn(markSize, "object-contain", darkIconSrc && "dark:hidden")}
+          className={cn(
+            markSize,
+            "object-contain",
+            darkIconSrc && "dark:hidden",
+          )}
         />
         {darkIconSrc ? (
           <img
@@ -100,7 +107,7 @@ export function AgentIcon({
     <span
       aria-hidden={true}
       style={{ backgroundColor: color }}
-      className="flex size-5 shrink-0 items-center justify-center rounded font-heading text-ui-10 font-semibold text-white"
+      className="flex size-5 shrink-0 items-center justify-center rounded-sm font-heading text-ui-10 font-semibold text-white"
     >
       {mark}
     </span>
@@ -124,7 +131,7 @@ export function CommandBlock({ command }: { command: string }) {
         aria-label={
           copied ? t("settings.agents.copied") : t("settings.agents.copy")
         }
-        className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
