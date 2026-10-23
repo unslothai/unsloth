@@ -220,10 +220,10 @@ def test_an_offloaded_re_record_hands_the_dropped_pool_back_first(monkeypatch):
     cg.uninstall_all(handles)
 
 
-def _two_shapes(net):
+def _two_shapes(net, shapes = (16, 8)):
     outs = []
     with torch.no_grad():
-        for rows in (16, 8):
+        for rows in shapes:
             g = torch.Generator(device = "cpu").manual_seed(rows)
             x = torch.randn(rows, 64, generator = g).cuda()
             t = torch.rand(1, generator = g).cuda()
@@ -284,6 +284,35 @@ def test_a_re_record_waits_for_the_retired_pool_flush(monkeypatch):
     assert handles[0].stats["captures"] == 2 and not cg.retired_pool_due()
     for a, b in zip(got, want):
         assert torch.equal(a, b)
+    cg.uninstall_all(handles)
+
+
+def test_a_capture_refused_while_another_records_never_empties_the_cache(monkeypatch):
+    """A capture refused because another thread is recording (a retired pool is due and cannot be flushed) runs eager
+    without touching the allocator: an empty_cache or a cuBLAS workspace clear inside that recording could invalidate
+    it. The cleanup stays due and the next capture's entry flush does it once the recording ended."""
+    _cuda()
+    _reset_retired(monkeypatch)
+    monkeypatch.setattr(cg, "RETIRED_FLUSH_WAIT_S", 0.01)
+    torch.manual_seed(0)
+    net = _streamed(_Net(), 3)
+    handles, _ = cg.arm_after_placement(_pipe(net))
+    _two_shapes(net)
+    before = handles[0].stats["captures"]
+    _retire()  # another wrapper retired a pool
+    real = torch.cuda.empty_cache
+    during = []
+    monkeypatch.setattr(
+        torch.cuda, "empty_cache", lambda: during.append(cg._CAPTURE_DEPTH) or real()
+    )
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)  # another thread is recording
+    _two_shapes(net, (12, 4))  # new keys: each capture is refused at its entry
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 0)
+    assert handles[0].stats["captures"] == before
+    assert handles[0].stats.get("capture_refusals", 0) >= 1
+    assert during == []  # nothing flushed while the other capture recorded
+    _two_shapes(net, (12, 4))
+    assert handles[0].stats["captures"] == before + 2 and not _due()
     cg.uninstall_all(handles)
 
 

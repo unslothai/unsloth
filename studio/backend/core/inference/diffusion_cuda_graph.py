@@ -376,6 +376,29 @@ def flush_retired_pools() -> bool:
         return _flush_retired_locked(seen)
 
 
+def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
+    """``empty_cache`` (and the cuBLAS workspaces) only when no capture is recording: either is prohibited inside
+    another thread's recording and can invalidate it. Skipped (False) then, and counted as a retired pool, so the next
+    capture's entry flush hands the segments back instead."""
+    gc.collect()  # outside _CAPTURE_LOCK: a finalizer may take it
+    with hold_off_capture() as safe:
+        if safe:
+            try:
+                torch = _torch()
+                if clear_cublas:
+                    clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+                    if callable(clear):
+                        clear()
+                cuda = getattr(torch, "cuda", None)
+                if cuda is not None and hasattr(cuda, "empty_cache"):
+                    cuda.empty_cache()
+            except Exception:  # noqa: BLE001 - best effort
+                pass
+            return True
+    note_pool_retired()
+    return False
+
+
 def _note_dropped_pools(tokens: list) -> None:
     """Graph entries just left a step cache: count a retirement when one of their pools no live graph records into
     (a pool still shared with a live graph keeps its freed blocks for that pool's next capture)."""
@@ -1087,19 +1110,8 @@ class GraphedForward:
 
     def _release(self) -> None:
         """Return the dropped graphs' pool segments to the device; ``gc.collect`` alone leaves them in the private pool."""
-        try:
-            gc.collect()
-            torch = _torch()
-            cuda = getattr(torch, "cuda", None)
-            if getattr(self, "placement", None) is not None:
-                # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
-                clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
-                if callable(clear):
-                    clear()
-            if cuda is not None and hasattr(cuda, "empty_cache"):
-                cuda.empty_cache()
-        except Exception:  # noqa: BLE001 - best effort
-            pass
+        # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
+        release_cached_outside_capture(clear_cublas = getattr(self, "placement", None) is not None)
 
     def reset(self) -> "GraphedForward":
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""

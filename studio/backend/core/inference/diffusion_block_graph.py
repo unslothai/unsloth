@@ -1417,12 +1417,9 @@ class BlockGraphSet:
 
 def _release_cached() -> None:
     try:
-        import gc
-
-        gc.collect()
-        torch = _torch()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        from .diffusion_cuda_graph import release_cached_outside_capture
+        if _torch().cuda.is_available():
+            release_cached_outside_capture()
     except Exception:  # noqa: BLE001
         pass
 
