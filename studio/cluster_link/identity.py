@@ -58,49 +58,57 @@ def pem_fingerprint(pem: bytes) -> str:
     return tls.fingerprint(_der_of_pem(pem))
 
 
-def _leaf(public_key, ca_key, ca_cert, node_id: str, role: str, days: int):
-    x509, hashes, _, _, eku, name_oid = _x509()
+_KEY_USAGES = (
+    "digital_signature",
+    "content_commitment",
+    "key_encipherment",
+    "data_encipherment",
+    "key_agreement",
+    "key_cert_sign",
+    "crl_sign",
+    "encipher_only",
+    "decipher_only",
+)
+
+
+def _build_cert(subject, issuer, public_key, signing_key, days: int, path_length, usages, extras):
+    """A certificate: a CA when ``path_length`` is not None, ``usages`` its key usages, ``extras``
+    its further (non-critical) extensions."""
+    x509, hashes, _, _, _, _ = _x509()
     now = _now()
-    return (
+    builder = (
         x509.CertificateBuilder()
-        .subject_name(
-            x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, f"unsloth {role} {node_id}")])
-        )
-        .issuer_name(ca_cert.subject)
+        .subject_name(subject)
+        .issuer_name(issuer)
         .public_key(public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(minutes = 5))
         .not_valid_after(now + datetime.timedelta(days = days))
-        .add_extension(x509.BasicConstraints(ca = False, path_length = None), critical = True)
         .add_extension(
-            x509.KeyUsage(
-                digital_signature = True,
-                content_commitment = False,
-                key_encipherment = False,
-                data_encipherment = False,
-                key_agreement = True,
-                key_cert_sign = False,
-                crl_sign = False,
-                encipher_only = False,
-                decipher_only = False,
-            ),
+            x509.BasicConstraints(ca = path_length is not None, path_length = path_length),
             critical = True,
         )
-        .add_extension(x509.ExtendedKeyUsage([eku.SERVER_AUTH, eku.CLIENT_AUTH]), critical = False)
-        .add_extension(
-            x509.SubjectAlternativeName(
-                [
-                    x509.UniformResourceIdentifier(tls.NODE_URI_PREFIX + node_id),
-                    x509.UniformResourceIdentifier(tls.ROLE_URI_PREFIX + role),
-                ]
-            ),
-            critical = False,
-        )
-        .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical = False
-        )
-        .sign(ca_key, hashes.SHA256())
+        .add_extension(x509.KeyUsage(**{u: u in usages for u in _KEY_USAGES}), critical = True)
     )
+    for extension in extras:
+        builder = builder.add_extension(extension, critical = False)
+    return builder.sign(signing_key, hashes.SHA256())
+
+
+def _leaf(public_key, ca_key, ca_cert, node_id: str, role: str, days: int):
+    x509, _, _, _, eku, name_oid = _x509()
+    subject = x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, f"unsloth {role} {node_id}")])
+    san = [
+        x509.UniformResourceIdentifier(tls.NODE_URI_PREFIX + node_id),
+        x509.UniformResourceIdentifier(tls.ROLE_URI_PREFIX + role),
+    ]
+    extras = [
+        x509.ExtendedKeyUsage([eku.SERVER_AUTH, eku.CLIENT_AUTH]),
+        x509.SubjectAlternativeName(san),
+        x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+    ]
+    usages = ("digital_signature", "key_agreement")
+    return _build_cert(subject, ca_cert.subject, public_key, ca_key, days, None, usages, extras)
 
 
 def _identity_dir() -> Path:
@@ -143,36 +151,12 @@ def _load_ca():
 
 
 def _create_ca(cluster_id: str):
-    x509, hashes, _, ec, _, name_oid = _x509()
+    x509, _, _, ec, _, name_oid = _x509()
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, f"unsloth cluster {cluster_id}")])
-    now = _now()
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(minutes = 5))
-        .not_valid_after(now + datetime.timedelta(days = ROOT_DAYS))
-        .add_extension(x509.BasicConstraints(ca = True, path_length = 0), critical = True)
-        .add_extension(
-            x509.KeyUsage(
-                digital_signature = False,
-                content_commitment = False,
-                key_encipherment = False,
-                data_encipherment = False,
-                key_agreement = False,
-                key_cert_sign = True,
-                crl_sign = True,
-                encipher_only = False,
-                decipher_only = False,
-            ),
-            critical = True,
-        )
-        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical = False)
-        .sign(key, hashes.SHA256())
-    )
+    ski = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
+    usages = ("key_cert_sign", "crl_sign")
+    cert = _build_cert(name, name, key.public_key(), key, ROOT_DAYS, 0, usages, [ski])
     # Certificate first: the key is the marker of an existing root, so an interrupted write never
     # leaves a key whose certificate is missing (a lone certificate is simply overwritten next time).
     write_private(_ca_dir() / "root.pem", _cert_pem(cert))
