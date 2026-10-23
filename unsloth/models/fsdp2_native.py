@@ -1642,19 +1642,57 @@ def native_fsdp2_unsharded(model):
             root.__dict__["_unsloth_unsharded_depth"] -= 1
         return
     units = [m for m in model.modules() if isinstance(m, FSDPModule)]
+    saved = []
     try:
         for unit in units:
-            unit.set_reshard_after_forward(False, recurse = False)
+            saved.append(_keep_unsharded_after_forward(unit))
         for unit in units:
             unit.unshard()
         yield model
     finally:
         root.__dict__["_unsloth_unsharded_depth"] = 0
+        errors = []
         for unit in units:
-            unit.reshard()
-            unit.set_reshard_after_forward(
-                getattr(unit, "_unsloth_reshard_after_forward", True), recurse = False
-            )
+            try:
+                unit.reshard()
+            except Exception as exc:
+                errors.append(exc)
+        for restore in saved:
+            try:
+                restore()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
+
+
+def _keep_unsharded_after_forward(unit):
+    """Make `unit` keep its parameters gathered after forward; returns a callable that restores the
+    exact previous setting. The unit's post-forward mesh info is what `set_reshard_after_forward`
+    (torch >= 2.8) writes: saving and restoring it also works on torch 2.6 / 2.7, which lack that
+    setter, and keeps an int `reshard_after_forward` (reshard to a smaller world), which the setter
+    refuses as not a bool."""
+    state = unit._get_fsdp_state() if hasattr(unit, "_get_fsdp_state") else None
+    group = getattr(state, "_fsdp_param_group", None) if state is not None else None
+    if group is None or not hasattr(group, "post_forward_mesh_info"):
+        if group is None and state is not None:
+            return lambda: None  # a unit without parameters: nothing to reshard
+        unit.set_reshard_after_forward(False, recurse = False)
+        value = getattr(unit, "_unsloth_reshard_after_forward", True)
+        return lambda: unit.set_reshard_after_forward(bool(value), recurse = False)
+    previous_info = group.post_forward_mesh_info
+    has_auto = hasattr(state, "_auto_reshard_after_forward")
+    previous_auto = getattr(state, "_auto_reshard_after_forward", None)
+    group.post_forward_mesh_info = None  # _get_post_forward_mesh_info(False, ...)
+    if has_auto:
+        state._auto_reshard_after_forward = False
+
+    def restore():
+        group.post_forward_mesh_info = previous_info
+        if has_auto:
+            state._auto_reshard_after_forward = previous_auto
+
+    return restore
 
 
 @contextlib.contextmanager
