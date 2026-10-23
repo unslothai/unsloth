@@ -2553,8 +2553,10 @@ _BNB_UNSUPPORTED = (
 )
 
 
-def _swap_bnb_optimizer(training_args):
-    """bitsandbytes' optimizers step plain CUDA tensors; native FSDP2 parameters are DTensors."""
+def _swap_bnb_optimizer(training_args, cpu_shards = False):
+    """bitsandbytes' optimizers step plain CUDA tensors; native FSDP2 parameters are DTensors. Adam /
+    AdamW step the local shards instead, unless the shards sit on the CPU (CPU offload, a CPU mesh)
+    and this bitsandbytes cannot step CPU tensors: then the switch to torch's AdamW stays."""
     optim = getattr(training_args, "optim", None)
     if optim is None:
         return False
@@ -2569,7 +2571,7 @@ def _swap_bnb_optimizer(training_args):
     target = _BNB_OPTIMS.get(name)
     if target is None:
         return False
-    if name in _BNB_LOCAL_SHARD_OPTIMS and _bnb_local_shards_available():
+    if name in _BNB_LOCAL_SHARD_OPTIMS and _bnb_local_shards_available(cpu_shards):
         _print_rank0(
             f"Unsloth: native FSDP2 keeps optim = '{name}': bitsandbytes steps each rank's local shard "
             "of the DTensor parameters (8-bit state per shard; UNSLOTH_FSDP2_BNB_LOCAL=0 switches to "
@@ -2590,10 +2592,12 @@ def _swap_bnb_optimizer(training_args):
     return True
 
 
-def _bnb_local_shards_available():
-    from .fsdp2_bnb_optim import bnb_local_shards_enabled, supports_local_shards
+def _bnb_local_shards_available(cpu_shards = False):
+    from .fsdp2_bnb_optim import bnb_local_shards_enabled, bnb_steps_cpu_tensors, supports_local_shards
 
     if not bnb_local_shards_enabled():
+        return False
+    if cpu_shards and not bnb_steps_cpu_tensors():
         return False
     try:
         from bitsandbytes.optim import AdamW8bit
@@ -2602,13 +2606,42 @@ def _bnb_local_shards_available():
     return supports_local_shards(AdamW8bit)
 
 
+def _optimizer_on_cpu(optimizer):
+    """Whether any parameter's local shard (or the parameter itself) is a CPU tensor."""
+    for group in getattr(optimizer, "param_groups", None) or []:
+        for p in group["params"]:
+            local = getattr(p, "_local_tensor", p)
+            if getattr(local, "device", None) is not None and local.device.type == "cpu":
+                return True
+    return False
+
+
+def _native_shards_on_cpu(model, training_args):
+    """Where native FSDP2 keeps (or will keep) the trainable shards: on the CPU with
+    UNSLOTH_FSDP2_CPU_OFFLOAD, a CPU Trainer (use_cpu) or no CUDA device."""
+    if model is not None and is_native_fsdp2(model):
+        return any(
+            getattr(p, "_local_tensor", p).device.type == "cpu"
+            for p in model.parameters()
+            if p.requires_grad
+        )
+    if _trainer_uses_cpu(training_args) or not torch.cuda.is_available():
+        return True
+    try:
+        return bool(FSDP2Config.from_env().cpu_offload)
+    except Exception:
+        return False
+
+
 def _localize_bnb_optimizer(optimizer):
     """A bitsandbytes Adam / AdamW (built by the Trainer from args.optim, or passed in) steps the local
     shards of its DTensor parameters (fsdp2_bnb_optim). True when it now does."""
     if optimizer is None:
         return False
     inner = _inner_optimizer(optimizer)
-    if not _is_bnb_optimizer_class(type(inner)) or not _bnb_local_shards_available():
+    if not _is_bnb_optimizer_class(type(inner)):
+        return False
+    if not _bnb_local_shards_available(_optimizer_on_cpu(inner)):
         return False
     from .fsdp2_bnb_optim import localize_bnb_optimizer
 
@@ -2728,6 +2761,8 @@ def _refuse_bnb_optimizer_instance(optimizer):
     if optimizer is None or _localize_bnb_optimizer(optimizer):
         return
     inner = _inner_optimizer(optimizer)
+    if "galore" in type(inner).__name__.lower():
+        raise ValueError(_Q_GALORE_REFUSAL)
     if _is_bnb_optimizer_class(type(inner)):
         raise ValueError(
             f"Unsloth: native FSDP2 shards parameters as DTensors, which bitsandbytes' optimizers cannot "
@@ -2856,16 +2891,19 @@ def _refuse_clef(model):
         )
 
 
+_Q_GALORE_REFUSAL = (
+    "Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with q_galore_config: Q-GaLore's "
+    "8-bit optimizer projects whole 2-D weights, and native FSDP2 hands it DTensor shards. Set "
+    "q_galore_config = None, or launch without UNSLOTH_FSDP2."
+)
+
+
 def _refuse_q_galore(training_args):
     """UnslothTrainer builds QGaLoreAdamW8bit in its own create_optimizer when q_galore_config is set,
     bypassing args.optim (so _swap_bnb_optimizer never sees it). Its 8-bit states and 2-D projections
     expect plain tensors, not DTensor shards."""
     if getattr(training_args, "q_galore_config", None) is not None:
-        raise ValueError(
-            "Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) cannot train with q_galore_config: Q-GaLore's "
-            "8-bit optimizer projects whole 2-D weights, and native FSDP2 hands it DTensor shards. Set "
-            "q_galore_config = None, or launch without UNSLOTH_FSDP2."
-        )
+        raise ValueError(_Q_GALORE_REFUSAL)
 
 
 def _refuse_projection_optim(training_args):
@@ -2984,7 +3022,7 @@ def native_fsdp2_trainer_setup(
                 raise RuntimeError(_MIXED_GROUPS_REFUSAL)
         if is_native_fsdp2(model):
             _swap_bnb_optimizer(
-                training_args
+                training_args, _native_shards_on_cpu(model, training_args)
             )  # the Trainer still builds the optimizer from args.optim
         if model is None or not isinstance(model, nn.Module) or is_native_fsdp2(model):
             return model
@@ -2995,7 +3033,7 @@ def native_fsdp2_trainer_setup(
                 "`unsloth.models.fsdp2_native.shard_model(model)` before building the optimizer, or "
                 "let the Trainer build it (optimizers = (None, None))."
             )
-        _swap_bnb_optimizer(training_args)
+        _swap_bnb_optimizer(training_args, _native_shards_on_cpu(model, training_args))
         config = FSDP2Config.from_env()
         if _trainer_uses_cpu(training_args):
             config.device = "cpu"  # the Trainer will run on the CPU: no GPU mesh

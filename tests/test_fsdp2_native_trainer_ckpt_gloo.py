@@ -382,3 +382,81 @@ def test_bnb_optimizer_cls_preflight_uses_the_localization_predicate(which):
             native._refuse_bnb_optimizer_cls((cls, {"lr": 1e-3}))
     else:
         native._refuse_bnb_optimizer_cls((cls, {"lr": 1e-3}))
+
+
+def test_cpu_shards_keep_the_torch_adamw_switch_when_bnb_cannot_step_cpu(monkeypatch):
+    """CPU-offloaded / CPU-mesh shards are CPU tensors; bitsandbytes releases before 0.50 refuse CPU
+    inputs in the 8-bit Adam step, so adamw_8bit falls back to torch's AdamW there."""
+    pytest.importorskip("bitsandbytes")
+    native = _load_native()
+    import unsloth.models.fsdp2_bnb_optim as local_shards
+
+    for cpu_shards, can_step_cpu, kept in (
+        (False, False, True),
+        (True, True, True),
+        (True, False, False),
+    ):
+        monkeypatch.setattr(local_shards, "bnb_steps_cpu_tensors", lambda: can_step_cpu)
+        args = types.SimpleNamespace(optim = "adamw_8bit")
+        native._swap_bnb_optimizer(args, cpu_shards)
+        value = str(getattr(args.optim, "value", args.optim))
+        assert (value == "adamw_8bit") == kept, (cpu_shards, can_step_cpu, value)
+        if not kept:
+            assert value in ("adamw_torch", "adamw_torch_fused"), value
+    # A prebuilt bitsandbytes optimizer over CPU tensors is then not localized (and refused).
+    import bitsandbytes as bnb
+
+    opt = bnb.optim.AdamW8bit([torch.nn.Parameter(torch.zeros(4))])
+    assert native._localize_bnb_optimizer(opt) is False
+    with pytest.raises(ValueError, match = "cannot"):
+        native._refuse_bnb_optimizer_instance(opt)
+    # Where the shards will live: UNSLOTH_FSDP2_CPU_OFFLOAD, a CPU Trainer, or no CUDA device.
+    monkeypatch.setattr(native.torch.cuda, "is_available", lambda: True)
+    args = types.SimpleNamespace(use_cpu = False, no_cuda = False)
+    monkeypatch.delenv("ACCELERATE_USE_CPU", raising = False)
+    monkeypatch.delenv("UNSLOTH_FSDP2_CPU_OFFLOAD", raising = False)
+    assert native._native_shards_on_cpu(None, args) is False
+    monkeypatch.setenv("UNSLOTH_FSDP2_CPU_OFFLOAD", "1")
+    assert native._native_shards_on_cpu(None, args) is True
+    monkeypatch.delenv("UNSLOTH_FSDP2_CPU_OFFLOAD")
+    assert native._native_shards_on_cpu(None, types.SimpleNamespace(use_cpu = True)) is True
+
+
+def _q_galore_class():
+    """unsloth/optimizers/q_galore_adamw.py loaded on its own (unsloth_zoo's device helper stubbed)."""
+    import importlib.util
+
+    zoo = types.ModuleType("unsloth_zoo.device_type")
+    zoo.device_synchronize = lambda *a, **k: None
+    sys.modules.setdefault("unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    sys.modules["unsloth_zoo.device_type"] = zoo
+    optimizers = types.ModuleType("unsloth.optimizers")
+    optimizers.__path__ = [os.path.join(REPO, "unsloth", "optimizers")]
+    sys.modules["unsloth.optimizers"] = optimizers
+    name = "unsloth.optimizers.q_galore_adamw"
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(REPO, "unsloth", "optimizers", "q_galore_adamw.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module.QGaLoreAdamW8bit
+
+
+def test_q_galore_is_refused_not_localized():
+    bnb = pytest.importorskip("bitsandbytes")
+    native = _load_native()
+    from unsloth.models.fsdp2_bnb_optim import supports_local_shards
+
+    QGaLoreAdamW8bit = _q_galore_class()
+    opt = QGaLoreAdamW8bit([torch.nn.Parameter(torch.zeros(64, 64))], lr = 1e-3)
+    assert opt.optimizer_name == "adam"  # what the old predicate keyed on
+    assert supports_local_shards(opt) is False and supports_local_shards(QGaLoreAdamW8bit) is False
+    assert native._localize_bnb_optimizer(opt) is False
+    with pytest.raises(ValueError, match = "Q-GaLore"):
+        native._refuse_bnb_optimizer_instance(opt)
+    with pytest.raises(ValueError, match = "cannot"):
+        native._refuse_bnb_optimizer_cls((QGaLoreAdamW8bit, {"lr": 1e-3}))
+    # bitsandbytes' own Adam classes still step local shards.
+    for cls in (bnb.optim.AdamW8bit, bnb.optim.Adam8bit, bnb.optim.PagedAdamW8bit, bnb.optim.PagedAdamW32bit):
+        assert supports_local_shards(cls([torch.nn.Parameter(torch.zeros(4))])), cls

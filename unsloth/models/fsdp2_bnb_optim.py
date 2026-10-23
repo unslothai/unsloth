@@ -76,6 +76,8 @@ def supports_local_shards(optimizer_or_cls):
         return False
     if "ademamix" in cls.__name__.lower():
         return False
+    if not _plain_bnb_class(cls, base):
+        return False
     if isinstance(optimizer_or_cls, type):
         return True
     if getattr(optimizer_or_cls, "optimizer_name", None) != "adam":
@@ -84,6 +86,48 @@ def supports_local_shards(optimizer_or_cls):
     if args is not None and int(getattr(args, "optim_bits", 32)) == 8:
         # 8-bit non-blockwise state (max1 / new_max1) is per tensor: not covered.
         return bool(getattr(args, "block_wise", True))
+    return True
+
+
+def _plain_bnb_class(cls, base):
+    """Only bitsandbytes' own Adam / AdamW / PagedAdam(W) classes: every class above Optimizer2State
+    comes from bitsandbytes and none replaces step / init_state / update_step. A subclass elsewhere
+    (Unsloth's QGaLoreAdamW8bit: optimizer_name 'adam', its own step() projecting whole 2-D weights)
+    cannot be stepped shard by shard."""
+    def unwrapped(fn):
+        while hasattr(fn, "__wrapped__"):
+            fn = fn.__wrapped__
+        return fn
+
+    for klass in cls.__mro__:
+        if klass is base:
+            return True
+        module = str(getattr(klass, "__module__", "") or "")
+        if module != "bitsandbytes" and not module.startswith("bitsandbytes."):
+            return False
+        for name in ("step", "init_state", "update_step"):
+            # torch.optim.Optimizer.__init__ rewraps the class's inherited step for profiling
+            # (`step.hooked`), so compare the unwrapped function with the base's.
+            if name in vars(klass) and unwrapped(vars(klass)[name]) is not unwrapped(getattr(base, name)):
+                return False
+    return False
+
+
+@functools.lru_cache(maxsize = None)
+def bnb_steps_cpu_tensors():
+    """Whether this bitsandbytes steps 8-bit blockwise and 32-bit Adam on CPU tensors (0.50 does; older
+    releases require GPU inputs). Probed once with one step on a tiny CPU parameter of each."""
+    try:
+        import bitsandbytes as bnb
+
+        for kwargs in ({"optim_bits": 8, "min_8bit_size": 0}, {"optim_bits": 32}):
+            p = torch.nn.Parameter(torch.zeros(256))
+            p.grad = torch.ones(256)
+            bnb.optim.AdamW([p], lr = 1e-3, **kwargs).step()
+            if not torch.isfinite(p).all():
+                return False
+    except Exception:
+        return False
     return True
 
 
