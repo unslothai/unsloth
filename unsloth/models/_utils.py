@@ -1029,16 +1029,15 @@ def _sibling_model_class_for_config(model_class, child_config):
     return candidates[0]
 
 
-def _flash_unsupported_sub_configs(config, model_class = None):
-    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
+def _sub_config_model_classes(config, model_class = None):
+    """(sub-config name, model class) for every tower Transformers builds from a sub-config."""
     try:
         from transformers import AutoModel, AutoModelForCausalLM
         mappings = (AutoModel._model_mapping, AutoModelForCausalLM._model_mapping)
     except Exception:
-        return {}
+        return
     # Encoder-decoder composites (Donut, MusicGen) name their towers "encoder" / "decoder".
     declared = getattr(config, "sub_configs", None) or ()
-    out = {}
     for field_name, child_config in _config_items(config):
         if not isinstance(field_name, str):
             continue
@@ -1057,14 +1056,35 @@ def _flash_unsupported_sub_configs(config, model_class = None):
             child_class = child_class[0] if child_class else None
         if child_class is None and model_class is not None:
             child_class = _sibling_model_class_for_config(model_class, child_config)
-        if child_class is None:
-            continue
+        if child_class is not None:
+            yield field_name, child_class
+
+
+def _flash_unsupported_sub_configs(config, model_class = None):
+    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
+    out = {}
+    for field_name, child_class in _sub_config_model_classes(config, model_class):
         if getattr(child_class, "_supports_flash_attn", False) or getattr(
             child_class, "_supports_flash_attn_2", False
         ):
             continue
         out[field_name] = "sdpa" if getattr(child_class, "_supports_sdpa", False) else "eager"
     return out
+
+
+def _scoped_sdpa(config, model_class = None):
+    """ "sdpa", or a mapping sending towers without SDPA to eager: a plain "sdpa" reaches every
+    sub-config and Transformers rejects it there (MusicGen's EnCodec, VibeVoice-ASR's tokenizers)."""
+    unsupported = {
+        field_name: "eager"
+        for field_name, child_class in _sub_config_model_classes(config, model_class)
+        if not getattr(child_class, "_supports_sdpa", False)
+    }
+    if not unsupported:
+        return "sdpa"
+    if not _transformers_supports_attn_impl_mapping():
+        return "eager"
+    return {"": "sdpa", **unsupported}
 
 
 def _scoped_flash_attention(
@@ -2060,6 +2080,54 @@ def _install_text_only_conversion_carry():
     modeling_utils.get_model_conversion_mapping = get_model_conversion_mapping
 
 
+# Qwen/Qwen3-ASR-0.6B and -1.7B ship the qwen-asr package layout: sub-configs under thinker_config and
+# weights under thinker.*. transformers' Qwen3ASRConfig reads no thinker_config, so it builds a
+# default-sized model that matches none of the checkpoint's weights (the -hf repos are native).
+_QWEN3_ASR_PACKAGE_KEY_MAPPING = {
+    r"^thinker\.audio_tower\.proj1\.": "model.multi_modal_projector.linear_1.",
+    r"^thinker\.audio_tower\.proj2\.": "model.multi_modal_projector.linear_2.",
+    r"^thinker\.audio_tower\.": "model.audio_tower.",
+    r"^thinker\.model\.": "model.language_model.",
+    r"^thinker\.lm_head\.": "lm_head.",
+}
+
+
+def _convert_qwen3_asr_package_config(config):
+    """(native config, key_mapping) for a qwen-asr package layout Qwen3-ASR config, else (config, None)."""
+    if getattr(config, "model_type", None) != "qwen3_asr":
+        return config, None
+    thinker = getattr(config, "thinker_config", None)
+    if not isinstance(thinker, dict) or not {"audio_config", "text_config"} <= set(thinker):
+        return config, None
+    # Qwen3-ForcedAligner shares the layout but is a classifier (thinker model_type qwen3_forced_aligner).
+    if thinker.get("model_type", "qwen3_asr") != "qwen3_asr":
+        return config, None
+    native = type(config)
+
+    def sub(d):
+        return {k: v for k, v in dict(d).items() if k != "model_type"}
+
+    extra = {
+        k: thinker[k]
+        for k in (
+            "audio_token_id",
+            "pad_token_id",
+            "eos_token_id",
+            "initializer_range",
+            "tie_word_embeddings",
+        )
+        if k in thinker
+    }
+    new = native(
+        audio_config = sub(thinker["audio_config"]), text_config = sub(thinker["text_config"]), **extra
+    )
+    new.architectures = ["Qwen3ASRForConditionalGeneration"]
+    for k in ("_name_or_path", "_commit_hash"):
+        if hasattr(config, k):
+            setattr(new, k, getattr(config, k))
+    return new, dict(_QWEN3_ASR_PACKAGE_KEY_MAPPING)
+
+
 def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     # Add the text-only key_mapping to from_pretrained kwargs, under any user mapping.
     mapping = _get_text_only_key_mapping(parent_config, text_config)
@@ -2687,6 +2755,8 @@ def resolve_attention_implementation(
         )
         final_attn_impl = _set_attn_impl(config, "eager")
 
+    if final_attn_impl == "sdpa":
+        final_attn_impl = _set_attn_impl(config, _scoped_sdpa(config, model_class))
     return final_attn_impl
 
 
@@ -4334,8 +4404,8 @@ def has_internet(
         return False
 
 
-def _get_statistics(statistics = None, force_download = True):
-    # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
+def _statistics_environment(statistics = None):
+    # Which environment is in use (kaggle, colab, aws, ...): os.environ and /sys only, no network.
     n_cpus = psutil.cpu_count(logical = False)
     keynames = "\n" + "\n".join(os.environ.keys())
     global USE_MODELSCOPE
@@ -4395,41 +4465,57 @@ def _get_statistics(statistics = None, force_download = True):
                     statistics = try_vllm_check()
                 except Exception:
                     statistics = "other"
+    return statistics
 
-    if statistics is not None:
-        import tempfile
-        from huggingface_hub import snapshot_download
-        from unsloth_zoo.rl_environments import execute_with_time_limit
 
-        if has_internet():
+def _download_statistics(names):
+    # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
+    # All repos are fetched concurrently in ONE time-limited child: one child per repo, one after another, cost a slow proxy minutes per load (#14366).
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+    from huggingface_hub import snapshot_download
+    from unsloth_zoo.rl_environments import execute_with_time_limit
 
-            def stats_check():
-                with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
-                    snapshot_download(
-                        f"unslothai/{statistics}",
-                        force_download = True,
-                        cache_dir = f,
-                        local_dir = f,
-                    )
+    if has_internet():
 
-            time_limited_stats_check = execute_with_time_limit(120)(stats_check)
-            try:
-                time_limited_stats_check()
-            except TimeoutError:
-                raise TimeoutError(
-                    "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
-                    "Check https://status.huggingface.co/ for more details.\n"
-                    "As a temporary measure, use modelscope with the same model name ie:\n"
-                    "```\n"
-                    "pip install modelscope\n"
-                    "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
-                    "from unsloth import FastLanguageModel\n"
-                    "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
-                    "```"
+        def download(statistics):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+                snapshot_download(
+                    f"unslothai/{statistics}",
+                    force_download = True,
+                    cache_dir = f,
+                    local_dir = f,
                 )
-            except Exception:
-                logger.debug("Unsloth: stats_check failed with an exception.")
-                # Do not retry without a time limit: it would freeze offline.
+
+        def stats_check():
+            with ThreadPoolExecutor(max_workers = len(names)) as pool:
+                futures = [pool.submit(download, name) for name in names]
+            for future in futures:
+                future.result()
+
+        # The process backend kills a hung download; SIGALRM cannot interrupt the worker threads.
+        time_limited_stats_check = execute_with_time_limit(120, backend = "process")(stats_check)
+        try:
+            time_limited_stats_check()
+        except TimeoutError:
+            raise TimeoutError(
+                "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"
+                "Check https://status.huggingface.co/ for more details.\n"
+                "As a temporary measure, use modelscope with the same model name ie:\n"
+                "```\n"
+                "pip install modelscope\n"
+                "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"
+                "from unsloth import FastLanguageModel\n"
+                "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"
+                "```"
+            )
+        except Exception:
+            logger.debug("Unsloth: stats_check failed with an exception.")
+            # Do not retry without a time limit: it would freeze offline.
+
+
+def _get_statistics(statistics = None, force_download = True):
+    _download_statistics([_statistics_environment(statistics)])
 
 
 def get_statistics(local_files_only = False):
@@ -4459,8 +4545,6 @@ def get_statistics(local_files_only = False):
     if not are_progress_bars_disabled():
         disable_progress_bars()
         disabled = True
-    _get_statistics(None)
-    _get_statistics("repeat", force_download = False)
     if DEVICE_TYPE == "xpu":
         total_memory = torch.xpu.get_device_properties(0).total_memory
     elif DEVICE_TYPE == "npu":
@@ -4485,8 +4569,14 @@ def get_statistics(local_files_only = False):
         vram = 80
     else:
         vram = 96
-    _get_statistics(f"vram-{vram}")
-    _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
+    _download_statistics(
+        [
+            _statistics_environment(),
+            "repeat",
+            f"vram-{vram}",
+            f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}",
+        ]
+    )
     if disabled:
         enable_progress_bars()
 
@@ -4822,6 +4912,10 @@ def config_return_dict(config):
 
 
 def is_bfloat16_supported():
+    # XPU: ask again, so a torch.xpu.set_device after import is seen, as the trainer's live
+    # unsloth_zoo probe sees it. Cheap (device properties only).
+    if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
+        return xpu_supports_native_bf16()
     return SUPPORTS_BFLOAT16
 
 
@@ -9202,6 +9296,9 @@ class _AutoCheckpointSkip:
         return None
 
     def _model_pre_hook(self, module, args):
+        # Planning under torch.compile breaks fullgraph/dynamic tracing; compiled models stay fully checkpointed.
+        if torch.compiler.is_compiling():
+            return
         if not module.training or not torch.is_grad_enabled():
             return
         device = self._plan_device()
@@ -9220,6 +9317,8 @@ class _AutoCheckpointSkip:
             self.plan(device)
 
     def _probe_pre_hook(self, index, module, args):
+        if torch.compiler.is_compiling():
+            return
         if self.started is None or index in self.measured or not module.training:
             return
         if not torch.is_grad_enabled():
@@ -9239,6 +9338,8 @@ class _AutoCheckpointSkip:
             self.before = (index, torch.cuda.memory_allocated(hidden.device), hidden.device)
 
     def _probe_hook(self, index, module, args, output):
+        if torch.compiler.is_compiling():
+            return
         if self.before is None or self.before[0] != index or index in self.measured:
             return
         device = self.before[2]

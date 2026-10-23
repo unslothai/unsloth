@@ -856,7 +856,7 @@ export function UsageExamples({
                     {/* Inline on the baseline, like a glyph after the label. */}
                     <button
                       type="button"
-                      className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("settings.apiKeys.secureHttpsHint")}
                     >
                       {/* Follows the UI font size, like the SettingsRow hint
@@ -878,7 +878,7 @@ export function UsageExamples({
             type="button"
             onClick={handleCopyUrl}
             className={cn(
-              "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               !useTunnel && "opacity-50",
             )}
             title={cloudflareUrl}
@@ -941,7 +941,7 @@ export function UsageExamples({
                 setAgentsTabAgent(agent);
                 useSettingsDialogStore.getState().setActiveTab("agents");
               }}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <HugeiconsIcon icon={BotIcon} className="size-3.5" />
               {t("settings.apiKeys.openAgentsTab")}
@@ -955,7 +955,7 @@ export function UsageExamples({
               aria-label={t("settings.agents.agentDocs", {
                 agent: agentDetails.name,
               })}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {t("settings.agents.docs")}
               <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -1024,7 +1024,7 @@ export function UsageExamples({
           <button
             type="button"
             onClick={handleCopyAgent}
-            className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon

@@ -2897,7 +2897,13 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
-_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
+# MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
+    "qwen-image-2.1": 1849,
+    "flux.1": 2666,
+    "z-image": 2666,
+    "moss-image": 2976,
+}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -4183,10 +4189,8 @@ def install_encode_release(
             restore = release_resident_groups(
                 owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
             )
+            # No empty_cache: the allocator frees cached segments and retries on OOM; flushing per prompt cost a sync.
             pending.append(restore)
-            if restore is not None and torch.cuda.is_available():
-                # freed blocks sit in the default stream's pool; the encoder onloads on the copy stream
-                torch.cuda.empty_cache()
 
         def _after(module: Any, args: Any, output: Any) -> None:
             if not pending:
@@ -4267,11 +4271,10 @@ def measured_request_extra_mib(
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
-    # the dense tier seeds were measured on text-to-image: a reference the guard cannot size is not covered
-    tier_seeded = (
-        dense_mib is not None
-        and sized["dense_tier_seeds"]
-        and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+    # tier and phase seeds were measured on text-to-image: an unsized reference is not covered
+    tier_seeded = str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES and (
+        (dense_mib is not None and sized["dense_tier_seeds"])
+        or (dense_mib is None and sized["phase_seeds"])
     )
     if (unpriced_references and tier_seeded) or (
         (learned or need is None)

@@ -191,12 +191,13 @@ export function HighlightedCode({
     [code, language],
   );
   return (
+    // Intrinsic code width keeps scrolling on the focusable section.
     <section
       // Safari never focuses a scroller on its own, so long examples need a tab stop.
       // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
       tabIndex={0}
       aria-label={label}
-      className="max-h-96 max-w-full overflow-auto scroll-rounded rounded-lg p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
+      className="max-h-96 max-w-full overflow-auto scroll-rounded rounded-lg p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre [&_pre]:!break-normal [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!min-w-max [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
       data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
     >
       <Streamdown
@@ -269,7 +270,7 @@ export function ExampleCodeBox({
   };
 
   return (
-    <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
+    <div className="relative min-w-0 rounded-xl border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
       {/* Copy stays on the first line when the choices wrap. */}
       <div className="flex min-w-0 items-start gap-2 border-b border-border/60 px-2 py-1.5 dark:border-white/5">
         <div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
@@ -281,7 +282,7 @@ export function ExampleCodeBox({
         <button
           type="button"
           onClick={handleCopy}
-          className="my-1.5 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="my-1.5 flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={
             copied
               ? t("settings.apiKeys.copied")
