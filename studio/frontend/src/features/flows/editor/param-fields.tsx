@@ -283,18 +283,103 @@ function RemoteOptionsField({ spec, value, onChange }: FieldProps) {
   );
 }
 
+/** Suggestions for a plain text field; empty without `options_from`. */
+function useRouteSuggestions(spec: ParamSpec): string[] {
+  return useRemoteOptions(spec) ?? [];
+}
+
+function TextField({ spec, value, onChange }: FieldProps) {
+  const listId = useId();
+  const suggestions = useRouteSuggestions(spec);
+  return (
+    <>
+      <input
+        value={(value as string) ?? ""}
+        list={suggestions.length ? listId : undefined}
+        onChange={(e) => onChange(e.target.value)}
+        className={FIELD}
+      />
+      {suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((id) => (
+            <option key={id} value={id} />
+          ))}
+        </datalist>
+      )}
+    </>
+  );
+}
+
+interface LoraEntry {
+  id: string;
+  weight: number;
+}
+
+function LoraListField({ spec, value, onChange }: FieldProps) {
+  const listId = useId();
+  const suggestions = useRouteSuggestions(spec);
+  const rows = Array.isArray(value) ? (value as LoraEntry[]) : [];
+  const update = (index: number, patch: Partial<LoraEntry>) =>
+    onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  return (
+    <div className="flex flex-col gap-1.5">
+      {rows.map((row, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id of their own
+        <div key={index} className="flex items-center gap-1.5">
+          <input
+            value={row.id}
+            list={listId}
+            placeholder="LoRA id"
+            onChange={(e) => update(index, { id: e.target.value })}
+            className={FIELD}
+          />
+          <input
+            type="number"
+            min={0}
+            max={2}
+            step={0.05}
+            value={row.weight}
+            onChange={(e) =>
+              update(index, { weight: Number(e.target.value) || 0 })
+            }
+            className={`${FIELD} w-20`}
+          />
+          <button
+            type="button"
+            onClick={() => onChange(rows.filter((_, i) => i !== index))}
+            className="rounded px-1.5 text-zinc-500 hover:text-red-300"
+            aria-label="Remove LoRA"
+          >
+            x
+          </button>
+        </div>
+      ))}
+      {rows.length < 8 && (
+        <button
+          type="button"
+          onClick={() => onChange([...rows, { id: "", weight: 1 }])}
+          className="self-start rounded-md border border-white/10 px-2 py-1 text-[12px] text-zinc-300 hover:bg-white/5"
+        >
+          Add LoRA
+        </button>
+      )}
+      <datalist id={listId}>
+        {suggestions.map((id) => (
+          <option key={id} value={id} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
 function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
   if (spec.options_from && (spec.kind === "text" || spec.kind === "select"))
     return <RemoteOptionsField spec={spec} value={value} onChange={onChange} />;
   switch (spec.kind) {
     case "text":
-      return (
-        <input
-          value={(value as string) ?? ""}
-          onChange={(e) => onChange(e.target.value)}
-          className={FIELD}
-        />
-      );
+      return <TextField spec={spec} value={value} onChange={onChange} />;
+    case "lora_list":
+      return <LoraListField spec={spec} value={value} onChange={onChange} />;
     case "textarea":
       return (
         <div className="flex flex-col gap-1">

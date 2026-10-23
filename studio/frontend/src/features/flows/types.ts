@@ -15,6 +15,7 @@ export type PortType =
   | "json"
   | "list"
   | "image"
+  | "mask"
   | "audio"
   | "video"
   | "dataset"
@@ -134,7 +135,8 @@ export type ParamKind =
   | "asset"
   | "story"
   | "world"
-  | "schema";
+  | "schema"
+  | "lora_list";
 
 export interface ParamSpec {
   id: string;
@@ -152,6 +154,8 @@ export interface ParamSpec {
   options_path?: string;
   /** The param also takes a connection (its `param:<id>` input). */
   bindable?: boolean;
+  /** Shown under a collapsed "Advanced" heading in the inspector. */
+  advanced?: boolean;
 }
 
 export interface PortSpec {
@@ -187,6 +191,8 @@ export interface NodeSpec {
   requires?: string[];
   /** Holds the Studio-wide GPU lease while it runs (measurements). */
   exclusive_gpu?: boolean;
+  /** Runs only for the owner, once approved: python | http | mcp | provider | trigger. */
+  requires_approval?: string[];
 }
 
 export interface NodeCategory {

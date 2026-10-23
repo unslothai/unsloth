@@ -707,6 +707,46 @@ async def _stream_text(ctx: Any, body: dict, on_text: Callable[[str], None]) -> 
     return strip_think("".join(parts))
 
 
+IMAGE_STATUS = "/api/inference/images/status"
+
+
+async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
+    """ControlNet needs a bf16 (or bnb 4-bit) load, but Studio's default auto precision picks int8/fp8 where it
+    can. With a control image connected, load the picked model unquantized unless it already runs ControlNet."""
+    from studio_mcp import loading
+
+    repo = model.get("repo") if isinstance(model, dict) else None
+    variant = model.get("variant") if isinstance(model, dict) else None
+    try:
+        status = await ctx.call("GET", IMAGE_STATUS)
+    except FlowNodeError:
+        status = None
+    status = status if isinstance(status, dict) else {}
+    loaded = bool(status.get("loaded"))
+    names = {str(status.get(k) or "").lower() for k in ("repo_id", "display_repo_id")}
+    same = loaded and (not repo or repo.lower() in names)
+    if same and status.get("supports_controlnet") is not False:
+        return
+    if not repo:
+        if loaded:
+            raise FlowNodeError(
+                "The loaded image model cannot use a ControlNet at its current precision. Pick the model "
+                "on this node, or load it in bf16 on the Images page"
+            )
+        return
+    ctx.log(f"Loading {repo} unquantized: ControlNet needs a bf16 model")
+    await loading.load_media(
+        _caller(ctx),
+        None,
+        kind = "image",
+        model = repo,
+        variant = variant,
+        hf_token = None,
+        deadline = time.monotonic() + LOAD_DEADLINE_S,
+        knobs = {"transformer_quant": "off"},
+    )
+
+
 async def generate_image(
     ctx: Any,
     *,
@@ -724,10 +764,26 @@ async def generate_image(
     workflow: Optional[str] = None,
     count: int = 1,
     upscale: Optional[float] = None,
+    mask: Optional[dict] = None,
+    control: Optional[dict] = None,
+    options: Optional[dict] = None,
 ) -> list[dict]:
-    await ensure_model(ctx, "image", model)
+    # Wiring errors first, so a cold run never downloads or loads a model just to report them.
     if not (prompt or "").strip():
         raise FlowNodeError("The image prompt is empty")
+    if mask is not None and init_image is None:
+        raise FlowNodeError("Inpainting needs a source image: connect one to Init image")
+    if control is not None and not float(control.get("strength") or 0) > 0:
+        # Strength 0 is ControlNet off: Studio skips it, so do not reload the model in bf16 for it.
+        control = None
+    if control is not None and (init_image is not None or mask is not None or references):
+        raise FlowNodeError(
+            "ControlNet works with plain text-to-image here: disconnect the Init image, mask and references, "
+            "or the control image"
+        )
+    if control is not None:
+        await _controlnet_ready(ctx, model)
+    await ensure_model(ctx, "image", model)
     body: dict[str, Any] = {"prompt": prompt, "width": int(width), "height": int(height)}
     if negative_prompt:
         body["negative_prompt"] = negative_prompt
@@ -754,6 +810,19 @@ async def generate_image(
         body["workflow"] = workflow
     if upscale:
         body["upscale"] = float(upscale)
+    if mask is not None:
+        body["mask_image"] = await _mask_data_url(ctx, mask, init_image)
+    if control is not None:
+        body["controlnet"] = {
+            "id": control["id"],
+            "image": await data_url(ctx, control["image"]),
+            "control_type": control.get("control_type") or "passthrough",
+            "strength": float(control.get("strength", 1.0)),
+            "guidance_start": float(control.get("guidance_start", 0.0)),
+            "guidance_end": float(control.get("guidance_end", 1.0)),
+        }
+    # Only what was set is sent, so a node without these settings posts the same body as before.
+    body.update(route_options(options))
 
     async def cancel() -> None:
         await ctx.call("POST", "/api/inference/images/generate/cancel")
@@ -801,6 +870,163 @@ async def generate_image(
         for row in rows
         if isinstance(row, dict) and row.get("id")
     ]
+
+
+SAMPLERS = ("default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde")
+SCHEDULES = ("automatic", "uniform", "karras", "exponential")
+
+
+def route_options(options: Optional[dict]) -> dict:
+    """The image route's sampling, LoRA and hires fields from a node's settings; unset ones are left out."""
+    o = options or {}
+    body: dict[str, Any] = {}
+    loras = []
+    for item in o.get("loras") or []:
+        if isinstance(item, dict) and str(item.get("id") or "").strip():
+            weight = item.get("weight")
+            weight = 1.0 if weight is None else max(0.0, min(float(weight), 2.0))
+            loras.append({"id": str(item["id"]).strip(), "weight": weight})
+    if loras:
+        body["loras"] = loras[:8]
+    if o.get("sampler") in SAMPLERS[1:]:
+        body["sampler"] = o["sampler"]
+    if o.get("schedule_type") in SCHEDULES[1:]:
+        body["schedule_type"] = o["schedule_type"]
+    for key, low, high in (("clip_skip", 1, 12), ("cfg_rescale", 0.0, 1.0), ("shift", 0.01, 100.0)):
+        if o.get(key) is not None:
+            value = max(low, min(o[key], high))
+            body[key] = int(value) if key == "clip_skip" else float(value)
+    if o.get("mask_blur") is not None:
+        body["mask_blur"] = max(0, min(int(o["mask_blur"]), 64))
+    if o.get("only_masked"):
+        body["inpaint_only_masked"] = True
+    if o.get("inpaint_padding") is not None:
+        body["inpaint_padding"] = max(0, min(int(o["inpaint_padding"]), 256))
+    if o.get("hires_scale") is not None:
+        denoise = o.get("hires_denoise")
+        hires: dict[str, Any] = {
+            "scale": max(1.0, min(float(o["hires_scale"]), 4.0)),
+            "denoise": max(0.0, min(float(0.5 if denoise is None else denoise), 1.0)),
+        }
+        if o.get("hires_steps"):
+            hires["steps"] = max(1, min(int(o["hires_steps"]), 100))
+        if str(o.get("hires_upscaler") or "").strip():
+            hires["upscaler"] = str(o["hires_upscaler"]).strip()
+        body["hires"] = hires
+    if str(o.get("upscale_model") or "").strip():
+        body["upscale_model"] = str(o["upscale_model"]).strip()
+    return body
+
+
+def _fit_mask(mask: bytes, size: tuple[int, int]) -> tuple[bytes, Optional[tuple[int, int]]]:
+    """The mask as a grayscale PNG at ``size``; the second value is its original size when it had to be resized."""
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(mask))
+    im.load()
+    original = im.size
+    im = im.convert("L")
+    if im.size != size:
+        im = im.resize(size, Image.LANCZOS)
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue(), (original if original != size else None)
+
+
+def upright_size(data: bytes) -> tuple[int, int]:
+    """The image's size as Studio's image routes see it: turned per its EXIF orientation, like phone photos."""
+    from PIL import Image
+
+    from core.inference.image_orientation import exif_upright
+
+    return exif_upright(Image.open(io.BytesIO(data))).size
+
+
+async def _mask_data_url(ctx: Any, mask: dict, init_image: dict) -> str:
+    mask_bytes, _ = await media_bytes(ctx, mask)
+    init_bytes, _ = await media_bytes(ctx, init_image)
+    size = await asyncio.to_thread(upright_size, init_bytes)
+    fitted, original = await asyncio.to_thread(_fit_mask, mask_bytes, size)
+    if original is not None:
+        ctx.log(
+            f"The mask is {original[0]}x{original[1]} but the image is {size[0]}x{size[1]}; "
+            "it was resized to match",
+            "warning",
+        )
+    return f"data:image/png;base64,{base64.b64encode(fitted).decode()}"
+
+
+SEGMENTER = "/api/inference/images/segment"
+
+
+async def ensure_segmenter(ctx: Any) -> None:
+    """Download Studio's text-to-mask segmenter on first use, as a model step downloads its model."""
+    found = await ctx.call("GET", f"{SEGMENTER}/status")
+    if not isinstance(found, dict) or found.get("downloaded") is not False:
+        return
+    if found.get("supported") is False:
+        raise FlowNodeError(
+            found.get("reason") or "Mask from text is not available on this install"
+        )
+    ctx.log("Downloading the mask segmenter (first use only)")
+    try:
+        await ctx.call("POST", f"{SEGMENTER}/download", json = {})
+    except FlowNodeError as exc:
+        if "installation owner" not in str(exc):
+            raise
+        # Managed accounts cannot download models; only the owner can provision it once.
+        raise FlowNodeError(
+            "The mask segmenter is not downloaded yet, and only the installation owner can download it. "
+            "Ask them to run Find Mask once, or download it from the mask tool in Images."
+        ) from exc
+
+    def parse(payload: Any) -> tuple[str, Optional[dict], Optional[str]]:
+        payload = payload if isinstance(payload, dict) else {}
+        download = payload.get("download") or {}
+        if payload.get("downloaded") and not download.get("downloading"):
+            return "completed", None, None
+        if download.get("error"):
+            return "failed", None, f"Downloading the mask segmenter failed: {download['error']}"
+        if download.get("cancelled") or not download.get("downloading"):
+            return "cancelled", None, "The mask segmenter download stopped"
+        done, total = download.get("bytes_done"), download.get("bytes_total")
+        progress = (
+            {"phase": "Downloading the mask segmenter", "step": int(done), "total": int(total)}
+            if isinstance(done, (int, float)) and isinstance(total, (int, float)) and total
+            else None
+        )
+        return "running", progress, None
+
+    async def cancel() -> None:
+        await ctx.call("POST", f"{SEGMENTER}/cancel", json = {})
+
+    await poll_job(
+        ctx,
+        status = lambda: ctx.call("GET", f"{SEGMENTER}/status"),
+        parse = parse,
+        cancel = cancel,
+        interval = 2.0,
+    )
+
+
+async def segment(ctx: Any, image: dict, subject: str) -> bytes:
+    """A grayscale mask PNG (white = the subject) at the image's size, from Studio's SAM 3 segmenter."""
+    data, mime = await media_bytes(ctx, image)
+    await ensure_segmenter(ctx)
+    answer = await ctx.call(
+        "POST",
+        SEGMENTER,
+        json = {
+            "image": f"data:{mime};base64,{base64.b64encode(data).decode()}",
+            "prompt": subject or "subject",
+        },
+    )
+    mask_value = answer.get("mask") if isinstance(answer, dict) else None
+    if not isinstance(mask_value, str):
+        raise FlowNodeError("The segmenter returned no mask")
+    size = await asyncio.to_thread(upright_size, data)
+    fitted, _ = await asyncio.to_thread(_fit_mask, _decode_data_url(mask_value), size)
+    return fitted
 
 
 def _decode_data_url(value: str) -> bytes:

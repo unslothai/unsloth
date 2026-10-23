@@ -450,6 +450,7 @@ from routes.sandbox_capability import router as sandbox_capability_router
 from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
+from routes.flows import hooks_router as flows_hooks_router
 from routes.flows import router as flows_router
 from routes.library import router as library_router
 from routes.profile_stats import router as profile_stats_router
@@ -1032,6 +1033,11 @@ async def lifespan(app: FastAPI):
     sweep_slot_save_dir()
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
+    # Flow schedule triggers fire only while Studio runs.
+    from core.flows.triggers import SCHEDULER as _flow_trigger_scheduler
+
+    _flow_trigger_scheduler.start(app)
+
     # Initialize RSA key pair for API key encryption (external providers).
     from core.inference.key_exchange import init_key_pair
 
@@ -1127,6 +1133,10 @@ async def lifespan(app: FastAPI):
         stop_auto_sync()
     except Exception as exc:
         _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
+
+    from core.flows.triggers import SCHEDULER as _flow_trigger_scheduler
+
+    await _flow_trigger_scheduler.stop()
 
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
@@ -1655,6 +1665,10 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
 
 
 def _get_request_body_max_bytes(path: str) -> int:
+    # Flow webhooks take unauthenticated calls: cap what is buffered before the secret is even checked.
+    if path.startswith("/api/flows/hooks/"):
+        from routes.flows import WEBHOOK_MAX_BYTES
+        return WEBHOOK_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe/raw"):
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
@@ -1995,6 +2009,8 @@ app.include_router(library_router, prefix = "/api/library", tags = ["library"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
+# Before the flows router: webhook triggers authenticate by their secret, not a Studio session.
+app.include_router(flows_hooks_router, prefix = "/api/flows/hooks", tags = ["flows"])
 app.include_router(flows_router, prefix = "/api/flows", tags = ["flows"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])

@@ -431,6 +431,33 @@ def _ensure_flows_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # What the owner approved a flow to do (Python code by hash, HTTP hosts, MCP, providers, triggers). Kept out of the
+    # flow document, which any editor or import can write.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_capabilities (
+            flow_id TEXT PRIMARY KEY,
+            approved_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    # Schedule and webhook triggers of saved flows; the webhook secret lives here, never in the exportable document.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flow_triggers (
+            flow_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            token TEXT,
+            token_hash TEXT,
+            last_fired_at INTEGER,
+            PRIMARY KEY (flow_id, node_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_flow_triggers_token ON flow_triggers(token_hash)")
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:

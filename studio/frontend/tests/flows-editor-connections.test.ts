@@ -205,4 +205,9 @@ test("the editor accepts the same coercions as the compiler", () => {
   assert.equal(typesCompatible(text, list), true);
   assert.equal(typesCompatible(image, list), false);
   assert.equal(typesCompatible(image, json), false);
+  const mask = { id: "mask", type: "mask" } as never;
+  const audio = { id: "audio", type: "audio" } as never;
+  assert.equal(typesCompatible(mask, image), true);
+  assert.equal(typesCompatible(image, mask), true);
+  assert.equal(typesCompatible(mask, audio), false);
 });

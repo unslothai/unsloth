@@ -116,8 +116,12 @@ class NodeContext(Protocol):
         references: Optional[list[dict]] = None,
         workflow: Optional[str] = None,
         count: int = 1,
+        upscale: Optional[float] = None,
+        mask: Optional[dict] = None,
+        control: Optional[dict] = None,
+        options: Optional[dict] = None,
     ) -> list[dict]:
-        """Returns MediaValue dicts (Studio gallery images)."""
+        """Returns MediaValue dicts (Studio gallery images). Unset ``options`` keys are not sent."""
         ...
 
     async def remove_background(
@@ -127,6 +131,10 @@ class NodeContext(Protocol):
         trim: bool = True,
     ) -> tuple[dict, dict]:
         """Returns (cutout MediaValue, mask MediaValue)."""
+        ...
+
+    async def segment(self, image: dict, subject: str) -> bytes:
+        """A grayscale mask PNG (white = ``subject``) at the image's size."""
         ...
 
     async def speak(
@@ -187,6 +195,25 @@ class NodeContext(Protocol):
     def on_cancel(self, fn: Callable[[], Awaitable[None]]) -> None:
         """Register a coroutine the engine awaits when the run is cancelled while this node is in flight."""
         ...
+
+    # Who started the run: {"kind": "ui" | "api_key" | "trigger" | "player", "owner": bool}.
+    origin: dict[str, Any]
+
+    def capability_refusal(
+        self,
+        cap: str,
+        detail: Optional[str] = None,
+    ) -> Optional[str]:
+        """Why this run may not use ``cap`` (python, http + host, mcp, provider + id), or None. A spec listing the
+        capability in ``requires_approval`` is checked by the engine before the handler runs; call this for a
+        capability a handler only sometimes uses (an agent turning on MCP tools)."""
+        ...
+
+    def capability_allowed(
+        self,
+        cap: str,
+        detail: Optional[str] = None,
+    ) -> bool: ...
 
 
 Handler = Callable[[NodeContext], Awaitable[dict[str, Any]]]

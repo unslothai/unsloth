@@ -25,7 +25,7 @@ def _example(name: str) -> dict:
 
 
 def test_the_example_count():
-    assert len(BUILT) == 35
+    assert len(BUILT) == 43
 
 
 @pytest.mark.parametrize("name", IDS)
