@@ -928,8 +928,11 @@ def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
         target = (96, 96),
         refine_steps = 4,
     )
+    state = _State(family = _fam("sdxl"), server = _Server(old_dir, fail = True))
+    # The replacement is published only while the backend still holds the server it replaces.
+    b._state = state
     images, _ = b._generate_server(
-        _State(family = _fam("sdxl"), server = _Server(old_dir, fail = True)),
+        state,
         prompt = "p",
         negative_prompt = None,
         width = 64,
@@ -951,6 +954,7 @@ def test_native_cpu_restart_restages_the_model_upscaler(tmp_path, monkeypatch):
         new_dir,
     ]  # staged again in the new server's dir
     assert not any(p.exists() for p in staged_paths)  # both removed after
+    assert b._state.server is new_server
 
 
 def test_diffusers_status_names_why_hires_is_hidden():
