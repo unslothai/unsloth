@@ -381,7 +381,9 @@ def get_gpu_vram_mib() -> dict[int, tuple[int, int]]:
 
 _HIP_ID_MAP_NONE_TTL_S = 300.0
 _hip_id_map_lock = threading.Lock()
-_hip_id_map_cache: Optional[tuple[float, Optional[dict[int, int]], Optional[int], Optional[tuple]]] = None
+_hip_id_map_cache: Optional[
+    tuple[float, Optional[dict[int, int]], Optional[int], Optional[tuple]]
+] = None
 
 
 def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
@@ -411,7 +413,6 @@ def _static_generation() -> Optional[int]:
     """gpu_query's static generation, bumped by hardware re-detection (a swapped or re-seated card)."""
     try:
         from utils.hardware import gpu_query
-
         return gpu_query._static_gen
     except Exception:
         return None
@@ -421,7 +422,6 @@ def _amd_pci_topology() -> Optional[tuple]:
     """hardware's sysfs view of the bound AMD cards, or None when it cannot be read."""
     try:
         from utils.hardware.hardware import _linux_amd_pci_topology
-
         return _linux_amd_pci_topology()
     except Exception:
         return None

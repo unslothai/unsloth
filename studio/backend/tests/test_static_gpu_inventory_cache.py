@@ -12,7 +12,11 @@ from utils.hardware import hardware as hw
 
 
 class _Result:
-    def __init__(self, stdout, returncode = 0):
+    def __init__(
+        self,
+        stdout,
+        returncode = 0,
+    ):
         self.stdout, self.stderr, self.returncode = stdout, "", returncode
 
 
@@ -44,7 +48,8 @@ def rocm_cli(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(
-        "shutil.which", lambda name, *a, **k: f"/opt/rocm/bin/{name}" if name in ("rocminfo", "amd-smi") else None
+        "shutil.which",
+        lambda name, *a, **k: f"/opt/rocm/bin/{name}" if name in ("rocminfo", "amd-smi") else None,
     )
     monkeypatch.delenv("UNSLOTH_GPU_QUERY_CACHE", raising = False)
     for name in _MASKS:
@@ -70,7 +75,9 @@ def test_hardware_redetection_reads_the_gfx_target_again(rocm_cli):
     assert _count(rocm_cli, "rocminfo") == 2
 
 
-@pytest.mark.parametrize("name", ["ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "HSA_OVERRIDE_GFX_VERSION"])
+@pytest.mark.parametrize(
+    "name", ["ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "HSA_OVERRIDE_GFX_VERSION"]
+)
 def test_a_changed_mask_or_override_reads_the_gfx_target_again(rocm_cli, monkeypatch, name):
     hw._linux_amd_gfx_candidates()
     monkeypatch.setenv(name, "1" if "VISIBLE" in name else "11.0.0")

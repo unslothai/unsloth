@@ -469,7 +469,9 @@ def _gfx_candidates_key() -> Optional[tuple]:
         return None
     topology = _linux_amd_pci_topology()
     if topology is None:
-        return None  # an unreadable walk cannot tell a swapped card apart: probe every pass, as before
+        return (
+            None  # an unreadable walk cannot tell a swapped card apart: probe every pass, as before
+        )
     # The runner object, as gpu_query keys it, so a swapped fake never shares an answer.
     return (
         subprocess.run,
@@ -477,7 +479,11 @@ def _gfx_candidates_key() -> Optional[tuple]:
         binaries,
         tuple(os.environ.get(name) for name in _GFX_CANDIDATE_ENV),
         # Per-device overrides (HSA_OVERRIDE_GFX_VERSION_<n>) change what rocminfo reports too.
-        tuple(sorted((k, v) for k, v in os.environ.items() if k.startswith("HSA_OVERRIDE_GFX_VERSION_"))),
+        tuple(
+            sorted(
+                (k, v) for k, v in os.environ.items() if k.startswith("HSA_OVERRIDE_GFX_VERSION_")
+            )
+        ),
         topology,
     )
 
@@ -1672,7 +1678,6 @@ def _detect_hardware_locked() -> DeviceType:
     _gfx_candidates_cache = None  # a forced detection asks the ROCm CLIs again
     try:
         from . import amd as _amd
-
         _amd._hip_id_map_cache = None  # and re-reads the HIP id map
     except Exception:
         pass
