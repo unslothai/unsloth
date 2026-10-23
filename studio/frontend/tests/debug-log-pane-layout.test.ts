@@ -25,7 +25,7 @@ test("the wrap toggle sits on the log pane, not in the toolbar", () => {
 test("the frame draws the border so the pane's scrollbar stays off its corners", () => {
   assert.match(
     pane,
-    /"flex rounded-lg border border-border\/60 bg-muted\/20 p-1/,
+    /"flex rounded-lg border border-border\/60 bg-muted\/20 py-1 pr-0\.5 pl-1/,
   );
   assert.match(
     pane,
