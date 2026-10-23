@@ -1904,7 +1904,10 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
-        elif any(x in model_types_all for x in ("deepseek_v2", "deepseek_v3", "deepseek_v4")):
+        elif any(
+            x in model_types_all
+            for x in ("deepseek_v2", "deepseek_v3", "deepseek_v4", "minimax", "minimax_m2")
+        ):
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             if "deepseek_v4" in model_types_all:
@@ -1921,6 +1924,40 @@ class FastModel(FastBaseModel):
                         return (self.weight * hidden_states).to(input_dtype)
 
                     modeling_deepseek_v4.DeepseekV4RMSNorm.forward = _dsv4_rmsnorm_forward
+                except Exception:
+                    pass
+            if "minimax" in model_types_all:
+                try:
+                    from transformers.models.minimax import modeling_minimax
+
+                    _orig_minimax_lightning_forward = (
+                        modeling_minimax.MiniMaxLightningAttention.forward
+                    )
+
+                    def _minimax_lightning_forward(self, hidden_states, *args, **kwargs):
+                        target_dtype = hidden_states.dtype
+                        for buf_name in (
+                            "slope_rate",
+                            "query_decay",
+                            "key_decay",
+                            "diagonal_decay",
+                        ):
+                            buf = getattr(self, buf_name, None)
+                            if buf is not None and buf.dtype != target_dtype:
+                                setattr(self, buf_name, buf.to(target_dtype))
+                        return _orig_minimax_lightning_forward(
+                            self, hidden_states, *args, **kwargs
+                        )
+
+                    if not getattr(
+                        modeling_minimax.MiniMaxLightningAttention.forward,
+                        "_unsloth_dtype_patched",
+                        False,
+                    ):
+                        _minimax_lightning_forward._unsloth_dtype_patched = True
+                        modeling_minimax.MiniMaxLightningAttention.forward = (
+                            _minimax_lightning_forward
+                        )
                 except Exception:
                     pass
         else:

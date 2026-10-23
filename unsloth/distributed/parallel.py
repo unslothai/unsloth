@@ -203,12 +203,14 @@ def text_model(model):
 def apply_cp(model, cp_group) -> int:
     from .deepseek_cp import apply_deepseek_cp
     from .gdn_cp import apply_gdn_cp
+    from .lightning_cp import apply_lightning_cp
     from .ulysses import apply_ulysses_attention
 
     cp = dist.get_world_size(cp_group)
     apply_ulysses_attention(model, cp, cp_group, attn_fn = sdpa_flash_fn)
     n_gdn = apply_gdn_cp(model, cp_group)
     n_ds = apply_deepseek_cp(model, cp_group)
+    n_lt = apply_lightning_cp(model, cp_group)
     for module in model.modules():
         config = getattr(module, "config", None)
         if config is not None and hasattr(config, "_attn_implementation"):
@@ -219,7 +221,7 @@ def apply_cp(model, cp_group) -> int:
             config._attn_implementation = "flash_attention_2"
     if hasattr(model, "config"):
         model.config.use_cache = False
-    return n_gdn + n_ds
+    return n_gdn + n_ds + n_lt
 
 
 def _layer_classes(model) -> set[type]:

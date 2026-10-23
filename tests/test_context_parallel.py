@@ -250,6 +250,56 @@ def _tiny_deepseek_v4():
     return model
 
 
+def _tiny_minimax():
+    from transformers.models.minimax import MiniMaxConfig, MiniMaxForCausalLM
+
+    config = MiniMaxConfig(
+        vocab_size = 128,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        block_size = 8,
+        layer_types = ["linear_attention", "full_attention"],
+        full_attn_alpha_factor = 3.5,
+        full_attn_beta_factor = 1.0,
+        linear_attn_alpha_factor = 3.5,
+        linear_attn_beta_factor = 1.0,
+        mlp_alpha_factor = 3.5,
+        mlp_beta_factor = 1.0,
+    )
+    torch.manual_seed(3407)
+    model = MiniMaxForCausalLM(config).float()
+    model.config.use_cache = False
+    return model
+
+
+def _tiny_minimax_m2():
+    from transformers.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
+
+    config = MiniMaxM2Config(
+        vocab_size = 128,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        bos_token_id = 1,
+        eos_token_id = 2,
+    )
+    torch.manual_seed(3407)
+    model = MiniMaxM2ForCausalLM(config).float()
+    model.config.use_cache = False
+    return model
+
+
 def _generic_worker(rank, world, port, seq, out, builder):
     dist.init_process_group(
         "gloo", rank = rank, world_size = world, init_method = f"tcp://127.0.0.1:{port}"
@@ -267,7 +317,10 @@ def _generic_worker(rank, world, port, seq, out, builder):
         dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("builder", [_tiny_deepseek_v2, _tiny_deepseek_v4])
+@pytest.mark.parametrize(
+    "builder",
+    [_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2],
+)
 def test_deepseek_cp_matches_single_process(builder):
     seq = 16
     model = builder()
@@ -293,6 +346,6 @@ if __name__ == "__main__":
     for s in (32, 33):
         test_cp_matches_single_process(s)
         print(f"test_cp_matches_single_process(seq={s}): PASS")
-    for b in (_tiny_deepseek_v2, _tiny_deepseek_v4):
+    for b in (_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2):
         test_deepseek_cp_matches_single_process(b)
         print(f"test_deepseek_cp_matches_single_process({b.__name__}): PASS")
