@@ -1118,16 +1118,17 @@ export function UsageExamples({
             redactFromReload={Boolean(apiKey)}
           />
         </div>
-        {/* Drawn over the native resize handle, which is easy to miss; clicks pass through. */}
+        {/* Drawn over the native resize handle, which is easy to miss; clicks pass through.
+            Inset past the rounded corner's curve so the lines never cross the border. */}
         <svg
           aria-hidden="true"
-          viewBox="0 0 12 12"
-          className="pointer-events-none absolute right-1 bottom-1 size-3 text-muted-foreground"
+          viewBox="0 0 10 10"
+          className="pointer-events-none absolute right-2.5 bottom-2.5 size-2.5 text-muted-foreground/60"
         >
           <path
-            d="M11 4 4 11M11 8 8 11"
+            d="M9 3 3 9M9 6.5 6.5 9"
             stroke="currentColor"
-            strokeWidth="1.5"
+            strokeWidth="1.25"
             strokeLinecap="round"
             fill="none"
           />

@@ -57,10 +57,11 @@ test("the usage example starts short, drags taller, and its copy button is icon-
     src,
     /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:resize-y [^"]*\[&_\[data-streamdown=code-block-header\]\]:hidden",\s*tall && "\[&>section\]:h-46"/,
   );
-  // a visible grip over the native handle, which must not swallow the drag
+  // a visible grip over the native handle, which must not swallow the drag, inset
+  // past the 17.6px corner curve (0.29r at 45 degrees) so it never crosses the border
   assert.match(
     src,
-    /className="pointer-events-none absolute right-1 bottom-1 size-3/,
+    /className="pointer-events-none absolute right-2\.5 bottom-2\.5 size-2\.5/,
   );
   assert.doesNotMatch(src, /exampleExpand|exampleCollapse|setExpanded/);
   assert.doesNotMatch(src, /t\("settings\.apiKeys\.copy"\)/);
