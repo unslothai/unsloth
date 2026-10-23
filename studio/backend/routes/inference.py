@@ -51439,7 +51439,9 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
+    from core.inference.diffusion_memory import snapshot_upcoming_load_budget
 
+    snapshot_upcoming_load_budget()
     if not gpu_ids:
         if not allow_ranking:
             return None
