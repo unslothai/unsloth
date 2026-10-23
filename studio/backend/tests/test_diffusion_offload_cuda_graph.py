@@ -433,6 +433,33 @@ def test_a_deferred_release_is_owed_before_it_tries_the_lock(monkeypatch):
     assert cg.retired_pool_due() and cg._CUBLAS_CLEAR_DUE[0]
 
 
+def test_a_pool_retired_while_a_capture_enters_is_flushed_before_it_records(monkeypatch):
+    """Another thread retires a pool after this capture read the counters but before it raised the depth (here, while
+    it waits for replica-side work to drain): the entry flushes that one too, so nothing records while it is due."""
+    monkeypatch.setattr(cg, "_RETIRED_POOLS", [1, 0], raising = False)
+    flushes = []
+
+    def flush(seen):
+        flushes.append(seen)
+        cg._RETIRED_POOLS[1] = max(cg._RETIRED_POOLS[1], seen)
+        return True
+
+    late = []
+
+    def drained(own):
+        if not late:
+            late.append(1)
+            cg.note_pool_retired()  # lands after the entry flush, before the depth goes up
+
+    monkeypatch.setattr(cg, "_flush_retired_locked", flush)
+    monkeypatch.setattr(cg, "_wait_outside_drained", drained)
+    monkeypatch.setattr(cg.gc, "collect", lambda *a: 0)
+    with cg._capturing():
+        due_while_recording = cg.retired_pool_due()
+    assert late and not due_while_recording
+    assert flushes == [1, 2]
+
+
 def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeypatch):
     """Another wrapper retired a pool; this wrapper's first capture is refused in _capturing (replica-side work still
     held) before anything flushes: the flush stays due for the next capture."""
@@ -459,10 +486,10 @@ def test_a_first_capture_refused_before_entry_keeps_the_retired_pool_due(monkeyp
     cg.uninstall_all(handles)
 
 
-def test_a_pool_retired_while_the_capture_flushes_stays_due(monkeypatch):
+def test_a_pool_retired_while_the_capture_flushes_is_flushed_before_it_records(monkeypatch):
     """Retirement is not serialized with captures: another thread's invalidation can retire a pool while this
-    capture's entry flush runs. The flush acknowledges only what was retired before it began, so the newly retired
-    pool is still flushed before the next recording instead of being taken as already handed back."""
+    capture's entry flush runs. That flush acknowledges only what was retired before it began, and the entry rechecks
+    before it raises the depth, so the newly retired pool is flushed too before anything records."""
     _cuda()
     _reset_retired(monkeypatch)
     torch.manual_seed(0)
@@ -471,6 +498,7 @@ def test_a_pool_retired_while_the_capture_flushes_stays_due(monkeypatch):
     _retire()
     real = torch.cuda.empty_cache
     raced = []
+    due_at_record = []
 
     def flush():
         real()
@@ -478,13 +506,19 @@ def test_a_pool_retired_while_the_capture_flushes_stays_due(monkeypatch):
             raced.append(1)
             _retire()  # lands after this flush freed what it could, before the capture records
 
+    real_begin = torch.cuda.CUDAGraph.capture_begin
+
+    def begin(self, *args, **kwargs):
+        due_at_record.append(_due())
+        return real_begin(self, *args, **kwargs)
+
     monkeypatch.setattr(torch.cuda, "empty_cache", flush)
+    monkeypatch.setattr(torch.cuda.CUDAGraph, "capture_begin", begin)
+    flushes = cg._POOL_FLUSHES[0]
     _run(net, [0, 1])
     assert raced and handles[0].stats["captures"] >= 1
-    assert _due()
-    monkeypatch.setattr(torch.cuda, "empty_cache", real)
-    if hasattr(cg, "flush_retired_pools"):
-        assert cg.flush_retired_pools() and not _due()
+    assert due_at_record and not any(due_at_record)
+    assert cg._POOL_FLUSHES[0] - flushes == 2 and not _due()
     cg.uninstall_all(handles)
 
 

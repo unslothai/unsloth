@@ -222,10 +222,21 @@ def _capturing():
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
     seen = _retired_pools_seen()
     with _CAPTURE_IDLE:
-        if seen is not None:
-            _settle_retired_pools(seen)
-        _wait_outside_drained(own)
-        _CAPTURE_DEPTH += 1
+        for _ in range(_ENTRY_SETTLE_TRIES):
+            if seen is not None:
+                _settle_retired_pools(seen)
+            _wait_outside_drained(own)
+            # Retirement takes _RETIRE_LOCK, so one is either counted before this check (flush again, still under
+            # the capture lock) or lands once the depth is up (due for the next capture): never in between.
+            with _RETIRE_LOCK:
+                if _RETIRED_POOLS[1] >= _RETIRED_POOLS[0]:
+                    _CAPTURE_DEPTH += 1
+                    break
+                seen = _RETIRED_POOLS[0]
+        else:
+            raise CaptureRefused(
+                "graph pools kept retiring while this capture entered; capture deferred"
+            )
     try:
         yield
     finally:
@@ -313,6 +324,8 @@ _CUBLAS_CLEAR_DUE = [False]
 # underway, so an eager step here could invalidate that recording. Only a recording that never ends (the same bound as
 # replica-side work, OUTSIDE_WAIT_S) refuses the capture.
 RETIRED_FLUSH_WAIT_S = OUTSIDE_WAIT_S
+# Flushes a capture entry makes for pools retired while it entered before it gives up (refused, nothing recorded).
+_ENTRY_SETTLE_TRIES = 8
 
 
 def note_pool_retired() -> None:
