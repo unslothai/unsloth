@@ -58,19 +58,20 @@ test("every API example section has a platform toggle that follows the user's ma
       name,
     );
   }
-  // the header rows are the old usage-example pill rows: Language row with copy, then Platform
+  // one header row: the choices, then Platform pushed to its end, then copy
   assert.match(
     parts,
-    /<div className=\{HEADER_ROW\}>\s*<PlatformToggle value=\{os\} onChange=\{onOsChange\} \/>/,
+    /\{pills\}\s*<div className="ml-auto">\s*<PlatformToggle value=\{os\} onChange=\{onOsChange\} \/>\s*<\/div>\s*<\/div>\s*<button/,
   );
+  // Language and Platform keep the old usage-example pills; what the example does is a toggle
+  assert.match(parts, /variant = "pills"/);
   assert.match(
     parts,
-    /"relative whitespace-nowrap rounded-full px-2\.5 py-1 text-ui-11 font-medium/,
+    /toggle\s*\? "inline-flex h-9 items-center px-3 text-ui-12"\s*: "px-2\.5 py-1 text-ui-11"/,
   );
-  assert.doesNotMatch(parts, /hub-tab-toggle/);
 });
 
-test("Request and Image or video share the Language row; Audio keeps its grouped Example dropdown", () => {
+test("Request and Image or video are toggles in the Language row; Audio keeps its grouped Example dropdown", () => {
   const usage = readSrc("features/settings/components/usage-examples.tsx");
   const media = readSrc("features/settings/components/media-api-examples.tsx");
   const audio = readSrc("features/settings/components/audio-api-examples.tsx");
@@ -81,7 +82,7 @@ test("Request and Image or video share the Language row; Audio keeps its grouped
     assert.match(
       src,
       new RegExp(
-        `pills=\\{\\s*<>\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.${key}"\\)\\}[\\s\\S]*?<PillDivider />\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.exampleLanguage"`,
+        `pills=\\{\\s*<>\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.${key}"\\)\\}\\s*variant="toggle"[\\s\\S]*?/>\\s*<ExampleToggle\\s*label=\\{t\\("settings\\.apiKeys\\.exampleLanguage"`,
       ),
       key,
     );

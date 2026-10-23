@@ -18,7 +18,6 @@ import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store
 import {
   ExampleCodeBox,
   ExampleToggle,
-  PillDivider,
   useExampleOs,
 } from "./api-example-parts";
 import {
@@ -183,6 +182,7 @@ export function MediaApiExamples({
           <>
             <ExampleToggle
               label={t("settings.apiKeys.exampleKind")}
+              variant="toggle"
               value={kind}
               options={MEDIA_API_KINDS.map((id) => ({
                 id,
@@ -194,7 +194,6 @@ export function MediaApiExamples({
               }))}
               onChange={setKind}
             />
-            <PillDivider />
             <ExampleToggle
               label={t("settings.apiKeys.exampleLanguage")}
               value={lang}

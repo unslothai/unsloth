@@ -71,7 +71,6 @@ import {
   ExampleCodeBox,
   ExampleToggle,
   type ExampleOs,
-  PillDivider,
   isLoopbackUrl,
   useExampleOs,
 } from "./api-example-parts";
@@ -910,6 +909,7 @@ export function UsageExamples({
           <>
             <ExampleToggle
               label={t("settings.apiKeys.exampleRequest")}
+              variant="toggle"
               value={variant}
               options={VARIANTS.map((option) => ({
                 id: option.id,
@@ -917,7 +917,6 @@ export function UsageExamples({
               }))}
               onChange={(next) => pickExample(exampleType(language, next))}
             />
-            <PillDivider />
             <ExampleToggle
               label={t("settings.apiKeys.exampleLanguage")}
               value={language}
