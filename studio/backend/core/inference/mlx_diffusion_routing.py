@@ -714,6 +714,20 @@ class RoutedMlxEngine:
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         # The fallback drains first and stays fenced until the teardown ends: one failing after MLX was freed would
         # otherwise see its own epoch and reload MLX, and none may register while both engines are torn down.
+        if expected_account is not None:
+            with self._lock:
+                foreign = (
+                    self._fallback_cancel is not None
+                    and self._active_generate_account
+                    not in (
+                        None,
+                        expected_account,
+                    )
+                )
+            if foreign:
+                # Refused before the drain: draining cancels the other account's in-flight fallback.
+                from core.inference.gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
+                raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
         ours = self._drain_fallback(replacing = True)
         try:
             if expected_account is None:

@@ -535,6 +535,19 @@ def test_unload_frees_both_engines(rig):
     assert ("diffusers", "load") not in rig.log
 
 
+def test_a_scoped_unload_never_cancels_another_accounts_fallback(rig):
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+
+    cancel = threading.Event()
+    rig.engine._fallback_cancel = cancel
+    rig.engine._active_generate_account = "owner"
+    epoch = rig.engine._epoch
+    with pytest.raises(GpuBusyForAnotherAccountError):
+        rig.engine.unload(expected_account = "intruder")
+    assert not cancel.is_set() and rig.engine._epoch == epoch
+    assert ("mlx", "unload") not in rig.log
+
+
 @pytest.mark.parametrize("field", ["transformer_quant", "text_encoder_quant"])
 @pytest.mark.parametrize("value", ["none", "off", "NONE"])
 def test_a_pinned_original_precision_keeps_the_load_on_diffusers(field, value):
