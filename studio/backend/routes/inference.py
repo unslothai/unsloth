@@ -52668,7 +52668,7 @@ async def _generate_diffusion_image_run(
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_adapters, request)
-    # Refused before the render, so a model with no inpaint path or a missing SAM 3 never costs one.
+    # Validate before the render so an unrunnable pass never costs one.
     detailer = (
         await asyncio.to_thread(_detailer_settings, backend, request.detailer)
         if request.detailer is not None
@@ -52808,9 +52808,7 @@ async def _generate_diffusion_image_run(
 
     global _diffusion_persist_active
     if detailer is not None:
-        # The render's own active marker is down by now: hold generate-progress (and liveness) "active" from here
-        # through the persist below, which drops this hold with its own, so a reload or the lost-response recovery
-        # never reads the request as finished while SAM 3 and the face inpaints still run.
+        # The render's active marker is down: hold "active" through the persist so recovery never sees it finished.
         _diffusion_persist_active += 1
         try:
             with account_access.media_generation("diffusion"):
@@ -52935,7 +52933,6 @@ async def _generate_diffusion_image_run(
                             )
                             if result.get(key) not in (None, [])
                         },
-                        # Present only when the Detailer ran (or was asked for and failed), so other recipes are unchanged.
                         **(
                             {"detailer": result["detailer"][index]}
                             if result.get("detailer") and index < len(result["detailer"])
@@ -52956,7 +52953,6 @@ async def _generate_diffusion_image_run(
         logger.error("diffusion.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
-        # Also the Detailer's hold, raised before its pass.
         _diffusion_persist_active -= 2 if detailer is not None else 1
 
     return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
@@ -53911,7 +53907,6 @@ async def cancel_diffusion_generation(
     detailer = sys.modules.get("core.inference.diffusion_detailer")
     # The slot can change hands before the executor callback, so the engine rechecks under the lock.
     expected = account_access.tracked_generation_account()
-    # Only this account's passes (all of them with no account scope).
     detailing = bool(detailer is not None and detailer.cancel_active(expected))
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:
@@ -53983,7 +53978,6 @@ def _cancel_upsampler_warm_start() -> None:
 
 
 def _detailer_settings(backend: Any, spec: Any) -> Any:
-    """The request's Detailer settings, or 400 when the loaded model cannot run the pass."""
     from core.inference import diffusion_detailer
 
     try:
@@ -53997,17 +53991,14 @@ def _detailer_settings(backend: Any, spec: Any) -> Any:
 def _run_detailer(
     backend: Any, request: Any, result: dict, enhancement: Any, settings: Any
 ) -> None:
-    """The Detailer pass over a finished render: one inpaint per detection on the same load, LoRAs, sampler and
-    shift, with no live preview (the preview would show a crop)."""
+    """Detailer pass on the same load, LoRAs and sampler; no live preview (it would show a crop)."""
     from types import SimpleNamespace
 
     from core.inference import diffusion_detailer
     from core.inference.diffusion_families import load_identity
 
     status = backend.status()
-    # The render reports the load's display id when it has one (a local snapshot shown under its Hub id), status both.
     if result.get("repo_id") != (status.get("display_repo_id") or status.get("repo_id")):
-        # Another model was loaded after the render: its pass would not be the same model's.
         result["detailer"] = [
             {**diffusion_detailer.settings_record(settings), "error": "the model changed"}
             for _ in result.get("images") or []
@@ -54022,7 +54013,6 @@ def _run_detailer(
         )
         return enhancement.encoded(typed)
 
-    # Only what an inpaint can apply: variation seeds are text to image only.
     sd_controls = SimpleNamespace(
         prompt_weighting = getattr(request, "prompt_weighting", None),
         clip_skip = getattr(request, "clip_skip", None),
@@ -54033,8 +54023,7 @@ def _run_detailer(
         result,
         settings,
         prompt_for = _prompt_for,
-        # The submitted one, not the render's: that is None when the base CFG left it off, and the Detailer's own
-        # CFG may engage it.
+        # The submitted one: the render's is None when the base CFG left it off, but the Detailer's CFG may use it.
         negative_prompt = request.negative_prompt,
         account = account_access.tracked_generation_account(),
         steps = request.steps,
@@ -54059,7 +54048,7 @@ def _release_mask_segmenter_for_render() -> None:
     module = sys.modules.get("core.inference.diffusion_segment")
     if module is not None:
         try:
-            # Parked in host RAM, not dropped: the next Find or Detailer pass moves it back in well under a second.
+            # Park, not drop: unparking takes well under a second.
             module.release_segmenter("image generation", wait = True, park = True)
         except Exception as exc:  # noqa: BLE001 -- never fail a render on this
             logger.warning("images.segment: could not release before a render: %s", exc)

@@ -422,7 +422,6 @@ def test_detailer_budget_moves_only_the_planes_it_keeps(tiny_sam3, monkeypatch):
     assert len(after) == cap and len(moved) <= cap
     assert [i for i, _ in after] == [i for i, _ in before]
     assert all(torch.equal(a, b) for (_, a), (_, b) in zip(after, before))
-    # The Detailer's own selection over the budgeted result is today's.
     sized = [p for p in zip(budgeted.instances, budgeted.instance_logits) if keep(p[0].box)]
     assert all(plane is not None for _, plane in sized[:cap])
     assert det.MAX_DETECTIONS >= cap
@@ -766,8 +765,7 @@ def test_choose_device_needs_room_on_the_card(monkeypatch):
 
 
 def test_choose_device_credits_the_allocator_cache_parking_leaves(monkeypatch):
-    # Parking keeps SAM's emptied weights in the CUDA cache: 2 GiB driver free plus 8 GiB reusable cache is room for
-    # the segmenter, as the render's memory check counts it, so the next detection must not fall back to the CPU.
+    # Reusable CUDA cache counts as free, so the next detection must not fall back to the CPU.
     import contextlib
 
     import torch

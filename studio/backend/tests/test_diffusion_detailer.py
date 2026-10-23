@@ -16,7 +16,6 @@ from PIL import Image
 from core.inference import diffusion_detailer as det
 
 
-# ── geometry, against Impact-Pack's own formulas ────────────────────────────────────────────────────────────────────
 def test_defaults_follow_facedetailer():
     s = det.DetailerSettings()
     assert (s.targets, s.confidence, s.denoise, s.crop_factor) == ("face", 0.5, 0.5, 3.0)
@@ -39,9 +38,7 @@ def test_crop_region_is_the_box_times_crop_factor_about_its_centre():
 def test_crop_region_is_shifted_back_inside_the_image():
     # Near the top-left corner the crop keeps its size and starts at 0 (normalize_region).
     assert det.crop_region(1024, 768, (10, 5, 110, 85), 3.0) == (0, 0, 300, 240)
-    # Near the bottom-right it ends at the edge.
     assert det.crop_region(1024, 768, (950, 700, 1020, 760), 3.0) == (814, 588, 1024, 768)
-    # Larger than the picture: the whole picture.
     assert det.crop_region(200, 100, (50, 20, 150, 80), 3.0) == (0, 0, 200, 100)
 
 
@@ -52,7 +49,6 @@ def test_upscale_puts_the_box_short_side_at_guide_size():
     # A loose cap: the box's short side lands on guide_size.
     upscale, w, h = det.upscaled_size(100, 80, 300, 240, 512, "bbox", 4096)
     assert upscale == pytest.approx(6.4) and (w, h) == (1920, 1536)
-    # guide_size_for = crop_region measures the crop instead.
     upscale, w, h = det.upscaled_size(100, 80, 300, 240, 512, "crop_region", 4096)
     assert upscale == pytest.approx(512 / 240) and h == 512
 
@@ -139,7 +135,6 @@ def test_composite_keeps_zero_alpha_pixels_byte_for_byte():
     assert (out[3, 5] == blended).all()
 
 
-# ── prompts, targets, seeds ─────────────────────────────────────────────────────────────────────────────────────────
 def test_targets_take_the_detailer_count_unless_named():
     assert det.target_concepts("face") == [("face", det.DEFAULT_PER_TARGET)]
     assert det.target_concepts("face:2, (hand), eyes:99") == [
@@ -173,7 +168,6 @@ def test_detection_seed_is_seed_plus_index():
     assert det.detection_seed(2**53 - 1, 1) == 0
 
 
-# ── the pass ────────────────────────────────────────────────────────────────────────────────────────────────────────
 def _scene(width = 256, height = 192):
     rng = np.random.default_rng(7)
     return Image.fromarray(rng.integers(0, 256, (height, width, 3), dtype = np.uint8))
@@ -411,8 +405,7 @@ def test_detection_holds_the_engine_generation_slot(monkeypatch):
 
 
 def test_detection_registers_as_the_generation_slot_holder(monkeypatch):
-    # Holding the raw lock is not enough: a request queued on it has entered media_generation, so without a slot
-    # holder generation_is_foreign() sees two accounts and the owner's cancel is refused.
+    # Without a registered slot holder, generation_is_foreign() refuses the owner's cancel.
     import threading
 
     from core.inference import diffusion_engine_router as router
@@ -517,7 +510,6 @@ def test_overrides_reach_the_record_and_the_negative_prompt():
     assert record["steps"] == 12 and record["guidance"] == 4.5 and record["prompt"] == "sharp face"
 
 
-# ── detail_result: the batch, failures, cancel ──────────────────────────────────────────────────────────────────────
 def _patch_detect(monkeypatch, per_image):
     monkeypatch.setattr(
         det,
@@ -653,7 +645,6 @@ def test_detect_releases_sam3_even_on_failure(monkeypatch):
     )
     with pytest.raises(RuntimeError):
         det.detect([_scene()], det.DetailerSettings())
-    # Parked in host RAM, not dropped: the next pass reuses it.
     assert released == [("detailer", True, True)]
 
 
@@ -809,7 +800,6 @@ def test_stop_during_detection_skips_the_remaining_images(monkeypatch):
     assert [r["error"] for r in result["detailer"]] == ["cancelled"] * 4
 
 
-# ── infotext and the gallery record ─────────────────────────────────────────────────────────────────────────────────
 def test_infotext_uses_adetailer_keys():
     record = {
         **det.settings_record(det.DetailerSettings(prompt = "detailed face, smile", steps = 12)),
@@ -866,7 +856,6 @@ def test_gallery_image_accepts_the_detailer_record():
     assert image.detailer["targets"] == "face"
 
 
-# ── route gating ────────────────────────────────────────────────────────────────────────────────────────────────────
 class _Backend:
     def __init__(self, workflows):
         self._status = {"loaded": True, "workflows": workflows, "repo_id": "r"}
@@ -956,7 +945,6 @@ def test_stop_between_two_inpaints_ends_the_pass(monkeypatch):
     assert calls == [1]
     assert [r["error"] for r in result["detailer"]] == ["cancelled", "cancelled"]
     assert result["images"][0] is first and result["images"][1] is second
-    # Nothing is registered once the pass returned.
     assert det.cancel_active() is False
 
 
@@ -984,7 +972,6 @@ def test_cancel_route_stops_a_detailer_pass(monkeypatch):
     assert out == {"cancelled": True} and stopped == [1]
 
 
-# ── route: model identity and in-flight marker ──────────────────────────────────────────────────────────────────────
 def test_route_runs_the_pass_on_a_display_id_load_and_stays_in_flight(monkeypatch, tmp_path):
     """A load shown under a display id (a local snapshot under its Hub id) is the same model, and generate-progress
     / liveness stay active from the end of the render through the Detailer and the persist."""
@@ -1033,7 +1020,6 @@ def test_route_runs_the_pass_on_a_display_id_load_and_stays_in_flight(monkeypatc
     assert routes.generation_in_flight() is False
 
 
-# ── round 3: cancel scope, batch SAM hold, cap after drop_size, late Stop, SD controls, inherited negative ──────────
 def _crop_back(kwargs):
     import base64
     import io
@@ -1182,7 +1168,6 @@ def test_detect_keeps_sam_loaded_across_the_batch(monkeypatch):
     )
     det.detect([_scene(), _scene(), _scene()], det.DetailerSettings())
     assert events == [("segment", None)] * 3 + [("park", "detailer")]
-    # Outside a hold the call settles as before.
     seg._after_call()
     assert events[-1] == ("unload", "no keep-alive")
 
@@ -1262,12 +1247,10 @@ def test_route_passes_sd_controls_submitted_negative_and_account(monkeypatch):
     controls = captured["generate_kwargs"]["sd_controls"]
     assert isinstance(controls, SdControls)
     assert (controls.prompt_weighting, controls.clip_skip, controls.cfg_rescale) == (False, 2, 0.7)
-    # Variation seeds are text to image only.
     assert controls.variation_seed is None and not controls.variation_strength
     assert captured["negative_prompt"] == "blurry" and captured["account"] == "acct-1"
 
 
-# ── fallback review: zero-step schedule, inherited negative in a template ──────────────────────────────────────────
 def test_a_low_denoise_still_schedules_one_inpaint_timestep(monkeypatch):
     _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
     calls = []

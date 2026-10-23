@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Detailer (face fix): after the render, SAM 3 finds each face (or any named target), which is inpainted again in an
-// enlarged crop and pasted back, like AUTOMATIC1111's ADetailer and ComfyUI-Impact-Pack's FaceDetailer. Defaults are
-// FaceDetailer's (core/inference/diffusion_detailer.py cites each). Pure logic only (no "@/" imports) so node:test can
-// load it directly.
+// Detailer (face fix) logic. No "@/" imports so node:test can load it directly.
 
 export const DETAILER_LABEL = "Detailer (face fix)";
 export const DETAILER_HINT =
@@ -25,18 +22,14 @@ export interface DetailerOptions {
   confidence: number;
   cropFactor: number;
   guideSize: number;
-  /** What guide size measures: the detection box or the whole crop (FaceDetailer's guide_size_for). */
   guideSizeFor: DetailerGuideSizeFor;
   maxSize: number;
   dilation: number;
   feather: number;
-  /** Detections with a box side at or below this many pixels are skipped. */
   dropSize: number;
-  /** null = the image's own steps. */
   steps: number | null;
-  /** Empty = the image's own negative prompt. */
   negativePrompt: string;
-  /** null = the image's own CFG (ADetailer's "use separate CFG scale" off). */
+  /** null / empty = the image's own. */
   guidance: number | null;
 }
 
@@ -58,7 +51,6 @@ export const DETAILER_DEFAULTS: DetailerOptions = {
   guidance: null,
 };
 
-/** The request's `detailer` object (DiffusionDetailerSpec). */
 export interface DetailerRequest {
   targets: string;
   prompt?: string;
@@ -86,7 +78,6 @@ export interface DetailerDetection {
   prompt?: string;
 }
 
-/** What a gallery record keeps (`detailer`): the settings that ran and each detection, or an error. */
 export interface DetailerRecord {
   targets?: string;
   prompt?: string;
@@ -119,12 +110,10 @@ interface DetailerSegmenterStatus {
   downloaded: boolean;
 }
 
-/** The loaded model can inpaint: the Detailer's redraw is its inpaint pipeline. */
 export function detailerModelCapable(status: DetailerModelStatus | null | undefined, external: boolean): boolean {
   return !external && status?.loaded === true && (status.workflows ?? []).includes("inpaint");
 }
 
-/** Shown only when the model can inpaint and SAM 3 is installed and downloaded. */
 export function detailerAvailable(
   status: DetailerModelStatus | null | undefined,
   external: boolean,
@@ -135,7 +124,7 @@ export function detailerAvailable(
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
-/** The request field: nothing unless on and available, then the targets plus every option off its default. */
+/** Only options off their default are sent. */
 export function detailerRequestField(
   enabled: boolean,
   available: boolean,
@@ -171,15 +160,12 @@ export function detailerRequestField(
   return { detailer: out };
 }
 
-/** Whether a Detailer [SEP] template reads the image's own text: empty, an empty part, or a [PROMPT]. */
 export function detailerTemplateInherits(template: string | undefined): boolean {
   if (!template) return true;
   return template.split(/\s*\[SEP\]\s*/).some((part) => !part.trim() || part.includes("[PROMPT]"));
 }
 
-/** The Detailer's own CFG turns guidance on for its inpaints while it inherits the image's negative prompt (no
- *  separate one, or a template reading it), so the request must carry the main negative prompt even when the
- *  base CFG leaves it unused. */
+/** The Detailer's CFG can engage the inherited negative prompt even when the base CFG leaves it unused. */
 export function detailerEngagesNegative(
   enabled: boolean,
   available: boolean,
@@ -194,7 +180,7 @@ export function detailerEngagesNegative(
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
-/** A record's `detailer` as untrusted input (a dropped file): known fields of the right type, else null. */
+/** Untrusted input (a dropped file). */
 export function detailerRecordOf(value: unknown): DetailerRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
@@ -223,15 +209,13 @@ export function detailerRecordOf(value: unknown): DetailerRecord | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
-/** What a restore applies: a record with a pass turns the Detailer on with its settings; one without turns it off. */
 export function restoredDetailer(image: { detailer?: unknown }): {
   enabled: boolean;
   options: Partial<DetailerOptions>;
 } {
   const record = detailerRecordOf(image.detailer);
   if (!record) return { enabled: false, options: {} };
-  // Every setting the record does not carry is its default (an ADetailer infotext has no crop factor, guide size or
-  // max size), so a restore never keeps a stale stored value from an earlier run.
+  // Missing settings reset to defaults so a restore never keeps a stale value.
   const options: Partial<DetailerOptions> = { ...DETAILER_DEFAULTS };
   if (record.targets) options.targets = record.targets;
   options.prompt = record.prompt ?? "";
@@ -250,15 +234,12 @@ export function restoredDetailer(image: { detailer?: unknown }): {
   }
   options.guideSizeFor = isGuideSizeFor(record.guide_size_for) ? record.guide_size_for : DETAILER_DEFAULTS.guideSizeFor;
   options.steps = record.steps ?? null;
-  // ADetailer's separate negative prompt and CFG: absent means the image's own, so a restore clears a stale override.
   options.negativePrompt = record.negative_prompt ?? "";
   options.guidance = record.guidance ?? null;
   return { enabled: true, options };
 }
 
-/** AUTOMATIC1111 infotext `ADetailer ...` fields (lower-cased keys) -> a record, as Studio's backend writes them
- *  (diffusion_detailer.infotext_fields) and ADetailer itself does (adetailer/args.py). Only the first tab: ADetailer's
- *  later tabs carry a " 2nd" / " 3rd" suffix. */
+/** First-tab `ADetailer ...` infotext fields (lower-cased keys) -> a record. */
 export function detailerFromInfotext(fields: Record<string, string>): DetailerRecord | null {
   const get = (key: string): string | undefined => fields[`adetailer ${key}`];
   const model = get("model");
@@ -296,8 +277,6 @@ export function detailerFromInfotext(fields: Record<string, string>): DetailerRe
   return out;
 }
 
-// The first-tab keys detailerFromInfotext restores, plus what needs no control: the version stamp, and inpaint only
-// masked, which the pass always does.
 const INFOTEXT_RESTORED = new Set(
   [
     "model",
@@ -316,8 +295,7 @@ const INFOTEXT_RESTORED = new Set(
   ].map((key) => `adetailer ${key}`),
 );
 
-/** The `ADetailer ...` keys an import drops: a later tab (" 2nd", " 3rd", ...) and options Studio has no control
- *  for. With no first-tab pass ("None" or absent) nothing of it restores but that off model itself. */
+/** `ADetailer ...` keys an import drops (later tabs, unsupported options). */
 export function detailerInfotextNotApplied(fields: Record<string, string>): string[] {
   const restored = detailerFromInfotext(fields) !== null;
   return Object.keys(fields).filter((key) => {
@@ -328,13 +306,10 @@ export function detailerInfotextNotApplied(fields: Record<string, string>): stri
   });
 }
 
-/** What a restore or import names as not applied when it brings back a pass this load cannot run (no inpaint path,
- *  SAM 3 missing, or its status not in yet): the switch is restored behind the hidden control and Generate omits it. */
 export function detailerNotApplied(recorded: boolean, ready: boolean): string[] {
   return recorded && !ready ? ["Detailer (face fix)"] : [];
 }
 
-/** The Recipe line for an image's pass: "face x2, denoise 0.5", or why it did not run. */
 export function detailerSummary(record: DetailerRecord | null | undefined): string | null {
   if (!record) return null;
   if (record.error) return `not applied (${record.error})`;
@@ -343,7 +318,7 @@ export function detailerSummary(record: DetailerRecord | null | undefined): stri
   return `${targets}: ${count} fixed, denoise ${record.denoise ?? DETAILER_DEFAULTS.denoise}`;
 }
 
-/** Errors worth a toast after a run: a cancel is the user's own doing. */
+/** Cancels get no toast. */
 export function detailerErrors(images: Array<{ detailer?: unknown }>): string[] {
   const errors = new Set<string>();
   for (const image of images) {

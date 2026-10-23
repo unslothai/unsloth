@@ -20,9 +20,7 @@ import {
 import { SEGMENTER_STATUS_EVENT, type SegmenterStatus } from "./lib/mask-from-text";
 import { getSegmenterStatus } from "./mask-segment-api";
 
-/** SAM 3's status, read when the loaded model can inpaint (and again when that changes); null otherwise. Kept
- *  current by every other status read (the Mask from text panel's download polling, SEGMENTER_STATUS_EVENT), and
- *  polled itself while a download runs, so the control appears once SAM 3 is on disk without a reload. */
+/** SAM 3 status when the model can inpaint, else null; polled during a download so the control appears. */
 export function useDetailerSegmenter(modelCapable: boolean, modelKey: string): SegmenterStatus | null {
   const [status, setStatus] = useState<SegmenterStatus | null>(null);
   const seq = useRef(0);
@@ -62,7 +60,7 @@ export function useDetailerSegmenter(modelCapable: boolean, modelKey: string): S
   return status;
 }
 
-/** A number box where empty means "the image's own"; keeps the typed text (e.g. "4.") while it is being edited. */
+/** Empty means "the image's own"; keeps partial text like "4." while editing. */
 function OptionalNumberInput({
   ariaLabel,
   value,
@@ -74,7 +72,6 @@ function OptionalNumberInput({
 }) {
   const [text, setText] = useState(value === null ? "" : String(value));
   useEffect(() => {
-    // A restore or another tab changed the value: show it, unless the box already reads as that number.
     setText((current) => {
       const n = current.trim() === "" ? null : Number(current);
       return n === value ? current : value === null ? "" : String(value);
@@ -109,7 +106,6 @@ function Row({ label, hint, children }: { label: string; hint: string; children:
   );
 }
 
-/** The Detailer switch and its settings; renders nothing unless the loaded model can inpaint and SAM 3 is ready. */
 export function DetailerField({
   available,
   enabled,

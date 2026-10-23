@@ -152,12 +152,10 @@ ENV_VARIANT = "UNSLOTH_SAM3_VARIANT"
 
 ENV_PATH_OVERRIDE = "UNSLOTH_SAM3_PATH"
 ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
-# How long a model parked in host RAM (release(park = True): an image render or the Detailer took the GPU back) is kept
-# for the next call before it is dropped; 0 never parks.
+# Seconds a host-RAM parked model is kept; 0 never parks.
 ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
 PARK_SECONDS = 600.0
-# "1" makes the parked copy one page-locked (pinned) host buffer: moving it back is then a DMA (0.03 s for SAM 3.1
-# INT8 against ~0.6 s pageable), but page-locking 1.7 GB took minutes on a loaded host, so it is opt-in.
+# "1" pins the parked copy (0.03 s unpark vs ~0.6 s); opt-in since pinning 1.7 GB took minutes on a loaded host.
 ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
@@ -920,9 +918,7 @@ class SegmentResult:
     device: str = "cpu"
     elapsed_ms: float = 0.0
     precision: Optional[str] = None
-    # One CPU float (h, w) mask-logit plane per instance, in ``instances`` order, only when the call asked for
-    # instance masks (the Images detailer); never part of the route body. None for an instance the call's
-    # ``plane_filter`` / ``max_planes`` left on the device.
+    # Per-instance CPU mask logits (instance_masks only, never in the route body); None for filtered planes.
     instance_logits: list = field(default_factory = list)
 
     def to_json(self) -> dict:
@@ -1037,15 +1033,8 @@ def _free_device_cache(device: Optional[str]) -> None:
 
 
 class _HostWeights:
-    """The parked model's weights as one host buffer (pinned when ENV_PARK_PIN is "1") and, on the device, one
-    storage that every weight tensor views. Moving ~1,500 separate tensors costs one device allocation each (after
-    the cache is emptied, a cudaMalloc each), which on a busy host is slower than reading the file again; with one
-    storage, park is a single device-to-host copy and a free, and unpark a single allocation and host-to-device copy.
-
-    The first park repacks: each weight storage is copied to its slice of the host buffer, freed, and its tensors are
-    re-pointed (``Tensor.set_``, same sizes and strides) at the matching offset of the one device storage. The
-    modules and tensor objects stay as they are; a tensor subclass (torchao's quantized weights) is handled through
-    its inner tensors."""
+    """Parked weights as one host buffer and one device storage every weight views (via ``Tensor.set_``), so
+    park/unpark is one copy instead of ~1,500 allocations, which on a busy host is slower than rereading the file."""
 
     _ALIGN = 256
 
@@ -1340,8 +1329,7 @@ class MaskSegmenter:
         return model, plan
 
     def _unpark_locked(self, path: str, key: tuple, device: str, dtype: Any) -> bool:
-        """Move the parked model back onto ``device`` when it is the same weights for the same card and dtype; any
-        other parked copy is dropped. False when nothing usable was parked (or the move failed)."""
+        """Unpark when weights, card and dtype match (else drop the parked copy); False when nothing was usable."""
         parked = self._parked
         if parked is None:
             return False
@@ -1423,10 +1411,7 @@ class MaskSegmenter:
         self._path = self._weights_key = self.device = self._dtype = None
         self.precision = self.precision_reason = self.weights_file = None
         del model
-        # The emptied storage stays in this process's CUDA cache, so the image model's next forward takes it straight
-        # back, and the render's memory check counts it as free (diffusion_memory.reclaimable_snapshot_device_memory).
-        # Neither gc.collect nor empty_cache: on a busy card the flush alone took minutes, and the next forward would
-        # then cudaMalloc it all again. A GPU handover still releases everything (release() without park).
+        # No empty_cache: the flush took minutes on a busy card; the cache counts as free for the render's check.
         self._arm_park_timer()
         logger.info(
             "images.segment: parked in host RAM from %s in %.2fs (copy %.2fs) (%s)",
@@ -1444,7 +1429,6 @@ class MaskSegmenter:
         device = self._parked.get("device")
         self._parked = None
         self._host = None
-        # Park left the emptied weight storage in the CUDA cache; a full release hands it back to the driver too.
         _free_device_cache(device)
         logger.info("images.segment: dropped the host RAM copy (%s)", reason)
         return True
@@ -1551,8 +1535,7 @@ class MaskSegmenter:
 
     @contextmanager
     def hold(self) -> Iterator[None]:
-        """Keep the model loaded across several calls (one batch pass): no tight-card or keep-alive unload between
-        them. A release asked for meanwhile still applies. The holder releases (or parks) the model afterwards."""
+        """Keep the model loaded across a batch; an explicit release still applies."""
         with self._state_lock:
             self._holds += 1
         try:
@@ -1618,9 +1601,7 @@ class MaskSegmenter:
         plane_filter: Optional[Callable[[tuple[float, float, float, float]], bool]] = None,
         max_planes: Optional[int] = None,
     ) -> SegmentResult:
-        """``plane_filter`` / ``max_planes`` (with ``instance_masks``, the Detailer's call): only planes of instances
-        whose box passes the filter, the first ``max_planes`` of those in ``instances`` order, leave the device (the
-        rest are None), and no union mask is built (``mask_png`` is empty)."""
+        """With ``plane_filter`` / ``max_planes``, only those planes leave the device and no union mask is built."""
         concepts = parse_prompt(prompt)
         if not concepts:
             raise ValueError("Describe what to mask, for example: sofa, red lamp, pillow:2")
@@ -1674,7 +1655,6 @@ class MaskSegmenter:
         started = time.perf_counter()
         device, dtype = choose_device(allow_gpu)
         self._call_device = device
-        # Passed only when asked, so the plain Find call is the one it always was.
         extra: dict = {"instance_masks": True} if instance_masks else {}
         if instance_masks and (plane_filter is not None or max_planes is not None):
             extra.update(plane_filter = plane_filter, max_planes = max_planes)
@@ -1724,8 +1704,6 @@ class MaskSegmenter:
         model, tokenizer = self._model, self._tokenizer
         width, height = image.size
         scale = torch.tensor([width, height, width, height], dtype = torch.float32)
-        # The Detailer's call: it never reads the union, and only planes it can process leave the device, picked in
-        # the order it ranks them (``instances`` order, filter first, then the cap).
         budgeted = instance_masks and (plane_filter is not None or max_planes is not None)
         slots = 0
         union = None if budgeted else torch.zeros(height, width, dtype = torch.bool, device = device)
@@ -1771,11 +1749,9 @@ class MaskSegmenter:
                     )
                     del out, presence
                     if budgeted:
-                        # Kept (capped, low resolution) until the occurrences below pick which planes to move.
                         kept[concept.text] = (scores, boxes, (masks, {}))
                     else:
                         union |= union_mask(masks, height, width)
-                        # Low resolution (SAM 3's 288x288 planes), so a capped list stays small on the host.
                         planes = [m.float().cpu() for m in masks] if instance_masks else []
                         del masks
                         kept[concept.text] = (scores, boxes, planes)

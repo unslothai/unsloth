@@ -140,7 +140,6 @@ test("a gallery record restores the pass and turns the switch on; one without tu
   });
   assert.deepEqual(restoredDetailer({}), { enabled: false, options: {} });
   assert.deepEqual(restoredDetailer({ detailer: "nonsense" }), { enabled: false, options: {} });
-  // Untrusted input: wrong types are dropped.
   assert.deepEqual(detailerRecordOf({ denoise: "0.4", targets: 3, steps: 9 }), { steps: 9 });
 });
 
@@ -239,7 +238,6 @@ test("errors are surfaced, a cancel is not", () => {
 
 test("the page wires the control behind the gate and keeps it out of the startup bundle", () => {
   const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
-  // Rendered with the gate, sent with the gate.
   assert.match(page, /<DetailerField\s+available=\{detailerReady\}/);
   assert.match(page, /detailerRequestField\(detailerOn, detailerReady, detailerOptions\)/);
   assert.match(page, /useState\(false\);\n\s*const \[detailerOptions/);
@@ -302,7 +300,6 @@ test("an imported default ADetailer run does not keep geometry stored from an ea
   assert.equal(sent.guide_size_for, undefined);
   assert.equal(sent.denoise, 0.4);
   assert.equal(sent.steps, 12);
-  // A record that carries them still restores them.
   const custom = restoredDetailer({ detailer: { targets: "face", crop_factor: 4, guide_size: 768, max_size: 1536 } });
   const resent = detailerRequestField(true, true, { ...DETAILER_DEFAULTS, ...custom.options }).detailer;
   assert.equal(resent?.crop_factor, 4);

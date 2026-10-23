@@ -1,37 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Detailer (face fix) post-pass for the Images page, after AUTOMATIC1111's ADetailer and ComfyUI-Impact-Pack's
-FaceDetailer: find the targets with SAM 3's text prompts ("face", "hand", any text), then for each detection crop a
-padded region around it, enlarge it, inpaint the masked target at a moderate denoise with the same model, and paste the
-result back through a feathered mask. Pixels the feathered mask does not reach are the original ones, bit for bit.
-
-Where the two tools differ, the setting follows FaceDetailer (ComfyUI-Impact-Pack, modules/impact/impact_pack.py
-FaceDetailer.INPUT_TYPES and modules/impact/core.py / utils.py):
-
-- detection threshold 0.5 (``bbox_threshold``), mask dilation 10 px (``bbox_dilation``), and a detection whose box
-  side is not above 10 px is dropped (``drop_size``, ONNXDetector.detect);
-- crop region = the box scaled by 3.0 about its centre (``bbox_crop_factor``, utils.make_crop_region), shifted back
-  inside the picture (utils.normalize_region);
-- the crop is enlarged so the box's short side reaches 512 (``guide_size``, ``guide_size_for`` = bbox), capped so
-  neither side passes 1024 (``max_size``), and never shrunk (``force_inpaint``: core.enhance_detail renders a big
-  target at 1x);
-- denoise 0.5 (``denoise``), only the mask is denoised (``noise_mask``), the paste-back mask is the crop's mask blurred
-  with a (2 * 5 + 1) Gaussian kernel at sigma 10 (``feather``, utils.tensor_gaussian_blur_mask);
-- detections run one after another on the image the previous one left (impact_pack.py DetailerForEach.do_detail), each
-  with seed + its index (``seg_seed = seed + i``), which is also ADetailer's per-detection seed.
-
-ADetailer (Bing-su/adetailer) is followed where FaceDetailer has no counterpart: the optional separate prompt and
-negative prompt, where empty means the image's own prompt, ``[PROMPT]`` stands for it and ``[SEP]`` gives later
-detections their own text (!adetailer.py:289-307, 867), and the infotext keys it writes (adetailer/args.py
-``_all_args``), so a pasted or dropped PNG restores the pass. The steps, CFG and sampler are the image's own unless
-overridden, as in ADetailer (its "use separate steps / CFG" are off by default).
-
-Two departures, both because Studio's detector is SAM 3 rather than a YOLO box model: the mask is SAM 3's instance mask
-(dilated), not the box rectangle, and a target with no ``:N`` keeps up to DEFAULT_PER_TARGET detections instead of
-SAM 3's usual single best one. SAM 3 is on the GPU only for the detection: before the first inpaint it is parked in
-host RAM (diffusion_segment MaskSegmenter.release(park = True)), so it is never resident beside the image model while
-that denoises, and the next pass moves it back instead of reading its weights again.
+"""Detailer (face fix) post-pass, after ADetailer and ComfyUI-Impact-Pack's FaceDetailer: SAM 3 finds each target,
+its padded crop is enlarged, inpainted at a moderate denoise and pasted back through a feathered mask (pixels outside
+the mask stay bit-identical). Defaults follow FaceDetailer; prompts, [SEP]/[PROMPT] and infotext keys follow ADetailer.
+Departures: the mask is SAM 3's dilated instance mask, not the box, and SAM 3 is parked in host RAM before the first
+inpaint so it never sits on the GPU beside the image model.
 """
 
 from __future__ import annotations
@@ -52,7 +26,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# ── defaults (FaceDetailer, modules/impact/impact_pack.py:743-769; utils.py:454) ────────────────────────────────────
+# Defaults: FaceDetailer, modules/impact/impact_pack.py:743-769; utils.py:454.
 DEFAULT_TARGETS = "face"
 DEFAULT_CONFIDENCE = 0.5  # bbox_threshold
 DEFAULT_DENOISE = 0.5  # denoise
@@ -64,14 +38,11 @@ DEFAULT_GUIDE_SIZE = 512  # guide_size
 DEFAULT_GUIDE_SIZE_FOR = "bbox"  # guide_size_for: True = "bbox", False = "crop_region"
 DEFAULT_MAX_SIZE = 1024  # max_size
 DEFAULT_DROP_SIZE = 10  # drop_size
-# A target with no ":N" keeps this many detections; an explicit N is capped at MAX_PER_TARGET.
 DEFAULT_PER_TARGET = 8
 MAX_PER_TARGET = 20
-# Every detection costs one inpaint render: the pass stops after this many per image.
 MAX_DETECTIONS = 32
-# Studio's inpaint snaps the source to a multiple of 16 (diffusion.py _snap_to_multiple); sized here so it never has to.
+# Matches diffusion.py _snap_to_multiple so inpaint never resizes.
 SIZE_MULTIPLE = 16
-# The seed space the request accepts (DiffusionGenerateRequest: JSON-safe seeds).
 _SEED_SPACE = 2**53
 
 DETAILER_UNAVAILABLE_INPAINT = (
@@ -83,18 +54,16 @@ _SEP = re.compile(r"\s*\[SEP\]\s*")
 
 
 class DetailerCancelled(RuntimeError):
-    """Stop was pressed while the pass ran (between two inpaints, where no denoise is there to stop)."""
+    """Stop pressed between two inpaints."""
 
 
-# The stop events of the passes running now, each with the account that started it (None: no account scope);
-# POST /images/generate/cancel sets the caller's (cancel_active).
+# Running passes' stop events -> owning account (None: no account scope).
 _active: dict[threading.Event, Optional[str]] = {}
 _active_lock = threading.Lock()
 
 
 def cancel_active(account: Optional[str] = None) -> bool:
-    """Stop the running passes at their next detection: every pass when ``account`` is None (no account scope),
-    else only that account's. True when one was stopped."""
+    """Stop running passes (all when ``account`` is None); True when one was stopped."""
     with _active_lock:
         hit = [event for event, owner in _active.items() if account is None or owner == account]
         for event in hit:
@@ -131,7 +100,7 @@ class DetailerSettings:
             raise ValueError("Name what the Detailer should fix, for example: face")
         from core.inference import diffusion_segment
 
-        # SAM 3's own limits (at most MAX_CONCEPTS concepts), checked before the render instead of after it.
+        # Validate SAM 3 limits before the render, not after.
         diffusion_segment.parse_prompt(segment_prompt(settings.targets))
         return settings
 
@@ -141,8 +110,7 @@ class Detection:
     concept: str
     score: float
     box: tuple[float, float, float, float]
-    # (H, W) bool at the image's size, or None with ``plane`` set: SAM 3's low-resolution mask logits, expanded only
-    # when this detection is processed, so a batch never holds every full-size mask at once.
+    # Full-size bool mask, or None with ``plane`` (low-res logits) expanded lazily to bound batch memory.
     mask: Any = None
     plane: Any = None
 
@@ -158,10 +126,8 @@ class DetailResult:
     record: dict = field(default_factory = dict)
 
 
-# ── pure geometry ───────────────────────────────────────────────────────────────────────────────────────────────────
 def target_concepts(targets: Optional[str]) -> list[tuple[str, int]]:
-    """``face, hand:2`` -> [("face", DEFAULT_PER_TARGET), ("hand", 2)]: SAM 3's prompt syntax (diffusion_segment
-    .parse_prompt), with the detailer's own count when a target names none."""
+    """``face, hand:2`` -> [("face", DEFAULT_PER_TARGET), ("hand", 2)]."""
     out: list[tuple[str, int]] = []
     text = (targets or "").replace("(", "").replace(")", "")
     for part in (p.strip() for p in text.split(",")):
@@ -184,7 +150,7 @@ def segment_prompt(targets: Optional[str]) -> str:
 
 
 def _normalize_region(limit: int, start: int, size: float) -> tuple[int, int]:
-    """Impact-Pack utils.normalize_region: shift the span back inside [0, limit)."""
+    """Impact-Pack utils.normalize_region."""
     if start < 0:
         return 0, int(min(limit, size))
     if start + size > limit:
@@ -195,7 +161,7 @@ def _normalize_region(limit: int, start: int, size: float) -> tuple[int, int]:
 def crop_region(
     width: int, height: int, box: tuple[float, float, float, float], crop_factor: float
 ) -> tuple[int, int, int, int]:
-    """Impact-Pack utils.make_crop_region: the box scaled by ``crop_factor`` about its centre, kept in the image."""
+    """Impact-Pack utils.make_crop_region."""
     x1, y1, x2, y2 = box
     bbox_w, bbox_h = x2 - x1, y2 - y1
     crop_w, crop_h = bbox_w * crop_factor, bbox_h * crop_factor
@@ -215,8 +181,7 @@ def upscaled_size(
     guide_size_for: str,
     max_size: int,
 ) -> tuple[float, int, int]:
-    """Impact-Pack core.enhance_detail's size with force_inpaint on: the box's (or crop's) short side to
-    ``guide_size``, then capped at ``max_size``; a factor at or below 1 renders the crop at its own size."""
+    """Impact-Pack core.enhance_detail sizing with force_inpaint: never shrinks."""
     short = min(bbox_w, bbox_h) if guide_size_for == "bbox" else min(crop_w, crop_h)
     upscale = guide_size / short if short > 0 else 1.0
     new_w, new_h = int(crop_w * upscale), int(crop_h * upscale)
@@ -233,13 +198,11 @@ def snap_size(
     height: int,
     multiple: int = SIZE_MULTIPLE,
 ) -> tuple[int, int]:
-    """Down to the inpaint grid, at least one cell."""
     return max(multiple, width // multiple * multiple), max(multiple, height // multiple * multiple)
 
 
 def dilate(mask: Any, pixels: int) -> Any:
-    """cv2.dilate / cv2.erode with an ``abs(pixels)`` square kernel (Impact-Pack utils.dilate_masks), anchored at its
-    centre; erosion treats outside the array as set, as OpenCV's default border does."""
+    """cv2.dilate / cv2.erode (Impact-Pack utils.dilate_masks), OpenCV border semantics."""
     import numpy as np
 
     mask = np.asarray(mask, dtype = bool)
@@ -257,7 +220,6 @@ def dilate(mask: Any, pixels: int) -> Any:
             if shift == 0:
                 continue
             moved = np.full_like(src, not grow)
-            # moved[i] = src[i + shift]
             lo, hi = max(0, -shift), min(length, length - shift)
             if lo < hi:
                 dst = [slice(None)] * 2
@@ -285,8 +247,7 @@ def feather_mask(
     feather: int,
     sigma: float = FEATHER_SIGMA,
 ) -> Any:
-    """Impact-Pack utils.tensor_gaussian_blur_mask: a (2 * feather + 1) Gaussian at ``sigma`` with reflect padding,
-    the kernel shrunk to half the short side (odd) on a small crop, and no blur below a 3 px kernel. Float32 in [0, 1]."""
+    """Impact-Pack utils.tensor_gaussian_blur_mask."""
     import numpy as np
 
     alpha = np.asarray(mask, dtype = np.float32)
@@ -316,8 +277,7 @@ def feather_mask(
 
 
 def composite(base: Any, patch: Any, alpha: Any) -> Any:
-    """``(1 - alpha) * base + alpha * patch`` (Impact-Pack utils.tensor_paste) on uint8 RGB, rounded; a pixel with
-    alpha 0 is ``base``'s byte for byte."""
+    """Impact-Pack utils.tensor_paste; alpha 0 keeps ``base`` byte for byte."""
     import numpy as np
 
     base = np.asarray(base, dtype = np.uint8)
@@ -329,13 +289,11 @@ def composite(base: Any, patch: Any, alpha: Any) -> Any:
 
 
 def detection_seed(base_seed: int, index: int) -> int:
-    """Impact-Pack ``seg_seed = seed + i`` (ADetailer's ``seed + j``), kept in the request's seed range."""
     return (int(base_seed) + int(index)) % _SEED_SPACE
 
 
 def detection_prompt(template: Optional[str], main: str, index: int) -> Optional[str]:
-    """ADetailer's prompt rule: split on [SEP], detection ``index`` takes the matching part (the last one repeats),
-    an empty part is the image's own prompt and [PROMPT] stands for it. None means [SKIP]."""
+    """ADetailer [SEP]/[PROMPT] rule (last part repeats); None means [SKIP]."""
     parts = _SEP.split(template or "")
     part = parts[min(index, len(parts) - 1)].strip()
     if part == "[SKIP]":
@@ -346,14 +304,12 @@ def detection_prompt(template: Optional[str], main: str, index: int) -> Optional
 
 
 def inherits_main(template: Optional[str]) -> bool:
-    """Whether a [SEP] template uses the image's own text anywhere: an empty part or a [PROMPT]."""
     if not template:
         return True
     return any(not part.strip() or "[PROMPT]" in part for part in _SEP.split(template))
 
 
 def resolve_inherited(template: str, main: str) -> str:
-    """``template`` with every inherited part written out against ``main``, so it reads the same without it."""
     return " [SEP] ".join(
         main if not part.strip() else part.strip().replace("[PROMPT]", main)
         for part in _SEP.split(template)
@@ -361,15 +317,12 @@ def resolve_inherited(template: str, main: str) -> str:
 
 
 def schedulable_steps(steps: int, denoise: float) -> int:
-    """The smallest step count >= ``steps`` that leaves at least one timestep at ``denoise``: SDXL-style inpaint
-    pipelines keep ``int(steps * strength)`` and refuse zero (3 steps at 0.25 would fail every face)."""
+    """Smallest steps >= ``steps`` with int(steps * denoise) >= 1; inpaint pipelines refuse zero timesteps."""
     n = max(1, int(steps))
     denoise = float(denoise)
     if not (0.0 < denoise < 1.0):  # also NaN
         return n
-    # Closed form: int(n * denoise) >= 1 first holds near ceil(1 / denoise). Float rounding can put the true
-    # answer one off either side, so nudge with a fixed bound instead of counting up from ``steps`` (1e-7 would
-    # otherwise loop ten million times before any cancel check).
+    # Closed form plus a bounded nudge for float rounding; counting up would loop forever at tiny denoise.
     m = max(n, math.ceil(1.0 / denoise))
     for _ in range(4):
         if m > n and int((m - 1) * denoise) >= 1:
@@ -381,12 +334,10 @@ def schedulable_steps(steps: int, denoise: float) -> int:
     return m
 
 
-# ── the pass ────────────────────────────────────────────────────────────────────────────────────────────────────────
 InpaintFn = Callable[[Any, Any, int, str, Optional[str]], Any]
 
 
 def _big_enough(box: tuple[float, float, float, float], drop_size: int) -> bool:
-    """Impact-Pack's detector filter: both box sides above ``drop_size``."""
     x1, y1, x2, y2 = box
     return x2 - x1 > drop_size and y2 - y1 > drop_size
 
@@ -402,8 +353,7 @@ def detail_image(
     inpaint: InpaintFn,
     stop: Optional[Callable[[], bool]] = None,
 ) -> DetailResult:
-    """Run every detection in order on ``image`` (PIL RGB). ``inpaint(crop, mask, seed, prompt, negative)`` renders
-    one enlarged crop with its binary mask and returns the image at that size."""
+    """Inpaint every detection in order on ``image``, each on the previous result."""
     import numpy as np
     from PIL import Image
 
@@ -411,8 +361,7 @@ def detail_image(
     current = np.array(image.convert("RGB"), dtype = np.uint8)
     height, width = current.shape[:2]
     done: list[dict] = []
-    # Undersized boxes go before the loop and the cap, as Impact-Pack's detectors drop them: they take no [SEP]
-    # prompt, seed or cap slot.
+    # Undersized boxes take no [SEP] prompt, seed or cap slot (Impact-Pack drops them at detection).
     sized = [d for d in detections if _big_enough(d.box, settings.drop_size)]
     skipped = len(detections) - len(sized)
     for index, det in enumerate(sized[:MAX_DETECTIONS]):
@@ -485,7 +434,6 @@ def detail_image(
 
 
 def settings_record(settings: DetailerSettings) -> dict:
-    """The settings as the recipe stores them: every value that ran, overrides only when set."""
     out = {
         "targets": settings.targets,
         "confidence": settings.confidence,
@@ -505,9 +453,9 @@ def settings_record(settings: DetailerSettings) -> dict:
     return out
 
 
-# ── infotext (ADetailer's keys, adetailer/args.py _all_args) ────────────────────────────────────────────────────────
+# Infotext keys: adetailer/args.py _all_args.
 def _quote(value: Any) -> str:
-    """AUTOMATIC1111 infotext_utils.quote: values holding a comma, colon or newline are JSON strings."""
+    """AUTOMATIC1111 infotext_utils.quote."""
     text = str(value)
     if "," not in text and "\n" not in text and ":" not in text:
         return text
@@ -515,8 +463,7 @@ def _quote(value: Any) -> str:
 
 
 def infotext_fields(record: Optional[dict], model: Optional[str] = None) -> str:
-    """``, ADetailer model: ..., ...`` for the parameters line, or "" when no detailer ran. ADetailer always writes
-    model, confidence, dilate erode, mask blur and denoising strength, and the rest only off their defaults."""
+    """``, ADetailer model: ...`` for the parameters line, or "" when no detailer ran."""
     if not record or not isinstance(record, dict) or record.get("error"):
         return ""
     pairs: list[tuple[str, Any]] = [
@@ -544,10 +491,8 @@ def infotext_fields(record: Optional[dict], model: Optional[str] = None) -> str:
     return "".join(f", {key}: {_quote(value)}" for key, value in pairs if value is not None)
 
 
-# ── engine glue ─────────────────────────────────────────────────────────────────────────────────────────────────────
 def check_available(status: dict) -> None:
-    """Raise ValueError (400) when the loaded model cannot run the pass: no inpaint pipeline (which also covers the
-    native sd.cpp engine, whose status offers no inpaint), or no SAM 3."""
+    """Raise ValueError (400) without an inpaint pipeline (covers sd.cpp) or SAM 3."""
     from core.inference import diffusion_segment
 
     if not status.get("loaded"):
@@ -567,7 +512,6 @@ def check_available(status: dict) -> None:
 
 
 def _plane_to_mask(plane: Any, height: int, width: int) -> Any:
-    """One instance's mask logits -> (height, width) bool, as diffusion_segment.union_mask upsamples them."""
     import torch
     import torch.nn.functional as F
 
@@ -579,8 +523,7 @@ def _plane_to_mask(plane: Any, height: int, width: int) -> Any:
 
 
 def _take_generation_slot(stop: Optional[Callable[[], bool]] = None) -> Any:
-    """The active image engine's generation lock, acquired (waiting out a render or load that holds it), or None when
-    the engine has none. Raises DetailerCancelled when ``stop`` is set while waiting."""
+    """Acquire the active engine's generation lock (None if it has none); cancellable while waiting."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         lock = getattr(get_active_diffusion_engine(), "_generate_lock", None)
@@ -599,10 +542,7 @@ def detect(
     settings: DetailerSettings,
     stop: Optional[Callable[[], bool]] = None,
 ) -> tuple[list[list[Detection]], dict]:
-    """SAM 3 on every image, then parked in host RAM: it never stays on the GPU beside the image model while that
-    denoises. Each image keeps at most MAX_DETECTIONS detections (the pass's cap) as low-resolution planes;
-    ``info["found"]`` has how many SAM 3 kept per image, ``info["undersized"]`` how many of those were at or below
-    drop_size (filtered before the cap). ``stop`` is checked before each image."""
+    """SAM 3 on every image, then parked in host RAM; at most MAX_DETECTIONS sized planes per image."""
     from core.inference import diffusion_segment
 
     prompt = segment_prompt(settings.targets)
@@ -611,17 +551,14 @@ def detect(
     undersized: list[int] = []
     info: dict = {}
     started = time.perf_counter()
-    # The image engine's generation slot through detection and the park: a queued render waits for SAM 3 to leave
-    # the GPU instead of denoising beside it.
+    # Hold the generation slot so a queued render waits for SAM 3 to leave the GPU.
     slot = _take_generation_slot(stop)
     try:
         segmenter = diffusion_segment.get_segmenter()
-        # One load for the whole batch: no tight-card unload between images, parked once below.
         hold = getattr(segmenter, "hold", None)
         with contextlib.ExitStack() as held:
             if slot is not None:
-                # Registered as the slot holder, as a render is: a request queued on the lock is not the running
-                # one, so this account's cancel is not refused as foreign.
+                # Register as slot holder so this account's cancel is not refused as foreign.
                 from hub.services.models.account_access import media_generation_slot
                 held.enter_context(media_generation_slot("diffusion"))
             if hold is not None:
@@ -629,8 +566,6 @@ def detect(
             for image in images:
                 if stop is not None and stop():
                     raise DetailerCancelled("cancelled")
-                # Only the planes kept below (sized, then the first MAX_DETECTIONS) leave the device, and no union
-                # mask is built: the pass never reads it.
                 result = segmenter.segment(
                     image.convert("RGB"),
                     prompt,
@@ -641,7 +576,6 @@ def detect(
                 )
                 pairs = list(zip(result.instances, result.instance_logits))
                 found.append(len(pairs))
-                # Undersized boxes never run, so they take no cap slot (Impact-Pack drops them at detection).
                 sized = [p for p in pairs if _big_enough(p[0].box, settings.drop_size)]
                 undersized.append(len(pairs) - len(sized))
                 out.append(
@@ -654,7 +588,6 @@ def detect(
                 del result, pairs, sized
     finally:
         try:
-            # Parked in host RAM: the next pass moves it back instead of reading the weights again.
             diffusion_segment.release_segmenter("detailer", wait = True, park = True)
         finally:
             if slot is not None:
@@ -666,7 +599,7 @@ def detect(
     return out, info
 
 
-# What a render result names as its build (diffusion.py generate): a same-repo reload differing in any is another model.
+# A same-repo reload differing in any of these is another model.
 BUILD_KEYS = (
     "repo_id",
     "model_kind",
@@ -678,7 +611,7 @@ BUILD_KEYS = (
 
 
 def same_build(render: dict, inpaint: dict) -> bool:
-    """True when ``inpaint`` ran on the build ``render`` did; a key either result does not report is not compared."""
+    """Keys missing from either result are not compared."""
     for key in BUILD_KEYS:
         if key in render and key in inpaint:
             a, b = render[key], inpaint[key]
@@ -707,10 +640,7 @@ def detail_result(
     generate_kwargs: dict,
     account: Optional[str] = None,
 ) -> None:
-    """Detail every image of a finished render in place: ``result["images"]`` are replaced and
-    ``result["detailer"]`` holds one recipe record per image. ``generate`` is the engine's generate() with the
-    run's model identity, LoRAs and sampler bound; a failure is recorded on the image (the render is kept), a cancel
-    stops the pass. ``account`` owns the pass for cancel_active."""
+    """Detail a finished render in place; failures are recorded per image and the render is kept."""
     images = list(result.get("images") or [])
     if not images:
         return
@@ -736,8 +666,7 @@ def detail_result(
     finally:
         with _active_lock:
             _active.pop(stop_event, None)
-            # Under the lock cancel_active sets events with: a Stop it answered "cancelled" for is honoured here,
-            # even one that arrived after the last inpaint returned.
+            # Under the lock: a Stop cancel_active acknowledged is honoured even after the last inpaint.
             stopped = stop_event.is_set()
     if finished and stopped:
         result["images"] = renders
@@ -806,14 +735,12 @@ def _detail_images(
                 **generate_kwargs,
             )
             if not same_build(result, out):
-                # Same repo, other build (GGUF file, quantization, baked adapters): not the render's weights.
                 raise ValueError("the model changed")
             if det_negative and out.get("negative_prompt") and not result.get("negative_prompt"):
-                # The image's negative prompt engaged only at the Detailer's CFG: the recipe keeps it.
+                # Negative prompt engaged only at the Detailer's CFG: record it.
                 if not settings.negative_prompt:
                     inherited["negative_prompt"] = det_negative
                 elif negative_prompt and inherits_main(settings.negative_prompt):
-                    # A template reading it ([PROMPT], an empty [SEP] part): saved resolved, self-contained.
                     inherited["negative_prompt"] = resolve_inherited(
                         settings.negative_prompt, negative_prompt
                     )
@@ -850,7 +777,6 @@ def _detail_images(
         small = tiny[index] if index < len(tiny) else 0
         if small:
             records[index]["skipped"] = records[index].get("skipped", 0) + small
-        # Detection kept only the first MAX_DETECTIONS: the record counts what SAM 3 found.
         total = totals[index] if index < len(totals) else None
         if total is not None and total > len(found[index]):
             records[index]["found"] = total
