@@ -674,10 +674,24 @@ def _yielding(count: Callable[[str], int]) -> Callable[[str], int]:
     return call
 
 
+def _embedder_busy() -> bool:
+    """Whether another caller holds a lock the encode path would wait on: model load / backend build, the ST
+    compute lock, or the llama-server backend's serve lock. Probed without blocking."""
+    locks = [embeddings._backend_lock, embeddings._lock, embeddings._compute_lock]
+    serve = getattr(embeddings._backend, "_serve_lock", None)
+    if serve is not None:
+        locks.append(serve)
+    for lock in locks:
+        if not lock.acquire(blocking = False):
+            return True
+        lock.release()
+    return False
+
+
 def _embedder_free() -> bool:
-    """Wait for the in-process embedder without queueing on its lock: a queued worker cannot see a stop, so a
-    generation would wait behind another caller's (e.g. ingestion's) whole batch."""
-    while embeddings._compute_lock.locked():
+    """Wait for the embedder without queueing on its locks: a queued worker cannot see a stop, so a generation
+    would wait behind another caller's (e.g. ingestion's) whole batch."""
+    while _embedder_busy():
         if _gap_closed():
             return False
         time.sleep(0.05)

@@ -1825,7 +1825,8 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     assert start() is False
 
 
-def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypatch):
+@pytest.mark.parametrize("held", ["compute", "llama_serve", "backend_build"])
+def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypatch, held):
     """While ingestion holds the embedder, a new generation must not wait for the worker to get and finish its turn."""
     import time
 
@@ -1835,15 +1836,27 @@ def test_the_gap_worker_never_queues_behind_another_embedder_user(conn, monkeypa
     turns = _gap_thread(thread_id, 6, tag = "lock")
     real = embeddings.encode_with_identity
 
+    import threading
+    import types
+
+    # The llama-server embedder serialises on its own reentrant lock, not the ST one.
+    serve = threading.RLock()
+    monkeypatch.setattr(embeddings, "_backend", types.SimpleNamespace(_serve_lock = serve))
+    lock = {
+        "compute": embeddings._compute_lock,
+        "llama_serve": serve,
+        "backend_build": embeddings._backend_lock,
+    }[held]
+
     def locked(texts, **kwargs):
-        with embeddings._compute_lock:
+        with lock:
             time.sleep(0.5)
             return real(texts, **kwargs)
 
     monkeypatch.setattr(embeddings, "encode_with_identity", locked)
     monkeypatch.setattr(conversation_archive, "_PAUSE_JOIN_S", 30.0)
     conversation_archive.note_branch(thread_id, turns)
-    with embeddings._compute_lock:
+    with lock:
         conversation_archive._start_prewarm()
         time.sleep(0.3)
         started = time.monotonic()
