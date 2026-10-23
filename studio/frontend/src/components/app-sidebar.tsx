@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Sidebar,
   SidebarContent,
@@ -48,6 +49,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { ProgressiveRows } from "@/components/progressive-rows";
+import {
+  returnToChatThreadId,
+  useApprovalWaitingStore,
+  watchApprovalWaiting,
+} from "@/features/chat/utils/approval-waiting";
 import { keepOpenedChats, touchOpenedChat } from "@/features/chat/utils/opened-chats";
 import { isAssistantLocalThreadId } from "@/features/chat/utils/thread-ids";
 import {
@@ -151,7 +157,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Copy, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, Copy, GitBranchIcon, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -401,7 +407,7 @@ const SELECT_WITH_META =
 // zoom or UI scale instead of rounding differently per row.
 // DROP_CUE_CLASS: the carried row's copy covers the spot it is aimed at, so the drag draws each
 // cue's border again above it.
-const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']`;
+const DROP_CUE_BASE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-foreground before:content-['']`;
 const DROP_CUE_TOP = `${DROP_CUE_BASE} before:top-0`;
 // bottom-px: on the last row, DROP_ROW_HIT's extra pixel is clipped by the list.
 const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
@@ -410,7 +416,7 @@ const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:bottom-px`;
 const DROP_CUE_IN_FOLDER = "before:left-[calc(39px*var(--ui-space-scale,1))]";
 // A row dropped onto a folder or section joins it, so the whole target is tinted and outlined,
 // with the same border as the line. Kept inside the box for the same clipping reason.
-const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-1 before:inset-y-0 before:rounded-2xl before:bg-wash-8 before:border-[1.5px] before:border-foreground before:content-['']`;
 // "Move to": the whole submenu stays inside the window, and each group's list scrolls past about
 // seven rows, the next one half showing, so a long list of projects keeps the Sections group, and
 // each group's Remove, in reach. No scrollbar: it would take its width out of the rows' right
@@ -424,7 +430,7 @@ const MOVE_TO_LIST =
 // Most projects, and most sections, a "Move to" lists: the most recent, so a long list stays light.
 const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
-const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
+const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-wash-8 before:border-[1.5px] before:border-foreground before:content-['']`;
 /** Reports while it is mounted, so a folder row ProgressiveRows has not drawn reads nothing. */
 function MountedFolder({
   id,
@@ -470,7 +476,7 @@ function landedOrder(
 
 // A closed section has no body to light, so its header takes the tint.
 const DROP_INTO_HEADER_CUE =
-  "rounded-full bg-primary/8 outline-solid outline-[length:1.5px] outline-primary -outline-offset-[1.5px]";
+  "rounded-full bg-wash-8 outline-solid outline-[length:1.5px] outline-foreground -outline-offset-[1.5px]";
 
 // The sort a list is on and its setter: a reorder switches a sorted list to Manual, or the
 // sort would undo the drop.
@@ -643,6 +649,7 @@ function NavItem({
   dataTour,
   className,
   spinner,
+  waiting,
   tooltip,
   tooltipAction,
   alwaysTooltip,
@@ -661,6 +668,8 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  // Replaces the spinner with the approval mark; the text is read after the label.
+  waiting?: string;
   onIntent?: () => void;
   // Stable hook for the UI smokes, which assert a row spins rather than greys out
   // while its capability verdict is still unmeasured.
@@ -704,7 +713,7 @@ function NavItem({
         isActive={active}
         data-tour={dataTour}
         data-testid={testId}
-        data-spinner={spinner ? "true" : undefined}
+        data-spinner={spinner && !waiting ? "true" : undefined}
         className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
@@ -714,13 +723,27 @@ function NavItem({
             {badge}
           </Badge>
         )}
-        {spinner && (
-          // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
-          <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+        {waiting ? (
+          <>
+            <span className="sr-only"> {waiting}</span>
+            <ApprovalMark className="ml-auto mr-1.5 size-3.5 group-data-[collapsible=icon]:hidden" />
+          </>
+        ) : (
+          spinner && (
+            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+          )
         )}
       </SidebarMenuButton>
-      {spinner && (
-        <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+      {waiting ? (
+        <ApprovalMark
+          testId="nav-approval"
+          className="pointer-events-none absolute right-1 top-1 hidden size-2.5 group-data-[collapsible=icon]:block"
+        />
+      ) : (
+        spinner && (
+          <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+        )
       )}
       {overlay}
     </div>
@@ -730,6 +753,28 @@ function NavItem({
       {flyout ? flyout(row) : row}
       {children}
     </SidebarMenuItem>
+  );
+}
+
+/** The spinner's stand-in while a run waits on Allow / Deny. Its shape, not only its colour, tells it from
+ *  the unread dot (amber-accent themes, colour-blind users); static, since motion means working. */
+function ApprovalMark({ className, testId }: { className: string; testId?: string }) {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+      data-testid={testId}
+      className={cn("shrink-0", className)}
+    >
+      <circle cx="7" cy="7" r="7" className="fill-amber-700 dark:fill-amber-400" />
+      <path
+        d="M7 3.6v4.1"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        className="stroke-white dark:stroke-neutral-900"
+      />
+      <circle cx="7" cy="10.3" r="1" className="fill-white dark:fill-neutral-900" />
+    </svg>
   );
 }
 
@@ -836,7 +881,8 @@ function MediaNavDisclosure({
       )}
     >
       <span className="sidebar-row-action-glyph">
-        <ChevronDown
+        <HugeiconsIcon
+          icon={ChevronDownStandardIcon}
           className={cn(
             "size-3.5 transition-transform duration-200",
             !expanded && "-rotate-90",
@@ -2036,6 +2082,9 @@ export function AppSidebar() {
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
   const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Watched here, not by the tool cards: only the open chat mounts those.
+  const approvalWaitingThreadIds = useApprovalWaitingStore((s) => s.threadIds);
+  useEffect(() => watchApprovalWaiting(useChatRuntimeStore), []);
   // Shared with the thread's own Fork, so neither surface can post a second one.
   const forkInFlight = useForkInFlight((s) => s.forking);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one row.
@@ -2059,13 +2108,27 @@ export function AppSidebar() {
     return rows + running.size;
   }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
-  // Where "Return to Chat" lands: the newest running chat, not an empty New Chat draft (map
-  // insertion order is start order). Compare rows resolve back to the pair id /chat expects.
+  const activeThreadId = isChatRoute
+    ? (search.thread as string | undefined) ??
+      (search.compare as string | undefined) ??
+      storeThreadId ??
+      undefined
+    : undefined;
+  // Less the open chat: its card is already on screen.
+  const approvalWaitingElsewhere = useMemo(() => {
+    if (!activeThreadId) return approvalWaitingThreadIds;
+    const open = allChatItems.find((item) => item.id === activeThreadId);
+    const openIds = new Set(open ? getSidebarItemThreadIds(open) : [activeThreadId]);
+    return new Set([...approvalWaitingThreadIds].filter((id) => !openIds.has(id)));
+  }, [approvalWaitingThreadIds, activeThreadId, allChatItems]);
+  const anyChatWaiting = useMemo(
+    () => [...approvalWaitingElsewhere].some((id) => runningByThreadId[id]),
+    [approvalWaitingElsewhere, runningByThreadId],
+  );
+  // Where "Return to Chat" lands: a running chat, not an empty New Chat draft. Compare rows
+  // resolve back to the pair id /chat expects.
   const runningTarget = useMemo(() => {
-    const ids = Object.entries(runningByThreadId)
-      .filter(([, on]) => on)
-      .map(([id]) => id);
-    const id = ids.length > 0 ? ids[ids.length - 1] : null;
+    const id = returnToChatThreadId(runningByThreadId, approvalWaitingElsewhere);
     if (!id) return null;
     const pair = allChatItems.find(
       (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
@@ -2073,13 +2136,7 @@ export function AppSidebar() {
     return pair
       ? { id: pair.id, compare: true as const }
       : { id, compare: false as const };
-  }, [runningByThreadId, allChatItems]);
-  const activeThreadId = isChatRoute
-    ? (search.thread as string | undefined) ??
-      (search.compare as string | undefined) ??
-      storeThreadId ??
-      undefined
-    : undefined;
+  }, [runningByThreadId, approvalWaitingElsewhere, allChatItems]);
   // A chat started from a section's header joins it when its first send gives it an id, which
   // lands in the store while the address still names the new chat. Leaving that chat first lets
   // the mark go, so a chat opened afterwards is never filed by mistake. Turning it into a compare
@@ -4684,7 +4741,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               Pinned
-              <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             {/* Pinning is the grouping, so no organize half and no "+". */}
             {renderSidebarHeaderMenu({
@@ -4822,7 +4879,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               <span className="min-w-0 truncate">{section.name}</span>
-              <ChevronDown className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             {/* As Recents has, a chat started here is filed here. */}
             <button
@@ -4944,7 +5001,7 @@ export function AppSidebar() {
           >
             <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
               {t("shell.navigation.projects")}
-              <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
             </CollapsibleTrigger>
             <button
               type="button"
@@ -5445,6 +5502,9 @@ export function AppSidebar() {
     // Active generation and queued work share the in-row spinner slot so they cannot drift.
     const showQueuedActivity = hasQueuedActivity && !isGenerating;
     const showWorkSpinner = isGenerating || showQueuedActivity;
+    const awaitingApproval =
+      isGenerating &&
+      threadIds.some((threadId) => approvalWaitingElsewhere.has(threadId));
     const alreadyUnread = threadIds.some((threadId) =>
       unreadThreadIds.has(threadId),
     );
@@ -5470,7 +5530,7 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[calc(8.5px*var(--ui-space-scale,1))]",
       // A spinner glyph cannot truncate, and the pin and the kebab overlay that same edge, so a
       // working row holds their room open whether or not it is hovered.
-      showWorkSpinner ? "pr-16" : hasUnreadActivity ? "pr-7" : showForkMark ? "pr-9" : undefined,
+      showWorkSpinner ? "pr-16" : hasUnreadActivity || showForkMark ? "pr-9" : undefined,
       // Coarse pointers reveal the actions permanently, so the spinner drops back beside
       // them (right-16, ending 78px in) and the title has to clear that, not just pr-16.
       showWorkSpinner && "[@media(pointer:coarse)]:pr-[calc(78px*var(--ui-space-scale,1))]",
@@ -5528,7 +5588,8 @@ export function AppSidebar() {
               data-thread-type={item.type}
               data-thread-id={item.id}
               data-generating={isGenerating ? "true" : undefined}
-              aria-busy={isGenerating || undefined}
+              // Waiting on the user is not busy.
+              aria-busy={(isGenerating && !awaitingApproval) || undefined}
               isActive={activeThreadId === item.id}
               data-selected={selectedChatIds.has(item.id) ? "true" : undefined}
               className={buttonClass}
@@ -5549,6 +5610,12 @@ export function AppSidebar() {
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>
+              {/* The mark and the dot sit outside the button, so its name carries them. */}
+              {awaitingApproval ? (
+                <span className="sr-only"> {translate("shell.navigation.chatAwaitingApproval")}</span>
+              ) : hasUnreadActivity ? (
+                <span className="sr-only"> {translate("shell.navigation.chatUnread")}</span>
+              ) : null}
             </SidebarMenuButton>
             {showWorkSpinner ? (
               // Anchored to the row, not laid out in it. As ml-auto the spinner rested on
@@ -5566,25 +5633,30 @@ export function AppSidebar() {
                     : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
               >
-                <Spinner
-                  data-testid="chat-row-spinner"
-                  // role="status" + label: announced, not motion-only.
-                  label={
-                    isGenerating
-                      ? translate("shell.navigation.chatGenerating")
-                      : "Queued"
-                  }
-                  className="size-3.5 shrink-0 text-muted-foreground"
-                />
+                {awaitingApproval ? (
+                  <ApprovalMark testId="chat-row-approval" className="size-3.5" />
+                ) : (
+                  <Spinner
+                    data-testid="chat-row-spinner"
+                    // role="status" + label: announced, not motion-only.
+                    label={
+                      isGenerating
+                        ? translate("shell.navigation.chatGenerating")
+                        : "Queued"
+                    }
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                  />
+                )}
               </span>
             ) : null}
             {hasUnreadActivity ? (
+              // Same box and anchor as the spinner, so both share one column.
               <span
                 className={cn(
-                  "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+                  "pointer-events-none absolute right-4 top-1/2 z-10 flex size-3.5 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
                 )}
                 aria-hidden
               >
@@ -6018,7 +6090,7 @@ export function AppSidebar() {
                   >
                     {t("shell.navigation.search")}
                     {searchShortcutLabel && (
-                      <kbd className="rounded bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
+                      <kbd className="rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
                         {searchShortcutLabel}
                       </kbd>
                     )}
@@ -6102,6 +6174,12 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
+              // On every route: the waiting row can be folded away, behind Show more, or scrolled off.
+              waiting={
+                anyChatWaiting
+                  ? t("shell.navigation.chatAwaitingApproval")
+                  : undefined
+              }
               // An action, not a destination, so it never marks itself active: the active pill is the
               // hover pill, and on a blank new chat it left the row looking permanently hovered.
               active={false}
@@ -6465,7 +6543,7 @@ export function AppSidebar() {
               >
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
                 {/* Starts a chat outside any project, whatever page is open. */}
                 <button
@@ -6543,7 +6621,7 @@ export function AppSidebar() {
             <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", headerInset, scrolled && "is-scrolled")} asChild>
               <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                 {t("shell.navigation.recents")}
-                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-section:opacity-100 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
@@ -6695,7 +6773,7 @@ export function AppSidebar() {
                     .openDialog("about", { scrollTarget: "about-updates" });
                   closeMobileIfOpen();
                 }}
-                className="flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-[14px] border border-border/60 bg-transparent px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:w-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+                className="btn-fill flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-[14px] px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:w-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
               >
                 <span
                   aria-hidden="true"
@@ -6746,7 +6824,7 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-[20px] border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
+              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-xl border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
@@ -7012,7 +7090,7 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {deleteTargetHasFiles(confirmingDelete) ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}

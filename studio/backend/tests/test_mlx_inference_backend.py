@@ -93,7 +93,7 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     for name in FUSIONS + ZOO_ONLY_FUSIONS:
         setattr(module, f"fused_{name}", _neutral_scope)
-    for name, helper in PLAIN_HELPERS.items():
+    for name, helper in {**PLAIN_HELPERS, **NEUTRAL_PLAIN_HELPERS}.items():
         setattr(module, name, helper)
     module.INFERENCE_SCOPES = _zoo_registry()
     module.inference_scopes = _stub_inference_scopes(module)
@@ -122,6 +122,16 @@ def _fusion_modules(model, modules):
 
 # Plain-function helpers zoo's generate.py imports; the neutral scope cannot stand in for them.
 PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
+
+
+def _fused_drafter_ops(model, *_args, **_kwargs):
+    """zoo's fused_drafter_ops (unsloth_zoo #2031) is a plain call returning how many drafter
+    modules it fused, not a scope. Its body needs Metal kernels, so the stub fuses none."""
+    return 0
+
+
+# Plain calls whose zoo body cannot run here, so the stub returns their do-nothing answer instead.
+NEUTRAL_PLAIN_HELPERS = {"fused_drafter_ops": _fused_drafter_ops}
 
 
 def _neutral_zoo_helper(name):
@@ -836,7 +846,7 @@ def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_infere
         args = [object() for _ in call.args]
         kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
         helper = getattr(mlx_inference_patches, call.func.id)
-        if call.func.id in PLAIN_HELPERS:
+        if call.func.id in PLAIN_HELPERS or call.func.id in NEUTRAL_PLAIN_HELPERS:
             helper(*args, **kwargs)
             continue
         with helper(*args, **kwargs):

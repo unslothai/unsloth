@@ -10,6 +10,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { LineBox } from "@/components/ui/line-box";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { useLoginMode } from "@/features/auth/account-session";
@@ -140,7 +141,7 @@ function RemoteUrlQrButton({ url }: { url: string }) {
             Scan to open the remote URL in your phone’s browser.
           </DialogDescription>
         </DialogHeader>
-        <div className="mx-auto mt-2 rounded-md bg-white p-3">
+        <div className="mx-auto mt-2 rounded-lg bg-white p-3">
           <QRCode value={url} size={192} />
         </div>
         <code className="block break-all text-center font-mono text-xs text-muted-foreground">
@@ -187,9 +188,12 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
           <CopyRemoteUrlButton url={url} />
         </div>
       </div>
-      <code className="block w-full break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+      <LineBox
+        as="code"
+        className="block w-full break-all border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground"
+      >
         {url}
-      </code>
+      </LineBox>
       <span className="text-xs text-muted-foreground leading-snug">
         {multi
           ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
@@ -371,7 +375,7 @@ export function RemoteAccessSection() {
   return (
     <section
       data-settings-label="Remote access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
@@ -389,16 +393,16 @@ export function RemoteAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices through a secure,
-              temporary public Cloudflare URL.
+              Use Unsloth and its APIs from other devices over a secure,
+              temporary Cloudflare URL.
             </p>
           </div>
         </div>
         <Button
           type="button"
           size="sm"
-          variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
+          variant={stopAction ? "outline" : "dark"}
+          className="shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -418,7 +422,7 @@ export function RemoteAccessSection() {
 
         <SettingsRow
           label="Start automatically"
-          description="Create a new remote URL each time Unsloth starts. Stopping remote access now won’t turn this off."
+          description="Create a new remote URL each time Unsloth starts. Stopping now won’t turn this off."
         >
           <Switch
             checked={status?.autoStart ?? false}

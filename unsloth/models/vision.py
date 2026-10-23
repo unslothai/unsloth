@@ -2736,6 +2736,22 @@ def _architecture_skip_modules(model_types):
     # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
     if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
         skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
+    # Moonshine's LM head is proj_out (untied on moonshine-streaming): kept 16-bit like lm_head, which the fused CE loss reads as a plain weight.
+    if any(mt in ("moonshine", "moonshine_streaming") for mt in model_types):
+        skip.append("proj_out")
+    # WavLM's attention hands q/k/v/out_proj.weight to F.multi_head_attention_forward, which a packed Params4bit cannot be.
+    if any(mt == "wavlm" for mt in model_types):
+        # Qualified so a composite's decoder (SpeechEncoderDecoderModel) stays quantized: transformers 5 matches
+        # "attention.q_proj" as a suffix; 4.x matches only bare leaf names or ancestors, hence "attention".
+        skip.extend(
+            (
+                "attention",
+                "attention.q_proj",
+                "attention.k_proj",
+                "attention.v_proj",
+                "attention.out_proj",
+            )
+        )
     # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
     # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
     # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
@@ -4823,6 +4839,9 @@ class FastBaseModel:
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
         prefetch_depth = prefetch_depth_arg(kwargs)
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
+        # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
+        if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
+            layers_to_transform = [layers_to_transform]
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).

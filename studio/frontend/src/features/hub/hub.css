@@ -265,7 +265,7 @@
     );
     position: relative;
     overflow: hidden;
-    border-radius: 18px;
+    border-radius: var(--radius-2xl);
     background-color: color-mix(in srgb, var(--foreground) calc(2.5% * var(--contrast-wash-gain, 1)), transparent);
     border: 1px solid transparent;
     box-shadow: none;
@@ -449,7 +449,7 @@
     --hub-trending-muted-ink: rgb(255 255 255 / 0.68);
     isolation: isolate;
     border: 0;
-    border-radius: 18px;
+    border-radius: var(--radius-2xl);
     background-color: var(--hub-trending-surface);
     box-shadow: none;
     transition: background-color 160ms ease;
@@ -600,23 +600,13 @@
      column; the scroll pane (not the column) bounds it. */
   .hub-page .hub-result-row {
     border: 0;
-    border-radius: 14px;
+    border-radius: var(--radius-2xl);
     background-color: var(--card);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
     transition:
       background-color 160ms ease,
       box-shadow 180ms ease,
       transform 180ms ease;
-  }
-
-  .hub-page .hub-result-row.hub-result-card {
-    border-radius: 16px;
-  }
-
-  @media (max-width: 767px) {
-    .hub-page .hub-result-row.hub-result-card {
-      border-radius: 14px;
-    }
   }
 
   .hub-page .hub-result-row:hover {
@@ -721,7 +711,7 @@
 
   /* The composer + menu's shape: 12px rows on a 9px gutter keep the 21px corners concentric. */
   .hub-composer-menu[data-slot] {
-    border-radius: 21px !important;
+    border-radius: var(--radius-xl) !important;
     padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(9px * var(--ui-space-scale, 1)) !important;
   }
   html.dark .hub-composer-menu {
@@ -729,7 +719,7 @@
   }
   .hub-composer-menu .hub-menu-row {
     margin-block: 2px;
-    border-radius: 12px;
+    border-radius: var(--radius-md);
   }
   .hub-composer-menu .hub-menu-row:is(:hover, [data-highlighted]) {
     background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
@@ -922,7 +912,7 @@
     @apply bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] ring-[rgb(255_255_255_/_calc(0.035*var(--contrast-edge-gain,1)))];
   }
   .hub-download-card {
-    @apply flex w-full flex-col gap-2 rounded-[22px] p-2;
+    @apply flex w-full flex-col gap-2 rounded-2xl p-2;
     background-color: color-mix(in srgb, var(--foreground) calc(3% * var(--contrast-wash-gain, 1)), transparent);
     border: 1px solid color-mix(in srgb, var(--foreground) calc(5.5% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
@@ -941,7 +931,7 @@
   }
 
   .hub-download-panel {
-    border-radius: 20px;
+    border-radius: var(--radius-xl);
     background-color: var(--popover);
     border: 1px solid color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
@@ -1378,7 +1368,7 @@
     transform: translateY(-50%);
     align-items: center;
     justify-content: center;
-    border-radius: 8px;
+    border-radius: 9999px;
     color: var(--muted-foreground);
     opacity: 0;
     cursor: pointer;
@@ -1471,7 +1461,7 @@
     );
     position: relative;
     overflow: hidden;
-    border-radius: 24px;
+    border-radius: var(--radius-3xl);
     border: 1px solid transparent;
     background-color: var(--hub-hero-fill);
   }
@@ -1569,7 +1559,7 @@
   }
 
   .hub-page .hub-hero-panel {
-    border-radius: 18px;
+    border-radius: var(--radius-xl);
     border: 1px solid transparent;
     background-color: color-mix(in srgb, var(--background) 72%, transparent);
   }

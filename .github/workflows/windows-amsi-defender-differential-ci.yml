@@ -33,6 +33,9 @@ name: "Windows: AMSI and Defender differential"
 on:
   workflow_dispatch:
   pull_request:
+    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
+    # one ready has to start the run that tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'
       - 'studio/setup.ps1'
@@ -54,6 +57,7 @@ concurrency:
 
 jobs:
   measure:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: does the scanner refuse either side
     runs-on: windows-latest
     timeout-minutes: 30
