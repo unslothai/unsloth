@@ -150,6 +150,17 @@ export function readImageComponents(model: ImageModelKey): ImageComponentFiles |
   return files.textEncoderFiles || files.vaeFile ? files : null;
 }
 
+/** What a load of `model` sends from the Advanced fields: fields still holding `owner` (what was filled in or loaded
+ *  last) are not the user's edit, so they give way to the model's own saved files, and no entry sends none. */
+export function componentFilesForModel(
+  typed: ImageComponentFiles,
+  owner: ImageComponentFiles,
+  model: ImageModelKey,
+): { files: ImageComponentFiles; replaced: boolean } {
+  if (!sameComponentFiles(typed, owner)) return { files: typed, replaced: false };
+  return { files: readImageComponents(model) ?? {}, replaced: true };
+}
+
 /** Store the paths a load succeeded with; a load with none forgets the model's entry. */
 export function rememberImageComponents(model: ImageModelKey, files: ImageComponentFiles): void {
   const key = componentsKey(model);

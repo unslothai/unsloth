@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "@typescript/typescript6";
 import {
+  componentFilesForModel,
   readImageComponents,
   readImageModel,
   rememberImageComponents,
@@ -90,6 +91,7 @@ test("a model pick fills the Advanced fields from that model, clears another mod
       splitComponentFileList,
       sameComponentFiles,
       readImageComponents,
+      componentFilesForModel,
       setTextEncoderFiles: (v: string) => (state.te = v),
       setVaeFile: (v: string) => (state.vae = v),
     };
@@ -162,6 +164,7 @@ test("Reapply of a resident model sends that model's files, never the fields ano
       splitComponentFileList,
       sameComponentFiles,
       readImageComponents,
+      componentFilesForModel,
       setTextEncoderFiles: (v: string) => (state.te = v),
       setVaeFile: (v: string) => (state.vae = v),
       lastLoad: { current: null },
@@ -200,4 +203,59 @@ test("Reapply of a resident model sends that model's files, never the fields ano
   assert.equal(toZ.loads[0].advanced.vae_file, zFiles.vaeFile);
   const typed = reapply({ te: "mine.safetensors", vae: "" }, zFiles, other);
   assert.deepEqual(typed.loads[0].advanced.text_encoder_file, ["mine.safetensors"]);
+});
+
+test("a Load-mode footprint plans the shown model with its own files, a Download-mode one with the fields", async () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const tree = ts.createSourceFile("images-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let declaration = "";
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "resolveDownloadFootprint")
+      declaration = `const ${node.getText(tree)};`;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(`${declaration}\nreturn resolveDownloadFootprint;`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  });
+  const footprint = async (action: "load" | "download") => {
+    const fields = { te: zFiles.textEncoderFiles.join("\n"), vae: zFiles.vaeFile };
+    const planned: Record<string, unknown>[] = [];
+    const scope = {
+      useCallback: (fn: unknown) => fn,
+      textEncoderFiles: fields.te,
+      vaeFile: fields.vae,
+      componentFieldsOwner: { current: zFiles },
+      modelSelectionAction: action,
+      splitComponentFileList,
+      readImageComponents,
+      componentFilesForModel,
+      currentLoadAdvanced: () => ({
+        cpu_offload: false,
+        text_encoder_file: splitComponentFileList(fields.te),
+        vae_file: fields.vae,
+      }),
+      requestDownloadPlan: (_repo: string, _opts: unknown, picked: Record<string, unknown>) => {
+        planned.push(picked);
+        return Promise.resolve({ required_bytes: 1, checkpoint_bytes: 1 });
+      },
+      pickGuard: null,
+      stage: null,
+    };
+    const resolve = new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+    await resolve("org/other-GGUF", { ggufFilename: "o.gguf" });
+    return planned[0];
+  };
+
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  // The fields still hold Z-Image's files: the Load the picker would fire for another GGUF sends none.
+  const load = await footprint("load");
+  assert.equal(load.text_encoder_file, undefined);
+  assert.equal(load.vae_file, undefined);
+  assert.equal(load.cpu_offload, false);
+  // A download-only pick sends the fields as they are, so its footprint does too.
+  const download = await footprint("download");
+  assert.deepEqual(download.text_encoder_file, zFiles.textEncoderFiles);
 });

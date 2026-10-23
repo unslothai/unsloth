@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, readImageComponents, rememberImageComponents, sameComponentFiles, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFilesForModel, readImageComponents, rememberImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -1907,9 +1907,9 @@ export function ImagesPage({
   const pickComponentFiles = useCallback(
     (model: ImageModelKey): ImageComponentFiles => {
       const typed = { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() };
-      if (!sameComponentFiles(typed, componentFieldsOwner.current)) return typed;
       // Another model's files must not ride along: no entry clears the fields.
-      const saved = readImageComponents(model) ?? {};
+      const { files: saved, replaced } = componentFilesForModel(typed, componentFieldsOwner.current, model);
+      if (!replaced) return saved;
       componentFieldsOwner.current = saved;
       setTextEncoderFiles((saved.textEncoderFiles ?? []).join("\n"));
       setVaeFile(saved.vaeFile ?? "");
@@ -4421,10 +4421,25 @@ export function ImagesPage({
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
       if (!meta.ggufFilename) return null;
+      const opts = { kind: "gguf", filename: meta.ggufFilename } as const;
+      const advanced = currentLoadAdvanced(repoId, false);
+      // A Load pick sends this model's own encoder / VAE files (see pickComponentFiles), so its footprint plans
+      // those without touching the fields; a download-only pick sends the fields as they are.
+      const { files } = componentFilesForModel(
+        { textEncoderFiles: splitComponentFileList(textEncoderFiles), vaeFile: vaeFile.trim() },
+        componentFieldsOwner.current,
+        { repoId, ...opts },
+      );
       const plan = await requestDownloadPlan(
         repoId,
-        { kind: "gguf", filename: meta.ggufFilename },
-        currentLoadAdvanced(repoId, false),
+        opts,
+        modelSelectionAction === "download"
+          ? advanced
+          : {
+              ...advanced,
+              text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
+              vae_file: files.vaeFile || undefined,
+            },
       );
       const requiredBytes = plan.required_bytes ?? 0;
       if (requiredBytes <= 0) return null;
@@ -4434,7 +4449,7 @@ export function ImagesPage({
           plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
       };
     },
-    [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage],
+    [currentLoadAdvanced, requestDownloadPlan, pickGuard, stage, modelSelectionAction, textEncoderFiles, vaeFile],
   );
 
   const beginPick = useCallback(() => {
