@@ -2494,9 +2494,13 @@ def _scaler_for_native(trainer):
             super().unscale_(optimizer)
             if not self.is_enabled():
                 return
+            # The all-reduce SUMS found_inf: it is the number of ranks that overflowed. Fused
+            # optimizers skip the step only on found_inf == 1 (and subtract it from their step
+            # counts), so 2+ ranks overflowing stepped on inf / NaN gradients. Clamp to 0 / 1.
             state = self._per_optimizer_states[id(optimizer)]
             state["found_inf_per_device"] = {
-                d: t.reshape(()) for d, t in state["found_inf_per_device"].items()
+                d: t.clamp(max = 1.0).reshape(())
+                for d, t in state["found_inf_per_device"].items()
             }
 
     kwargs = {}
