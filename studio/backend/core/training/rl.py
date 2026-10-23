@@ -515,6 +515,13 @@ def render_preference_rows(dataset, tokenizer):
             _thinking_as_reasoning_content(tokenizer, value) if isinstance(value, list) else value
         )
 
+    eos = getattr(getattr(tokenizer, "tokenizer", tokenizer), "eos_token", None)
+
+    def ends_at_eos(completion: str) -> str:
+        # TRL 1.x appends EOS to text completions not ending in it; `<|im_end|>\n` would get a second.
+        trimmed = completion.rstrip()
+        return trimmed if eos and trimmed.endswith(eos) else completion
+
     def render(row: dict) -> dict:
         tools, kwargs = _row_tools(row), _row_template_kwargs(row)
         # Passed explicitly, never left in the row: TRL 0.25+ would expand it a second time.
@@ -542,7 +549,11 @@ def render_preference_rows(dataset, tokenizer):
             for key in ("chosen", "rejected")
         }
         text = os.path.commonprefix([text, *full.values()])
-        return {**row, "prompt": text, **{key: f[len(text) :] for key, f in full.items()}}
+        return {
+            **row,
+            "prompt": text,
+            **{key: ends_at_eos(f[len(text) :]) for key, f in full.items()},
+        }
 
     return dataset.map(render, remove_columns = [c for c in _TRL_ROW_COLUMNS if c in columns])
 

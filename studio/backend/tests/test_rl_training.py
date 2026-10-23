@@ -988,6 +988,35 @@ def test_preference_rendering_drops_the_null_fields_arrow_adds():
     assert rendered[0]["chosen"] == "<assistant>Sunny."
 
 
+def test_rendered_completions_end_at_eos_so_trl_adds_no_second_one():
+    from core.training.rl import render_preference_rows
+
+    class _ChatML:
+        eos_token = "<|im_end|>"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            text = "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages)
+            return text + ("<|im_start|>assistant\n" if add_generation_prompt else "")
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "2 + 2?"}],
+                "chosen": [{"role": "assistant", "content": "4"}],
+                "rejected": [{"role": "assistant", "content": "5"}],
+            }
+        ]
+    )
+    row = render_preference_rows(ds, _ChatML())[0]
+    assert row["chosen"] == "4<|im_end|>" and row["rejected"] == "5<|im_end|>"
+
+
 def test_tool_call_arguments_keep_their_nulls():
     from core.training.rl import _without_nulls
 
