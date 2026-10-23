@@ -422,6 +422,12 @@ async def _join_locked(invite, name, devices, timeout, now, replace, agent_port)
     der = identity.csr_der(csr_pem)
     worker_nonce = secrets.token_bytes(32)
 
+    async def answer(reader) -> dict:
+        frame = await framing.read_frame(reader, FRAME_TIMEOUT_S)
+        if frame.get("type") == "pair_error":
+            raise PairingError("the master refused this pairing (token used, expired or wrong)")
+        return frame
+
     async def handshake(reader, writer) -> dict:
         hello = {
             "type": "pair_hello",
@@ -435,10 +441,9 @@ async def _join_locked(invite, name, devices, timeout, now, replace, agent_port)
         if devices is not None:
             hello["devices"] = list(devices)[:64]
         await framing.write_frame(writer, hello)
-        frame = await framing.read_frame(reader, FRAME_TIMEOUT_S)
-        if frame.get("type") == "pair_error":
-            raise PairingError("the master refused this pairing (token used, expired or wrong)")
-        challenge = framing.expect(frame, "pair_challenge", session = str, master_nonce = str)
+        challenge = framing.expect(
+            await answer(reader), "pair_challenge", session = str, master_nonce = str
+        )
         data = transcript(
             cluster_id = invite.cluster_id,
             invite_id = invite.invite_id,
@@ -451,11 +456,8 @@ async def _join_locked(invite, name, devices, timeout, now, replace, agent_port)
         await framing.write_frame(
             writer, {"type": "pair_proof", "proof": _proof(invite.secret, data)}
         )
-        frame = await framing.read_frame(reader, FRAME_TIMEOUT_S)
-        if frame.get("type") == "pair_error":
-            raise PairingError("the master refused this pairing (token used, expired or wrong)")
         issued = framing.expect(
-            frame,
+            await answer(reader),
             "pair_issued",
             node_id = str,
             worker_cert = str,

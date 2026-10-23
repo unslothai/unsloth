@@ -34,14 +34,14 @@ def _set(ctx: ssl.SSLContext, name: str, value) -> None:
 
 
 def _base(purpose_server: bool) -> ssl.SSLContext:
+    import _ssl
+
     cls = plain_ssl_context_class()
     ctx = cls(ssl.PROTOCOL_TLS_SERVER if purpose_server else ssl.PROTOCOL_TLS_CLIENT)
     _set(ctx, "minimum_version", ssl.TLSVersion.TLSv1_3)
     _set(ctx, "check_hostname", False)
     if hasattr(ctx, "keylog_filename"):
         _set(ctx, "keylog_filename", None)
-    import _ssl
-
     _set(ctx, "options", _ssl._SSLContext.options.__get__(ctx) | ssl.OP_NO_TICKET)
     if purpose_server:
         _set(ctx, "num_tickets", 0)
@@ -76,8 +76,12 @@ def fingerprint(der: bytes) -> str:
     return hashlib.sha256(der).hexdigest()
 
 
+def _peer_der(ssl_object: Optional[ssl.SSLObject]) -> Optional[bytes]:
+    return ssl_object.getpeercert(binary_form = True) if ssl_object is not None else None
+
+
 def peer_fingerprint(ssl_object: Optional[ssl.SSLObject]) -> Optional[str]:
-    der = ssl_object.getpeercert(binary_form = True) if ssl_object is not None else None
+    der = _peer_der(ssl_object)
     return fingerprint(der) if der else None
 
 
@@ -107,5 +111,5 @@ def identity_from_der(der: bytes) -> Optional[PeerIdentity]:
 
 
 def peer_identity(ssl_object: Optional[ssl.SSLObject]) -> Optional[PeerIdentity]:
-    der = ssl_object.getpeercert(binary_form = True) if ssl_object is not None else None
+    der = _peer_der(ssl_object)
     return identity_from_der(der) if der else None

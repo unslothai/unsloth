@@ -35,12 +35,16 @@ def decode(body: bytes) -> Dict[str, Any]:
     return obj
 
 
+def _length(header: bytes) -> int:
+    (length,) = _HEADER.unpack(header)
+    if length > MAX_FRAME:
+        raise FrameError(f"frame of {length} bytes exceeds {MAX_FRAME}")
+    return length
+
+
 async def read_frame(reader: asyncio.StreamReader, timeout: float = 10.0) -> Dict[str, Any]:
     try:
-        header = await asyncio.wait_for(reader.readexactly(_HEADER.size), timeout)
-        (length,) = _HEADER.unpack(header)
-        if length > MAX_FRAME:
-            raise FrameError(f"frame of {length} bytes exceeds {MAX_FRAME}")
+        length = _length(await asyncio.wait_for(reader.readexactly(_HEADER.size), timeout))
         body = await asyncio.wait_for(reader.readexactly(length), timeout)
     except asyncio.IncompleteReadError:
         raise FrameError("connection closed mid-frame") from None
@@ -69,10 +73,7 @@ def recv_frame(sock, timeout: float = 10.0) -> Dict[str, Any]:
     previous = sock.gettimeout()
     sock.settimeout(timeout)
     try:
-        (length,) = _HEADER.unpack(_recv_exact(sock, _HEADER.size))
-        if length > MAX_FRAME:
-            raise FrameError(f"frame of {length} bytes exceeds {MAX_FRAME}")
-        body = _recv_exact(sock, length)
+        body = _recv_exact(sock, _length(_recv_exact(sock, _HEADER.size)))
     except TimeoutError:
         raise FrameError("timed out waiting for a frame") from None
     finally:

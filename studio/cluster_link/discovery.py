@@ -224,13 +224,7 @@ class Listener:
                     pass
             sock.bind(("", self.port))
             ifaces = lan_ipv4_addresses()
-            joined = []
-            for iface in ifaces:
-                try:
-                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq(iface))
-                    joined.append(iface)
-                except OSError:
-                    pass
+            joined = [iface for iface in ifaces if self._join(sock, iface)]
             if not joined:
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq("0.0.0.0"))
             self._ifaces, self._joined, self._joined_at = ifaces, joined, time.monotonic()
@@ -247,6 +241,14 @@ class Listener:
     def _mreq(iface: str) -> bytes:
         return struct.pack("4s4s", socket.inet_aton(DISCOVERY_GROUP_V4), socket.inet_aton(iface))
 
+    @classmethod
+    def _join(cls, sock: socket.socket, iface: str) -> bool:
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, cls._mreq(iface))
+            return True
+        except OSError:
+            return False
+
     def _interfaces_changed(self, sock: Optional[socket.socket] = None) -> bool:
         if time.monotonic() - self._joined_at < REJOIN_S:
             return False
@@ -254,13 +256,8 @@ class Listener:
         if lan_ipv4_addresses() != self._ifaces:
             return True
         for iface in self._ifaces:
-            if iface in self._joined or sock is None:
-                continue
-            try:
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, self._mreq(iface))
+            if iface not in self._joined and sock is not None and self._join(sock, iface):
                 self._joined.append(iface)
-            except OSError:
-                pass
         return False
 
     def observe(
