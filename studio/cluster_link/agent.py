@@ -31,7 +31,8 @@ from . import (
     tls,
 )
 from .model import LocalIdentity
-from .paths import lock_fd, run_dir, state_dir, unlock_fd
+from .identity import lock_fd, unlock_fd
+from .paths import run_dir, state_dir
 import socket
 
 from .splice import (

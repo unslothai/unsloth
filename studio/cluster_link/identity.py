@@ -17,7 +17,7 @@ from typing import Iterator, List, Optional, Tuple
 
 from . import tls
 from .model import LocalIdentity, Peer
-from .paths import lock_fd, private_dir, state_dir, unlock_fd, write_private
+from .paths import private_dir, state_dir, write_private
 
 ROOT_DAYS = 3650
 MASTER_CERT_DAYS = 3650
@@ -322,6 +322,28 @@ def forget_master() -> None:
     """Drop a master's identity, its cluster root and registry."""
     forget_identity()
     _unlink(_ca_dir() / "root_key.pem", _ca_dir() / "root.pem")
+
+
+def lock_fd(fd: int, blocking: bool = True) -> None:
+    """An exclusive lock on ``fd``: waits for it, or raises OSError at once when not ``blocking``."""
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+
+
+def unlock_fd(fd: int) -> None:
+    """Release lock_fd's lock and close ``fd``."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    os.close(fd)
 
 
 @contextlib.contextmanager

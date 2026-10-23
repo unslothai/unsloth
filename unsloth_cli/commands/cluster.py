@@ -57,8 +57,15 @@ def _registry(identity: Any) -> Any:
 
 
 def _addresses(peer: Any) -> List[Tuple[str, int]]:
-    from studio.cluster_link.model import peer_addresses
-    return peer_addresses(peer)
+    default = int(getattr(peer, "agent_port", 0) or 0)
+    out: List[Tuple[str, int]] = []
+    for addr in getattr(peer, "addrs", None) or []:
+        host, sep, port = str(addr).rpartition(":")
+        if sep and host and port.isdigit() and ":" not in host:
+            out.append((host, int(port)))
+        elif addr and default:
+            out.append((str(addr), default))
+    return out
 
 
 def parse_duration(text: str) -> float:

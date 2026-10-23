@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Tuple
+from typing import List
 
 
 @dataclass(frozen = True)
@@ -35,16 +35,3 @@ class Peer:
     agent_port: int = 0
     added_at: float = 0.0
     removed: bool = False  # a tombstone: kept so a removed worker cannot quietly come back
-
-
-def peer_addresses(peer: Any, default_port: int = 0) -> List[Tuple[str, int]]:
-    """``peer.addrs`` as (host, port); a bare host gets the peer's agent port, else ``default_port``."""
-    port = int(getattr(peer, "agent_port", 0) or 0) or default_port
-    out: List[Tuple[str, int]] = []
-    for addr in getattr(peer, "addrs", None) or []:
-        host, sep, tail = str(addr).rpartition(":")
-        if sep and host and tail.isdigit() and ":" not in host:
-            out.append((host, int(tail)))
-        elif addr and port:
-            out.append((str(addr), port))
-    return out

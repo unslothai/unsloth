@@ -1201,8 +1201,14 @@ def _go_native(relays: Any, peer: Any, status: Dict[str, Any]) -> Optional[int]:
 
 
 def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
-    from studio.cluster_link.model import peer_addresses
-    return peer_addresses(peer, default_port)
+    found: List[Tuple[str, int]] = []
+    for addr in getattr(peer, "addrs", None) or []:
+        host, sep, port = str(addr).rpartition(":")
+        if sep and host and port.isdigit() and ":" not in host:
+            found.append((host, int(port)))
+        elif addr:
+            found.append((str(addr), int(getattr(peer, "agent_port", 0) or default_port)))
+    return found
 
 
 def _alongside_request(request: Any) -> bool:
