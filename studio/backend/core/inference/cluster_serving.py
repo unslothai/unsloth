@@ -2388,15 +2388,21 @@ _SAMPLING_ONLY_FLAGS = frozenset(
         "--frequency-penalty",
     }
 )
+# Every request field the sizing (_size), placement (_placement_owner, _locks_host_copy) and
+# speculation planning read, so a reload changing any of them is not served the old split.
 _LOAD_SETTING_FIELDS = (
     "max_seq_length",
     "cache_type_kv",
+    "ctx_checkpoints",
+    "load_mode",
     "speculative_type",
     "spec_draft_n_max",
     "n_batch",
     "n_ubatch",
     "disable_vision",
     "gpu_ids",
+    "gpu_memory_mode",
+    "tensor_parallel",
     "tensor_split",
 )
 

@@ -3155,6 +3155,19 @@ def test_a_config_error_reload_with_new_load_settings_does_not_reuse_the_split(m
     assert out.llama_extra_args == block
 
 
+@pytest.mark.parametrize("field, value", [("ctx_checkpoints", 64), ("load_mode", "mlock")])
+def test_a_config_error_reload_with_a_new_memory_setting_does_not_reuse_the_split(
+    monkeypatch, field, value
+):
+    """Checkpoint count sizes host memory and load_mode=mlock pins it: both are part of the plan."""
+    _serve(monkeypatch)
+    block = list(cs.state().block)
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(**{field: value}), 4))
+    assert run(ss.before_load(_request(), 4)).llama_extra_args == block
+
+
 def test_a_config_error_does_not_lend_the_split_to_another_model(monkeypatch):
     _serve(monkeypatch)
     monkeypatch.setenv(cs.ENV_NODES, "bad host!")
