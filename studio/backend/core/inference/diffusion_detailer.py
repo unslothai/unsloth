@@ -514,7 +514,6 @@ def check_available(status: dict) -> None:
 def _plane_to_mask(plane: Any, height: int, width: int) -> Any:
     import torch
     import torch.nn.functional as F
-
     with torch.inference_mode():
         up = F.interpolate(
             plane[None, None].float(), size = (height, width), mode = "bilinear", align_corners = False

@@ -29,9 +29,10 @@ ROOTFS = {
     "size": 356739129,
 }
 UV = {
-    "url": "https://github.com/astral-sh/uv/releases/download/0.12.19/uv-x86_64-unknown-linux-gnu.tar.gz",
-    "sha256": "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
-    "size": 19831732,
+    "url": "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f",
+    "size": 16682639,
+    "version": "0.13.5",
 }
 # AMD: ROCm from AMD's apt repo plus the DXG bridge .deb (HSA reaches the Windows driver via /dev/dxg).
 # The repo key ships with Studio: repo.radeon.com serves it at a mutable URL, breaking a pinned download.
@@ -562,9 +563,14 @@ def ensure_distro(
         guest(["mkdir", "-p", f"{GUEST_ROOT}/bin"])
         put(f"{GUEST_ROOT}/owner.json", owner)
     put(f"{GUEST_ROOT}/bin/run-engine", RUNNER, "755")
+    # The pinned release, not merely a uv: an older guest uv (0.12.x) still trusts the emSign roots.
     try:
-        guest(["test", "-x", f"{GUEST_ROOT}/bin/uv"])
-    except RuntimeError:
+        installed = re.search(
+            r"^uv (\S+)", guest([f"{GUEST_ROOT}/bin/uv", "--version"], timeout = 60), re.M
+        )
+    except (RuntimeError, subprocess.TimeoutExpired):
+        installed = None
+    if not installed or installed.group(1) != UV["version"]:
         archive = download(UV, "uv-x86_64-unknown-linux-gnu.tar.gz", progress, cancel)
         guest(
             [

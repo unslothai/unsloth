@@ -8761,15 +8761,28 @@ def _ensure_flash_attn() -> None:
 _SSM_KERNEL_EXTENSIONS = {"causal_conv1d": "causal_conv1d_cuda", "mamba_ssm": "selective_scan_cuda"}
 # Exit code of the probe below when torch imported and the extension raised ImportError / OSError.
 _SSM_EXTENSION_BROKEN_EXIT = 87
+# Missing outright = the extension-free mamba_ssm wheel (Triton route); causal_conv1d has none.
+_SSM_EXTENSION_OPTIONAL = {"selective_scan_cuda"}
 _SSM_EXTENSION_PROBE = (
+    "import importlib.util\n"
     "import sys\n"
     "import torch\n"
+    "if {optional} and importlib.util.find_spec('{extension}') is None:\n"
+    "    sys.exit(0)\n"
     "try:\n"
     "    import {extension}\n"
     "except (ImportError, OSError) as exc:\n"
     "    print('{extension}: %s: %s' % (type(exc).__name__, exc), file = sys.stderr)\n"
     "    sys.exit({code})\n"
 )
+
+
+def _ssm_extension_probe(extension: str) -> str:
+    return _SSM_EXTENSION_PROBE.format(
+        extension = extension,
+        code = _SSM_EXTENSION_BROKEN_EXIT,
+        optional = extension in _SSM_EXTENSION_OPTIONAL,
+    )
 
 
 def _probe_tail(stderr) -> str:
@@ -8819,9 +8832,7 @@ def _remove_stale_ssm_kernels() -> None:
     for name in installed:
         distribution = KERNELS[name][0]
         extension = _SSM_KERNEL_EXTENSIONS[name]
-        probe = _run_import_probe(
-            _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
-        )
+        probe = _run_import_probe(_ssm_extension_probe(extension))
         if probe is None or probe.returncode == 0:
             continue
         tail = _probe_tail(probe.stderr)
@@ -8839,9 +8850,7 @@ def _remove_stale_ssm_kernels() -> None:
                     f"{name} does not load with this torch, but its install lock is busy; kept it"
                 )
                 continue
-            recheck = _run_import_probe(
-                _SSM_EXTENSION_PROBE.format(extension = extension, code = _SSM_EXTENSION_BROKEN_EXIT)
-            )
+            recheck = _run_import_probe(_ssm_extension_probe(extension))
             if recheck is not None and recheck.returncode == 0:
                 _note(f"{name} now loads with this torch; kept it")
                 continue
@@ -8910,13 +8919,45 @@ def _bootstrap_uv() -> bool:
     return True
 
 
+# CA trust floor. certifi 2026.10.19 drops the distrusted emSign ECC Root CA - G3. pip before 26.2.2
+# always verifies TLS with its own vendored certifi (pip dropped Python 3.9 before that release).
+_TRUST_FLOOR_CERTIFI = "certifi>=2026.10.19"
+_TRUST_FLOOR_PIP = "pip>=26.2.2"
+
+
+def _trust_floor_specs() -> list[str]:
+    """The trust-floor requirements this venv does not already satisfy."""
+    wanted = [_TRUST_FLOOR_CERTIFI]
+    if sys.version_info >= (3, 10):
+        wanted.append(_TRUST_FLOOR_PIP)
+    missing = []
+    for spec in wanted:
+        name, specifier = re.match(r"([a-z]+)(.*)", spec).groups()
+        installed = _installed_distribution_version(name)
+        if installed is None or _version_satisfies(installed, specifier) is not True:
+            missing.append(spec)
+    return missing
+
+
+def _ensure_trust_floor() -> None:
+    """Raise certifi (and pip on 3.10+) to the trust floor. Every setup, update and repair, both
+    modes. A lower bound only: a satisfied venv runs nothing, and nothing is ever downgraded.
+    Offline it warns and carries on; the next run with a network retries."""
+    missing = _trust_floor_specs()
+    if not missing:
+        return
+    if not pip_install_try("Raising the CA trust floor (" + ", ".join(missing) + ")", *missing):
+        _note("warning: could not install " + ", ".join(missing) + "; retrying on the next update")
+
+
 def _venv_pip_is_usable() -> bool:
     """Whether this interpreter already has a pip new enough for the pass.
 
     Read from metadata rather than by spawning it: the bootstrap below reinstalls pip from the
     index on every run, a download and a resolve for a package nothing changed. 23.0 is the
     floor because the constraint and override handling the pass relies on predates it
-    comfortably; a fresh uv venv has no pip at all and still bootstraps.
+    comfortably; a fresh uv venv has no pip at all and still bootstraps. On Python 3.10+ the
+    floor is the trust floor's pip, since an older pip verifies TLS with its own vendored certifi.
     """
     try:
         if importlib.util.find_spec("pip") is None:
@@ -8931,6 +8972,11 @@ def _venv_pip_is_usable() -> bool:
     except (AttributeError, ValueError):
         return False
     if major < 23:
+        return False
+    if (
+        sys.version_info >= (3, 10)
+        and _version_satisfies(installed, _TRUST_FLOOR_PIP[3:]) is not True
+    ):
         return False
     # Metadata survives a truncated pip, and everything without uv is `python -m pip`: one bounded
     # launch settles it.
@@ -10578,14 +10624,17 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
 FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
-def _desktop_unsloth_spec(package_name: str) -> str:
+def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
     """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
 
-    Twin of install.sh's _relax_unsloth_floors_to_index.
+    Returns the (unsloth, unsloth-zoo) requirements to install. A lowered unsloth comes with
+    the zoo it was resolved against, since the no-torch path installs --no-deps and so never
+    reads unsloth's zoo floor. Twin of install.sh's _relax_unsloth_floors_to_index.
     """
+    zoo_spec = "unsloth-zoo"
     desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
     if not (desktop_min_ver and package_name == "unsloth"):
-        return package_name
+        return package_name, zoo_spec
     spec = f"unsloth>={desktop_min_ver}"
     marker = Path(sys.prefix) / FEED_CEILING_MARKER
     try:
@@ -10593,19 +10642,21 @@ def _desktop_unsloth_spec(package_name: str) -> str:
     except OSError:
         pass
     if not USE_UV:
-        return spec
+        return spec, zoo_spec
 
-    def newest(requirement: str, name: str = "unsloth") -> "str | None":
+    def resolve(*requirements: str, deps: bool = False) -> "dict[str, str] | None":
         # --output-file: a uv.toml output-file would otherwise be overwritten by every probe.
+        # Linux x86_64 is fixed so a host without torch wheels (Intel Mac, no-torch) still resolves.
         with tempfile.TemporaryDirectory() as scratch:
             out = Path(scratch) / "probe.txt"
-            argv = ["uv", "pip", "compile", "--python", sys.executable, "--no-deps"]
+            argv = ["uv", "pip", "compile", "--python", sys.executable]
+            argv += ["--python-platform", "x86_64-manylinux_2_28"] if deps else ["--no-deps"]
             argv += ["--resolution", "highest", "--no-header", "--no-annotate", "--quiet"]
             argv += ["--output-file", str(out), "-"]
             try:
                 result = subprocess.run(
                     argv,
-                    input = requirement + "\n",
+                    input = "\n".join(requirements) + "\n",
                     stdout = subprocess.DEVNULL,
                     stderr = subprocess.DEVNULL,
                     text = True,
@@ -10617,29 +10668,54 @@ def _desktop_unsloth_spec(package_name: str) -> str:
                 return None
         if text is None:
             return None
-        match = re.search(rf"^{name}==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
-        return match.group(1) if match else None
+        found = dict(
+            re.findall(r"^(unsloth(?:-zoo)?)==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
+        )
+        return found or None
 
-    if newest(spec) is not None:
-        return spec
+    def newest(requirement: str, name: str = "unsloth") -> "str | None":
+        return (resolve(requirement) or {}).get(name)
+
+    found = resolve(spec, zoo_spec, deps = True) or {}
+    if found.get("unsloth"):
+        # The zoo it resolved against as a floor: the no-torch install is --no-deps, so a bare
+        # unsloth-zoo under UV_RESOLUTION=lowest could pick one below unsloth's own zoo floor.
+        return spec, (
+            f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec
+        )
+    requested_present = newest(spec) is not None
     # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo).
-    zoo = newest("unsloth-zoo", "unsloth-zoo")
+    zoo = newest(zoo_spec, "unsloth-zoo")
     available = newest(f"unsloth<={zoo}") if zoo else None
     if available is None:
-        return spec
-    _note(
-        f"[WARN] your package index does not have {spec} yet; "
-        f"installing unsloth {available}, the newest it has",
-        _warn,
-    )
+        return spec, zoo_spec
+    # A newer unsloth whose zoo floor the index still meets beats that bound (unsloth patch
+    # releases often ship without a zoo release).
+    pair = resolve(f"unsloth>={available}", zoo_spec, deps = True) or {}
+    if pair.get("unsloth") and pair.get("unsloth-zoo"):
+        available, zoo = pair["unsloth"], pair["unsloth-zoo"]
+    elif requested_present:
+        # The index has the release and nothing older resolves either: not a lag to work around.
+        return spec, zoo_spec
     try:
-        marker.write_text(
-            json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
-            encoding = "utf-8",
+        from packaging.version import Version
+        lowered = Version(available) < Version(desktop_min_ver)
+    except Exception:  # noqa: BLE001 - unparseable: treat as lowered, as before
+        lowered = True
+    if lowered:
+        _note(
+            f"[WARN] your package index does not have {spec} with a matching unsloth-zoo yet; "
+            f"installing unsloth {available} + unsloth-zoo {zoo}, the newest pair it has",
+            _warn,
         )
-    except OSError:
-        pass
-    return f"unsloth=={available}"
+        try:
+            marker.write_text(
+                json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
+                encoding = "utf-8",
+            )
+        except OSError:
+            pass
+    return f"unsloth=={available}", f"unsloth-zoo=={zoo}"
 
 
 def pip_install(
@@ -12818,6 +12894,10 @@ def install_python_stack() -> int:
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
 
+    # 2a. Before the bulk installs and outside every skip path: the bootstrap above only
+    # guarantees an installer, not a current trust store.
+    _ensure_trust_floor()
+
     # A superseded dist-info makes version() and every RECORD consumer choose
     # an arbitrary package version. Repair it before any fast package operation,
     # including installer handoffs that set skip_base after their own upgrade.
@@ -12895,7 +12975,7 @@ def install_python_stack() -> int:
     elif NO_TORCH:
         # No-torch update path: --no-deps throughout (PyPI metadata makes torch a hard dep).
         _progress("base packages (no torch)")
-        unsloth_spec = _desktop_unsloth_spec(package_name)
+        unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -12905,7 +12985,7 @@ def install_python_stack() -> int:
             "--upgrade-package",
             "unsloth-zoo",
             unsloth_spec,
-            "unsloth-zoo",
+            zoo_spec,
         )
         # pydantic WITH deps (all torch-free) so pip pins a matching pydantic-core.
         pip_install(
@@ -12948,7 +13028,7 @@ def install_python_stack() -> int:
         )
     else:
         _progress("base packages")
-        unsloth_spec = _desktop_unsloth_spec(package_name)
+        unsloth_spec, zoo_spec = _desktop_unsloth_spec(package_name)
         with _FreezeNewTorchForCoreUpdate():
             pip_install(
                 "Updating core packages",
@@ -12958,7 +13038,7 @@ def install_python_stack() -> int:
                 "--upgrade-package",
                 "unsloth-zoo",
                 unsloth_spec,
-                "unsloth-zoo",
+                zoo_spec,
             )
 
     # The package just installed may ship a newer copy of this file. Raised rather than rerun

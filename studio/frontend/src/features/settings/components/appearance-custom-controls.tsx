@@ -307,7 +307,7 @@ function FontSelect({
       value={font}
       onSelect={() => select(font)}
       data-checked={value === font}
-      className="cursor-pointer rounded-[11px]"
+      className="cursor-pointer rounded-md"
     >
       {/* Preview each entry in its own typeface. */}
       <span
@@ -360,7 +360,7 @@ function FontSelect({
               value={defaultLabel}
               onSelect={() => select(null)}
               data-checked={value === null}
-              className="cursor-pointer rounded-[11px]"
+              className="cursor-pointer rounded-md"
             >
               <span style={{ fontFamily: `"${defaultFont}", var(--font-sans)` }}>
                 {defaultLabel}
@@ -383,7 +383,7 @@ function FontSelect({
                     value={font.name}
                     onSelect={() => select(font.name)}
                     data-checked={value === font.name}
-                    className="cursor-pointer rounded-[11px]"
+                    className="cursor-pointer rounded-md"
                   >
                     <span
                       className="min-w-0 truncate"
@@ -399,7 +399,7 @@ function FontSelect({
                         e.stopPropagation();
                         removeImportedFont(font.name);
                       }}
-                      className="ml-auto rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                      className="ml-auto rounded-full p-0.5 text-muted-foreground transition-colors hover:text-foreground"
                     >
                       <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                     </button>
@@ -419,7 +419,7 @@ function FontSelect({
                       key={`folder-${name}`}
                       value={name}
                       onSelect={() => importFile(file)}
-                      className="cursor-pointer rounded-[11px]"
+                      className="cursor-pointer rounded-md"
                     >
                       <span className="min-w-0 truncate">{name}</span>
                     </CommandItem>
@@ -444,7 +444,7 @@ function FontSelect({
           <button
             type="button"
             onClick={requestUpload}
-            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <HugeiconsIcon
               icon={Upload01Icon}
@@ -456,7 +456,7 @@ function FontSelect({
           <button
             type="button"
             onClick={requestFolder}
-            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <HugeiconsIcon
               icon={Folder01Icon}
