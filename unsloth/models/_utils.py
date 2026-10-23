@@ -10013,11 +10013,15 @@ def _tensor_subclass_weights_for_ddp(trainer):
     model = getattr(trainer, "model", None)
     if model is None or not is_distributed():
         return []
-    if any(
-        getattr(m, "_unsloth_fsdp2_native", False) is True
-        for m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None))
-        if m is not None
-    ) or getattr(trainer, "is_fsdp_enabled", False) or getattr(trainer, "is_deepspeed_enabled", False):
+    if (
+        any(
+            getattr(m, "_unsloth_fsdp2_native", False) is True
+            for m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None))
+            if m is not None
+        )
+        or getattr(trainer, "is_fsdp_enabled", False)
+        or getattr(trainer, "is_deepspeed_enabled", False)
+    ):
         return []
     names = _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = True)
     ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])

@@ -33,7 +33,9 @@ from test_fsdp2_native_units import _load_native  # noqa: E402
 from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 from test_fsdp2_native_guards_gloo import _tiny_llama  # noqa: E402
 
-MODELS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models")
+MODELS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "unsloth", "models"
+)
 _FAKE_PKG = "_fp8_torchao_ddp_pkg"
 
 
@@ -106,7 +108,11 @@ def _reference_grads(model):
     return {n: p.grad.clone() for n, p in ref.named_parameters() if p.requires_grad}
 
 
-def _grad_diff(model, want, canon = lambda n: n):
+def _grad_diff(
+    model,
+    want,
+    canon = lambda n: n,
+):
     from torch.distributed.tensor import DTensor
 
     worst = 0.0
@@ -196,7 +202,11 @@ def _worker(rank, world, port, out, kind, arg):
             pass
 
 
-def _run(kind, arg, timeout = 150):
+def _run(
+    kind,
+    arg,
+    timeout = 150,
+):
     import torch.multiprocessing as mp
 
     out = mp.get_context("spawn").Queue()
@@ -213,7 +223,9 @@ def _run(kind, arg, timeout = 150):
             if time.time() > deadline:
                 for p in procs.processes:
                     p.kill()
-                pytest.fail(f"fp8 {kind} {arg}: the ranks did not finish (hung collective) {results}")
+                pytest.fail(
+                    f"fp8 {kind} {arg}: the ranks did not finish (hung collective) {results}"
+                )
     except mp.ProcessExitedException as exc:
         pytest.fail(f"fp8 {kind} {arg}: a rank died ({exc}) {results}")
     while not out.empty():
@@ -251,7 +263,10 @@ def test_ddp_skips_float8tensor_broadcast_and_matches_one_process(via):
 
 def test_trainable_float8tensor_is_refused():
     for rank, r in _run("ddp", "trainable").items():
-        assert r["wrap"].startswith("NotImplementedError") and "Float8Tensor" in r["wrap"], (rank, r)
+        assert r["wrap"].startswith("NotImplementedError") and "Float8Tensor" in r["wrap"], (
+            rank,
+            r,
+        )
     native = _load_native()
     with pytest.raises(NotImplementedError, match = "trainable float8"):
         native._float8_params(_fp8_llama(trainable_fp8 = True))
