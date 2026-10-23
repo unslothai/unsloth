@@ -24,6 +24,7 @@ import textwrap
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FIXES = os.path.join(_ROOT, "unsloth", "import_fixes.py")
@@ -165,22 +166,15 @@ def test_skips_a_torch_that_already_has_the_barrier(monkeypatch):
 
 
 def test_torch_without_custom_graph_pass_skips_the_fx_graph_cache(monkeypatch):
-    import builtins
     from torch._inductor import config as inductor_config
     from torch._inductor.codegen import triton as triton_codegen
 
-    monkeypatch.setattr(triton_codegen, "TritonKernel", _fake_kernel_class())
+    fake = _fake_kernel_class()
+    monkeypatch.setattr(triton_codegen, "TritonKernel", fake)
     monkeypatch.setattr(inductor_config, "fx_graph_cache", True)
-    real_import = builtins.__import__
-
-    def no_custom_graph_pass(name, *args, **kwargs):  # torch 2.4 / 2.5
-        if name == "torch._inductor.custom_graph_pass":
-            raise ImportError(name)
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", no_custom_graph_pass)
+    monkeypatch.setitem(sys.modules, "torch._inductor.custom_graph_pass", None)  # torch 2.4 / 2.5
     _load_fixes("unsloth_import_fixes_readback_old").fix_inductor_reduction_readback_race()
-    monkeypatch.setattr(builtins, "__import__", real_import)
+    assert fake.load._unsloth_readback_barrier
     assert inductor_config.fx_graph_cache is False
 
 
@@ -212,7 +206,7 @@ _GPU_RUNNER = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "Inductor Triton codegen needs a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "Inductor Triton codegen needs a GPU")
 def test_generated_reduction_syncs_before_the_reload(tmp_path):
     env = dict(
         os.environ,
