@@ -394,10 +394,11 @@ def _preflight_probe(dev: Any) -> bool:
     import flashinfer
     import torch
     with torch.cuda.device(dev):
-        # An explicit generator: up to torch 2.11 a default-generator draw raises while another thread records.
-        gen = torch.Generator(device = dev).manual_seed(0)
-        x = torch.randn(128, 256, device = dev, dtype = torch.bfloat16, generator = gen) * 0.05
-        w = torch.randn(128, 256, device = dev, dtype = torch.bfloat16, generator = gen) * 0.02
+        # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
+        # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
+        gen = torch.Generator().manual_seed(0)
+        x = torch.randn(128, 256, dtype = torch.bfloat16, generator = gen).to(dev) * 0.05
+        w = torch.randn(128, 256, dtype = torch.bfloat16, generator = gen).to(dev) * 0.02
         a_gsf, w_gsf = global_scale(x), global_scale(w)
         xq, x_sf = flashinfer.nvfp4_quantize(x, a_gsf, do_shuffle = False)
         wq, w_sf = flashinfer.nvfp4_quantize(w, w_gsf, do_shuffle = False)
