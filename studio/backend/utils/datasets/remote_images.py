@@ -6,6 +6,7 @@
 import functools
 import importlib.abc
 import importlib.util
+import os
 import sys
 
 _MAX_IMAGE_BYTES = 64 * 1024 * 1024
@@ -34,23 +35,49 @@ _DATASETS_OWN_SCHEMES = {
 }
 
 
+# The same opt-in unsloth_zoo's media fetch honours: images on a LAN host, a share or a non-Hub
+# archive the owner trusts load the way datasets loads them.
+ALLOW_PRIVATE_ENV = "UNSLOTH_ALLOW_PRIVATE_URL_FETCH"
+_OPT_IN_HINT = f"Set {ALLOW_PRIVATE_ENV}=1 to load images from private hosts or shares you trust."
+
+
+def private_sources_allowed():
+    return os.environ.get(ALLOW_PRIVATE_ENV) == "1"
+
+
 def _scheme(url):
     return url.split("://", 1)[0].lower() if "://" in url else ""
 
 
+_LOCAL_SHARE_HOSTS = ("", "localhost", "wsl$", "wsl.localhost")
+_WINDOWS = os.name == "nt"
+
+
 def is_network_share(path):
-    """UNC and network ``file:`` paths: Windows would open an SMB connection to the host."""
+    """UNC and network ``file:`` paths: Windows would open an SMB connection to the host. Elsewhere
+    ``//x`` is an ordinary path, and ``\\\\wsl$`` is the user's own WSL distro."""
+    if not _WINDOWS:
+        return False
     p = path.replace("\\", "/")
     if p[:5].lower() == "file:":
         p = p[5:]
         if p.startswith("//"):
             host = p[2:].split("/", 1)[0]
-            if host.lower() not in ("", "localhost"):
+            if host.lower() not in _LOCAL_SHARE_HOSTS:
                 return True
             p = p[2 + len(host) :]
     if p.startswith(("//?/", "//./")):
-        return p[4:].upper().startswith("UNC/")
-    return p.startswith("//")
+        p = p[4:]
+        if not p.upper().startswith("UNC/"):
+            return False
+        p = "//" + p[4:]
+    return p.startswith("//") and p[2:].split("/", 1)[0].lower() not in _LOCAL_SHARE_HOSTS
+
+
+def guard_url(url):
+    """Percent-encode what a browser would (a raw space), so the guard sees a valid URL."""
+    from urllib.parse import quote
+    return quote(url.strip(), safe = ":/?#[]@!$&'()*+,;=%~")
 
 
 def fetch_untrusted_image_bytes(url):
@@ -60,14 +87,14 @@ def fetch_untrusted_image_bytes(url):
     from core.inference.tools import _fetch_url_raw
 
     error, body, _ = _fetch_url_raw(
-        url,
+        guard_url(url),
         timeout = _IMAGE_TIMEOUT_S,
         extra_headers = {"Accept": "image/*"},
         deadline = time.monotonic() + _IMAGE_TIMEOUT_S * 2,
         raw_bytes_max = _MAX_IMAGE_BYTES,
     )
     if error is not None:
-        raise OSError(error)
+        raise OSError(f"{error} {_OPT_IN_HINT}")
     return body
 
 
@@ -98,22 +125,26 @@ def install_guarded_image_decode(hf_image = None):
         token_per_repo_id = None,
     ):
         path = value.get("path") if isinstance(value, dict) else None
-        if isinstance(path, str) and value.get("bytes") is None:
+        if isinstance(path, str) and value.get("bytes") is None and not private_sources_allowed():
             # fsspec opens every hop of a chained path, so each one is checked.
             hops = path.split("::")
             for hop in hops:
                 if is_network_share(hop):
-                    raise OSError(f"Refusing an image path on a network share: {path}")
+                    raise OSError(
+                        f"Refusing an image path on a network share: {path}. {_OPT_IN_HINT}"
+                    )
                 if _scheme(hop) not in _DATASETS_OWN_SCHEMES:
                     # ftp://, sftp://, smb:// ... would reach fsspec with no address checks.
-                    raise OSError(f"Refusing an image URL with an unsupported scheme: {path}")
+                    raise OSError(
+                        f"Refusing an image URL with an unsupported scheme: {path}. {_OPT_IN_HINT}"
+                    )
             # Exact origin, not a prefix: huggingface.co.attacker.example would match a prefix.
             if any(
                 _scheme(hop) in ("http", "https") and _origin(hop) != _origin(config.HF_ENDPOINT)
                 for hop in hops
             ):
                 if len(hops) > 1:
-                    raise OSError(f"Refusing a remote archive image path: {path}")
+                    raise OSError(f"Refusing a remote archive image path: {path}. {_OPT_IN_HINT}")
                 value = {"path": None, "bytes": fetch_untrusted_image_bytes(path)}
         return original(self, value, token_per_repo_id)
 

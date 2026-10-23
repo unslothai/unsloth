@@ -71,6 +71,9 @@ def test_public_image_urls_go_through_the_guarded_fetch(monkeypatch):
 
 
 def test_network_share_paths_are_not_probed(monkeypatch):
+    from utils.datasets import remote_images
+
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
     import os
 
     def no_touch(*args, **kwargs):

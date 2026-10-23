@@ -326,6 +326,8 @@ def test_chained_non_hub_urls_are_refused(monkeypatch, path):
     ],
 )
 def test_network_share_paths_are_refused(monkeypatch, path):
+    from utils.datasets import remote_images
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
     with pytest.raises(OSError, match = "network share"):
         _decode_without_io(monkeypatch, path)
 
@@ -347,6 +349,9 @@ def test_local_and_hub_paths_still_reach_datasets(monkeypatch, path):
 
 
 def test_string_rows_naming_a_network_share_never_touch_it(monkeypatch):
+    from utils.datasets import remote_images
+
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
     import PIL.Image
 
     from utils.datasets import format_conversion
@@ -386,3 +391,50 @@ def test_guard_applies_when_datasets_loads_after_this_module():
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert "GUARDED_LAZILY" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "\\\\wsl$\\Ubuntu\\home\\u\\a.png",
+        "\\\\wsl.localhost\\Ubuntu\\home\\u\\a.png",
+        "file://wsl.localhost/Ubuntu/home/u/a.png",
+        "\\\\?\\C:\\data\\a.png",
+    ],
+)
+def test_wsl_and_drive_paths_are_local_on_windows(monkeypatch, path):
+    from utils.datasets import remote_images
+    monkeypatch.setattr(remote_images, "_WINDOWS", True)
+    with pytest.raises(AssertionError, match = "reached"):
+        _decode_without_io(monkeypatch, path)
+
+
+def test_double_slash_paths_are_ordinary_paths_off_windows(monkeypatch):
+    from utils.datasets import remote_images
+    monkeypatch.setattr(remote_images, "_WINDOWS", False)
+    with pytest.raises(AssertionError, match = "reached"):
+        _decode_without_io(monkeypatch, "//data/images/a.png")
+
+
+def test_refusals_name_the_opt_in(monkeypatch):
+    with pytest.raises(OSError, match = "UNSLOTH_ALLOW_PRIVATE_URL_FETCH=1"):
+        _decode_without_io(monkeypatch, "zip://a.png::https://attacker.example/x.zip")
+
+
+def test_the_opt_in_restores_private_hosts_and_archives(monkeypatch, loopback_server):
+    # The owner's own LAN image server or non-Hub archive loads the way datasets loads it.
+    base, hits = loopback_server
+    monkeypatch.setenv("UNSLOTH_ALLOW_PRIVATE_URL_FETCH", "1")
+    ds = Dataset.from_list([{"image": f"{base}/lan.png", "caption": "x"}])
+    out = convert_to_vlm_format(ds, instruction = "Describe.", text_column = "caption")
+    assert isinstance(out[0]["messages"][0]["content"][1]["image"], Image.Image)
+    assert isinstance(_typed_image_dataset(f"{base}/typed.png")[0]["image"], Image.Image)
+    assert len(hits) >= 2
+    with pytest.raises(AssertionError, match = "reached"):
+        _decode_without_io(monkeypatch, "zip://a.png::https://images.example.org/x.zip")
+
+
+def test_unencoded_spaces_are_quoted_before_the_guard(monkeypatch):
+    calls = _recording_fetch(monkeypatch, _png())
+    _typed_image_dataset("https://example.com/my images/a b.png")[0]
+    assert calls == ["https://example.com/my%20images/a%20b.png"]

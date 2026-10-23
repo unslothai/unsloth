@@ -974,9 +974,14 @@ def detect_vlm_dataset_structure(dataset):
         if not isinstance(sample_value, str):
             return True
 
+        from .remote_images import guard_url, is_network_share, private_sources_allowed
+
         if not sample_value.startswith(("http://", "https://")):
-            from .remote_images import is_network_share
-            return not is_network_share(sample_value) and os.path.exists(sample_value)
+            if is_network_share(sample_value) and not private_sources_allowed():
+                return False
+            return os.path.exists(sample_value)
+        if private_sources_allowed():
+            return True
 
         try:
             import time
@@ -984,7 +989,7 @@ def detect_vlm_dataset_structure(dataset):
             from core.inference.tools import _fetch_url_raw
 
             error, _, _ = _fetch_url_raw(
-                sample_value,
+                guard_url(sample_value),
                 timeout = 3,
                 deadline = time.monotonic() + 3,
                 method = "HEAD",
