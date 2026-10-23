@@ -21,6 +21,7 @@ import {
 import type { RfNode } from "./derive-rf";
 import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
+import { StructuredBadge, isStructuredValue } from "./value-viewers";
 
 /** Below this zoom the text is unreadable anyway; hiding it (layout kept, so handles stay put)
  *  is what keeps panning a thousand-node graph smooth. */
@@ -165,6 +166,7 @@ function OutputValues({
   for (const port of spec.outputs) {
     const value = outputs[port.id];
     if (value === undefined || value === null) continue;
+    if (isStructuredValue(value)) return <StructuredBadge value={value} />;
     if (typeof value === "string") {
       return (
         <p className="line-clamp-4 whitespace-pre-wrap text-[11px] leading-snug text-zinc-300">

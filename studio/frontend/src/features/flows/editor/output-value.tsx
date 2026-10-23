@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { MediaThumb, isMediaValue } from "./media";
+import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
-/** One output value: media, a media list, text, or JSON. Shared by the inspector and the App view. */
+/** One output value: media, a media list, a table / chart / heatmap / tensor, text, or JSON. Shared by the inspector and the App view. */
 export function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
     return <span className="text-zinc-600">-</span>;
@@ -25,6 +26,7 @@ export function OutputValue({ value }: { value: unknown }) {
       </div>
     );
   }
+  if (isStructuredValue(value)) return <StructuredOutput value={value} />;
   if (typeof value === "string") {
     return (
       <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-zinc-200">

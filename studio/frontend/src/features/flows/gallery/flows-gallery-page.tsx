@@ -27,6 +27,7 @@ import {
   createFlow,
   deleteFlow,
   importFlow,
+  importNotebook,
   listExamples,
   listFlows,
 } from "../api";
@@ -42,6 +43,8 @@ import {
 } from "../editor/icon-data";
 import { MediaThumb } from "../editor/media";
 import type { FlowKind, FlowRecord, FlowSummary } from "../types";
+import { NotebooksSection } from "./notebooks-section";
+import { notebookName } from "./notebooks";
 import { templateDocument } from "./templates";
 
 const KIND_STYLE: Record<
@@ -196,7 +199,7 @@ function ImportDialog({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{
-    flow: FlowRecord;
+    flow: FlowRecord | null;
     report: ImportReport;
   } | null>(null);
   const {
@@ -204,7 +207,7 @@ function ImportDialog({
     dragging,
     dragHandlers,
   } = useNativeFileDrop({
-    accept: ".unslothflow,.json",
+    accept: ".unslothflow,.json,.ipynb",
     multiple: false,
     disabled: busy,
     onFiles: (files) => {
@@ -226,7 +229,13 @@ function ImportDialog({
   const submit = useCallback(async (data: Blob | string, name?: string) => {
     setBusy(true);
     try {
-      setResult(await importFlow(data, name));
+      // A picked or dropped file carries its own name; only a notebook goes to the notebook importer.
+      const notebook = notebookName(data, name);
+      setResult(
+        notebook
+          ? await importNotebook(data, notebook)
+          : await importFlow(data, name),
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Import failed");
     } finally {
@@ -239,12 +248,18 @@ function ImportDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {result ? `Imported “${result.flow.name}”` : "Import a flow"}
+            {result
+              ? result.flow
+                ? `Imported “${result.flow.name}”`
+                : "Open this notebook in Colab"
+              : "Import a flow"}
           </DialogTitle>
           <DialogDescription>
             {result
-              ? "Nothing ran or downloaded. Here is what it needs on this computer."
-              : "Drop a .unslothflow or .json file, or paste the flow's JSON. Imports never run anything by themselves."}
+              ? result.flow
+                ? "Nothing ran or downloaded. Here is what it needs on this computer."
+                : "Studio cannot train this notebook yet. Nothing ran or downloaded."
+              : "Drop a .unslothflow, .json or Unsloth notebook (.ipynb) file, or paste the flow's JSON. Imports never run anything by themselves."}
           </DialogDescription>
         </DialogHeader>
         {result ? (
@@ -271,6 +286,11 @@ function ImportDialog({
                 pre-generated, so those parts work without models.
               </p>
             )}
+            {(result.report.unsupported ?? []).map((line) => (
+              <p key={line} className="text-destructive text-sm">
+                {line}
+              </p>
+            ))}
             {result.report.warnings.map((warning) => (
               <p
                 key={warning}
@@ -304,7 +324,7 @@ function ImportDialog({
             <input
               ref={fileRef}
               type="file"
-              accept=".unslothflow,.json,application/json,application/zip"
+              accept=".unslothflow,.json,.ipynb,application/json,application/zip"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -322,8 +342,22 @@ function ImportDialog({
           </div>
         )}
         <DialogFooter>
-          {result ? (
-            <Button onClick={() => onImported(result.flow)}>Open flow</Button>
+          {result?.flow ? (
+            <Button onClick={() => result.flow && onImported(result.flow)}>
+              Open flow
+            </Button>
+          ) : result ? (
+            result.report.colab_url && (
+              <Button asChild={true}>
+                <a
+                  href={result.report.colab_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open in Colab
+                </a>
+              </Button>
+            )
           ) : (
             <Button
               disabled={busy || !text.trim()}
@@ -510,6 +544,19 @@ export function FlowsGalleryPage(): ReactElement {
           </div>
         </section>
       )}
+
+      <NotebooksSection
+        onUseTemplate={(exampleId) =>
+          copyExample(exampleId)
+            .then((record) => open(record.id))
+            .catch((e: unknown) =>
+              toast.error(
+                e instanceof Error ? e.message : "Could not copy the template",
+              ),
+            )
+        }
+        onImport={() => setImportOpen(true)}
+      />
 
       <ImportDialog
         open={importOpen}
