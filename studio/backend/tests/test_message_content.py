@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for `content_to_text`, the #4383 fix for list-form message content.
-
-Loaded by file path so the test skips importing ``core.inference`` (whose
-``__init__`` pulls in the orchestrator + llama_cpp / torch).
-"""
+"""Tests content_to_text on list-form content; loads the module by path to skip core.inference."""
 
 import importlib.util
 from pathlib import Path
@@ -73,7 +69,6 @@ def test_audio_and_image_only_list_is_empty():
 
 def test_part_without_type_treated_as_text():
     mc = _load_message_content()
-    # A ``text`` field with no ``type`` is treated as text.
     assert mc.content_to_text([{"text": "untyped"}]) == "untyped"
 
 
@@ -94,7 +89,7 @@ def test_tuple_behaves_like_list():
 
 def test_result_supports_string_ops():
     mc = _load_message_content()
-    # Crux of #4383: result must be a plain str for caller .strip()/.replace().
+    # Result must be a plain str for caller .strip()/.replace().
     out = mc.content_to_text([{"type": "text", "text": "  padded  "}])
     assert out.strip() == "padded"
     assert isinstance(out, str)
@@ -111,8 +106,6 @@ def test_paste_only_turn_is_not_empty_text():
         "content": [],
         "attachments": [{"content": [{"type": "text", "text": _pasted("Fix.txt", body, 28)}]}],
     }
-    # Deep research rejects a message whose text is empty, and a long paste
-    # carries all of its text in the attachment.
     assert mc.message_text_with_pastes(message) == body
 
 
@@ -142,7 +135,6 @@ def test_other_attachments_are_left_out():
 def test_pasted_body_unwraps_only_the_wrapper():
     mc = _load_message_content()
     assert mc.pasted_text_body(_pasted("a.txt", "body", 4)) == "body"
-    # Without the size, and with a body that itself ends in a tag-like line.
     assert mc.pasted_text_body("<pasted_text name=a.txt>\nbody") == "body"
     assert mc.pasted_text_body("plain text") == ""
     assert mc.pasted_text_body("<attachment name=a.txt>\nbody\n</attachment>") == ""

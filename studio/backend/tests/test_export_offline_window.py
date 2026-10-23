@@ -53,10 +53,9 @@ def _run_worker(monkeypatch, commands, unreachable):
     monkeypatch.setattr(worker, "_setup_log_capture", lambda _: None)
     monkeypatch.setattr(worker, "_activate_transformers_version", lambda *args: None)
     monkeypatch.setattr(worker, "_handle_load", lambda *args: None)
-    # Worker-process globals; keep them from leaking into later tests.
     monkeypatch.setattr(worker, "_log_forward_gate", threading.Event())
     monkeypatch.setattr(log_config, "_BARS_RESTORED", log_config._BARS_RESTORED)
-    # Below the client's request hook, which is where huggingface_hub enforces offline mode.
+    # below the client's request hook, where huggingface_hub enforces offline mode
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle_request)
     monkeypatch.setattr(transformers_version, "hf_endpoint_unreachable", unreachable)
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
@@ -64,7 +63,6 @@ def _run_worker(monkeypatch, commands, unreachable):
     for command in [*commands, {"type": "shutdown"}]:
         cmd_queue.put(command)
     resp_queue = queue.Queue()
-    # The worker normally owns its process environment; isolate that mutation here.
     with patch.dict(os.environ):
         os.environ.pop("HF_HUB_OFFLINE", None)
         os.environ.pop("TRANSFORMERS_OFFLINE", None)
@@ -81,7 +79,6 @@ def _run_worker(monkeypatch, commands, unreachable):
 
 
 def test_local_export_rechecks_connectivity_and_restores_hub_state(monkeypatch):
-    # Activation and load online, first export disconnected, next export recovered.
     verdicts = [False, False, True, False]
     probes = []
 

@@ -4,8 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// The overlay .tsx pulls in motion, hugeicons and the router, so it cannot be imported
-// here. These drive its watch through the exact call order its effects use.
+// The overlay .tsx cannot be imported here; these replay its effects' exact call order.
 import {
   type ApiMonitorWatch,
   type WatchedEntry,
@@ -16,11 +15,9 @@ import {
   startWatching,
 } from "../src/features/api-monitor/new-traffic.ts";
 
-// The server's clock: entry timestamps are its time.time(), never a browser instant.
+// Entry timestamps are the server's time.time(), never a browser instant.
 const SERVER_NOW = 1_000_000;
-// performance.now() when the poll first stood up.
 const WATCH_AT = 1_000;
-// An hour spent with automatic opening switched off.
 const OPT_OUT_MS = 3_600_000;
 
 function entry(
@@ -41,11 +38,7 @@ function snapshot(
   return { entries, server_time: serverTime };
 }
 
-/**
- * The overlay as its effects run it. `standDown` is the poll effect returning early for the
- * opt out; `standUp` is it running again; `observe` is the observer effect, which re-runs on
- * any store change and so sees the snapshot already in hand as well as each fresh one.
- */
+/** The overlay's effects: standDown/standUp are the poll effect; observe re-runs on any store change. */
 function overlay(): {
   watch: ApiMonitorWatch;
   standDown: () => void;
@@ -68,19 +61,15 @@ test("turning automatic opening back on does not pop the panel for the opt-out b
   ui.standUp(WATCH_AT);
   assert.equal(ui.observe(first, WATCH_AT + 10), false);
 
-  // "Stop opening this automatically": the poll stands down with that snapshot in hand.
   ui.standDown();
   assert.equal(ui.observe(first, WATCH_AT + 20), false);
 
-  // An hour of curl against the API key, none of it polled for.
   const during = [
     entry("apireq_curl_b", "completed", SERVER_NOW + 900),
     entry("apireq_curl_a", "completed", SERVER_NOW + 300),
     ...backlog,
   ];
 
-  // The switch in settings goes back on: the poll stands up and the observer re-runs with
-  // the stale snapshot before the first fetch of the new watch resolves.
   ui.standUp(WATCH_AT + OPT_OUT_MS);
   assert.equal(ui.observe(first, WATCH_AT + OPT_OUT_MS + 1), false);
   const opened = ui.observe(
@@ -91,8 +80,6 @@ test("turning automatic opening back on does not pop the panel for the opt-out b
 });
 
 test("the snapshot in hand at the stand down cannot spend the opt-out re-arm", () => {
-  // Same run, one effect at a time: the re-arm has to survive the observer re-running on
-  // the autoOpen change itself, both when it goes off and when it comes back.
   const ui = overlay();
   const first = snapshot([entry("apireq_old", "completed", SERVER_NOW - 90)]);
   ui.standUp(WATCH_AT);
@@ -133,8 +120,6 @@ test("a call made after automatic opening is back on still opens the panel", () 
 });
 
 test("a session that starts opted out still reports its first snapshot", () => {
-  // Nothing has been folded in, so there is no backlog to write off; the persisted opt out
-  // must not turn into a permanent silence once the switch goes back on.
   const ui = overlay();
   ui.standDown();
   assert.equal(ui.watch.resumed, false);
@@ -147,7 +132,6 @@ test("a session that starts opted out still reports its first snapshot", () => {
 });
 
 test("an opt out with nothing behind it leaves the retained ids read", () => {
-  // The ids held at the stand down were already diffed away, re-arm or not.
   const ui = overlay();
   const backlog = [entry("apireq_old", "completed", SERVER_NOW - 90)];
   ui.standUp(WATCH_AT);

@@ -118,6 +118,7 @@ export const ko = {
     reload: "새로고침",
     more: "더보기",
     addressPlaceholder: "검색어 또는 URL 입력",
+    local: "로컬",
     suggested: "추천",
     suggestedMenu: {
       open: "열기",
@@ -468,6 +469,8 @@ export const ko = {
       downloadFailed: "{name}을(를) 다운로드할 수 없습니다",
       notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
       blocked: "이 주소는 브라우저 패널에서 열 수 없습니다. 공개 웹사이트만 열 수 있습니다.",
+      blockedLocal: "이 로컬 주소는 여기에서 열 수 없습니다. 열려면 주소 표시줄에 입력하세요.",
+      studioAddress: "Unsloth 자체의 주소이므로 브라우저 패널에서 열 수 없습니다.",
       clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제합니다. 사이트에서 로그아웃됩니다.",
       clearDataDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
@@ -622,6 +625,8 @@ export const ko = {
     temporaryChatDescription: "이 채팅은 기록에 표시되지 않으며 저장되지 않습니다. 나가면 사라집니다.",
   },
   picker: {
+    unifiedTightFit: "빠듯함",
+    unifiedTightFitHint: "이 Mac에서는 더 짧은 컨텍스트로 로드되거나 느리게 실행될 수 있습니다.",
     onDevice: "기기",
     huggingFace: "Hugging Face",
     retry: "다시 시도",
@@ -1085,6 +1090,10 @@ export const ko = {
       alternateSlot: "대체 단축키",
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
+      metaUnsupported: "Windows 키는 단축키에 사용할 수 없습니다.",
+      altGraphUnsupported: "AltGr 조합은 단축키로 사용할 수 없습니다.",
+      desktopOnly: "데스크톱 앱 전용",
+      builtInKey: "기본 제공: {key}",
       actions: {
         findInPage: {
           label: "페이지에서 찾기",
@@ -1285,6 +1294,10 @@ export const ko = {
         steerMessage: {
           label: "응답 조정",
           description: "현재 응답을 중단하고 초안을 다음으로 보냅니다",
+        },
+        stopGeneration: {
+          label: "생성 중지",
+          description: "작성 중인 응답을 중지합니다",
         },
         cycleReasoningEffort: {
           label: "추론 강도 순환",
@@ -1805,20 +1818,14 @@ export const ko = {
       },
       notifications: {
         sectionTitle: "알림",
-        showLlamaUpdates: "llama.cpp 업데이트 알림",
-        showLlamaUpdatesDescription:
-          "새 모델 실행을 위한 최신 llama.cpp 업데이트가 있으면 알려드립니다. 학습 기능만 사용하는 경우 꺼두세요.",
-        showLoadedModels: "로드된 모델 표시기",
-        showLoadedModelsDescription:
-          "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
-        showAudioCppUpdates: "audio.cpp 업데이트 알림",
-        showAudioCppUpdatesDescription:
-          "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
-        showUnslothUpdates: "Unsloth 업데이트 알림",
-        showUnslothUpdatesDescription:
-          "설치할 수 있는 새 Unsloth 버전이 있으면 알립니다.",
+        showLoadedModels: "로드된 모델 카드",
+        showLoadedModelsDescription: "로드된 모든 모델을 보여 주는 모서리 카드로, 클릭 한 번에 내릴 수 있습니다.",
+        updateReminders: "업데이트 알림",
+        updateRemindersDescription: "새 버전이 준비되면 얼마나 자주 안내할지 정합니다.",
+        llamaHint: "채팅 및 GGUF 모델",
+        audioHint: "음성, 음악, 받아쓰기",
         frequency: {
-          always: "항상",
+          always: "나올 때마다",
           daily: "하루에 한 번",
           weekly: "일주일에 한 번",
           biweekly: "2주에 한 번",
@@ -1971,6 +1978,18 @@ export const ko = {
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
       },
+      fullInstall: {
+        label: "설치 유형",
+        description:
+          "채팅 전용(GGUF). 전체 설치에는 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능이 추가됩니다.",
+        action: "전체 설치로 업그레이드",
+        confirmTitle: "전체 설치로 업그레이드할까요?",
+        confirmDescription:
+          "이 채팅 전용 설치는 GGUF 모델을 실행합니다. 전체 설치는 이 컴퓨터의 GPU에 맞는 PyTorch를 추가하여 학습, 내보내기, 동영상, safetensors 모델, 더 많은 이미지 생성 기능을 사용할 수 있게 합니다. 수 GB(디스크 공간 5GB 이상)를 다운로드하고 서버를 다시 시작합니다. 채팅, 모델, 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmAction: "업그레이드",
+        keywords:
+          "full install upgrade 설치 유형 전체 설치 업그레이드 채팅 전용 chat only gguf add training 학습 훈련 train fine-tune pytorch torch 내보내기 동영상 이미지 생성 safetensors",
+      },
       repairInstall: {
         label: "설치 복구",
         description:
@@ -1979,6 +1998,8 @@ export const ko = {
         confirmTitle: "이 설치를 복구할까요?",
         confirmDescription:
           "서버를 중지하고 설치 프로그램을 다시 실행하여 이 컴퓨터의 GPU에 맞는 PyTorch를 다시 설치합니다. 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmDescriptionChatOnly:
+          "서버를 중지하고 설치 프로그램을 다시 실행합니다. 이 설치는 채팅 전용이므로 설치 프로그램이 PyTorch를 포함한 전체 설치로도 업그레이드합니다(총 수 GB). 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "지금 복구",
       },
       resetPreferences: {
@@ -2059,9 +2080,9 @@ export const ko = {
         longestStreak: "최장 연속 기록",
         activityTitle: "토큰 활동",
         activityDescription: {
-          daily: "최근 {weeks} 동안 {total}",
-          weekly: "최고 주 {total} · 최근 {weeks}",
-          cumulative: "최근 {weeks} 동안 누적 {total}",
+          daily: "{since} 이후 {total}",
+          weekly: "가장 많은 주 {total} · {since} 이후",
+          cumulative: "{since} 이후 누적 {total}",
         },
         mode: {
           daily: "일별",
@@ -2070,8 +2091,9 @@ export const ko = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} 주간 · {tokens}",
-        chartToggle: "차트",
-        chartToggleHint: "주별 및 누적을 축 레이블이 있는 차트로 표시",
+        emptyDayTooltip: "{date} · 활동 없음",
+        apiRequests: "API로 {count}건",
+        cumulativeTooltip: "{date} 주까지 · 누적 {tokens}",
         less: "적음",
         more: "많음",
         insightsTitle: "활동 분석",
@@ -2695,6 +2717,10 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      showReplyTimes: "응답 시간",
+      showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
+      showReplyTimesKeywords:
+        "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
@@ -3099,6 +3125,7 @@ export const ko = {
       relativeNever: "없음",
       relativeJustNow: "방금",
       expired: "만료됨",
+      expiredStatus: "만료됨",
       today: "오늘",
       created: "생성: {value}",
       used: "마지막 사용: {value}",
@@ -3127,6 +3154,14 @@ export const ko = {
         autoSwitchOff:
           "모델 자동 전환이 켜져 있을 때만 이름으로 모델을 불러옵니다. 자동 전환을 켜거나 먼저 오디오 페이지에서 모델을 불러오세요.",
         useViaApi: "API로 사용",
+      },
+      mediaApi: {
+        title: "이미지 및 동영상 API",
+        description: "OpenAI 호환 엔드포인트로 직접 작성한 코드에서 이미지와 동영상을 생성하세요.",
+        images: "이미지",
+        video: "동영상",
+        placeholderModel: "표시된 모델은 예시입니다. 이미지 또는 동영상 페이지에서 모델을 로드한 뒤 그 페이지의 API 버튼으로 여기를 열면 채워집니다.",
+        autoSwitchOff: "미디어 자동 전환이 꺼져 있어 요청은 이름과 관계없이 페이지에 로드된 모델에서 실행됩니다.",
       },
       decisionApi: {
         title: "판단 API",
@@ -3207,6 +3242,24 @@ export const ko = {
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       audioCppVersion: "audio.cpp 버전",
+      whisperCppVersion: "whisper.cpp 버전",
+      engines: {
+        title: "엔진",
+        description: "Unsloth가 모델을 실행하는 데 사용하는 런타임입니다. 업데이트는 재시작 없이 백그라운드에서 설치됩니다.",
+        updatesLabel: "엔진 업데이트",
+        notInstalled: "설치되지 않음",
+        available: "{version} 사용 가능",
+        upToDate: "최신 상태",
+        updatesAvailable: "업데이트 있음",
+        checking: "업데이트 확인 중...",
+        checkFailed: "업데이트를 확인할 수 없습니다. 나중에 다시 시도하세요.",
+        unsupported: "이 설치의 엔진은 Unsloth 외부에서 관리됩니다.",
+        checkForUpdates: "업데이트 확인",
+        update: "업데이트",
+        updating: "업데이트 중...",
+        updated: "엔진이 업데이트되었습니다.",
+        updateFailed: "업데이트 실패: {error}",
+      },
       hardware: "하드웨어",
       gpu: "GPU",
       gpuIntegrated: "내장",
@@ -3291,6 +3344,9 @@ export const ko = {
         docsUpdating: "업데이트",
         docsMac: "Mac",
         docsWindows: "Windows",
+        docsLinux: "Linux",
+        docsDocker: "Docker",
+        docsAmd: "AMD",
       },
     },
   },
@@ -4634,5 +4690,42 @@ export const ko = {
     cantRun: "실행할 수 없습니다",
     failed: "오류 {status}",
     invalidJson: "요청 본문이 올바른 JSON이 아닙니다.",
+  },
+  floatingPanels: {
+    loadedModels: {
+      title: "로드된 모델",
+      countOne: "모델 {count}개 로드됨",
+      countMany: "모델 {count}개 로드됨",
+      pillLabel: "{count}. 세부 정보를 보거나 드래그하여 이동",
+      dragToMove: "드래그하여 이동",
+      dragHandleLabel: "로드된 모델 패널을 이동합니다. 방향키로 조금씩 움직일 수 있습니다.",
+      collapse: "접기",
+      collapseLabel: "로드된 모델 접기",
+      close: "닫기",
+      closeLabel: "로드된 모델 닫기",
+      backOnNextLoad: "다음 모델을 로드할 때 다시 표시됩니다",
+      ejectToFree: "꺼내서 메모리 확보",
+      ejectLabel: "{model} 꺼내기",
+      openTarget: "{target} 열기",
+      rowLabel: "{model}. {target} 열기",
+      loading: "로딩 중",
+      ejecting: "꺼내는 중",
+      stillInMemory: "아직 메모리에 있음",
+      alsoServing: "함께 서비스 중",
+      noneLoaded: "로드된 모델 없음",
+      noneLoadedDetail: "로드한 모델이 여기에 표시됩니다.",
+      otherAccount: "다른 계정에서 사용 중",
+      otherAccountDetail: "볼 수 없는 모델이 메모리를 점유하고 있습니다",
+      toastStillResident: "꺼내는 중에 \"{model}\"이(가) 로드되어 아직 메모리를 사용하고 있습니다. 다시 꺼내면 메모리가 해제됩니다.",
+      toastUnverified: "{model}의 언로드를 요청했지만 런타임이 확인하지 않았습니다. 잠시 후 카드를 확인하세요.",
+      toastAlreadyFree: "{model}은(는) 더 이상 로드되어 있지 않았습니다.",
+      toastReplaced: "{model}은(는) 더 이상 로드되어 있지 않습니다. \"{resident}\"이(가) 그 자리를 차지했으며 그대로 두었습니다.",
+      toastEjected: "{model} 꺼냄",
+      toastFailed: "{model}을(를) 꺼내지 못했습니다",
+    },
+    monitor: {
+      dragHandleLabel: "실시간 모니터를 이동합니다. 방향키로 조금씩 움직이고, 더블클릭하면 위치가 초기화됩니다.",
+      reconnecting: "다시 연결하는 중...",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

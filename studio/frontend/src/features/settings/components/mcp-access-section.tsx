@@ -12,6 +12,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { translate, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -40,10 +41,7 @@ import {
   hasMcpSnippet,
 } from "./mcp-agent-snippet";
 import { SettingsRow } from "./settings-row";
-import {
-  readUseTunnelPref,
-  subscribeUseTunnelPref,
-} from "./tunnel-preference";
+import { readUseTunnelPref, subscribeUseTunnelPref } from "./tunnel-preference";
 
 const ENV_FORCE = "UNSLOTH_STUDIO_ENABLE_MCP";
 const MCP_AGENTS = SUPPORTED_AGENTS.filter((agent) => hasMcpSnippet(agent.id));
@@ -133,7 +131,11 @@ export function McpAccessSection({
   // match the server address shown by the API examples.
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
   const snippet = settings?.enabled
     ? (buildMcpSnippet(agent, base, os, apiKey) ??
       buildMcpSnippet(agent, settings.url, os, apiKey))
