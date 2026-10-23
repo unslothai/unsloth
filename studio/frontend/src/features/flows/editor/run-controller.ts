@@ -52,12 +52,16 @@ export interface RunOptions {
   bake?: boolean;
 }
 
+// Set before the start request is awaited: a double-click on Run must not start two runs.
+let starting = false;
+
 export async function runFlow(options: RunOptions = {}): Promise<void> {
   const docState = useDocStore.getState();
   const flowId = docState.flowId;
   if (!flowId) return;
   const runtime = useRuntimeStore.getState();
   if (
+    starting ||
     runtime.runStatus === "running" ||
     runtime.runStatus === "queued" ||
     runtime.runStatus === "cancelling"
@@ -65,6 +69,7 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
     toast.message("A run is already in progress");
     return;
   }
+  starting = true;
   try {
     const { run_id } = await startRun(flowId, {
       doc: documentFromState(docState),
@@ -80,6 +85,8 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
     toast.error(
       error instanceof Error ? error.message : "Could not start the run",
     );
+  } finally {
+    starting = false;
   }
 }
 

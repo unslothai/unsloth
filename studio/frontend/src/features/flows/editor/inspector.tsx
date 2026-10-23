@@ -20,6 +20,7 @@ import { MediaThumb, isMediaValue } from "./media";
 import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
 import { TriggerPanel } from "./trigger-panel";
+import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
@@ -42,6 +43,7 @@ function OutputValue({ value }: { value: unknown }) {
       </div>
     );
   }
+  if (isStructuredValue(value)) return <StructuredOutput value={value} />;
   if (typeof value === "string") {
     return (
       <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-zinc-200">
@@ -71,6 +73,12 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
         </p>
       )}
       {!hasOutputs && runtime.text && <OutputValue value={runtime.text} />}
+      {hasOutputs &&
+        spec.outputs.length === 0 &&
+        // Preview and Result blocks have no output ports; show the value they display.
+        Object.entries(runtime.outputs ?? {}).map(([key, value]) => (
+          <OutputValue key={key} value={value} />
+        ))}
       {hasOutputs &&
         spec.outputs.map((port) =>
           runtime.outputs && port.id in runtime.outputs ? (

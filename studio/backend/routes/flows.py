@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
-from core.flows import capabilities, compiler, package, triggers
+from core.flows import capabilities, compiler, notebook_import, package, triggers
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -205,6 +205,23 @@ async def import_flow(request: Request, name: Optional[str] = None) -> dict:
     if not data:
         raise HTTPException(status_code = 400, detail = "The upload is empty")
     record, report = await asyncio.to_thread(_import_doc, data, name)
+    report["missing_models"] = await _missing_models(request, record["doc"])
+    return {"flow": record, "report": report}
+
+
+@router.post("/import/notebook")
+async def import_notebook(request: Request, name: str = "notebook.ipynb") -> dict:
+    """An Unsloth notebook read as data (never run): a new flow, or a report saying to open it in Colab."""
+    data = await _read_body(request, notebook_import.MAX_NOTEBOOK_BYTES)
+    if not data:
+        raise HTTPException(status_code = 400, detail = "The upload is empty")
+    try:
+        doc, report = await asyncio.to_thread(notebook_import.read_notebook, data, name[:200])
+    except notebook_import.NotebookImportError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    if doc is None:
+        return {"flow": None, "report": report}
+    record, _report = await asyncio.to_thread(_import_doc, json.dumps(doc).encode())
     report["missing_models"] = await _missing_models(request, record["doc"])
     return {"flow": record, "report": report}
 
