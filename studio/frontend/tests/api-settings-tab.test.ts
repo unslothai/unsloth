@@ -16,6 +16,24 @@ test("the API tab leaves Remote & LAN to its own tab, the next one down", () => 
   );
 });
 
+test("the API tab still publishes a tunnel URL that comes up after it opens", () => {
+  const hook = readSrc("features/settings/hooks/use-publish-access-urls.ts");
+  assert.match(TAB, /usePublishAccessUrls\(isOwner\);/);
+  assert.match(
+    hook,
+    /usePlatformStore\.setState\(\{ cloudflareUrl: next\.url \}\)/,
+  );
+  assert.match(
+    hook,
+    /next\.state === "starting" \|\| next\.state === "stopping"/,
+  );
+  assert.match(
+    hook,
+    /window\.setTimeout\(readRemote, remoteAccessPollDelay\(next\)\)/,
+  );
+  assert.match(hook, /publishLanUrls\(next\)/);
+});
+
 test("usage examples sit right under the keys, where a new key lands", () => {
   const examples = TAB.indexOf("<UsageExamples");
   assert.ok(examples > TAB.indexOf("<CreateKeyForm"));
