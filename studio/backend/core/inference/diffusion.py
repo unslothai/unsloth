@@ -118,6 +118,7 @@ from .diffusion_device import (
 from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
 from .diffusion_zimage_cfg_split import (
     install_zimage_cfg_split,
+    split_aware_request_extra,
     uninstall_zimage_cfg_split,
     zimage_cfg_split_status,
 )
@@ -222,9 +223,13 @@ from .diffusion_memory import (
     with_label_part,
     applied_plan,
     release_resident_groups,
+    release_for_decode,
     resident_group_mib,
     hook_resident_denoiser,
     measured_request_extra_mib,
+    DECODE_LEND_ATTR,
+    decode_lend_from_plan,
+    with_workflow,
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _torchao_stream_pinnable,
@@ -270,6 +275,7 @@ from .diffusion_speed import (
     snapshot_backend_flags,
 )
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
+from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_attention import (
     apply_attention_backend,
@@ -282,6 +288,7 @@ from .diffusion_attention import (
     begin_attention_run,
     report_attention_run,
     select_attention_backend,
+    _dit_head_dims,
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
@@ -310,6 +317,7 @@ from .diffusion_cache import (
     TC_STATIC,
     apply_step_cache,
     auto_static_skip_plan,
+    auto_step_cache_mode,
     auto_step_cache_allowed,
     skip_tier,
     cache_breaks_graph,
@@ -2305,9 +2313,308 @@ def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
         return False
     try:
         pipe._unsloth_measured_reserve = None
+        setattr(
+            pipe, DECODE_LEND_ATTR, None
+        )  # the lent encoder residency was priced on the same one-card plan
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+RELEASE_BEFORE_TILING_ENV = "UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING"
+RELEASE_BEFORE_TILING_LAYER = "release_before_tiling"
+RELEASE_BEFORE_TILING_STATS = "_unsloth_release_before_tiling_stats"
+
+
+def _release_before_tiling_off() -> bool:
+    return os.environ.get(RELEASE_BEFORE_TILING_ENV, "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
+    """MiB short for decoding ``z`` untiled, by ``decode_tile_budget``'s rule on the whole frame. None off CUDA,
+    on unknown figures, or when ``decode_platform_cap`` is under the frame."""
+    from .diffusion_vae_tiling import (
+        FREE_FRACTION,
+        _free_mib,
+        _fused,
+        _geometry,
+        decode_mib_per_latent,
+        decode_platform_cap,
+    )
+    try:
+        cap = decode_platform_cap(vae, z)
+        if cap is not None and cap < int(z.shape[-2]) * int(z.shape[-1]):
+            return None
+        free = _free_mib(vae, z)
+        if free is None:
+            return None
+        mib, scale = free
+        frames = int(z.shape[2]) if z.dim() == 5 else 1
+        batch = 1 if bool(getattr(vae, "use_slicing", False)) else int(z.shape[0])
+        per_latent = decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__)
+        need = batch * frames * int(z.shape[-2]) * int(z.shape[-1]) * per_latent * scale
+        return int(-(-(need / FREE_FRACTION - mib) // 1))
+    except Exception:  # noqa: BLE001 - unknown figures: decode as planned (tiled)
+        return None
+
+
+def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
+    """MiB short for encoding ``x`` untiled, the decode's rule; None off CUDA or on unknown figures."""
+    from .diffusion_vae_tiling import FREE_FRACTION, _fused, _geometry, encode_mib_per_latent
+    try:
+        import torch
+
+        if getattr(x, "device", None) is None or x.device.type != "cuda":
+            return None
+        ratio = int(_geometry(vae)[0])
+        per_latent = encode_mib_per_latent(ratio, _fused(vae), type(vae).__name__)
+        if per_latent is None or ratio <= 0:
+            return None
+        free, _ = torch.cuda.mem_get_info(x.device)
+        free += torch.cuda.memory_reserved(x.device) - torch.cuda.memory_allocated(x.device)
+        elem = next(vae.encoder.parameters()).element_size()
+        # enable_fp16_vae_decode's fp32_encode upcasts the fp16 encoder and input for the encode itself
+        if getattr(vae, "_unsloth_fp16_decode", False):
+            elem = max(elem, 4)
+        scale = elem / 2
+        frames = int(x.shape[2]) if x.dim() == 5 else 1
+        batch = 1 if bool(getattr(vae, "use_slicing", False)) else int(x.shape[0])
+        latents = -(-int(x.shape[-2]) // ratio) * -(-int(x.shape[-1]) // ratio)
+        need = batch * frames * latents * per_latent * scale
+        return int(-(-(need / FREE_FRACTION - free / 2**20) // 1))
+    except Exception:  # noqa: BLE001 - unknown figures: encode tiled
+        return None
+
+
+def _release_for_untiled(
+    state_pipe: Any, shortfall: Callable[[], Optional[int]], device: Any, logger: Any, reason: str
+) -> tuple[bool, Optional[Callable[[], None]]]:
+    """(untiled?, restore). Streams the shortfall plus margin, then the rest once; nothing when even every resident
+    group could not cover it (a freed MiB frees at most a MiB). Still short: pin back and tile."""
+    short = shortfall()
+    if short is None:
+        return False, None
+    if short <= 0:
+        return True, None
+    resident = resident_group_mib(state_pipe)
+    if short > resident:
+        return False, None
+    restore: Optional[Callable[[], None]] = None
+    try:
+        for need in (min(resident, short + short // 4 + 256), None):
+            if need is None:
+                need = resident_group_mib(state_pipe)
+                if need <= 0:
+                    break
+            step = release_resident_groups(state_pipe, need, logger, reason = reason, device = device)
+            if step is None:
+                break
+            restore = _chain_restores(step, restore)
+            again = shortfall()
+            if again is not None and again <= 0:
+                return True, restore
+            if need >= resident:
+                break
+    except Exception as exc:  # noqa: BLE001 - a broken release keeps the tiled pass
+        if logger is not None:
+            logger.warning("diffusion.memory: streaming before %s failed (%s)", reason, exc)
+    except BaseException:
+        # a cancel between a release and its handover: pin back before propagating
+        if restore is not None:
+            restore()
+        raise
+    if restore is not None:
+        restore()
+    return False, None
+
+
+def _release_for_untiled_decode(
+    state_pipe: Any, vae: Any, z: Any, device: Any, logger: Any
+) -> tuple[bool, Optional[Callable[[], None]]]:
+    return _release_for_untiled(
+        state_pipe,
+        lambda: _untiled_decode_shortfall_mib(vae, z),
+        device,
+        logger,
+        "an untiled VAE decode",
+    )
+
+
+def _release_for_untiled_encode(
+    state_pipe: Any, vae: Any, x: Any, device: Any, logger: Any
+) -> tuple[bool, Optional[Callable[[], None]]]:
+    """Untiled only on a positive fit check: on WDDM an overrun spills to host memory instead of raising."""
+    return _release_for_untiled(
+        state_pipe,
+        lambda: _untiled_encode_shortfall_mib(vae, x),
+        device,
+        logger,
+        "an untiled VAE encode",
+    )
+
+
+def _defer_tiling_to_decode(
+    pipe: Any,
+    state_pipe: Any,
+    verdict: Any,
+    guard_target: Any,
+    guard_kwargs: dict,
+    restore_vae: Any,
+    logger: Any,
+) -> Any:
+    """Tile verdict with resident offload groups: keep them through the denoise (as ComfyUI does) and decide at each
+    VAE decode / encode, on its own input, whether streaming lets it run untiled (tiling changes pixels, streaming
+    only costs time); groups pin back right after. An untiled encode OOM retries tiled. Wrappers sit on the public
+    ``decode`` / ``encode`` slots, outside compiled regions. Returns the VAE restore extended to drop them."""
+    vae = getattr(pipe, "vae", None)
+    if (
+        vae is None
+        or restore_vae is None
+        or verdict is None
+        or verdict.action != ACTIVATION_TILE
+        or verdict.overridden
+        or _release_before_tiling_off()
+        or not bool(getattr(vae, "use_tiling", False))
+        or not callable(getattr(vae, "decode", None))
+    ):
+        return restore_vae
+    resident = resident_group_mib(state_pipe)
+    if resident <= 0:
+        return restore_vae
+    # No request-wide "hopeless" gate: the verdict prices the denoise, gone by decode time.
+    try:
+        if _vae_on_other_card(pipe, guard_target) is not None:
+            return restore_vae
+    except Exception:  # noqa: BLE001 - unreadable split: the primary's card decodes
+        pass
+    from . import decode_layers
+    from .diffusion_vae_oom import _compiling, clear_partial_decode, drop_tracebacks, is_oom
+
+    device = getattr(guard_target, "torch_device", None)
+    stats = {"decodes": 0, "untiled": 0, "tiled": 0, "release_s": 0.0, "restore_s": 0.0,
+             "released_mib": 0, "encodes": 0, "encode_untiled": 0, "encode_tiled": 0,
+             "encode_released_mib": 0, "encode_oom": 0}  # fmt: skip
+    vae.__dict__[RELEASE_BEFORE_TILING_STATS] = stats
+
+    def make_decode(inner: Callable, layer: Any) -> Callable:
+        depth = [0]
+
+        def decode(*args: Any, **kwargs: Any) -> Any:
+            if depth[0] or _compiling():
+                return inner(*args, **kwargs)
+            depth[0] += 1
+            restore = None
+            untiled = False
+            try:
+                z = args[0] if args else kwargs.get("z")
+                t0 = time.perf_counter()
+                before = resident_group_mib(state_pipe)
+                untiled, restore = _release_for_untiled_decode(state_pipe, vae, z, device, logger)
+                stats["decodes"] += 1
+                stats["release_s"] += time.perf_counter() - t0
+                stats["untiled" if untiled else "tiled"] += 1
+                if restore is not None:
+                    stats["released_mib"] += max(0, before - resident_group_mib(state_pipe))
+                vae.use_tiling = not untiled
+                return inner(*args, **kwargs)
+            finally:
+                vae.use_tiling = False
+                if restore is not None:
+                    t1 = time.perf_counter()
+                    try:
+                        restore()
+                    except Exception as exc:  # noqa: BLE001 - the groups keep streaming
+                        if logger is not None:
+                            logger.warning(
+                                "diffusion.memory: re-residency after the decode failed: %s", exc
+                            )
+                    stats["restore_s"] += time.perf_counter() - t1
+                depth[0] -= 1
+
+        return decode
+
+    def make_encode(inner: Callable, layer: Any) -> Callable:
+        depth = [0]
+
+        def encode(*args: Any, **kwargs: Any) -> Any:
+            if depth[0] or _compiling() or bool(getattr(vae, "use_tiling", False)):
+                return inner(*args, **kwargs)
+            depth[0] += 1
+            restore = None
+            try:
+                x = args[0] if args else kwargs.get("x")
+                before = resident_group_mib(state_pipe)
+                untiled, restore = _release_for_untiled_encode(state_pipe, vae, x, device, logger)
+                stats["encodes"] += 1
+                stats["encode_untiled" if untiled else "encode_tiled"] += 1
+                if restore is not None:
+                    stats["encode_released_mib"] += max(0, before - resident_group_mib(state_pipe))
+                vae.use_tiling = not untiled
+                if not untiled:
+                    return inner(*args, **kwargs)  # oversized or unknown: tiled, as main
+                try:
+                    return inner(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - the backstop behind a fit check that was wrong
+                    if not is_oom(exc):
+                        raise
+                    drop_tracebacks(exc)
+                stats["encode_oom"] += 1
+                clear_partial_decode(vae, x)
+                vae.use_tiling = True
+                return inner(*args, **kwargs)
+            finally:
+                vae.use_tiling = False
+                if restore is not None:
+                    try:
+                        restore()
+                    except Exception as exc:  # noqa: BLE001 - the groups keep streaming
+                        if logger is not None:
+                            logger.warning(
+                                "diffusion.memory: re-residency after the encode failed: %s", exc
+                            )
+                depth[0] -= 1
+
+        return encode
+
+    layers = [decode_layers.wrap(vae, "decode", RELEASE_BEFORE_TILING_LAYER, make_decode)]
+    if callable(getattr(vae, "encode", None)):
+        layers.append(decode_layers.wrap(vae, "encode", RELEASE_BEFORE_TILING_LAYER, make_encode))
+    vae.use_tiling = False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: VAE tiling waits for the decode; resident groups stay resident for the denoise"
+        )
+
+    def restore_all() -> None:
+        for layer in reversed(layers):
+            decode_layers.unwrap(layer)
+        vae.use_tiling = True  # what the request's tiling left, for its own undo
+        restore_vae()
+
+    return restore_all
+
+
+def _chain_restores(
+    first: Optional[Callable[[], None]], then: Optional[Callable[[], None]]
+) -> Optional[Callable[[], None]]:
+    """One restore running ``first`` (the later release) and then ``then``; None when both are None."""
+    if first is None:
+        return then
+    if then is None:
+        return first
+
+    def restore() -> None:
+        try:
+            first()
+        finally:
+            then()
+
+    return restore
 
 
 def _tile_for_verdict(
@@ -2355,6 +2662,20 @@ def _tile_for_verdict(
             restore_vae()
         raise
     return restore_vae
+
+
+def plan_is_calibrated(plan: Any) -> bool:
+    """Whether ``plan`` was fitted to the measured activation row rather than the flat estimate: the one-card plan, or
+    a multi-GPU split priced with ``calibrated_split_headroom_mib``. The generate guard then charges conditioning
+    (ControlNet, references) on top and drops the flat default-resolution exemption."""
+    estimates = getattr(plan, "estimates", None) or {}
+    if "calibrated_headroom_mib" in estimates:
+        return True
+    split = (
+        getattr(plan, "layer_split", None) is not None
+        or getattr(plan, "secondary_ordinal", None) is not None
+    )
+    return split and "calibrated_split_headroom_mib" in estimates
 
 
 def _controlnet_streams(state: Any) -> bool:
@@ -2432,7 +2753,7 @@ def _quadratic_attention(
         except Exception:  # noqa: BLE001
             return False
     try:
-        if not sdpa_math_only(target):
+        if not sdpa_math_only(target, _dit_head_dims(pipe)):
             return False
     except Exception:  # noqa: BLE001 - a broken probe must never block a generation
         return False
@@ -2699,16 +3020,29 @@ def _record_peak_probe(
     height: Optional[int],
     batch_size: int,
     target: Any = None,
+    workflow: Optional[str] = None,
 ) -> None:
-    """Persist a completed render's peak above its starting allocation under the load's peak identity."""
+    """Persist a completed render's peak above its starting allocation under the load's peak identity, keyed for
+    ``workflow`` (``with_workflow``: text-to-image keeps the load's key), with its pre-decode / decode phases."""
     if probe is None or not width or not height:
         return
     identity = getattr(getattr(state, "pipe", None), "_unsloth_peak_identity", None)
     try:
-        from .diffusion_measured_peaks import device_name, record
+        from .diffusion_measured_peaks import (
+            PHASE_DECODE,
+            PHASE_DECODE_UNPADDED,
+            PHASE_PRE_DECODE,
+            PHASE_UNPADDED,
+            device_name,
+            record,
+        )
 
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
+            return
+        if getattr(probe, "decode_released", False):
+            # the decode streamed lent groups out, so its peak is net of their bytes: a sample would under-size the
+            # bucket (the placement that lent them already held a sample covering this decode)
             return
         if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
@@ -2732,7 +3066,19 @@ def _record_peak_probe(
         index = getattr(probe.device, "index", None)
         graphs = cuda_graph.live_graph_count(index)
         generation = cuda_graph.capture_generation(index)
-        peak += int(getattr(probe, "window_pad", 0) or 0)
+        pad = int(getattr(probe, "window_pad", 0) or 0)
+        peak += pad
+        split = getattr(probe, "phase_peaks", None) or {}
+        phases = {}
+        if PHASE_PRE_DECODE in split and PHASE_DECODE in split:
+            pre, dec = int(split[PHASE_PRE_DECODE]), int(split[PHASE_DECODE])
+            phases = {
+                PHASE_PRE_DECODE: pre + pad,
+                PHASE_DECODE: dec + pad,
+                PHASE_DECODE_UNPADDED: dec,
+                PHASE_UNPADDED: max(pre, dec),
+            }
+        quant = with_workflow(quant, _peak_workflow(getattr(state, "family", None), workflow))
         held: list = []
         raised = record(
             family = family,
@@ -2745,6 +3091,7 @@ def _record_peak_probe(
             device_name = device_name(probe.device),
             quadratic = _quadratic_attention(target, engaged, state.pipe),
             held = held,
+            phases = phases,
         )
         if held:
             # the store holds this sample, so it covers the graphs the render recorded; unpersisted, they stay dirty
@@ -9250,6 +9597,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_static_seed", True),
                                 plan.estimates.get("measured_learned_cfg_off", False),
                             )
+                            setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
 
@@ -9539,7 +9887,7 @@ class DiffusionBackend:
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
                         offload_policy = effective_policy,
-                        calibrated_placement = "calibrated_headroom_mib" in plan.estimates,
+                        calibrated_placement = plan_is_calibrated(plan),
                         vae_tiling = effective_tiling,
                         memory_mode = plan.requested_mode,
                         speed_mode = effective_speed,
@@ -12207,6 +12555,34 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
+
+                # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
+                strength_applied = effective_request_strength(
+                    strength,
+                    init_pil is not None,
+                    "strength" in call_params,
+                    call_params["strength"].default if "strength" in call_params else None,
+                )
+                denoise_steps = effective_denoise_steps(steps, strength_applied)
+                auto_step_cache_on = False
+                # (mode,) once the pre-guard disable ran, so the toggle below is not repeated
+                pre_guard_toggle = None
+                if state.cache_auto:
+                    # Judged on the pipeline that RUNS: from_pipe workflows open no cache_context for FBCache.
+                    from .diffusion_autoopt.runtime import auto_cache_steps
+
+                    cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
+                    auto_step_cache_on = auto_step_cache_mode(cache_steps) is not None
+                    if not auto_step_cache_on:
+                        pre_guard_toggle = (
+                            maybe_toggle_step_cache(
+                                state.pipe,
+                                steps = cache_steps,
+                                quant_active = state.cache_quant_active,
+                                threshold = state.cache_threshold,
+                                logger = logger,
+                            ),
+                        )
                 guard_width = guard_height = guard_target = None
                 guard_batch = 1
 
@@ -12257,14 +12633,21 @@ class DiffusionBackend:
                         and ref_resolution is None
                         and not is_flux3_family(fam)
                     )
-                    extra_mib = measured_request_extra_mib(
+                    guard_cfg, extra_mib = split_aware_request_extra(
                         state.pipe,
-                        width = guard_width,
-                        height = guard_height,
-                        batch_size = guard_batch,
-                        condition_pixels = guard_condition_pixels,
-                        cfg = guard_cfg,
-                        unpriced_references = guard_unpriced_refs,
+                        guard_cfg,
+                        workflow,
+                        lambda cfg: measured_request_extra_mib(
+                            state.pipe,
+                            width = guard_width,
+                            height = guard_height,
+                            batch_size = guard_batch,
+                            condition_pixels = guard_condition_pixels,
+                            cfg = cfg,
+                            unpriced_references = guard_unpriced_refs,
+                            workflow = _peak_workflow(fam, workflow),
+                        ),
+                        step_cache = auto_step_cache_on,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
@@ -12300,9 +12683,21 @@ class DiffusionBackend:
                     if _hires_pass is not None and _hires_pass.preflight is not None:
                         _hires_pass.preflight(guard_kwargs)
                     _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
+                    tiled_before = bool(getattr(getattr(pipe, "vae", None), "use_tiling", False))
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
                     )
+                    # tiling changes pixels, streaming only costs time: defer the choice to the decode
+                    if not tiled_before:
+                        restore_vae = _defer_tiling_to_decode(
+                            pipe,
+                            state.pipe,
+                            verdict,
+                            guard_target,
+                            guard_kwargs,
+                            restore_vae,
+                            logger,
+                        )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
                 except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe
@@ -12440,36 +12835,28 @@ class DiffusionBackend:
                         pipe, fam, sd_controls, chunk_kwargs, guidance = guidance
                     ):
                         weighting_used[0] = True
-                    with sd_controls_mod.variation_latents(
-                        pipe,
-                        chunk_variation,
-                        sd_controls.variation_strength if sd_controls is not None else None,
+                    with (
+                        sd_controls_mod.variation_latents(
+                            pipe,
+                            chunk_variation,
+                            sd_controls.variation_strength if sd_controls is not None else None,
+                        ),
+                        pipeline_upcasts_keep_storage(pipe),
                     ):
                         return pipe(**chunk_kwargs).images
 
-                # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
-                strength_applied = effective_request_strength(
-                    strength,
-                    init_pil is not None,
-                    "strength" in call_params,
-                    call_params["strength"].default if "strength" in call_params else None,
-                )
-                denoise_steps = effective_denoise_steps(steps, strength_applied)
-
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
-                    # Judged against the pipeline that RUNS this call: a from_pipe workflow (FLUX.1 img2img /
-                    # inpaint) shares the denoiser but opens no cache_context, which the FBCache hooks need.
-                    from .diffusion_autoopt.runtime import auto_cache_steps
-
-                    cache_steps, runner_reason = auto_cache_steps(state.pipe, pipe, denoise_steps)
-                    toggled = maybe_toggle_step_cache(
-                        state.pipe,
-                        steps = cache_steps,
-                        quant_active = state.cache_quant_active,
-                        threshold = state.cache_threshold,
-                        logger = logger,
-                    )
+                    if pre_guard_toggle is not None:
+                        toggled = pre_guard_toggle[0]
+                    else:
+                        toggled = maybe_toggle_step_cache(
+                            state.pipe,
+                            steps = cache_steps,
+                            quant_active = state.cache_quant_active,
+                            threshold = state.cache_threshold,
+                            logger = logger,
+                        )
                     if toggled != state.transformer_cache:
                         # _LoadState is frozen; this in-place update is deliberate so status reports the pipe-level toggle.
                         object.__setattr__(state, "transformer_cache", toggled)
@@ -12494,6 +12881,7 @@ class DiffusionBackend:
                 except Exception:  # noqa: BLE001 - an unknown guidance mode records nothing
                     state.pipe._unsloth_peak_cfg = None
                 peak_probe = _start_peak_probe(state)
+                decode_restores: list = []
                 try:
                     previewer = _start_previewer()
                     pending = list(chunks)
@@ -12569,6 +12957,22 @@ class DiffusionBackend:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            if peak_probe is not None:
+                                peak_probe.mark_decode()
+                            # encoder residency lent to the decode streams again only if free memory is short now
+                            restore = release_for_decode(
+                                state.pipe,
+                                width = guard_width,
+                                height = guard_height,
+                                batch_size = len(chunk),
+                                device = getattr(guard_target, "torch_device", None),
+                                logger = logger,
+                            )
+                            if restore is not None:
+                                decode_restores.append(restore)
+                                if peak_probe is not None:
+                                    # the decode ran with fewer weights than the probe's baseline: its peak understates
+                                    peak_probe.decode_released = True
                             marked = False
                             for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                                 with _hold_off_cuda_graph_capture() as clear:
@@ -12630,7 +13034,17 @@ class DiffusionBackend:
                             )
                             continue
                         finally:
-                            # Report eager fallback on every exit, so status and LoRA gating stop calling it compiled.
+                            while decode_restores:
+                                try:
+                                    decode_restores.pop()()
+                                except Exception as restore_exc:  # noqa: BLE001 - the groups keep streaming
+                                    logger.warning(
+                                        "diffusion.memory: re-pinning groups after the decode failed (%s)",
+                                        restore_exc,
+                                    )
+                            # A guarded block that fell back to eager (compile failed at its first forward) no longer
+                            # runs compiled: report it on every exit, cancel and error included, so status, LoRA gating
+                            # and the compile-cache shape registry stop treating it as compiled.
                             settle_compile_fallback(state, state.pipe, logger)
                         if cancel.is_set():
                             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -12675,6 +13089,7 @@ class DiffusionBackend:
                     height = guard_height,
                     batch_size = max(chunk_shapes or [1]),
                     target = guard_target,
+                    workflow = workflow,
                 )
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
@@ -13188,6 +13603,17 @@ def _hires_status(fam: DiffusionFamily) -> dict[str, Any]:
         else None,
         "upscale_models": models if getattr(fam, "img2img_pipeline_class", None) else [],
     }
+
+
+def _peak_workflow(fam: Any, workflow: Optional[str]) -> Optional[str]:
+    """``workflow`` for the learned-peak key, None when it is the family's only workflow (an edit-only family): those
+    renders are what its loads place from, so they stay on the load key."""
+    try:
+        if fam is not None and _family_workflows(fam) == [str(workflow or "").strip().lower()]:
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+    return workflow
 
 
 def _family_workflows(fam: DiffusionFamily) -> list[str]:

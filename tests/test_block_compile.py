@@ -1395,3 +1395,71 @@ def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
     assert calls == []
     model.layers[0](x).sum().backward()
     assert calls
+
+
+def test_router_logits_capture_compiles_one_graph_for_every_layer(monkeypatch):
+    """A capture hook inside the block appends to an empty scratch list on every call.
+
+    Before: the hook appended to the collector's list and Dynamo guarded on its length (the layer
+    index), so each of 10 layers compiled its own graph. Now <= 2 graphs (static, then dynamic) across
+    10 layers at 10 sequence lengths, and the collected logits match the stock forward in order.
+    """
+    output_capturing = pytest.importorskip("transformers.utils.output_capturing")
+    misc = pytest.importorskip("unsloth_zoo.temporary_patches.misc")
+    if not hasattr(misc, "output_capture_scratch"):
+        pytest.skip("needs an unsloth_zoo with output_capture_scratch (unsloth-zoo#2041)")
+    misc.patch_output_collector_for_compiled_submodules()
+    from torch._dynamo.testing import CompileCounter
+
+    M = _load()
+    cc = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kw: real_compile(fn, backend = cc, fullgraph = False, dynamic = None),
+    )
+    var = output_capturing._active_collector
+
+    class RouterDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8)
+            self.router = torch.nn.Linear(8, 4)
+
+            def hook(
+                module, args, output
+            ):  # transformers' capture hook for a non hidden_states key
+                collected = var.get()
+                if collected is None or "router_logits" not in collected.keys():
+                    return
+                collected["router_logits"].append(output)
+
+            self.router.register_forward_hook(hook)
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            return self.proj(hidden_states) + self.router(hidden_states).sum(-1, keepdim = True)
+
+    M._wrap(RouterDecoderLayer, {})
+    lengths = [5, 9, 12, 17, 23, 31, 40, 47, 58, 64]
+    layers = [RouterDecoderLayer() for _ in lengths]
+    xs = [torch.randn(2, n, 8) for n in lengths]
+    with torch.no_grad():
+        want = [layer.router(x) for layer, x in zip(layers, xs)]
+    torch._dynamo.reset()
+    collected = {"router_logits": []}
+    token = var.set(collected)
+    try:
+        for layer, x in zip(layers, xs):
+            layer(x.requires_grad_())
+    finally:
+        var.reset(token)
+    assert cc.frame_count <= 2, f"{cc.frame_count} graphs for {len(lengths)} layers"
+    got = collected["router_logits"]
+    assert len(got) == len(want)
+    for g, w in zip(got, want):
+        torch.testing.assert_close(g.detach(), w)

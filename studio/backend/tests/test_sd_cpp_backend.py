@@ -1459,6 +1459,7 @@ def _run_server_load(
     device = "cpu",
     gguf_filename = "z.gguf",
     family_override = None,
+    gpu_ordinal = None,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1489,6 +1490,7 @@ def _run_server_load(
         family_override = family_override,
         hf_token = None,
         _load_token = 1,
+        gpu_ordinal = gpu_ordinal,
     )
 
 
@@ -2965,3 +2967,123 @@ def test_the_native_progress_total_is_sized_where_the_assets_are_fetched(monkeyp
     b._set_expected_bytes(assets, None)
     assert asked == ["unsloth/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
     assert b._loading.expected_bytes == 2_000
+
+
+@pytest.mark.parametrize(
+    "device,ccs,expected",
+    [
+        ("cuda", [(10, 0)], {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}),
+        ("cuda", [(8, 9)], None),
+        ("cuda", [], None),
+        ("cpu", [(10, 0)], None),
+    ],
+)
+def test_cuda_sd_server_gets_the_bf16_cublas_route_by_compute_capability(
+    monkeypatch, device, ccs, expected
+):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: list(ccs))
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = device)
+    assert servers and servers[-1].env == expected
+    assert dict(b._state.child_env) == (expected or {})
+
+
+@pytest.mark.parametrize(
+    "weight_types", [frozenset({"Q4_K", "Q5_K"}), frozenset({"Q8_0", "Q4_K"}), None]
+)
+def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    seen: list = []
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod,
+        "gguf_quantized_weight_types",
+        lambda path: seen.append(path) or weight_types,
+    )
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert seen == ["/m/z.gguf"]  # the diffusion model, not the encoder or VAE
+    assert servers[-1].env is None
+    assert dict(b._state.child_env) == {}
+
+
+def test_a_user_quant_cublas_value_reaches_sd_server_unchanged(monkeypatch):
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert servers[-1].env is None
+
+
+def test_the_capability_probe_is_bounded_when_the_driver_stalls(monkeypatch):
+    import sys
+    import time
+
+    release = threading.Event()
+    cuda = types.SimpleNamespace(is_available = lambda: release.wait(30) or True)
+    fake_torch = types.SimpleNamespace(version = types.SimpleNamespace(hip = None), cuda = cuda)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    start = time.monotonic()
+    try:
+        assert bk._torch_cuda_capabilities(None, timeout_s = 0.2) == []
+    finally:
+        release.set()
+    assert time.monotonic() - start < 5
+
+
+def test_the_cublas_route_follows_a_deferred_install_onto_cuda(monkeypatch):
+    # Placed on the CPU bundle first; the deferred upgrade lands the CUDA build, so the committed env must follow.
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    installed = {"accelerator": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed["accelerator"])
+
+    def _upgrade(self, server_binary, **_kw):
+        installed["accelerator"] = "cuda"
+        return server_binary
+
+    monkeypatch.setattr(SdCppDiffusionBackend, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "cuda")
+    )
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert b._state.device == "cuda"
+    assert servers[-1].env == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert dict(b._state.child_env) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+
+
+@pytest.mark.parametrize(
+    "resolved,expected", [("CUDA1", {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}), (None, None)]
+)
+def test_an_unresolved_pin_judges_every_visible_card(monkeypatch, resolved, expected):
+    # Card 1 is an A100, card 0 (sd.cpp's default) an Ada card. Without the pin sd.cpp runs on card 0.
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    caps = {None: [(8, 9), (8, 0)], 0: [(8, 9)], 1: [(8, 0)]}
+    monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: list(caps[ordinal]))
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "gguf_quantized_weight_types", lambda path: frozenset({"Q8_0"})
+    )
+    monkeypatch.setattr(bk, "sd_cpp_device_name_for_ordinal", lambda binary, ordinal: resolved)
+    monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
+    monkeypatch.setattr(bk, "sd_cpp_device_named", lambda binary, name, position = None: None)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda", gpu_ordinal = 1)
+    assert servers[-1].env == expected
+    assert dict(b._state.child_env) == (expected or {})
