@@ -307,3 +307,26 @@ def test_offline_installs_use_only_a_cached_sdk(tmp_path, monkeypatch, offline):
     if offline:
         fetch(tmp_path / f"level-zero-sdk-{toolchain._L0_VERSION}")
         assert toolchain._provide_level_zero_sdk() is not None
+
+
+def test_toolchain_probes_open_no_console_window(tmp_path, monkeypatch):
+    # Desktop starts workers with no console; cmd.exe and vswhere.exe would each flash one.
+    hidden = {"creationflags": 0x08000000}
+    monkeypatch.setattr(toolchain, "windows_hidden_subprocess_kwargs", lambda: dict(hidden))
+    vswhere = tmp_path / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    vswhere.parent.mkdir(parents = True)
+    vswhere.write_text("")
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path))
+    seen = []
+
+    def run(*a, **k):
+        seen.append(k)
+        return types.SimpleNamespace(returncode = 1, stdout = b"" if "text" not in k else "")
+
+    monkeypatch.setattr(toolchain.subprocess, "run", run)
+
+    toolchain._vcvars_path()
+    toolchain._vcvars_environment(r"C:\VS\vcvars64.bat")
+
+    assert len(seen) == 2
+    assert all(k.get("creationflags") == hidden["creationflags"] for k in seen)

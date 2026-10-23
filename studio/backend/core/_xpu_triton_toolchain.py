@@ -22,6 +22,8 @@ import tempfile
 import subprocess
 from pathlib import Path
 
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+
 from ._msvc_env import _have_crt_headers
 
 logger = logging.getLogger(__name__)
@@ -154,6 +156,7 @@ def _vcvars_path() -> str | None:
             capture_output = True,
             text = True,
             timeout = 60,
+            **windows_hidden_subprocess_kwargs(),
         )
     except Exception:  # noqa: BLE001
         logger.debug("vswhere could not be run", exc_info = True)
@@ -173,6 +176,7 @@ def _vcvars_environment(vcvars: str) -> dict | None:
             f'cmd /d /u /s /c ""{vcvars}" >nul 2>&1 && set"',
             capture_output = True,
             timeout = 120,
+            **windows_hidden_subprocess_kwargs(),
         )
     except Exception:  # noqa: BLE001
         logger.debug("vcvars64.bat could not be run", exc_info = True)
