@@ -289,7 +289,6 @@ def _open_window(module: Any, dev: Any) -> Any:
     accounted = getattr(module, "_unsloth_video_graphs", None)
     # a capture counts its graph before its generation, so an unchanged generation around the count makes 0 consistent
     if graphs == 0 and generation == before:
-        # no live graph (a dropped one freed its pool): nothing unaccounted can remain
         module._unsloth_video_graphs = accounted = 0
         module._unsloth_video_graph_gen = generation
     elif accounted is None or graphs < accounted:
@@ -352,9 +351,7 @@ def _failed_captures() -> int:
 
 
 def _graphs_off_for_load(handles: tuple) -> bool:
-    """True only when every whole-step graph is off for good: its placement declined recording or it is poisoned, with no
-    per-block fallback armed or engaged. A request-specific eager call (a refused argument, a placement refusal)
-    can still capture on a later request, so it keeps the graph key."""
+    """True when every whole-step graph is off for good (declined or poisoned, no per-block fallback); per-call refusals keep the key."""
     if not handles:
         return False
     for h in handles:
@@ -363,8 +360,7 @@ def _graphs_off_for_load(handles: tuple) -> bool:
             or getattr(h, "fallback_handle", None) is not None
         ):
             return False
-        # load-wide only: a streamed speed drop declines the placement; a per-key drop (an unpaid resident replay,
-        # a probe OOM) leaves other shapes free to capture
+        # load-wide only: a per-key drop (probe OOM, unpaid replay) leaves other shapes free to capture
         placement = getattr(h, "placement", None)
         declined = placement is not None and getattr(placement, "_declined", None) is not None
         dropped = declined and not getattr(h, "cache", None)
