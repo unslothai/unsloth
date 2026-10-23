@@ -6,16 +6,7 @@ import test from "node:test";
 
 import { installOverrideWatcher } from "../src/components/assistant-ui/math-block-mode.ts";
 
-/*
- * `applyMathBlockContainment()` is called once, before the first render. Before the watcher below,
- * a tester who set `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` from the devtools console AFTER load
- * changed nothing at all: the attribute kept its previous value and the session went on measuring
- * the arm it was already in. That is the worst thing an escape hatch can do, because the number it
- * produces looks like an answer, and it is what these rows exist to stop.
- *
- * The watcher is exercised against a plain object rather than the real global, so the tests do not
- * have to mutate `globalThis` and cannot leak into each other.
- */
+/* Overrides set from the console after load must re-apply; uses a plain object, not globalThis. */
 
 const scopeWithSpy = () => {
   const scope: Record<string, unknown> = {};
@@ -35,8 +26,6 @@ test("assigning the override reapplies the mode", () => {
 });
 
 test("reading it back returns what was written", () => {
-  // Anything that made the property write-only, or that stored somewhere else, would break the
-  // documented console workflow in a different way than the bug it is fixing.
   const { scope } = scopeWithSpy();
   scope.__UNSLOTH_MATH_BLOCK_CONTAINMENT__ = "contain";
   assert.equal(scope.__UNSLOTH_MATH_BLOCK_CONTAINMENT__, "contain");
@@ -45,8 +34,7 @@ test("reading it back returns what was written", () => {
 });
 
 test("a value set BEFORE the watcher is installed is preserved", () => {
-  // The build flag and the measurement harness both set the global before load. Installing the
-  // watcher must not discard that, or the harness would silently fall back to the ship default.
+  // The harness sets the global before load; installing the watcher must keep it.
   const scope: Record<string, unknown> = {
     __UNSLOTH_MATH_BLOCK_CONTAINMENT__: "contain",
   };
@@ -74,8 +62,7 @@ test("the property stays enumerable and configurable, so a later redefine is pos
 });
 
 test("a frozen scope is reported rather than throwing through startup", () => {
-  // This runs from `main.tsx` before the first render. An exception there is a white screen, and
-  // the flag still works when set before load, so refusing quietly is the right failure.
+  // Runs before first render, so throwing would white-screen.
   const frozen = Object.freeze({} as Record<string, unknown>);
   let installed: boolean | null = null;
   assert.doesNotThrow(() => {

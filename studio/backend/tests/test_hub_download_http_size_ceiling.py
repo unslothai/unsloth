@@ -20,7 +20,6 @@ from fastapi import HTTPException
 from hub.services import download_lifecycle as dl
 from hub.utils import download_registry
 
-# Sizes from the repository reported in #10840.
 _OVERSIZED = 54_400_261_312
 _UNDER_THE_CEILING = 49_859_583_136
 
@@ -43,11 +42,6 @@ def _flash_next_siblings() -> list[_Sibling]:
     ]
 
 
-# --------------------------------------------------------------------------------------------
-# The ceiling itself
-# --------------------------------------------------------------------------------------------
-
-
 def test_the_ceiling_is_read_from_the_installed_hub():
     from huggingface_hub import constants as hf_constants
     assert download_registry.http_max_file_bytes() == hf_constants.MAX_HTTP_DOWNLOAD_SIZE
@@ -57,7 +51,6 @@ def test_only_a_file_past_the_ceiling_refuses_http():
     ceiling = download_registry.http_max_file_bytes()
     assert download_registry.http_size_ceiling_reason(ceiling) is None
     assert download_registry.http_size_ceiling_reason(ceiling + 1) is not None
-    # Unknown sizes preserve the previous transport choice.
     assert download_registry.http_size_ceiling_reason(None) is None
     assert download_registry.http_size_ceiling_reason(0) is None
 
@@ -78,11 +71,6 @@ def test_transport_unavailable_reason_is_size_aware():
         )
         is not None
     )
-
-
-# --------------------------------------------------------------------------------------------
-# Which file the ceiling is asked about
-# --------------------------------------------------------------------------------------------
 
 
 def test_the_size_is_measured_per_variant_not_per_repo(monkeypatch):
@@ -191,11 +179,6 @@ def _raise(*a, **k):
     raise RuntimeError("hub is down")
 
 
-# --------------------------------------------------------------------------------------------
-# What the transport choice does with it
-# --------------------------------------------------------------------------------------------
-
-
 def test_auto_takes_xet_over_a_demoted_verdict_when_http_cannot_serve(monkeypatch):
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     fake = _types.ModuleType("utils.hf_xet_fallback")
@@ -264,11 +247,6 @@ def test_capabilities_mark_http_unavailable_for_an_oversized_download(monkeypatc
     )
 
 
-# --------------------------------------------------------------------------------------------
-# What the user is told
-# --------------------------------------------------------------------------------------------
-
-
 _HUB_REFUSAL = (
     "ValueError: The file is too large to be downloaded using the regular download method. "
     " Install `hf_xet` with `pip install hf_xet` for xet-powered downloads."
@@ -289,11 +267,6 @@ def test_a_known_size_makes_the_rewrite_specific():
 def test_every_other_failure_is_passed_through():
     assert download_registry.humanize_worker_error("404 Client Error") == "404 Client Error"
     assert download_registry.humanize_worker_error("") == ""
-
-
-# --------------------------------------------------------------------------------------------
-# The recovery ladder
-# --------------------------------------------------------------------------------------------
 
 
 class _Proc:
@@ -565,11 +538,6 @@ def _metadata_of(registry, key):
     return registry.get_job_metadata(key)
 
 
-# --------------------------------------------------------------------------------------------
-# A metadata refresh that fails
-# --------------------------------------------------------------------------------------------
-
-
 class _OneShotHfApi:
     """Answer ``repo_info`` once, then fail the way a dropped connection does."""
 
@@ -692,11 +660,6 @@ def test_a_finalized_shard_still_reopens_http_on_a_failed_refresh(monkeypatch, t
     assert rungs == [download_registry.TRANSPORT_HTTP]
 
 
-# --------------------------------------------------------------------------------------------
-# Whose credential the probe measures with
-# --------------------------------------------------------------------------------------------
-
-
 def _record_probe_tokens(monkeypatch) -> list:
     """Capture the token every ``repo_info`` call is made under."""
     import huggingface_hub
@@ -782,11 +745,6 @@ def test_the_watcher_probes_under_the_jobs_own_boundary(monkeypatch, tmp_path):
     assert set(seen) == {False}, "a watcher probe borrowed the backend's own login"
 
 
-# --------------------------------------------------------------------------------------------
-# The request path measures what the worker will actually fetch
-# --------------------------------------------------------------------------------------------
-
-
 def _request_path(monkeypatch):
     """Take a model download request as far as the transport decision, then stop."""
     from hub.services.models import downloads as model_downloads
@@ -844,11 +802,6 @@ def test_a_real_scope_is_still_measured_on_its_files(monkeypatch):
 
     assert excinfo.value.status_code == 400
     assert "HTTPS cannot fetch" in excinfo.value.detail
-
-
-# --------------------------------------------------------------------------------------------
-# A measurement the cache no longer holds
-# --------------------------------------------------------------------------------------------
 
 
 def test_nothing_left_to_fetch_is_zero_not_unknown(monkeypatch, tmp_path):

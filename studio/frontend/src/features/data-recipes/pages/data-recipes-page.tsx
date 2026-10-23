@@ -31,6 +31,7 @@ import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
+  BookOpen01Icon,
   CodeIcon,
   CookBookIcon,
   Database02Icon,
@@ -179,6 +180,22 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "rgb(148 163 184 / 0.45)",
     ],
     learningRecipeId: "github-support-bot",
+  },
+  {
+    title: "Books & Documents to Text",
+    description:
+      "Extract EPUB, MOBI, PDF, Word, Excel, PowerPoint and more into a text dataset for continued pretraining.",
+    icon: BookOpen01Icon,
+    difficulty: "Easy",
+    learningBadges: ["Unstructured", "Ebooks", "Expression"],
+    surfaceClassName:
+      "from-rose-500/15 via-pink-500/5 to-transparent dark:from-rose-400/20 dark:via-pink-400/10 dark:to-rose-950/16",
+    shineColor: [
+      "rgb(244 63 94 / 0.45)",
+      "rgb(236 72 153 / 0.4)",
+      "rgb(251 113 133 / 0.45)",
+    ],
+    learningRecipeId: "books-and-documents",
   },
 ];
 

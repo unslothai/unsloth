@@ -1,21 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""diffusion_vae_attn_chunked: query-chunked VAE attention where no fused SDPA kernel takes the head dim (ROCm).
-
-CPU only: the math SDPA backend stands in for ROCm's fallback, and a dispatch-mode probe records the largest
-tensor any op produces, so the bound on the score tile is checked without a GPU."""
+"""Query-chunked VAE attention where no fused SDPA takes the head dim; the score tile is bounded."""
 
 import types
 
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 F = torch.nn.functional
 attention = pytest.importorskip("torch.nn.attention")
 from torch.utils._python_dispatch import TorchDispatchMode  # noqa: E402
 
 from core.inference import diffusion_vae_attn_chunked as C  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 
 def _math():
@@ -120,7 +123,7 @@ def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
     mask = torch.ones(256, 256, dtype = torch.bool)
     with _math():
         ref = F.scaled_dot_product_attention(q, q, q)
-        # fused kernel available (the CPU answer, and NVIDIA's for head dim 512): the stock call, bit-identical
+        # fused kernel available (CPU, and NVIDIA at head dim 512): the stock call, bit-identical
         with C.chunked_attention_mode(big) as mode:
             assert torch.equal(F.scaled_dot_product_attention(q, q, q), ref)
         assert mode.chunked == 0
@@ -131,9 +134,7 @@ def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
             F.scaled_dot_product_attention(q, q, q, is_causal = True)
             F.scaled_dot_product_attention(q, q, q, dropout_p = 0.1)
         with C.chunked_attention_mode(256 * 256 * 4) as small:
-            assert torch.equal(
-                F.scaled_dot_product_attention(q, q, q), ref
-            )  # at the budget: unchunked
+            assert torch.equal(F.scaled_dot_product_attention(q, q, q), ref)
     assert mode.chunked == 0 and small.chunked == 0 and calls == []
 
 
@@ -199,6 +200,7 @@ def test_install_gates(monkeypatch, rocm):
     assert C.install(vae, rocm) == 0
     monkeypatch.delenv(C.VAE_ATTN_CHUNK_ENV)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     assert C.install(vae, rocm) == 0
     assert not any(getattr(m, C._PATCHED, False) for m in vae.modules())
     assert C.install(None, rocm) == 0
