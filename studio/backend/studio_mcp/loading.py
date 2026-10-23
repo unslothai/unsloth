@@ -566,7 +566,8 @@ def _resident_matches(
     if not isinstance(status, dict) or status.get("loaded") is not True:
         return False
     names = {opt_text(status.get("repo_id")), opt_text(status.get("display_repo_id"))}
-    if model.lower() not in {name.lower() for name in names if name}:
+    # A local path keeps its case (/models/Foo and /models/foo are two models); a Hub id does not.
+    if not any(_same(model, name) for name in names if name):
         return False
     # Another file of the same repo is another model: a missing field reads as not loaded yet.
     wanted = opt_text((body or {}).get("gguf_filename"))
@@ -662,10 +663,11 @@ async def load_media(
         try:
             await prepare()
             job.body = _media_identity(body)
-            # A late unload already sent would cancel this load's POST: let it finish first.
-            dispatched = _MEDIA_UNLOADING.get(key)
-            if dispatched:
-                await asyncio.wait(set(dispatched))
+            # A late unload already sent (by any account: the slot is shared) would cancel this
+            # load's POST: let it finish first, rechecked since another may go out meanwhile.
+            while dispatched := {d for d in _MEDIA_UNLOADING.get(kind, ()) if not d.done()}:
+                await asyncio.wait(dispatched)
+            _MEDIA_PREPARING.get(kind, set()).discard(job.generation)
             # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
             job.post = asyncio.ensure_future(
                 route_json("POST", routes["load"], caller = caller, json_body = {**body, **knobs})
@@ -888,19 +890,25 @@ async def _watch_media_outcome(
         )
 
 
-# Media load requests this process made, per (account, slot): the last number taken, those whose POST answered
-# (a load registered for it) and whose load has not failed since, the highest registered when an
-# unload of the slot went out (that unload ended it), and those whose outcome is not known yet.
-_MEDIA_GENERATIONS: dict[tuple[str, str], int] = {}
+# Media load requests this process made. Per slot, shared by every account since the backend slot
+# is one: the last number taken, those whose outcome is not known yet, those that have not sent their
+# POST yet, and late unload POSTs in flight. Per (account, slot): those whose POST answered (a load
+# registered for it) and whose load has not failed since, and the highest registered when an
+# unload of the slot went out (that unload ended it).
+_MEDIA_GENERATIONS: dict[str, int] = {}
 _MEDIA_REGISTERED: dict[tuple[str, str], dict[int, tuple[str, Optional[dict]]]] = {}
 # Registered requests whose load the backend showed ready: none of them is a load still in flight.
 _MEDIA_READY: dict[tuple[str, str], set[int]] = {}
 _MEDIA_UNLOADED: dict[tuple[str, str], int] = {}
-_MEDIA_OUTCOMES: dict[tuple[str, str], dict[int, asyncio.Future]] = {}
+_MEDIA_OUTCOMES: dict[str, dict[int, asyncio.Future]] = {}
+# Still preparing (Hub and plan reads, which have no timeout): no POST of theirs is out yet.
+_MEDIA_PREPARING: dict[str, set[int]] = {}
 # Late unload POSTs sent and not answered yet: a newer load posts only after them.
-_MEDIA_UNLOADING: dict[tuple[str, str], set[asyncio.Future]] = {}
+_MEDIA_UNLOADING: dict[str, set[asyncio.Future]] = {}
 # Tries a late unload (or a watch on a newer load's outcome) makes before giving up on route errors.
 _LATE_UNLOAD_ATTEMPTS = 5
+# How long a late unload waits on a newer request that has not posted yet (its Hub and plan reads).
+_PREPARE_WAIT_S = 2 * READ_S
 # How long a newer load's outcome is watched after its readiness wait hit a route error.
 _OUTCOME_WATCH_S = 3600.0
 
@@ -911,7 +919,8 @@ def _media_identity(body: dict) -> dict:
 
 
 def _media_key(caller: Caller, kind: str) -> tuple[str, str]:
-    # Per account: on a multi-user install one account's unload never ends another's registrations.
+    # Registrations are per account: on a multi-user install one account's unload never ends
+    # another's. Request order, outcomes and late unload POSTs are per slot (key[1]): the slot is one.
     return (caller.account_id, kind)
 
 
@@ -945,11 +954,13 @@ def _newer_media_registered(kind: str, generation: int) -> list[int]:
     return [g for g in _MEDIA_REGISTERED.get(kind, {}) if g > generation and g > unloaded]
 
 
-def _take_media_generation(kind: str, job: LoadJob) -> asyncio.Future:
-    job.generation = _MEDIA_GENERATIONS.get(kind, 0) + 1
-    _MEDIA_GENERATIONS[kind] = job.generation
+def _take_media_generation(key: tuple[str, str], job: LoadJob) -> asyncio.Future:
+    slot = key[1]
+    job.generation = _MEDIA_GENERATIONS.get(slot, 0) + 1
+    _MEDIA_GENERATIONS[slot] = job.generation
     outcome = asyncio.get_running_loop().create_future()
-    _MEDIA_OUTCOMES.setdefault(kind, {})[job.generation] = outcome
+    _MEDIA_OUTCOMES.setdefault(slot, {})[job.generation] = outcome
+    _MEDIA_PREPARING.setdefault(slot, set()).add(job.generation)
     return outcome
 
 
@@ -969,19 +980,31 @@ def _media_post_answered(
 
 
 def _settle_media_generation(
-    kind: str, job: LoadJob, outcome: asyncio.Future, registered: bool
+    key: tuple[str, str], job: LoadJob, outcome: asyncio.Future, registered: bool
 ) -> None:
-    _MEDIA_OUTCOMES.get(kind, {}).pop(job.generation, None)
+    _MEDIA_OUTCOMES.get(key[1], {}).pop(job.generation, None)
+    _MEDIA_PREPARING.get(key[1], set()).discard(job.generation)
     if not outcome.done():
         outcome.set_result(registered)
 
 
-def _newer_media_outcomes(kind: str, generation: int) -> list[asyncio.Future]:
+def _newer_media_outcomes(
+    key: tuple[str, str], generation: int, *, preparing: bool = True
+) -> list[asyncio.Future]:
+    """Newer requests of the slot, from any account, whose outcome is not known yet.
+
+    ``preparing=False`` leaves out those that have not posted: their Hub and plan reads are
+    unbounded, and their POST waits for any late unload sent meanwhile, so it cannot cancel them.
+    """
     loop = asyncio.get_running_loop()
+    skip = set() if preparing else _MEDIA_PREPARING.get(key[1], set())
     return [
         outcome
-        for taken, outcome in _MEDIA_OUTCOMES.get(kind, {}).items()
-        if taken > generation and not outcome.done() and outcome.get_loop() is loop
+        for taken, outcome in _MEDIA_OUTCOMES.get(key[1], {}).items()
+        if taken > generation
+        and taken not in skip
+        and not outcome.done()
+        and outcome.get_loop() is loop
     ]
 
 
@@ -1004,12 +1027,19 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
     if not _posted_ok(job.post):
         return  # Its load never registered: nothing of it to unload.
     failures = 0
+    # A newer request still preparing is waited for only this long: its reads have no timeout.
+    prepare_until = time.monotonic() + _PREPARE_WAIT_S
     while True:
         try:
-            # A newer request still preparing or posting may fail: wait for its outcome first.
-            newer = _newer_media_outcomes(key, job.generation)
+            # A newer request (of any account) may fail or register: wait for its outcome first.
+            left = prepare_until - time.monotonic()
+            newer = _newer_media_outcomes(key, job.generation, preparing = left > 0)
             if newer:
-                await asyncio.wait(newer)
+                await asyncio.wait(
+                    newer,
+                    timeout = left if left > 0 else None,
+                    return_when = asyncio.FIRST_COMPLETED,
+                )
                 continue
             # Bounded: a stalled read counts as a route error and is retried below.
             progress = as_dict(
@@ -1019,7 +1049,9 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
                 await asyncio.wait_for(route_json("GET", routes["status"], caller = caller), READ_S)
             )
             # Rechecked with no await before the unload, so it never cancels a newer request's load.
-            if _newer_media_outcomes(key, job.generation):
+            if _newer_media_outcomes(
+                key, job.generation, preparing = time.monotonic() < prepare_until
+            ):
                 continue
             phase = opt_text(progress.get("phase"))
             in_flight = phase not in (None, "ready", "error")
@@ -1044,7 +1076,7 @@ async def _unload_media_once_posted(caller: Caller, kind: str, job: LoadJob) -> 
             # Sent with no await since the check above; a newer load taking its number from here
             # on waits for this POST before posting its own, so the unload never cancels it.
             dispatch = asyncio.ensure_future(route_json("POST", routes["unload"], caller = caller))
-            unloading = _MEDIA_UNLOADING.setdefault(key, set())
+            unloading = _MEDIA_UNLOADING.setdefault(kind, set())
             unloading.add(dispatch)
             dispatch.add_done_callback(unloading.discard)
             await dispatch

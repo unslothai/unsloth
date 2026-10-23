@@ -1510,7 +1510,7 @@ def test_the_media_registry_keeps_no_hub_token(monkeypatch, fast_polls):
 
     asyncio.run(scenario())
     key = ("owner", "video")
-    generation = loading._MEDIA_GENERATIONS[key]
+    generation = loading._MEDIA_GENERATIONS["video"]
     assert loading._MEDIA_REGISTERED[key][generation][0] == LTX
     assert secret not in repr(loading._MEDIA_REGISTERED)
 
@@ -1953,3 +1953,120 @@ def test_running_chats_block_a_load_with_a_wait_or_cancel_hint(monkeypatch):
     )
     assert "thread" not in message
     assert "force_cancel_active" not in message
+
+
+def test_a_late_media_unload_waits_for_another_accounts_newer_load(monkeypatch, fast_polls):
+    # Managed multi-user install: the video slot is one. Account B posts a load of another model
+    # while account A's stopped POST is still out; A's late unload must not read B's in-flight
+    # phase as its own load and cancel it.
+    other = "Wan-AI/Wan2.1-T2V-1.3B"
+    _late_unload_scenario(monkeypatch, post_s = ())
+    state = {"resident": None, "phase": None, "unloads": []}
+
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        json_body = None,
+        **_kw,
+    ):
+        if path == "/api/inference/video/load":
+            model = json_body["model_path"]
+            if model == LTX:
+                await asyncio.sleep(0.3)
+                state["resident"] = LTX
+                return {"loaded": True, "repo_id": LTX}
+            state["phase"] = "loading"
+            await asyncio.sleep(0.6)
+            state["resident"], state["phase"] = model, None
+            return {"loaded": True, "repo_id": model}
+        if path == "/api/inference/video/unload":
+            state["unloads"].append(state["phase"] or state["resident"])
+            state["resident"] = state["phase"] = None
+            return UNLOADED
+        if path.endswith("/load-progress"):
+            if state["phase"]:
+                return {"phase": state["phase"]}
+            return READY if state["resident"] else {"phase": None}
+        if path == "/api/inference/video/status" and state["resident"]:
+            return {"loaded": True, "repo_id": state["resident"]}
+        return UNLOADED
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+    monkeypatch.setattr(loading, "try_json", lambda caller, path: route_json("GET", path))
+
+    async def scenario():
+        owner = make_caller(account_id = "a")
+        await _load_ltx(owner)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(owner, "video")
+        newer = await loading.load_media(
+            make_caller(account_id = "b"),
+            None,
+            kind = "video",
+            model = other,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 5,
+        )
+        await _late_unloads_done()
+        return newer
+
+    newer = asyncio.run(scenario())
+    assert state["unloads"] == [None]
+    assert newer.loaded is True and state["resident"] == other
+
+
+def test_a_late_media_unload_does_not_wait_on_a_newer_load_stalled_before_its_post(
+    monkeypatch, fast_polls
+):
+    # A newer request stalls in its plan read (forwarded reads have no timeout) before posting.
+    # The stopped load's late unload must still go out, and the newer POST must follow it.
+    release = asyncio.Event
+
+    async def scenario():
+        gate = release()
+
+        async def hang():
+            await gate.wait()
+            return {}
+
+        state = _late_unload_scenario(monkeypatch, post_s = (0.3, 0.05), plans = [None, hang])
+        monkeypatch.setattr(loading, "_PREPARE_WAIT_S", 0.2)
+        caller = make_caller(account_id = "stall")
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        await loading.load_media(
+            caller,
+            None,
+            kind = "video",
+            model = LTX,
+            variant = None,
+            hf_token = None,
+            deadline = time.monotonic() + 0.05,
+        )
+        await asyncio.sleep(0.8)
+        unloads = list(state["unloads"])
+        gate.set()
+        while state["registered"] < 2:
+            await asyncio.sleep(0.01)
+        await _late_unloads_done()
+        return state, unloads
+
+    state, unloads = asyncio.run(scenario())
+    assert unloads == [0, 1]
+    assert state["unloads"] == [0, 1] and state["registered"] == 2
+
+
+@pytest.mark.parametrize(
+    "model, resident, same",
+    [
+        ("/models/Foo", "/models/foo", False),
+        ("/models/Foo", "/models/Foo", True),
+        ("Lightricks/LTX-Video", "lightricks/ltx-video", True),
+    ],
+)
+def test_resident_media_names_keep_a_local_paths_case(model, resident, same):
+    status = {"loaded": True, "repo_id": resident}
+    assert loading._resident_matches(status, model) is same
