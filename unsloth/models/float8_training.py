@@ -126,10 +126,14 @@ def _recipe_scaling(recipe):
         return "rowwise"
 
 
-def _model_device(model):
-    for p in model.parameters():
-        return p.device
-    return None
+def _selected_devices(model, module_filter_fn):
+    """Devices of the Linear weights that will be converted (an offloaded CPU embedding is not one of them)."""
+    devices = []
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear) and module_filter_fn(module, name):
+            if module.weight.device not in devices:
+                devices.append(module.weight.device)
+    return devices
 
 
 def _check_hardware(device, recipe):
@@ -145,13 +149,14 @@ def _check_hardware(device, recipe):
             "Unsloth: float8_training needs compute capability 8.9+ (fp8 tensor cores); "
             f"{name} is {major}.{minor}. Train in bfloat16 / float16 instead."
         )
+    if torch.version.hip is None and _recipe_scaling(recipe) == "tensorwise" and (major, minor) < (9, 0):
+        # Measured on an L4: every gradient is NaN from the first step once gradient checkpointing runs.
+        # The scaling is what fails, so explicit Float8LinearConfigs are refused too.
+        raise RuntimeError(
+            "Unsloth: float8_training with tensorwise scaling gives NaN gradients on compute capability "
+            f"8.9 ({name}). Train in bfloat16 instead."
+        )
     if isinstance(recipe, str):
-        if torch.version.hip is None and recipe == "tensorwise" and (major, minor) < (9, 0):
-            # Measured on an L4: every gradient is NaN from the first step once gradient checkpointing runs.
-            raise RuntimeError(
-                "Unsloth: float8_training = 'tensorwise' gives NaN gradients on compute capability 8.9 "
-                f"({name}). Train in bfloat16 instead."
-            )
         if torch.version.hip is not None or (major, minor) not in _MEASURED_FASTER.get(recipe, ()):
             where = "ROCm" if torch.version.hip is not None else f"compute capability {major}.{minor}"
             raise RuntimeError(
@@ -190,11 +195,26 @@ def convert_model_to_float8_training(
             "Unsloth: float8_training needs torchao with torchao.float8: `pip install torchao`. "
             f"({type(e).__name__}: {e})"
         ) from e
+    from dataclasses import replace
+
     config = Float8LinearConfig.from_recipe_name(recipe) if isinstance(recipe, str) else recipe
-    if check_hardware and not getattr(config, "emulate", False):
-        _check_hardware(_model_device(model), recipe)
+    if getattr(config, "enable_fsdp_float8_all_gather", False):
+        # Its weight subclass gives a shared (tied) weight one parameter per user, so AdamW updates it twice,
+        # and safetensors cannot save it. Refused before any layer is swapped.
+        raise ValueError(
+            "Unsloth: float8_training does not support enable_fsdp_float8_all_gather = True (shared weights "
+            "would be updated twice and checkpoints cannot be saved). Use a config with it set to False."
+        )
+    # Flattened token counts of variable-length batches are rarely multiples of 16, which the fp8 GEMM of the
+    # weight gradient needs; torchao pads the inner dim when asked. The caller's config is left untouched.
+    if not getattr(config, "pad_inner_dim", True):
+        config = replace(config, pad_inner_dim = True)
     if module_filter_fn is None:
         module_filter_fn = float8_training_filter(model, recipe, size_filter = size_filter)
+    if check_hardware and not getattr(config, "emulate", False):
+        devices = _selected_devices(model, module_filter_fn)
+        for device in devices or [next((p.device for p in model.parameters()), None)]:
+            _check_hardware(device, recipe)
     convert_to_float8_training(model, module_filter_fn = module_filter_fn, config = config)
     converted = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
     if not converted:

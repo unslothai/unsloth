@@ -247,3 +247,52 @@ def test_loader_rejects_float8_training_for_lora():
             loader.from_pretrained(
                 "trl-internal-testing/tiny-Qwen3ForCausalLM", float8_training = True
             )
+
+
+def _cuda_like(monkeypatch, cap, name):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: name)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(f8t, "_probe_float8_gemm", lambda *a: None)
+
+
+def test_explicit_tensorwise_config_refused_on_sm89(monkeypatch):
+    # The NaN refusal is about the scaling, so an explicit config gets it too; rowwise configs stay allowed.
+    _cuda_like(monkeypatch, (8, 9), "NVIDIA L4")
+    with pytest.raises(RuntimeError, match = "NaN gradients"):
+        f8t._check_hardware(torch.device("cuda", 0), _emulated_config("tensorwise"))
+    f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
+
+
+@pytest.mark.parametrize("recipe", ["rowwise", "tensorwise"])
+def test_converted_layers_pad_the_inner_dim(recipe):
+    # Variable-length batches flatten to token counts not divisible by 16; the fp8 backward GEMM needs them padded.
+    model = _tiny_qwen3()
+    config = _emulated_config(recipe)
+    assert not config.pad_inner_dim
+    f8t.convert_model_to_float8_training(model, config, size_filter = False)
+    layers = [m for m in model.modules() if isinstance(m, _float8_linear())]
+    assert layers and all(m.config.pad_inner_dim for m in layers)
+    assert not config.pad_inner_dim  # the caller's config is not mutated
+
+
+def test_fsdp_float8_all_gather_refused_before_conversion():
+    # It wraps weights in a tensor subclass that splits shared parameters (doubled AdamW updates) and that
+    # safetensors cannot save, so it is refused before any layer is swapped.
+    from dataclasses import replace
+
+    model = _tiny_qwen3()
+    config = replace(_emulated_config("tensorwise"), enable_fsdp_float8_all_gather = True)
+    with pytest.raises(ValueError, match = "enable_fsdp_float8_all_gather"):
+        f8t.convert_model_to_float8_training(model, config, size_filter = False)
+    assert not any(isinstance(m, _float8_linear()) for m in model.modules())
+
+
+def test_shared_weights_stay_shared():
+    model = _tiny_qwen3()
+    model.model.layers[1].mlp.up_proj.weight = model.model.layers[0].mlp.up_proj.weight
+    before = len(list(model.parameters()))
+    f8t.convert_model_to_float8_training(model, _emulated_config("tensorwise"), size_filter = False)
+    assert len(list(model.parameters())) == before
+    assert model.model.layers[1].mlp.up_proj.weight is model.model.layers[0].mlp.up_proj.weight
