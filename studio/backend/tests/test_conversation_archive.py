@@ -2190,6 +2190,21 @@ def test_the_cap_counts_only_chunks_that_still_need_embedding(conn, monkeypatch)
     assert calls == []
 
 
+def test_an_oversized_turn_after_a_cached_one_waits_for_the_next_compaction(conn, monkeypatch):
+    """A pre-embedded first turn counts nothing toward the cap; the huge turn behind it must still be deferred."""
+    thread_id = "cap-cached-then-huge"
+    cached = _gap_thread(thread_id, 1, tag = "cachedfirst")
+    huge = _turn("paste this log", " ".join(f"line{i}" for i in range(6000)))
+    _save_thread(thread_id, huge, append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "2")
+    conversation_archive.note_branch(thread_id, cached)
+    _run_gap()
+
+    calls = _counting_encoder(monkeypatch)
+    assert conversation_archive.archive_turns(thread_id, cached + huge) == 1
+    assert calls == []
+
+
 def test_a_gap_job_runs_as_the_account_that_noted_it(monkeypatch):
     """The worker is a plain thread; without the binding it would read the owner's databases."""
     from utils.account_context import AccountContext, current_account, run_as

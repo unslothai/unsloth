@@ -887,7 +887,8 @@ def _archive_turns(
         if chunk_total > max_chunks or skipped:
             kept, used = [], 0
             for entry, need in zip(pending, needs):
-                if used and used + need > max_chunks:
+                # On what was kept, not on chunk count: a fully cached first turn adds nothing to `used`.
+                if kept and used + need > max_chunks:
                     break
                 if need > max_chunks and not kept:
                     # An oversized first turn still goes, or it would block the backlog forever.
