@@ -203,7 +203,10 @@ async def upload_asset(
 ) -> dict:
     data = await _read_body(request, MAX_ASSET_BYTES)
     hint = asset_store.text_hint(mime, name)
-    sniffed = asset_store.sniff_mime(data) or asset_store.sniff_text(data, hint)
+    # Text sniffing decodes the whole upload; keep it off the event loop.
+    sniffed = asset_store.sniff_mime(data) or await asyncio.to_thread(
+        asset_store.sniff_text, data, hint
+    )
     if asset_store.kind_of(sniffed or "") not in ("image", "audio", "video", "document"):
         raise HTTPException(
             status_code = 415,

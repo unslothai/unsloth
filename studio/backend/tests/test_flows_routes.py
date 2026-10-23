@@ -356,3 +356,27 @@ def test_many_side_runs_keep_the_older_outputs(client):
     engine_mod.ENGINE.runs.clear()
     latest = client.get("/api/flows/flow1/latest-outputs").json()["nodes"]
     assert latest["a"]["outputs"] == {"text": "story"}
+
+
+def test_text_upload_is_sniffed_off_the_event_loop(client, monkeypatch):
+    import threading
+
+    from core.flows import assets as asset_store
+
+    real, seen = asset_store.sniff_text, []
+
+    def sniff(data, hint):
+        seen.append(threading.current_thread() is threading.main_thread() or _on_loop())
+        return real(data, hint)
+
+    def _on_loop():
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    monkeypatch.setattr(asset_store, "sniff_text", sniff)
+    media = client.post("/api/flows/assets?name=notes.md", content = b"# Notes").json()["media"]
+    # store() sniffs again in its own worker thread; no call may run on the loop.
+    assert media["kind"] == "document" and seen and not any(seen)
