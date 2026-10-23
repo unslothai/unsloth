@@ -39,12 +39,15 @@ def test_examples_never_print_a_hardcoded_model_id():
     # The catalog is tri-state: a `[]` printed a snippet before /v1/models answered.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert "MODEL_FALLBACK" not in src
-    assert re.search(r'"unsloth/[^"]+"', src) is None
+    # TRAIN names a base model to fine-tune, not a served one, so only the chat snippets are held to /v1.
+    chat = re.sub(r"\nconst TRAIN = \{.*?\n\} as const;", "", src, count = 1, flags = re.S)
+    assert re.search(r'"unsloth/[^"]+"', chat) is None
     assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
     assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
-    assert "if (!snippets) return;" in src
-    assert "{snippets ? (" in src
+    assert ": (snippets?.[lang] ?? null);" in src
+    assert "if (!snippet) return;" in src
+    assert "{snippet ? (" in src
     assert 't("settings.apiKeys.usageNoModel")' in src
 
     en = EN_TS.read_text(encoding = "utf-8")
