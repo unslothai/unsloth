@@ -272,8 +272,10 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
         type="button"
         disabled={disabled}
         className={cn(
-          "nodrag flex w-full min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-background px-3 text-left transition-colors hover:bg-muted/40 disabled:pointer-events-none disabled:opacity-60",
-          compact ? "min-h-8 py-1.5 text-xs" : "min-h-10 py-2 text-sm",
+          "nodrag flex w-full min-w-0 items-center gap-2 border border-border/70 bg-background px-3 text-left transition-colors hover:bg-muted/40 disabled:pointer-events-none disabled:opacity-60",
+          compact
+            ? "min-h-8 rounded-full py-1.5 text-xs"
+            : "min-h-10 rounded-xl py-2 text-sm",
           className,
         )}
       >
@@ -341,7 +343,7 @@ function LocalModelRow({
         disabled={probing}
         onClick={() => onSelectModel(model)}
         className={cn(
-          "flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-muted/50",
+          "flex w-full items-center gap-2 rounded-md px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-muted/50",
           selected && "bg-muted/70 text-foreground ring-1 ring-border/70",
         )}
       >
