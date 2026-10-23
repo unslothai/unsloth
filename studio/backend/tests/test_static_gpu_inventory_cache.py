@@ -55,6 +55,11 @@ def rocm_cli(monkeypatch):
     for name in _MASKS:
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(hw, "_gfx_candidates_cache", None, raising = False)
+    # Other files can leave amd-smi latched off (failures, a non-Linux platform stub): start clean.
+    monkeypatch.setattr(amd, "_amd_smi_disabled", False)
+    monkeypatch.setattr(amd, "_amd_smi_consecutive_failures", 0)
+    monkeypatch.setattr(amd, "_amd_smi_allowed", lambda *a, **k: True)
+    monkeypatch.setattr(amd, "_hip_id_map_cache", None)
     return calls
 
 
@@ -250,6 +255,27 @@ def test_a_probe_running_across_a_forced_detection_cannot_republish(rocm_cli, mo
     monkeypatch.setattr(hw, "_probe_linux_amd_gfx_candidates", real_probe)
     assert hw._linux_amd_gfx_candidates() == ["gfx1100"]
     assert _count(rocm_cli, "rocminfo") == 1
+
+
+def test_an_empty_answer_is_asked_again_after_its_window(rocm_cli, monkeypatch):
+    now = [1000.0]
+    answers = ["  Name:                    CPU\n", "  Name:                    gfx1100\n"]
+
+    def run(argv, *a, **k):
+        rocm_cli.append(list(argv))
+        if argv[0] == "rocminfo":
+            return _Result(answers[0] if _count(rocm_cli, "rocminfo") == 1 else answers[1])
+        return _Result("")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(hw.time, "monotonic", lambda: now[0])
+    assert hw._linux_amd_gfx_candidates() == []
+    now[0] += hw._GFX_EMPTY_TTL_S - 1
+    assert hw._linux_amd_gfx_candidates() == []
+    assert _count(rocm_cli, "rocminfo") == 1
+    now[0] += 2
+    assert hw._linux_amd_gfx_candidates() == ["gfx1100"]
+    assert _count(rocm_cli, "rocminfo") == 2
 
 
 def test_the_cache_switch_turns_it_off(rocm_cli, monkeypatch):

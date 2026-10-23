@@ -451,7 +451,9 @@ _GFX_CANDIDATE_ENV = (
     "GPU_DEVICE_ORDINAL",
     "HSA_OVERRIDE_GFX_VERSION",
 )
-_gfx_candidates_cache: Optional[tuple[tuple, list[str]]] = None
+_gfx_candidates_cache: Optional[tuple[tuple, list[str], float]] = None
+# A CLI that answered with no gfx target (a GPU runtime still coming up) is asked again after this long.
+_GFX_EMPTY_TTL_S = 300.0
 # Bumped by forced detection and part of the key, so a probe that started before it publishes under a key
 # no later read matches (no lock held across a rocminfo that can take seconds).
 _gfx_detect_epoch = 0
@@ -526,12 +528,17 @@ def _linux_amd_gfx_candidates() -> list[str]:
     global _gfx_candidates_cache
     key = _gfx_candidates_key()
     cached = _gfx_candidates_cache
-    if key is not None and cached is not None and cached[0] == key:
+    if (
+        key is not None
+        and cached is not None
+        and cached[0] == key
+        and (cached[1] or time.monotonic() - cached[2] < _GFX_EMPTY_TTL_S)
+    ):
         return list(cached[1])
     found, settled = _probe_linux_amd_gfx_candidates()
     # A timed-out or failing CLI is not an answer about the silicon: ask again next pass.
     if key is not None and settled:
-        _gfx_candidates_cache = (key, list(found))
+        _gfx_candidates_cache = (key, list(found), time.monotonic())
     return found
 
 
