@@ -184,7 +184,7 @@ export function OpenAICodexConnect({
       {flow?.method === "device" && flow.status === "pending" ? (
         <div data-reload-snapshot-sensitive className="space-y-2 text-sm">
           <p>Enter this code in ChatGPT:</p>
-          <code className="block w-fit rounded-lg bg-muted px-3 py-2 font-mono text-base">{flow.user_code}</code>
+          <code className="block w-fit rounded-full bg-muted px-3 py-2 font-mono text-base">{flow.user_code}</code>
           <p className="text-xs text-muted-foreground">Device login may need to be enabled in ChatGPT security or workspace settings.</p>
 
           <Button

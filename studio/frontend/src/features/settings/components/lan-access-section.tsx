@@ -224,7 +224,7 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
       {status.urls.map((url) => (
         <div key={url} className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            <code className="block w-full min-w-0 break-all rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+            <code className="block w-full min-w-0 break-all rounded-line [--line-pad:0.5rem] border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
               {url}
             </code>
             {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}

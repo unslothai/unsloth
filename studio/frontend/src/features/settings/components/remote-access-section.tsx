@@ -187,7 +187,7 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
           <CopyRemoteUrlButton url={url} />
         </div>
       </div>
-      <code className="block w-full break-all rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+      <code className="block w-full break-all rounded-line [--line-pad:0.5rem] border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
         {url}
       </code>
       <span className="text-xs text-muted-foreground leading-snug">

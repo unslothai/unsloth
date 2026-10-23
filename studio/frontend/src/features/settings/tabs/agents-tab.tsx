@@ -373,7 +373,7 @@ function CopyableCode({
     <div className="relative min-w-0">
       <code
         className={cn(
-          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
+          "block min-w-0 whitespace-pre-wrap rounded-line [--line-pad:0.625rem] border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
       >

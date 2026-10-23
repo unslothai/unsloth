@@ -112,7 +112,7 @@ export function CommandBlock({ command }: { command: string }) {
   const { copied, copy } = useCopyButton(command);
 
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
+    <div className="group relative overflow-hidden rounded-line [--line-pad:0.75rem] border border-border bg-muted/40 text-xs leading-relaxed dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
       <pre className="py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
         <code className="block font-mono whitespace-pre-wrap break-all">
           {command}
