@@ -1761,7 +1761,8 @@
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L50:     exec(compile(_SRC, module_path, \"exec\"), module.__dict__)\nExec: L50:     exec(compile(_SRC, module_path, \"exec\"), module.__dict__)",
-      "evidence_hash": "d964080b66d4a99e39c1c0b8af1d6722bc535f35f4a2f385937d942e90242403"
+      "evidence_hash": "d964080b66d4a99e39c1c0b8af1d6722bc535f35f4a2f385937d942e90242403",
+      "file_sha256": "044cd5032dc71d582c3d8c6b9eb0da9202332d8ebea03b201c2af32763d74b51"
     },
     {
       "package": "unsloth-zoo",
