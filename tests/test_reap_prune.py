@@ -315,6 +315,12 @@ def test_rejects_bad_requests():
     with pytest.raises(RuntimeError, match = "get_peft_model"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     del model.model.layers[0].adapted
+    # Custom LoRA layers registered from user code subclass PEFT's layer classes.
+    custom = type("CustomLoraLayer", (wrapper,), {"__module__": "my_package.layers"})
+    model.model.layers[0].adapted = custom()
+    with pytest.raises(RuntimeError, match = "get_peft_model"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del model.model.layers[0].adapted
     # Nothing was touched by the refused calls.
     assert model.model.layers[1].mlp.experts.gate_up_proj.shape[0] == 16
 

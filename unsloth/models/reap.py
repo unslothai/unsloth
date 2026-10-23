@@ -637,9 +637,13 @@ def _model_parallel_layout(model):
 
 
 def _has_unmerged_adapters(model):
-    # PEFT < 0.19 leaves `peft_config` on the model after `merge_and_unload`, so look for PEFT modules
-    # (PeftModel, tuner models, adapter layers, adaption-prompt wrappers) instead.
-    return any(type(module).__module__.split(".", 1)[0] == "peft" for module in model.modules())
+    # PEFT < 0.19 leaves `peft_config` on the model after `merge_and_unload`, so look for modules whose
+    # class (or a base, as for custom LoRA layers) comes from PEFT: PeftModel, tuners, adapter wrappers.
+    return any(
+        (cls.__module__ or "").split(".", 1)[0] == "peft"
+        for module in model.modules()
+        for cls in type(module).__mro__
+    )
 
 
 @torch.no_grad()
