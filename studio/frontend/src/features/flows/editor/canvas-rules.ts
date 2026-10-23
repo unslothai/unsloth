@@ -107,6 +107,7 @@ const EXT: Record<string, string> = {
   "audio/ogg": "ogg",
   "audio/flac": "flac",
   "audio/mp4": "m4a",
+  "audio/webm": "weba",
   "video/mp4": "mp4",
   "video/webm": "webm",
 };

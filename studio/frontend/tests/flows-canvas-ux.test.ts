@@ -81,6 +81,11 @@ test("Download gives the first media output, else the outputs as JSON", () => {
     "Memo",
   );
   assert.equal(memo?.filename, "memo.m4a");
+  const voice = outputDownload(
+    { audio: { kind: "audio", ref: "sha256:ef", mime: "audio/webm" } },
+    "Voice",
+  );
+  assert.equal(voice?.filename, "voice.weba");
   const json = outputDownload({ rows: [1, 2] }, "Table");
   assert.equal(json?.kind, "json");
   assert.equal(json?.filename, "table.json");
