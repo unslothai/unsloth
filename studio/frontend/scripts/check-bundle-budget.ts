@@ -387,8 +387,12 @@ export const BUDGET = {
   // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
   // (a CI build measured about 100 B over a local one). Raised by that.
-  transferBytes: 2_084_696,
-  rawBytes: 6_920_821,
+  // MOSS-Image (#14552): its two image catalog groups, family label and generation defaults sit in the eager
+  // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
+  // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
+  // at 97). Raised by that growth so main's margin stays where it was.
+  transferBytes: 2_084_877,
+  rawBytes: 6_922_119,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
