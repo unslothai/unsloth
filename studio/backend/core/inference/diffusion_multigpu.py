@@ -1328,9 +1328,14 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     elif declined is not None:
         out["cfg_parallel"] = {"armed": False, "declined": declined}
     if decision is not None:
-        out["decision"] = _live_decision(
-            pipe, decision, info, layer, declined if cfg is None else None
-        )
+        if cfg is None:
+            cfg_rejected = declined
+        elif cfg.disabled_reason not in (None, "uninstalled"):
+            # armed, then fell back to one card at run time: say so where the placement is reported
+            cfg_rejected = f"disabled at run time: {cfg.disabled_reason}"
+        else:
+            cfg_rejected = None
+        out["decision"] = _live_decision(pipe, decision, info, layer, cfg_rejected)
     return out
 
 
@@ -1872,10 +1877,99 @@ def _holds_opaque_tensors(obj: Any, depth: int = 0) -> bool:
             isinstance(value, (list, tuple, dict)) and next(_iter_tensors(value), None) is not None
         ):
             return True
-        if not isinstance(value, (*_PLAIN_TYPES, list, tuple, dict)) and depth < 4:
-            if _holds_opaque_tensors(value, depth + 1):
-                return True
+        # a container of value holders (Qwen-Image-2.1: ``layer_caches``, a list of per-layer K/V objects)
+        if (
+            depth < 4
+            and not isinstance(value, _PLAIN_TYPES)
+            and _holds_opaque_tensors(value, depth + 1)
+        ):
+            return True
     return False
+
+
+# A prefix-KV cache handed to the denoiser as ``kv_cache`` (Qwen-Image-2.1's ``QwenImage21KVCache``): filled by the
+# step-0 prefill (``kv_cache_mode="extract"``), only read by later steps (``"cached"``). The prefill always runs on the
+# primary; a cached odd branch runs on the replica against the replica's own copy of the cache, made once per cache.
+_KV_KWARG = "kv_cache"
+_KV_MODE_KWARG = "kv_cache_mode"
+
+
+class _Unmirrorable(Exception):
+    pass
+
+
+def _walk_cache(
+    obj: Any,
+    move: Optional[Callable[[Any], Any]],
+    found: list,
+    depth: int = 0,
+) -> Any:
+    """Structural copy of a cache object (``move`` applied to every tensor), or with ``move`` None only the tensors
+    collected into ``found``. Raises :class:`_Unmirrorable` on anything but plain values, containers and ``__dict__``
+    value holders (a module, a slotted or foreign object), which then stays on the primary."""
+    torch = _torch()
+    if isinstance(obj, torch.Tensor):
+        found.append(obj)
+        return move(obj) if move is not None else obj
+    if isinstance(obj, (*_PLAIN_TYPES, torch.device, torch.dtype)):
+        return obj
+    if depth >= 4 or isinstance(obj, torch.nn.Module):
+        raise _Unmirrorable(type(obj).__name__)
+    if isinstance(obj, list):
+        out = [_walk_cache(v, move, found, depth + 1) for v in obj]
+        return out if move is not None else obj
+    if isinstance(obj, tuple) and not hasattr(obj, "_fields"):
+        out_t = tuple(_walk_cache(v, move, found, depth + 1) for v in obj)
+        return out_t if move is not None else obj
+    if isinstance(obj, dict) and type(obj) is dict:
+        out_d = {k: _walk_cache(v, move, found, depth + 1) for k, v in obj.items()}
+        return out_d if move is not None else obj
+    attrs = getattr(obj, "__dict__", None)
+    if type(attrs) is not dict or hasattr(type(obj), "__slots__"):
+        raise _Unmirrorable(type(obj).__name__)
+    copied = {k: _walk_cache(v, move, found, depth + 1) for k, v in attrs.items()}
+    if move is None:
+        return obj
+    cls = type(obj)
+    clone = cls.__new__(cls)  # not object.__new__: a C base (SimpleNamespace) refuses it
+    clone.__dict__.update(copied)
+    return clone
+
+
+def _cache_tensors(cache: Any) -> Optional[list]:
+    """The tensors a mirrorable cache object holds (in a fixed order), None when it cannot be mirrored."""
+    torch = _torch()
+    if cache is None or isinstance(cache, (torch.Tensor, list, tuple, dict, *_PLAIN_TYPES)):
+        return None
+    found: list = []
+    try:
+        _walk_cache(cache, None, found)
+    except _Unmirrorable:
+        return None
+    return found
+
+
+def _prefix_kv_mode(kwargs: Any) -> Optional[str]:
+    """``"extract"`` / ``"cached"`` for a call carrying a mirrorable prefix-KV cache, else None."""
+    if not isinstance(kwargs, dict) or kwargs.get(_KV_KWARG) is None:
+        return None
+    mode = kwargs.get(_KV_MODE_KWARG)
+    if mode not in ("extract", "cached"):
+        return None
+    return mode if _cache_tensors(kwargs[_KV_KWARG]) is not None else None
+
+
+def _is_prefill(kwargs: Any) -> bool:
+    """A prefix-KV prefill (``kv_cache_mode="extract"``): it writes a cache the pipeline reads back (or returns one, as
+    FLUX.2 does), so it always runs on the primary, whatever the cache object looks like."""
+    return isinstance(kwargs, dict) and kwargs.get(_KV_MODE_KWARG) == "extract"
+
+
+def _without_prefix_kv(args: tuple, kwargs: dict) -> tuple:
+    """The call minus a cached-mode prefix-KV cache the replica gets its own copy of."""
+    if _prefix_kv_mode(kwargs) != "cached":
+        return args, kwargs
+    return args, {k: v for k, v in kwargs.items() if k != _KV_KWARG}
 
 
 def _iter_tensors(obj: Any, depth: int = 0) -> Iterator[Any]:
@@ -2211,6 +2305,9 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
             sig.append((path, leaf))
         elif isinstance(leaf, (int, float)):
             sig.append((path, type(leaf), leaf))
+        elif path and path[-1] == _KV_KWARG and (held := _cache_tensors(leaf)) is not None:
+            # a new prefix length (another prompt) may compile: it must not count as warm
+            sig.append((path, type(leaf), tuple((tuple(t.shape), t.dtype) for t in held)))
         else:
             sig.append((path, type(leaf)))
     return (
@@ -2291,7 +2388,13 @@ class CfgParallelRouter:
             "opaque_primary_calls": 0,
             "pairs_parallel": 0,
             "exclusion_skips": 0,
+            "kv_cache_copies": 0,
+            "kv_prefill_primary_calls": 0,
+            "replica_failures": 0,
         }
+        # source prefix-KV cache id -> (source cache, the tensors it held when copied, the replica's copy)
+        self.kv_mirrors: dict[int, tuple[Any, list, Any]] = {}
+        self._opaque_logged = False
         # Set when replica work was refused by a long recording: until that capture ends, later replica attempts go
         # straight to the source instead of each waiting OUTSIDE_WAIT_S again.
         self.exclusion_refused = False
@@ -2311,6 +2414,8 @@ class CfgParallelRouter:
     def describe(self) -> dict[str, Any]:
         return {
             "secondary": str(self.secondary),
+            # False once the router fell back to one card (``disabled_reason`` says why)
+            "armed": self.disabled_reason is None,
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
             "disabled_reason": self.disabled_reason,
@@ -2320,6 +2425,8 @@ class CfgParallelRouter:
     def disable(self, reason: str) -> None:
         if self.disabled_reason is None:
             self.disabled_reason = reason
+            if reason.startswith("replica "):
+                self.stats["replica_failures"] += 1
             if self.logger is not None:
                 self.logger.warning(
                     "diffusion.multigpu: CFG-parallel disabled (%s); one card from here", reason
@@ -2332,6 +2439,7 @@ class CfgParallelRouter:
             self.worker = None
         self._drop_pending()
         self.replica = None
+        self.kv_mirrors.clear()
         self.pairs = []
         self.warm_primary.clear()
         self.warm_replica.clear()
@@ -2345,6 +2453,7 @@ class CfgParallelRouter:
     def end_render(self) -> None:
         self._drop_pending()
         self.prefetched.clear()
+        self.kv_mirrors.clear()  # caches are per render: free the replica's copies
         self.carry = []
         self.next_carry = []
         self.prev_latent = None
@@ -2419,21 +2528,35 @@ class CfgParallelRouter:
                 self._prefetch(args, kwargs)
                 sig = _call_signature(args, kwargs)
                 self._launch_prediction(latent, sig)
+        prefill = self.branch % 2 == 1 and _is_prefill(kwargs)
         if (
             self.branch % 2 == 1
             and self.disabled_reason is None
-            and _holds_opaque_tensors((args, kwargs))
+            and not prefill
+            and _holds_opaque_tensors(_without_prefix_kv(args, kwargs))
         ):
             self._drop_pending()
             self.template = None
             self.stats["opaque_primary_calls"] += 1
+            if not self._opaque_logged and self.logger is not None:
+                self._opaque_logged = True
+                self.logger.info(
+                    "diffusion.multigpu: a guidance branch carries tensors inside an object the replica cannot copy;"
+                    " that branch stays on %s",
+                    self.primary,
+                )
         elif self.branch % 2 == 1 and self.disabled_reason is None:
             self.singles = 0
             if self.replica is None:
                 self.cfg_seen = True
                 self._build_replica()
-                if self.branch == 1:
+                if self.branch == 1 and not prefill:
                     self._record_template(args, kwargs, latent)
+            elif prefill:
+                # The prefill writes the step-0 K/V into the pipeline's cache object: it stays on the primary (that
+                # cache is the one the pipeline reads back), and the replica copies the filled cache once.
+                self._drop_pending()
+                self.template = None
             elif self.cfg_seen and self._refused_this_capture():
                 # this step's prefetch or prediction was refused: the branch runs on the source, no further wait
                 self._drop_pending()
@@ -2452,6 +2575,8 @@ class CfgParallelRouter:
                     self._note_refusal(exc)
                     self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             self.cfg_seen = True
+        if prefill:
+            self.stats["kv_prefill_primary_calls"] += 1
         self.stats["primary_calls"] += 1
         return self._primary_noting(sig, args, kwargs)
 
@@ -2569,6 +2694,8 @@ class CfgParallelRouter:
         if predicted is None or self.worker is None:
             return
         p_args, p_kwargs = predicted
+        if _is_prefill(p_kwargs):
+            return  # a prefill never runs on the replica
         if (
             sig not in self.warm_primary
             or _call_signature(p_args, p_kwargs) not in self.warm_replica
@@ -2763,6 +2890,11 @@ class CfgParallelRouter:
         def walk(value: Any, depth: int = 0) -> Any:
             if isinstance(value, torch.Tensor):
                 return one(value)
+            if depth == 0 and isinstance(value, dict) and _prefix_kv_mode(value) == "cached":
+                return type(value)(
+                    (k, self._kv_mirror(v) if k == _KV_KWARG else walk(v, depth + 1))
+                    for k, v in value.items()
+                )
             if depth < 4 and isinstance(value, tuple) and not hasattr(value, "_fields"):
                 return tuple(walk(v, depth + 1) for v in value)
             if depth < 4 and isinstance(value, list):
@@ -2775,6 +2907,26 @@ class CfgParallelRouter:
 
         with outside_capture():
             return walk(obj)
+
+    def _kv_mirror(self, cache: Any) -> Any:
+        """The replica's own copy of a filled prefix-KV cache: copied once per cache (one per prompt and render), then
+        reused by every later step while the source still holds the same K/V tensors."""
+        held = _cache_tensors(cache) or []
+        entry = self.kv_mirrors.get(id(cache))
+        if (
+            entry is not None
+            and entry[0] is cache
+            and len(entry[1]) == len(held)
+            and all(a is b for a, b in zip(entry[1], held))
+        ):
+            return entry[2]
+        secondary = self.secondary
+        mirror = _walk_cache(cache, lambda t: t if t.device == secondary else t.to(secondary), [])
+        while len(self.kv_mirrors) >= 4:
+            self.kv_mirrors.pop(next(iter(self.kv_mirrors)))
+        self.kv_mirrors[id(cache)] = (cache, held, mirror)
+        self.stats["kv_cache_copies"] += 1
+        return mirror
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
         # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place

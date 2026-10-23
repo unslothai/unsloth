@@ -1440,6 +1440,136 @@ def test_branch_with_a_cache_object_stays_on_the_primary():
     assert mg._holds_opaque_tensors({"kv_cache": _Cache()})
 
 
+class _KVLayer:
+    """Qwen-Image-2.1's ``QwenImage21KVLayerCache``: one layer's prefix K, filled by the prefill."""
+
+    def __init__(self):
+        self.k = None
+
+
+class _KVCache:
+    """Qwen-Image-2.1's ``QwenImage21KVCache``: the per-layer holders sit in a list inside the cache object."""
+
+    def __init__(self, layers):
+        self.layer_caches = [_KVLayer() for _ in range(layers)]
+
+
+class _PrefixKVDit(_Dit):
+    """Step 0 stores the prefix K (``extract``); later steps concatenate it with the step's own (``cached``)."""
+
+    # (thread, mode, cache) per layer read; on the class, so the replica's copy logs here too
+    seen: list = []
+
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        kv_cache = None,
+        kv_cache_mode = None,
+        return_dict = False,
+    ):
+        out = self.proj(hidden_states) * timestep
+        prefix = self.proj(encoder_hidden_states)
+        for layer in kv_cache.layer_caches:
+            self.seen.append((threading.current_thread(), kv_cache_mode, kv_cache))
+            if kv_cache_mode == "extract":
+                layer.k = prefix.clone()
+            else:
+                out = out + torch.cat([layer.k, out], dim = 0)[: out.shape[0]].sum(0)
+        return (out,)
+
+
+def _kv_render(
+    dit,
+    latents,
+    steps = 5,
+):
+    cond, neg = (
+        torch.randn(3, 4, generator = torch.Generator().manual_seed(1)),
+        torch.randn(3, 4, generator = torch.Generator().manual_seed(2)),
+    )
+    caches = (_KVCache(2), _KVCache(2))
+    for i in range(steps):
+        t = torch.tensor(1.0 - i / steps)
+        mode = "extract" if i == 0 else "cached"
+        a, b = (
+            dit(
+                hidden_states = latents,
+                timestep = t,
+                encoder_hidden_states = e,
+                kv_cache = c,
+                kv_cache_mode = mode,
+            )[0]
+            for e, c in zip((cond, neg), caches)
+        )
+        latents = latents - 0.1 * (b + 4.0 * (a - b))
+    return latents, caches
+
+
+def test_prefix_kv_cache_branch_runs_on_the_replica_against_its_own_copy():
+    torch.manual_seed(0)
+    dit = _PrefixKVDit()
+    latents = torch.randn(2, 4)
+    references = [_kv_render(dit, latents.clone())[0] for _ in range(2)]
+    router, replicas = _router(dit)
+    main = threading.current_thread()
+    for render in range(2):
+        _PrefixKVDit.seen.clear()
+        out, (cond_cache, neg_cache) = _kv_render(dit, latents.clone())
+        assert torch.equal(out, references[render])
+        # the prefill fills the pipeline's own cache object, on the primary
+        assert all(th is main for th, mode, _c in _PrefixKVDit.seen if mode == "extract")
+        assert neg_cache.layer_caches[0].k is not None
+        # the replica reads its own copy, never the pipeline's (mutable) object
+        replica_caches = [c for th, mode, c in _PrefixKVDit.seen if th is not main]
+        assert replica_caches and all(
+            c is not neg_cache and c is not cond_cache for c in replica_caches
+        )
+        router.end_render()
+    assert router.describe()["disabled_reason"] is None and router.describe()["armed"]
+    assert router.stats["steps_parallel"] >= 6
+    # one copy per render (per prompt), not per step
+    assert router.stats["kv_cache_copies"] == 2
+    assert router.stats["kv_prefill_primary_calls"] == 2
+    assert router.kv_mirrors == {}  # dropped at end_render
+
+
+def test_opaque_detection_sees_tensors_in_a_list_of_value_holders():
+    cache = _KVCache(2)
+    assert not mg._holds_opaque_tensors({"kv_cache": cache})  # empty before the prefill
+    cache.layer_caches[1].k = torch.ones(2)
+    assert mg._holds_opaque_tensors({"kv_cache": cache})
+    # a filled cache in cached mode is copied for the replica, the rest of the call is checked as before
+    kwargs = {"kv_cache": cache, "kv_cache_mode": "cached", "x": torch.ones(1)}
+    assert mg._prefix_kv_mode(kwargs) == "cached"
+    assert not mg._holds_opaque_tensors(mg._without_prefix_kv((), kwargs))
+    assert mg._prefix_kv_mode({**kwargs, "kv_cache_mode": "extract"}) == "extract"
+    assert mg._prefix_kv_mode({**kwargs, "kv_cache_mode": None}) is None
+    # a prefill stays on the primary even when its cache could not be copied, or is returned (FLUX.2)
+    assert mg._is_prefill({"kv_cache": object(), "kv_cache_mode": "extract"})
+    assert mg._is_prefill({"kv_cache_mode": "extract"}) and not mg._is_prefill(kwargs)
+    # a prompt of another length is another signature (it may compile)
+    longer = _KVCache(2)
+    longer.layer_caches[1].k = torch.ones(3)
+    assert mg._call_signature((), kwargs) != mg._call_signature((), {**kwargs, "kv_cache": longer})
+
+
+def test_replica_failure_is_reported_in_the_status():
+    torch.manual_seed(0)
+    dit = _Dit()
+
+    def broken():
+        raise RuntimeError("no card")
+
+    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu", replica_factory = broken)
+    dit.forward = router
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    info = router.describe()
+    assert info["armed"] is False and info["replica_failures"] == 1
+    assert info["disabled_reason"].startswith("replica unavailable")
+
+
 def test_split_video_request_is_guarded_on_every_card():
     from core.inference import video as vid
 
