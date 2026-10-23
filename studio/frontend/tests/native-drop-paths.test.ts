@@ -1023,8 +1023,20 @@ test("every basename the picker claims is one the drop paths accept", () => {
     assert.equal(isTextAttachmentName(name), true, `${name} is droppable`);
     assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "docs", name);
   }
+  // A second download or a Finder / Explorer duplicate is still the same file.
+  for (const name of [
+    "LICENSE(1)",
+    "LICENSE (2)",
+    "README copy",
+    "README copy 2",
+    "Makefile - Copy (3)",
+    ".gitignore (1)",
+  ]) {
+    assert.equal(isTextAttachmentName(name), true, `${name} is droppable`);
+    assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "docs", name);
+  }
   // Unlisted names stay out of both, rather than being widened; .env usually holds secrets.
-  for (const name of ["notes", ".env", ".DS_Store"]) {
+  for (const name of ["notes", ".env", ".DS_Store", "notes(1)", ".env (1)", "copy", "(1)"]) {
     assert.equal(isTextAttachmentName(name), false, name);
     assert.equal(classifyDropPaths([`/repo/${name}`]).kind, "unsupported", name);
   }

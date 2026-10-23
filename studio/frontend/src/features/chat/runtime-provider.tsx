@@ -95,6 +95,7 @@ import {
   isBinaryOfficeTemplate,
   isCompiledFortranModule,
   isBinaryVobSubSubtitle,
+  isTextAttachmentName,
   readTextAttachmentOnce,
   UndecodableTextError,
 } from "./text-attachment-accept";
@@ -301,6 +302,22 @@ const pendingRunStartReadyByMessageId = new Map<
 >();
 const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
 
+/** assistant-ui's fileMatchesAccept, which the package does not export. */
+function matchesAccept(file: { name: string; type: string }, accept: string): boolean {
+  if (accept === "*") return true;
+  const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+  const mime = file.type.toLowerCase();
+  return accept.split(",").some((entry) => {
+    const token = entry.trim().toLowerCase();
+    if (token.startsWith(".")) return token === extension;
+    if (token.endsWith("/*")) return mime.startsWith(token.slice(0, -1));
+    return token === mime;
+  });
+}
+
+const UNSUPPORTED_ATTACHMENT_HINT =
+  "Attach images, audio, video, PDFs, Office and OpenDocument files, e-books, email, or text and code files.";
+
 class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
   private readonly getThreadIds: () => Array<string | null | undefined>;
@@ -313,11 +330,25 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     this.getThreadIds = getThreadIds;
   }
 
-  get accept(): string {
-    return this.delegate.accept;
-  }
+  // "*" so every file reaches add(): the runtime's own accept check refuses a mismatch with only a
+  // console error, so a dropped "LICENSE(1)" or .exe vanished without a word.
+  readonly accept = "*";
 
   add(state: { file: File }) {
+    let file = state.file;
+    // A second download is "LICENSE(1)", read as the extension ".license(1)" with no MIME type.
+    if (!matchesAccept(file, this.delegate.accept) && isTextAttachmentName(file.name)) {
+      file = new File([file], file.name, {
+        type: "text/plain",
+        lastModified: file.lastModified,
+      });
+    }
+    if (!matchesAccept(file, this.delegate.accept)) {
+      const reason = `${file.name} can't be attached`;
+      toast.error(reason, { description: UNSUPPORTED_ATTACHMENT_HINT });
+      throw new Error(reason);
+    }
+    if (file !== state.file) state = { ...state, file };
     // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
     // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
     // first, as the native readers do. Every other file goes straight through.
