@@ -707,6 +707,46 @@ async def _stream_text(ctx: Any, body: dict, on_text: Callable[[str], None]) -> 
     return strip_think("".join(parts))
 
 
+IMAGE_STATUS = "/api/inference/images/status"
+
+
+async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
+    """ControlNet needs a bf16 (or bnb 4-bit) load, but Studio's default auto precision picks int8/fp8 where it
+    can. With a control image connected, load the picked model unquantized unless it already runs ControlNet."""
+    from studio_mcp import loading
+
+    repo = model.get("repo") if isinstance(model, dict) else None
+    variant = model.get("variant") if isinstance(model, dict) else None
+    try:
+        status = await ctx.call("GET", IMAGE_STATUS)
+    except FlowNodeError:
+        status = None
+    status = status if isinstance(status, dict) else {}
+    loaded = bool(status.get("loaded"))
+    names = {str(status.get(k) or "").lower() for k in ("repo_id", "display_repo_id")}
+    same = loaded and (not repo or repo.lower() in names)
+    if same and status.get("supports_controlnet") is not False:
+        return
+    if not repo:
+        if loaded:
+            raise FlowNodeError(
+                "The loaded image model cannot use a ControlNet at its current precision. Pick the model "
+                "on this node, or load it in bf16 on the Images page"
+            )
+        return
+    ctx.log(f"Loading {repo} unquantized: ControlNet needs a bf16 model")
+    await loading.load_media(
+        _caller(ctx),
+        None,
+        kind = "image",
+        model = repo,
+        variant = variant,
+        hf_token = None,
+        deadline = time.monotonic() + LOAD_DEADLINE_S,
+        knobs = {"transformer_quant": "off"},
+    )
+
+
 async def generate_image(
     ctx: Any,
     *,
@@ -733,6 +773,8 @@ async def generate_image(
         raise FlowNodeError("The image prompt is empty")
     if mask is not None and init_image is None:
         raise FlowNodeError("Inpainting needs a source image: connect one to Init image")
+    if control is not None:
+        await _controlnet_ready(ctx, model)
     await ensure_model(ctx, "image", model)
     body: dict[str, Any] = {"prompt": prompt, "width": int(width), "height": int(height)}
     if negative_prompt:

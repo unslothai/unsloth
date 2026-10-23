@@ -468,3 +468,71 @@ def test_find_mask_tells_a_managed_account_who_can_download_the_segmenter():
     ctx = Managed(files = {"src": _png((40, 30))}, segment_mask = _png((40, 30), 255, "L"))
     with pytest.raises(FlowNodeError, match = "Ask them to run Find Mask once"):
         asyncio.run(_common.segment(ctx, _media("src"), "the face"))
+
+
+def _control(media_id = "c"):
+    return {"id": "flux-union-pro", "image": _media(media_id), "strength": 0.7}
+
+
+class _StatusCtx(FakeCtx):
+    def __init__(self, status, **kw):
+        super().__init__(**kw)
+        self.status = status
+
+    async def call(
+        self,
+        method,
+        path,
+        json = None,
+    ):
+        if path == _common.IMAGE_STATUS:
+            return self.status
+        return await super().call(method, path, json)
+
+
+def _media_loads(monkeypatch):
+    from studio_mcp import loading
+
+    loads = []
+
+    async def fake_load_media(caller, ctx, **kwargs):
+        loads.append(kwargs)
+
+    monkeypatch.setattr(loading, "load_media", fake_load_media)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: None)
+    return loads
+
+
+FLUX1 = {"repo": "black-forest-labs/FLUX.1-dev"}
+
+
+def test_controlnet_loads_the_picked_model_unquantized(monkeypatch):
+    loads = _media_loads(monkeypatch)
+    # Resident at an auto-picked int8: ControlNet cannot run on it, so it is reloaded in bf16.
+    status = {"loaded": True, "repo_id": FLUX1["repo"], "supports_controlnet": False}
+    ctx = _StatusCtx(status, files = {"c": _png((16, 16))})
+    asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox", control = _control()))
+    assert len(loads) == 1 and loads[0]["knobs"] == {"transformer_quant": "off"}
+    assert loads[0]["model"] == FLUX1["repo"] and loads[0]["kind"] == "image"
+    # Not loaded at all: the first load is already the unquantized one.
+    ctx = _StatusCtx({"loaded": False}, files = {"c": _png((16, 16))})
+    asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox", control = _control()))
+    assert len(loads) == 2 and loads[1]["knobs"] == {"transformer_quant": "off"}
+
+
+def test_controlnet_keeps_a_model_that_already_runs_it(monkeypatch):
+    loads = _media_loads(monkeypatch)
+    status = {"loaded": True, "repo_id": FLUX1["repo"], "supports_controlnet": True}
+    ctx = _StatusCtx(status, files = {"c": _png((16, 16))})
+    asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox", control = _control()))
+    # Without a control image nothing is checked or reloaded either.
+    asyncio.run(_common.generate_image(ctx, model = FLUX1, prompt = "a fox"))
+    assert loads == []
+
+
+def test_controlnet_on_an_unpicked_quantized_model_says_how_to_fix_it(monkeypatch):
+    loads = _media_loads(monkeypatch)
+    ctx = _StatusCtx({"loaded": True, "repo_id": "x/y", "supports_controlnet": False})
+    with pytest.raises(FlowNodeError, match = "load it in bf16 on the Images page"):
+        asyncio.run(_common.generate_image(ctx, model = None, prompt = "a fox", control = _control()))
+    assert loads == []
