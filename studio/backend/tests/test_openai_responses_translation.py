@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Unit tests for the OpenAI `/v1/responses` translation in external_provider.
-
-Covers:
-- Request body shape: system messages collapse into `instructions`,
-  user/assistant messages go into `input`, and unsupported sampling knobs
-  (presence_penalty, top_k) are not forwarded.
-- SSE translation: `response.output_text.delta` → Chat Completions chunks,
-  `response.completed` → a `finish_reason: stop` chunk, stream ends with
-  `data: [DONE]`.
-- Image parts rewritten from Chat Completions
-  `{type: image_url, image_url: {url}}` to Responses
-  `{type: input_image, image_url: <url>}`.
-"""
+"""Unit tests for the /v1/responses translation in external_provider: body, SSE and image parts."""
 
 import asyncio
 import json
@@ -152,8 +139,6 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert body["input"] == [{"role": "user", "content": "Hi"}]
     assert body["max_output_tokens"] == 512
     assert body["stream"] is True
-    # Responses API on reasoning-class models rejects these as `Unsupported
-    # parameter`. Never silently forward them.
     assert "temperature" not in body
     assert "top_p" not in body
     assert "presence_penalty" not in body
@@ -163,10 +148,7 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
 
 
 def test_responses_never_forwards_sampling_for_any_openai_family(monkeypatch):
-    # ChatCompletionRequest defaults these to 0.6 / 0.95 and the UI hides both
-    # sliders for OpenAI, so anything forwarded is a value the user never
-    # chose -- and reasoning ids no prefix catches, like codex-mini-latest,
-    # reject them outright.
+    # Defaults (0.6/0.95) are values the user never chose; reasoning models reject them.
     for model in (
         "gpt-5.6-sol",
         "gpt-5.5",
@@ -187,8 +169,7 @@ def test_responses_never_forwards_sampling_for_any_openai_family(monkeypatch):
 
 
 def test_responses_sends_extended_cache_retention_only_where_supported(monkeypatch):
-    # Documented for the gpt-5 line and gpt-4.1 only; every other model 400s
-    # the turn with "prompt_cache_retention is not supported on this model".
+    # prompt_cache_retention is only documented for gpt-5 and gpt-4.1; others 400.
     for model in ("gpt-5", "gpt-5.1", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-4.1"):
         body = _capture_responses_body(monkeypatch, model)
         assert body.get("prompt_cache_retention") == "24h", (model, body)
@@ -281,7 +262,6 @@ def test_responses_translates_image_parts(monkeypatch):
     parts = captured["body"]["input"][0]["content"]
     assert parts[0] == {"type": "input_text", "text": "What is this?"}
     assert parts[1] == {"type": "input_image", "image_url": "data:image/png;base64,AAA"}
-    # No max_output_tokens key when caller passes max_tokens=None.
     assert "max_output_tokens" not in captured["body"]
 
 
@@ -303,7 +283,6 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
 
     lines = _drive(run())
 
-    # Keep only data lines for assertion clarity.
     data_lines = [line for line in lines if line.startswith("data:")]
     payloads = []
     for line in data_lines:
@@ -313,7 +292,6 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
         else:
             payloads.append(json.loads(raw))
 
-    # Two text deltas, one terminal chunk, then [DONE].
     assert payloads[0]["choices"][0]["delta"]["content"] == "Hello"
     assert payloads[0]["choices"][0]["finish_reason"] is None
     assert payloads[1]["choices"][0]["delta"]["content"] == ", world"
@@ -323,11 +301,7 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
 
 
 def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypatch):
-    """Round 12: function tools forwarded into /v1/responses must have their
-    `function_call` output items translated back into Chat Completions
-    delta.tool_calls, and the terminal chunk must emit
-    finish_reason="tool_calls" (not "stop") so the frontend's accumulator runs
-    the function."""
+    """Function calls must surface as delta.tool_calls with finish_reason tool_calls, not stop."""
 
     captured: dict = {}
 
@@ -404,7 +378,6 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
     assert tc["id"] == "call_xyz"
     assert tc["function"]["name"] == "get_weather"
     assert tc["function"]["arguments"] == '{"city":"SF"}'
-    # Final chunk reports tool_calls, not stop.
     terminal = next(
         p
         for p in payloads
@@ -507,10 +480,7 @@ def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
 
 
 def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeypatch):
-    """Round 13: a second turn after a Responses function call must serialize
-    the tool_calls history and tool result as Responses `function_call` /
-    `function_call_output` input items, not Chat Completions role="tool"
-    content."""
+    """A follow-up turn must send tool history as function_call and function_call_output input items."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -843,7 +813,6 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
 @pytest.mark.parametrize(
     ("body", "expected"),
     (
-        # OpenAI, Anthropic and Gemini error envelopes.
         (
             '{"error": {"message": "You have no credits remaining.",'
             ' "type": "insufficient_quota", "code": "credit_balance_exhausted"}}',
@@ -859,14 +828,12 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
             ' "status": "INVALID_ARGUMENT"}}',
             "API key not valid. (INVALID_ARGUMENT)",
         ),
-        # FastAPI-style bodies from OpenAI-compat backends (vllm, llama.cpp).
         ('{"detail": "Model unavailable"}', "Model unavailable"),
         (
             '{"detail": [{"loc": ["body", "model"], "msg": "field required"},'
             ' {"msg": "bad temperature"}]}',
             "field required; bad temperature",
         ),
-        # Already-friendly text passes through; empty/detail-free bodies fall back.
         ("Timeout waiting for openai response", "Timeout waiting for openai response"),
         ("", "openai returned HTTP 500 with no error details."),
         ('{"error": {}}', "openai returned HTTP 500 with no error details."),
@@ -896,6 +863,5 @@ def test_error_sse_line_forwards_retry_after():
     body = '{"error": {"message": "Rate limit reached."}}'
     error = json.loads(ep_mod._error_sse_line(429, body, "openai", "30")[len("data:") :])["error"]
     assert error["retry_after"] == "30"
-    # Absent upstream, absent here: never invent a delay the provider did not ask for.
     plain = json.loads(ep_mod._error_sse_line(429, body, "openai")[len("data:") :])["error"]
     assert "retry_after" not in plain

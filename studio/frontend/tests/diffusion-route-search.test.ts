@@ -24,17 +24,14 @@ test("an expander pick routes its exact filename as the quant", () => {
 });
 
 test("a pinned pick routes its label, and never as the quant", () => {
-  // The target reads `quant` verbatim as a filename, so a label there routes a file that does not exist.
   const search: DiffusionRouteSearch = diffusionRouteSearch(REPO, {
     ggufVariant: "Q4_K_S",
   });
-  // Asserted before the shape below: deepEqual narrows `search` to the literal it matched.
   assert.equal(search.quant, undefined);
   assert.deepEqual(search, { model: REPO, ggufQuant: "Q4_K_S" });
 });
 
 test("a non-catalog repo keeps its label too", () => {
-  // The gap this closes: with no catalog entry for the repo, the label is the page's only evidence that it is GGUF.
   assert.deepEqual(
     diffusionRouteSearch("QuantStack/SomeDiffusion-GGUF", {
       ggufVariant: "Q6_K",
@@ -54,7 +51,6 @@ test("blank metadata is dropped rather than routed", () => {
     diffusionRouteSearch(REPO, { ggufFilename: "  ", ggufVariant: "" }),
     { model: REPO },
   );
-  // A filename wins over a label, and both are trimmed.
   assert.deepEqual(
     diffusionRouteSearch(REPO, {
       ggufFilename: " a-Q8_0.gguf ",
@@ -79,7 +75,6 @@ test("an arrival naming a real file loads it, label or no label", () => {
 });
 
 test("a label left in the filename slot is resolved, not posted", () => {
-  // A hand-built link, or a producer predating the split: posting "Q4_K_S" as a filename is a certain error.
   assert.equal(routedGgufLabel({ quant: "Q4_K_S" }), "Q4_K_S");
   assert.equal(routedGgufFilename({ quant: "Q4_K_S" }), null);
 });
