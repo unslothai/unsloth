@@ -114,7 +114,6 @@ function ImportResultList({ imported, failed }: SkillImportResult): ReactElement
             />
             <span className="truncate">{failure.name}</span>
           </div>
-          {/* Indented past the icon so the reason sits under the name. */}
           <p className="pl-5 text-xs break-words text-muted-foreground">{failure.error}</p>
         </li>
       ))}

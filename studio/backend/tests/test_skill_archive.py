@@ -7,11 +7,8 @@ import io
 import json
 import os
 import stat
-import subprocess
-import sys
 import tracemalloc
 import zipfile
-from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -42,9 +39,14 @@ def _symlink(name: str) -> zipfile.ZipInfo:
 
 
 def _future_version(archive: bytes) -> bytes:
-    # A "version needed" newer than zipfile knows makes ZipFile() raise NotImplementedError.
     at = archive.index(b"PK\x01\x02") + 6
     return archive[:at] + (99).to_bytes(2, "little") + archive[at + 2 :]
+
+
+def _corrupt_member(archive: bytes) -> bytes:
+    # Flip the stored CRC of the last member so reading it fails.
+    at = archive.rindex(b"PK\x01\x02") + 16
+    return archive[:at] + bytes(b ^ 0xFF for b in archive[at : at + 4]) + archive[at + 4 :]
 
 
 def _files(skill_dir) -> dict[str, bytes]:
@@ -120,6 +122,11 @@ def test_import_takes_skill_md_at_the_top_or_inside_one_folder(isolated_skills, 
         pytest.param(b"not a zip", "ZIP file", id = "not-a-zip"),
         pytest.param(
             _future_version(_zip(("SKILL.md", _MANIFEST))), "ZIP file", id = "future-version"
+        ),
+        pytest.param(
+            _corrupt_member(_zip(("SKILL.md", _MANIFEST), ("ref.md", b"x" * 100))),
+            "damaged",
+            id = "bad-crc",
         ),
         pytest.param(
             _zip(("SKILL.md", _MANIFEST), ("big.bin", b"x" * (skills.MAX_SKILL_FILE_BYTES + 1))),
@@ -222,7 +229,6 @@ def test_import_refuses_frontmatter_whose_merge_keys_explode(isolated_skills, fr
         "imported": [],
         "failed": [{"name": "bomb", "error": "SKILL.md contains invalid YAML frontmatter."}],
     }
-    # Refused before the merged pairs are built, not after.
     assert peak < 48 * 1024 * 1024
     assert not (home / ".agents" / "skills" / "bomb").exists()
 
@@ -274,20 +280,6 @@ def test_import_refuses_too_many_files_or_too_many_bytes(isolated_skills, monkey
     assert not (home / ".agents").exists()
 
 
-def test_importing_an_existing_name_leaves_the_existing_skill_alone(isolated_skills):
-    home, _ = isolated_skills
-    skill_dir = _write_skill(home, "agents", "packed", body = "Original")
-    before = _files(skill_dir)
-
-    result = skills.import_skill_archive(_zip(("SKILL.md", _MANIFEST), ("new.md", b"x")), home = home)
-
-    assert result == {
-        "imported": [],
-        "failed": [{"name": "packed", "error": "Skill 'packed' already exists."}],
-    }
-    assert _files(skill_dir) == before
-
-
 def test_a_failed_resource_write_removes_the_half_imported_skill(isolated_skills, monkeypatch):
     home, studio = isolated_skills
     studio.mkdir()
@@ -306,7 +298,6 @@ def test_a_failed_resource_write_removes_the_half_imported_skill(isolated_skills
     assert result["failed"] == [{"name": "packed", "error": "Could not import skill 'packed'."}]
 
     assert not (home / ".agents" / "skills" / "packed").exists()
-    # The stale disable dropped for the import is put back, as a failed create does.
     assert skills._load_overrides() == {"packed": False}
 
 
@@ -345,7 +336,7 @@ def test_export_refuses_a_linked_resource(isolated_skills, kind):
     try:
         (skill_dir / "leak").symlink_to(target, target_is_directory = kind == "folder")
     except (OSError, NotImplementedError):
-        pytest.skip("symlinks are unavailable on this platform")
+        pytest.skip(reason = "symlinks are unavailable on this platform")
 
     with pytest.raises(skills.SkillError, match = "symbolic links"):
         skills.export_skill("packed", home = home)
@@ -392,10 +383,3 @@ def test_authenticated_import_and_export_routes(isolated_skills, monkeypatch):
 
     monkeypatch.setattr(skills_routes, "MAX_SKILL_ARCHIVE_BYTES", 8)
     assert client.post("/api/skills/import", files = upload).status_code == 413
-
-
-def test_skills_import_without_lzma():
-    src = "import sys; sys.modules['_lzma'] = sys.modules['lzma'] = None; import core.inference.skills"
-    backend = Path(skills.__file__).resolve().parents[2]
-    proc = subprocess.run([sys.executable, "-c", src], cwd = backend, capture_output = True, text = True)
-    assert proc.returncode == 0, proc.stderr

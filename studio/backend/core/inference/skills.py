@@ -15,7 +15,6 @@ import tempfile
 import threading
 import unicodedata
 import zipfile
-import zlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
@@ -37,29 +36,11 @@ MAX_SKILL_RESOURCE_PATH_BYTES = 400
 MAX_SKILL_PATH_COMPONENTS = 256
 MAX_SKILLS_PER_ROOT = 1_000
 MAX_SKILL_INSTRUCTIONS_BYTES = 256 * 1024
-# Caps both the uploaded ZIP and the total it extracts to.
 MAX_SKILL_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_SKILL_ARCHIVE_FILES = 200
 MAX_SKILL_FRONTMATTER_PAIRS = 10_000
 
 logger = logging.getLogger(__name__)
-
-_ZIP_READ_ERRORS: tuple[type[BaseException], ...] = (
-    zipfile.BadZipFile,
-    zlib.error,
-    EOFError,
-    NotImplementedError,
-    OSError,
-    RuntimeError,
-    ValueError,
-)
-# Python built without xz support has no lzma; Studio must still start there.
-try:
-    import lzma
-except ImportError:
-    pass
-else:
-    _ZIP_READ_ERRORS += (lzma.LZMAError,)
 
 _LOCK = threading.RLock()
 _OVERRIDES_NAME = "skill-overrides.json"
@@ -81,8 +62,7 @@ MAX_FRONTMATTER_REPAIRS = 16
 
 
 class _FrontmatterLoader(yaml.SafeLoader):
-    # Merge keys copy every pair of each alias they name, so a 2 KB SKILL.md can expand to
-    # billions of pairs; count before PyYAML builds the merged list, and across the document.
+    # Nested merge keys expand exponentially (2 KB -> billions of pairs): count before PyYAML merges.
     def __init__(self, stream):
         super().__init__(stream)
         self._pairs_left = MAX_SKILL_FRONTMATTER_PAIRS
@@ -986,7 +966,6 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
         paths: list[Path] = []
 
         def unreadable(exc: OSError) -> None:
-            # os.walk skips unlistable folders silently; fail instead.
             raise SkillError("Could not read the skill folder.") from exc
 
         for directory, folders, files in os.walk(skill_dir, onerror = unreadable):
@@ -1009,7 +988,7 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
                 total += len(content)
                 if total > MAX_SKILL_ARCHIVE_BYTES:
                     raise SkillError("Skill archive exceeds the 20 MB limit.")
-                # Bare ZipInfo: the str overload stamps the host clock.
+                # Bare ZipInfo keeps 1980 timestamps: reproducible archives.
                 archive.writestr(
                     zipfile.ZipInfo(f"{record['name']}/{relative.as_posix()}"),
                     content,
@@ -1054,7 +1033,7 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
         for info in archive.infolist():
             name = info.filename.replace("\\", "/")
             parts = PurePosixPath(name).parts
-            # Drop zip-tool junk; ".." is kept so the path check refuses it.
+            # ".." survives so the path check refuses it.
             if (
                 name.endswith("/")
                 or parts[:1] == ("__MACOSX",)
@@ -1069,7 +1048,7 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
         if len(members) > MAX_SKILL_ARCHIVE_FILES:
             raise SkillError(f"Skill archive exceeds the {MAX_SKILL_ARCHIVE_FILES}-file limit.")
 
-        bundles: list[tuple[bytes, list[tuple[PurePosixPath, bytes]]]] = []
+        bundles: list[tuple[str, bytes, list[tuple[PurePosixPath, bytes]]]] = []
         total = 0
         for folder in _archive_skill_folders([name for name, _ in members]):
             manifest = b""
@@ -1084,11 +1063,11 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
                     raise SkillError(f"Skill archive contains '{path.as_posix()}' more than once.")
                 seen.add(key)
                 limit = MAX_SKILL_MD_BYTES if key == "skill.md" else MAX_SKILL_FILE_BYTES
-                # Read past the limit, not trusting declared sizes; any decompress failure is the archive's.
+                # Declared sizes are untrusted; any decoder error (zlib, bz2, lzma, CRC) is the archive's.
                 try:
                     with archive.open(info) as handle:
                         content = handle.read(limit + 1)
-                except _ZIP_READ_ERRORS as exc:
+                except Exception as exc:
                     raise SkillError("Skill archive is damaged.") from exc
                 if len(content) > limit:
                     raise SkillError(f"{path.as_posix()} exceeds the {limit // 1024} KB limit.")
@@ -1107,7 +1086,6 @@ def import_skill_archive(data: bytes, *, home: Optional[Path] = None) -> dict:
         try:
             metadata = _parse_skill_markdown(manifest)
             name = metadata["name"]
-            # Installed as uploaded so unknown frontmatter keys survive.
             imported.append(_install_new_skill(name, manifest, metadata, files = files, home = home))
         except SkillError as exc:
             failed.append({"name": name or "SKILL.md", "error": str(exc)})
