@@ -2600,7 +2600,8 @@ def provision_peer(
                 f"{user}@{peer_ip}:{remote}/",
             ]
             # Mirror the venv exactly so both ranks import the same code; caches stay additive.
-            if delete or (not force and label in (_VENV_LABEL, _PYTHON_RUNTIME_LABEL)):
+            # --force only overrides the busy-peer refusal; it never relaxes the mirroring.
+            if delete or label in (_VENV_LABEL, _PYTHON_RUNTIME_LABEL):
                 cmd.insert(2, "--delete")
             if dry_run:
                 cmd.insert(1, "--dry-run")
@@ -2736,12 +2737,15 @@ def _weight_group(filename: str) -> Optional[str]:
 def _size_one_group(files: List[Tuple[str, str]]) -> Dict[str, Any]:
     """Total bytes of the ONE model in `files` [(name, path)], or why there is not exactly one."""
     groups: Dict[str, int] = {}
+    entry: Dict[str, str] = {}
     seen: set = set()
     shards: Dict[str, Tuple[set, int]] = {}
-    for name, full in files:
+    for name, full in sorted(files):
         group = _weight_group(name)
         if group is None:
             continue
+        # The file a GGUF loader is pointed at: the lone file, or shard 1 of a series.
+        entry.setdefault(group, full)
         match = _GGUF_SHARD_RE.match(name) if name.endswith(".gguf") else None
         if match:
             found, _total = shards.get(group, (set(), 0))
@@ -2774,7 +2778,8 @@ def _size_one_group(files: List[Tuple[str, str]]) -> Dict[str, Any]:
                 f"the size is the model that will actually load"
             ),
         }
-    return {"bytes": next(iter(groups.values())), "why": ""}
+    group, size = next(iter(groups.items()))
+    return {"bytes": size, "why": "", "group": group, "path": entry.get(group)}
 
 
 def _hf_snapshot_dir(root: str) -> Optional[str]:
@@ -2831,11 +2836,21 @@ def model_size_report(target: str) -> Dict[str, Any]:
                     ),
                 }
             try:
-                return {"gib": sum(osp.getsize(f) for f in series) / 2**30, "why": ""}
+                return {
+                    "gib": sum(osp.getsize(f) for f in series) / 2**30,
+                    "why": "",
+                    "group": _weight_group(osp.basename(path)),
+                    "path": series[0],
+                }
             except OSError as exc:
                 return {"gib": None, "why": f"could not read the shard series: {exc}"}
         try:
-            return {"gib": osp.getsize(path) / 2**30, "why": ""}
+            return {
+                "gib": osp.getsize(path) / 2**30,
+                "why": "",
+                "group": _weight_group(osp.basename(path)),
+                "path": path,
+            }
         except OSError as exc:
             return {"gib": None, "why": f"could not read {path}: {exc}"}
     root = path if osp.isdir(path) else None
@@ -2857,7 +2872,12 @@ def model_size_report(target: str) -> Dict[str, Any]:
     result = _size_one_group(files)
     if result["bytes"] is None:
         return {"gib": None, "why": f"{target}: {result['why']}"}
-    return {"gib": result["bytes"] / 2**30, "why": ""}
+    return {
+        "gib": result["bytes"] / 2**30,
+        "why": "",
+        "group": result["group"],
+        "path": result["path"],
+    }
 
 
 _FLOAT_DTYPES = {"F8_E4M3", "F8_E5M2", "F8_E8M0", "F16", "BF16", "F32", "F64"}
@@ -3865,6 +3885,13 @@ def _serve_commands(
             f"--distributed-executor-backend ray",
         ]
     gguf = model.endswith(".gguf") or model == "<model>"
+    if not gguf:
+        # A directory or cached repo holding one GGUF: classify by the weights that were sized,
+        # and point llama.cpp at the file, since `-m` does not take a directory.
+        sized = model_size_report(model)
+        if str(sized.get("group") or "").startswith("gguf:") and sized.get("path"):
+            gguf = True
+            qmodel = shlex.quote(sized["path"])
     server = llama_server_binary() or "llama-server"
     if axis == "replicas":
         backends = " ".join(
@@ -4396,9 +4423,31 @@ def training_memory_estimate(
     }
 
 
+def training_shape_error(batch: int, microbatches: int, seq: int) -> Optional[str]:
+    """Why a layer-split training shape is invalid, or None. Shared by `spark train` and
+    `spark estimate` so the estimate never blesses a shape the launch would refuse."""
+    # Before the modulo: `--microbatches 0` would raise ZeroDivisionError.
+    if microbatches < 1:
+        return f"--microbatches ({microbatches}) must be at least 1."
+    if batch < 1:
+        return f"--batch ({batch}) must be at least 1."
+    if seq < 2:
+        return f"--seq ({seq}) must be at least 2: one token has nothing to predict."
+    if batch % microbatches:
+        return (
+            f"--batch ({batch}) must be a multiple of --microbatches ({microbatches}); "
+            "the pipeline rejects the pair only after loading the model."
+        )
+    return None
+
+
 def _cmd_estimate(
     model: str, batch: int, microbatches: int, seq: int, full_finetune: bool, checkpointed: bool
 ) -> int:
+    shape_error = training_shape_error(batch, microbatches, seq)
+    if shape_error:
+        print(shape_error)
+        return 2
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to estimate.")
         return 0

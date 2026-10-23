@@ -2265,7 +2265,12 @@ def test_an_oversized_data_parallel_run_is_refused_rather_than_noted():
 def _fake_spark_cluster(seen: dict):
     """A stand-in for studio/spark_cluster.py that records the argv the CLI hands it."""
 
+    real = _load("studio/spark_cluster.py")
+
     class _SC:
+        # The real validator: `spark train` and `spark estimate` share it.
+        training_shape_error = staticmethod(real.training_shape_error)
+
         @staticmethod
         def is_dgx_spark() -> bool:
             return True
