@@ -323,3 +323,140 @@ def test_a_captures_own_sync_is_refused_but_a_plain_sync_still_runs_after_the_wa
     finally:
         release.set()
         first.join(10)
+
+
+class _FakeDriver:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def cuMemUnmap(self, va, size):
+        self.calls.append("unmap")
+        return 0
+
+    def cuMemRelease(self, handle):
+        self.calls.append("release")
+        return 0
+
+    def cuMemAddressFree(self, va, size):
+        self.calls.append("free")
+        return 0
+
+
+def _fake_arena(monkeypatch, calls):
+    """A mapped ``VmmArena`` over a fake driver, so the finalizer path runs on any host."""
+    import contextlib
+
+    import core.inference.diffusion_stable_arena as sa
+
+    monkeypatch.setattr(sa, "_driver", lambda: _FakeDriver(calls))
+    monkeypatch.setattr(torch.cuda, "device", lambda _index: contextlib.nullcontext())
+    monkeypatch.setattr(
+        torch.cuda,
+        "synchronize",
+        lambda device = None: calls.append(
+            ("sync", cg._CAPTURE_DEPTH > 0)
+        ),  # lock-free: may run under it
+    )
+    arena = object.__new__(sa.VmmArena)
+    arena.size, arena.device_index, arena.va = 1 << 21, 0, 1 << 40
+    arena._handle, arena._base = 7, object()
+    arena.maps, arena.unmaps, arena.closed = 1, 0, False
+    sa._count_mapped(0, arena.size)
+    return sa, arena
+
+
+def _on_thread_with_timeout(fn, timeout = 5.0):
+    """Run ``fn`` on a fresh thread: a deadlock fails the test instead of hanging it."""
+    box = {}
+
+    def target():
+        try:
+            box["out"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    t = threading.Thread(target = target, daemon = True)
+    t.start()
+    t.join(timeout)
+    assert not t.is_alive(), "deadlocked on the capture lock"
+    if "error" in box:
+        raise box["error"]
+    return box.get("out")
+
+
+def test_an_arena_finalizer_under_this_threads_capture_lock_defers_not_deadlocks(monkeypatch):
+    """GC can run an arena finalizer on a thread inside the gate's own ``Condition`` setup (lock held, no flag set):
+    it must queue the release, not re-take the non-reentrant lock; the next gated sync frees it after a device sync."""
+    monkeypatch.setattr(cg, "_DEFERRED_RELEASES", __import__("collections").deque(), raising = False)
+    calls = []
+    sa, arena = _fake_arena(monkeypatch, calls)
+
+    def finalizer_under_lock():
+        with cg._CAPTURE_IDLE:  # what synchronize_outside_capture holds around wait_for
+            sa.ModuleArena._finalize({"arena": arena})
+            assert calls == [] and not arena.closed and arena.mapped
+            assert len(cg._DEFERRED_RELEASES) == 1
+
+    _on_thread_with_timeout(finalizer_under_lock)
+    _on_thread_with_timeout(lambda: cg.synchronize_outside_capture("cuda:0"))
+    assert arena.closed and not arena.mapped and len(cg._DEFERRED_RELEASES) == 0
+    # the gated sync, then the deferred close: its own sync with no capture recording, before the memory goes
+    assert calls == [("sync", False), ("sync", False), "unmap", "release", "free"]
+
+
+def test_an_arena_finalizer_during_another_threads_recording_waits_for_the_capture_exit(
+    monkeypatch,
+):
+    monkeypatch.setattr(cg, "_DEFERRED_RELEASES", __import__("collections").deque(), raising = False)
+    calls = []
+    sa, arena = _fake_arena(monkeypatch, calls)
+    entered, release = threading.Event(), threading.Event()
+    first = _hold_capture_open(entered, release)
+    first.start()
+    assert entered.wait(10)
+    try:
+        _on_thread_with_timeout(lambda: sa._close_ranges([types_ns(arena = arena)]))
+        assert calls == [] and arena.mapped  # never freed under a recording
+    finally:
+        release.set()
+        first.join(10)
+    assert not first.is_alive()
+    # drained by the capture's exit, with no capture recording
+    assert arena.closed and not arena.mapped
+    assert calls == [("sync", False), "unmap", "release", "free"]
+
+
+def test_an_arena_finalizer_with_the_gate_free_closes_at_once(monkeypatch):
+    monkeypatch.setattr(cg, "_DEFERRED_RELEASES", __import__("collections").deque(), raising = False)
+    calls = []
+    sa, arena = _fake_arena(monkeypatch, calls)
+    _on_thread_with_timeout(lambda: sa.ModuleArena._finalize({"arena": arena}))
+    assert arena.closed and len(cg._DEFERRED_RELEASES) == 0
+    assert calls == [("sync", False), "unmap", "release", "free"]
+
+
+def types_ns(**kw):
+    import types
+    return types.SimpleNamespace(**kw)
+
+
+@pytest.mark.skipif(not _CUDA, reason = "needs CUDA")
+def test_a_real_arena_finalizer_under_the_capture_lock_frees_on_the_next_gated_sync():
+    import core.inference.diffusion_stable_arena as sa
+
+    torch.cuda.set_device(0)
+    module = torch.nn.Linear(8, 8)
+    marena = sa.ModuleArena(module, "cuda:0")
+    module.to("cuda:0")
+    arena = marena.arena
+    assert arena is not None and arena.mapped
+
+    def finalizer_under_lock():
+        with cg._CAPTURE_IDLE:
+            sa.ModuleArena._finalize({"arena": arena})
+        return arena.mapped
+
+    assert _on_thread_with_timeout(finalizer_under_lock) is True
+    _on_thread_with_timeout(cg.synchronize_outside_capture)
+    assert arena.closed and not arena.mapped
+    del module, marena

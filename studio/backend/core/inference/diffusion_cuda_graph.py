@@ -10,6 +10,7 @@ Not a hook: hooks move ``nn.Module._call_impl`` off its fast path and offload ow
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import gc
 import inspect
@@ -253,6 +254,8 @@ def _capturing():
         with _CAPTURE_IDLE:
             _CAPTURE_DEPTH -= 1
             _CAPTURE_IDLE.notify_all()
+        if _DEFERRED_RELEASES and not mine:
+            drain_deferred_releases()
 
 
 def _wait_recordings_ended(mine: int) -> None:
@@ -302,6 +305,60 @@ def synchronize_outside_capture(device: Any = None, *, refuse: bool = False) -> 
         _sync_device(torch, device)
     finally:
         capture_release()
+    drain_deferred_releases()
+
+
+# Releases a finalizer could not run at once (the capture lock was taken, possibly by its own thread, or a capture was
+# recording). A deque: append / popleft run no Python code, so a finalizer firing mid-call cannot re-enter them.
+_DEFERRED_RELEASES: "collections.deque" = collections.deque()
+
+
+def run_if_capture_idle(fn: Any) -> bool:
+    """Run ``fn()`` now under the capture lock with no capture recording, else return False without waiting.
+
+    Never blocks on the capture gate, so it is safe from a weakref finalizer: one can run on a thread already holding
+    the (non-reentrant) lock, e.g. inside a ``Condition.wait_for`` setup. ``fn`` may sync and free device memory: no
+    capture can enter while it runs."""
+    if _OUTSIDE_LOCAL.recording:
+        return False
+    if _OUTSIDE_LOCAL.lock_held:
+        # Under this thread's own hold_off_capture: the lock is held here, so the depth cannot change under fn.
+        if _CAPTURE_DEPTH != 0:
+            return False
+        fn()
+        return True
+    if not _CAPTURE_LOCK.acquire(blocking = False):
+        return False
+    try:
+        if _CAPTURE_DEPTH != 0:
+            return False
+        fn()
+        return True
+    finally:
+        _CAPTURE_LOCK.release()
+
+
+def release_when_capture_idle(fn: Any) -> None:
+    """For finalizers: run ``fn`` as ``run_if_capture_idle`` does, else queue it for the next gated point (an explicit
+    ``synchronize_outside_capture`` or a capture's exit). Never blocks."""
+    if not run_if_capture_idle(fn):
+        _DEFERRED_RELEASES.append(fn)
+
+
+def drain_deferred_releases() -> None:
+    """Run the queued finalizer releases the gate allows now; the rest stay queued. Never blocks."""
+    for _ in range(len(_DEFERRED_RELEASES)):
+        try:
+            fn = _DEFERRED_RELEASES.popleft()
+        except IndexError:
+            return
+        try:
+            done = run_if_capture_idle(fn)
+        except Exception:  # noqa: BLE001 - a failed release is dropped, as the finalizer would have
+            continue
+        if not done:
+            _DEFERRED_RELEASES.append(fn)
+            return
 
 
 def capture_hold() -> None:
