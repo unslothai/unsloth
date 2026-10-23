@@ -919,7 +919,16 @@ async def ensure_segmenter(ctx: Any) -> None:
             found.get("reason") or "Mask from text is not available on this install"
         )
     ctx.log("Downloading the mask segmenter (first use only)")
-    await ctx.call("POST", f"{SEGMENTER}/download", json = {})
+    try:
+        await ctx.call("POST", f"{SEGMENTER}/download", json = {})
+    except FlowNodeError as exc:
+        if "installation owner" not in str(exc):
+            raise
+        # Managed accounts cannot download models; only the owner can provision it once.
+        raise FlowNodeError(
+            "The mask segmenter is not downloaded yet, and only the installation owner can download it. "
+            "Ask them to run Find Mask once, or download it from the mask tool in Images."
+        ) from exc
 
     def parse(payload: Any) -> tuple[str, Optional[dict], Optional[str]]:
         payload = payload if isinstance(payload, dict) else {}

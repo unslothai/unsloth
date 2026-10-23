@@ -449,3 +449,22 @@ def test_a_mask_without_a_source_fails_before_the_model_loads(monkeypatch):
     with pytest.raises(FlowNodeError, match = "needs a source image"):
         asyncio.run(_common.generate_image(FakeCtx(), model = None, prompt = "a fox", mask = _media("m")))
     assert loads == []
+
+
+def test_find_mask_tells_a_managed_account_who_can_download_the_segmenter():
+    class Managed(FakeCtx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+        ):
+            if path.endswith("/segment/status"):
+                return {"supported": True, "downloaded": False}
+            if path.endswith("/segment/download"):
+                raise FlowNodeError("Only the installation owner can do this")
+            return await super().call(method, path, json)
+
+    ctx = Managed(files = {"src": _png((40, 30))}, segment_mask = _png((40, 30), 255, "L"))
+    with pytest.raises(FlowNodeError, match = "Ask them to run Find Mask once"):
+        asyncio.run(_common.segment(ctx, _media("src"), "the face"))
