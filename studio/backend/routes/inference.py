@@ -8336,11 +8336,16 @@ def _direct_llama_request(counted: bool = True):
     if not counted:
         yield
         return
-    from core.rag.conversation_archive import hold_inference
+    from core.rag.conversation_archive import _pause_prewarm, hold_inference
 
-    # Inference too (caption / OCR, TTS): background archive embedding stays paused. Non-blocking, since the TTS
-    # route enters this on the event loop.
+    # Inference too (caption / OCR, TTS): background archive embedding stays paused. A worker thread (caption /
+    # OCR) also waits out the batch in flight; the TTS route enters this on the event loop, and its generation
+    # runs the gated generate_audio_response in a thread, which waits there.
     release = hold_inference()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _pause_prewarm()
     _direct_llama_request_started()
     try:
         yield

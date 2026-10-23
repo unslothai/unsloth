@@ -1882,9 +1882,35 @@ def test_an_interrupted_gap_requeues_what_it_did_not_finish(conn, monkeypatch):
     assert queued == ["requeue-a", "requeue-b"]
 
 
-def test_a_direct_llama_call_holds_the_gap_closed(conn):
+def test_a_direct_llama_call_holds_the_gap_closed(conn, monkeypatch):
     """Caption / OCR during ingestion and TTS post to llama-server directly, outside the chat paths."""
+    import threading
+    import time
+
+    from core.rag import embeddings
     from routes import inference as inference_routes
+
+    # From a worker thread (caption / OCR) the request waits out a batch already in flight.
+    real = embeddings.encode_with_identity
+    in_batch, encoding = threading.Event(), threading.Event()
+
+    def slow(texts, **kwargs):
+        encoding.set()
+        try:
+            in_batch.set()
+            time.sleep(3)
+            return real(texts, **kwargs)
+        finally:
+            encoding.clear()
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    conversation_archive.note_branch("direct-thread", _gap_thread("direct-thread", 4, tag = "direct"))
+    conversation_archive._start_prewarm()
+    assert in_batch.wait(5)
+    with inference_routes._direct_llama_request():
+        assert not encoding.is_set()
+        conversation_archive._noted_branches.clear()
 
     with inference_routes._direct_llama_request():
         assert conversation_archive._inference_depth == 1
