@@ -230,7 +230,7 @@ function DetailSection({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-md bg-muted/45 p-3">
+    <section className="rounded-lg bg-muted/45 p-3">
       <h3 className="mb-2 font-heading text-foreground text-sm">{title}</h3>
       <div className="grid gap-2">{children}</div>
     </section>
@@ -430,7 +430,7 @@ const MessageResponseDetailsSheetContent: FC<{
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-          <div className="min-w-0 rounded-md border border-border/70 bg-card p-3">
+          <div className="min-w-0 rounded-lg border border-border/70 bg-card p-3">
             <p className="min-w-0 break-words font-heading text-foreground text-sm">
               {summaryLabel}
             </p>

@@ -660,7 +660,7 @@ function ErrorResult({
   return (
     <div
       role="alert"
-      className="flex gap-3 rounded-xl border border-red-500/25 bg-red-500/5 px-4 py-3.5"
+      className="flex gap-3 rounded-lg border border-red-500/25 bg-red-500/5 px-4 py-3.5"
     >
       <HugeiconsIcon
         icon={AlertCircleIcon}

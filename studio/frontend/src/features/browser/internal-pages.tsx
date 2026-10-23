@@ -147,12 +147,12 @@ function Row({
         </>
       }
     >
-      <li className="group/row relative flex items-center gap-1 rounded-xl pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+      <li className="group/row relative flex items-center gap-1 rounded-md pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
         <button
           type="button"
           onClick={onOpen}
           disabled={!onOpen}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
         >
           {icon}
           <span className="min-w-0 flex-1">
@@ -297,7 +297,7 @@ function HistoryRow({
               type="button"
               aria-label={t("browser.pages.pageActions", { title })}
               className={cn(
-                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 HOVER_WASH,
                 OPEN_WASH,
                 "data-[state=open]:text-foreground",
@@ -327,7 +327,7 @@ function DayCard({ label, children }: { label: string; children: ReactNode }) {
   const t = useT();
   const [open, setOpen] = useState(true);
   return (
-    <section className={cn("overflow-hidden rounded-xl border border-border", CARD_WASH)}>
+    <section className={cn("overflow-hidden rounded-2xl border border-border", CARD_WASH)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -352,7 +352,7 @@ function PageCrumbs({ current }: { current: string }) {
   const t = useT();
   const openSettings = (tab?: "browser") => useSettingsDialogStore.getState().openDialog(tab);
   const crumb =
-    "cursor-pointer rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+    "cursor-pointer rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <nav className="flex items-center gap-2 px-6 pt-4 text-ui-14" aria-label={current}>
       <button type="button" className={crumb} onClick={() => openSettings()}>
@@ -473,7 +473,7 @@ function SearchWithFilter({
           </DropdownMenu>
         </label>
       </PopoverAnchor>
-      <PopoverContent align="end" sideOffset={6} className="browser-menu w-auto rounded-2xl p-0">
+      <PopoverContent align="end" sideOffset={6} className="browser-menu w-auto rounded-xl p-0">
         <Calendar
           mode="range"
           selected={dates}
@@ -664,7 +664,7 @@ function useMissingDownloads(downloads: DownloadItem[]) {
 }
 
 const ROW_ACTION = cn(
-  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
   HOVER_WASH,
 );
 
@@ -730,7 +730,7 @@ function DownloadRow({
         >
           <span
             className={cn(
-              "flex size-10 shrink-0 items-center justify-center rounded-lg",
+              "flex size-10 shrink-0 items-center justify-center rounded-md",
               "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
             )}
           >
