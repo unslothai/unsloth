@@ -1288,6 +1288,8 @@ function ModelRow({
   className?: string;
 }) {
   const exceeds = isOverBudget(vramStatus);
+  // With no GPU every load runs from RAM: `ram` keeps its warning but is not an overage to dim.
+  const dimmed = exceeds && !(vramStatus === "ram" && !(gpuGb && gpuGb > 0));
   const showVramTooltip =
     vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
   const vramTooltipText =
@@ -1448,9 +1450,9 @@ function ModelRow({
           "flex w-full items-center",
           alignMeta === "device" ? DEVICE_META_GAP : "gap-1",
           // Over budget reads as a dimmed row, which scans; hover restores it. The selected row keeps full weight.
-          exceeds &&
+          dimmed &&
             !selected &&
-            "opacity-50 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-40",
+            "opacity-55 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-50",
         )}
       >
         <span className="flex min-w-0 flex-1 items-baseline">
@@ -2528,7 +2530,7 @@ function GgufVariantExpander({
             )}
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
-              <span className={cn(oom && "!text-gray-400 dark:!text-gray-500")}>
+              <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>
                 {ggufVariantPickerLabel(v, {
                   h3Grouped: group?.title != null,
                   hideH3PrunedBuild,
@@ -4302,8 +4304,6 @@ export function HubModelPicker({
                 : budget.unifiedLoadBudgetGb,
           });
       if (fit === "fits") return null;
-      // With no GPU every load runs from RAM: `ram` is this host's best case, not an overage.
-      if (fit === "ram" && budget.memoryTotalGb <= 0) return null;
       return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
         ? "exceeds"
         : fit;

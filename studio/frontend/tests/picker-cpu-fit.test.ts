@@ -38,9 +38,11 @@ test("a checkpoint keeps its old verdicts everywhere else", () => {
   assert.equal(checkpointFit(130, { ...cuda, available: false, backend: "mlx" }, true), null);
 });
 
-test("with no GPU a GGUF that fits in RAM is not dimmed as an overage", () => {
+test("with no GPU a GGUF that fits in RAM keeps its warning but is not dimmed", () => {
+  // The verdict still reaches the row, so the RAM fallback mark shows.
+  assert.doesNotMatch(PICKERS, /fit === "ram" && budget\.memoryTotalGb <= 0/);
   assert.match(
     PICKERS,
-    /if \(fit === "fits"\) return null;\s*\/\/[^\n]*\n\s*if \(fit === "ram" && budget\.memoryTotalGb <= 0\) return null;/,
+    /const dimmed = exceeds && !\(vramStatus === "ram" && !\(gpuGb && gpuGb > 0\)\);/,
   );
 });
