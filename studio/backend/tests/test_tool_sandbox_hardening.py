@@ -19,6 +19,37 @@ from core.inference.os_sandbox import ToolLaunchPlan
 
 _POSIX = pytest.mark.skipif(sys.platform == "win32", reason = "POSIX launch layout")
 
+# Names of the chat-planted pytest11 entry points a name-less scan sees. Python 3.9's
+# importlib.metadata.entry_points() takes no group and returns a dict of groups; 3.10+ selects.
+_PYTEST11_SCAN = (
+    "_eps = m.entry_points()\n"
+    "_eps = _eps.select(group = 'pytest11') if hasattr(_eps, 'select') else _eps.get('pytest11', ())\n"
+    "print('SCAN', sorted(e.name for e in _eps if e.name.startswith('chat')))\n"
+)
+
+
+@pytest.mark.parametrize("shape", ["dict", "selectable"])
+def test_the_pytest11_scan_reads_both_entry_point_api_shapes(shape, capsys):
+    """The scan the approved-call checks run works on the 3.9 dict API and the 3.10+ select API."""
+    import types
+
+    hit = types.SimpleNamespace(name = "chatplugin")
+    other = types.SimpleNamespace(name = "hostplugin")
+
+    class Selectable(list):
+        def select(self, group):
+            return [hit, other] if group == "pytest11" else []
+
+    def entry_points(**kwargs):
+        if shape == "dict":
+            if kwargs:
+                raise TypeError("entry_points() got an unexpected keyword argument 'group'")
+            return {"pytest11": (hit, other), "console_scripts": ()}
+        return Selectable()
+
+    exec(_PYTEST11_SCAN, {"m": types.SimpleNamespace(entry_points = entry_points)})
+    assert capsys.readouterr().out == "SCAN ['chatplugin']\n"
+
 
 def _planted_workdir(tmp_path):
     workdir = tmp_path / "chat"
@@ -151,8 +182,8 @@ def test_an_approved_script_still_imports_chat_installed_packages(tmp_path, monk
     code = (
         "import importlib.metadata as m, chatlib, chatlib.sub, chatpkg\n"
         "print('LIB', chatlib.X, chatlib.sub.X, chatpkg.VALUE, m.version('chatlib'))\n"
-        "print('SCAN', sorted(e.name for e in m.entry_points(group = 'pytest11') if e.name.startswith('chat')))\n"
-        f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+        + _PYTEST11_SCAN
+        + f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
     )
     out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
     assert "LIB chatlib-sub chatlib-sub from-session-packages 2.0" in out, out
@@ -196,8 +227,16 @@ def test_an_approved_script_imports_chat_portions_of_host_pkgutil_namespaces(tmp
     packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
     host = tmp_path / "host"
     extend = "__path__ = __import__('pkgutil').extend_path(__path__, __name__)\n"
+    # Only mentions the namespace helpers (a comment, an unused import, a string, a dead branch):
+    # still a regular package.
+    mentions = (
+        "# not a namespace: no extend_path or declare_namespace here\n"
+        "from pkgutil import extend_path\n"
+        "NOTE = 'declare_namespace(__name__)'\n"
+        "if False:\n    __path__ = extend_path(__path__, __name__)\n"
+    )
     for root, owner in ((host, "host"), (packages, "chat")):
-        for pkg, init in (("chatpkgutil", extend), ("chatregular", "")):
+        for pkg, init in (("chatpkgutil", extend), ("chatregular", ""), ("chatmention", mentions)):
             (root / pkg).mkdir(parents = True)
             (root / pkg / "__init__.py").write_text(init, encoding = "utf-8")
             (root / pkg / f"{owner}_mod.py").write_text(f"V = '{owner}'\n", encoding = "utf-8")
@@ -211,15 +250,17 @@ def test_an_approved_script_imports_chat_portions_of_host_pkgutil_namespaces(tmp
         "import chatpkgutil.host_mod, chatpkgutil.chat_mod, chatpkgutil.shared, chatregular.host_mod\n"
         "print('PKG', chatpkgutil.host_mod.V, chatpkgutil.chat_mod.V, chatpkgutil.shared.V,"
         " sorted(i.name for i in pkgutil.iter_modules(chatpkgutil.__path__)))\n"
-        "try:\n    import chatregular.chat_mod\n    print('REGULAR leaked')\n"
-        "except ModuleNotFoundError:\n    print('REGULAR closed')\n"
-        "print('SCAN', sorted(e.name for e in m.entry_points(group = 'pytest11') if e.name.startswith('chat')))\n"
-        f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+        "for name in ('chatregular', 'chatmention'):\n"
+        "    try:\n        __import__(name + '.chat_mod')\n        print('REGULAR leaked', name)\n"
+        "    except ModuleNotFoundError:\n        print('REGULAR closed', name)\n"
+        + _PYTEST11_SCAN
+        + f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
     )
     out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
     # The host's own portion still wins for a name both provide.
     assert "PKG host chat host-shared ['chat_mod', 'host_mod', 'shared']" in out, out
-    assert "REGULAR closed" in out, out
+    assert "REGULAR closed chatregular" in out and "REGULAR closed chatmention" in out, out
+    assert "REGULAR leaked" not in out, out
     assert "SCAN []" in out, out
     assert not marker.exists(), out
 

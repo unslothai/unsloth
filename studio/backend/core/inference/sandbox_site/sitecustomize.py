@@ -362,14 +362,46 @@ class _HostPackagesFinder:
     def _extends_path(cls, origin):
         # A pkgutil-style (extend_path) or pkg_resources-style (declare_namespace) namespace package
         # collects its portions by scanning sys.path while its __init__ runs, so it never sees this folder.
+        # Only the statements that declare one count: `__path__ = <...>extend_path(__path__, __name__)`
+        # or `<...>declare_namespace(__name__)`, at module level or in a module-level try. A comment,
+        # a string, an unused import or a call under if/def/class leaves the package regular.
         if origin not in cls._extends:
             try:
+                import ast
+
                 with open(origin, "rb") as f:
-                    text = f.read()
-                cls._extends[origin] = b"extend_path" in text or b"declare_namespace" in text
+                    tree = ast.parse(f.read())
+                cls._extends[origin] = any(map(cls._declares_namespace, cls._top_level(tree.body)))
             except Exception:  # noqa: BLE001 - an unreadable __init__ is treated as a regular package
                 cls._extends[origin] = False
         return cls._extends[origin]
+
+    @classmethod
+    def _top_level(cls, body):
+        import ast
+
+        for node in body:
+            yield node
+            if isinstance(node, ast.Try):
+                for block in (node.body, node.orelse, node.finalbody, *(h.body for h in node.handlers)):
+                    yield from cls._top_level(block)
+
+    @staticmethod
+    def _declares_namespace(node):
+        import ast
+
+        def call_of(value, name, args):
+            if not isinstance(value, ast.Call) or value.keywords:
+                return False
+            func = value.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            return called == name and [getattr(a, "id", None) for a in value.args] == args
+
+        if isinstance(node, ast.Assign):
+            return any(getattr(t, "id", None) == "__path__" for t in node.targets) and call_of(
+                node.value, "extend_path", ["__path__", "__name__"]
+            )
+        return isinstance(node, ast.Expr) and call_of(node.value, "declare_namespace", ["__name__"])
 
     def find_distributions(self, context = None):
         name = getattr(context, "name", None)

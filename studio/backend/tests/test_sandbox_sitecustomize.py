@@ -404,3 +404,33 @@ def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_pat
         assert not os.path.exists(os.path.join(os.getcwd(), "missing_xyz.bin"))
     finally:
         _restore_patch_targets(saved)
+
+
+@pytest.mark.parametrize(
+    "init, namespace",
+    [
+        ("__path__ = __import__('pkgutil').extend_path(__path__, __name__)\n", True),
+        ("from pkgutil import extend_path\n__path__ = extend_path(__path__, __name__)\n", True),
+        ("__import__('pkg_resources').declare_namespace(__name__)\n", True),
+        (
+            "try:\n    __import__('pkg_resources').declare_namespace(__name__)\n"
+            "except ImportError:\n    import pkgutil\n"
+            "    __path__ = pkgutil.extend_path(__path__, __name__)\n",
+            True,
+        ),
+        ("# extend_path and declare_namespace are not used here\n", False),
+        ("from pkgutil import extend_path\n", False),
+        ("DOC = '__path__ = extend_path(__path__, __name__)'\n", False),
+        ("if False:\n    __import__('pkg_resources').declare_namespace(__name__)\n", False),
+        ("def setup():\n    __path__ = extend_path(__path__, __name__)\n", False),
+        ("paths = extend_path(['x'], 'other')\n", False),
+        ("this is not python(\n", False),
+    ],
+)
+def test_host_packages_finder_only_treats_declared_namespaces_as_open(tmp_path, init, namespace):
+    """Only a real extend_path / declare_namespace declaration opens a regular-looking package to
+    the chat folder's portion; text that merely mentions them does not."""
+    finder = _load_shim()._HostPackagesFinder
+    origin = tmp_path / "__init__.py"
+    origin.write_text(init, encoding = "utf-8")
+    assert finder._extends_path(str(origin)) is namespace
