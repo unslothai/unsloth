@@ -269,24 +269,18 @@ export const MessageTiming: FC<{
                   </span>
                 </div>
               )}
-              {timing.firstTokenTime !== undefined && (
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">First token</span>
-                  <span className="font-mono tabular-nums">
-                    {formatTimingMs(timing.firstTokenTime)}
-                  </span>
-                </div>
-              )}
               {draftText !== null && (
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-muted-foreground">Draft accepted</span>
                   <span className="font-mono tabular-nums">{draftText}</span>
                 </div>
               )}
-              {stopReason !== null && (
+              {timing.firstTokenTime !== undefined && (
                 <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Stop reason</span>
-                  <span>{stopReason}</span>
+                  <span className="text-muted-foreground">First token</span>
+                  <span className="font-mono tabular-nums">
+                    {formatTimingMs(timing.firstTokenTime)}
+                  </span>
                 </div>
               )}
               {st?.diffusion_steps != null && (
@@ -334,6 +328,12 @@ export const MessageTiming: FC<{
                   {timing.totalChunks}
                 </span>
               </div>
+              {stopReason !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Stop reason</span>
+                  <span>{stopReason}</span>
+                </div>
+              )}
             </>
             )
           ) : (
@@ -345,12 +345,6 @@ export const MessageTiming: FC<{
                   <span className="font-mono tabular-nums">
                     {formatTimingMs(timing.firstTokenTime)}
                   </span>
-                </div>
-              )}
-              {stopReason !== null && (
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">Stop reason</span>
-                  <span>{stopReason}</span>
                 </div>
               )}
               {cacheHits > 0 && (
@@ -381,6 +375,12 @@ export const MessageTiming: FC<{
                   {timing.totalChunks}
                 </span>
               </div>
+              {stopReason !== null && (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Stop reason</span>
+                  <span>{stopReason}</span>
+                </div>
+              )}
             </>
           )}
         </div>
