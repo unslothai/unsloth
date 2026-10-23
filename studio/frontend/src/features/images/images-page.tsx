@@ -5652,7 +5652,6 @@ export function ImagesPage({
           label: availableLoras.find((a) => a.id === l.id)?.display_name ?? l.id.split(/[\\/]/).pop() ?? l.id,
         })),
       sdControls: compareSdControls,
-      // Generate's negative-prompt predicate counts Hires CFG too; the cells must send what Generate would.
       hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
       // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
       controlnetEngaged,

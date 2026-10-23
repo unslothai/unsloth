@@ -954,13 +954,11 @@ test("Hires CFG keeps the negative prompt on a CFG cell whose base guidance leav
   const ctx = sdxl({ hiresEngagesNegative: true });
   assert.equal(buildCellRequest(g, 0, base({ hires }), ctx, seeds).negative_prompt, "blurry");
   assert.equal(buildCellRequest(g, 1, base({ hires }), ctx, seeds).negative_prompt, "blurry");
-  // Without Hires CFG the base-only rule stands.
   assert.equal(buildCellRequest(g, 0, base(), sdxl(), seeds).negative_prompt, undefined);
-  // A negative-only Prompt S/R term at base CFG 1 is used by the refine pass, so it is not refused.
+  // A negative-only S/R term at base CFG 1 is read by the refine pass, so not refused.
   const sr = sdxl({ prompt: "a fox", negativePrompt: "red eyes", guidance: 1 });
   assert.equal(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], sr).ok, false);
   assert.ok(planCompare([{ axisId: "prompt_sr", text: "red, blue" }], { ...sr, hiresEngagesNegative: true }).ok);
-  // The grid PNG records the negative prompt the refine pass read.
   const off = plan([{ axisId: "steps", text: "10, 20" }], { ...sr, negativePrompt: "blurry" });
   assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry" }), undefined);
   assert.equal(gridNegativePrompt(off, { ...sr, negativePrompt: "blurry", hiresEngagesNegative: true }), "blurry");

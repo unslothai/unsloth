@@ -146,8 +146,7 @@ function controlNetUnit(value: unknown): string | undefined {
 
 const sameHires = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
-/** A Hires fix the cells ran, in the backend's A1111 names (diffusion_hires.infotext_fields): Size stays the base
- *  pass and `Hires upscale` is the factor, so a restore re-runs the refine pass. */
+/** Hires fields in A1111 names (diffusion_hires.infotext_fields); Size stays the base pass. */
 function hiresFields(hires: HiresRequest | undefined): Array<[string, string | number | undefined]> {
   if (!hires) return [];
   const upscaler = hires.upscaler ? (HIRES_UPSCALER_LABELS[hires.upscaler] ?? hires.upscaler.replace(/^local:/, "")) : undefined;

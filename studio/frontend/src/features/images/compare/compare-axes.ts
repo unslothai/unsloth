@@ -46,8 +46,7 @@ export interface CompareContext {
   loras: ReadonlyArray<{ id: string; weight: number; label: string }>;
   sdControls?: CompareSdControls | null;
   controlnetEngaged: boolean;
-  // The form's Hires CFG turns CFG on for the refine pass, which then reads the negative prompt whatever the cell's
-  // base CFG (hiresEngagesNegative, the predicate Generate uses). No axis varies Hires, so it holds for every cell.
+  // Hires CFG makes the refine pass read the negative prompt at any base CFG; no axis varies Hires, so it is grid-wide.
   hiresEngagesNegative?: boolean;
 }
 
