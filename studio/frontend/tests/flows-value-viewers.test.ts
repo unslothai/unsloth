@@ -207,3 +207,10 @@ test("delta cells are not coloured as good or bad: the table does not know which
   );
   assert.equal(/role === "delta"/.test(src), false);
 });
+
+test("a column mixing numbers and words sorts as text, consistently", () => {
+  const rows = [{ v: "15x" }, { v: "2" }, { v: "10" }];
+  const once = sortRows(rows, "v", false).map((r) => r.v);
+  assert.deepEqual(once, ["10", "15x", "2"]);
+  assert.deepEqual(sortRows([...rows].reverse(), "v", false).map((r) => r.v), once);
+});

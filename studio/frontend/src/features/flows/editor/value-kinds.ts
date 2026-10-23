@@ -149,6 +149,14 @@ export function sortRows(
   descending: boolean,
 ): Record<string, unknown>[] {
   const sign = descending ? -1 : 1;
+  const asNumber = (v: unknown): number =>
+    typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+  // One ordering per column (a mix would not sort consistently): by value when every cell is a number,
+  // including numbers stored as text ("10", "2"), else as text.
+  const numeric = rows.every((row) => {
+    const v = row[column];
+    return v === null || v === undefined || Number.isFinite(asNumber(v));
+  });
   return rows
     .map((row, index) => ({ row, index }))
     .sort((a, b) => {
@@ -158,16 +166,9 @@ export function sortRows(
       const yEmpty = y === null || y === undefined;
       if (xEmpty || yEmpty)
         return xEmpty === yEmpty ? a.index - b.index : xEmpty ? 1 : -1;
-      // Numbers stored as text ("10", "2") sort by value too.
-      const nx = typeof x === "string" && x.trim() !== "" ? Number(x) : x;
-      const ny = typeof y === "string" && y.trim() !== "" ? Number(y) : y;
-      const order =
-        typeof nx === "number" &&
-        typeof ny === "number" &&
-        Number.isFinite(nx) &&
-        Number.isFinite(ny)
-          ? nx - ny
-          : String(x).localeCompare(String(y));
+      const order = numeric
+        ? asNumber(x) - asNumber(y)
+        : String(x).localeCompare(String(y));
       return order === 0 ? a.index - b.index : sign * order;
     })
     .map((entry) => entry.row);

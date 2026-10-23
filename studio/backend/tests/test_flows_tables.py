@@ -304,3 +304,9 @@ def test_compare_matches_numeric_keys_stored_as_text():
     base = T.make_table([{"ctx": "4096", "tps": 10.0}])
     out = T.compare(head, base, ["ctx"], "tps")
     assert out["rows"][0]["delta"] == 2.0
+
+
+def test_chart_treats_text_and_number_x_as_one_coordinate():
+    t = T.make_table([{"ctx": 4096, "tps": 10}, {"ctx": "4096", "tps": 12}])
+    with pytest.raises(FlowNodeError, match = "Aggregate"):
+        T.chart(t, "ctx", ["tps"], kind = "line", group = None, error = None)

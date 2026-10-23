@@ -354,9 +354,16 @@ def chart(
     _require(table, [x] + y + ([group] if group else []) + ([error] if error else []), "Chart")
     if group and len(y) > 1:
         raise FlowNodeError("Pick one y column when grouping into series")
-    # Insertion order without a list scan per row (a 100k-row table would be quadratic).
-    xs: list[Any] = list(dict.fromkeys(row.get(x) for row in table["rows"]))
     by_id = {c["id"]: c for c in table["columns"]}
+    numeric_x = by_id[x].get("type") == "number"
+
+    def x_of(row: dict) -> Any:
+        # Numbers stored as text ("1024") are the same coordinate as 1024 and plot on a numeric axis.
+        v = row.get(x)
+        return _number(v) if numeric_x and _number(v) is not None else v
+
+    # Insertion order without a list scan per row (a 100k-row table would be quadratic).
+    xs: list[Any] = list(dict.fromkeys(x_of(row) for row in table["rows"]))
     series = []
     names = (
         [(str(g), g) for g in dict.fromkeys(r.get(group) for r in table["rows"])]
@@ -373,13 +380,13 @@ def chart(
         for row in table["rows"]:
             if group and row.get(group) != gval:
                 continue
-            if row.get(x) in points:
+            if x_of(row) in points:
                 where = f" in series {name!r}" if group else ""
                 raise FlowNodeError(
-                    f"More than one row has {x} = {row.get(x)!r}{where}; "
+                    f"More than one row has {x} = {x_of(row)!r}{where}; "
                     "average repeats with Aggregate first, or add a series column"
                 )
-            points[row.get(x)] = row
+            points[x_of(row)] = row
         values = [_number(points[v].get(column)) if v in points else None for v in xs]
         entry: dict[str, Any] = {"name": name, "y": values}
         if error:
@@ -388,9 +395,6 @@ def chart(
     # One axis unit only when every plotted column shares it; mixed units are not labelled as one.
     units = {by_id[m].get("unit") for m in y}
     unit = units.pop() if len(units) == 1 else None
-    if by_id[x].get("type") == "number":
-        # Numbers stored as text ("1024") still plot on a numeric axis.
-        xs = [_number(v) if v is not None else None for v in xs]
     return {
         "kind": "chart",
         "type": kind,
