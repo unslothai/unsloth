@@ -312,7 +312,7 @@ function openPopup(tab: BrowserTab, url: string): void {
   const store = useBrowserStore.getState();
   if (tab.chat !== store.chat) {
     // The opener's temporary flag, not the shown chat's: a temporary page's popups stay out of history.
-    const temporary = pageTemporary(tab.id, currentEntry(tab)) || undefined;
+    const temporary = pageTemporary(tab.id, currentEntry(tab));
     store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true, temporary });
   } else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
 }
