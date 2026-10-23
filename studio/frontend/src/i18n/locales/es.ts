@@ -3157,6 +3157,7 @@ export const es = {
       requestPlain: "Básica",
       requestTools: "Con herramientas",
       requestAdvanced: "Muestreo avanzado",
+      exampleKind: "Ejemplo",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "HTTPS seguro",

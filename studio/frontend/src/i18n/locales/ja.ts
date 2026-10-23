@@ -3093,6 +3093,7 @@ export const ja = {
       requestPlain: "基本",
       requestTools: "ツールあり",
       requestAdvanced: "詳細なサンプリング",
+      exampleKind: "例",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "セキュア HTTPS",

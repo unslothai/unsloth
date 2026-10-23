@@ -3068,6 +3068,7 @@ export const it = {
       requestPlain: "Base",
       requestTools: "Con strumenti",
       requestAdvanced: "Campionamento avanzato",
+      exampleKind: "Esempio",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "HTTPS sicuro",

@@ -3118,6 +3118,7 @@ export const ar = {
       requestPlain: "أساسي",
       requestTools: "مع الأدوات",
       requestAdvanced: "أخذ عينات متقدم",
+      exampleKind: "المثال",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "HTTPS آمن",

@@ -3165,6 +3165,7 @@ export const fr = {
       requestPlain: "Simple",
       requestTools: "Avec outils",
       requestAdvanced: "Échantillonnage avancé",
+      exampleKind: "Exemple",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "HTTPS sécurisé",

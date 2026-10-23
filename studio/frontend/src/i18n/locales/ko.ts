@@ -3106,6 +3106,7 @@ export const ko = {
       requestPlain: "기본",
       requestTools: "도구 사용",
       requestAdvanced: "고급 샘플링",
+      exampleKind: "예제",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "보안 HTTPS",

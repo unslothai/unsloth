@@ -29,13 +29,28 @@ test("the API tab hands owners to the Agents tab and gives other accounts the ag
   assert.doesNotMatch(src, /href: "https?:\/\//);
 });
 
-test("the API tab's platform follows the user's machine until they pick one", () => {
-  const src = readSrc("features/settings/components/usage-examples.tsx");
+test("every API example section has a platform toggle that follows the user's machine", () => {
+  const parts = readSrc("features/settings/components/api-example-parts.tsx");
   assert.match(
-    src,
-    /const os: Os =\s*osOverride \?\?\s*\(\(isLoopbackUrl\(base\) \? deviceType === "windows" : isWindowsClient\)/,
+    parts,
+    /const os: ExampleOs =\s*override \?\?\s*\(\(isLoopbackUrl\(base\) \? deviceType === "windows" : isWindowsClient\)/,
   );
-  assert.match(src, /p\.startsWith\("win"\) \|\| p\.includes\("windows"\)/);
+  assert.match(parts, /p\.startsWith\("win"\) \|\| p\.includes\("windows"\)/);
+  for (const name of [
+    "usage-examples",
+    "audio-api-examples",
+    "media-api-examples",
+  ]) {
+    const src = readSrc(`features/settings/components/${name}.tsx`);
+    assert.match(src, /const \[os, setOs\] = useExampleOs\(base\);/, name);
+    assert.match(
+      src,
+      /<PlatformToggle value=\{os\} onChange=\{setOs\} \/>/,
+      name,
+    );
+    // no section hides the toggle behind its curl pick any more
+    assert.doesNotMatch(src, /lang === "curl" \? \(\s*<div/, name);
+  }
 });
 
 test("with no model loaded the example still renders, naming a placeholder", () => {
@@ -48,19 +63,31 @@ test("with no model loaded the example still renders, naming a placeholder", () 
   assert.doesNotMatch(src, /\{snippets \? \(/);
 });
 
-test("the usage example starts short, drags taller, and its copy button is icon-only", () => {
-  const src = readSrc("features/settings/components/usage-examples.tsx");
+test("the example code box starts short, drags taller, and its copy button is icon-only", () => {
+  const src = readSrc("features/settings/components/api-example-parts.tsx");
   assert.match(src, /const START_LINES = 8;/);
-  assert.match(src, /snippets\[lang\]\.split\("\\n"\)\.length > START_LINES/);
+  assert.match(src, /code\.split\("\\n"\)\.length > START_LINES/);
   // the cap is lifted so a drag can grow it; a height is set, from the drag once there is one
   assert.match(
     src,
-    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*exampleHeight === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
+    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
   );
   // our own handle: CSS resize draws a native grabber the rounded corner clips into an arc
   assert.doesNotMatch(src, /resize-y|webkit-resizer/);
-  assert.match(src, /onPointerDown=\{startExampleResize\}/);
+  assert.match(src, /onPointerDown=\{startResize\}/);
   assert.match(src, /setPointerCapture\(event\.pointerId\)/);
-  assert.doesNotMatch(src, /exampleExpand|exampleCollapse|setExpanded/);
-  assert.doesNotMatch(src, /t\("settings\.apiKeys\.copy"\)/);
+  for (const name of [
+    "usage-examples",
+    "audio-api-examples",
+    "media-api-examples",
+    "api-example-parts",
+  ]) {
+    const file = readSrc(`features/settings/components/${name}.tsx`);
+    assert.doesNotMatch(file, /t\("settings\.apiKeys\.copy"\)/, name);
+    assert.doesNotMatch(
+      file,
+      /SegmentedPill group=\{`\$\{pillId\}-(lang|tab|kind|run)`\}/,
+      name,
+    );
+  }
 });

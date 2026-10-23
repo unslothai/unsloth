@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { createCodePlugin } from "@/components/assistant-ui/code-plugin";
-import {
-  unslothDarkTheme,
-  unslothLightTheme,
-} from "@/components/assistant-ui/code-themes";
-import { SegmentedPill } from "@/components/segmented-control";
-import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Select,
   SelectContent,
@@ -45,17 +38,12 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
 import type {
   KeylessApiAccessExposure,
@@ -79,6 +67,14 @@ import {
   statusGgufVerdict,
 } from "./agent-command";
 import { AgentIcon } from "./agent-command-block";
+import {
+  ExampleCodeBox,
+  ExampleField,
+  type ExampleOs,
+  PlatformToggle,
+  isLoopbackUrl,
+  useExampleOs,
+} from "./api-example-parts";
 import { detailsFor } from "./coding-agent-list";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
 import {
@@ -97,7 +93,7 @@ type ExampleType =
   | "curlAdvanced"
   | "pythonAdvanced"
   | "javascriptAdvanced";
-type Os = "unix" | "windows";
+type Os = ExampleOs;
 type Variant = "plain" | "tools" | "advanced";
 type Language = "curl" | "python" | "javascript";
 
@@ -111,11 +107,6 @@ const VARIANTS: { id: Variant; labelKey: TranslationKey }[] = [
   { id: "plain", labelKey: "settings.apiKeys.requestPlain" },
   { id: "tools", labelKey: "settings.apiKeys.requestTools" },
   { id: "advanced", labelKey: "settings.apiKeys.requestAdvanced" },
-];
-
-const OS_OPTIONS: { id: Os; labelKey: TranslationKey }[] = [
-  { id: "unix", labelKey: "settings.apiKeys.osUnix" },
-  { id: "windows", labelKey: "settings.apiKeys.osWindows" },
 ];
 
 // guards a restored pick against a snippet type dropped in a later release.
@@ -150,19 +141,6 @@ function exampleParts(type: ExampleType): [Language, Variant] {
       ? "advanced"
       : "plain";
   return [language, variant];
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <div className="flex h-5 items-center">
-        <span className="truncate text-xs font-medium text-foreground">
-          {label}
-        </span>
-      </div>
-      {children}
-    </div>
-  );
 }
 
 const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
@@ -413,8 +391,6 @@ function buildSnippets(
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const MODEL_PLACEHOLDER = "YOUR_MODEL";
-// Lines that fit the example box's starting height (h-46); longer ones start there and scroll.
-const START_LINES = 8;
 // OpenAI SDKs require an api_key value even for keyless access.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
 // retry while /v1 has no model because downloads and loads do not update the store.
@@ -552,57 +528,6 @@ function canUseLocalAgentDetection(base: string): boolean {
   }
 }
 
-function isLoopbackUrl(url: string | null | undefined): boolean {
-  if (!url) return false;
-  try {
-    return isLoopbackHost(normalizeHost(new URL(url).hostname));
-  } catch {
-    return false;
-  }
-}
-
-const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
-  typeof unslothLightTheme,
-  typeof unslothDarkTheme,
-];
-const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
-
-export function HighlightedCode({
-  code,
-  language,
-  label,
-  redactFromReload,
-}: {
-  code: string;
-  language: string;
-  label: string;
-  redactFromReload: boolean;
-}) {
-  const markdown = useMemo(
-    () => `\`\`\`${language}\n${code}\n\`\`\``,
-    [code, language],
-  );
-  return (
-    <section
-      // Safari never focuses a scroller on its own, so long examples need a tab stop.
-      // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
-      tabIndex={0}
-      aria-label={label}
-      className="max-h-96 max-w-full overflow-auto scroll-rounded rounded-lg p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
-      data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
-    >
-      <Streamdown
-        mode="static"
-        plugins={{ code: codePlugin }}
-        controls={{ code: false }}
-        shikiTheme={SHIKI_THEMES}
-      >
-        {markdown}
-      </Streamdown>
-    </section>
-  );
-}
-
 export function UsageExamples({
   apiKey,
   useTunnel,
@@ -622,14 +547,11 @@ export function UsageExamples({
   keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
-  const pillId = useId();
   const isOwner = useIsAccountOwner();
-  const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const secure = usePlatformStore((s) => s.secure);
   const setStoredLang = useSettingsPanelPrefsStore((s) => s.setApiExampleLang);
-  const setStoredOs = useSettingsPanelPrefsStore((s) => s.setApiExampleOs);
   const setStoredAgent = useSettingsPanelPrefsStore(
     (s) => s.setApiExampleAgent,
   );
@@ -642,19 +564,6 @@ export function UsageExamples({
       ? (storedPrefs.apiExampleLang as ExampleType)
       : "curl",
   );
-  // an explicit pick wins, since the snippet may target another machine.
-  const [osOverride, setOsOverride] = useState<Os | null>(
-    storedPrefs.apiExampleOs === "windows" ||
-      storedPrefs.apiExampleOs === "unix"
-      ? storedPrefs.apiExampleOs
-      : null,
-  );
-  // Anchor the match: a bare includes("win") would also match "darwin".
-  const [isWindowsClient] = useState(() => {
-    const p = getClientPlatform();
-    return p.startsWith("win") || p.includes("windows");
-  });
-  const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
   const [agent, setAgent] = useState<string>(
@@ -679,13 +588,7 @@ export function UsageExamples({
       : isTauri
         ? (serverUrl ?? origin)
         : origin;
-  // A loopback base is this machine, where deviceType tells WSL from Windows; otherwise
-  // the snippet is pasted where the user is, so the client platform is the guess.
-  const os: Os =
-    osOverride ??
-    ((isLoopbackUrl(base) ? deviceType === "windows" : isWindowsClient)
-      ? "windows"
-      : "unix");
+  const [os, setOs] = useExampleOs(base);
   const localAgentDetection = canUseLocalAgentDetection(base);
   const loopbackBind = isLoopbackUrl(serverUrl);
   // isServedByLlamaCpp owns which store fields count; a context length is not among them,
@@ -894,7 +797,6 @@ export function UsageExamples({
     () => buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os),
     [base, key, toolsKey, model, os],
   );
-  const tall = snippets[lang].split("\n").length > START_LINES;
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
     () => buildAgentCommand(base, agentKey, os, agent),
@@ -908,41 +810,6 @@ export function UsageExamples({
     : JAVASCRIPT_TYPES.has(lang)
       ? "javascript"
       : "python";
-
-  const exampleBoxRef = useRef<HTMLDivElement>(null);
-  const [exampleHeight, setExampleHeight] = useState<number | null>(null);
-  const startExampleResize = (event: ReactPointerEvent<HTMLSpanElement>) => {
-    const scroller = exampleBoxRef.current?.querySelector("section");
-    if (!scroller || event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    const handle = event.currentTarget;
-    handle.setPointerCapture(event.pointerId);
-    const startY = event.clientY;
-    const startHeight = scroller.getBoundingClientRect().height;
-    const move = (e: PointerEvent) => {
-      // 96px floor matches min-h-24.
-      setExampleHeight(
-        Math.max(96, Math.round(startHeight + e.clientY - startY)),
-      );
-    };
-    const stop = () => {
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", stop);
-      handle.removeEventListener("pointercancel", stop);
-    };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", stop);
-    handle.addEventListener("pointercancel", stop);
-  };
-
-  const handleCopy = async () => {
-    if (await copyToClipboard(snippets[lang])) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    }
-  };
 
   const handleCopyUrl = async () => {
     if (cloudflareUrl && (await copyToClipboard(cloudflareUrl))) {
@@ -1031,7 +898,7 @@ export function UsageExamples({
       ) : null}
       <div className="@container">
         <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
-          <Field label={t("settings.apiKeys.exampleLanguage")}>
+          <ExampleField label={t("settings.apiKeys.exampleLanguage")}>
             <Select
               value={language}
               onValueChange={(next) =>
@@ -1052,8 +919,8 @@ export function UsageExamples({
                 ))}
               </SelectContent>
             </Select>
-          </Field>
-          <Field label={t("settings.apiKeys.exampleRequest")}>
+          </ExampleField>
+          <ExampleField label={t("settings.apiKeys.exampleRequest")}>
             <Select
               value={variant}
               onValueChange={(next) =>
@@ -1074,40 +941,10 @@ export function UsageExamples({
                 ))}
               </SelectContent>
             </Select>
-          </Field>
-          <Field label={t("settings.apiKeys.examplePlatform")}>
-            <fieldset className="flex min-w-0">
-              <legend className="sr-only">
-                {t("settings.apiKeys.examplePlatform")}
-              </legend>
-              <div className="hub-tab-toggle flex h-9 w-full min-w-0 items-center rounded-full">
-                {OS_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => {
-                      setOsOverride(option.id);
-                      setStoredOs(option.id);
-                    }}
-                    aria-pressed={os === option.id}
-                    className={cn(
-                      "relative inline-flex h-9 min-w-0 flex-auto items-center justify-center whitespace-nowrap rounded-full px-2.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                      os === option.id
-                        ? "text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {os === option.id && (
-                      <SegmentedPill group={`${pillId}-os`} />
-                    )}
-                    <span className="relative truncate">
-                      {t(option.labelKey)}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </fieldset>
-          </Field>
+          </ExampleField>
+          <ExampleField label={t("settings.apiKeys.examplePlatform")}>
+            <PlatformToggle value={os} onChange={setOs} />
+          </ExampleField>
         </div>
       </div>
       {model ? null : (
@@ -1115,65 +952,12 @@ export function UsageExamples({
           {t("settings.apiKeys.usageNoModel")}
         </p>
       )}
-      <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="absolute top-2.5 right-1.5 z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          aria-label={
-            copied
-              ? t("settings.apiKeys.copied")
-              : t("settings.apiKeys.copySnippet")
-          }
-        >
-          <HugeiconsIcon
-            icon={copied ? Tick02Icon : Copy01Icon}
-            className={cn("size-3.5", copied && "text-control-accent")}
-          />
-        </button>
-        {/* The language label adds nothing next to the Language picker. HighlightedCode's
-            max-h-96 is lifted so a drag can grow the box past it. */}
-        <div
-          ref={exampleBoxRef}
-          style={
-            exampleHeight === null
-              ? undefined
-              : ({ "--example-h": `${exampleHeight}px` } as CSSProperties)
-          }
-          className={cn(
-            "[&>section]:max-h-none [&>section]:min-h-24 [&_[data-streamdown=code-block-header]]:hidden",
-            exampleHeight === null
-              ? tall && "[&>section]:h-46"
-              : "[&>section]:h-(--example-h)",
-          )}
-        >
-          <HighlightedCode
-            key={snippets[lang]}
-            code={snippets[lang]}
-            language={shikiLang}
-            label={t("settings.apiKeys.usageExamples")}
-            redactFromReload={Boolean(apiKey)}
-          />
-        </div>
-        {/* Our own handle, not CSS resize: the native grabber can't be hidden without custom
-            scrollbars and the rounded corner clips it into a stray arc. Inset past the curve.
-            Mouse-only, like the native one; the keyboard still scrolls the region. */}
-        <span
-          aria-hidden="true"
-          onPointerDown={startExampleResize}
-          className="absolute right-1 bottom-1 flex size-5 cursor-ns-resize touch-none items-center justify-center text-muted-foreground/60 transition-colors hover:text-muted-foreground"
-        >
-          <svg viewBox="0 0 10 10" className="size-2.5">
-            <path
-              d="M9 3 3 9M9 6.5 6.5 9"
-              stroke="currentColor"
-              strokeWidth="1.25"
-              strokeLinecap="round"
-              fill="none"
-            />
-          </svg>
-        </span>
-      </div>
+      <ExampleCodeBox
+        code={snippets[lang]}
+        language={shikiLang}
+        label={t("settings.apiKeys.usageExamples")}
+        redactFromReload={Boolean(apiKey)}
+      />
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
         <div className="flex h-5 items-center justify-between gap-3">
           <span className="text-xs font-medium text-foreground">

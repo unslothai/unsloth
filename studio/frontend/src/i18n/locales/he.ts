@@ -3238,6 +3238,7 @@ export const he = {
       requestPlain: "בסיסי",
       requestTools: "עם כלים",
       requestAdvanced: "דגימה מתקדמת",
+      exampleKind: "דוגמה",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "HTTPS מאובטח",

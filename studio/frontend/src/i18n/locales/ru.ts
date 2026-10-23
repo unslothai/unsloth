@@ -3134,6 +3134,7 @@ export const ru = {
       requestPlain: "Простой",
       requestTools: "С инструментами",
       requestAdvanced: "Расширенная выборка",
+      exampleKind: "Пример",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "Защищённый HTTPS",

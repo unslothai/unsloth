@@ -3338,6 +3338,7 @@ export const sv = {
       requestPlain: "Grundläggande",
       requestTools: "Med verktyg",
       requestAdvanced: "Avancerad sampling",
+      exampleKind: "Exempel",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "Säker HTTPS",

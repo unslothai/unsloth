@@ -3064,6 +3064,7 @@ export const zhCN = {
       requestPlain: "基础",
       requestTools: "使用工具",
       requestAdvanced: "高级采样",
+      exampleKind: "示例",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "安全 HTTPS",

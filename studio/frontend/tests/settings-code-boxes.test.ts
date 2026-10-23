@@ -11,13 +11,15 @@ const COMMAND_BLOCK = readSrc(
 );
 const USAGE = readSrc("features/settings/components/usage-examples.tsx");
 const AUDIO = readSrc("features/settings/components/audio-api-examples.tsx");
+const MEDIA = readSrc("features/settings/components/media-api-examples.tsx");
+const PARTS = readSrc("features/settings/components/api-example-parts.tsx");
 
 const commandBlock = COMMAND_BLOCK.slice(
   COMMAND_BLOCK.indexOf("export function CommandBlock"),
 );
-const highlightedCode = USAGE.slice(
-  USAGE.indexOf("export function HighlightedCode"),
-  USAGE.indexOf("export function UsageExamples"),
+const highlightedCode = PARTS.slice(
+  PARTS.indexOf("export function HighlightedCode"),
+  PARTS.indexOf("export function ExampleCodeBox"),
 );
 
 test("command boxes wrap long commands instead of scrolling under the copy button", () => {
@@ -42,10 +44,12 @@ test("long API examples are capped and scroll inside a keyboard-reachable region
     highlightedCode,
     /aria-label=\{label\}[\s\S]*data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
   );
-  for (const caller of [USAGE, AUDIO]) {
+  // all three example sections share one code box
+  for (const caller of [USAGE, AUDIO, MEDIA]) {
     assert.match(
       caller,
-      /<HighlightedCode[\s\S]*?label=\{t\("settings\.apiKeys\./,
+      /<ExampleCodeBox[\s\S]*?label=\{t\("settings\.apiKeys\./,
     );
+    assert.doesNotMatch(caller, /<HighlightedCode\b/);
   }
 });

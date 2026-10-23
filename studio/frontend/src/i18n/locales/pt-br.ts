@@ -3137,6 +3137,7 @@ export const ptBR = {
       requestPlain: "Básica",
       requestTools: "Com ferramentas",
       requestAdvanced: "Amostragem avançada",
+      exampleKind: "Exemplo",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "HTTPS seguro",

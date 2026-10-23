@@ -3127,6 +3127,7 @@ export const hi = {
       requestPlain: "बुनियादी",
       requestTools: "टूल के साथ",
       requestAdvanced: "उन्नत सैंपलिंग",
+      exampleKind: "उदाहरण",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "सुरक्षित HTTPS",
