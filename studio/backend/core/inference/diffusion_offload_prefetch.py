@@ -12,8 +12,7 @@ group uploads on the compute stream): queued earlier they hold that upload back 
 
 Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
 freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
-Unpinned host copies stage through temporary pinned buffers alive until the copy runs; on a card slower than the host
-(T4 Z-Image) these grew to the whole denoiser in pinned RAM, so staged bytes are capped at ``window`` (host waits).
+Unpinned copies' temporary pinned staging is capped at ``window`` (else T4 Z-Image pinned the whole denoiser).
 Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
 """
 
