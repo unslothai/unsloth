@@ -103,7 +103,13 @@ def _router_extra_args(module, parent):
     return extra
 
 
-def _prime_formula(rr, module, hook, layers, parent = None):
+def _prime_formula(
+    rr,
+    module,
+    hook,
+    layers,
+    parent = None,
+):
     """Run the zoo hook once, eagerly, on a synthetic router call whose replay is the natural
     routing: it picks and caches module._unsloth_replay_formula exactly as the first real call
     would. Returns None when primed, else why it could not be."""
@@ -177,7 +183,11 @@ def _check_formula(rr, module, x, extra):
             li, wi, ii, dense = positions
             logits = output[li].reshape(-1, output[li].shape[-1])
             ids = output[ii].reshape(-1, output[ii].shape[-1]).long()
-            weights = output[wi].reshape(logits.shape).gather(-1, ids) if dense else output[wi].reshape(ids.shape)
+            weights = (
+                output[wi].reshape(logits.shape).gather(-1, ids)
+                if dense
+                else output[wi].reshape(ids.shape)
+            )
             candidate = fn(logits, ids).to(weights.dtype).float()
             if not torch.allclose(candidate, weights.float(), rtol = 2e-2, atol = 2e-3):
                 return f"the {formula} weight formula does not reproduce its routing weights"
@@ -203,7 +213,9 @@ def prepare_routing_replay(model, before):
         import unsloth_zoo.routing_replay as rr
     except Exception:
         rr = None
-    if rr is not None and all(hasattr(rr, n) for n in ("_STATE", "_is_router", "_split_router_output", "_LAYER_INDEX_RE")):
+    if rr is not None and all(
+        hasattr(rr, n) for n in ("_STATE", "_is_router", "_split_router_output", "_LAYER_INDEX_RE")
+    ):
         layer_of, parent_of = {}, {}
         for name, module in model.named_modules():
             match = rr._LAYER_INDEX_RE.search(f"{name}.")
@@ -212,7 +224,8 @@ def prepare_routing_replay(model, before):
             for child in module.children():
                 parent_of[id(child)] = module
         routers = [
-            entry for entry in hooks
+            entry
+            for entry in hooks
             if entry[1] == "_forward_hooks" and rr._is_router(entry[0]) and id(entry[0]) in layer_of
         ]
         # One replay row per decoder layer index, every row the natural routing.
@@ -220,7 +233,9 @@ def prepare_routing_replay(model, before):
         failed = []
         for entry in routers:
             module, name, extras, hook_id = entry
-            why = _prime_formula(rr, module, module._forward_hooks[hook_id], layers, parent_of.get(id(module)))
+            why = _prime_formula(
+                rr, module, module._forward_hooks[hook_id], layers, parent_of.get(id(module))
+            )
             if why is not None:
                 _remove_hook(*entry)
                 failed.append((type(module).__name__, why))
