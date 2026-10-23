@@ -296,6 +296,7 @@ async def reflect(ctx: NodeContext) -> dict:
     asked = (raw.get("questions") if isinstance(raw, dict) else None) or []
     questions = [str(q).strip() for q in asked if str(q).strip()][:3]
     if not questions:
+        stream["since_reflection"] = 0.0
         return {"memory": stream, "insights": [], "reflected": False}
     vectors = await _embed_missing(ctx, stream["records"], questions)
     per_question = int(ctx.params.get("max_insights") or 5)
@@ -324,7 +325,7 @@ async def reflect(ctx: NodeContext) -> dict:
                 continue
             cites = [
                 evidence[n - 1]["id"]
-                for n in insight.get("cites") or []
+                for n in (insight.get("cites") if isinstance(insight.get("cites"), list) else [])
                 if isinstance(n, int) and 1 <= n <= len(evidence)
             ]
             new.append(

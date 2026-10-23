@@ -289,3 +289,36 @@ def test_plan_schema_limits_places_to_the_list():
     item = schema["properties"]["plan"]["items"]
     assert item["properties"]["place"]["enum"] == ["park"]
     assert schema["properties"]["plan"]["maxItems"] == 4
+
+
+def test_reflect_drops_scalar_citations_and_an_empty_ask_resets_the_trigger():
+    s = stream_of(("ran hills, knee hurts", 8, 0.0))
+    s["since_reflection"] = 200.0
+    ctx = Ctx("memory.reflect", {"memory": s, "now": 1.0})
+    ctx.answers = [
+        {"questions": ["How is the knee?"]},
+        {"insights": [{"text": "The knee is hurt", "cites": 1, "importance": 7}]},
+    ]
+    out = run(nodes.reflect(ctx))
+    assert out["insights"] == ["The knee is hurt"]
+    assert out["memory"]["records"][-1]["cites"] == []
+    s["since_reflection"] = 200.0
+    ctx = Ctx("memory.reflect", {"memory": s, "now": 2.0})
+    ctx.answers = [{"questions": []}]
+    out = run(nodes.reflect(ctx))
+    assert out["reflected"] is False and out["memory"]["since_reflection"] == 0.0
+
+
+def test_a_bare_record_list_gets_ids_the_other_blocks_can_use():
+    s = mem.as_stream(
+        [{"text": "Maya runs"}, {"text": "Maya cooks", "id": "m0"}, {"text": "x", "id": "m0"}]
+    )
+    ids = [r["id"] for r in s["records"]]
+    assert len(set(ids)) == 3 and all(ids)
+    out = run(nodes.summary(Ctx("agent.summary", {"memory": s, "name": "Maya", "now": 1.0})))
+    assert out["summary"]
+
+
+def test_keyword_fallback_matches_other_scripts():
+    assert mem.keyword_relevance("Москва", "Я живу в Москва") > 0
+    assert mem.keyword_relevance("東京", "東京で走る") > 0
