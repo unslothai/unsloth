@@ -10,17 +10,6 @@ export const SCHEDULED_TASKS_API = "/api/scheduled-tasks";
 export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed";
 
 export type TaskNotify = "all" | "failures" | "none";
-/** lowest/highest are relative ends resolved per run for local models; null = model default. */
-export type TaskReasoningEffort =
-  | "off"
-  | "lowest"
-  | "highest"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
 
 export interface ScheduledTaskRun {
   id: string;
@@ -40,7 +29,6 @@ export interface ScheduledTaskRun {
 export interface FinishedScheduledTaskRun extends ScheduledTaskRun {
   taskTitle: string;
   taskNotify: TaskNotify;
-  taskModel: string | null;
 }
 
 export interface ScheduledTask {
@@ -52,10 +40,6 @@ export interface ScheduledTask {
   enabled: boolean;
   notify: TaskNotify;
   named: boolean;
-  model: string | null;
-  reasoningEffort: TaskReasoningEffort | null;
-  allowModelLoad: boolean;
-  /** False: every run adds to one ongoing chat; the next two apply only to a chat per run. */
   archiveSuccessful: boolean;
   projectId: string | null;
   status: "active" | "paused" | "completed";
@@ -72,9 +56,6 @@ export interface ScheduledTaskInput {
   timezone: string;
   notify: TaskNotify;
   named: boolean;
-  model?: string | null;
-  reasoningEffort?: TaskReasoningEffort | null;
-  allowModelLoad?: boolean;
   archiveSuccessful?: boolean;
   projectId?: string | null;
 }
@@ -137,11 +118,8 @@ export function deleteScheduledTask(id: string): Promise<void> {
   return request(taskPath(id), { method: "DELETE" });
 }
 
-export function runScheduledTaskNow(id: string, loadModel = false): Promise<ScheduledTaskRun> {
-  return request(taskPath(id, "/run"), {
-    method: "POST",
-    ...(loadModel ? { body: JSON.stringify({ loadModel: true }) } : {}),
-  });
+export function runScheduledTaskNow(id: string): Promise<ScheduledTaskRun> {
+  return request(taskPath(id, "/run"), { method: "POST" });
 }
 
 export function getScheduledTaskActivity(since: number | null): Promise<ScheduledTaskActivity> {

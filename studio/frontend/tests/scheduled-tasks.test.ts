@@ -21,7 +21,6 @@ import {
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
-  runsAskingToLoad,
   runsToNotify,
   shouldSaveSeen,
 } from "../src/features/scheduled-tasks/results.ts";
@@ -283,7 +282,6 @@ function finished(id: string, finishedAt: number): ScheduledTasksApi.FinishedSch
     error: null,
     taskTitle: "Morning brief",
     taskNotify: "all",
-    taskModel: null,
   };
 }
 
@@ -509,26 +507,4 @@ test("a task left unnamed is named after its instructions' first line", () => {
   const title = titleFromPrompt(long);
   assert.ok(title.endsWith("…") && title.length <= 61, title);
   assert.ok(long.startsWith(title.slice(0, -1)), "cut at a word, from the start");
-});
-
-test("a run whose model was not loaded asks once per task, whatever its notifications say", () => {
-  const run = (id: string, taskId: string, errorCode: string | null, taskModel: string | null) => ({
-    ...finished(id, 1_000),
-    status: "failed" as const,
-    taskId,
-    errorCode,
-    taskModel,
-    taskNotify: "none" as const,
-  });
-  const asks = runsAskingToLoad([
-    run("a", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
-    run("b", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
-    run("c", "task-2", "no_model", null),
-    run("e", "task-4", "model_busy", "unsloth/gemma-3-GGUF"),
-    run("d", "task-3", "model_not_loaded", null),
-  ]);
-  assert.deepEqual(
-    asks.map((ask) => ask.id),
-    ["b"],
-  );
 });
