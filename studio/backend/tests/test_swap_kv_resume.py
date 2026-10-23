@@ -610,3 +610,16 @@ def test_an_unload_during_the_preflight_cancels_the_load(
     assert env.calls == [] and env.is_loaded and arb._owner == arb.CHAT
     assert cs._pending is None and kw._kv_resume is None and _no_files(env)
     assert cs._preparing == {} and cs._saving == {}
+
+
+def test_a_cancelled_preflight_stops_before_the_native_video_unload():
+    # The native video model sharing the sd.cpp tree is torn down before the engine switch, so a load
+    # cancelled during its preflight must exit before that unload, not after it.
+    import inspect
+
+    import routes.inference as routes
+
+    src = inspect.getsource(routes.load_diffusion_model_gated)
+    assert src.index("raise_if_load_cancelled(") < src.index(
+        "_unload_native_video_sharing_the_sd_cpp_tree"
+    )

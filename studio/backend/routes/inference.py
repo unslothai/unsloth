@@ -51980,15 +51980,15 @@ async def load_diffusion_model_gated(
         note_evictions(replaced_media, evicted_slots)
         # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
+        from core.inference.chat_swap_kv import preparing_load_token, raise_if_load_cancelled
+
+        # An unload sent while this POST was still in its preflight (a page reopened then offers
+        # Cancel) stops it here, before it unloads a native video model, switches engine, evicts chat or acquires.
+        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
         if off_torch is not None and pending_name == ENGINE_SD_CPP:
             await asyncio.to_thread(
                 _unload_native_video_sharing_the_sd_cpp_tree, multi_model_mode, evicted_slots
             )
-        from core.inference.chat_swap_kv import preparing_load_token, raise_if_load_cancelled
-
-        # An unload sent while this POST was still in its preflight (a page reopened then offers
-        # Cancel) stops it here, before the engine switch, chat's eviction or the acquire.
-        raise_if_load_cancelled(_DIFFUSION_LOAD_CANCELLED)
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         # Under Always the switch re-checks under the router's transition lock: another load may have landed meanwhile.
         engine = await asyncio.to_thread(
