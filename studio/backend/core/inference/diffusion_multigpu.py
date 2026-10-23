@@ -2415,11 +2415,14 @@ class CfgParallelRouter:
             "pairs_parallel": 0,
             "exclusion_skips": 0,
             "kv_cache_copies": 0,
+            "kv_cache_declined": 0,
             "kv_prefill_primary_calls": 0,
             "replica_failures": 0,
         }
         # source prefix-KV cache id -> (source cache, the tensors it held when copied, the replica's copy)
         self.kv_mirrors: dict[int, tuple[Any, list, Any]] = {}
+        # source prefix-KV cache id -> (source cache, its tensors) whose copy did not fit on the replica card this render
+        self.kv_declined: dict[int, tuple[Any, list]] = {}
         self._opaque_logged = False
         # Set when replica work was refused by a long recording: until that capture ends, later replica attempts go
         # straight to the source instead of each waiting OUTSIDE_WAIT_S again.
@@ -2465,6 +2468,7 @@ class CfgParallelRouter:
         self._drop_pending()
         self.replica = None
         self.kv_mirrors.clear()
+        self.kv_declined.clear()
         self.pairs = []
         self.warm_primary.clear()
         self.warm_replica.clear()
@@ -2479,6 +2483,7 @@ class CfgParallelRouter:
         self._drop_pending()
         self.prefetched.clear()
         self.kv_mirrors.clear()  # caches are per render: free the replica's copies
+        self.kv_declined.clear()
         self.carry = []
         self.next_carry = []
         self.prev_latent = None
@@ -2595,6 +2600,9 @@ class CfgParallelRouter:
                     if self.branch == 1:
                         self.stats["steps_parallel"] += 1
                     return out
+                except _KVMirrorDeclined:
+                    # the prefix cache does not fit on the replica card: this branch runs on the primary, replica kept
+                    self._drop_pending()
                 except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
                     self._note_refusal(exc)
                     self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
@@ -2634,6 +2642,8 @@ class CfgParallelRouter:
         try:
             r_args = self._to_replica(args)
             r_kwargs = self._to_replica(kwargs)
+        except _KVMirrorDeclined:
+            return None  # the prefix cache does not fit on the replica card: both halves run on the source
         except Exception as exc:  # noqa: BLE001 - e.g. no room left on the replica card: both halves run on the source
             self.disable(f"replica input copy failed: {type(exc).__name__}: {exc}")
             return None
@@ -2844,14 +2854,7 @@ class CfgParallelRouter:
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
-            free, _total = _free_total_mib(self.secondary.index)
-            if free is not None:
-                with contextlib.suppress(Exception):
-                    torch = _torch()
-                    free += (
-                        torch.cuda.memory_reserved(self.secondary)
-                        - torch.cuda.memory_allocated(self.secondary)
-                    ) // (1 << 20)
+            free = self._secondary_free_mib()
             if free is not None and need_mib + 1024 > free:
                 raise RuntimeError(
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
@@ -2943,6 +2946,31 @@ class CfgParallelRouter:
             and all(a is b for a, b in zip(entry[1], held))
         ):
             return entry[2]
+        declined = self.kv_declined.get(id(cache))
+        if (
+            declined is not None
+            and declined[0] is cache
+            and len(declined[1]) == len(held)
+            and all(a is b for a, b in zip(declined[1], held))
+        ):
+            raise _KVMirrorDeclined("prefix cache does not fit on the replica card")
+        # Admission left the replica card only 1 GiB beyond the weights; a condition-image cache can exceed that.
+        # Same margin as the admission: decline before copying rather than OOM mid-copy and lose the replica.
+        need = sum(t.numel() * t.element_size() for t in held)
+        free = self._secondary_free_mib()
+        if free is not None and need + (1024 << 20) > free * (1 << 20):
+            self.kv_declined[id(cache)] = (cache, held)
+            self.stats["kv_cache_declined"] += 1
+            if self.logger is not None:
+                self.logger.info(
+                    "diffusion.multigpu: prefix KV cache (%d MiB) does not fit on %s (%d MiB free);"
+                    " its guidance branch stays on %s this render",
+                    need >> 20,
+                    self.secondary,
+                    free,
+                    self.primary,
+                )
+            raise _KVMirrorDeclined("prefix cache does not fit on the replica card")
         secondary = self.secondary
         mirror = _walk_cache(cache, lambda t: t if t.device == secondary else t.to(secondary), [])
         while len(self.kv_mirrors) >= 4:
@@ -2950,6 +2978,18 @@ class CfgParallelRouter:
         self.kv_mirrors[id(cache)] = (cache, held, mirror)
         self.stats["kv_cache_copies"] += 1
         return mirror
+
+    def _secondary_free_mib(self) -> Optional[int]:
+        """Free MiB on the replica card, counting its allocator's cached-but-unused blocks (as the admission does)."""
+        free, _total = _free_total_mib(self.secondary.index)
+        if free is not None:
+            with contextlib.suppress(Exception):
+                torch = _torch()
+                free += (
+                    torch.cuda.memory_reserved(self.secondary)
+                    - torch.cuda.memory_allocated(self.secondary)
+                ) // (1 << 20)
+        return free
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
         # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place
@@ -2963,6 +3003,10 @@ class CfgParallelRouter:
         out = self.worker.call(_replica_call(replica, r_args, r_kwargs))
         _note_warm(self.warm_replica, sig)
         return _to_primary(out, self.primary)
+
+
+class _KVMirrorDeclined(RuntimeError):
+    """A prefix-KV cache too large for the replica card's free memory: the branch runs on the primary."""
 
 
 def _replica_call(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:

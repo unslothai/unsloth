@@ -1571,6 +1571,42 @@ def test_prefix_kv_cache_branch_runs_on_the_replica_against_its_own_copy():
     assert router.kv_mirrors == {}  # dropped at end_render
 
 
+def test_prefix_kv_cache_too_large_for_the_replica_card_stays_on_the_primary(monkeypatch):
+    torch.manual_seed(0)
+    dit = _PrefixKVDit()
+    latents = torch.randn(2, 4)
+    reference = _kv_render(dit, latents.clone())[0]
+    # the replica (no weights to speak of) passes admission with exactly 1 GiB free; the cache on top of it does not
+    monkeypatch.setattr(mg, "_free_total_mib", lambda ordinal: (1024, 2048))
+    router, replicas = _router(dit)
+    copies = []
+    real_walk = mg._walk_cache
+
+    def walk(
+        obj,
+        move,
+        found,
+        depth = 0,
+    ):
+        if move is not None and depth == 0:
+            copies.append(obj)
+        return real_walk(obj, move, found, depth)
+
+    monkeypatch.setattr(mg, "_walk_cache", walk)
+    main = threading.current_thread()
+    _PrefixKVDit.seen.clear()
+    out, _caches = _kv_render(dit, latents.clone())
+    assert torch.equal(out, reference)
+    assert copies == [] and router.stats["kv_cache_copies"] == 0
+    assert router.stats["kv_cache_declined"] == 1  # probed once per cache, not per step
+    assert all(th is main for th, _mode, _c in _PrefixKVDit.seen)
+    # declined for this render only: the replica stays built and armed
+    assert replicas and router.replica is not None
+    assert router.describe()["disabled_reason"] is None
+    router.end_render()
+    assert router.kv_declined == {}
+
+
 def test_opaque_detection_sees_tensors_in_a_list_of_value_holders():
     cache = _KVCache(2)
     assert not mg._holds_opaque_tensors({"kv_cache": cache})  # empty before the prefill
