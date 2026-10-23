@@ -54,7 +54,6 @@ _OP_HANDLE: Any = None
 _ACTQ_HANDLE: Any = None
 # device indices whose own probe passed; the kernel never runs on a device that failed or was never probed
 _ACTQ_DEVICES: frozenset = frozenset()
-# the fused rotation + act quant op (diffusion_convrot_quant, rotq_h16) and the unlisted-arch cards it was armed on
 _RQ_HANDLE: Any = None
 _RQ_DEVICES: frozenset = frozenset()
 # UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
@@ -1358,15 +1357,13 @@ def _rotated_act_quant(x2d: Any, group: int, weight: Any) -> tuple:
 
 
 def arm_rotated(index: int) -> bool:
-    """Probe the fused rotation + quant (``rotq_h16``) on card ``index`` (outside any trace) and let the rotated int8 paths here
-    use it there. False keeps the rotation GEMM + act quant."""
+    """Arm ``rotq_h16`` for card ``index`` (outside any trace); False keeps the rotation GEMM + act quant."""
     global _RQ_HANDLE, _RQ_DEVICES
     if int8_fused_disabled():
         return False
     try:
         from .diffusion_convrot_quant import _rotq_op, unlisted_device_ok
 
-        # timed against the two kernels it replaces here: rotation GEMM + the probed act quant (else the GEMM alone)
         actq = _act_quant_op() if _act_quant_device_ok(index) else None
         ok = unlisted_device_ok(index, actq)
         handle = _rotq_op() if ok else None

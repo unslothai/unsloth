@@ -1013,27 +1013,16 @@ def convrot_swiglu_act_quant(g2d: Any, v2d: Any, group: int, v2: bool) -> Option
     return _SWIGLU_HANDLE(g2d, v2d, group, v2)
 
 
-# ---- unlisted archs: rotq_h16 without a dense tile ----
-#
-# Main runs the ConvRot rotation on every arch outside ``_ROTQ_CONFIG`` as a dense 256x256 bf16 GEMM through cuBLAS,
-# then a separate act quant (the Qwen-Image-2.1 / Z-Image stock fusions in ``diffusion_int8_fused``). On GA102 (RTX
-# 30xx, A6000, A10) bf16 with fp32 accumulate runs at 1/8 of the int8 rate, so that GEMM costs a large share of every
-# int8 Linear. ``rotq_h16`` needs no tile table: on an arch with no entry it is probed (``_h16_probe``, ``codes_close``)
-# and then latency-checked on the card: it must not be slower than the rotation GEMM + the caller's act quant kernel,
-# both timed from CUDA-graph replays (the compiled denoiser replays its kernels; host launch cost must not count). A
-# card that fails either keeps main's path. ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED=0`` keeps it (read per load);
-# ``=1`` skips the latency check (the probe still runs); ``UNSLOTH_DIFFUSION_INT8_ROTQUANT_H16=0``,
-# ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0`` and ``UNSLOTH_DIFFUSION_INT8_GEMM=0`` turn it off too.
+# Unlisted archs: main runs the rotation as a dense bf16 GEMM (1/8 the int8 rate on GA102) + a separate act quant.
+# rotq_h16 must pass the probe and be no slower than both, timed from CUDA-graph replays (the compiled denoiser replays
+# kernels; host launch cost must not count). ``..._UNLISTED=1`` skips the latency check, not the probe.
 INT8_ROTQUANT_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED"
-# device index -> True (rotq_h16 serves it) / False, filled once per device by ``unlisted_device_ok``.
 _UNLISTED_DEVICE: dict = {}
-# device index -> {"h16": us, "stock": us} of the latency check, for the load log.
 _UNLISTED_TIMING: dict = {}
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096), (1024, 12288))
 
 
 def unlisted_mode() -> str:
-    """'off', 'force' or 'auto'."""
     if rotquant_mode() == "off" or not rotquant_h16_enabled():
         return "off"
     return _env_mode(INT8_ROTQUANT_UNLISTED_ENV)
@@ -1103,9 +1092,7 @@ def _unlisted_latency(
 
 
 def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
-    """Once per device (outside any trace / capture): arch gate, ``_h16_probe``, latency check. On success the card's
-    second-stage mode lands in ``_H16_DEVICE`` and ``_ROTQ_HANDLE`` is published, so ``convrot_act_quant`` / the
-    ``convrot_act_quant_int8`` op serve it with ``rotq_h16``."""
+    """Once per device, outside any trace / capture: arch gate, ``_h16_probe``, latency check."""
     global _ROTQ_HANDLE
     if unlisted_mode() == "off":  # read per load: the switches act without a restart
         return False
