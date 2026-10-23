@@ -1286,6 +1286,45 @@ def _host_ram_capacity_mib() -> Optional[int]:
     return host_memory.usable_mib(_system_memory_mib()[0], _cgroup_memory_limit_mib())
 
 
+def _windows_commit_headroom_mib() -> Optional[int]:
+    """(CommitLimit - CommitTotal) in MiB on Windows via ``K32GetPerformanceInfo``; 0 when exhausted, None when
+    unreadable or not Windows. The diffusion guards' failure mode is commit exhaustion (#13432), which a
+    physical `available` reading does not see."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _PERFORMANCE_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("CommitTotal", ctypes.c_size_t),
+                ("CommitLimit", ctypes.c_size_t),
+                ("CommitPeak", ctypes.c_size_t),
+                ("PhysicalTotal", ctypes.c_size_t),
+                ("PhysicalAvailable", ctypes.c_size_t),
+                ("SystemCache", ctypes.c_size_t),
+                ("KernelTotal", ctypes.c_size_t),
+                ("KernelPaged", ctypes.c_size_t),
+                ("KernelNonpaged", ctypes.c_size_t),
+                ("PageSize", ctypes.c_size_t),
+                ("HandleCount", ctypes.c_ulong),
+                ("ProcessCount", ctypes.c_ulong),
+                ("ThreadCount", ctypes.c_ulong),
+            ]
+
+        info = _PERFORMANCE_INFORMATION()
+        info.cb = ctypes.sizeof(_PERFORMANCE_INFORMATION)
+        # kernel32 exports the K32-prefixed name only; the unprefixed one lives in psapi
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        if not kernel32.K32GetPerformanceInfo(ctypes.byref(info), info.cb):
+            return None
+        headroom = (int(info.CommitLimit) - int(info.CommitTotal)) * int(info.PageSize)
+        return max(0, headroom // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
@@ -4271,11 +4310,10 @@ def measured_request_extra_mib(
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
-    # the dense tier seeds were measured on text-to-image: a reference the guard cannot size is not covered
-    tier_seeded = (
-        dense_mib is not None
-        and sized["dense_tier_seeds"]
-        and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+    # tier and phase seeds were measured on text-to-image: an unsized reference is not covered
+    tier_seeded = str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES and (
+        (dense_mib is not None and sized["dense_tier_seeds"])
+        or (dense_mib is None and sized["phase_seeds"])
     )
     if (unpriced_references and tier_seeded) or (
         (learned or need is None)

@@ -3435,6 +3435,10 @@ def _drafter_path_kind(path: str) -> Optional[str]:
 
 
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+# Mirrors hub.utils.gguf._IMATRIX_WEIGHTED_RE.
+_IMATRIX_WEIGHTED_RE = re.compile(
+    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
+)
 
 
 def _is_companion_gguf_path(path: str) -> bool:
@@ -3455,7 +3459,8 @@ def _is_companion_gguf_path(path: str) -> bool:
         return True
     # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
     # holding calibration statistics, so only the name rules it out.
-    if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+    stem = Path(p).stem
+    if _IMATRIX_TOKEN_RE.search(stem) and not _IMATRIX_WEIGHTED_RE.search(stem):
         return True
     if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
         return True
@@ -17862,11 +17867,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _llama_server_env_for_binary(
-        binary: str, *, use_system_rocm: bool = True
+        binary: str,
+        *,
+        use_system_rocm: bool = True,
+        verify_system_rocm: bool = True,
     ) -> dict[str, str]:
         """Build a subprocess env that lets llama-server resolve native libs.
 
-        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend.
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend;
+        ``verify_system_rocm=False`` keeps it without the GPU visibility probe.
         WSL's librocdxg prepend is independent and is not gated by this flag.
         """
         env = child_env_without_native_path_secret()
@@ -17920,9 +17929,15 @@ class LlamaCppBackend:
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
-            # which can be incompatible with the host amdkfd driver (#7233).
+            # which can be incompatible with the host amdkfd driver (#7233). On other
+            # hosts the system copy is the mismatched one and hides the GPU (#14906).
             if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary):
-                lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
+                _system_rocm = _native_linux_system_rocm_lib_dirs(binary_dir)
+                if _system_rocm and not (
+                    verify_system_rocm
+                    and LlamaCppBackend._system_rocm_hides_gpu(binary, _system_rocm)
+                ):
+                    lib_dirs.extend(_system_rocm)
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -24468,6 +24483,67 @@ class LlamaCppBackend:
         revision = LlamaCppBackend._binary_stamp(resolved)
         with LlamaCppBackend._bundle_only_rocm_lock:
             return LlamaCppBackend._bundle_only_rocm_dirs.get(str(resolved.parent)) == revision
+
+    # Build dirs whose system ROCm prepend was already probed, keyed like the latch above.
+    _system_rocm_probed: dict[str, tuple] = {}
+    _system_rocm_probe_lock = threading.Lock()
+
+    @staticmethod
+    def _list_devices_under(binary: str, env: Mapping[str, str]) -> Optional[list[str]]:
+        try:
+            result = subprocess.run(
+                [binary, "--list-devices"],
+                capture_output = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 30,
+                env = utf8_child_env(dict(env)),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logger.debug(f"llama-server --list-devices failed: {e}")
+            return None
+        if result.returncode != 0:
+            return None
+        return _parse_listed_devices(result.stdout)
+
+    @staticmethod
+    def _system_rocm_hides_gpu(binary: str, system_dirs: "list[str]") -> bool:
+        """True when llama-server lists no GPU with system ROCm first but does with its bundle.
+
+        The prepend crash-proofs hosts whose bundled ROCR mismatches amdkfd (#7208), but
+        where the system copy is the mismatched one HIP init fails silently and the server
+        runs on CPU (#14906). No crash means the load_model retry never fires, so this asks
+        the binary directly, once per build. Any other answer keeps the prepend.
+        """
+        resolved = _resolve_llama_binary(binary)
+        key = str(resolved.parent)
+        revision = LlamaCppBackend._binary_stamp(resolved)
+        with LlamaCppBackend._system_rocm_probe_lock:
+            # A caller that waited out the first probe re-reads its verdict from the latch.
+            if LlamaCppBackend._system_rocm_probed.get(key) == revision:
+                return LlamaCppBackend._prefers_bundle_only_rocm(binary)
+            mixed = LlamaCppBackend._list_devices_under(
+                binary,
+                LlamaCppBackend._llama_server_env_for_binary(binary, verify_system_rocm = False),
+            )
+            bundled = None
+            if mixed == []:
+                bundled = LlamaCppBackend._list_devices_under(
+                    binary,
+                    LlamaCppBackend._llama_server_env_for_binary(binary, use_system_rocm = False),
+                )
+            LlamaCppBackend._system_rocm_probed[key] = revision
+            if not bundled:
+                return False
+            logger.warning(
+                "llama-server lists no GPU with the system ROCm libraries (%s) ahead of its "
+                "bundled runtime, but lists %s without them; using the bundled ROCm runtime.",
+                ":".join(system_dirs),
+                ", ".join(bundled),
+            )
+            LlamaCppBackend._remember_bundle_only_rocm(binary)
+            return True
 
     @staticmethod
     def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
@@ -42749,7 +42825,8 @@ class LlamaCppBackend:
                         # nobody answered. Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
-                            # Approved: now it really is running.
+                            # tool_approved first: the route forwards it before retaking the model slot.
+                            yield decision.tool_approved_event(approval_id)
                             yield {"type": "status", "text": decision.status_text}
                         if _decision == "deny":
                             decision_slot = None

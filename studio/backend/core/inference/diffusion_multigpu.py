@@ -1111,34 +1111,55 @@ def _split_home(pipe: Any) -> Any:
     return None
 
 
-def install_execution_device_patch() -> bool:
-    """``DiffusionPipeline._execution_device`` / ``.device`` report the primary card of a split pipeline. diffusers
-    returns the first non-CPU component in signature order, which is the VAE (on the secondary) for most families.
-    Inert for any pipeline without a split denoiser; also covers ``from_pipe`` siblings, which share the modules."""
+def _pipeline_bases() -> list[type]:
+    """``DiffusionPipeline`` plus ``ModularPipeline`` (FLUX.3 / MiniMax-H3; not a subclass) when this diffusers has it."""
+    bases: list[type] = []
     try:
         from diffusers import DiffusionPipeline
+        bases.append(DiffusionPipeline)
     except Exception:  # noqa: BLE001
+        pass
+    try:
+        from diffusers import ModularPipeline
+        bases.append(ModularPipeline)
+    except Exception:  # noqa: BLE001 - diffusers before modular pipelines
+        pass
+    return bases
+
+
+def _patch_execution_device(cls: type) -> bool:
+    if getattr(cls, "_unsloth_split_exec_patch", False):
+        return True
+    orig_exec = cls.__dict__.get("_execution_device")
+    orig_dev = cls.__dict__.get("device")
+    if not isinstance(orig_exec, property) or not isinstance(orig_dev, property):
+        return False
+
+    def _exec(self: Any) -> Any:
+        home = _split_home(self)
+        return home if home is not None else orig_exec.fget(self)
+
+    def _dev(self: Any) -> Any:
+        home = _split_home(self)
+        return home if home is not None else orig_dev.fget(self)
+
+    cls._execution_device = property(_exec, doc = orig_exec.__doc__)
+    cls.device = property(_dev, doc = orig_dev.__doc__)
+    cls._unsloth_split_exec_patch = True
+    return True
+
+
+def install_execution_device_patch() -> bool:
+    """``_execution_device`` / ``.device`` report the primary card of a split pipeline. diffusers returns the first
+    non-CPU component (the VAE) or, for a modular pipeline, the first component (the text encoder), so latents landed
+    on the secondary. Inert without a split denoiser; covers ``from_pipe`` siblings. True when ``DiffusionPipeline``
+    is patched."""
+    bases = _pipeline_bases()
+    if not bases:
         return False
     with _EXEC_PATCH_LOCK:
-        if getattr(DiffusionPipeline, "_unsloth_split_exec_patch", False):
-            return True
-        orig_exec = DiffusionPipeline.__dict__.get("_execution_device")
-        orig_dev = DiffusionPipeline.__dict__.get("device")
-        if not isinstance(orig_exec, property) or not isinstance(orig_dev, property):
-            return False
-
-        def _exec(self: Any) -> Any:
-            home = _split_home(self)
-            return home if home is not None else orig_exec.fget(self)
-
-        def _dev(self: Any) -> Any:
-            home = _split_home(self)
-            return home if home is not None else orig_dev.fget(self)
-
-        DiffusionPipeline._execution_device = property(_exec, doc = orig_exec.__doc__)
-        DiffusionPipeline.device = property(_dev, doc = orig_dev.__doc__)
-        DiffusionPipeline._unsloth_split_exec_patch = True
-        return True
+        patched = [_patch_execution_device(cls) for cls in bases]
+    return patched[0]
 
 
 def companion_names(pipe: Any) -> tuple[str, ...]:
@@ -1619,6 +1640,10 @@ def build_replica(module: Any, device: Any) -> Any:
     )
     if stray:
         raise RuntimeError(f"replica weights stayed on {', '.join(stray)}, not {device}")
+    # The ROCm flash gate is thread-local state its root hooks set; the copy runs on its own worker thread.
+    from .diffusion_attention import track_rocm_flash_replica
+
+    track_rocm_flash_replica(module, replica, device)
     return replica
 
 
@@ -1724,7 +1749,7 @@ def _copy_module(module: Any, device: Any) -> Any:
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
 # Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
 # forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache"})
+_SOURCE_ONLY_ATTRS = frozenset({"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas"})
 
 
 def _rewrap_compiled(source: Any, replica: Any) -> None:
@@ -2353,6 +2378,12 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
+        # FLUX.3's modular denoise step passes only kwargs named in forward's signature: expose the wrapped one.
+        try:
+            import inspect
+            self.__signature__ = inspect.signature(self.orig_forward)
+        except (TypeError, ValueError):
+            pass
         self.inner: Any = None
         self._pairing = False
         self.had_override = "forward" in module.__dict__

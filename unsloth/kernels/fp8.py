@@ -205,10 +205,14 @@ _SCALE_DEQUANT_MIN_NUMEL = 1 << 22
 
 
 def _scale_dequant_one_pass_ok(x, s, dtype):
-    # Eager NVIDIA e4m3fn only; compiled regions already fuse the torch expression.
+    # NVIDIA e4m3fn only; under compile only below sm89, where Inductor cannot emit fp8e4nv.
+    if torch.compiler.is_compiling():
+        if not _fp8_e4m3fn_unsupported_in_trace(x):
+            return False
+    elif x.numel() <= _SCALE_DEQUANT_MIN_NUMEL:
+        return False
     return (
-        x.numel() > _SCALE_DEQUANT_MIN_NUMEL
-        and x.is_cuda
+        x.is_cuda
         and torch.version.hip is None
         and x.dtype == torch.float8_e4m3fn
         and dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -218,11 +222,14 @@ def _scale_dequant_one_pass_ok(x, s, dtype):
         and not (torch.is_grad_enabled() and (x.requires_grad or s.requires_grad))
         # The kernel indexes dense rows, so a transposed view must be a dense transpose.
         and (x.is_contiguous() or (_is_transposed_view(x) and x.t().is_contiguous()))
-        and not torch.compiler.is_compiling()
     )
 
 
-def _scale_dequant_one_pass(x, s, dtype):
+@_opaque_under_compile(
+    "fp8_scale_dequant",
+    lambda x, s, dtype: torch.empty_like(x, dtype = dtype),
+)
+def _scale_dequant_one_pass(x: torch.Tensor, s: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     transposed = _is_transposed_view(x)
     if transposed:
         x = x.t()
@@ -246,6 +253,7 @@ def _scale_dequant_one_pass(x, s, dtype):
             ROUND_SCALE = dtype != torch.float16,
             LONG_INDEXING = long_indexing(xb, out, block = BLOCK_M * n),
             num_warps = num_warps,
+            enable_fp_fusion = True,
         )
     return out.t() if transposed else out
 
@@ -746,6 +754,26 @@ def _fp8_device_lacks_kernel(device):
     return torch.cuda.get_device_capability(device) < (8, 9)
 
 
+# gfx11: byte decoder measured 7.5x faster than the torch loop on gfx1151, bit-identical for bf16 / fp32.
+_HIP_FP8_BYTES_DEQUANT = os.environ.get("UNSLOTH_FP8_HIP_BYTES_DEQUANT", "1") != "0"
+
+
+@functools.lru_cache(maxsize = None)
+def _rocm_bytes_dequant_arch(device):
+    try:
+        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0].lower()
+    except Exception:
+        return False
+    return arch.startswith("gfx11")
+
+
+def _hip_bytes_dequant(device, out_dtype):
+    # fp16 excluded: on gfx1151 the byte decoder rounds fp16 differently from the torch loop.
+    return (
+        _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
+    )
+
+
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
     """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
 
@@ -762,6 +790,25 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
         and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
         and _fp8_device_lacks_kernel(tensor.device)
     )
+
+
+def _fp8_lacks_kernel_per_device():
+    try:
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        return tuple(_fp8_device_lacks_kernel(torch.device("cuda", i)) for i in range(count))
+    except Exception:
+        return ()
+
+
+# Read once: a capability query while tracing can graph-break a compiled region.
+_FP8_DEVICE_LACKS_KERNEL = _fp8_lacks_kernel_per_device()
+
+
+def _fp8_e4m3fn_unsupported_in_trace(tensor):
+    if not tensor.is_cuda or tensor.dtype != torch.float8_e4m3fn:
+        return False
+    index = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
+    return index < len(_FP8_DEVICE_LACKS_KERNEL) and _FP8_DEVICE_LACKS_KERNEL[index]
 
 
 @triton.jit
@@ -1408,13 +1455,11 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Uneven tiling, rectangular blocks, or an uncompilable fp8 dtype: the triton kernel uses one
         # BLOCK_SIZE for both axes, so it mis-indexes when block_size[0] != [1].
         if (
-            torch.version.hip is None
-            and weight.is_cuda
+            weight.is_cuda
             and weight.dtype == torch.float8_e4m3fn
             and weight_scale.ndim == 2
+            and (torch.version.hip is None or _hip_bytes_dequant(weight.device, out_dtype))
         ):
-            # NVIDIA, any arch (below sm89, or ragged / rectangular blocks): one triton pass over the
-            # e4m3fn bytes, bit-identical to the torch loop.
             return _e4m3fn_bytes_dequant(
                 weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
             )

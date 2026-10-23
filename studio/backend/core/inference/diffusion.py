@@ -164,12 +164,14 @@ from .diffusion_small_host import (
     INT8_DENOISER_NAMES,
     decide_small_host,
     engaged_on as small_host_engaged_on,
+    host_commit_mib,
     host_ram_mib,
     resolve_snapshot_dir,
     stored_components,
     torch_dtype_map as small_host_torch_dtype_map,
 )
 from .model_ids import hf_cache_repo_id
+from .safetensors_pread import pread_available
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
@@ -2600,14 +2602,21 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
-def _calibrated_activation(fam: Any, target: Any) -> Any:
-    """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
+def _calibrated_activation(
+    fam: Any,
+    target: Any,
+    *,
+    unpriced_references_ok: bool = False,
+) -> Any:
+    """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
+    ``unpriced_references_ok``: skip the reference rule; the caller sizes references via measured_request_extra_mib."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
     # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
     # FLUX.3 can: every reference is resized to 1 MP and the request guard charges those pixels on top.
     if (
-        getattr(fam, "reference", False)
+        not unpriced_references_ok
+        and getattr(fam, "reference", False)
         and not tuple(getattr(fam, "reference_resolutions", ()) or ())
         and not is_flux3_family(fam)
     ):
@@ -3316,6 +3325,15 @@ def _comfy_keep_fp32_pricing(fam: Any, target: Any) -> dict:
         return {}
     fp16 = getattr(target, "dtype", None) is torch.float16
     return {"keep_fp32": keep, "keep_fp32_bytes": 4 if fp16 else None}
+
+
+def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
+    """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
+    stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped."""
+    from .safetensors_pread import pread_safetensors
+
+    keep = tuple(small_host.storage_dtypes) if small_host is not None and small_host.engaged else ()
+    return pread_safetensors(convert_to = dtype, keep = keep)
 
 
 class DiffusionBackend:
@@ -8920,9 +8938,10 @@ class DiffusionBackend:
                                     # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                     # otherwise)
                                     try:
-                                        pipe = pipeline_cls.from_pretrained(
-                                            _base_local_dir or fetch_base, **pipe_kwargs
-                                        )
+                                        with _converted_shards_pread(dtype, small_host):
+                                            pipe = pipeline_cls.from_pretrained(
+                                                _base_local_dir or fetch_base, **pipe_kwargs
+                                            )
                                     finally:
                                         self._stop_load_prefetch()
                                     if fam.single_file_is_pipeline:
@@ -9191,9 +9210,10 @@ class DiffusionBackend:
                                     pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
                                         small_host, dtype
                                     )
-                                pipe = pipeline_cls.from_pretrained(
-                                    _base_local_dir or fetch_base, **pipe_kwargs
-                                )
+                                with _converted_shards_pread(dtype, small_host):
+                                    pipe = pipeline_cls.from_pretrained(
+                                        _base_local_dir or fetch_base, **pipe_kwargs
+                                    )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
                                         pipe,
@@ -9880,8 +9900,11 @@ class DiffusionBackend:
                             "unknown"  # adapters baked in at load: a build the key cannot name
                         )
                     try:
-                        # the phase-table seed holds only where it was measured
-                        pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                        # the phase-table seed holds only where it was measured; unpriced references size flat
+                        pipe._unsloth_phase_seeds = (
+                            _calibrated_activation(fam, target, unpriced_references_ok = True)
+                            is not None
+                        )
                         # the dense default / max tier seeds hold on the measured target only
                         pipe._unsloth_dense_tier_seeds = _measured_target(target)
                         # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
@@ -10229,8 +10252,11 @@ class DiffusionBackend:
                     install_cfg_batch(
                         pipe, offload_policy = effective_policy, speed_mode = speed_mode, logger = logger
                     )
-                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new
-                    install_zimage_cfg_split(pipe, offload_policy = effective_policy, logger = logger)
+                    # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new.
+                    # compiled_only: an eager denoiser keeps the batched guided call (no graph to protect).
+                    install_zimage_cfg_split(
+                        pipe, offload_policy = effective_policy, logger = logger, compiled_only = True
+                    )
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -10925,7 +10951,8 @@ class DiffusionBackend:
                 family = getattr(fam, "name", None),
             )
         )
-        pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
+        with _converted_shards_pread(dtype, None):
+            pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         check_cancelled()
         pipe.to(device)
         return pipe
@@ -11369,6 +11396,8 @@ class DiffusionBackend:
             host_total_mib = total,
             host_available_mib = available,
             lora_active = lora_active,
+            host_commit_mib = host_commit_mib(),
+            pread_libraries = ("transformers",) if pread_available() else (),
         )
         if decision.engaged or decision.refuse:
             logger.info(
@@ -11377,6 +11406,8 @@ class DiffusionBackend:
                 decision.reason,
                 decision.storage_dtypes,
             )
+        elif decision.available_mib is not None:
+            logger.info("diffusion.small_host: engaged=False (%s)", decision.reason)
         if decision.refuse:
             raise RuntimeError(decision.refuse)
         return decision
