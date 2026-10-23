@@ -3373,15 +3373,22 @@ def recommend_topology(
     prompt_tokens: int,
     per_node_free_bytes: float,
     prefill_heavy: bool = False,
+    replicas: int = 1,
 ) -> Dict[str, Any]:
-    """Which of single / replicas / layer_split to serve a GGUF with, and why."""
+    """Which of single / replicas / layer_split to serve a GGUF with, and why.
+
+    ``replicas`` is how many copies the users would be spread over; a round-robin front door
+    gives each one ceil(users / replicas) of them. 1 keeps every user's KV on every replica.
+    """
     users = max(1, int(users or 1))
+    replicas = max(1, int(replicas or 1))
+    users_per_replica = -(-users // replicas)
     prompt_tokens = max(1, int(prompt_tokens or 512))
     model_bytes = max(0.0, float(model_bytes or 0))
     kv_each = max(0.0, float(kv_bytes_per_user or 0))
     free = float(per_node_free_bytes or 0)
     single_need = model_bytes + kv_each * users
-    replica_need = model_bytes + kv_each * users
+    replica_need = model_bytes + kv_each * users_per_replica
     fits_model = model_bytes <= free
     out: Dict[str, Any] = {
         "topology": "single",
@@ -3400,6 +3407,8 @@ def recommend_topology(
         "prompt_tokens": prompt_tokens,
         "single_node_bytes": single_need,
         "replica_node_bytes": replica_need,
+        "replicas": replicas,
+        "users_per_replica": users_per_replica,
         "per_node_free_bytes": free,
         "measured_on": TOPOLOGY_MEASUREMENT,
     }
@@ -3433,8 +3442,23 @@ def recommend_topology(
             split_mtp_note = split_mtp_note(),
         )
         return out
+    if single_need > free and replicas > 1 and replica_need <= free:
+        # One node cannot hold every user's KV, but each replica only serves its share.
+        gain = replicas_speedup(prompt_tokens, users)
+        out.update(
+            topology = "replicas",
+            speedup = gain,
+            reason = (
+                f"model plus KV for {users} users ({single_need / gib:.1f} GiB) exceeds one "
+                f"node's {free / gib:.1f} GiB, but {replicas} replicas behind one front door "
+                f"each serve {users_per_replica} of them ({replica_need / gib:.1f} GiB per "
+                f"node), which fits. Two replicas measured {gain:.2f}x aggregate decode at "
+                f"{users} users; a layer split would be capacity only, decode about "
+                f"{LAYER_SPLIT_DECODE_ONLY_SPEEDUP:.2f}x."
+            ),
+        )
+        return out
     if single_need > free:
-        # No replicas branch: a replica needs exactly what a single node needs.
         out.update(
             topology = "layer_split",
             prefill_speedup = LAYER_SPLIT_PREFILL_SPEEDUP,
@@ -3442,8 +3466,9 @@ def recommend_topology(
             reason = (
                 f"the model fits, but model plus KV for {users} users "
                 f"({single_need / gib:.1f} GiB) exceeds one node's {free / gib:.1f} GiB, and a "
-                f"replica is no smaller because each one holds a full copy and KV for every "
-                f"user. Only a layer split, which spreads the KV with the layers, has the "
+                f"replica holds a full copy plus KV for {users_per_replica} of them "
+                f"({replica_need / gib:.1f} GiB), which does not fit either. Only a layer "
+                f"split, which spreads the KV with the layers, has the "
                 f"room. Capacity, not speed: " + pipeline_groups_note() + " " + split_mtp_note()
             ),
             split_mtp = split_mtp_wins(users),
@@ -3875,11 +3900,25 @@ def _ray_cluster(model: str) -> List[str]:
     return lines
 
 
+def _llama_slots_args(ctx: Optional[int], parallel: Optional[int]) -> str:
+    """` --ctx-size C -np N` for llama-server: ``ctx`` is per user, and `-np` slots divide the
+    shared `--ctx-size`, so it is ctx * slots. Empty when no context was planned."""
+    if not ctx:
+        return ""
+    slots = max(1, int(parallel or 1))
+    return f" --ctx-size {int(ctx) * slots} --parallel {slots}"
+
+
 def _serve_commands(
     axis: str,
     n_nodes: int,
     model: str = "<model>",
+    ctx: Optional[int] = None,
+    concurrency: int = 1,
 ) -> List[str]:
+    """``ctx`` (per user) and ``concurrency`` are what the plan priced the KV at; every GGUF
+    command carries them so the server allocates what was planned."""
+    users = max(1, int(concurrency or 1))
     env = 'eval "$(unsloth spark env)"   # GB10 NCCL settings; NCCL_NET_GDR_LEVEL=0 is mandatory'
     qmodel = model if model == "<model>" else shlex.quote(model)
     if axis == "tensor-parallel":
@@ -3908,9 +3947,12 @@ def _serve_commands(
                 f"vllm serve {qmodel} --host 0.0.0.0 --port 8081     # run on EACH Spark",
                 f"python -m studio.spark_lb --port 8080 {backends}     # one front door",
             ]
+        per_replica = -(-users // max(1, n_nodes))
         return [
             env,
-            f"{shlex.quote(server)} -m {qmodel} -ngl 999 --host 0.0.0.0 --port 8081     # run on EACH Spark",
+            f"{shlex.quote(server)} -m {qmodel} -ngl 999"
+            f"{_llama_slots_args(ctx, per_replica)} --host 0.0.0.0 --port 8081     "
+            f"# run on EACH Spark",
             f"python -m studio.spark_lb --port 8080 {backends}     # one front door",
         ]
     if axis in ("pipeline-parallel", "layer-split"):
@@ -3923,14 +3965,19 @@ def _serve_commands(
             ]
         return [
             env,
-            f"unsloth spark serve --model {qmodel} --engines 1   # prints the RPC split launch",
+            f"unsloth spark serve --model {qmodel} --engines 1"
+            + (f" --ctx {int(ctx)} --slots {users}" if ctx else "")
+            + "   # prints the RPC split launch",
             f"# or, with vLLM:  vllm serve {qmodel} --pipeline-parallel-size {n_nodes} "
             f"--distributed-executor-backend ray",
         ]
     if axis == "single":
         if not gguf:
             return [f"vllm serve {qmodel} --host 0.0.0.0 --port 8080"]
-        return [f"{shlex.quote(server)} -m {qmodel} -ngl 999 --host 0.0.0.0 --port 8080"]
+        return [
+            f"{shlex.quote(server)} -m {qmodel} -ngl 999{_llama_slots_args(ctx, users)} "
+            f"--host 0.0.0.0 --port 8080"
+        ]
     return []
 
 
@@ -3945,8 +3992,14 @@ def plan_deployment(
     prompt_tokens: Optional[int] = None,
     prefill_heavy: bool = False,
     kv_gib_per_user: float = 0.0,
+    ctx: Optional[int] = None,
+    split_kv_across_replicas: bool = True,
 ) -> Dict[str, Any]:
-    """Recommend a topology AND an axis from model size, node count and intent."""
+    """Recommend a topology AND an axis from model size, node count and intent.
+
+    ``ctx`` is the per-user context the KV was priced at; GGUF commands carry it and the
+    concurrency. ``split_kv_across_replicas=False`` is for a caller whose every replica holds
+    KV for all ``concurrency`` users (`spark serve --slots` is per engine)."""
     budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
     if n_nodes is None:
         nodes = 1 if two_sparks is None else (2 if two_sparks else 1)
@@ -3980,8 +4033,15 @@ def plan_deployment(
         )
         return out
 
-    split_need = size_gib + max(0.0, float(kv_gib_per_user or 0)) * max(1, int(concurrency or 1))
+    kv_each_gib = max(0.0, float(kv_gib_per_user or 0))
+    users = max(1, int(concurrency or 1))
+    split_need = size_gib + kv_each_gib * users
     fits_one = split_need <= budget
+    kv_replicas = nodes if split_kv_across_replicas else 1
+    replica_need = size_gib + kv_each_gib * -(-users // kv_replicas)
+    # Weights fit, every user's KV does not, but each replica's share does.
+    replicas_fit_kv = not fits_one and kv_replicas > 1 and replica_need <= budget
+    cmd = {"ctx": ctx, "concurrency": concurrency}
     min_nodes = _nodes_needed(split_need, budget)
     out["min_nodes"] = min_nodes
     out["fits_one_node"] = fits_one
@@ -3998,7 +4058,7 @@ def plan_deployment(
                 f"budget) -- pair a second one, or use a smaller quant"
             ),
             expected = expected_gain("none", 1, concurrency),
-            commands = _serve_commands("single" if fits_one else "none", 1, model),
+            commands = _serve_commands("single" if fits_one else "none", 1, model, **cmd),
         )
         out["recommendation"] = (
             f"Serve it on this Spark. With one node there is no axis to choose."
@@ -4028,6 +4088,7 @@ def plan_deployment(
             prompt_tokens or 512,
             budget * 2**30,
             prefill_heavy = prefill_heavy,
+            replicas = kv_replicas,
         )
 
     copies = int(budget // size_gib) if size_gib > 0 else 0
@@ -4044,6 +4105,12 @@ def plan_deployment(
             f"{size_gib:.1f} GiB fits on ONE Spark ({budget:.0f} GiB budget), but a second "
             f"copy does not fit beside it on the same node. Each of your {nodes} Sparks "
             f"can hold exactly one copy."
+        )
+    elif topology == "layer-split" and replicas_fit_kv:
+        out["summary"] = (
+            f"{size_gib:.1f} GiB of weights plus KV for {users} users ({split_need:.1f} GiB) "
+            f"exceeds one Spark's {budget:.0f} GiB, but {nodes} replicas each serving "
+            f"{-(-users // kv_replicas)} of them need {replica_need:.1f} GiB per node, which fits."
         )
     elif topology == "layer-split":
         out["summary"] = (
@@ -4071,13 +4138,17 @@ def plan_deployment(
             f"{budget:.0f} GiB. Add nodes until you have {need_nodes}, quantise smaller, or "
             f"serve fewer concurrent users."
         )
-    elif not fits_one:
+    elif not fits_one and not (
+        replicas_fit_kv
+        and intent == "throughput"
+        and (out.get("serving") or {}).get("topology") == "replicas"
+    ):
         shard_nodes = min(nodes, max(2, min_nodes))
         out.update(
             axis = "tensor-parallel",
             axis_nodes = shard_nodes,
             expected = expected_gain("tensor-parallel", shard_nodes, concurrency),
-            commands = _serve_commands("tensor-parallel", shard_nodes, model),
+            commands = _serve_commands("tensor-parallel", shard_nodes, model, **cmd),
         )
         out["fallback_axis"] = "pipeline-parallel"
         out["fallback_expected"] = expected_gain("pipeline-parallel", shard_nodes, concurrency)
@@ -4094,7 +4165,7 @@ def plan_deployment(
             axis = "tensor-parallel",
             axis_nodes = nodes,
             expected = expected_gain("tensor-parallel", nodes, concurrency),
-            commands = _serve_commands("tensor-parallel", nodes, model),
+            commands = _serve_commands("tensor-parallel", nodes, model, **cmd),
         )
         out["recommendation"] = (
             f"TENSOR parallel across {nodes} Sparks. It is the only axis that makes a "
@@ -4112,7 +4183,10 @@ def plan_deployment(
             axis_nodes = axis_nodes,
             expected = expected_gain(axis, axis_nodes, concurrency, prompt_tokens or 512),
             commands = _serve_commands(
-                "layer-split" if chosen == "layer_split" else "single", axis_nodes, model
+                "layer-split" if chosen == "layer_split" else "single",
+                axis_nodes,
+                model,
+                **cmd,
             ),
         )
         out["recommendation"] = (out.get("serving") or {}).get("reason", "") or (
@@ -4125,7 +4199,7 @@ def plan_deployment(
             axis = "replicas",
             axis_nodes = nodes,
             expected = expected_gain("replicas", nodes, concurrency, prompt_tokens or 512),
-            commands = _serve_commands("replicas", nodes, model),
+            commands = _serve_commands("replicas", nodes, model, **cmd),
         )
         out["recommendation"] = (
             f"REPLICAS: one independent server per Spark, {nodes} in total, behind "
@@ -4142,7 +4216,7 @@ def plan_deployment(
             axis = "none",
             axis_nodes = 1,
             expected = expected_gain("none", 1, concurrency),
-            commands = _serve_commands("single", 1, model),
+            commands = _serve_commands("single", 1, model, **cmd),
         )
         out["recommendation"] = (
             f"For capacity, MORE SPARKS WILL NOT HELP YOU HERE: {size_gib:.1f} GiB already "
@@ -4162,6 +4236,7 @@ def _cmd_plan(
     concurrency: int = 1,
     prompt_tokens: int = 512,
     prefill_heavy: bool = False,
+    ctx: int = 8192,
 ) -> int:
     if not is_dgx_spark():
         print("Not a DGX Spark; nothing to plan.")
@@ -4170,6 +4245,10 @@ def _cmd_plan(
         info = discover_peers(timeout = 0.0)
         nodes = max(info.get("n_nodes", 1), 2 if peer_ip_for() else 1)
     size = model_size_gib(model)
+    try:
+        kv_gib = serving_kv_gib_per_user(model, ctx).get("gib") or 0.0
+    except Exception:
+        kv_gib = 0.0
     plan = plan_deployment(
         size,
         n_nodes = nodes,
@@ -4178,6 +4257,8 @@ def _cmd_plan(
         model = model,
         prompt_tokens = prompt_tokens,
         prefill_heavy = prefill_heavy,
+        kv_gib_per_user = kv_gib,
+        ctx = ctx,
     )
     print(f"  model     : {model}")
     print(f"  size      : " + (f"{size:.1f} GiB" if size else "unknown (not cached locally)"))
@@ -4715,6 +4796,8 @@ def _cmd_serve(
         two_sparks = True,
         concurrency = slots,
         kv_gib_per_user = kv["gib"] or 0.0,
+        # --slots is per engine: each replica below runs all of them.
+        split_kv_across_replicas = False,
     )
     # `single-or-replicas` = one copy per Spark, so two replicas fit across the pair.
     serving = advice.get("serving") or {}
@@ -5541,6 +5624,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             concurrency = args.concurrency,
             prompt_tokens = args.prompt_tokens,
             prefill_heavy = args.prefill_heavy,
+            ctx = args.ctx,
         )
     if args.command == "peers":
         return _cmd_peers(check = not args.no_probe)

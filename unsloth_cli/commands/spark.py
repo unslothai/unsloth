@@ -111,6 +111,7 @@ def _plan_deployment(
     prompt_tokens: int = 512,
     prefill_heavy: bool = False,
     kv_gib_per_user: float = 0.0,
+    ctx = None,
 ):
     """Call plan_deployment against whichever signature the module currently has."""
     fn = getattr(sc, "plan_deployment", None)
@@ -136,6 +137,8 @@ def _plan_deployment(
                 kwargs["prefill_heavy"] = prefill_heavy
             if "kv_gib_per_user" in params:
                 kwargs["kv_gib_per_user"] = kv_gib_per_user
+            if "ctx" in params and ctx is not None:
+                kwargs["ctx"] = ctx
             return fn(size_gib, **kwargs)
         if "nodes" in params:
             return fn(size_gib, nodes = nodes)
@@ -1119,6 +1122,7 @@ def plan(
         prompt_tokens = prompt_tokens,
         prefill_heavy = prefill_heavy,
         kv_gib_per_user = kv.get("gib") or 0.0,
+        ctx = ctx,
     )
     if result is None:
         _say("Could not produce a plan (the planner is unavailable in this build).")
