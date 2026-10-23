@@ -205,7 +205,14 @@ def test_a_foreign_listener_listed_before_ours_does_not_refuse_us(monkeypatch):
 # ── Windows: psutil can misdescribe our own live listener (#15022) ──
 
 
-def _row(port, *, pid, status, ip = "127.0.0.1", raddr = ()):
+def _row(
+    port,
+    *,
+    pid,
+    status,
+    ip = "127.0.0.1",
+    raddr = (),
+):
     return SimpleNamespace(
         laddr = SimpleNamespace(ip = ip, port = port),
         raddr = raddr,
@@ -215,7 +222,13 @@ def _row(port, *, pid, status, ip = "127.0.0.1", raddr = ()):
     )
 
 
-def _tables(monkeypatch, *, own, everyone, windows = True):
+def _tables(
+    monkeypatch,
+    *,
+    own,
+    everyone,
+    windows = True,
+):
     monkeypatch.setattr(llama_cpp, "_socket_owner_is_always_named", lambda: windows)
     monkeypatch.setattr(
         psutil.Process, "net_connections", lambda self, kind = "inet": own, raising = False
