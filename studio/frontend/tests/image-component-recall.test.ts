@@ -286,15 +286,28 @@ test("a recalled model's files come from the per-model map, the last-model slot 
 
 test("a finished load owns the fields only while they show its files", () => {
   // Typed paths that loaded become that model's, so the next pick may replace them.
-  assert.deepEqual(componentFieldsOwnerAfterLoad(zFiles, zFiles, {}), zFiles);
+  assert.deepEqual(componentFieldsOwnerAfterLoad(zFiles, zFiles, {}, "gguf"), zFiles);
   // An adapter deploy (a pipeline, which takes no files) or a recalled generation never touched the fields:
   // they stay with the model that filled them, so a later pick still swaps them out instead of sending them on.
-  assert.deepEqual(componentFieldsOwnerAfterLoad(zFiles, {}, zFiles), zFiles);
+  assert.deepEqual(componentFieldsOwnerAfterLoad(zFiles, {}, zFiles, "pipeline"), zFiles);
+  assert.deepEqual(componentFieldsOwnerAfterLoad(zFiles, {}, zFiles, "single_file"), zFiles);
   const source = readSrc("features/images/images-page.tsx");
   assert.match(
     source,
-    /componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(componentFieldsShown\.current, files, componentFieldsOwner\.current\);/,
+    /componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(componentFieldsShown\.current, files, componentFieldsOwner\.current, lastLoad\.current\.kind\);/,
   );
+});
+
+test("a load that ignores the fields keeps a cleared field the user's edit", () => {
+  // The encoder field was cleared, then a pipeline (or adapter) loaded: its request carries no files because a pipeline
+  // ignores them, which must not make the cleared field look untouched, or the next pick refills that model's saved path.
+  const shown = { vaeFile: zFiles.vaeFile };
+  assert.deepEqual(componentFieldsOwnerAfterLoad(shown, {}, zFiles, "pipeline"), zFiles);
+  rememberImageComponents(flux, { textEncoderFiles: ["../text_encoders/t5.safetensors"], vaeFile: "../vae/flux_ae.safetensors" });
+  const owner = componentFieldsOwnerAfterLoad(shown, {}, zFiles, "pipeline");
+  assert.deepEqual(componentFilesForModel(shown, owner, flux).files, { vaeFile: "../vae/flux_ae.safetensors" });
+  // A field-taking load that sent nothing for the cleared field does own it.
+  assert.deepEqual(componentFieldsOwnerAfterLoad(shown, {}, zFiles, "single_file"), { vaeFile: zFiles.vaeFile });
 });
 
 test("a Load anyway retry keeps the requested files, which a native load strips from what it sends", () => {
@@ -406,6 +419,7 @@ test("the encoder and VAE fields are owned separately, so editing one does not c
       { textEncoderFiles: zFiles.textEncoderFiles, vaeFile: "edited-during-load" },
       zFiles,
       { vaeFile: "old" },
+      "gguf",
     ),
     { textEncoderFiles: zFiles.textEncoderFiles, vaeFile: "old" },
   );
@@ -531,6 +545,28 @@ test("every settled loaded status forgets the resident model's stale files, not 
   // So a pick or Reapply of the resident model with untouched fields sends no stale VAE.
   assert.deepEqual(componentFilesForModel(zFiles, zFiles, flux).files, {});
   assert.deepEqual(readImageComponents(zImage), zFiles);
+  // The slot naming another model is left alone.
+  assert.deepEqual(readImageModel(), { ...zImage, ...zFiles });
+  // A slot naming the resident model loses its stale files too, since recall falls back to it once unloaded.
+  rememberImageModel({ ...flux, vaeFile: "../vae/flux_ae.safetensors", familyOverride: "flux" });
+  rememberImageComponents(flux, { vaeFile: "../vae/flux_ae.safetensors" });
+  assert.deepEqual(forgetStaleResidentComponents(fluxResident), { ...flux, familyOverride: "flux" });
+  assert.deepEqual(readImageModel(), { ...flux, familyOverride: "flux" });
+  assert.deepEqual(recalledComponentFiles(readImageModel()!), {});
+  // Also with no entry left (evicted, or an older build kept them only in the slot).
+  rememberImageModel({ ...flux, vaeFile: "../vae/flux_ae.safetensors" });
+  assert.ok(forgetStaleResidentComponents(fluxResident));
+  assert.deepEqual(readImageModel(), { ...flux });
+  // A slot whose files the build uses, or a native build: kept.
+  for (const status of [
+    { ...fluxResident, component_files: { vae: "flux_ae.safetensors" } },
+    { ...fluxResident, engine: "sd_cpp", component_files: null },
+  ]) {
+    rememberImageModel({ ...flux, vaeFile: "../vae/flux_ae.safetensors" });
+    assert.equal(forgetStaleResidentComponents(status), null);
+    assert.deepEqual(readImageModel(), { ...flux, vaeFile: "../vae/flux_ae.safetensors" });
+  }
+  rememberImageModel({ ...zImage, ...zFiles });
   // Kept: a build that uses the files, a native build, or nothing loaded.
   const kept = [
     { ...fluxResident, component_files: { vae: "flux_ae.safetensors" } },
@@ -563,16 +599,25 @@ test("every settled loaded status forgets the resident model's stale files, not 
   const { outputText } = ts.transpileModule(`${declaration}\nreturn reconcileResidentComponents;`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   });
+  let remembered: unknown;
   const run = (initialLoadProbe: string, busy: string | null) => {
     rememberImageComponents(flux, { vaeFile: "../vae/flux_ae.safetensors" });
-    const scope = { useCallback: (fn: unknown) => fn, initialLoadProbe, busy, forgetStaleResidentComponents };
+    const setRememberedModel = (m: unknown) => (remembered = m);
+    const scope = { useCallback: (fn: unknown) => fn, initialLoadProbe, busy, forgetStaleResidentComponents, setRememberedModel };
     new Function(...Object.keys(scope), outputText)(...Object.values(scope))(fluxResident);
     return readImageComponents(flux);
   };
+  // The page state follows the slot: a Generate after unload recalls the bare model.
+  rememberImageModel({ ...flux, vaeFile: "../vae/flux_ae.safetensors" });
+  assert.equal(run("idle", null), null);
+  assert.deepEqual(remembered, { ...flux });
+  remembered = undefined;
+  rememberImageModel({ ...zImage, ...zFiles });
   assert.equal(run("idle", null), null);
   // A resumed load leaves the probe at "loading"; once it finished, later statuses still count.
   assert.equal(run("loading", null), null);
   assert.equal(run("idle", "generating"), null);
   assert.deepEqual(run("pending", null), { vaeFile: "../vae/flux_ae.safetensors" });
   assert.deepEqual(run("idle", "loading"), { vaeFile: "../vae/flux_ae.safetensors" });
+  assert.equal(remembered, undefined);
 });

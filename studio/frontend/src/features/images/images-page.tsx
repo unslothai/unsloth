@@ -1975,7 +1975,8 @@ export function ImagesPage({
   const reconcileResidentComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (initialLoadProbe === "pending" || busy === "loading") return;
-      forgetStaleResidentComponents(loaded);
+      const bare = forgetStaleResidentComponents(loaded);
+      if (bare) setRememberedModel(bare);
     },
     [initialLoadProbe, busy],
   );
@@ -3458,7 +3459,7 @@ export function ImagesPage({
           rememberImageModel(remembered);
           setRememberedModel(remembered);
           const files = rememberLoadedImageComponents(lastLoad.current, loaded);
-          if (files) componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current);
+          if (files) componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current, lastLoad.current.kind);
         }
         setBusy(null);
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
