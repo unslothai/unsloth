@@ -462,3 +462,53 @@ def test_the_untiled_encode_shortfall_uses_the_measured_encode_figures(monkeypat
     assert tiling.encode_mib_per_latent(12, False, "SomeVae") is None  # unknown class and ratio
     x.device = types.SimpleNamespace(type = "cpu")
     assert diffusion._untiled_encode_shortfall_mib(vae, x) is None
+
+
+def test_the_untiled_decode_check_keeps_the_budget_caps(monkeypatch):
+    # decode_tile_budget pins Qwen-Image-2.1 on ROCm to the 32x32 floor (the CUDA figures under-predict there): the
+    # whole-frame check must not approve more than that platform cap would.
+    import core.inference.diffusion_vae_tiling as tiling
+
+    monkeypatch.delenv(tiling.MAX_TILE_ENV, raising = False)
+    monkeypatch.setattr(tiling, "_free_mib", lambda vae, z: (10**7, 1.0))
+    monkeypatch.setattr(tiling, "_geometry", lambda vae: (16, 32, 4))
+    monkeypatch.setattr(tiling, "_fused", lambda vae: False)
+    vae = type("AutoencoderKLQwenImage21", (), {"use_slicing": True})()
+    z = types.SimpleNamespace(
+        shape = (1, 16, 1, 64, 64), dim = lambda: 5, device = types.SimpleNamespace(type = "cuda")
+    )
+    monkeypatch.setattr(tiling, "is_rocm_torch", lambda torch: False)
+    assert diffusion._untiled_decode_shortfall_mib(vae, z) <= 0  # CUDA: fits, untiled
+    monkeypatch.setattr(tiling, "is_rocm_torch", lambda torch: True)
+    assert tiling.decode_tile_budget(vae, z) == tiling.TILE_LATENTS**2
+    assert diffusion._untiled_decode_shortfall_mib(vae, z) is None  # ROCm: keep the floor tiles
+    small = types.SimpleNamespace(shape = (1, 16, 1, 32, 32), dim = lambda: 5, device = z.device)
+    assert diffusion._untiled_decode_shortfall_mib(vae, small) <= 0  # the frame is the floor tile
+    monkeypatch.setattr(tiling, "is_rocm_torch", lambda torch: False)
+    monkeypatch.setenv(tiling.MAX_TILE_ENV, "40")  # an explicit max tile sizes tiled decodes only
+    assert diffusion._untiled_decode_shortfall_mib(vae, z) <= 0
+
+
+def test_the_untiled_encode_check_prices_the_fp32_encode_of_an_fp16_decode_vae(monkeypatch):
+    # enable_fp16_vae_decode leaves the SDXL encoder fp16 but its fp32_encode upcasts encoder and input for the
+    # encode: price it at fp32, not at the fp16 parameters the check sees.
+    import core.inference.diffusion_vae_tiling as tiling
+
+    monkeypatch.setattr(tiling, "_geometry", lambda vae: (8, 32, 4))
+    monkeypatch.setattr(tiling, "_fused", lambda vae: False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1000 * 2**20, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    param = types.SimpleNamespace(element_size = lambda: 2)
+    vae = type("AutoencoderKL", (), {})()
+    vae.encoder = types.SimpleNamespace(parameters = lambda: iter([param]))
+    x = types.SimpleNamespace(
+        shape = (1, 3, 1024, 1024), dim = lambda: 4, device = types.SimpleNamespace(type = "cuda")
+    )
+    per_latent = tiling.encode_mib_per_latent(8, False, "AutoencoderKL")
+    fp16 = 128 * 128 * per_latent / tiling.FREE_FRACTION - 1000
+    fp32 = 128 * 128 * per_latent * 2 / tiling.FREE_FRACTION - 1000
+    assert abs(diffusion._untiled_encode_shortfall_mib(vae, x) - fp16) <= 1
+    vae._unsloth_fp16_decode = True
+    assert abs(diffusion._untiled_encode_shortfall_mib(vae, x) - fp32) <= 1

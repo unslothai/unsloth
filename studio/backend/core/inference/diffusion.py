@@ -2552,15 +2552,20 @@ def _release_before_tiling_off() -> bool:
 def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
     """MiB the free VRAM is short by, now, for decoding ``z`` in one piece: the rule the wide-tile decode picks its
     tile by (``decode_tile_budget``: per-latent decode peak within ``FREE_FRACTION`` of the free memory), applied to
-    the whole frame. A whole-frame tile is the untiled decode. None off CUDA or when the VAE's figures are unknown."""
+    the whole frame. A whole-frame tile is the untiled decode. None off CUDA, when the VAE's figures are unknown, or
+    when a platform cap of the budget (``decode_platform_cap``: the ROCm Qwen-Image-2.1 floor) is under the frame."""
     from .diffusion_vae_tiling import (
         FREE_FRACTION,
         _free_mib,
         _fused,
         _geometry,
         decode_mib_per_latent,
+        decode_platform_cap,
     )
     try:
+        cap = decode_platform_cap(vae, z)
+        if cap is not None and cap < int(z.shape[-2]) * int(z.shape[-1]):
+            return None
         free = _free_mib(vae, z)
         if free is None:
             return None
@@ -2590,7 +2595,11 @@ def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
             return None
         free, _ = torch.cuda.mem_get_info(x.device)
         free += torch.cuda.memory_reserved(x.device) - torch.cuda.memory_allocated(x.device)
-        scale = next(vae.encoder.parameters()).element_size() / 2
+        elem = next(vae.encoder.parameters()).element_size()
+        # enable_fp16_vae_decode's fp32_encode upcasts the fp16 encoder and input for the encode itself
+        if getattr(vae, "_unsloth_fp16_decode", False):
+            elem = max(elem, 4)
+        scale = elem / 2
         frames = int(x.shape[2]) if x.dim() == 5 else 1
         batch = 1 if bool(getattr(vae, "use_slicing", False)) else int(x.shape[0])
         latents = -(-int(x.shape[-2]) // ratio) * -(-int(x.shape[-1]) // ratio)

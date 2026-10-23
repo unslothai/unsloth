@@ -302,21 +302,29 @@ def _fused(vae: Any) -> bool:
     )
 
 
-def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
-    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
-    raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
-    if raw.isdigit() and int(raw) > 0:
-        return int(raw) ** 2
+def decode_platform_cap(vae: Any, z: Any) -> Optional[int]:
+    """The decode tile area (latents) a platform pins regardless of free memory, else None."""
     # CUDA-calibrated coefficients under-predict Qwen-Image-2.1 decode on ROCm (40x40, 64x32 and 96x56 OOM at
     # 17/19 GiB limits): start at the tested 32x32 floor rather than retrying an oversized tile on every image.
     import torch
 
     if (
-        z.device.type == "cuda"
+        getattr(getattr(z, "device", None), "type", None) == "cuda"
         and is_rocm_torch(torch)
         and type(vae).__name__ == "AutoencoderKLQwenImage21"
     ):
         return TILE_LATENTS**2
+    return None
+
+
+def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
+    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
+    raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw) ** 2
+    cap = decode_platform_cap(vae, z)
+    if cap is not None:
+        return cap
     try:
         _, tile, _ = _geometry(vae)
         # Stock tile == floor: grow only into device-free memory; decoding out of the allocator cache stalled on
