@@ -168,6 +168,15 @@ export function unseenChatChanges(
   };
 }
 
+/** Stored unread result chats that Recents has just marked read. */
+export function readInRecents(
+  threads: readonly string[],
+  before: ReadonlySet<string>,
+  now: ReadonlySet<string>,
+): string[] {
+  return threads.filter((id) => before.has(id) && !now.has(id));
+}
+
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
 const ERROR_KEYS: Record<string, TranslationKey> = {

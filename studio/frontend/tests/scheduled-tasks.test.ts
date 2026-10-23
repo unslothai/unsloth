@@ -23,6 +23,7 @@ import {
   runErrorText,
   runsToAnnounce,
   runsToNotify,
+  readInRecents,
   unseenChatChanges,
   shouldSaveSeen,
 } from "../src/features/scheduled-tasks/results.ts";
@@ -357,6 +358,13 @@ test("unread chats follow the stored unread result chats", () => {
   assert.deepEqual(unseenChatChanges(["c1"], []), { added: ["c1"], opened: [] });
   assert.deepEqual(unseenChatChanges(["c1", "c2"], ["c1"]), { added: ["c2"], opened: [] });
   assert.deepEqual(unseenChatChanges(["c2"], ["c1", "c2"]), { added: [], opened: ["c1"] });
+});
+
+test("a result chat marked read in Recents is read for good, others untouched", () => {
+  const before = new Set(["c1", "c2", "other"]);
+  assert.deepEqual(readInRecents(["c1", "c2"], before, new Set(["c2", "other"])), ["c1"]);
+  assert.deepEqual(readInRecents(["c1", "c2"], before, new Set()), ["c1", "c2"]);
+  assert.deepEqual(readInRecents(["c3"], before, new Set()), []);
 });
 
 test("a failed run is worded from its error code, else from the server's text", () => {

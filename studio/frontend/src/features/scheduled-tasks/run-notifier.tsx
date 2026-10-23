@@ -25,6 +25,7 @@ import {
   runErrorText,
   runsToAnnounce,
   runsToNotify,
+  readInRecents,
   unseenChatChanges,
   shouldSaveSeen,
 } from "./results";
@@ -137,9 +138,22 @@ export function ScheduledTaskRunNotifier() {
       if (opened.length > 0) chats.clearThreadsUnread(opened);
     };
     sync(useUnseenScheduledRuns.getState().threads, []);
-    return useUnseenScheduledRuns.subscribe((state, previous) => {
+    const offUnseen = useUnseenScheduledRuns.subscribe((state, previous) => {
       if (state.threads !== previous.threads) sync(state.threads, previous.threads);
     });
+    // Read in Recents (opened, "Mark as read", all at once) is read for good. A sign-out's reset
+    // comes after the token is gone, when the record is out of reach and stays as it was.
+    const offChats = useChatNavigationStore.subscribe((state, previous) => {
+      if (state.unreadThreadIds === previous.unreadThreadIds) return;
+      const unseen = useUnseenScheduledRuns.getState();
+      for (const id of readInRecents(unseen.threads, previous.unreadThreadIds, state.unreadThreadIds)) {
+        unseen.clearThread(id);
+      }
+    });
+    return () => {
+      offUnseen();
+      offChats();
+    };
   }, []);
   useEffect(() => {
     navigateRef.current = navigate;
