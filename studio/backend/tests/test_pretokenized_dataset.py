@@ -361,6 +361,68 @@ def test_mlx_training_prepares_eval_only_when_it_is_pretokenized():
     assert any("ev" in {n.id for n in ast.walk(a.value) if isinstance(n, ast.Name)} for a in assigned)
 
 
+def test_mlx_training_prepares_a_pretokenized_eval_split_whatever_the_train_format():
+    # A text training split with a pre-tokenized eval split must still trim the eval rows' masked padding.
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    fn = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_mlx_training"
+    )
+    parents = {child: node for node in ast.walk(fn) for child in ast.iter_child_nodes(node)}
+    call = next(
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "prepare_pretokenized_dataset"
+        and node.args[0].id == "eval_dataset"
+    )
+    node = call
+    while node is not fn:
+        node = parents[node]
+        if isinstance(node, ast.If):
+            names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+            assert "dataset_final_format" not in names
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_prepare_trims_boolean_masks_like_integer_masks(streaming):
+    rows = {
+        "input_ids": [[0, 2, 3, 0], [4, 5]],
+        "attention_mask": [[False, True, True, False], [True, True]],
+        "labels": [[-100, 2, 3, -100], [4, 5]],
+    }
+    ds = Dataset.from_dict(rows)
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    out = list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
+    assert out[0]["input_ids"] == [2, 3]
+    assert out[0]["labels"] == [2, 3]
+    assert out[0]["attention_mask"] == [True, True]
+    assert out[1] == {k: v[1] for k, v in rows.items()}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_prepare_refuses_interior_false_in_a_boolean_mask(streaming):
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "attention_mask": [[True, False, True]]})
+    if streaming:
+        ds = ds.to_iterable_dataset()
+    with pytest.raises(ValueError, match = "zeros between attended tokens"):
+        list(prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100))
+
+
+def test_prepare_leaves_an_all_true_boolean_mask_byte_identical():
+    rows = {"input_ids": [[1, 2, 3]], "attention_mask": [[True, True, True]]}
+    ds = Dataset.from_dict(rows)
+    out = prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+    assert out is ds
+    assert out.data.table.equals(Dataset.from_dict(rows).data.table)
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("bad", [100, 250, -1, -5])
 def test_prepare_rejects_labels_outside_the_vocabulary(bad, streaming):

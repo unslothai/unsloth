@@ -89,6 +89,7 @@ def _raise_length_mismatch(column):
 
 def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
     """Returns (needs_truncation, needs_trimming)."""
+    import pyarrow as pa
     import pyarrow.compute as pc
 
     ids = table.column("input_ids")
@@ -96,6 +97,9 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> tuple[bool, bool]:
     needs_trimming = False
     if "attention_mask" in table.column_names:
         flat_mask = pc.list_flatten(table.column("attention_mask"))
+        if pa.types.is_boolean(flat_mask.type):
+            # Arrow has no bool-vs-int comparison kernel; True/False are exactly 1/0, so compare them as integers.
+            flat_mask = pc.cast(flat_mask, pa.int8())
         # Exact membership, not a range: a float mask such as [0.5, 1.0] sits inside [0, 1] yet is neither value.
         if pc.any(pc.and_(pc.not_equal(flat_mask, 0), pc.not_equal(flat_mask, 1))).as_py():
             mask = table.column("attention_mask").combine_chunks()

@@ -3603,14 +3603,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
             dataset, eval_dataset = split_result
             eval_final_format = dataset_final_format
 
+    # zoo's MLX batcher reads input_ids / labels and ignores attention_mask, so masked padding is trimmed here as on
+    # CUDA. MLX truncates to max_seq_length itself. Each split goes by its own format: a separately supplied eval
+    # split can be pre-tokenized while the training split is text, and the reverse.
     if dataset_final_format == "pretokenized":
-        # zoo's MLX batcher reads input_ids / labels and ignores attention_mask, so masked padding is trimmed here as
-        # on CUDA. MLX truncates to max_seq_length itself.
         from utils.datasets.pretokenized import prepare_pretokenized_dataset
 
         dataset = prepare_pretokenized_dataset(dataset, max_seq_length = None)
-        if eval_dataset is not None and eval_final_format == "pretokenized":
-            eval_dataset = prepare_pretokenized_dataset(eval_dataset, max_seq_length = None)
+    if eval_dataset is not None and eval_final_format == "pretokenized":
+        from utils.datasets.pretokenized import prepare_pretokenized_dataset
+
+        eval_dataset = prepare_pretokenized_dataset(eval_dataset, max_seq_length = None)
 
     requested_max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)
