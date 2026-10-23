@@ -39,7 +39,9 @@ def streamed(monkeypatch):
 def test_pad_skips_an_empty_denoiser_slot(streamed):
     pipe = types.SimpleNamespace(components = {"transformer": streamed, "transformer_2": None})
     assert dm.stream_window_pad_mib(pipe) == 0
-    assert dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": streamed})) == 0
+    assert (
+        dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": streamed})) == 0
+    )
 
 
 def test_streamed_group_window_skips_an_empty_denoiser_slot(streamed):
