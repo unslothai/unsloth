@@ -47,6 +47,7 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
+// ── CSS variants ──────────────────────────────────────────────────── Each variant is a stylesheet
 // CSS variants appended after src/index.css. Prefix is overspecific to beat the tree's scoped rules.
 const HERE = ".aui-thread-root.aui-thread-root.aui-thread-root";
 const BLOCK = '[data-streamdown="code-block"]';

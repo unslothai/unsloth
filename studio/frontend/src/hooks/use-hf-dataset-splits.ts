@@ -21,6 +21,8 @@ import {
 
 export type { HfSplitEntry } from "./hf-dataset-split-sources";
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 export interface HfSplitsResponse {
   splits: HfSplitEntry[];
   pending: unknown[];
@@ -148,6 +150,8 @@ const DEFAULT_FETCHERS: DatasetSplitFetchers = {
   hub: fetchHubSplits,
 };
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 export function useHfDatasetSplits(
   datasetName: string | null,
   selectedSubset: string | null,

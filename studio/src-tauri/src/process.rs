@@ -3046,6 +3046,7 @@ mod tests {
         (port, tx, handle)
     }
 
+    // ── #9756: a spawned handle whose child has exited must not block the next launch ──
     // A spawned handle whose child exited without stdout EOF must not block the next launch.
 
     #[cfg(unix)]

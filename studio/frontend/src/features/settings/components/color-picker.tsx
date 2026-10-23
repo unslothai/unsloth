@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { ColorPickerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+/* ------------------------- HSV ↔ hex conversions ------------------------- */
 
 type Hsv = { h: number; s: number; v: number };
 
@@ -59,6 +60,7 @@ function isLightColor(hex: string): boolean {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.62;
 }
 
+/* ------------------------------- Component ------------------------------- */
 type EyeDropperResult = { sRGBHex: string };
 type EyeDropperConstructor = new () => {
   open: () => Promise<EyeDropperResult>;

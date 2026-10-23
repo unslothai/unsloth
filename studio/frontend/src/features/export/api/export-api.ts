@@ -363,6 +363,7 @@ export async function getExportStatus(): Promise<ExportStatus> {
   const response = await authFetch("/api/export/status");
   return parseJson<ExportStatus>(response);
 }
+// ───────────────────────────────────────────────────────────────────── Live export log stream
 
 export type ExportLogStream = "stdout" | "stderr" | "status";
 

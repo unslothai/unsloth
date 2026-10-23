@@ -50,6 +50,7 @@ export function useExportRuntimeLifecycle(): void {
       store.getState().setConnected(false);
     };
 
+    // ── JSON log polling (tunnel-safe fallback) ────────────────────────── Runs for the whole
     // Polling runs alongside SSE; over a Cloudflare tunnel the SSE is buffered, so polls fill
     // the log. A successful poll marks the stream connected.
     const pollLogsOnce = async () => {

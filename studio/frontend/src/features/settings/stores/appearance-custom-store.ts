@@ -588,6 +588,7 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
   ),
 );
 
+/* ------------------------------ DOM applier ------------------------------ */
 const DEFAULT_SANS_STACK =
   '"Inter Variable", ui-sans-serif, sans-serif, system-ui';
 const DEFAULT_HEADING_STACK =

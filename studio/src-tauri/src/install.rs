@@ -9,6 +9,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
+// ── Types ──
 #[derive(Default)]
 pub struct InstallProcess {
     /// Process group handle: killing this kills the entire subprocess tree.
@@ -501,6 +502,7 @@ fn powershell_exe() -> PathBuf {
     }
 }
 
+// ── Script Resolution ──
 /// Dev mode: repo root script + --tauri --local. Production: bundled resource + --tauri.
 fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
     let mut args = vec!["--tauri".to_string()];
@@ -538,6 +540,7 @@ fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), Str
         Ok((script, args))
     }
 }
+// ── Emit Helpers ──
 
 #[derive(Clone, Copy)]
 enum InstallEventMode {
@@ -597,6 +600,7 @@ fn emit_complete(app: &AppHandle) {
     let _ = app.emit("install-complete", ());
 }
 
+// ── Spawn ──
 /// Spawns the install script in a process group so stop_install() can kill the whole tree.
 fn spawn_script(
     script: &Path,
@@ -697,6 +701,7 @@ fn spawn_script(
     Ok((stdout, stderr))
 }
 
+// ── Stream ──
 /// Parses structured events from stdout and failure controls from both streams.
 fn stream_output(
     app: &AppHandle,
@@ -837,6 +842,7 @@ fn stream_output(
     (threads, failure_context)
 }
 
+// ── Wait & Finalize ──
 /// Returns (exit_status, was_intentional_stop). The deadline is a backstop; see install_watchdog.
 fn wait_for_exit(
     state: &InstallState,
@@ -875,6 +881,7 @@ fn wait_for_exit(
     )
 }
 
+// ── Public API ──
 /// Returns Err("NEEDS_ELEVATION") if system packages need elevated install (Linux only).
 pub fn run_install(
     app: AppHandle,

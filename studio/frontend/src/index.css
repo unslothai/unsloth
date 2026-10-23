@@ -499,10 +499,12 @@
 	--action-base: var(--foreground);
 }
 
+/* --------------------------------------------------------------------------- */
 /* Palettes are orthogonal to light/dark, carried as `data-palette` on <html> (theme-store.ts);
    no attribute is Standard. They override only color tokens. Light blocks use :not(.dark) so the
    base .dark block wins the mode dimension. */
 
+/* -------------------------------- Classic -------------------------------- */
 :root[data-palette="classic"]:not(.dark) {
 	--background: #ffffff;
 	--foreground-base: #1a1c1f;
@@ -573,6 +575,7 @@
 	--sidebar-ring: #ececec;
 }
 
+/* -------------------------------- Minimal -------------------------------- */
 :root[data-palette="minimal"]:not(.dark) {
 	--background: #ffffff;
 	--foreground-base: #171717;
@@ -1549,6 +1552,7 @@
 	--th-chart-5: #c79ae6;
 }
 
+/* --------------------------------------------------------------------------- */
 /* Appearance customization: every rule is gated on a class or attribute appearance-custom-store.ts
    sets on <html>, so with none active the stylesheet is stock. Custom colors/fonts are inline vars. */
 

@@ -925,6 +925,7 @@ export function ExportPage() {
     [],
   );
 
+  // ---- Export handlers ----
   const handleStart = useCallback(async () => {
     const source =
       sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;

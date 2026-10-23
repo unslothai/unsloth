@@ -292,6 +292,7 @@ export const chatterboxConvertPanel: AudioToolPanel<ChatterboxConvertValue> = {
   ),
 };
 
+// ---- Vevo2 -----------------------------------------------------------------------------------
 const VEVO2_HINTS = {
   singing: "Singing keeps the recording's own style.",
   target:

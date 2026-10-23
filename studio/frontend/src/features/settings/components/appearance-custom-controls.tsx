@@ -69,6 +69,7 @@ import { COLOR_THEMES } from "../lib/color-themes";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
+/* ------------------------------- Colors -------------------------------- */
 // Mirrors the palette tokens in index.css (foregrounds converted from oklch).
 type DefaultModeColors = { [K in keyof CustomModeColors]: string };
 const PALETTE_DEFAULT_COLORS: Record<
@@ -115,6 +116,7 @@ export function ActiveColorControl({
   );
 }
 
+/* ------------------------------ Typography ------------------------------ */
 const DEFAULT_FONT_NAMES = {
   ui: "Inter Variable",
   heading: "Hellix",
@@ -131,6 +133,7 @@ const BUNDLED_FONTS = [
   "Fira Code",
 ] as const;
 
+/* ----------------------------- Device fonts ------------------------------ */
 // Probed by canvas measurement when the Local Font Access API is unavailable or denied.
 const CANDIDATE_DEVICE_FONTS = [
   "American Typewriter",
@@ -517,6 +520,7 @@ export function CodeFontRow({ className }: { className?: string }) {
   );
 }
 
+/* ---------------------------- Imported fonts ---------------------------- */
 const FONT_MIME_BY_EXTENSION: Record<string, string> = {
   woff2: "font/woff2",
   woff: "font/woff",
@@ -567,6 +571,7 @@ function familyCandidates(base: string): string[] {
   return candidates;
 }
 
+/* ----------------------------- Folder fonts ----------------------------- */
 // Directory-input file handles cannot be persisted, so the scan lives for the session.
 type FolderFont = { name: string; file: File };
 let folderFontsCache: FolderFont[] = [];
@@ -853,6 +858,7 @@ export function FontSmoothingSwitch() {
   );
 }
 
+/* ------------------------------ Interface ------------------------------- */
 export function ChatWidthSelect() {
   const t = useT();
   const chatWidth = useAppearanceCustomStore((s) => s.customization.chatWidth);
@@ -1013,6 +1019,7 @@ export function ReduceMotionSegmented() {
   );
 }
 
+/* ------------------------------- Reset all ------------------------------ */
 export function ResetCustomizationButton() {
   const t = useT();
   const customization = useAppearanceCustomStore((s) => s.customization);
