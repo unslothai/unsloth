@@ -1258,12 +1258,15 @@ def _budget_reserve_kind(memory: DeviceMemory) -> str:
     return _ROCM_APU_POOL if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
-def _user_budget_reserve_mib(base: int) -> int:
+def _user_budget_reserve_mib(base: Optional[int]) -> int:
     """What the user's VRAM Budget setting keeps free of ``base``. 0 at or above the default, where the reserves above
-    are already tuned (3% of a 192 GiB card would exceed the discrete cap), so an untouched setting changes nothing."""
+    are already tuned (3% of a 192 GiB card would exceed the discrete cap), so an untouched setting changes nothing.
+    The placement paths outside this module (multi-GPU encoder cards, CFG-parallel replicas, video residency) charge
+    the same reserve, so one setting caps every card Studio places weights on."""
+    if not base or int(base) <= 0:
+        return 0
     try:
         from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT, get_vram_budget_fraction
-
         fraction = float(get_vram_budget_fraction())
     except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
         return 0
@@ -1291,7 +1294,9 @@ def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    reserve = max(2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2, _user_budget_reserve_mib(base))
+    reserve = max(
+        2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2, _user_budget_reserve_mib(base)
+    )
     return max(0, int(memory.free_mib) - reserve)
 
 

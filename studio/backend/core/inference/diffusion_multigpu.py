@@ -889,9 +889,18 @@ def encoder_card_limit_mib(ordinal: int) -> Optional[int]:
     """What a secondary that only runs text encoders may hold: free memory minus ComfyUI's per-card floor (the layer
     split prices its block-only cards the same way). None when the card cannot be read."""
     from .diffusion_layer_split_plan import secondary_reserve_mib
+    from .diffusion_memory import _user_budget_reserve_mib
 
-    free, _total = _free_total_mib(int(ordinal))
-    return None if free is None else max(0, int(free) - secondary_reserve_mib())
+    free, total = _free_total_mib(int(ordinal))
+    if free is None:
+        return None
+    return max(0, int(free) - max(secondary_reserve_mib(), _user_budget_reserve_mib(total or free)))
+
+
+def _replica_reserve_mib(free: Optional[int], total: Optional[int]) -> int:
+    """Room a CFG replica leaves free on its card: 1 GiB, or what the user's VRAM Budget keeps free when larger."""
+    from .diffusion_memory import _user_budget_reserve_mib
+    return max(1024, _user_budget_reserve_mib(total or free))
 
 
 def secondary_device_memory(ordinal: int) -> Any:
@@ -2658,7 +2667,8 @@ class CfgParallelRouter:
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
-            free, _total = _free_total_mib(self.secondary.index)
+            free, total = _free_total_mib(self.secondary.index)
+            reserve = _replica_reserve_mib(free, total)
             if free is not None:
                 with contextlib.suppress(Exception):
                     torch = _torch()
@@ -2666,7 +2676,7 @@ class CfgParallelRouter:
                         torch.cuda.memory_reserved(self.secondary)
                         - torch.cuda.memory_allocated(self.secondary)
                     ) // (1 << 20)
-            if free is not None and need_mib + 1024 > free:
+            if free is not None and need_mib + reserve > free:
                 raise RuntimeError(
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
                 )
@@ -2863,7 +2873,10 @@ def install_cfg_parallel(
             ) // (1 << 20)
             best = max(candidates, key = lambda o: probes[o].free_mib or -1)
             free = probes[best].free_mib
-            if free is not None and need_mib + 1024 > free:
+            if (
+                free is not None
+                and need_mib + _replica_reserve_mib(free, probes[best].total_mib) > free
+            ):
                 reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
             else:
                 graph = _resident_graph(denoiser)

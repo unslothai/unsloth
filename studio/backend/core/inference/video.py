@@ -2519,9 +2519,12 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
     try:
         from utils.hardware import trusted_mem_get_info
 
+        from .diffusion_memory import _user_budget_reserve_mib
+
         # Windows ROCm over-reports free (#8403); pinning the denoiser on that reading is how a card that is already
-        # full still looks roomy
-        return int(trusted_mem_get_info()[0])
+        # full still looks roomy. The user's VRAM Budget keeps its share of the card free (0 at the default).
+        free, total = trusted_mem_get_info()
+        return max(0, int(free) - (_user_budget_reserve_mib(int(total) >> 20) << 20))
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None
 
