@@ -230,6 +230,10 @@ def _discover_peer_address() -> Optional[str]:
 def enabled() -> bool:
     if (os.environ.get(ENV_TOGGLE) or "").strip() == "0":
         return False
+    from core.inference import cluster_serving
+
+    if cluster_serving.configured():
+        return True
     if not is_spark():
         return False
     return peer_address() is not None
@@ -605,7 +609,8 @@ def ssh_argv(
     ]
     if keepalive:
         argv += ["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
-    argv += [f"{_ssh_user()}@{peer}", remote]
+    # A cluster node can name its own login ("me@10.0.0.3"); a Spark peer is a bare address.
+    argv += [peer if "@" in peer else f"{_ssh_user()}@{peer}", remote]
     return argv
 
 
@@ -698,6 +703,7 @@ _SIDECAR_FLAGS = frozenset(
         "-mm",
         "--model-draft",
         "-md",
+        "--spec-draft-model",
         "--lora",
         "--lora-scaled",
         "--control-vector",
@@ -1963,7 +1969,9 @@ def layer_split_extra_args(
 
 def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
     """``extra`` without our appended split block, so an inheriting reload re-plans the split."""
-    tokens = [str(t) for t in extra]
+    from core.inference import cluster_serving
+
+    tokens = cluster_serving.strip_managed_block([str(t) for t in extra])
     fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
     fixed += ["--cache-ram", "0"]
     for start in range(len(tokens) - 1, -1, -1):
@@ -2302,6 +2310,7 @@ class SparkServing:
         # The current load is a model kept alongside, which this state does not describe.
         self._passthrough: bool = False
         self._confirm_teardown: Any = None
+        self._on_plan_accepted: Any = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         # The split's llama-server lost its rpc-server and has not reconnected to the replacement.
@@ -2472,6 +2481,14 @@ class SparkServing:
                 self.load_in_progress = False
                 self._restore_pre_load_state()
                 raise SparkLoadDoesNotFit(why)
+            hook, self._on_plan_accepted = self._on_plan_accepted, None
+            if hook is not None:
+                try:
+                    await hook()
+                except BaseException as exc:
+                    self.load_in_progress = False
+                    self._restore_pre_load_state()
+                    raise _TeardownRefused() from exc
             extra = getattr(request, "llama_extra_args", None)
             mtp = await asyncio.to_thread(
                 mtp_plan,
@@ -3445,8 +3462,9 @@ def state() -> SparkServing:
 
 
 def reset_for_tests() -> None:
-    global _STATE, _CLUSTER, _CLUSTER_LOOKED_UP
+    global _STATE, _CLUSTER, _CLUSTER_LOOKED_UP, _DETACH_LEGACY_ON_COMMIT
     _STATE = None
+    _DETACH_LEGACY_ON_COMMIT = False
     _CLUSTER = None
     _CLUSTER_LOOKED_UP = False
     _HELP_TEXT.clear()
@@ -3465,11 +3483,100 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
     _STATE.tag_conversation(payload, thread_id)
 
 
+_DETACH_LEGACY_ON_COMMIT = False
+
+
+def _cluster_active() -> bool:
+    from core.inference import cluster_serving
+    return (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured()
+
+
+def _legacy_worker_holds_a_cluster_port() -> bool:
+    from core.inference import cluster_serving
+
+    process = _STATE.peer_process if _STATE is not None else None
+    if (
+        process is None
+        or getattr(process, "name", "") != "ggml-rpc-server"
+        or not getattr(process, "alive", False)
+    ):
+        return False
+    argv = [str(a) for a in getattr(process, "argv", None) or []]
+
+    def operand(flag: str) -> str:
+        return argv[argv.index(flag) + 1] if flag in argv[:-1] else ""
+
+    port = operand("-p")
+    hosts = {operand("-H"), str(getattr(process, "peer", "") or "").rpartition("@")[2]} - {""}
+    candidates = [
+        node
+        for node in cluster_serving.state().nodes
+        if node.managed and str(node.rpc_port) == port
+    ]
+    if any(node.host in hosts for node in candidates):
+        return True
+    if not candidates:
+        return False
+    # A host name and an address are the same endpoint when they resolve to a common IPv4.
+    legacy = set().union(*(_ipv4_addresses(h) for h in hosts)) if hosts else set()
+    return any(legacy & _ipv4_addresses(node.host) for node in candidates)
+
+
+def _ipv4_addresses(host: str) -> set:
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        return {host}
+    try:
+        return {
+            info[4][0]
+            for info in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        }
+    except (OSError, UnicodeError):
+        return set()
+
+
+async def _legacy_worker_holds_a_cluster_port_bounded(timeout: float = 5.0) -> bool:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_legacy_worker_holds_a_cluster_port), timeout
+        )
+    except asyncio.TimeoutError:
+        return False
+
+
+def _legacy_kept() -> bool:
+    from core.inference import cluster_serving
+
+    if _STATE is None or (_STATE.peer_process is None and _STATE.router is None):
+        return False
+    if not _cluster_active():
+        return False
+    cluster = cluster_serving.state()
+    cluster.refresh_nodes()
+    return bool(cluster.config_error)
+
+
 def current_topology() -> Optional[str]:
+    from core.inference import cluster_serving
+
+    if (
+        cluster_serving._STATE is not None
+        and not _legacy_kept()
+        and (_cluster_active() or cluster_serving._STATE.serving())
+    ):
+        return cluster_serving._STATE.topology
     st = state()
     if st.attached_backend is None and st.peer_process is None and st.router is None:
         return None
     return st.topology
+
+
+async def _confirm(confirm_teardown: Any) -> None:
+    """Run the route's teardown gate; it may be async (a forced reload drains its chats there)."""
+    if confirm_teardown is None:
+        return
+    confirmed = confirm_teardown()
+    if inspect.isawaitable(confirmed):
+        await confirmed
 
 
 async def before_load(
@@ -3480,6 +3587,89 @@ async def before_load(
     cancel_event: Any = None,
     confirm_teardown: Any = None,
 ) -> Any:
+    from core.inference import cluster_serving
+
+    global _DETACH_LEGACY_ON_COMMIT
+    alongside = bool(
+        getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
+    )
+    replacing = not alongside and str(getattr(request, "engine", "auto") or "auto") == "auto"
+    if cluster_serving._STATE is not None:
+        cluster_serving._STATE.settle_internal_load()
+    legacy_serving = _STATE is not None and (
+        _STATE.peer_process is not None or _STATE.router is not None
+    )
+    cluster_broken = False
+    if _cluster_active() and legacy_serving:
+        cluster_serving.state().refresh_nodes()
+        cluster_broken = bool(cluster_serving.state().config_error)
+    # A malformed cluster config never tears down a two-Spark split that still serves.
+    if _cluster_active() and not cluster_broken:
+        retired_first = False
+        if replacing and await _legacy_worker_holds_a_cluster_port_bounded():
+            # The two-Spark rpc-server holds the port a managed worker must bind: retire it first.
+            await _confirm(confirm_teardown)
+            _STATE._note_retired_split(_STATE.peer_process)
+            await _STATE.detach()
+            retired_first = True
+        try:
+            out = await cluster_serving.state().before_load(
+                request,
+                n_parallel,
+                inherited_extra_args = inherited_extra_args,
+                cancel_event = cancel_event,
+            )
+        except BaseException:
+            if retired_first:
+                # Refused after its split went: the primary left cannot compute, so unload it.
+                await _STATE.load_failed()
+            raise
+        if retired_first:
+            out = SparkServing._request_with(out, {"force_reload": True})
+        legacy = _STATE is not None and (
+            _STATE.peer_process is not None or _STATE.router is not None
+        )
+        _DETACH_LEGACY_ON_COMMIT = legacy and not alongside and not replacing
+        if replacing and legacy and not cluster_serving.state()._cancelled():
+            # Only once the cluster has a plan, so a refused or cancelled load leaves it serving.
+            try:
+                await _confirm(confirm_teardown)
+            except BaseException:
+                await cluster_serving._STATE.load_failed()  # no load follows a refused teardown
+                raise
+            if _STATE.peer_process is not None:
+                _STATE._note_retired_split(_STATE.peer_process)  # load_failed unloads the orphan
+            await _STATE.detach()
+            out = SparkServing._request_with(out, {"force_reload": True})
+        return out
+    if cluster_serving._STATE is not None and (
+        cluster_serving._STATE.workers or cluster_serving._STATE._backend is not None
+    ):
+        cluster_serving._STATE.retire_on_commit = not (
+            getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
+        )
+        if replacing and cluster_serving._STATE.retire_on_commit and enabled():
+            # The workers go once the two-Spark planner accepts; a refused load keeps them serving.
+            async def retire_cluster() -> None:
+                await _confirm(confirm_teardown)
+                cluster = cluster_serving._STATE
+                if cluster._backend is not None and cluster.block and cluster.workers:
+                    state()._retired_split = (
+                        cluster._backend,
+                        getattr(cluster._backend, "_process", None),
+                    )
+                await cluster.shutdown()
+
+            state()._on_plan_accepted = retire_cluster
+        cluster = cluster_serving._STATE
+        if (
+            replacing
+            and cluster.retire_on_commit
+            and cluster.block
+            and getattr(cluster._backend, "is_loaded", False)
+        ):
+            # after_load retires the workers, so the primary using them must not be kept as is.
+            request = SparkServing._request_with(request, {"force_reload": True})
     if not enabled():
         return request
     st = state()
@@ -3509,6 +3699,7 @@ async def before_load(
         raise exc.__cause__
     finally:
         st._confirm_teardown = None
+        st._on_plan_accepted = None
 
 
 async def after_load(
@@ -3518,6 +3709,19 @@ async def after_load(
     cancel_event: Any = None,
 ) -> bool:
     """True when the load was cancelled during the replica startup and must be undone."""
+    from core.inference import cluster_serving
+
+    global _DETACH_LEGACY_ON_COMMIT
+    if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
+        await cluster_serving._STATE.after_load(llama_backend)
+        if _DETACH_LEGACY_ON_COMMIT and _STATE is not None:
+            await _STATE.detach()
+        _DETACH_LEGACY_ON_COMMIT = False
+        if _STATE is not None:
+            _STATE._retired_split = None
+        return False
+    if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
+        await cluster_serving._STATE.shutdown()
     if not enabled():
         return False
     st = state()
@@ -3533,6 +3737,20 @@ async def after_load(
 
 
 async def load_failed() -> None:
+    from core.inference import cluster_serving
+
+    global _DETACH_LEGACY_ON_COMMIT
+    _DETACH_LEGACY_ON_COMMIT = False
+    if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
+        await cluster_serving._STATE.load_failed()
+        legacy = _STATE.attached_backend if _STATE is not None else None
+        if legacy is not None and not getattr(legacy, "is_loaded", False):
+            await _STATE.detach()  # an engine load unloaded the two-Spark primary, then failed
+        if _STATE is not None and _STATE._retired_split is not None:
+            await _STATE.load_failed()  # unloads the two-Spark primary whose split went
+        return
+    if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
+        await cluster_serving._STATE.failed_while_retiring()
     if _STATE is None or not enabled():
         return
     if _STATE._passthrough:
@@ -3543,6 +3761,10 @@ async def load_failed() -> None:
 
 async def reconcile_internal_load() -> None:
     """Drop a two-node topology before a load that did not come through ``before_load``."""
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None:
+        cluster_serving._STATE.note_internal_load()
     if _STATE is None or _STATE.attached_backend is None and _STATE.peer_process is None:
         return
     logger.info("spark serving: serving on this node only for a load that bypassed the planner")
@@ -3550,12 +3772,24 @@ async def reconcile_internal_load() -> None:
 
 
 async def shutdown() -> None:
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None:
+        await cluster_serving._STATE.shutdown()
     if _STATE is None:
         return
     await _STATE.detach()
 
 
 def status() -> Dict[str, Any]:
+    from core.inference import cluster_serving
+
+    if _legacy_kept():
+        return dict(state().status(), cluster_config_error = cluster_serving.state().config_error)
+    if _cluster_active():
+        return cluster_serving.state().status()
+    if cluster_serving._STATE is not None and cluster_serving._STATE.serving():
+        return dict(cluster_serving._STATE.status(), retiring = True)
     if not enabled():
         return {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}
     return state().status()
