@@ -479,7 +479,12 @@ def untrack_admitted_inference(scope) -> None:
 
 def end_in_process_request(scope, answered: bool) -> None:
     """LlamaKeepWarmMiddleware's end-of-request bookkeeping for an in-process request. Idempotent."""
-    if answered and isinstance(scope, dict) and scope.get(_ADMITTED_SCOPE_KEY):
+    if (
+        answered
+        and isinstance(scope, dict)
+        and scope.get(_ADMITTED_SCOPE_KEY)
+        and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
+    ):
         _claim_non_preview_slot()
     untrack_admitted_inference(scope)
 

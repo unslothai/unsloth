@@ -474,6 +474,7 @@ test("a task change reaches the account's other tabs, and a deletion has Recents
         "./api": { deleteScheduledTask: async () => undefined },
         "./results": {
           SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASKS_WRITTEN_KEY: "written",
           SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
         },
       },
@@ -506,6 +507,7 @@ test("a Run now answer arriving after its run finished keeps the finished run", 
         "./api": { runScheduledTaskNow: () => new Promise((resolve) => (answer = resolve)) },
         "./results": {
           SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASKS_WRITTEN_KEY: "written",
           SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
         },
       },
@@ -541,6 +543,7 @@ test("an edit answer that predates its run's finish keeps the finished run", asy
         "./api": { updateScheduledTask: () => new Promise((resolve) => (answer = resolve)) },
         "./results": {
           SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASKS_WRITTEN_KEY: "written",
           SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
         },
       },
@@ -615,6 +618,7 @@ test("a write that drops a list refresh in flight asks for the list again", asyn
         },
         "./results": {
           SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASKS_WRITTEN_KEY: "written",
           SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
         },
       },

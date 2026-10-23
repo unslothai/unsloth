@@ -7,6 +7,8 @@ import type { FinishedScheduledTaskRun, ScheduledTaskActivity } from "./api";
 
 /** A task was added, rescheduled or started: the results poll looks again now. */
 export const SCHEDULED_TASKS_CHANGED_EVENT = "unsloth-scheduled-tasks-changed";
+/** Bumped on every task change so other tabs get a storage event. */
+export const SCHEDULED_TASKS_WRITTEN_KEY = "unsloth_scheduled_tasks_written";
 /** Runs finished: a loaded Tasks page re-reads its list to show them. */
 export const SCHEDULED_TASK_RUNS_FINISHED_EVENT = "unsloth-scheduled-task-runs-finished";
 

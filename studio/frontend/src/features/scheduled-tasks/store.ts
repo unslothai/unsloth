@@ -14,10 +14,13 @@ import {
   runScheduledTaskNow,
   updateScheduledTask,
 } from "./api";
-import { SCHEDULED_TASKS_CHANGED_EVENT, SCHEDULED_TASK_RUNS_FINISHED_EVENT } from "./results";
+import {
+  SCHEDULED_TASKS_CHANGED_EVENT,
+  SCHEDULED_TASKS_WRITTEN_KEY,
+  SCHEDULED_TASK_RUNS_FINISHED_EVENT,
+} from "./results";
 
-/** Bumped on every change so other tabs get a storage event. */
-export const SCHEDULED_TASKS_WRITTEN_KEY = "unsloth_scheduled_tasks_written";
+export { SCHEDULED_TASKS_WRITTEN_KEY };
 
 function announceChange(): void {
   if (typeof window === "undefined") return;

@@ -14,6 +14,7 @@ import { type FinishedScheduledTaskRun, getScheduledTaskActivity } from "./api";
 import {
   IDLE_POLL_MS,
   SCHEDULED_TASKS_CHANGED_EVENT,
+  SCHEDULED_TASKS_WRITTEN_KEY,
   SCHEDULED_TASK_RUNS_FINISHED_EVENT,
   SEEN_KEY_PREFIX,
   type SeenRuns,
@@ -272,7 +273,12 @@ export function ScheduledTaskRunNotifier() {
     const onVisible = () => {
       if (document.visibilityState === "visible") recheck();
     };
+    // Another tab's change: it may have made a task due sooner than this tab's next look.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === SCHEDULED_TASKS_WRITTEN_KEY) recheck();
+    };
     window.addEventListener(SCHEDULED_TASKS_CHANGED_EVENT, recheck);
+    window.addEventListener("storage", onStorage);
     window.addEventListener(AUTH_SESSION_STORED_EVENT, recheck);
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", onVisible);
@@ -281,6 +287,7 @@ export function ScheduledTaskRunNotifier() {
       disposed = true;
       if (timer !== null) clearTimeout(timer);
       window.removeEventListener(SCHEDULED_TASKS_CHANGED_EVENT, recheck);
+      window.removeEventListener("storage", onStorage);
       window.removeEventListener(AUTH_SESSION_STORED_EVENT, recheck);
       window.removeEventListener("focus", recheck);
       document.removeEventListener("visibilitychange", onVisible);

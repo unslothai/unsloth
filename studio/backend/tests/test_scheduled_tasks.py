@@ -995,6 +995,18 @@ def test_a_run_picks_its_kept_model_after_the_model_gate_lets_it_in(monkeypatch)
     assert producer.payload.model == "after-the-wait"
 
 
+def test_a_reply_marked_failed_does_not_claim_the_model(monkeypatch):
+    claims = []
+    monkeypatch.setattr(llama_keepwarm, "_claim_non_preview_slot", lambda: claims.append(1))
+    scope = {
+        llama_keepwarm._ADMITTED_SCOPE_KEY: True,
+        llama_keepwarm._RESPONSE_FAILED_SCOPE_KEY: True,
+    }
+    llama_keepwarm.end_in_process_request(scope, answered = True)
+    llama_keepwarm.end_in_process_request({llama_keepwarm._ADMITTED_SCOPE_KEY: True}, answered = True)
+    assert claims == [1]
+
+
 def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
     monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)
