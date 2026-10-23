@@ -1449,6 +1449,15 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     # untiled 2048 decode is 9_738. References are charged through ``condition_pixel_weight``. The base (CFG) is
     # unmeasured and keeps the flat estimate.
     "flux.3-klein": ((301, 901, 2_437, 2_437, 3_359), (301, 901, 2_437, 2_437, 3_359)),
+    # FLUX.3 Klein base (CFG), B200 bf16 (quant auto picked bf16 offline), cond / uncond run apart: denoise 601 / 618 /
+    # 652 off / default / max, untiled decode 2_443 / 2_512, 2048^2 max(denoise 2_369, tiled decode 2_474). Same DiT and VAE as Klein (ComfyUI prices both with
+    # the one Flux2 formula), so each column is the larger of the two families: Klein's TE window and int8 / fp8 denoise.
+    "flux.3-klein-base": ((301, 901, 2_512, 2_512, 3_359), (301, 901, 2_512, 2_512, 3_359)),
+    # MOSS-Image SFT, B200 bf16 (quant auto picked bf16 offline): denoise 519-528 eager / 374-462 compiled, untiled
+    # fp32 VAE decode 3_666 eager / 2_807 compiled (a 512 px tile barely lowers it at 1024^2: 3_662 / 2_700), 2048^2
+    # max(denoise 2_106, tiled decode 3_750). Encoder 1_940 streamed (group offload on a 36 GiB cap; 4-22 MiB
+    # resident). Both tiers take the eager worst.
+    "moss-image": ((1_940, 528, 3_666, 3_662, 3_750), (1_940, 528, 3_666, 3_662, 3_750)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
 }
 

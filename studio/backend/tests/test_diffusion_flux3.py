@@ -490,8 +490,11 @@ def test_measured_memory_rows():
         (301, 901, 2_437, 2_437, 3_359),
     )
     assert mem._MEASURED_DENSE_EAGER_PEAK_MIB["flux.3-klein"] == (2437, 10600)
-    # The base runs CFG and is unmeasured: flat estimate.
-    assert "flux.3-klein-base" not in mem._MEASURED_IMAGE_ACTIVATION_MIB
+    # The base (CFG, cond / uncond run apart) is measured: never below Klein's row for the shared DiT and VAE.
+    assert mem._MEASURED_IMAGE_ACTIVATION_MIB["flux.3-klein-base"] == (
+        (301, 901, 2_512, 2_512, 3_359),
+        (301, 901, 2_512, 2_512, 3_359),
+    )
 
 
 def test_variant_mismatch_and_bfl_quant_packages_are_refused():
@@ -2091,8 +2094,11 @@ def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
     assert distilled.reference and not tuple(getattr(distilled, "reference_resolutions", ()) or ())
     act = d._calibrated_activation(distilled, nvidia)
     assert act is not None and act == d.calibrated_image_activation("flux.3-klein", max_speed = True)
-    # the base runs CFG (two denoiser batches) and has no measured row: it keeps the flat estimate
-    assert d._calibrated_activation(_family("flux.3-klein-base"), nvidia) is None
+    # the base has its own measured row (references are charged on top, as for the distilled model)
+    base = d._calibrated_activation(_family("flux.3-klein-base"), nvidia)
+    assert base is not None and base == d.calibrated_image_activation(
+        "flux.3-klein-base", max_speed = True
+    )
 
 
 @pytest.mark.parametrize("with_upsampler", [False, True])
