@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in torchao float8 training for full finetuning: eligible nn.Linear layers become torchao Float8Linear (fp8 matmuls in forward and backward, high precision master weights)."""
+"""Opt-in torchao float8 training for full finetuning: eligible nn.Linear layers become torchao Float8Linear (fp8 matmuls in forward and backward, high precision master weights).
+
+Usage: `FastModel.from_pretrained(..., full_finetuning = True, float8_training = True)`. True means the
+tensorwise recipe. By name it runs only on compute capability 12.x (RTX PRO 6000 / RTX 50 class), where it
+was measured faster than bfloat16 at equal loss. Other fp8 GPUs (H100, B200, ROCm) need an explicit
+`torchao.float8.Float8LinearConfig`. Works with native FSDP2 (UNSLOTH_FSDP2=1): convert, then shard."""
 
 from __future__ import annotations
 
@@ -14,7 +19,13 @@ __all__ = [
     "convert_model_to_float8_training",
 ]
 
-FLOAT8_TRAINING_RECIPES = ("rowwise", "tensorwise")
+FLOAT8_TRAINING_RECIPES = ("tensorwise",)
+
+# Named recipes run only where they were timed faster than bfloat16 at equal loss (Qwen3-1.7B / 4B full
+# finetuning). tensorwise: RTX PRO 6000 (12.0) 15% faster; L4 (8.9) NaN gradients with gradient
+# checkpointing. rowwise: 3% slower on the RTX PRO 6000 and 2% slower on the L4, so it is not offered by
+# name. Any other GPU needs an explicit torchao Float8LinearConfig.
+_MEASURED_FASTER = {"tensorwise": ((12, 0), (12, 1))}
 
 # Never fp8: output heads (Unsloth's fused CE reads lm_head.weight directly), MoE routers (tiny, precision sensitive).
 _SKIP_NAME_PARTS = ("lm_head", "embed_out", "output_projection", "router")
@@ -26,9 +37,15 @@ def resolve_float8_training(float8_training):
     if float8_training is None or float8_training is False:
         return None
     if float8_training is True:
-        return "rowwise"
+        return "tensorwise"
     if isinstance(float8_training, str):
         recipe = float8_training.strip().lower()
+        if recipe == "rowwise":
+            raise ValueError(
+                "Unsloth: float8_training = 'rowwise' trained slower than bfloat16 on every GPU it was "
+                "timed on (L4, RTX PRO 6000). Use float8_training = True (tensorwise), or pass "
+                "torchao.float8.Float8LinearConfig.from_recipe_name('rowwise') to force it."
+            )
         if recipe not in FLOAT8_TRAINING_RECIPES:
             raise ValueError(
                 f"Unsloth: float8_training = '{float8_training}' is not supported. "
@@ -53,7 +70,7 @@ def _size_ok(recipe, out_features, in_features):
     return not (N <= 4096 and K <= 2048)
 
 
-def float8_training_filter(model, recipe = "rowwise", size_filter = True):
+def float8_training_filter(model, recipe = "tensorwise", size_filter = True):
     """Filter for convert_to_float8_training: plain nn.Linear, dims divisible by 16, trainable floating weight, not an output head or router."""
     out_heads = set()
     try:
@@ -62,7 +79,7 @@ def float8_training_filter(model, recipe = "rowwise", size_filter = True):
             out_heads.add(id(out))
     except Exception:
         pass
-    size_recipe = recipe if isinstance(recipe, str) else "rowwise"
+    size_recipe = _recipe_scaling(recipe)
 
     def module_filter_fn(module, fqn):
         # Exact type: bitsandbytes / QAT / fp8 / PEFT linears subclass nn.Linear and must stay as they are.
@@ -98,6 +115,17 @@ def _probe_float8_gemm(device, recipe):
     torch._scaled_mm(a, b, scale_a = sa, scale_b = sb, out_dtype = torch.bfloat16)
 
 
+def _recipe_scaling(recipe):
+    """'tensorwise' or 'rowwise' for a recipe name or a Float8LinearConfig (by its input cast granularity)."""
+    if isinstance(recipe, str):
+        return recipe
+    try:
+        granularity = recipe.cast_config_input.scaling_granularity
+        return "rowwise" if "AXIS" in str(getattr(granularity, "name", granularity)).upper() else "tensorwise"
+    except Exception:
+        return "rowwise"
+
+
 def _model_device(model):
     for p in model.parameters():
         return p.device
@@ -107,29 +135,38 @@ def _model_device(model):
 def _check_hardware(device, recipe):
     if device is None or device.type != "cuda" or not torch.cuda.is_available():
         raise RuntimeError(
-            "Unsloth: float8_training needs the model on an NVIDIA GPU with compute capability 8.9+ "
-            f"(L4, Ada, H100, B200, RTX 40 / 50 series); the model is on {device}."
+            "Unsloth: float8_training needs the model on an NVIDIA GPU with compute capability 8.9+; "
+            f"the model is on {device}."
         )
     major, minor = torch.cuda.get_device_capability(device)
+    name = torch.cuda.get_device_name(device)
     if torch.version.hip is None and (major, minor) < (8, 9):
         raise RuntimeError(
-            "Unsloth: float8_training needs compute capability 8.9+ (L4, Ada, H100, B200, RTX 40 / 50 "
-            f"series); {torch.cuda.get_device_name(device)} is {major}.{minor}. Train in bfloat16 / float16 instead."
+            "Unsloth: float8_training needs compute capability 8.9+ (fp8 tensor cores); "
+            f"{name} is {major}.{minor}. Train in bfloat16 / float16 instead."
         )
-    if recipe == "tensorwise" and torch.version.hip is None and (major, minor) < (9, 0):
-        # Measured on an L4: every gradient is NaN from the first step once gradient checkpointing runs.
-        raise RuntimeError(
-            "Unsloth: float8_training = 'tensorwise' gives NaN gradients on compute capability 8.9 "
-            f"({torch.cuda.get_device_name(device)}); use float8_training = 'rowwise' there."
-        )
-    probe_recipe = recipe if isinstance(recipe, str) else "rowwise"
+    if isinstance(recipe, str):
+        if torch.version.hip is None and recipe == "tensorwise" and (major, minor) < (9, 0):
+            # Measured on an L4: every gradient is NaN from the first step once gradient checkpointing runs.
+            raise RuntimeError(
+                "Unsloth: float8_training = 'tensorwise' gives NaN gradients on compute capability 8.9 "
+                f"({name}). Train in bfloat16 instead."
+            )
+        if torch.version.hip is not None or (major, minor) not in _MEASURED_FASTER.get(recipe, ()):
+            where = "ROCm" if torch.version.hip is not None else f"compute capability {major}.{minor}"
+            raise RuntimeError(
+                f"Unsloth: float8_training = {recipe!r} has not been measured faster than bfloat16 on "
+                f"{name} ({where}); it is enabled by name only on RTX PRO 6000 / RTX 50 class GPUs "
+                "(compute capability 12.x). To try it here, pass "
+                f"torchao.float8.Float8LinearConfig.from_recipe_name({recipe!r}) as float8_training."
+            )
+    probe_recipe = _recipe_scaling(recipe)
     try:
         _probe_float8_gemm(device, probe_recipe)
     except Exception as e:
-        hint = " Try float8_training = 'tensorwise'." if probe_recipe == "rowwise" else ""
         raise RuntimeError(
-            f"Unsloth: float8_training = '{probe_recipe}' is not supported by torch {torch.__version__} on "
-            f"{torch.cuda.get_device_name(device)} ({type(e).__name__}: {str(e)[:200]}).{hint}"
+            f"Unsloth: float8_training ({probe_recipe} scaling) is not supported by torch {torch.__version__} on "
+            f"{torch.cuda.get_device_name(device)} ({type(e).__name__}: {str(e)[:200]})."
         ) from e
 
 

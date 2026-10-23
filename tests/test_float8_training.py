@@ -51,10 +51,14 @@ def _emulated_config(recipe = "rowwise"):
 def test_resolve_values():
     assert f8t.resolve_float8_training(None) is None
     assert f8t.resolve_float8_training(False) is None
-    assert f8t.resolve_float8_training(True) == "rowwise"
+    assert f8t.resolve_float8_training(True) == "tensorwise"
     assert f8t.resolve_float8_training("TensorWise") == "tensorwise"
+    with pytest.raises(ValueError, match = "slower than bfloat16"):
+        f8t.resolve_float8_training("rowwise")
     with pytest.raises(ValueError):
         f8t.resolve_float8_training("mxfp8")
+    config = _emulated_config("rowwise")
+    assert f8t.resolve_float8_training(config) is config
     with pytest.raises(TypeError):
         f8t.resolve_float8_training(3)
 
@@ -164,7 +168,46 @@ def test_refuses_pre_sm89(monkeypatch):
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA A10G")
     monkeypatch.setattr(torch.version, "hip", None)
     with pytest.raises(RuntimeError, match = "A10G is 8.6"):
-        f8t._check_hardware(torch.device("cuda", 0), "rowwise")
+        f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+    with pytest.raises(RuntimeError, match = "A10G is 8.6"):
+        f8t._check_hardware(torch.device("cuda", 0), _emulated_config("tensorwise"))
+
+
+def test_recipe_scaling_of_configs():
+    assert f8t._recipe_scaling("tensorwise") == "tensorwise"
+    assert f8t._recipe_scaling(_emulated_config("tensorwise")) == "tensorwise"
+    assert f8t._recipe_scaling(_emulated_config("rowwise")) == "rowwise"
+
+
+@pytest.mark.parametrize(
+    "cap, name, hip, allowed",
+    [
+        ((12, 0), "NVIDIA RTX PRO 6000 Blackwell", None, True),  # measured 15% faster
+        ((12, 1), "NVIDIA RTX 5090 class", None, True),
+        ((10, 0), "NVIDIA B200", None, False),  # not timed
+        ((9, 0), "NVIDIA H100", None, False),  # not timed
+        ((9, 4), "AMD Instinct MI300X", "6.4", False),  # ROCm not timed
+    ],
+)
+def test_named_recipe_only_where_measured_faster(monkeypatch, cap, name, hip, allowed):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: name)
+    monkeypatch.setattr(torch.version, "hip", hip)
+    probed = []
+    monkeypatch.setattr(f8t, "_probe_float8_gemm", lambda d, r: probed.append(r))
+    if allowed:
+        f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+        assert probed == ["tensorwise"]
+    else:
+        with pytest.raises(RuntimeError, match = "not been measured faster") as e:
+            f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+        assert "Float8LinearConfig.from_recipe_name('tensorwise')" in str(e.value)
+        assert probed == []
+    # An explicit Float8LinearConfig is the opt in for any fp8 GPU; only the GEMM probe gates it.
+    probed.clear()
+    f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
+    assert probed == ["rowwise"]
 
 
 def test_refuses_tensorwise_on_sm89(monkeypatch):
@@ -175,23 +218,25 @@ def test_refuses_tensorwise_on_sm89(monkeypatch):
     monkeypatch.setattr(f8t, "_probe_float8_gemm", lambda *a: None)
     with pytest.raises(RuntimeError, match = "NaN gradients"):
         f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
-    f8t._check_hardware(torch.device("cuda", 0), "rowwise")
+    f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
     f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
 
 
 def test_refuses_when_scaled_mm_probe_fails(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
-    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA RTX PRO 6000 Blackwell")
     monkeypatch.setattr(torch.version, "hip", None)
 
     def boom(*a, **k):
-        raise RuntimeError("rowwise scaling needs sm90")
+        raise RuntimeError("scaled_mm not built for sm120")
 
     monkeypatch.setattr(f8t, "_probe_float8_gemm", boom)
-    with pytest.raises(RuntimeError, match = "tensorwise"):
-        f8t._check_hardware(torch.device("cuda", 0), "rowwise")
+    with pytest.raises(RuntimeError, match = "tensorwise scaling\\) is not supported"):
+        f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+    with pytest.raises(RuntimeError, match = "rowwise scaling\\) is not supported"):
+        f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
 
 
 def test_loader_rejects_float8_training_for_lora():
