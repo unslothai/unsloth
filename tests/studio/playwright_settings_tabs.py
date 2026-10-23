@@ -566,8 +566,10 @@ def run_shortcut_recorder(page) -> None:
 
     click_forced(chord, timeout = 15000)
     box.wait_for(state = "visible", timeout = 5000)
+    # Taken before the press: Backspace removes the box, and a lookup after it waits for one that is gone.
+    recording = box.element_handle()
     page.keyboard.press("Backspace")
-    until(page, "el => el && !el.isConnected", arg = box.element_handle())
+    until(page, "el => el && !el.isConnected", arg = recording)
     state["cleared"] = {"shown": chord.inner_text(), "stored": page.evaluate(stored_js)}
 
     click_forced(page.get_by_role("button", name = "Restore defaults"), timeout = 15000)
