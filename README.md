@@ -57,36 +57,7 @@ Download the native Unsloth Desktop app for your operating system:
 
 Download from [Unsloth](https://unsloth.ai/download) or [GitHub Releases](https://github.com/unslothai/unsloth/releases).
 
-Or if you prefer to install manually:
-
-#### macOS, Linux, WSL:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | sh
-```
-
-#### Windows:
-```powershell
-irm https://unsloth.ai/install.ps1 | iex
-```
-#### Docker:
-
-The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/unsloth` is available on Docker. [Read guide.](https://unsloth.ai/docs/get-started/install/docker)
-
-#### Homebrew:
-```bash
-brew install --cask unsloth
-```
-
-#### Winget (Windows):
-```powershell
-winget install --id UnslothAI.Unsloth -e
-```
-
-#### Community:
-
-- [Discord](https://discord.gg/unsloth)
-- [𝕏 (Twitter)](https://x.com/UnslothAI)
-- [Reddit](https://reddit.com/r/unsloth)
+For command-line, package-manager, Docker, or source installations, see the [installation instructions](#-install).
 
 ## ⭐ Features
 Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU setups, NVIDIA, AMD, Intel GPUs, CPUs** and the **Vulkan** backend.
@@ -131,36 +102,7 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 
 ### Unsloth Desktop (recommended)
 
-<table>
-  <tr>
-    <td><b>Platform</b></td>
-    <td><b>Link</b></td>
-  </tr>
-  <tr>
-    <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows.exe'>Download</a></td>
-  </tr>
-  <tr>
-    <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
-  </tr>
-  <tr>
-    <td><b>Linux / Ubuntu (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
-  </tr>
-  <tr>
-    <td><b>Linux / Ubuntu (ARM64) (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
-  </tr>
-  <tr>
-    <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
-  </tr>
-  <tr>
-    <td><b>Windows (ARM64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
-  </tr>
-</table>
+Download the desktop app from the [platform download table](#-get-started) above, or visit [Unsloth Downloads](https://unsloth.ai/download) and [GitHub Releases](https://github.com/unslothai/unsloth/releases).
 
 ### Unsloth Studio (web UI)
 
@@ -177,6 +119,11 @@ irm https://unsloth.ai/install.ps1 | iex
 #### Homebrew:
 ```bash
 brew install --cask unsloth
+```
+
+#### Winget (Windows):
+```powershell
+winget install --id UnslothAI.Unsloth -e
 ```
 
 #### Docker
