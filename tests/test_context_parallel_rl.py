@@ -76,6 +76,8 @@ def _worker(rank, world, init_file, queue):
         assert out.last_hidden_state.shape == (2, 7, 8)
         assert out.hidden_states[-1] is out.last_hidden_state
         assert out.hidden_states[0].shape == (2, 7, 8)
+        # Trimmed from the padded gather as fresh tensors: compiled consumers must not guard on a view base.
+        assert out.last_hidden_state._base is None and out.hidden_states[0]._base is None
         torch.testing.assert_close(out.last_hidden_state, full.last_hidden_state, rtol = 1e-5, atol = 1e-6)
         # DDP's average over the CP group, as the trainer gets it.
         for p in model.parameters():
@@ -94,6 +96,13 @@ def _worker(rank, world, init_file, queue):
         got = cp._broadcast_from_group_root(mine, manager, torch.device("cpu"))
         assert got["text"] == ["r0"] and got["pair"] == (0, None)
         assert torch.equal(got["ids"], torch.zeros(2, dtype = torch.long))
+        # The root's inference-mode flag reaches every peer (compiled forwards guard on it).
+        with torch.inference_mode():
+            scored = {"ids": torch.full((2,), rank)}
+        got = cp._broadcast_from_group_root(scored, manager, torch.device("cpu"))
+        assert got["ids"].is_inference() and torch.equal(got["ids"], torch.zeros(2, dtype = torch.long))
+        got = cp._broadcast_from_group_root({"ids": torch.ones(1)}, manager, torch.device("cpu"))
+        assert not got["ids"].is_inference()
 
         cp._check_same_prompts(["same"], manager)
         with pytest.raises(RuntimeError, match = "different prompts"):

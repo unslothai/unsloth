@@ -1048,7 +1048,14 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
         return None
     manager = module._unsloth_cp_rl_manager
     last = output[0]
-    hidden = gather_sequence(last, manager)[:, :seq_len]
+
+    def _full(x):
+        # A fresh tensor, not a view of the padded gather: the compiled log-softmax would otherwise
+        # guard on the view's base and recompile under CP only.
+        x = gather_sequence(x, manager)
+        return x if x.shape[1] == seq_len else x[:, :seq_len].clone()
+
+    hidden = _full(last)
     layers = output.get("hidden_states") if not isinstance(output, tuple) else None
     if isinstance(output, tuple):
         if kwargs.get("output_hidden_states"):
@@ -1060,7 +1067,7 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
     if layers is not None:
         # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
         output["hidden_states"] = tuple(
-            hidden if layer is last else gather_sequence(layer, manager)[:, :seq_len]
+            hidden if layer is last else _full(layer)
             for layer in layers
         )
     return output
@@ -1119,6 +1126,14 @@ def _map_leaves(obj, fn, leaf = torch.Tensor):
 class _OnDevice:
     def __init__(self, tensor):
         self.tensor, self.on_accelerator = tensor.cpu(), tensor.device.type != "cpu"
+        self.inference = tensor.is_inference()
+
+    def restore(self, device):
+        # Peers get the root's inference-mode flag too: compiled forwards guard on it, so a mismatch
+        # recompiles on every peer but the root.
+        with torch.inference_mode(self.inference):
+            tensor = self.tensor.to(device) if self.on_accelerator else self.tensor
+            return tensor.clone() if self.inference and not tensor.is_inference() else tensor
 
 
 def _broadcast_from_group_root(obj, manager, device):
@@ -1128,7 +1143,7 @@ def _broadcast_from_group_root(obj, manager, device):
     dist.broadcast_object_list(payload, src = dist.get_global_rank(group, 0), group = group)
     return _map_leaves(
         payload[0],
-        lambda x: x.tensor.to(device) if x.on_accelerator else x.tensor,
+        lambda x: x.restore(device),
         leaf = _OnDevice,
     )
 
