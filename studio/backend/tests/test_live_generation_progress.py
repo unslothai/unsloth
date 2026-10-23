@@ -146,6 +146,25 @@ def test_stall_wait_sends_progress_while_the_generator_is_silent(monkeypatch):
     assert [_frame(line)["processed"] for line in lines] == [2048]
 
 
+def test_a_step_faster_than_the_poll_still_sends_what_it_recorded():
+    # Fast tokens (or tool-call markup stripped to no text) never reach the poll.
+    signal = route._PrefillProgressSignal(None, live = True)
+
+    async def scenario():
+        async def step():
+            signal({"prompt_progress": {"total": 4000, "processed": 4000}})
+            signal({"predicted_n": 3, "predicted_per_second": 20.0})
+            return "token"
+
+        task = asyncio.create_task(step())
+        await task
+        return [line async for line in route._stall_wait_frames(task, signal, first_timeout = 15.0)]
+
+    lines = asyncio.run(scenario())
+    assert [_frame(line)["phase"] for line in lines] == ["prefill", "decode"]
+    assert _frame(lines[0])["processed"] == 4000 and _frame(lines[1])["tokens"] == 3
+
+
 def test_stall_wait_still_sends_the_comment_after_the_stall_interval(monkeypatch):
     monkeypatch.setattr(route, "_LIVE_PROGRESS_POLL_S", 0.01)
 

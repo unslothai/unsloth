@@ -7803,15 +7803,21 @@ class _PrefillProgressSignal:
 
 
 async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
-    """Wait for a silent GGUF generator step: ``: prefill-progress`` / ``: keep-alive`` after ``first_timeout`` and
+    """Wait for a GGUF generator step: ``: prefill-progress`` / ``: keep-alive`` after ``first_timeout`` and
     every stall interval after, and for a live signal new ``generation_progress`` frames every
-    ``_LIVE_PROGRESS_POLL_S``. Never cancels ``next_task``: the caller's finally drains it."""
+    ``_LIVE_PROGRESS_POLL_S`` and once the step is done. Never cancels ``next_task``: the caller's finally drains it."""
     timeout = first_timeout
     waited = 0.0
     while True:
         poll = min(timeout - waited, _LIVE_PROGRESS_POLL_S) if signal.live else timeout
         done_tasks, _ = await asyncio.wait({next_task}, timeout = poll)
         if done_tasks:
+            # Steps faster than the poll, including ones whose text is all stripped markup, are the only
+            # chance to send what they recorded: a pending prefill sample, then decode figures.
+            for _ in range(2):
+                frame = signal.live_frame()
+                if frame is not None:
+                    yield frame
             return
         frame = signal.live_frame()
         if frame is not None:
@@ -34859,9 +34865,6 @@ async def produce_openai_chat_completions(
                         if visible_delta:
                             api_monitor.append_reply(monitor_id, visible_delta)
                             yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
-                        live_line = _gguf_prefill_signal.live_frame()
-                        if live_line is not None:
-                            yield live_line
 
                     for chunk in _flush_reasoning_extractor():
                         yield chunk
@@ -35485,9 +35488,6 @@ async def produce_openai_chat_completions(
                         if visible_delta:
                             api_monitor.append_reply(monitor_id, visible_delta)
                             yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
-                        live_line = _gguf_prefill_signal.live_frame()
-                        if live_line is not None:
-                            yield live_line
 
                     final_reasoning, final_visible = reasoning_extractor.finish()
                     if final_reasoning:
