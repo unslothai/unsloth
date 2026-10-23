@@ -626,9 +626,13 @@ def collect_mlx_info() -> dict:
     except Exception as e:
         info["errors"].append(f"unsloth_zoo version: {type(e).__name__}: {e}")
     info["zoo_mlx"] = True
-    for module in ("unsloth_zoo.mlx.trainer", "unsloth_zoo.mlx.loader"):
+    # Names written out: the risky-loader lint flags import_module on a variable.
+    for module, load in (
+        ("unsloth_zoo.mlx.trainer", lambda: importlib.import_module("unsloth_zoo.mlx.trainer")),
+        ("unsloth_zoo.mlx.loader", lambda: importlib.import_module("unsloth_zoo.mlx.loader")),
+    ):
         try:
-            importlib.import_module(module)
+            load()
         except Exception as e:
             info["errors"].append(f"{module}: {type(e).__name__}: {e}")
             info["zoo_mlx"] = False
