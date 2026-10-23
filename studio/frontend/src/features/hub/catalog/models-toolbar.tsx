@@ -463,7 +463,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               <button
                 type="button"
                 onClick={onManageLocalFolders}
-                aria-label="Add folder"
+                aria-label="Model folders"
                 className={cn(
                   triggerBase,
                   "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
@@ -477,7 +477,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
-              Add folder
+              Model folders
             </TooltipContent>
           </Tooltip>
         )}

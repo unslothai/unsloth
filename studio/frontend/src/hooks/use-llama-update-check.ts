@@ -40,6 +40,7 @@ export interface LlamaUpdateJob {
   finished_at: string | null;
   // The chained phase installing right now, when the backend reports phases.
   runningPhase: "llama" | "whisper" | "audio" | null;
+  whisperFailed: boolean;
 }
 
 export interface ComponentOffer {
@@ -104,6 +105,9 @@ function parseJob(value: unknown): LlamaUpdateJob {
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
     runningPhase: parseRunningPhase(job.phases),
+    whisperFailed:
+      (job.phases as Record<string, { state?: unknown } | null> | null)?.whisper
+        ?.state === "error",
   };
 }
 
@@ -204,8 +208,16 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
 // resynced -- would otherwise replay the same completed job forever. Persist the handled marker
 // outside React state so it survives both, and is shared across tabs in this browser.
 const HANDLED_RELOAD_STORAGE_KEY = "unsloth_llama_update_reload_handled_at";
+// sessionStorage, not localStorage: a skip kept for good stranded the install on that release.
 const OFFER_SUPPRESSION_STORAGE_KEY = "unsloth_llama_update_offer_suppression";
 const OFFER_SUPPRESSION_EVENT = "unsloth:llama-update-offer-suppression";
+
+// Retires the permanent record older builds wrote.
+try {
+  localStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
+} catch {
+  // Storage can be unavailable in restricted browser contexts.
+}
 
 type OfferSuppression =
   | { kind: "dismissed"; offerKey: string }
@@ -221,9 +233,8 @@ export function offerKey(status: LlamaUpdateStatus): string {
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
       : null,
-    whisper: status.whisper?.update_available
-      ? [status.whisper.installed_tag, status.whisper.latest_tag]
-      : null,
+    // whisper.cpp rides along; null matches keys stored before it joined.
+    whisper: null,
     migration: status.backend_migration_available
       ? [
           status.llama.installed_tag,
@@ -237,6 +248,24 @@ export function offerKey(status: LlamaUpdateStatus): string {
       ? { audio: [status.audio.installed_tag, status.audio.latest_tag] }
       : {}),
   });
+}
+
+/** The previous format recorded the whisper.cpp release in the key; ignore it so a new whisper.cpp release keeps the suppression. */
+export function offerKeyMatches(
+  key: string,
+  status: LlamaUpdateStatus,
+): boolean {
+  const current = offerKey(status);
+  if (key === current) return true;
+  try {
+    const stored: unknown = JSON.parse(key);
+    if (!stored || typeof stored !== "object" || !("whisper" in stored)) {
+      return false;
+    }
+    return JSON.stringify({ ...stored, whisper: null }) === current;
+  } catch {
+    return false;
+  }
 }
 
 function parseOfferSuppression(raw: string | null): OfferSuppression | null {
@@ -272,7 +301,7 @@ function getOfferSuppression(): OfferSuppression | null {
   if (!retainedSuppression.persisted) return retainedSuppression.value;
   try {
     const value = parseOfferSuppression(
-      localStorage.getItem(OFFER_SUPPRESSION_STORAGE_KEY),
+      sessionStorage.getItem(OFFER_SUPPRESSION_STORAGE_KEY),
     );
     retainedSuppression = { value, persisted: true };
     return value;
@@ -285,12 +314,12 @@ function publishOfferSuppression(suppression: OfferSuppression | null): void {
   retainedSuppression = { value: suppression, persisted: false };
   try {
     if (suppression) {
-      localStorage.setItem(
+      sessionStorage.setItem(
         OFFER_SUPPRESSION_STORAGE_KEY,
         JSON.stringify({ version: 1, ...suppression }),
       );
     } else {
-      localStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
+      sessionStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
     }
     retainedSuppression.persisted = true;
   } catch {
@@ -345,6 +374,8 @@ interface UseLlamaUpdateCheckOptions {
    * cross-tab update mirrored through the background poll.
    */
   onReloadRequired?: () => void;
+  /** Reads the cached status once on mount; only refresh() asks GitHub. For Settings, which remounts on every open. */
+  passive?: boolean;
 }
 
 export interface LlamaApplyResult {
@@ -361,6 +392,7 @@ export interface LlamaApplyResult {
 export function useLlamaUpdateCheck({
   enabled = true,
   onReloadRequired,
+  passive = false,
 }: UseLlamaUpdateCheckOptions = {}) {
   const [status, setStatus] = useState<LlamaUpdateStatus | null>(null);
   const [visible, setVisible] = useState(false);
@@ -394,7 +426,9 @@ export function useLlamaUpdateCheck({
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
     snoozeTimer.current = null;
     const suppression = suppressionRef.current;
-    if (!activeRef.current || suppression?.kind !== "snoozed") return;
+    if (passive || !activeRef.current || suppression?.kind !== "snoozed") {
+      return;
+    }
     const remaining = suppression.until - Date.now();
     if (remaining <= 0) return;
     snoozeTimer.current = setTimeout(() => {
@@ -403,7 +437,7 @@ export function useLlamaUpdateCheck({
         if (activeRef.current) surfaceRef.current(next);
       });
     }, remaining);
-  }, [readStatus]);
+  }, [passive, readStatus]);
 
   const clearSuppression = useCallback(() => {
     if (!suppressionRef.current) return;
@@ -420,7 +454,8 @@ export function useLlamaUpdateCheck({
       );
       const suppression = suppressionRef.current;
       const suppressed =
-        suppression?.offerKey === offerKey(next) &&
+        suppression != null &&
+        offerKeyMatches(suppression.offerKey, next) &&
         (suppression.kind === "dismissed" || suppression.until > Date.now());
       setApplying(presentation.applying);
       setVisible(presentation.visible && (presentation.running || !suppressed));
@@ -575,17 +610,19 @@ export function useLlamaUpdateCheck({
     if (statusRef.current) presentStatus(statusRef.current);
     else armSnoozeTimer();
 
-    const firstTimer = setTimeout(() => {
-      readStatus(true).then((s) => {
+    const check = (forceRefresh: boolean) => () => {
+      readStatus(forceRefresh).then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
-    }, FIRST_CHECK_DELAY_MS);
-
-    const reminder = setInterval(() => {
-      readStatus(true).then((s) => {
-        if (!canceled) surfaceIfAvailable(s);
-      });
-    }, REMINDER_INTERVAL_MS);
+    };
+    let firstTimer: ReturnType<typeof setTimeout> | undefined;
+    let reminder: ReturnType<typeof setInterval> | undefined;
+    if (passive) {
+      check(false)();
+    } else {
+      firstTimer = setTimeout(check(true), FIRST_CHECK_DELAY_MS);
+      reminder = setInterval(check(true), REMINDER_INTERVAL_MS);
+    }
 
     return () => {
       canceled = true;
@@ -600,6 +637,7 @@ export function useLlamaUpdateCheck({
     };
   }, [
     enabled,
+    passive,
     readStatus,
     surfaceIfAvailable,
     clearPollTimer,
@@ -634,7 +672,7 @@ export function useLlamaUpdateCheck({
         event.newValue &&
         event.newValue !== reloadNotifiedForRef.current
       ) {
-        readStatus(true).then(surfaceIfAvailable);
+        readStatus(!passive).then(surfaceIfAvailable);
       }
     };
     window.addEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
@@ -644,7 +682,14 @@ export function useLlamaUpdateCheck({
       window.removeEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
       window.removeEventListener("storage", onStorage);
     };
-  }, [enabled, readStatus, surfaceIfAvailable, presentStatus, armSnoozeTimer]);
+  }, [
+    enabled,
+    passive,
+    readStatus,
+    surfaceIfAvailable,
+    presentStatus,
+    armSnoozeTimer,
+  ]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -759,11 +804,18 @@ export function useLlamaUpdateCheck({
     );
   }, [applying, startJobPoll, notifyReloadIfNeeded, clearSuppression]);
 
+  const refresh = useCallback(async (): Promise<LlamaUpdateStatus | null> => {
+    const next = await readStatus(true);
+    if (activeRef.current) surfaceIfAvailable(next);
+    return next;
+  }, [readStatus, surfaceIfAvailable]);
+
   return {
     status: enabled ? status : null,
     visible: enabled && visible,
     applying: enabled && applying,
     apply,
+    refresh,
     dismiss,
     undoDismiss,
     snooze,

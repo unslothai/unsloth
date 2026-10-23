@@ -269,6 +269,15 @@ export const useKeyboardShortcutsStore = create<KeyboardShortcutsState>(
   }),
 );
 
+// Else this tab's next edit writes its stale copy over another tab's. A null key is localStorage.clear().
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === STORAGE_KEY || event.key === null) {
+      useKeyboardShortcutsStore.setState({ overrides: loadOverrides() });
+    }
+  });
+}
+
 /** Binding in force right now, for non-React callers (keydown handlers). */
 export function currentBinding(
   id: ShortcutId,

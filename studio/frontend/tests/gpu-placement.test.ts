@@ -13,7 +13,6 @@ import {
   shouldPinDiffusionPlacement,
 } from "../src/features/chat/lib/gpu-placement.ts";
 
-// The Send-time snapshot: Manual with 12 of another chat GGUF's layers on GPU.
 const shared = { gpuMemoryMode: "manual" as const, gpuLayers: 12 };
 
 test("a Vulkan CPU fallback does not replace the standing GPU intent", () => {
@@ -25,7 +24,6 @@ test("a Vulkan CPU fallback does not replace the standing GPU intent", () => {
 });
 
 test("a diffusion pane never inherits another model's layer split", () => {
-  // An unremembered pane carries neither key, so `??` would fall through to shared.
   assert.deepEqual(resolveComparePlacement({}, shared, true), {
     gpuMemoryMode: "auto",
     gpuLayers: GPU_LAYERS_AUTO,
@@ -72,11 +70,6 @@ test("an own value wins over the snapshot for a chat GGUF too", () => {
   );
 });
 
-// ── an unclassified GGUF must not inherit the split either ──
-// An undownloaded GGUF with no "DiffusionGemma" in its name comes back
-// is_diffusion=false + diffusion_unknown=true; /load may then read a diffusion
-// header and apply whatever split the request carried.
-
 test("an unclassified GGUF pane gets the diffusion-safe placement", () => {
   assert.equal(shouldPinDiffusionPlacement(true, false, true), true);
   assert.deepEqual(
@@ -101,7 +94,6 @@ test("an unclassified GGUF pane cannot inherit a CPU-masking zero", () => {
 });
 
 test("a CLASSIFIED ordinary GGUF still inherits the snapshot", () => {
-  // The point of the tri-state: the common path keeps its existing inheritance.
   assert.equal(shouldPinDiffusionPlacement(true, false, false), false);
   assert.deepEqual(
     resolveComparePlacement(
@@ -119,7 +111,6 @@ test("a confirmed diffusion GGUF is pinned however it was classified", () => {
 });
 
 test("a non-GGUF pane keeps inheriting the snapshot", () => {
-  // It sends no placement at all, so an unknown flag must not flip it to Auto.
   assert.equal(shouldPinDiffusionPlacement(false, undefined, false), false);
   assert.equal(shouldPinDiffusionPlacement(false, undefined, true), false);
 });
@@ -134,11 +125,6 @@ test("an own split still wins for an unclassified GGUF", () => {
     { gpuMemoryMode: "manual", gpuLayers: 6 },
   );
 });
-
-// -- the config-picker path must hand on "unknown", not a definite false --
-// onRun passes the probe answer into the selection, which becomes
-// sel.isDiffusion in the compare flow. A definite false there skips the pane's
-// re-probe, so the unknown state has to survive this hop.
 
 test("an inconclusive staged probe stays unknown", () => {
   assert.equal(
@@ -183,7 +169,6 @@ test("a pending probe is unknown, not ordinary", () => {
 });
 
 test("the unknown verdict re-probes and reaches diffusion-safe placement", () => {
-  // End to end: unknown -> undefined -> the compare preflight re-probes.
   const handedOn = resolveStagedDiffusionClassification(undefined, {
     isDiffusion: false,
     diffusionUnknown: true,
@@ -195,12 +180,6 @@ test("the unknown verdict re-probes and reaches diffusion-safe placement", () =>
   );
 });
 
-// -- a dropped split must survive a browser refresh --
-// A shim without --ngl runs Auto and the backend keeps the ask in
-// diffusion_requested_ngl. A refresh starts the store at Auto, so the response
-// has to carry it back or the next Apply sends manual/-1 and the post-upgrade
-// retry has nothing to apply.
-
 test("an auto diffusion response recovers the standing ask", () => {
   assert.equal(recoverDroppedDiffusionSplit(true, "auto", 20), 20);
 });
@@ -210,7 +189,6 @@ test("a zero-layer ask is recovered, not treated as absent", () => {
 });
 
 test("an applied manual split is authoritative, so nothing is recovered", () => {
-  // mode "manual" means the shim honoured the split: gpu_layers is the truth.
   assert.equal(recoverDroppedDiffusionSplit(true, "manual", 20), null);
 });
 
@@ -225,6 +203,5 @@ test("a non-diffusion response never recovers a split", () => {
 });
 
 test("an older backend without the field leaves the response unchanged", () => {
-  // Absent field -> undefined -> nothing recovered.
   assert.equal(recoverDroppedDiffusionSplit(true, "auto", undefined), null);
 });

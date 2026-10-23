@@ -25,6 +25,7 @@ parser.add_argument("--before-url")
 parser.add_argument("--out", type = Path, default = Path("work/project-folders-review"))
 ARGS = parser.parse_args()
 OUT = ARGS.out.resolve()
+MANAGED_FOLDER = "Unsloth-managed folder"  # working-folder-picker.tsx with no folder set
 
 
 async def scene(
@@ -171,17 +172,13 @@ async def scene(
                 await page.wait_for_function("typeof window.__resolvePick === 'function'")
                 await page.evaluate("window.__resolvePick(null)")
             if cancel or pending:
-                await expect(
-                    dialog.get_by_text("Studio-managed folder", exact = True)
-                ).to_be_visible()
+                await expect(dialog.get_by_text(MANAGED_FOLDER, exact = True)).to_be_visible()
                 await expect(choose).to_be_enabled()
             else:
                 await expect(dialog.get_by_text("Existing project", exact = True)).to_be_visible()
             if reset:
                 await dialog.get_by_role("button", name = "Use managed folder", exact = True).click()
-                await expect(
-                    dialog.get_by_text("Studio-managed folder", exact = True)
-                ).to_be_visible()
+                await expect(dialog.get_by_text(MANAGED_FOLDER, exact = True)).to_be_visible()
             if narrow:
                 assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             await page.screenshot(path = str(OUT / f"{label}-selected.png"), animations = "disabled")
@@ -269,14 +266,10 @@ async def scene(
                     dialog.get_by_text("/review/alternate-project", exact = True)
                 ).to_be_visible()
                 await dialog.get_by_role("button", name = "Use managed folder", exact = True).click()
-                await expect(
-                    dialog.get_by_text("Studio-managed folder", exact = True)
-                ).to_be_visible()
+                await expect(dialog.get_by_text(MANAGED_FOLDER, exact = True)).to_be_visible()
                 await dialog.get_by_role("button", name = "Cancel", exact = True).click()
                 await page.get_by_role("button", name = "Edit project", exact = True).click()
-                await expect(
-                    dialog.get_by_text("Studio-managed folder", exact = True)
-                ).to_be_visible()
+                await expect(dialog.get_by_text(MANAGED_FOLDER, exact = True)).to_be_visible()
                 assert [r["method"] for r in folder_requests] == ["PUT", "PUT", "DELETE"]
         else:
             if mode in ("unsupported", "guest"):

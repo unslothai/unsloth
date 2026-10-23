@@ -254,7 +254,8 @@ def test_list_training_runs_offloads_summary_batch(monkeypatch):
     )
 
     assert [summary.id for summary in response.runs] == ["b", "a", "c"]
-    assert offloads == [(training_history._summaries_from_rows, (rows, False))]
+    assert offloads[-1] == (training_history._summaries_from_rows, (rows, False))
+    assert len(offloads) == 3
 
 
 def _delete(
@@ -386,12 +387,7 @@ def test_delete_with_missing_shared_dir_still_deletes_row(monkeypatch, tmp_path)
 
 
 def test_a_failed_purge_is_reported_and_puts_the_directory_back(monkeypatch, tmp_path):
-    """A purge that fails must not report the artifacts as deleted.
-
-    The staged name is hidden and randomized, so claiming success would leave every byte on
-    disk under a name the UI never shows and no retry can rediscover -- the run row is gone by
-    then, so nothing points at it any more.
-    """
+    """A failed purge must be reported and the directory restored, since its staged name is hidden."""
     outputs, run_dir = _shared_setup_4(tmp_path)
 
     monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
@@ -673,7 +669,6 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
     assert response.artifacts_deleted is True
     assert deleted_runs == ["run-1"]
-    # One offload, not two: nothing was staged here, so there is no purge phase.
     assert len(calls) == 1
 
 
@@ -794,3 +789,37 @@ def test_shared_guard_compares_canonical_paths(monkeypatch, tmp_path):
     )
 
     assert training_history._output_dir_shared(str(run_dir), "run-1") is True
+
+
+def test_training_run_detail_reads_the_db_off_the_event_loop(monkeypatch):
+    offloaded: list[object] = []
+    row = _run_row(id = "a", output_dir = "/tmp/a")
+
+    async def record_offload(function, *args):
+        offloaded.append(function)
+        return function(*args)
+
+    def get_run(run_id):
+        return dict(row)
+
+    def get_run_metrics(run_id):
+        return {}
+
+    def sharing():
+        return False
+
+    monkeypatch.setattr(training_history.asyncio, "to_thread", record_offload)
+    monkeypatch.setattr(training_history, "get_run", get_run)
+    monkeypatch.setattr(training_history, "get_run_metrics", get_run_metrics)
+    monkeypatch.setattr(training_history, "get_preview_sharing_enabled", sharing)
+    monkeypatch.setattr(
+        training_history, "can_resume_run", lambda run, *, resource_cache = None: False
+    )
+    monkeypatch.setattr(training_history, "artifacts_present", lambda path: False)
+
+    response = asyncio.run(
+        training_history.get_training_run_detail("a", current_subject = "test-user")
+    )
+
+    assert response.run.id == "a"
+    assert {get_run, get_run_metrics, sharing} <= set(offloaded)

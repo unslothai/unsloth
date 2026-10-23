@@ -12,9 +12,7 @@ const { createNavigationCoalescer } =
 type Nav = { to: string; replace?: boolean };
 type Entry = { href: string; key: string };
 
-// A fake router over a history stack: push and replace mint a fresh key, as TanStack history
-// does; `render()` resolves the current entry, as the router's onResolved does. With
-// `blocked`, navigations wait on a blocker before touching history (the Library note save).
+// Fake router: push/replace mint fresh keys like TanStack; `blocked` waits on a blocker.
 function fakeRouter(start = "/chat", { blocked = false } = {}) {
   let n = 0;
   const entry = (href: string): Entry => ({ href, key: `k${n++}` });

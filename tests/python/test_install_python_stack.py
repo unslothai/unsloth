@@ -410,7 +410,7 @@ class TestUvSafePathWindowsNo8dot3:
         assert uvps.uv_safe_path(str(src)) == str(src)
 
     def test_uv_accepts_the_returned_constraint_path(self, tmp_path, monkeypatch):
-        """End to end against the real uv: the spaced path is refused, the returned one is read."""
+        """End to end against the real uv. uv < 0.13 cuts a spaced -c path at the space; 0.13 reads it."""
         import shutil
         import subprocess
         import sys
@@ -435,16 +435,22 @@ class TestUvSafePathWindowsNo8dot3:
                     sys.executable,
                     "-c",
                     constraint,
-                    "pip",
+                    "pytest",  # installed wherever this runs, so the offline plan resolves
                 ],
                 capture_output = True,
                 text = True,
             )
 
-        refused = dry_run(str(src))
-        assert "File not found" in refused.stderr, refused.stderr
-        accepted = dry_run(uvps.uv_safe_path(str(src)))
-        assert "File not found" not in accepted.stderr, accepted.stderr
+        safe = uvps.uv_safe_path(str(src))
+        spaced = dry_run(str(src))
+        if spaced.returncode != 0:
+            assert "File not found" in spaced.stderr, spaced.stderr
+            assert str(src).split(" ")[0] in spaced.stderr, spaced.stderr
+            if " " in uvps.tempfile.gettempdir():
+                pytest.skip("temp dir has a space and no short name: nothing uv < 0.13 can read")
+            assert " " not in safe
+        accepted = dry_run(safe)
+        assert accepted.returncode == 0, accepted.stderr
 
     @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
     def test_real_directory_without_a_short_name(self, tmp_path):

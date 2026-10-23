@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 and HunyuanImage 2.1 original-layout single files (the ComfyUI ``diffusion_models`` files).
-
-diffusers ships both transformers without a single-file converter, so every ComfyUI file of either
-family failed before this with "has no single-file converter" (the ComfyUI int8 / fp8 loader) or
-"FromOriginalModelMixin is currently only compatible with ..." (plain files).
-
-The stubs below are written from the real files' headers by an inverse map kept here, independent of
-the converter's own tables: a tiny diffusers model's weights go out in the original layout and must
-come back bit-identical, under exactly the model's keys and shapes. The ComfyUI int8 loader is then
-run on a real-format int8 file of the same tiny model, which proves the converter only moves whole
-rows (that loader refuses anything else) and that the codes and scales survive exactly.
-"""
+"""diffusers has no single-file converter for Krea 2 or HunyuanImage 2.1 ComfyUI files."""
 
 from __future__ import annotations
 
@@ -468,12 +457,52 @@ def test_comfy_int8_krea2_file_loads_with_codes_exact(tmp_path, monkeypatch):
     assert loaded._unsloth_comfy_quant["dequantized"] == len(expected)
 
 
+@pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
+def test_plain_fp8_krea2_file_keeps_its_linears_fp8_and_widens_exactly(tmp_path, monkeypatch, fmt):
+    """A plain (unscaled) fp8 file: with fp8_storage every Linear weight stays 1 byte per element and the forward
+    rebuilds exactly the bf16 weight the load-time cast held (fp8 values are exact in bf16), so outputs match."""
+    cls = _class("Krea2Transformer2DModel")
+    model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
+    fp8 = getattr(torch, fmt)
+    tensors = {}
+    for k, v in krea2_original(model.state_dict()).items():
+        tensors[k] = (v.to(fp8) if v.dim() == 2 else v.to(torch.bfloat16)).contiguous()
+    path = tmp_path / "krea2_tiny_fp8.safetensors"
+    safetensors_torch.save_file(tensors, str(path))
+    monkeypatch.setattr(cls, "load_config", classmethod(lambda c, *a, **k: dict(KREA2_CFG)))
+    kwargs = {
+        "torch_dtype": torch.bfloat16,
+        "config": "krea/Krea-2-Turbo",
+        "subfolder": "transformer",
+    }
+    widened = conv.load_original_layout_transformer(cls, str(path), kwargs)
+    stored = conv.load_original_layout_transformer(cls, str(path), kwargs, fp8_storage = True)
+    linears = [n for n, m in widened.named_modules() if isinstance(m, torch.nn.Linear)]
+    assert linears
+    keep = cls._keep_in_fp32_modules or []
+    count = 0
+    for name in linears:
+        dense = widened.get_submodule(name)
+        layer = stored.get_submodule(name)
+        if dense.weight.dtype is not torch.bfloat16 or any(m in name.split(".") for m in keep):
+            assert type(layer) is torch.nn.Linear, name
+            continue
+        count += 1
+        assert layer.weight_q.dtype is torch.uint8 and layer.fp8_format == fmt, name
+        assert torch.equal(layer.weight, dense.weight), name
+        x = torch.randn(2, 5, layer.in_features, dtype = torch.bfloat16)
+        assert torch.equal(layer(x), dense(x)), name
+    assert count
+    assert stored._unsloth_fp8_stored == count
+    assert not getattr(widened, "_unsloth_fp8_stored", 0)
+    wide_bytes = sum(t.numel() * t.element_size() for t in widened.state_dict().values())
+    stored_bytes = sum(t.numel() * t.element_size() for t in stored.state_dict().values())
+    assert stored_bytes < 0.6 * wide_bytes
+
+
 @pytest.mark.parametrize("prefix", ["", "model.model.", "diffusion_model."])
 def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch, prefix):
-    """A plain bf16 ComfyUI file through Studio's loader (used while diffusers gives Krea 2 no
-    from_single_file): same tensors as the diffusers weights, the _keep_in_fp32_modules norms in float32
-    as from_pretrained leaves them, strict on keys. Every container prefix, including the two diffusers
-    0.41's own Krea 2 converter does not strip."""
+    """Plain bf16 ComfyUI file loads strictly, with _keep_in_fp32_modules norms kept in float32."""
     cls = _class("Krea2Transformer2DModel")
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
     path = tmp_path / "krea2_tiny_bf16.safetensors"

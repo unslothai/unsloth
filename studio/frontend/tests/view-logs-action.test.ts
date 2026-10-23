@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The "View logs" route a failure offers, and the request that carries it. */
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -57,11 +55,10 @@ test("the action opens Logs on the family that failed", () => {
   });
 
   const action = viewLogsAction("llama-server");
-  // The owner gets one; the non-owner case has its own test below.
   assert.ok(action, "an owner must be offered the action");
   assert.equal(action.label, "t(settings.debugging.viewLogs)");
   assert.deepEqual(translated, ["settings.debugging.viewLogs"]);
-  // The key has to exist in the shipped catalogue, or the label renders as the raw key.
+  // The key must exist in the shipped catalogue or the raw key renders.
   const shipped = "settings.debugging.viewLogs"
     .split(".")
     .reduce<unknown>(
@@ -96,7 +93,6 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
     loadFailureLogFamily(true, true, RUNNER_LOG),
     "diffusion-server",
   );
-  // A Transformers or MLX load has no runner at all.
   for (const notGguf of [false, undefined] as const) {
     for (const diffusion of [true, false, undefined] as const) {
       assert.equal(
@@ -172,7 +168,7 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
     "@/features/auth/account-session": { isAccountOwner: () => true },
   });
 
-  // The wording llama_cpp.py appends, and treats as a diagnostics marker.
+  // The wording llama_cpp.py appends and treats as a diagnostics marker.
   const diagnostic =
     "llama-server failed to start\n\nllama-server output:\n  ggml_abort\n\n" +
     "Full log: /home/u/.unsloth/studio/logs/llama-server/llama-1765000000-port-8080.log";
@@ -188,7 +184,6 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
   assert.ok(pathAction);
   pathAction.onClick();
   assert.equal(store.getState().logSourcePathRequested, path);
-  // Cleared with the family, so a later visit cannot land on a stale file.
   store.getState().consumeLogFamilyRequest();
   assert.equal(store.getState().logSourcePathRequested, null);
 });
@@ -199,7 +194,6 @@ test("the Logs panel clears the request once it has consumed it", () => {
   assert.equal(store.getState().logFamilyRequested, "server");
   store.getState().consumeLogFamilyRequest();
   assert.equal(store.getState().logFamilyRequested, null);
-  // Still on the tab: consuming the request must not close or navigate the dialog.
   assert.equal(store.getState().activeTab, "debugging");
   assert.equal(store.getState().open, true);
 });
@@ -232,7 +226,6 @@ test("an account that cannot open Logs is offered no action at all", () => {
     assert.equal(viewLogsAction(family), undefined, family);
     assert.equal(viewLogsAction(family, "/some/log.log"), undefined, family);
   }
-  // And nothing was requested as a side effect of asking.
   assert.equal(store.getState().logFamilyRequested, null);
   assert.equal(store.getState().open, false);
 });
@@ -243,11 +236,9 @@ test("an older in-flight refresh does not consume a newer request", async () => 
   );
   reset();
 
-  // What the older fetch captured: nothing pending.
   const capturedByOlderFetch = pendingLogRequestKey(store.getState());
   assert.equal(capturedByOlderFetch, NO_PENDING_LOG_REQUEST);
 
-  // The click lands while that fetch is still out.
   store.getState().openLogs("llama-server", "/logs/llama-failed.log");
   const nowPending = pendingLogRequestKey(store.getState());
   assert.notEqual(
@@ -280,7 +271,6 @@ test("an older in-flight refresh does not consume a newer request", async () => 
     "pendingLogRequestKey(dialog) === requestedFor",
     "if (fromFailure && stillTheSameRequest)",
     "if (fromFailure && !stillTheSameRequest) return;",
-    // An older response (e.g. a 404 reselect) never overrides a newer selection.
     "const seq = ++sourceFetchSeqRef.current;",
     "appliedSourceFetchRef.current = seq;",
   ]) {
@@ -312,7 +302,6 @@ test("only a generation failure the server logged offers its log", () => {
     assert.equal(store.getState().logFamilyRequested, "server");
     reset();
   }
-  // Client-input refusals are answered with their own text and never logged.
   assert.equal(
     generationFailureLogsAction("negative_prompt is not supported by this family."),
     undefined,
