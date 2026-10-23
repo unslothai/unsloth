@@ -35,7 +35,12 @@ def _reference(x, s, dtype):
     return x.to(dtype) * s.to(dtype)
 
 
-def _weight(m, n, scale_dtype = torch.float32, seed = 0):
+def _weight(
+    m,
+    n,
+    scale_dtype = torch.float32,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     w = torch.randn(m, n, device = "cuda", generator = g)
     w = w * torch.logspace(-6, 2, m, device = "cuda")[:, None]
