@@ -1327,3 +1327,135 @@ def test_a_failed_pass_after_the_base_still_kicks_the_deferred_compile(monkeypat
     with pytest.raises(RuntimeError, match = "base failed"):
         hires.run_hires(_Backend(), base_fails, params, kw)
     assert kicks == []  # nothing was recorded, as a failed plain render
+
+
+@pytest.fixture(scope = "module")
+def tiny_sdxl_path():
+    """Resolved at module scope, before the per-test empty hub cache and the outbound-network block apply."""
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+    pytest.importorskip("accelerate")
+    import sys
+    from pathlib import Path
+
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from conftest import allow_outbound
+    from huggingface_hub import snapshot_download
+
+    repo = "hf-internal-testing/tiny-stable-diffusion-xl-pipe"
+    try:
+        return snapshot_download(repo, local_files_only = True)
+    except Exception:  # noqa: BLE001 - not cached yet
+        try:
+            with allow_outbound():
+                return snapshot_download(repo)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"tiny pipeline not reachable: {exc}")
+
+
+def _fresh_tiny_sdxl(path):
+    import diffusers
+    import torch
+
+    # A fresh copy: offload hooks stay on the pipe, so the shared module fixture must not see them.
+    return diffusers.StableDiffusionXLPipeline.from_pretrained(path, torch_dtype = torch.float32)
+
+
+def _base_image():
+    from PIL import Image
+    return Image.new("RGB", (64, 64), (120, 30, 200))
+
+
+def test_latent_encode_runs_where_the_offload_hook_computes(tiny_sdxl_path):
+    """Sequential-style offload leaves the VAE weights on ``meta`` and computes on the hook's device: the input must
+    go to that device, not to the weights' (fail-before: the input lands on ``meta``)."""
+    import torch
+    from accelerate import cpu_offload
+
+    pipe = _fresh_tiny_sdxl(tiny_sdxl_path)
+    f = pipe.vae_scale_factor
+    resident = hires.encode_upscaled_latents(pipe, _base_image(), (96, 96))
+    cpu_offload(pipe.vae, execution_device = torch.device("cpu"))
+    assert next(pipe.vae.parameters()).device.type == "meta"
+    lat = hires.encode_upscaled_latents(pipe, _base_image(), (96, 96))
+    assert lat.device.type == "cpu" and lat.shape == (1, 4, 96 // f, 96 // f)
+    assert torch.allclose(lat, resident, atol = 1e-5)
+
+
+def test_vae_execution_device_order():
+    import torch
+
+    cpu_param = torch.nn.Parameter(torch.zeros(1))
+    meta_param = torch.nn.Parameter(torch.zeros(1, device = "meta"))
+    hooked = types.SimpleNamespace(_hf_hook = types.SimpleNamespace(execution_device = 0))
+    bare = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(_execution_device = torch.device("cuda", 1))
+    # A whole-module offload hook names the card the weights move to.
+    assert hires._vae_execution_device(pipe, hooked, cpu_param) == torch.device("cuda", 0)
+    # Weights on the host or on meta with no hook of their own: the pipeline's execution device.
+    assert hires._vae_execution_device(pipe, bare, cpu_param) == torch.device("cuda", 1)
+    assert hires._vae_execution_device(pipe, bare, meta_param) == torch.device("cuda", 1)
+    # A duck-typed pipe with no execution device keeps the weights' device.
+    assert hires._vae_execution_device(types.SimpleNamespace(), bare, cpu_param) == torch.device(
+        "cpu"
+    )
+
+
+def _cuda_or_skip():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    return torch
+
+
+@pytest.mark.parametrize("offload", ["model", "sequential"])
+def test_latent_encode_under_cpu_offload_on_cuda(tiny_sdxl_path, offload):
+    """Studio loads SDXL with enable_model_cpu_offload when it does not fit (fail-before: RuntimeError, input on
+    the CPU while the hook moved the VAE to the card)."""
+    torch = _cuda_or_skip()
+    pipe = _fresh_tiny_sdxl(tiny_sdxl_path)
+    pipe.to("cuda")
+    resident = hires.encode_upscaled_latents(pipe, _base_image(), (96, 96))
+    pipe.to("cpu")
+    if offload == "model":
+        pipe.enable_model_cpu_offload(device = "cuda")
+    else:
+        pipe.enable_sequential_cpu_offload(device = "cuda")
+    assert next(pipe.vae.parameters()).device.type in ("cpu", "meta")
+    lat = hires.encode_upscaled_latents(pipe, _base_image(), (96, 96))
+    assert lat.device.type == "cuda"
+    assert torch.allclose(lat, resident, atol = 1e-4)
+
+
+def test_tiny_sdxl_hires_latent_under_model_offload_on_cuda(tiny_sdxl_path):
+    """The default SDXL Hires fix (latent upscaler) end to end on a whole-module offloaded load."""
+    _cuda_or_skip()
+    from core.inference.diffusion import DiffusionBackend, _LoadState
+
+    pipe = _fresh_tiny_sdxl(tiny_sdxl_path)
+    pipe.enable_model_cpu_offload(device = "cuda")
+    b = DiffusionBackend()
+    b._state = _LoadState(
+        pipe = pipe,
+        family = _fam("sdxl"),
+        repo_id = "tiny",
+        base_repo = "tiny",
+        device = "cuda",
+        dtype = "float32",
+        cpu_offload = True,
+        offload_policy = "model",
+    )
+    out = b.generate(
+        prompt = "a cat",
+        width = 256,
+        height = 256,
+        steps = 2,
+        guidance = 5.0,
+        seed = 7,
+        live_preview = False,
+        hires = hires.HiresParams(scale = 1.5, denoise = 0.5, steps = 2, upscaler = "latent"),
+    )
+    assert out["images"][0].size == (384, 384)
+    assert out["hires"]["upscaler"] == "latent" and out["hires"]["refine_steps"] == 2
