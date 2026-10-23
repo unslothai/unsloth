@@ -104,6 +104,7 @@ class FakeRpc:
     def __init__(self, mode: str, drop_after: int):
         self.mode, self.drop_after = mode, drop_after
         self.connections = self.open = self.received = self.sent = self.port = 0
+        self.seen = bytearray()  # first bytes of every connection, to spot a forwarded payload
         self.server = None
 
     async def start(self):
@@ -123,6 +124,8 @@ class FakeRpc:
                     self.sent += len(chunk)
             while data := await reader.read(256 * 1024):
                 self.received += len(data)
+                if len(self.seen) < 1 << 20:
+                    self.seen += data[:4096]
                 if self.mode == "drop" and self.received >= self.drop_after:
                     writer.transport.abort()
                     return
@@ -420,8 +423,11 @@ def test_a_client_reconnecting_while_its_last_session_drains_is_served(make_link
 )
 def test_an_unauthorized_peer_is_refused(make_link, kwargs):
     link = make_link(**kwargs)
-    assert _closed(link.connect(b"\x0e" + b"\0" * 15))
-    assert link.target.connections == 0
+    # A random marker, not a connection count: a stray client of an earlier test can land on the reused port.
+    marker = b"\x0e" + os.urandom(15)
+    assert _closed(link.connect(marker))
+    time.sleep(0.2)
+    assert marker not in link.target.seen
     if "source_filter" in kwargs:
         assert link.agent.stats["rejected"] >= 1
 
