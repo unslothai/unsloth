@@ -467,6 +467,20 @@ def test_a_lease_refuses_other_loads_and_training_but_not_its_holder(no_lease, m
     assert arb.lease_refusal() is None  # released
 
 
+def test_a_refused_load_keeps_the_load_generation(no_lease, monkeypatch):
+    monkeypatch.setitem(arb._EVICTORS, arb.CHAT, lambda: None)
+    arb.acquire_for(arb.CHAT, lambda: None)
+    before = arb.load_count()
+
+    def refuse():
+        raise RuntimeError("a load is already in progress")
+
+    with pytest.raises(RuntimeError):
+        arb.acquire_for(arb.CHAT, refuse)
+    # Flows keeps the loaded model's settings while the generation is unchanged.
+    assert arb.load_count() == before
+
+
 def test_while_leased_other_callers_get_409_and_plain_reasserts_pass(no_lease, monkeypatch):
     monkeypatch.setitem(arb._EVICTORS, arb.CHAT, lambda: None)
     monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: None)
