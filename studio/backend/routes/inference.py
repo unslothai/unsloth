@@ -30424,10 +30424,13 @@ def _fit_external_context(
         estimate_messages_tokens_conservative,
         messages_without_unpriced_media,
         prompt_budget,
+        retrieval_budget,
     )
     from core.inference.llama_cpp import (
+        _archive_and_recall,
         _boundary_metadata,
         _compaction_fit_kwargs,
+        _conversation_recall_reserve,
         _fit_with_instruction_pins,
         _keeps_compaction_boundary,
         _records_boundary,
@@ -30468,8 +30471,7 @@ def _fit_external_context(
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    # Evicted turns are archived below, but nothing on this path recalls them on the turn that
-    # resets, so a checkpoint reset may not start and the fit stays rolling.
+    # Recall below is inline and rolling (every evicting fit), so a checkpoint reset may not start.
     sticky, sticky_is_checkpoint = _sticky_compaction_state(
         thread_id,
         messages,
@@ -30484,38 +30486,36 @@ def _fit_external_context(
         count_tokens = _count,
         keeps_boundary = _keeps_compaction_boundary(thread_id),
         recall_offered = False,
+        reserve_tokens = _conversation_recall_reserve(thread_id),
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
         estimate_message = estimate_message_tokens_without_unpriced_media,
         **_compaction_fit_kwargs(policy, ratio),
     )
+    if truncation:
+        # The catalogue is chosen before this fit, so the turn that first evicts has no
+        # search_conversation: recall inline, as the local plain path does, or a question about
+        # an evicted attachment on that turn gets "I have no record of it".
+        recall = _archive_and_recall(
+            fitted,
+            messages,
+            branch_messages = messages,
+            thread_id = str(thread_id) if thread_id else None,
+            style = "inline",
+            recall_done = not truncation.get("fits", True),
+            recall_budget_tokens = retrieval_budget(
+                context_length,
+                max_tokens,
+                truncation.get("prompt_tokens_after") or 0,
+                reply_returns = bool(tools),
+            ),
+            count_tokens = _count,
+        )
+        fitted = recall["conversation"]
+        truncation = {**truncation, **recall["counts"]}
     if truncation and _records_boundary(truncation):
         truncation = {**truncation, **_boundary_metadata(fitted, messages, ratio)}
-    if truncation and truncation.get("dropped_messages"):
-        _archive_external_eviction(thread_id, messages, fitted)
     return fitted, truncation, max_tokens
-
-
-def _archive_external_eviction(thread_id, before: list[dict], fitted: list[dict]) -> None:
-    """Index the turns an external fit dropped into the thread's conversation archive.
-
-    The local paths archive what their fit evicts, which is what puts search_conversation and
-    the compaction nudge in front of the model on later turns. Without this an API-connected
-    chat lost every evicted turn outright, attached documents included, and the model was never
-    told the conversation had been compacted. Never raises: a chat that cannot archive still
-    gets its reply.
-    """
-    if not thread_id:
-        return
-    try:
-        from core.inference.context_window import evicted_messages
-        from core.rag import conversation_archive
-
-        gone = evicted_messages(before, fitted)
-        if gone:
-            conversation_archive.archive_turns(str(thread_id), gone, live = fitted, branch = before)
-    except Exception as exc:  # noqa: BLE001 -- archiving is best-effort
-        logger.warning("Could not archive turns evicted for an external provider: %s", exc)
 
 
 def _is_compaction_block_sse(line: str) -> bool:

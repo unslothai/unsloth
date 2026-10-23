@@ -83,8 +83,20 @@ def test_an_external_fit_archives_the_turns_it_evicts(archive_ready):
     fitted, truncation, _ = ri._fit_external_context(messages, _payload(THREAD))
 
     assert truncation and truncation["dropped_messages"] > 0
-    assert all(_DOCUMENT not in str(m.get("content")) for m in fitted)
+    assert all(_DOCUMENT not in str(m.get("content")) for m in fitted[:-1])
     assert conversation_archive.has_archive(THREAD)
+
+
+def test_the_evicting_fit_recalls_the_document_into_the_latest_turn(archive_ready):
+    # The catalogue is fixed before the fit, so on this turn the model has no search tool.
+    messages = _chat()
+    _persist(THREAD, messages)
+
+    fitted, truncation, _ = ri._fit_external_context(messages, _payload(THREAD))
+
+    assert truncation["recalled_chunks"] > 0
+    assert "055 794 3321" in str(fitted[-1]["content"])
+    assert "Was there a phone number on the report?" in str(fitted[-1]["content"])
 
 
 def test_an_attached_document_from_an_evicted_turn_is_searchable(archive_ready):
@@ -137,6 +149,7 @@ def test_an_archive_failure_still_returns_the_fitted_chat(archive_ready, monkeyp
 
     assert truncation and truncation["dropped_messages"] > 0
     assert fitted[-1]["content"] == "Was there a phone number on the report?"
+    assert "recalled_chunks" not in truncation
 
 
 def test_an_external_tool_chat_with_an_archive_is_told_about_compaction(monkeypatch):
