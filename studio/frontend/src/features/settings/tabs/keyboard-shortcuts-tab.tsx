@@ -303,7 +303,7 @@ export function KeyboardShortcutsTab() {
         aria-label={`${t("settings.keyboardShortcuts.edit")}: ${label}, ${text}`}
         className={cn(
           // ChatGPT's hover: a short pill with room either side, never narrower than it is tall.
-          "inline-flex h-[calc(28px*var(--ui-space-scale,1))] min-w-[calc(28px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-3 text-sm tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          "inline-flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(34px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-[calc(13px*var(--ui-space-scale,1))] text-sm tabular-nums text-muted-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           // A built-in key keeps working with the switch off; only assigned chords dim.
           parsed && !enabled && "opacity-50",
         )}
@@ -412,7 +412,7 @@ export function KeyboardShortcutsTab() {
                     setJustRecorded(null);
                     resetAction(def.id);
                   }}
-                  className="inline-flex size-[calc(28px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
+                  className="inline-flex size-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
                 >
                   <HugeiconsIcon
                     icon={UndoIcon}
