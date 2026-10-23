@@ -115,8 +115,22 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
     if _is_data_asset(value):
         digest = asset_store.parse_ref(value["ref"])
         got = asset_store.read(digest)
-        if got is not None:
-            files[digest] = got
+        if got is None:
+            return value
+        data, mime = got
+        # The inline preview was scrubbed with the document; the full rows need the same treatment.
+        try:
+            parsed = json.loads(data)
+        except (UnicodeDecodeError, ValueError):
+            parsed = None
+        clean = scrub(parsed)
+        if parsed is not None and clean != parsed:
+            data = json.dumps(clean, separators = (",", ":")).encode()
+            digest = hashlib.sha256(data).hexdigest()
+            value = {**value, "ref": f"sha256:{digest}"}
+            if "url" in value:
+                value["url"] = asset_store.url_for(digest)
+        files[digest] = (data, mime)
         return value
     return {k: await _embed(v, read_media, files) for k, v in value.items()}
 

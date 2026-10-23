@@ -163,7 +163,7 @@ def _fresh(name: str, taken: set[str]) -> str:
 def _strings(value: Any) -> list[str]:
     if isinstance(value, str):
         return [s.strip() for s in value.split(",") if s.strip()]
-    return [str(v) for v in (value or []) if str(v).strip()]
+    return [str(v).strip() for v in (value or []) if str(v).strip()]
 
 
 def concat(tables: list[dict]) -> dict:
@@ -375,6 +375,9 @@ def chart(
     # One axis unit only when every plotted column shares it; mixed units are not labelled as one.
     units = {by_id[m].get("unit") for m in y}
     unit = units.pop() if len(units) == 1 else None
+    if by_id[x].get("type") == "number":
+        # Numbers stored as text ("1024") still plot on a numeric axis.
+        xs = [_number(v) if v is not None else None for v in xs]
     return {
         "kind": "chart",
         "type": kind,

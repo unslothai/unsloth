@@ -287,3 +287,13 @@ def test_chart_x_keeps_first_seen_order_on_a_large_table():
     rows = [{"i": i, "v": float(i)} for i in range(50_000)]
     c = T.chart(_t(rows), "i", ["v"], kind = "line", group = None, error = None)
     assert c["x"][:3] == [0, 1, 2] and len(c["x"]) == 50_000
+
+
+def test_chart_numeric_x_stored_as_text_plots_as_numbers():
+    t = T.make_table([{"ctx": "1024", "tps": 10}, {"ctx": "32768", "tps": 8}])
+    c = T.chart(t, "ctx", ["tps"], kind = "line", group = None, error = None)
+    assert c["x"] == [1024, 32768]
+
+
+def test_column_name_lists_ignore_surrounding_spaces():
+    assert T._strings(["score ", " tps"]) == ["score", "tps"]

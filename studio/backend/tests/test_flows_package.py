@@ -267,6 +267,35 @@ async def test_baked_package_carries_a_large_tables_rows():
     assert parsed["baked"]["a"]["table"]["ref"] == f"sha256:{digest}"
 
 
+@run_async
+async def test_baked_large_table_rows_are_scrubbed_before_packaging():
+    secret = "sk-" + "a" * 40
+    full = {
+        "kind": "table",
+        "columns": [{"id": "x"}],
+        "rows": [{"x": 1}, {"x": secret, "api_key": "v"}],
+    }
+    digest, _ = asset_store.store(json.dumps(full).encode(), "application/json")
+    table = {
+        "kind": "table",
+        "columns": [{"id": "x"}],
+        "rows": [],
+        "row_count": 2,
+        "ref": f"sha256:{digest}",
+    }
+    d = doc([node("a", "input.text", value = "x")], baked = {"a": {"table": table}})
+
+    async def read_media(media):
+        raise AssertionError("a table is not gallery media")
+
+    data, _, _ = await package.export_flow(d, "baked", read_media)
+    parsed, files, _ = read_package(data)
+    ref = parsed["baked"]["a"]["table"]["ref"]
+    body = files[ref.removeprefix("sha256:")][0]
+    assert secret.encode() not in body and b"api_key" not in body
+    assert json.loads(body)["rows"][0] == {"x": 1}
+
+
 def test_a_json_asset_that_is_not_json_is_refused():
     blob = b"not json"
     name = f"assets/{hashlib.sha256(blob).hexdigest()}.json"
