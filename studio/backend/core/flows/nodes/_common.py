@@ -102,6 +102,19 @@ def strip_think(text: str) -> str:
     return _THINK.sub("", text or "").strip()
 
 
+def visible_so_far(text: str) -> str:
+    """What a streamed reply can show yet: closed think blocks dropped, an open one cut, a half-sent tag held back."""
+    shown = _THINK.sub("", text)
+    lowered = shown.lower()
+    cut = lowered.find("<think>")
+    if cut >= 0:
+        return shown[:cut]
+    for n in range(min(len("<think>") - 1, len(shown)), 0, -1):
+        if "<think>".startswith(lowered[-n:]):
+            return shown[:-n]
+    return shown
+
+
 def first_json(text: str) -> Any:
     """The first JSON object or array in ``text`` (models often wrap JSON in prose or fences)."""
     text = strip_think(text)
@@ -508,7 +521,7 @@ async def llm_text(
             payload = await ctx.call("POST", "/v1/chat/completions", json = body)
         return strip_think(_message_text(payload))
     parts: list[str] = []
-    in_think = False
+    shown = 0
     try:
         with tools_force_disabled():
             async for chunk in flow_caller.stream_sse(ctx.caller, "/v1/chat/completions", body):
@@ -521,13 +534,11 @@ async def llm_text(
                     if not isinstance(piece, str) or not piece:
                         continue
                     parts.append(piece)
-                    # Hide inline thinking from the live preview.
-                    if "<think>" in piece:
-                        in_think = True
-                    if not in_think:
-                        ctx.text_delta(stream_port, piece)
-                    if "</think>" in piece:
-                        in_think = False
+                    # Hide inline thinking from the live preview, even when a tag is split across pieces.
+                    visible = visible_so_far("".join(parts))
+                    if len(visible) > shown:
+                        ctx.text_delta(stream_port, visible[shown:])
+                        shown = len(visible)
     except flow_caller.RouteError as exc:
         raise FlowNodeError(exc.detail, status = exc.status) from None
     return strip_think("".join(parts))
