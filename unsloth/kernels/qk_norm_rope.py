@@ -18,11 +18,12 @@ from .rms_layernorm import (
     _traced_kernel,
     fast_rms_layernorm,
 )
-from .rope_embedding import fast_rope_embedding, _sync_if_split
+from .rope_embedding import fast_rope_embedding, _sync_if_split, DECODE_FUSED_ROPE
 
 __all__ = [
     "fast_qk_norm_rope",
     "QK_NORM_ROPE_ENABLED",
+    "decode_qk_norm_rope",
 ]
 
 QK_NORM_ROPE_ENABLED = os.environ.get("UNSLOTH_FUSED_QKNORM_ROPE", "0") == "1"
@@ -454,4 +455,52 @@ def fast_qk_norm_rope(
         Qo, Ko = _fused_untraced(*args)
     else:
         Qo, Ko, _, _ = torch.ops.unsloth.qk_norm_rope(*args)
+    return Qo.transpose(1, 2), Ko.transpose(1, 2)
+
+
+def decode_qk_norm_rope(q_norm, k_norm, Q, K, cos, sin, position_ids):
+    """Decode q/k norm + RoPE in one launch; returns new [bsz, n_heads, 1, head_dim] Q, K or None.
+    UNSLOTH_DECODE_FUSED_ROPE=0 disables it."""
+    if not DECODE_FUSED_ROPE or torch.compiler.is_compiling():
+        return None
+    Wq, Wk = q_norm.weight, k_norm.weight
+    if Q.device.type != "cuda" or Q.dim() != 4 or K.dim() != 4:
+        return None
+    batch, seq_len, _, head_dim = Q.shape
+    if seq_len != 1 or K.shape[0] != batch or K.shape[1] != 1 or K.shape[3] != head_dim:
+        return None
+    if position_ids is None or position_ids.numel() != batch:
+        return None
+    if torch.is_grad_enabled() and (
+        Q.requires_grad or K.requires_grad or Wq.requires_grad or Wk.requires_grad
+    ):
+        return None
+    cos2, sin2 = cos.squeeze(), sin.squeeze()
+    if (
+        head_dim % 2 != 0
+        or head_dim & (head_dim - 1) != 0
+        or head_dim < 16
+        or head_dim > 1024
+        or cos2.dim() != 2
+        or cos2.shape[-1] != head_dim
+        or sin2.shape != cos2.shape
+        or cos2.stride(-1) != 1
+        or sin2.stride(-1) != 1
+        or Q.stride(-1) != 1
+        or K.stride(-1) != 1
+        or Wq.shape != (head_dim,)
+        or Wk.shape != (head_dim,)
+        # Matches the unfused rounding only when every operand shares Q's dtype.
+        or not (Q.dtype == K.dtype == Wq.dtype == Wk.dtype == cos2.dtype == sin2.dtype)
+        or not (Q.device == K.device == Wq.device == Wk.device == cos2.device == sin2.device)
+    ):
+        return None
+    # The kernel indexes positions densely; an int32 last-column slice keeps its row stride.
+    rope_indices = position_ids.reshape(-1).to(dtype = torch.int32, device = Q.device).contiguous()
+    with torch_gpu_device(Q.device):
+        Qo, Ko, _, _ = _launch_forward(
+            Q, K, Wq.contiguous(), Wk.contiguous(), cos2, sin2, rope_indices,
+            float(_eps(q_norm)), float(_eps(k_norm)), True, _eager_kernel,
+        )  # fmt: skip
+    # No host drain (see decode_rope_inplace).
     return Qo.transpose(1, 2), Ko.transpose(1, 2)

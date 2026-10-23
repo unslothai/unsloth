@@ -4,7 +4,6 @@
 """Model loading and streaming shared by `inference` and `chat`."""
 
 import asyncio
-import itertools
 import json
 import os
 import re
@@ -37,16 +36,12 @@ _MPI_ENV_PAIRS = (
     ("MV2_COMM_WORLD_RANK", "MV2_COMM_WORLD_SIZE"),
 )
 
-# Built lazily; urllib stays function-local to match this module.
-_no_redirect_opener = None
+_openers: dict = {}
 
 
-def urlopen_no_redirect(request, timeout):
-    """urlopen that errors on any redirect: following a 3xx would send a bearer
-    token (or accept an identity proof) to a base we never vetted, letting a port
-    squatter relay a real Unsloth's response."""
-    global _no_redirect_opener
-    if _no_redirect_opener is None:
+def _opener(follow_redirects: bool, loopback: bool):
+    key = (follow_redirects, loopback)
+    if key not in _openers:
         import urllib.error
         import urllib.request
 
@@ -56,8 +51,27 @@ def urlopen_no_redirect(request, timeout):
                     req.full_url, code, f"refusing redirect to {newurl}", headers, fp
                 )
 
-        _no_redirect_opener = urllib.request.build_opener(_NoRedirect)
-    return _no_redirect_opener.open(request, timeout = timeout)
+        # urllib proxies 127.0.0.1 unless no_proxy lists it, leaking the bearer key to http_proxy.
+        handlers = [urllib.request.ProxyHandler({})] if loopback else []
+        if not follow_redirects:
+            handlers.append(_NoRedirect)
+        _openers[key] = urllib.request.build_opener(*handlers)
+    return _openers[key]
+
+
+def urlopen_no_redirect(request, timeout):
+    """urlopen that errors on any redirect: following a 3xx would send a bearer
+    token (or accept an identity proof) to a base we never vetted, letting a port
+    squatter relay a real Unsloth's response."""
+    return _opener(False, is_loopback_url(request.full_url)).open(request, timeout = timeout)
+
+
+def urlopen_local(request, timeout):
+    """urllib.request.urlopen that never sends a loopback request through a proxy."""
+    if not is_loopback_url(request.full_url):
+        import urllib.request
+        return urllib.request.urlopen(request, timeout = timeout)
+    return _opener(True, True).open(request, timeout = timeout)
 
 
 # /api/inference/load and /unload pad their body so a proxy cannot time a slow load out,
@@ -784,28 +798,31 @@ def _recorded_studio_bases(tried: list):
                 yield candidate
 
 
-def find_studio_server(timeout: float = 3.0) -> Optional[str]:
+def _answers_as_studio(base: str, timeout: float) -> bool:
     import urllib.request
+    request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
+    try:
+        with urlopen_local(request, timeout = timeout) as response:
+            # A live port is not Studio: a stranger answering every path would get our key.
+            body = json.loads(response.read(65536).decode() or "{}")
+            return body.get("service") == _STUDIO_SERVICE_MARKER
+    except Exception:
+        return False
 
+
+def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     candidates = _loopback_candidate_bases(base)
-    if not os.environ.get("UNSLOTH_STUDIO_URL"):
-        candidates = itertools.chain(candidates, _recorded_studio_bases(candidates))
     # Try the concrete loopback addresses in order and return the first that answers, so the rest of
     # the flow talks to that exact address.
-    for candidate in candidates:
-        request = urllib.request.Request(
-            f"{candidate}/api/health", headers = {"User-Agent": _USER_AGENT}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout = timeout) as response:
-                # A live port is not Studio: a stranger answering every path would get our key.
-                body = json.loads(response.read(65536).decode() or "{}")
-                if body.get("service") == _STUDIO_SERVICE_MARKER:
-                    return candidate
-        except Exception:
-            continue
-    return None
+    found = next((c for c in candidates if _answers_as_studio(c, timeout)), None)
+    if os.environ.get("UNSLOTH_STUDIO_URL"):
+        return found
+    recorded = list(_recorded_studio_bases(candidates))
+    # Another install may own the default port: prefer the server this install recorded.
+    if found is not None and (not recorded or verify_studio_identity(found, timeout)):
+        return found
+    return next((c for c in recorded if _answers_as_studio(c, timeout)), found)
 
 
 def is_loopback_url(base: str) -> bool:

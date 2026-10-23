@@ -1108,6 +1108,56 @@ def test_write_codex_parent_overlay_refreshes_fallback_copies(tmp_path, monkeypa
     assert (overlay / "history.jsonl").read_text() == "session state\n"
 
 
+def test_write_codex_parent_overlay_shares_a_token_refresh_without_symlinks(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"refresh_token": "rt-1"}')
+    monkeypatch.setenv("CODEX_HOME", str(source))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    overlay = start.write_codex_parent_overlay(tmp_path / "session" / "parent")
+    # Codex rewrites auth.json in place (FileAuthStorage::save) after rotating the refresh token.
+    with open(overlay / "auth.json", "w") as handle:
+        handle.write('{"refresh_token": "rt-2"}')
+    shutil.rmtree(tmp_path / "session")
+    assert (source / "auth.json").read_text() == '{"refresh_token": "rt-2"}'
+
+
+def test_write_codex_parent_overlay_copies_state_dbs_without_symlinks(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    for name in ("state_5.sqlite", "state_5.sqlite-wal", "history.jsonl"):
+        (source / name).write_bytes(b"data")
+    monkeypatch.setenv("CODEX_HOME", str(source))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError(1314, "A required privilege is not held by the client")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    overlay = start.write_codex_parent_overlay(tmp_path / "session" / "parent")
+    for name in ("state_5.sqlite", "state_5.sqlite-wal", "history.jsonl"):
+        assert (overlay / name).read_bytes() == b"data"
+        assert not os.path.samefile(overlay / name, source / name)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "needs symlink privilege")
+@pytest.mark.parametrize("home_exists", [False, True])
+def test_write_codex_parent_overlay_keeps_a_first_login(tmp_path, monkeypatch, home_exists):
+    source = tmp_path / "user-codex"
+    if home_exists:
+        source.mkdir()
+        (source / "config.toml").write_text('model = "gpt-5.5"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source))
+    overlay = start.write_codex_parent_overlay(tmp_path / "session" / "parent")
+    with open(overlay / "auth.json", "w") as handle:
+        handle.write('{"tokens": "chatgpt"}')
+    shutil.rmtree(tmp_path / "session")
+    assert (source / "auth.json").read_text() == '{"tokens": "chatgpt"}'
+
+
 def test_create_directory_junction_uses_windows_mklink(tmp_path, monkeypatch):
     captured = {}
     monkeypatch.setattr(start.os, "name", "nt")
@@ -1547,6 +1597,7 @@ def fake_studio(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: None)
+    monkeypatch.setattr(start, "_node_version", lambda: None)
     monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
     # No `claude` on PATH, so _claude_flags never probes the real binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
@@ -1666,10 +1717,24 @@ def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
-    positions = [index for index, arg in enumerate(command) if arg == "--settings"]
-    assert len(positions) == 2
-    assert command[positions[0] + 1] == forwarded
-    assert Path(command[positions[1] + 1]).name.startswith("settings-")
+    [position] = [index for index, arg in enumerate(command) if arg == "--settings"]
+    settings = json.loads(Path(command[position + 1]).read_text())
+    assert settings["env"]["CLAUDE_CODE_USE_FOUNDRY"] == ""
+    assert settings["env"]["ANTHROPIC_BASE_URL"] == BASE
+
+
+def test_connect_claude_merges_a_forwarded_settings_file(fake_studio, tmp_path):
+    user = tmp_path / "mine.json"
+    user.write_text(json.dumps({"statusLine": {"type": "command"}, "env": {"MY_VAR": "1"}}))
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", f"--settings={user}"])
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert str(user) not in " ".join(command)
+    settings = json.loads(Path(command[command.index("--settings") + 1]).read_text())
+    assert settings["statusLine"] == {"type": "command"}
+    assert settings["env"]["MY_VAR"] == "1"
+    assert settings["availableModels"] == [MODEL["id"]]
+    assert settings["apiKeyHelper"] == ""
 
 
 @pytest.mark.parametrize(
@@ -1694,8 +1759,8 @@ def test_connect_claude_session_settings_precede_subcommand(fake_studio, setting
         for index, arg in enumerate(command)
         if arg == "--settings" or arg.startswith("--settings=")
     ]
-    assert len(settings_positions) == 2
-    assert settings_positions[0] < settings_positions[1] < subcommand
+    assert len(settings_positions) == 1
+    assert settings_positions[0] < subcommand
 
 
 def test_connect_claude_session_settings_precede_forwarded_delimiter(fake_studio):
@@ -1852,7 +1917,7 @@ def test_claude_auto_route_blocks_the_parents_own_file_and_shell_tools(fake_stud
     assert route_gate["matcher"] == "Read|Grep|Glob|Bash|PowerShell|Monitor|NotebookRead|Agent|Task"
     [hook] = route_gate["hooks"]
     assert hook["type"] == "command"
-    assert start._b64_path(plugin / "hooks" / "route_gate.py") in hook["command"]
+    assert hook["args"][-1] == str(plugin / "hooks" / "route_gate.py")
     assert 0 < hook["timeout"] <= 30
     payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "about.txt"}})
     for run in (
@@ -1864,7 +1929,11 @@ def test_claude_auto_route_blocks_the_parents_own_file_and_shell_tools(fake_stud
             timeout = 30,
         ),
         lambda: subprocess.run(
-            hook["command"], input = payload, shell = True, capture_output = True, text = True, timeout = 30
+            [hook["command"], *hook["args"]],
+            input = payload,
+            capture_output = True,
+            text = True,
+            timeout = 30,
         ),
     ):
         denied = run()
@@ -2968,6 +3037,47 @@ def test_resolve_model_without_request_rejects_unloaded_catalog(monkeypatch):
         start._resolve_model(BASE, "sk-test", None)
 
 
+def test_resolve_model_without_request_skips_a_speech_model(monkeypatch, capsys):
+    speech = {"id": "unsloth/orpheus-3b-0.1-ft-GGUF", "task": "text-to-speech"}
+    listing = {"data": [speech, MODEL]}
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: listing)
+    assert start._resolve_model(BASE, "sk-test", None) == MODEL
+
+    listing["data"] = [speech]
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "sk-test", None)
+    assert "cannot serve chat" in capsys.readouterr().err
+
+
+def test_connect_sends_a_running_server_the_users_absolute_path(fake_studio, tmp_path, monkeypatch):
+    (tmp_path / "foo.gguf").write_bytes(b"GGUF")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda b, k, r, l, payload: (
+            fake_studio.state.update(models = [{"id": payload["model_path"]}])
+            or {"status": "loaded", "model": payload["model_path"]}
+        ),
+    )
+    _, _, entry = start._connect(None, "./foo.gguf")
+    assert entry["id"] == str(tmp_path / "foo.gguf")
+
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
+    monkeypatch.setattr(start, "_agent_api_key", lambda *a, **k: "sk-unsloth-saved")
+    _, _, entry = start._connect(None, "./foo.gguf")
+    assert entry["id"] == "./foo.gguf"
+
+
+def test_no_launch_says_why_no_server_was_started(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "unsloth/Qwen3-8B-GGUF"]
+    )
+    assert result.exit_code == 1
+    assert "--no-launch never starts a server" in result.output
+
+
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
     # Remotely the existence probe cannot see server paths, so a case variant must not attach.
     calls = []
@@ -3722,7 +3832,7 @@ def _session_request_body(agent, root, output):
         return config["providers"]["unsloth"]["models"][0].get("samplingParams")
     if agent == "hermes":
         config = yaml.safe_load((home / "config.yaml").read_text())
-        return config["providers"]["unsloth"].get("extra_body")
+        return config["providers"]["unsloth-studio"].get("extra_body")
     if agent == "openclaw":
         config = json.loads((home / "openclaw.json").read_text())
         models = config["agents"]["defaults"].get("models", {})
@@ -4216,6 +4326,7 @@ def test_connect_explicit_gguf_variant_wins_over_suffix(fake_studio):
         ],
     )
     assert result.exit_code == 0, result.output
+    assert "using --gguf-variant UD-Q4_K_XL instead of the :Q8_0" in result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == [
         (
@@ -6767,13 +6878,13 @@ def test_write_hermes_config_fresh(hermes_config):
     yaml = pytest.importorskip("yaml")
     start.write_hermes_config(BASE, MODEL, hermes_config)
     config = yaml.safe_load(hermes_config.read_text())
-    assert config["model"]["provider"] == "custom:unsloth"
+    assert config["model"]["provider"] == "custom:unsloth-studio"
     assert config["model"]["default"] == MODEL["id"]
     assert config["model"]["api_mode"] == "openai"
     assert config["model"]["context_length"] == MODEL["context_length"]
     assert config["compression"] == {"enabled": True, "threshold": 0.9}
     assert "auxiliary" not in config
-    provider = config["providers"]["unsloth"]
+    provider = config["providers"]["unsloth-studio"]
     assert provider["base_url"] == f"{BASE}/v1"
     assert provider["api_mode"] == "openai"
     assert provider["key_env"] == "UNSLOTH_API_KEY"
@@ -6787,9 +6898,41 @@ def test_write_hermes_config_small_window_claims_floor(hermes_config):
     config = yaml.safe_load(hermes_config.read_text())
     # 0.5625 = 0.9 * 40960 / 65536: 90% of the real window.
     assert config["model"]["context_length"] == 65536
-    assert config["compression"] == {"enabled": True, "threshold": 0.5625}
+    assert config["compression"] == {
+        "enabled": True,
+        "threshold": 0.5625,
+        "threshold_tokens": 36864,
+    }
     assert config["auxiliary"]["compression"]["context_length"] == 65536
     assert config["model"]["ollama_num_ctx"] == 65536
+
+
+def test_write_hermes_config_provider_name_is_not_an_unsloth_model_prefix(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(
+        yaml.safe_dump(
+            {
+                "providers": {
+                    "unsloth": {"base_url": f"{BASE}/v1", "key_env": "UNSLOTH_API_KEY"},
+                    "mine": {"base_url": "http://example.test/v1"},
+                }
+            }
+        )
+    )
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    config = yaml.safe_load(hermes_config.read_text())
+    provider = config["model"]["provider"].removeprefix("custom:")
+    assert not MODEL["id"].startswith(f"{provider}/")
+    assert set(config["providers"]) == {provider, "mine"}
+
+
+def test_write_hermes_config_drops_small_window_pins_for_a_larger_reload(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    start.write_hermes_config(BASE, {"id": "small", "context_length": 32768}, hermes_config)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    config = yaml.safe_load(hermes_config.read_text())
+    assert config["compression"] == {"enabled": True, "threshold": 0.9}
+    assert "context_length" not in config["auxiliary"]["compression"]
 
 
 def test_write_hermes_config_large_window_drops_claimed_num_ctx(hermes_config):
@@ -6821,9 +6964,9 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
     config = yaml.safe_load(hermes_config.read_text())
     assert config["terminal"] == {"backend": "local"}
     assert config["model"]["temperature"] == 0.7
-    assert config["model"]["provider"] == "custom:unsloth"
+    assert config["model"]["provider"] == "custom:unsloth-studio"
     assert config["providers"]["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
-    assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
+    assert config["providers"]["unsloth-studio"]["base_url"] == f"{BASE}/v1"
     before = hermes_config.read_text()
     start.write_hermes_config(BASE, MODEL, hermes_config)
     assert hermes_config.read_text() == before
@@ -6847,10 +6990,22 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     _assert_env_set(result.output, "HERMES_HOME", str(home))
     assert "hermes" in result.output
     config = yaml.safe_load((home / "config.yaml").read_text())
-    assert config["model"]["provider"] == "custom:unsloth"
-    assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
+    assert config["model"]["provider"] == "custom:unsloth-studio"
+    assert config["providers"]["unsloth-studio"]["base_url"] == f"{BASE}/v1"
     assert config["model"]["default"] == MODEL["id"]
     assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
+
+
+@pytest.mark.parametrize(("found", "warned"), [("v20.19.5", True), ("v22.19.0", False)])
+def test_pi_warns_when_node_is_older_than_it_needs(monkeypatch, capsys, found, warned):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/usr/bin/node")
+    monkeypatch.setattr(
+        start.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = found + "\n")
+    )
+    start._warn_if_node_older("Pi", start._PI_MIN_NODE, "pkg@legacy")
+    err = capsys.readouterr().err
+    assert ("needs Node.js 22.19.0" in err) is warned
+    assert ("pkg@legacy" in err) is warned
 
 
 def test_write_pi_config_fresh(tmp_path):
@@ -7510,6 +7665,8 @@ def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
         ),
         (["-V"], ["dsh", "-V"]),
         (["--version"], ["dsh", "--version"]),
+        (["headless", "fix the bug"], ["dsh", "headless", "--patch", "P", "fix the bug"]),
+        (["acp"], ["dsh", "acp", "--patch", "P"]),
     ],
 )
 def test_dsh_command_places_the_patch_where_dsh_parses_it(args, expected):
@@ -8108,8 +8265,7 @@ def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
     state = tmp_path / "agents" / "openclaw"
     config = json.loads((state / "openclaw.json").read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
-    approvals = json.loads((state / "exec-approvals.json").read_text())
-    assert approvals["defaults"] == {"security": "full", "ask": "off", "askFallback": "full"}
+    assert not (state / "exec-approvals.json").exists()
 
 
 def test_no_yolo_openclaw_leaves_fresh_config_untouched(fake_studio, tmp_path):
@@ -8138,11 +8294,46 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     config = json.loads(path.read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
-    approvals = json.loads((path.parent / "exec-approvals.json").read_text())
-    assert approvals == {
+    assert not (path.parent / "exec-approvals.json").exists()
+
+
+# What older `unsloth start openclaw --yolo` wrote.
+LEGACY_OPENCLAW_YOLO_APPROVALS = {
+    "version": 1,
+    "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
+}
+
+
+@pytest.mark.parametrize("yolo", [True, False])
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"socket": {"path": "/tmp/exec-approvals.sock", "token": "t"}, "agents": {}}],
+)
+def test_write_openclaw_config_retires_legacy_yolo_approvals(tmp_path, capsys, yolo, extra):
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    approvals.write_text(json.dumps({**LEGACY_OPENCLAW_YOLO_APPROVALS, **extra}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = yolo)
+    assert not approvals.exists()
+    assert "legacy exec approvals" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("yolo", [True, False])
+def test_write_openclaw_config_points_user_legacy_approvals_at_openclaw_doctor(
+    tmp_path, capsys, yolo
+):
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    legacy = {**LEGACY_OPENCLAW_YOLO_APPROVALS, "agents": {"main": {"allowlist": ["git status"]}}}
+    approvals.write_text(json.dumps(legacy))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = yolo)
+    assert json.loads(approvals.read_text()) == {
         "version": 1,
-        "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
+        "agents": {"main": {"allowlist": ["git status"]}},
     }
+    err = capsys.readouterr().err
+    assert "legacy exec approvals file" in err
+    assert "openclaw doctor --fix" in err
 
 
 def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp_path):
@@ -8166,7 +8357,7 @@ def test_no_launch_rerun_clears_stale_openclaw_yolo_state(fake_studio, tmp_path)
     yolo = CliRunner().invoke(start.start_app, ["openclaw", "--yolo", "--no-launch"])
     assert yolo.exit_code == 0, yolo.output
     state = tmp_path / "agents" / "openclaw"
-    assert (state / "exec-approvals.json").exists()
+    (state / "exec-approvals.json").write_text(json.dumps(LEGACY_OPENCLAW_YOLO_APPROVALS))
     plain = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert plain.exit_code == 0, plain.output
     config = json.loads((state / "openclaw.json").read_text())
@@ -8201,8 +8392,7 @@ def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
     path = tmp_path / "openclaw.json"
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     approvals = path.parent / "exec-approvals.json"
-    state = json.loads(approvals.read_text())
-    state["agents"] = {"main": {"allowlist": ["git status"]}}
+    state = {**LEGACY_OPENCLAW_YOLO_APPROVALS, "agents": {"main": {"allowlist": ["git status"]}}}
     approvals.write_text(json.dumps(state))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     remaining = json.loads(approvals.read_text())

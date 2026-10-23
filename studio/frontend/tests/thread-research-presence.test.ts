@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The composer's "has this thread used research already" answer, which gates whether deep
-// research is still offerable. It is asked inside a useAuiState selector, so once per store
-// write, and a keystroke IS a store write: before this cache the composer walked all 220 messages
-// of the heavy-thread fixture per character typed.
-//
-// Semantics first, cache second: a memoization bug here silently turns deep research back on in a
-// thread that already used it, or off in one that has not.
+// Asked once per store write (every keystroke), so it is cached; correctness gates deep research.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -34,8 +28,7 @@ test("a thread with no research reply answers false", () => {
 });
 
 test("only a string run id counts, which is what the composer's gate meant", () => {
-  // A non-string run id is how a half-written metadata blob shows up; counting it would switch
-  // deep research off in a thread that never used it.
+  // A non-string run id is a half-written metadata blob and must not count.
   for (const id of [undefined, null, 0, 1, true, {}, ["run_1"]]) {
     assert.equal(messageHasResearchRunId(withRun(id)), false, String(id));
     assert.equal(threadHasResearchMessage([withRun(id)]), false, String(id));
@@ -67,12 +60,10 @@ test("the answer is cached on the message array, not recomputed per call", () =>
 });
 
 test("a new message array is a new answer", () => {
-  // assistant-ui rebuilds the array on every repository change, which is why it is the key: a
-  // cache outliving the array would answer for the previous thread.
+  // assistant-ui rebuilds the array per repository change, so it is the cache key.
   const before = [{ metadata: {} }];
   assert.equal(threadHasResearchMessage(before), false);
   const after = [...before, withRun("run_1")];
   assert.equal(threadHasResearchMessage(after), true);
-  // The old array still answers what it did, rather than being invalidated by the new one.
   assert.equal(threadHasResearchMessage(before), false);
 });

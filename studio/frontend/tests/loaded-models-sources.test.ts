@@ -4,8 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// The indicator .tsx pulls in the router, motion and hugeicons, so it cannot be
-// imported here. The status to row mapping lives in a plain module, driven directly.
+// The indicator .tsx imports router/motion/icons, so the plain mapping module is tested.
 import { modelIdsMatch } from "../src/features/hub/lib/model-identity.ts";
 import {
   type LoadedModelEntry,
@@ -21,7 +20,6 @@ import {
   verifyResident,
 } from "../src/features/loaded-models/loaded-models-sources.ts";
 
-// Only the fields the mapping reads; the real responses carry dozens more.
 function inferenceStatus(
   overrides: Record<string, unknown> = {},
 ): Parameters<typeof describeInferenceStatus>[0] {
@@ -62,7 +60,6 @@ test("a GGUF chat model reports its variant", () => {
   assert.equal(row.detail, "GGUF · Q4_K_M");
 });
 
-// Same picker, same memory, but only one of them answers prompts.
 test("an audio model is a speech row, and a whisper one is dictation", () => {
   const [tts] = describeInferenceStatus(
     inferenceStatus({
@@ -80,7 +77,6 @@ test("an audio model is a speech row, and a whisper one is dictation", () => {
     }),
   );
   assert.equal(stt.kind, "stt");
-  // Still the chat runtime's, so it ejects through /api/inference/unload.
   assert.equal(stt.source, "chat");
 });
 
@@ -97,7 +93,6 @@ test("a model the runtime still holds besides the active one gets its own row", 
   assert.equal(rows[1].inactive, true);
 });
 
-// A server predating the engine split reports only the top-level fields.
 test("a legacy STT status still shows its resident Transformers model", () => {
   const rows = describeSttStatus({
     loaded_model: "openai/whisper-large-v3",
@@ -134,8 +129,6 @@ test("each STT engine that has a model resident gets a row naming its engine", (
   assert.equal(rows[0].detail, "llama.cpp · cuda");
 });
 
-// Those two sidecars report their engine name as the device, so the label and
-// the device are the same string and must not print twice.
 test("an engine that reports itself as its device is named once", () => {
   const rows = describeSttStatus({
     mtmd: { loaded_model: "qwen3-asr-0.6b", device: "llama.cpp" },
@@ -182,8 +175,6 @@ test("a row names the precision the pipeline actually loaded at", () => {
   } as never);
   assert.equal(image.detail, "flux · BF16 · cuda");
 
-  // The dense transformer's quantisation is what tells the builds apart, so it
-  // wins over the pipeline dtype.
   const [video] = describeVideoStatus({
     loaded: true,
     repo_id: "unsloth/Wan2.2-T2V-A14B",
@@ -201,7 +192,7 @@ test("a bf16 video load falls back to the pipeline dtype", () => {
     repo_id: "unsloth/Wan2.2-T2V-A14B",
     family: "wan",
     dtype: "bfloat16",
-    // "none" is the backend's word for plain bf16, not a precision to print.
+    // "none" is the backend's word for plain bf16.
     transformer_quant: "none",
     device: "cuda",
   } as never);
@@ -222,7 +213,6 @@ test("a GGUF video row names its selected quant instead of its compute dtype", (
 });
 
 test("a lowercase quant filename still reads as an upper-case quant", () => {
-  // Hub repos ship q8_0 filenames, and every other quant label in the UI is upper-cased.
   const [image] = describeDiffusionStatus({
     loaded: true,
     repo_id: "unsloth/Z-Image-Turbo-GGUF",
@@ -248,9 +238,7 @@ test("a GGUF image load does not print GGUF twice", () => {
 });
 
 test("a GGUF image row names the quant that was picked, not the compute dtype", () => {
-  // The reported bug: the picker chip said "GGUF \u00b7 Q8_0" and the row beside it said "BF16",
-  // because `dtype` is the pipeline COMPUTE dtype and reads bf16 for every CUDA load. The
-  // quant is what distinguishes the file that was downloaded and opened.
+  // dtype is the compute dtype (bf16 on CUDA); the quant identifies the file.
   const [image] = describeDiffusionStatus({
     loaded: true,
     repo_id: "unsloth/Z-Image-Turbo-GGUF",
@@ -265,8 +253,6 @@ test("a GGUF image row names the quant that was picked, not the compute dtype", 
 });
 
 test("a native GGUF image row names its selected quant without model_kind", () => {
-  // The sd.cpp engine reports dtype "gguf" and no model_kind, so the GGUF chip and the quant
-  // both have to survive on that field alone.
   const [image] = describeDiffusionStatus({
     loaded: true,
     repo_id: "unsloth/Z-Image-Turbo-GGUF",
@@ -279,8 +265,7 @@ test("a native GGUF image row names its selected quant without model_kind", () =
 });
 
 test("a GGUF pick the dense fast path replaced names that build instead", () => {
-  // The fast path denoises with a torchao build of the base transformer and never opens the
-  // .gguf, so the row must neither call it GGUF nor print a quant no tensor carries.
+  // The fast path uses a torchao build and never opens the .gguf.
   const [image] = describeDiffusionStatus({
     loaded: true,
     repo_id: "unsloth/Z-Image-Turbo-GGUF",
@@ -294,10 +279,7 @@ test("a GGUF pick the dense fast path replaced names that build instead", () => 
   assert.equal(image.detail, "z-image \u00b7 FP8 \u00b7 cuda");
 });
 
-// Gemma 3n and friends take audio in but answer as chat. Every backend sets
-// is_audio from `audio_type is not None and audio_type != "audio_vlm"`
-// (model_config.py, mlx_inference.py; llama_cpp.py keeps _is_audio False for
-// csm/whisper/audio_vlm), so the TTS test never sees one.
+// Backends set is_audio false for audio_vlm.
 test("an audio-input VLM stays a chat row, not Speech", () => {
   const [row] = describeInferenceStatus(
     inferenceStatus({
@@ -328,7 +310,6 @@ test("a row opens the page its runtime is used on", () => {
   });
 });
 
-// Dictation has no page of its own, so it opens the tab that drives it.
 test("a dictation row opens Voice settings", () => {
   assert.deepEqual(loadedModelTarget("stt"), {
     open: "settings",
@@ -337,8 +318,6 @@ test("a dictation row opens Voice settings", () => {
   });
 });
 
-// A Whisper checkpoint in the chat slot is Chat's, not dictation's: the target
-// follows the runtime holding the weights, not what the model does.
 test("the target follows the runtime, not the kind", () => {
   const [chatWhisper] = describeInferenceStatus(
     inferenceStatus({
@@ -385,8 +364,7 @@ test("one runtime naming the same model twice is still one row", () => {
   assert.equal(mergeLoadedModels([duplicated, duplicated]).length, 1);
 });
 
-// /images/unload, /video/unload and the STT unload carry no model id, so a row
-// up to one poll old must be checked against the runtime before either fires.
+// The image, video and STT unload routes take no model id, so the row is checked first.
 test("a runtime holding the row's model is safe to unload", () => {
   assert.equal(
     verifyResident("unsloth/FLUX.1-dev", "unsloth/FLUX.1-dev", modelIdsMatch),
@@ -412,9 +390,6 @@ test("an idle runtime is already free, so there is nothing to unload", () => {
   );
 });
 
-// These runtimes report repo_id / loaded_model, the same fields the rows were
-// built from, so matching is exact bar the tolerance modelIdsMatch already has.
-// A spurious "replaced" would refuse a legitimate eject, so pin that too.
 test("a trailing separator or casing difference is not a replacement", () => {
   assert.equal(
     verifyResident("/models/flux", "/models/flux/", modelIdsMatch),
@@ -435,12 +410,9 @@ test("a local load shows its model folder rather than leading directories", () =
     shortModelLabel("/Users/me/models/hub/gemma-3-4b-it"),
     "hub/gemma-3-4b-it",
   );
-  // Windows path, trailing separator: still the last two segments.
   assert.equal(shortModelLabel("C:\\models\\hub\\gemma\\"), "hub/gemma");
 });
 
-// The load toast appears at once, the poll is 5s behind it. /status reports a
-// load for its whole duration, so the row can match the toast.
 test("a chat model still loading gets its own row", () => {
   const rows = describeInferenceStatus(
     inferenceStatus({ loading: ["unsloth/Qwen3.5-9B-GGUF"] }),
@@ -479,8 +451,6 @@ test("an announced load shows before any status confirms it", () => {
   assert.equal(rows[0].name, "unsloth/Z-Image-Turbo-GGUF");
 });
 
-// The backend's answer wins: otherwise a finished load shows twice for the
-// moment between the status arriving and the settle event.
 test("a status row for that runtime replaces the announced one", () => {
   const loaded = describeDiffusionStatus({
     loaded: true,
@@ -500,9 +470,7 @@ test("nothing announced leaves the polled rows untouched", () => {
   assert.equal(withPendingLoads(rows, new Map()), rows);
 });
 
-// Swapping one image model for another: the outgoing one stays resident until
-// the backend drops it, so yielding on source alone showed nothing loading for
-// the whole swap, which is exactly when the toast says it is working.
+// The outgoing image model stays resident during a swap.
 test("a swap shows the incoming model alongside the outgoing one", () => {
   const resident = describeDiffusionStatus({
     loaded: true,

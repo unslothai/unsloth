@@ -389,13 +389,11 @@ def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
     finally:
         ic.emulate_precision_casts = prev
     assert ours.is_contiguous() and ours.shape == x.shape
-    # Only the sum-of-squares order is free: a few rows may land one rounding step away.
     budget = ours.numel() // (100000 if dtype == torch.bfloat16 else 20000)
     for ref in (eager, compiled):
         diff = (ours.float() - ref.float()).abs()
         assert int((ours != ref).sum()) <= max(2, budget)
         assert float(diff.max()) <= float((ref.float().abs().max() * 2**-7))
-    # negative control: a one-ulp-scale perturbation must be caught
     bad = (ours.float() * (1 + 2**-7)).to(dtype)
     assert int((bad != eager).sum()) > ours.numel() // 2
 

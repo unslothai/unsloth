@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One preflight and one repair at a time. Five Retry clicks after a crash ran five preflights,
-// each answering managed_stale with can_auto_repair, so five start_managed_repair calls raced
-// for one installer and "Installation is already running." landed over the winner's progress.
-//
-// The hook cannot be rendered here, so the guards are read off the shipped source the way
-// desktop-stop-intent.test.ts does beside it.
+// Concurrent Retry clicks raced start_managed_repair; guards are read off the shipped source.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -31,7 +26,6 @@ test("a preflight already in flight is not run again", () => {
   const arm = body.indexOf("preflightInFlightRef.current = true;");
   const preflight = body.indexOf('invoke<DesktopPreflightResult>("desktop_preflight")');
   assert.ok(guard > 0 && arm > guard && preflight > arm, "the guard must sit ahead of the preflight");
-  // The persisted stop still wins: it must not arm a flag it never releases.
   assert.ok(
     body.indexOf("hasServerStopIntent()") < guard,
     "the stop-intent check runs before the in-flight guard",
@@ -41,8 +35,7 @@ test("a preflight already in flight is not run again", () => {
     /finally \{\s*releasePreflight\(\);\s*\}/,
     "a failed preflight must release the flag or Retry is dead for the session",
   );
-  // Held past the probe, the Retry that server-start-timeout offers from inside the port poll is
-  // swallowed after clearing the error: error screen, nothing running.
+  // Held past the probe, the server-start-timeout Retry is swallowed.
   const release = body.indexOf("releasePreflight();");
   const dispatch = body.indexOf("switch (preflight.disposition)");
   assert.ok(
@@ -54,8 +47,7 @@ test("a preflight already in flight is not run again", () => {
     "no long await may run while the flag is held",
   );
   assert.ok(body.indexOf("await startRepair({ preflightReason: preflight.reason })") > release);
-  // Released twice, and by then a later call may hold the flag: an unowned clear would let a
-  // third preflight through.
+  // A later call may hold the flag by then, so an unowned clear lets a third preflight in.
   assert.match(
     body,
     /const releasePreflight = \(\) => \{\s*if \(!ownsPreflight\) return;\s*ownsPreflight = false;\s*preflightInFlightRef\.current = false;\s*\};/,
@@ -83,7 +75,6 @@ test("a repair already in flight is not started again", () => {
     /try \{\s*await runRepair\(options, releaseRepair\);\s*\} finally \{\s*releaseRepair\(\);\s*\}/,
     "the flag must be released on every exit, including an early return",
   );
-  // The refused call returns without touching state: the running repair owns the screen.
   assert.ok(
     body.indexOf("if (repairInFlightRef.current) return;") <
       body.indexOf("repairInFlightRef.current = true;"),
@@ -94,8 +85,7 @@ test("the repair body itself is unchanged in what it invokes", () => {
   const body = section("async function runRepair(", "async function startServer()");
   assert.match(body, /invoke\("start_managed_repair", \{ forceInstaller \}\)/);
   assert.match(body, /forcedRepairRef\.current = forceInstaller;/);
-  // The repair ends with the native call; holding the flag across the start that follows
-  // swallows the Retry server-start-timeout offers.
+  // Holding the flag across the following start swallows the server-start-timeout Retry.
   const native = body.indexOf('invoke("start_managed_repair"');
   const release = body.indexOf("releaseRepair();");
   const start = body.indexOf("await startManagedServer();");
