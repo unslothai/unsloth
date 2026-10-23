@@ -277,7 +277,8 @@ test("Qwen-Image-2.1 is badged with the size its verdict used", () => {
   const card = onCard(22.49, ["int8", "fp8"]);
   const fit = curatedArtifactFit(QWEN_21, IMAGE_CATALOG, card);
   assert.ok(fit?.sizeGb !== undefined);
-  assert.ok(Math.abs(fit.sizeGb - 27.01) < 0.01, String(fit.sizeGb));
+  // int8 DiT 7.26 + the companions with the Qwen3-VL-8B at its hosted int8 ConvRot size (8.71, not 16.33 bf16).
+  assert.ok(Math.abs(fit.sizeGb - 19.39) < 0.01, String(fit.sizeGb));
   assert.equal(fit.allowanceGb, 22.49 * 0.7);
   assert.equal(fit.fits, false);
   assert.equal(curatedArtifactFitsDevice(QWEN_21, IMAGE_CATALOG, card), fit.fits);
@@ -321,11 +322,11 @@ test("the over-budget text never shows the size below the budget it exceeds", ()
   );
   assert.equal(
     text(QWEN_21, 22.49),
-    "Needs ~27GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
+    "Needs ~19GB for weights (budget: ~15.7GB, 70% of a 22.49GB GPU)",
   );
 });
 
-test("Qwen-Image-2.1 routes every card as on main", () => {
+test("Qwen-Image-2.1 routes by the int8 text encoder an auto load takes", () => {
   const group = groupForRepoId(QWEN_21, IMAGE_CATALOG);
   assert.ok(group);
   const pick = (gpuGb: number) =>
@@ -333,10 +334,11 @@ test("Qwen-Image-2.1 routes every card as on main", () => {
       ...onCard(gpuGb, ["int8"]),
       isDownloaded: notDownloaded,
     }).repoId;
-  // 36 sits just below the existing routing threshold.
+  // 19.39 GiB resident against the 70% rule: the dense row from a 27.7 GiB card up, the GGUF below.
   assert.equal(pick(24), "unsloth/Qwen-Image-2.1-GGUF");
-  assert.equal(pick(31.84), "unsloth/Qwen-Image-2.1-GGUF");
-  assert.equal(pick(36), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(27.6), "unsloth/Qwen-Image-2.1-GGUF");
+  assert.equal(pick(27.8), QWEN_21);
+  assert.equal(pick(31.84), QWEN_21);
   assert.equal(pick(39.5), QWEN_21);
 });
 

@@ -10164,8 +10164,14 @@ async def _maybe_auto_switch_model(
                 await asyncio.to_thread(account_access.require_model_access, resident)
             except HTTPException as refusal:
                 # A Hub resident the caller's own token can fetch is theirs to use as well.
-                if refusal.status_code != 404 or not await _caller_token_authorizes_download(
-                    str(resident or ""), fastapi_request
+                if refusal.status_code != 404:
+                    raise
+                resident_reference = str(resident or "")
+                cached_repo = await asyncio.to_thread(
+                    account_access.cached_model_repo, resident_reference
+                )
+                if not await _caller_token_authorizes_download(
+                    cached_repo or resident_reference, fastapi_request
                 ):
                     raise
             return
@@ -25219,8 +25225,11 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 ) from av_error
             import os
             import tempfile
+            from utils.media_playlist import refuse_playlist
             from utils.paths import ensure_dir, tmp_root
 
+            # librosa may hand this to unrestricted FFmpeg, which follows playlist entries.
+            refuse_playlist(raw)
             with tempfile.NamedTemporaryFile(
                 suffix = ".audio",
                 delete = False,
@@ -45934,6 +45943,7 @@ async def diffusion_download_plan(
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from core.inference.sd_cpp_engine import ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -45954,6 +45964,15 @@ async def diffusion_download_plan(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
+        # A Hub repo named for no family (an SDXL fine-tune) says what it is in its own model_index.json or checkpoint
+        # header; fetch that small evidence first so the network-free validation below can read it.
+        await asyncio.to_thread(
+            prefetch_for_pick,
+            request.model_path,
+            request.gguf_filename,
+            request.family_override,
+            request.hf_token,
+        )
         fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
@@ -46194,6 +46213,7 @@ async def load_diffusion_model_gated(
         selected_card_identity,
     )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
+    from core.inference.diffusion_hub_evidence import prefetch_for_pick
     from utils.native_path_leases import redact_native_paths
 
     backend = get_diffusion_backend()
@@ -46214,6 +46234,17 @@ async def load_diffusion_model_gated(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
+        # A Hub repo named for no family (an SDXL fine-tune) says what it is in its own model_index.json or checkpoint
+        # header; fetch that small evidence first so the network-free validation below can read it.
+        await asyncio.to_thread(
+            prefetch_for_pick,
+            request.model_path,
+            request.gguf_filename,
+            request.family_override,
+            request.hf_token,
+            # An automatic (API auto-switch) load is cache-only, like the rest of this path.
+            user_initiated,
+        )
         # Validate cheaply BEFORE touching the GPU: an unloadable pick must not evict a working chat model and then 400. The family also drives engine selection.
         fam = await asyncio.to_thread(
             backend.validate_load_request,

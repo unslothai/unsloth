@@ -4,6 +4,11 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
+import type { CompareContext } from "./compare/compare-axes";
+import type { CompareRun } from "./compare/compare-run";
+// Statically imported: this page is already its own lazy chunk, and a nested import() of the panel split modules
+// the startup set shares out of their eager chunks (+3 startup chunks, measured with bundle:check).
+import ComparePanel from "./compare/compare-panel";
 import {
   type DragEvent,
   type ReactNode,
@@ -267,6 +272,7 @@ import {
   type ControlNetSpecInput,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
+  type DiffusionGenerateRequest,
   type DiffusionGenerateResponse,
   type DiffusionLoadProgress,
   type DiffusionLoadRequest,
@@ -833,6 +839,17 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
 
 // What the load toast shows while the backend saves the chat model's context ahead of this load.
 const SAVING_PROGRESS: DiffusionLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
+
+
+// The request one Generate run sends: a compare cell's own, else the form's.
+function compareRequest(
+  run: CompareRun | null,
+  i: number,
+  baseSeed: number,
+  body: DiffusionGenerateRequest,
+): DiffusionGenerateRequest {
+  return run ? run.request(i, body, baseSeed) : body;
+}
 
 // One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one
 // control.
@@ -1836,6 +1853,8 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
+  // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
+  const compareOnce = useRef<CompareRun | null>(null);
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -2019,7 +2038,12 @@ export function ImagesPage({
     }),
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
-  const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
+  const residentDefaults = residentDefaultsKey(
+    status?.repo_id ?? "",
+    status?.base_repo,
+    status?.resolved?.family_override,
+    status?.gguf_filename,
+  );
   const { steps: residentSteps, guidance: residentGuidance } = residentRecipeFor(
     residentDefaults,
     status?.generation_defaults,
@@ -2077,7 +2101,12 @@ export function ImagesPage({
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string, effectiveFamilyOverride = familyOverride, forceLoad = false) => {
+    (
+      repoId: string,
+      effectiveFamilyOverride = familyOverride,
+      forceLoad = false,
+      ggufFilename: string | null = null,
+    ) => {
       if (modelSelectionAction === "download" && !forceLoad) return;
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
@@ -2089,7 +2118,7 @@ export function ImagesPage({
       // whether the user takes the form after THIS pick.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
@@ -3374,7 +3403,12 @@ export function ImagesPage({
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
           pickDefaults.current,
-          residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),
+          residentDefaultsKey(
+            loaded.repo_id ?? "",
+            loaded.base_repo,
+            loaded.resolved?.family_override,
+            loaded.gguf_filename,
+          ),
           loaded.generation_defaults,
         );
         pickDefaults.current = null;
@@ -3565,6 +3599,7 @@ export function ImagesPage({
       model_kind: status?.model_kind,
       gguf_filename: status?.gguf_filename,
       display_repo_id: status?.display_repo_id,
+      base_repo: status?.base_repo,
       component_files: status?.component_files,
     });
     if (resident) lastLoad.current = resident;
@@ -4409,7 +4444,7 @@ export function ImagesPage({
           if (downloadOnly) return;
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
-          applyImageModelDefaults(repoId, effectiveFamilyOverride);
+          applyImageModelDefaults(repoId, effectiveFamilyOverride, false, filename);
         },
         onNotStarted: () => {
           // Nothing was applied for a download-only pick, so there is nothing to hand back, and
@@ -4495,7 +4530,12 @@ export function ImagesPage({
     if (revert) {
       quantRevert.current = revert;
       setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
-      applyImageModelDefaults(wanted, "auto");
+      applyImageModelDefaults(
+        wanted,
+        "auto",
+        false,
+        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+      );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
       if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
@@ -4672,7 +4712,7 @@ export function ImagesPage({
         if (revert) {
           quantRevert.current = revert;
           setQuant(meta.ggufVariant);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, meta.ggufFilename);
         }
         void loadOrStage(
           id,
@@ -4717,7 +4757,7 @@ export function ImagesPage({
         if (revert) {
           quantRevert.current = revert;
           setQuant(filename);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
         void loadOrStage(dir, { kind: "gguf", filename }, meta.source, token).then((started) => {
           // Guarded like every sibling branch: quantRevert is one slot, so a pick that no longer
@@ -5290,7 +5330,9 @@ export function ImagesPage({
       ? { ...sdChoice, variationSeed: String(vary.variationSeed), variationStrength: vary.strength }
       : sdChoice;
     const varying = Boolean(sdCaps?.variation_seed) && workflow === "create" && runChoice.variationStrength > 0;
-    if (varying && runChoice.variationSeed.trim() && parseVariationSeed(runChoice.variationSeed) === null) {
+    // A compare grid checks it at any form strength: a Var. strength axis can engage it with the form's at 0.
+    const checkVariation = varying || (compareOnce.current !== null && Boolean(sdCaps?.variation_seed));
+    if (checkVariation && runChoice.variationSeed.trim() && parseVariationSeed(runChoice.variationSeed) === null) {
       toast.error("Variation seed must be an integer from 0 to 4294967295");
       return;
     }
@@ -5310,10 +5352,14 @@ export function ImagesPage({
     // A large run count is legitimate, so no upper cap: floor at 1 and ignore non-numeric input.
     const runs = Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
     if (runs !== count) setCount(runs);
+    // A compare grid sends one request per cell, in the order compare/ chose.
+    const compare = compareOnce.current;
+    const runTotal = compare ? compare.cellCount : runs;
 
     // An explicit seed near the 2**53-1 backend cap can overflow once the per-run and in-batch
-    // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work.
-    if (baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
+    // offsets are added, 422ing a later run after earlier images generated. Fail before GPU work. A compare grid adds
+    // no offset (every cell runs at batch size 1 on the base seed or its Seed axis value, both already in range).
+    if (!compare && baseSeed > Number.MAX_SAFE_INTEGER - (runs * batchSize - 1)) {
       toast.error("Seed too large for this run count and batch size; use a smaller seed");
       return;
     }
@@ -5366,7 +5412,7 @@ export function ImagesPage({
     // arrive: settleLostGeneration proves a lost POST landed by finding a record outside it.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
-      for (let i = 0; i < runs; i++) {
+      for (let i = 0; i < runTotal; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
         // cancel only reaches the denoise in flight, so a count > 1 request would run on.
         if (
@@ -5389,7 +5435,7 @@ export function ImagesPage({
         const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage({
+          res = await generateDiffusionImage(compareRequest(compare, i, baseSeed, {
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
             negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
@@ -5414,7 +5460,9 @@ export function ImagesPage({
             ...sdControlsRequestFields(
               sdCaps,
               runChoice,
-              baseVariationSeed !== null ? (baseVariationSeed + i * batchSize) % 2 ** 32 : null,
+              // A compare grid keeps the form's variation seed for every cell (its axis, if any, replaces it), so
+              // only the swept setting differs between cells.
+              baseVariationSeed !== null ? (baseVariationSeed + (compare ? 0 : i * batchSize)) % 2 ** 32 : null,
               varying,
               !controlnetEngaged,
             ),
@@ -5441,7 +5489,7 @@ export function ImagesPage({
                   }
                 : undefined,
             ...(external && { provider_id: external.providerId, model: external.modelId }),
-          });
+          }));
         } catch (err) {
           // The POST response was lost while the backend kept generating (the secure-mode tunnel caps
           // the response near 100s). Retrying would duplicate the work, so wait the run out.
@@ -5451,11 +5499,13 @@ export function ImagesPage({
           await settleLostGeneration(() => isMounted.current, probeBaseline);
           if (!isMounted.current) break;
           await loadGallery();
+          // A compare cell takes its record from what the gallery gained (matched by seed in compare/).
+          compare?.onImages(i, galleryCache.images.filter((image) => !knownIds.has(image.id)));
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
           // The run landed without its records, so Reuse last seed takes the seed it was sent.
-          if (!external) setSessionSeed(runBaseSeed);
+          if (!external) setSessionSeed(compare?.sentSeed(i) ?? runBaseSeed);
           setGenDone(i + 1);
           continue;
         }
@@ -5476,6 +5526,7 @@ export function ImagesPage({
           if (notice) toast.info(notice.title, { id: "prompt-enhancement-notice", description: notice.description });
         }
         res.images.forEach((image) => void ensureSrc(image));
+        compare?.onImages(i, res.images);
         setGenDone(i + 1);
       }
     } catch (err) {
@@ -5487,7 +5538,14 @@ export function ImagesPage({
         message: msg,
         stopRequested: cancelRequested.current && cancelAcked.current,
       });
-      if (report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent })) {
+      const offerAnyway = report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent });
+      // Not for a compare cell: the queued retry would run after the grid has ended, as a plain form generation.
+      if (offerAnyway && compare) {
+        toast.error(MEMORY_REFUSAL_TITLE, {
+          description: `${msg} To run the grid anyway, turn on "${ALLOW_OVERSIZED_LABEL}" and generate it again.`,
+          duration: 20_000,
+        });
+      } else if (offerAnyway) {
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
           duration: 20_000,
@@ -5553,6 +5611,55 @@ export function ImagesPage({
       if (cancelAbort.current === abort) cancelAbort.current = null;
     }
   }, []);
+
+  // Compare grid: handleGenerate reads the run from compareOnce, so a grid shares Stop, progress and the gallery
+  // merge with Generate. Text-to-image on a loaded local model only.
+  const [compareRun, setCompareRun] = useState<CompareRun | null>(null);
+  const runCompare = useCallback(
+    async (run: CompareRun) => {
+      // Like Generate: the stored preset must replace the default steps / size before any request is sent.
+      if (busy !== null || !imagePresets.hydrated) return;
+      compareOnce.current = run;
+      setCompareRun(run);
+      try {
+        await handleGenerate();
+      } finally {
+        compareOnce.current = null;
+        setCompareRun(null);
+      }
+    },
+    [busy, handleGenerate, imagePresets.hydrated],
+  );
+  const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
+  const compareSdControls = sdCaps;
+  const compareContext = useMemo<CompareContext>(
+    () => ({
+      prompt,
+      negativePrompt,
+      negativeCapable,
+      negativeMinGuidance,
+      guidanceFixed,
+      guidance: effectiveGuidance,
+      samplers: samplerOptions,
+      samplerChoice,
+      shift: shiftControl,
+      loraCapable,
+      loras: loras
+        .filter((l) => l.id.trim())
+        .map((l) => ({
+          id: l.id,
+          weight: l.weight,
+          label: availableLoras.find((a) => a.id === l.id)?.display_name ?? l.id.split(/[\\/]/).pop() ?? l.id,
+        })),
+      sdControls: compareSdControls,
+      hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
+      // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
+      controlnetEngaged,
+    }),
+    // samplerChoice is rebuilt every render; its two fields are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
+  );
 
   const handleGenerateWithRecall = useCallback(async () => {
     if (busy !== null || !imagePresets.hydrated) return;
@@ -7025,6 +7132,21 @@ export function ImagesPage({
                   </div>
                 </Field>
 
+                {compareAvailable && (
+                  <ComparePanel
+                    context={compareContext}
+                    busy={busy !== null || compareRun !== null || !imagePresets.hydrated}
+                    seedFieldEmpty={!seed.trim()}
+                    variationSeed={sdCaps?.variation_seed ? parseVariationSeed(sdChoice.variationSeed) : null}
+                    modelName={status?.repo_id ?? null}
+                    width={width}
+                    height={height}
+                    steps={steps}
+                    guidance={effectiveGuidance}
+                    onRun={runCompare}
+                  />
+                )}
+
                 <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
                   {advancedControls}
                 </AdvancedDisclosure>
@@ -7318,9 +7440,11 @@ export function ImagesPage({
                     // Drop the chat min-height: this floating card has no layout to stabilise.
                     className="min-h-0"
                     title={
-                      genDone != null && count > 1
-                        ? `Run ${genDone + 1}/${count}`
-                        : null
+                      compareRun && genDone != null
+                        ? compareRun.title(genDone)
+                        : genDone != null && count > 1
+                          ? `Run ${genDone + 1}/${count}`
+                          : null
                     }
                     message="Starting…"
                     progressPercent={genStep ? genStep.fraction * 100 : null}

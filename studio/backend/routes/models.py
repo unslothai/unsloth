@@ -4312,12 +4312,12 @@ async def get_kv_cache_estimate(
                     # HF cache layout puts the projector at the snapshot root, not beside quant subdirs.
                     from core.inference.llama_cpp import (
                         _companion_snapshot_sibling,
-                        _pick_mmproj,
+                        _mmproj_picker,
                         _snapshot_dir_of,
                     )
 
                     if _snapshot_dir_of(path) is not None:
-                        mmproj = _companion_snapshot_sibling(path, _pick_mmproj)
+                        mmproj = _companion_snapshot_sibling(path, _mmproj_picker(repo_id, path))
                     else:
                         mmproj = detect_mmproj_file(path, search_root = repo_id if is_local else None)
                     if mmproj:

@@ -144,7 +144,14 @@ _WRITABLE_RUNTIME_SUBTREES = tuple(
 )
 
 
-# Write-silent devices like `2> /dev/null`; the rest of /dev is read-silent but not write-silent.
+# User-storage mounts: a configured root on one (model folder, HF cache) still covers paths under it.
+_USER_STORAGE_MOUNTS = tuple(
+    os.path.normcase(part) for part in ("/run/media", "/run/mount", "/run/host")
+)
+
+
+# Pseudo-devices a command legitimately writes to (`2> /dev/null`); the rest of /dev is read-silent but not
+# write-silent.
 _WRITE_SILENT_DEVICE_NODES = (
     "/dev/null",
     "/dev/zero",
@@ -416,6 +423,30 @@ def _contained_in(candidate: str, roots) -> bool:
     return any(candidate == root or candidate.startswith(root + os.sep) for root in roots)
 
 
+def _uncovered_runtime_subtree(path: str, roots) -> bool:
+    """*path* is in a writable runtime subtree that no silent root on user storage covers."""
+    return _contained_in(path, _WRITABLE_RUNTIME_SUBTREES) and not _contained_in(
+        path, tuple(root for root in roots if _contained_in(root, _USER_STORAGE_MOUNTS))
+    )
+
+
+def _follows_its_own_root_link(candidate: str, resolved: str, roots) -> bool:
+    """*candidate* sits under a root that is itself a link INTO a runtime subtree (`/dev/stdout` ->
+    `/dev/fd/1`), and *resolved* stays inside that link's target. A root linking to a broad directory
+    (`/var/run` -> `/run`) exempts nothing, or it would cover every runtime subtree under it."""
+    for root in roots:
+        if not _contained_in(candidate, (root,)):
+            continue
+        target = _resolved_fs_text(root)
+        if (
+            target != root
+            and _contained_in(target, _WRITABLE_RUNTIME_SUBTREES)
+            and _contained_in(resolved, (target,))
+        ):
+            return True
+    return False
+
+
 def _resolved_fs_text(text: str) -> str:
     """*text* with its symlinked components resolved, folded the way the roots are."""
     try:
@@ -480,14 +511,14 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # Kernel magic symlinks: `/proc/self/root/home/x` opens `/home/x` while looking like /proc.
     if _PROC_MAGIC_LINK_RE.match(candidate.replace(os.sep, "/")):
         return True
-    # User-writable tmpfs under a system root; checked before containment.
-    if any(
-        candidate == root or candidate.startswith(root + os.sep)
-        for root in _WRITABLE_RUNTIME_SUBTREES
-    ):
-        return True
+    # A writable subtree of an otherwise system root. `/dev/shm` and `/run/user/<uid>` are tmpfs the
+    # user's own processes write into, so a read there is a read of somebody's data, not of the
+    # machine's configuration. Checked before containment, so the enclosing root cannot cover them.
+    # Exception: a silent root INSIDE /run/media, /run/mount or /run/host covers it; `/run` itself never does.
     read_roots, write_roots = _silent_roots()
     roots = write_roots if writing else read_roots
+    if _uncovered_runtime_subtree(candidate, roots):
+        return True
     if not _contained_in(candidate, roots):
         return True
     # Shared project and tmp bases hold every account's subtree; never silent.
@@ -496,9 +527,24 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # A symlink inside a silent root can resolve outside it. Resolved only on the about-to-allow
     # path; the TOCTOU gap is the OS sandbox's to close.
     resolved = _resolved_fs_text(candidate)
-    # A root that is itself a symlink (macOS /tmp) would otherwise reject everything under it.
-    if resolved != candidate and not _contained_in(resolved, roots):
-        if not _contained_in(resolved, tuple(_resolved_fs_text(r) for r in roots)):
+    if resolved != candidate:
+        lexical_roots = roots
+        # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
+        # macOS `/tmp`, `/dev/stdout`, `/models -> /run/media/...`) would otherwise reject everything under it.
+        if not _contained_in(resolved, roots) or _contained_in(
+            resolved, _WRITABLE_RUNTIME_SUBTREES
+        ):
+            roots = roots + tuple(_resolved_fs_text(r) for r in roots)
+        if not _contained_in(resolved, roots):
+            return True
+        # Same carve-out for the target (a link may point into /run/user, held by the broad `/run` root).
+        # Exempt only when it follows its own root link: macOS `/dev/stdout` -> `/dev/fd/1` (`2> /dev/stderr`).
+        if _uncovered_runtime_subtree(resolved, roots) and not _follows_its_own_root_link(
+            candidate, resolved, lexical_roots
+        ):
+            return True
+        # And the account segment: a link can hide `Accounts/<other>/...` behind an innocent name.
+        if _names_a_managed_account_subtree(resolved):
             return True
     # Only a credential under a silent root still asks; check the resolved target too
     # (`/models/public -> $HF_HOME/token`).

@@ -406,7 +406,7 @@ def _veth_addresses(sysfs: str = "/sys/class/net") -> set[str]:
     links to an index visible here, so host networking keeps a 172.16/12 LAN (kernel ABI sysfs-class-net)."""
 
     def read(name: str, attr: str) -> str:
-        with open(f"{sysfs}/{name}/{attr}") as handle:
+        with open(f"{sysfs}/{name}/{attr}", encoding = "utf-8") as handle:
             return handle.read().strip()
 
     try:
