@@ -44,6 +44,7 @@ import threading
 import types
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
@@ -385,7 +386,7 @@ def device_config(index: int) -> Optional[tuple]:
         import torch
         if (
             torch.cuda.is_available()
-            and not getattr(torch.version, "hip", None)
+            and not is_rocm_torch(torch)
             and _triton_version_ok()
             and _kernels() is not None
             and _op() is not None
@@ -734,7 +735,7 @@ def install(
     try:
         import torch
 
-        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
             return 0
         if not _triton_version_ok() or _kernels() is None:
             return 0
@@ -776,11 +777,7 @@ def _swap(
             dev = torch.device(device)
         except Exception:  # noqa: BLE001
             return 0
-        if (
-            dev.type != "cuda"
-            or getattr(torch.version, "hip", None)
-            or not torch.cuda.is_available()
-        ):
+        if dev.type != "cuda" or is_rocm_torch(torch) or not torch.cuda.is_available():
             return 0
     else:
         dev = resident_cuda_device(transformer)
@@ -803,7 +800,7 @@ def _split_cards(transformer: Any) -> tuple:
 
         from .diffusion_layer_split import is_layer_split
 
-        if getattr(torch.version, "hip", None) or not is_layer_split(transformer):
+        if is_rocm_torch(torch) or not is_layer_split(transformer):
             return ()
         devices = {p.device for p in transformer.parameters()}
     except Exception:  # noqa: BLE001

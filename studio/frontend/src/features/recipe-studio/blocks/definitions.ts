@@ -175,7 +175,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "seed",
     type: "seed_unstructured",
     title: "Document file",
-    description: "Upload PDF, DOCX, or TXT and turn it into source rows.",
+    description: "Upload documents, ebooks, spreadsheets or slides and turn them into source rows.",
     icon: DocumentAttachmentIcon,
     dialogKey: "seed",
     createConfig: (id, existing) => makeSeedConfig(id, existing, "unstructured"),

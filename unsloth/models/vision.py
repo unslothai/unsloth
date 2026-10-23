@@ -2710,6 +2710,14 @@ def _architecture_skip_modules(model_types):
     # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
     if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
         skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
+    # Gemma 3n AltUp clamps prediction_coefs.weight.data in place every training step, which fails on packed
+    # uint8 weights; the same four modules unsloth/gemma-3n-*-unsloth-bnb-4bit keeps in 16-bit.
+    # transformers 5 matches a skip key as a suffix of each Linear's name, so the ModuleList children are listed too.
+    if any(mt.startswith("gemma3n") for mt in model_types):
+        skip.extend(("correction_coefs", "prediction_coefs"))
+        for name in ("altup_projections", "altup_unembed_projections"):
+            skip.append(name)
+            skip.extend(f"{name}.{i}" for i in range(8))
     return skip
 
 
@@ -4130,8 +4138,9 @@ class FastBaseModel:
                     _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 elif fsdp2_requested():
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
+                # Any dequantizing fp8 load (explicit config, pre-sm89 / CPU fallback); else a no-op.
+                _drop_fp8_dequantize_conversions(model)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
-                    _drop_fp8_dequantize_conversions(model)
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
