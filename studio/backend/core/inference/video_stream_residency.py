@@ -283,10 +283,12 @@ def _open_window(module: Any, dev: Any) -> Any:
     if stale is not None:
         close_window(stale[0], stale[1])
     module._unsloth_video_window = (dev, open_window(dev))
+    before = _capture_generation(dev)
     graphs = _live_graphs(dev)
     generation = _capture_generation(dev)
     accounted = getattr(module, "_unsloth_video_graphs", None)
-    if graphs == 0:
+    # a capture counts its graph before its generation, so an unchanged generation around the count makes 0 consistent
+    if graphs == 0 and generation == before:
         # no live graph (a dropped one freed its pool): nothing unaccounted can remain
         module._unsloth_video_graphs = accounted = 0
         module._unsloth_video_graph_gen = generation
@@ -349,15 +351,33 @@ def _failed_captures() -> int:
         return 0
 
 
+def _graphs_off_for_load(handles: tuple) -> bool:
+    """True only when every whole-step graph is off for good: dropped by the speed check or poisoned, with no
+    per-block fallback armed or engaged. A request-specific eager call (a refused argument, a placement refusal)
+    can still capture on a later request, so it keeps the graph key."""
+    if not handles:
+        return False
+    for h in handles:
+        if (
+            getattr(h, "fallback", None) is not None
+            or getattr(h, "fallback_handle", None) is not None
+        ):
+            return False
+        dropped = bool(getattr(h, "_slower", None)) and not getattr(h, "cache", None)
+        if not (dropped or getattr(h, "poisoned", False) is True):
+            return False
+    return True
+
+
 def live_speed_optims(pipe: Any, speed_optims: Any) -> tuple:
-    """``speed_optims`` minus ``cuda_graph`` once this load's graphs were dropped, so the key matches what runs."""
+    """``speed_optims`` minus ``cuda_graph`` once this load's graphs are off for good, so the key matches what runs."""
     optims = tuple(speed_optims or ())
     if "cuda_graph" not in optims:
         return optims
     try:
-        from .diffusion_cuda_graph import live_status
-        _, live = live_status(None, optims, tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ()))
-        return tuple(live)
+        if _graphs_off_for_load(tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())):
+            return tuple(o for o in optims if o != "cuda_graph")
+        return optims
     except Exception:  # noqa: BLE001 - unreadable: keep the load's record
         return optims
 
