@@ -802,16 +802,17 @@ async def call_webhook(request: Request, token: str) -> dict:
         raise HTTPException(status_code = 404, detail = "Not found")
     if triggers.rate_limited(token):
         raise HTTPException(status_code = 429, detail = "Too many calls; wait a minute")
-    data = await _read_body(request, WEBHOOK_MAX_BYTES)
-    try:
-        payload = json.loads(data) if data.strip() else {}
-    except ValueError:
-        raise HTTPException(status_code = 400, detail = "The body must be JSON")
+    # Resolve the secret before reading anything, so an unknown URL costs no body read.
     row = await asyncio.to_thread(run_as, OWNER, flows_db.trigger_by_token, token)
     if row is None:
         raise HTTPException(status_code = 404, detail = "Not found")
     if not row["config"].get("enabled"):
         raise HTTPException(status_code = 409, detail = "This webhook is switched off")
+    data = await _read_body(request, WEBHOOK_MAX_BYTES)
+    try:
+        payload = json.loads(data) if data.strip() else {}
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "The body must be JSON")
     from utils.account_context import arun_as
 
     received = {
