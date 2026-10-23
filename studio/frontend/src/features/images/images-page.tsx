@@ -4643,8 +4643,15 @@ export function ImagesPage({
       void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
       return;
     }
-    void handleLoad(l.repoId, opts);
-  }, [engineChoice, handleLoad, loadOrStage, status]);
+    // Untouched fields belong to the model that filled them (after a restart, the remembered one), not the
+    // resident model, so the reload takes the target's own files the way a pick does.
+    const files = pickComponentFiles({ repoId: l.repoId, kind: l.kind, filename: l.filename });
+    void handleLoad(l.repoId, opts, {
+      ...currentLoadAdvanced(l.repoId),
+      text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
+      vae_file: files.vaeFile || undefined,
+    });
+  }, [currentLoadAdvanced, engineChoice, handleLoad, loadOrStage, pickComponentFiles, status]);
 
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.

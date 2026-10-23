@@ -12,6 +12,7 @@ import {
   sameComponentFiles,
 } from "../src/features/images/image-model-recall.ts";
 import { splitComponentFileList } from "../src/features/images/component-files.ts";
+import { reapplyTarget } from "../src/features/images/lib/engine-choice.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { store } = installLocalStorageFake();
@@ -128,4 +129,75 @@ test("a successful load stores the requested files per model and the page starts
   assert.match(source, /readImageComponents\(rememberedModel\)/);
   // Every load pick routes through the prefill; a download-only pick and a staged snapshot keep theirs.
   assert.match(source, /downloadSnapshot \|\| downloadOnly \? null : pickComponentFiles\(\{ repoId, \.\.\.opts \}\)/);
+});
+
+test("Reapply of a resident model sends that model's files, never the fields another model filled in", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const tree = ts.createSourceFile("images-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declarations: Record<string, string> = {};
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ["pickComponentFiles", "handleReapply"].includes(node.name.getText(tree)))
+      declarations[node.name.getText(tree)] = `const ${node.getText(tree)};`;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(declarations.pickComponentFiles && declarations.handleReapply);
+  const { outputText } = ts.transpileModule(
+    `${declarations.pickComponentFiles}\n${declarations.handleReapply}\nreturn handleReapply;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  );
+  const reapply = (fields: { te: string; vae: string }, owner: object, status: object) => {
+    const loads: { repoId: string; advanced: Record<string, unknown> }[] = [];
+    const state = { ...fields };
+    const currentLoadAdvanced = () => ({
+      cpu_offload: false,
+      text_encoder_file: splitComponentFileList(state.te).length ? splitComponentFileList(state.te) : undefined,
+      vae_file: state.vae.trim() || undefined,
+    });
+    const scope = {
+      useCallback: (fn: unknown) => fn,
+      textEncoderFiles: fields.te,
+      vaeFile: fields.vae,
+      componentFieldsOwner: { current: owner },
+      splitComponentFileList,
+      sameComponentFiles,
+      readImageComponents,
+      setTextEncoderFiles: (v: string) => (state.te = v),
+      setVaeFile: (v: string) => (state.vae = v),
+      lastLoad: { current: null },
+      status,
+      engineChoice: "auto",
+      reapplyTarget,
+      reapplyChangesEngine: () => false,
+      reloadSource: () => "hub",
+      loadOrStage: () => assert.fail("no engine change here"),
+      currentLoadAdvanced,
+      // handleLoad reads the live fields when nothing is pinned.
+      handleLoad: (repoId: string, _opts: unknown, pinned?: Record<string, unknown>) => {
+        loads.push({ repoId, advanced: pinned ?? currentLoadAdvanced() });
+        return Promise.resolve(true);
+      },
+    };
+    new Function(...Object.keys(scope), outputText)(...Object.values(scope))();
+    return { loads, state };
+  };
+
+  store.clear();
+  rememberImageComponents(zImage, zFiles);
+  // After a restart the fields start on Z-Image's files, but another client left a plain GGUF resident.
+  const other = { loaded: true, repo_id: "org/other-GGUF", model_kind: "gguf", gguf_filename: "o.gguf", component_files: {} };
+  const toOther = reapply({ te: zFiles.textEncoderFiles.join("\n"), vae: zFiles.vaeFile }, zFiles, other);
+  assert.equal(toOther.loads.length, 1);
+  assert.equal(toOther.loads[0].repoId, "org/other-GGUF");
+  assert.equal(toOther.loads[0].advanced.text_encoder_file, undefined);
+  assert.equal(toOther.loads[0].advanced.vae_file, undefined);
+  assert.deepEqual(toOther.state, { te: "", vae: "" });
+
+  // The model the files belong to keeps them, and paths the user typed are still sent as typed.
+  const resident = { loaded: true, repo_id: zImage.repoId, model_kind: "gguf", gguf_filename: zImage.filename, component_files: {} };
+  const toZ = reapply({ te: zFiles.textEncoderFiles.join("\n"), vae: zFiles.vaeFile }, zFiles, resident);
+  assert.deepEqual(toZ.loads[0].advanced.text_encoder_file, zFiles.textEncoderFiles);
+  assert.equal(toZ.loads[0].advanced.vae_file, zFiles.vaeFile);
+  const typed = reapply({ te: "mine.safetensors", vae: "" }, zFiles, other);
+  assert.deepEqual(typed.loads[0].advanced.text_encoder_file, ["mine.safetensors"]);
 });
