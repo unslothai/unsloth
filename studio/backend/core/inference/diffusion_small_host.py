@@ -610,6 +610,20 @@ def _prefetch_budget_bytes(device: Any) -> int:
         return _PREFETCH_MIN_BYTES
 
 
+def _prefetch_budget_lowered(device: Any) -> bool:
+    """True when the user's VRAM Budget keeps a reserve on ``device``: the prefetcher then copies ahead only groups
+    that fit its window, never one whole oversized group. False at the default and on any read failure."""
+    try:
+        import torch
+
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        _free, total = torch.cuda.mem_get_info(device)
+        return user_budget_reserve_bytes(device, total) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class _EncoderPrefetcher:
     """Copies a memory-mapped encoder's offload groups ahead of its forward, in the previous forward's order, on a
     worker thread through a pinned ring (diffusers pins each group on the calling thread). Off-order groups and worker
@@ -635,6 +649,8 @@ class _EncoderPrefetcher:
         self.ready: dict = {}  # id(group) -> (device tensors, event)
         self.inflight = 0
         self.budget = _PREFETCH_MIN_BYTES
+        self.strict = False  # lowered Budget: an ahead group must fit the window, else it copies synchronously
+        self.skipped: dict = {}  # group id -> times the worker left to a synchronous copy
         self.pos = 0
         self.stop = False
         self.worker = None
@@ -715,6 +731,14 @@ class _EncoderPrefetcher:
             done.record(stream)
         return moved, done, nbytes
 
+    def _group_bytes(self, group: Any) -> int:
+        """Host bytes :meth:`_copy_group` would stage for ``group``."""
+        n = 0
+        for _t, src in _group_tensors(group):
+            if src.device.type == "cpu" and src.is_contiguous() and not src.is_pinned():
+                n += int(src.numel()) * int(src.element_size())
+        return n
+
     def _attach(self, group: Any, moved: list, done: Any) -> None:
         import torch
 
@@ -733,15 +757,26 @@ class _EncoderPrefetcher:
             if self.device.type == "cuda":
                 torch.cuda.set_device(self.device)
             for gid in order:
+                group = self.by_id.get(gid)
+                need = self._group_bytes(group) if self.strict and group is not None else 0
                 with self.cond:
+                    if need > self.budget:
+                        # Under a lowered Budget a group larger than the window would spend the reserve.
+                        self.skipped[gid] = self.skipped.get(gid, 0) + 1
+                        self.cond.notify_all()
+                        continue
                     # A group the forward onloads twice waits for its first copy to be taken.
                     while not self.stop and (
-                        (self.inflight > 0 and self.inflight >= self.budget) or gid in self.ready
+                        (
+                            self.inflight + need > self.budget
+                            if self.strict
+                            else self.inflight > 0 and self.inflight >= self.budget
+                        )
+                        or gid in self.ready
                     ):
                         self.cond.wait(0.05)
                     if self.stop:
                         return
-                group = self.by_id.get(gid)
                 if group is None:
                     continue
                 moved, done, n = self._copy_group(group)
@@ -765,6 +800,7 @@ class _EncoderPrefetcher:
         self.worker = None
         with self.cond:
             self.ready.clear()
+            self.skipped.clear()
             self.inflight = 0
 
     def begin(self) -> None:
@@ -787,6 +823,7 @@ class _EncoderPrefetcher:
         self.budget = _prefetch_budget_bytes(self.device)
         if self.budget <= 0:
             return  # no budgeted room: every group copies synchronously, as on the first forward
+        self.strict = _prefetch_budget_lowered(self.device)
         self._order_after_compute()
         self.worker = threading.Thread(
             target = self._run, args = (list(self.order),), daemon = True, name = "unsloth-encoder-prefetch"
@@ -816,9 +853,16 @@ class _EncoderPrefetcher:
             if expected == gid:
                 self.pos += 1
                 with self.cond:
-                    while gid not in self.ready and self.error is None and self.worker.is_alive():
+                    while (
+                        gid not in self.ready
+                        and not self.skipped.get(gid)
+                        and self.error is None
+                        and self.worker.is_alive()
+                    ):
                         self.cond.wait(0.05)
                     entry = self.ready.pop(gid, None)
+                    if entry is None and self.skipped.get(gid):
+                        self.skipped[gid] -= 1
                     if entry is not None:
                         self.inflight -= entry[2]
                         self.cond.notify_all()

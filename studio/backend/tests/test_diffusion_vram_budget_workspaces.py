@@ -222,6 +222,22 @@ def test_h3_kill_switch_still_spares_the_reserve(monkeypatch):
     assert V._h3_budgeted_launch_flags(_Rt(10 * GIB, 12 * GIB), uma) == uma
 
 
+def test_h3_kill_switch_still_refuses_no_room_inside_the_budget(monkeypatch):
+    """Codex #14816 r10: the kill switch keeps "-1" but must still refuse a card (nearly) inside the reserve."""
+    import core.inference.video as V
+    from core.inference import sd_cpp_args as A
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    monkeypatch.setenv(A.GRAPH_CUT_EXPLICIT_BUDGET_ENV, "0")
+    for free in (0, 1 * GIB, {"cuda0": 512 * 1024**2}):
+        with pytest.raises(H3NativeMemoryRefusal, match = "VRAM Budget"):
+            V._h3_budgeted_launch_flags(_Rt(free, 12 * GIB), _COMMITTED)
+    # a small but workable reading and an unread card still get the spare; the default budget is unchanged
+    assert V._h3_budgeted_launch_flags(_Rt(2 * GIB, 12 * GIB), _COMMITTED)[3] == "-13.00"
+    assert V._h3_budgeted_launch_flags(_Rt(None, 12 * GIB), _COMMITTED)[3] == "-13.00"
+    assert V._h3_budgeted_launch_flags(_Rt(0, 0), _COMMITTED) == _COMMITTED
+
+
 def test_h3_card_reserve_probe(fraction, monkeypatch):
     import contextlib
 

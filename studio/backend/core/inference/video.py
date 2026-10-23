@@ -1848,7 +1848,8 @@ def _h3_budgeted_launch_flags(
     if not max_vram_is_placeholder(max_vram_value(out)):
         return out
     if not explicit_vram_budget_enabled():
-        return _h3_spare_user_reserve(runtime, out)
+        # No positive budget, but a card (nearly) inside a lowered Budget's reserve is still refused.
+        return _h3_spare_user_reserve(runtime, out, read_free = True)
     probe = getattr(runtime, "vram_free_probe", None)
     try:
         free = probe() if probe is not None else None
@@ -1899,13 +1900,20 @@ def _h3_spare_user_reserve(
     flags: "list[str]",
     *,
     free: Any = None,
+    read_free: bool = False,
 ) -> list[str]:
     """``flags`` with the ``--max-vram -1`` placeholder turned into ``-(1 + reserve GiB)`` under a lowered VRAM Budget,
     so sd.cpp's own free-VRAM reading spares the user's reserve on top of its 1 GiB (unchanged at the default, off
     CUDA, or when the reserve is unread). ``free`` is a known-small budget-adjusted reading: at or below the 1 GiB sd.cpp
     spares itself, its reading minus the spare leaves no graph budget and it would disable graph splitting (place the
-    whole graph, into the reserve), so that launch is refused."""
-    from .sd_cpp_args import GRAPH_CUT_VRAM_FLAGS, max_vram_is_placeholder, max_vram_value
+    whole graph, into the reserve), so that launch is refused. ``read_free`` reads ``runtime.vram_free_probe`` for that
+    check, only under a reserve (the explicit-budget kill switch, which otherwise never probes)."""
+    from .sd_cpp_args import (
+        GRAPH_CUT_VRAM_FLAGS,
+        graph_cut_budget_gib,
+        max_vram_is_placeholder,
+        max_vram_value,
+    )
 
     from .video_minimax_h3 import H3NativeMemoryRefusal
 
@@ -1918,6 +1926,20 @@ def _h3_spare_user_reserve(
         reserve = None
     if not reserve or int(reserve) <= 0:
         return list(flags)
+    if read_free:
+        free_probe = getattr(runtime, "vram_free_probe", None)
+        try:
+            free = free_probe() if free_probe is not None else None
+        except Exception:  # noqa: BLE001 -- an unreadable card keeps the spare
+            free = None
+        # Only a known-small reading feeds the refusal, as on the explicit-budget path.
+        if isinstance(free, dict):
+            small = next(
+                (v is not None for v in free.values() if graph_cut_budget_gib(v) is None), False
+            )
+        else:
+            small = free is not None and graph_cut_budget_gib(free) is None
+        free = free if small else None
     spare_gib = float(-float(GRAPH_CUT_VRAM_FLAGS[1]))
     readings = free.values() if isinstance(free, dict) else [free]
     if any(
