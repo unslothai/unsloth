@@ -1769,6 +1769,7 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
 
     for fn in (
         InferenceOrchestrator._generate_dispatched,
+        InferenceOrchestrator._generate_inner,
         InferenceOrchestrator.generate_audio_response,
         InferenceOrchestrator.generate_whisper_response,
         InferenceOrchestrator.generate_audio_input_response,

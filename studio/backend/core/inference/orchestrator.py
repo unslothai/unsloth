@@ -3569,6 +3569,7 @@ class InferenceOrchestrator:
             if callable(close):
                 close()
 
+    @holds_inference
     def _generate_inner(
         self,
         messages: list = None,
