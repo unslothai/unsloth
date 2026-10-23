@@ -301,13 +301,46 @@ class VmmArena:
             return
         lib = _driver()
         with torch.cuda.device(self.device_index):
-            torch.cuda.synchronize(self.device_index)
-            self._base = None
-            _check(lib.cuMemUnmap(self.va, self.size), "cuMemUnmap")
-            _check(lib.cuMemRelease(self._handle), "cuMemRelease")
+            from .diffusion_cuda_graph import synchronize_outside_capture
+            synchronize_outside_capture(self.device_index)
+            self._release_synced(lib)
+
+    def _release_synced(self, lib: Any) -> None:
+        """Unmap and release, the card already synchronized with no capture recording."""
+        self._base = None
+        _check(lib.cuMemUnmap(self.va, self.size), "cuMemUnmap")
+        _check(lib.cuMemRelease(self._handle), "cuMemRelease")
         self._handle = None
         _count_mapped(self.device_index, -self.size)
         self.unmaps += 1
+
+    def _close_idle(self) -> None:
+        """``close`` for ``release_when_capture_idle``: run under the capture lock with no capture recording."""
+        import torch
+
+        if self.closed:
+            return
+        try:
+            if self._handle is not None:
+                with torch.cuda.device(self.device_index):
+                    torch.cuda.synchronize(self.device_index)
+                    self._release_synced(_driver())
+        finally:
+            self.closed = True
+            try:
+                _driver().cuMemAddressFree(self.va, self.size)
+            except Exception:  # noqa: BLE001 - process teardown
+                pass
+
+    def close_from_finalizer(self) -> None:
+        """``close`` for weakref finalizers: never blocks on the capture gate (the finalizer's thread may hold its
+        lock). Runs now when no capture records and the lock is free, else at the next gated point; the memory is
+        freed only after a device sync with no capture recording, as ``unmap`` does."""
+        if self.closed:
+            return
+        from .diffusion_cuda_graph import release_when_capture_idle
+
+        release_when_capture_idle(self._close_idle)
 
     def close(self) -> None:
         if self.closed:
@@ -419,7 +452,7 @@ class ModuleArena:
         arena = state.get("arena")
         if arena is not None:
             try:
-                arena.close()
+                arena.close_from_finalizer()
             except Exception:  # noqa: BLE001 - process teardown
                 pass
 
@@ -798,7 +831,7 @@ class GroupRange:
 def _close_ranges(ranges: list) -> None:
     for rng in ranges:
         try:
-            rng.arena.close()
+            rng.arena.close_from_finalizer()
         except Exception:  # noqa: BLE001 - process teardown
             pass
 

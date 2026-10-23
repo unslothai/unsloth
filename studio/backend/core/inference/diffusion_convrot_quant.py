@@ -884,7 +884,9 @@ def _rotq_probe(index: int, cfg: tuple) -> bool:
                 rq, rs = rotquant_reference(x, 256, kind)
                 if not (torch.equal(q, rq) and torch.equal(s, rs)):
                     return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -946,7 +948,9 @@ def _h16_probe(index: int) -> Any:
                         break
                 if not ok:
                     break
-            torch.cuda.synchronize(dev)
+            from .diffusion_cuda_graph import synchronize_outside_capture
+
+            synchronize_outside_capture(dev)
             if ok:
                 return mode
         except Exception:  # noqa: BLE001
@@ -971,7 +975,9 @@ def _swiglu_probe(index: int) -> bool:
                 q, s = _h16_launch(gate, kind, value)
                 if not codes_close(q, s, rq, rs):
                     return False
-        torch.cuda.synchronize(dev)
+        from .diffusion_cuda_graph import synchronize_outside_capture
+
+        synchronize_outside_capture(dev)
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -1062,9 +1068,15 @@ def _unlisted_latency(
     given, else the GEMM alone (a lower bound)."""
     import torch
     from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
+    from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
 
     dev = torch.device("cuda", index)
-    xs = [torch.randn(m, k, device = dev).to(torch.bfloat16) for m, k in _UNLISTED_LATENCY_SHAPES]
+    # An explicit CPU generator: a default-generator draw raises while another thread records (up to torch 2.11).
+    gen = torch.Generator().manual_seed(0)
+    xs = [
+        torch.randn(m, k, generator = gen).to(dev, torch.bfloat16)
+        for m, k in _UNLISTED_LATENCY_SHAPES
+    ]
     h = build_convrot_hadamard(256, device = dev, dtype = torch.bfloat16)
 
     def stock(x):
@@ -1082,17 +1094,18 @@ def _unlisted_latency(
                 for x in xs:
                     fn(x)  # compile / autotune outside the capture
         torch.cuda.current_stream(dev).wait_stream(side)
-        torch.cuda.synchronize(dev)
+        synchronize_outside_capture(dev)
         for name, fn in fns.items():
             graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            # Serialised with Studio's captures and recorded thread_local, like every other capture.
+            with _capturing(), torch.cuda.graph(graph, capture_error_mode = CAPTURE_MODE):
                 for _ in range(reps):
                     for x in xs:
                         fn(x)
             graphs[name] = graph
         for graph in graphs.values():
             graph.replay()
-        torch.cuda.synchronize(dev)
+        synchronize_outside_capture(dev)
         start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
         best = {name: float("inf") for name in graphs}
         for _ in range(7):
