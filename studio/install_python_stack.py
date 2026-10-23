@@ -2480,9 +2480,10 @@ def _lspci_nn_stdout() -> "str | None":
         )
     except Exception:
         return None
-    stdout = result.stdout if result.returncode == 0 else None
-    _LSPCI_MEMO = (lspci, runner, stdout)
-    return stdout
+    if result.returncode != 0:
+        return None  # a failed query is not kept: the next caller asks again
+    _LSPCI_MEMO = (lspci, runner, result.stdout)
+    return result.stdout
 
 
 def _linux_amd_gfx_from_lspci(beside_krackan2: bool = False) -> "str | None":

@@ -2408,3 +2408,26 @@ def test_the_sweep_skips_a_retired_tree_it_cannot_read(monkeypatch, tmp_path):
         assert server.is_file() and stuck.is_dir()
     finally:
         stuck.chmod(0o755)
+
+
+def test_driver_cuda_version_is_asked_again_after_the_memo_window(monkeypatch, tmp_path):
+    # A later install in the same Studio process reads the driver again.
+    exe = tmp_path / "nvidia-smi"
+    exe.write_text("")
+    calls = []
+    now = [1000.0]
+
+    def run(*a, **k):
+        calls.append(a)
+        return type("R", (), {"stdout": "CUDA Version: 12.6"})()
+
+    monkeypatch.setattr(M.shutil, "which", lambda name: str(exe))
+    monkeypatch.setattr(M.subprocess, "run", run)
+    monkeypatch.setattr(M.time, "monotonic", lambda: now[0])
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    now[0] += M._DRIVER_CUDA_MEMO_TTL_S - 1
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 1
+    now[0] += 2
+    assert M.nvidia_driver_cuda_version() == (12, 6)
+    assert len(calls) == 2

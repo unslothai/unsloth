@@ -404,7 +404,7 @@ def _installer_scan_block() -> str:
     return src[start:end]
 
 
-def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict:
+def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]], cim_error: bool = False) -> dict:
     items = ", ".join(
         f"[pscustomobject]@{{ Name = '{name}'; ConfigManagerErrorCode = {code} }}"
         for name, code in adapters
@@ -416,7 +416,12 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
                 "$ErrorActionPreference = 'Stop'",
                 # Both names: routing scan uses WMI, the report-only peer scan uses CIM.
                 "$script:cimCalls = 0",
-                f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) $script:cimCalls++; @({items}) }}",
+                (
+                    # A partial answer: CIM reports a non-terminating error beside the rows it read.
+                    f"function Get-CimInstance {{ [CmdletBinding()] param([Parameter(ValueFromRemainingArguments = $true)]$Rest) $script:cimCalls++; Write-Error 'partial'; @({items}) }}"
+                    if cim_error
+                    else f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) $script:cimCalls++; @({items}) }}"
+                ),
                 f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 "function substep { param($a, $b) }",
                 "$HasROCm = $false",
@@ -947,3 +952,13 @@ def test_these_assertions_fail_without_the_array_wraps(tmp_path):
     assert not before["wmi_array"], "the unwrapped scan should collapse to a scalar"
     assert before["label"] is None, "the unwrapped scan should report no GPU under 5.1 semantics"
     assert pinned["arch"] is None, "the unwrapped name list should infer nothing when pinned"
+
+
+@requires_pwsh
+def test_the_peer_scan_asks_again_after_a_routing_scan_error(tmp_path):
+    """A routing scan that reported an error may be partial, so the peer scan queries WMI itself, as before."""
+    out = _run_installer_scan(
+        tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)], cim_error = True
+    )
+    assert out["arch"] is None
+    assert out["cim"] == 2

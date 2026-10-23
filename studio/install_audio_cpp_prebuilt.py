@@ -50,6 +50,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tarfile
 import urllib.error
 import urllib.request
@@ -255,10 +256,12 @@ def default_install_dir() -> Path:
     return legacy if root == (Path.home() / ".unsloth" / "studio").resolve() else root / "audio.cpp"
 
 
-# detect_accelerator and the release pick both ask, so a version nvidia-smi reported is kept. Keyed
-# on its mtime (a driver update replaces it) and the runner, so a stubbed subprocess.run never
-# reads another stub's answer. No answer is not kept: a driver that recovers is seen next time.
+# detect_accelerator and the release pick both ask within one install, so a version nvidia-smi reported
+# is kept for a few minutes: a later install in the same Studio process asks again. Keyed on its mtime
+# (a driver update replaces it) and the runner, so a stubbed subprocess.run never reads another stub's
+# answer. No answer is not kept: a driver that recovers is seen next time.
 _DRIVER_CUDA_MEMO: Optional[tuple] = None
+_DRIVER_CUDA_MEMO_TTL_S = 300.0
 
 
 def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
@@ -273,7 +276,12 @@ def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
         stamp = None
     runner = subprocess.run
     memo = _DRIVER_CUDA_MEMO
-    if memo is not None and memo[:2] == (exe, stamp) and memo[2] is runner:
+    if (
+        memo is not None
+        and memo[:2] == (exe, stamp)
+        and memo[2] is runner
+        and time.monotonic() - memo[4] < _DRIVER_CUDA_MEMO_TTL_S
+    ):
         return memo[3]
     try:
         out = runner([exe], capture_output = True, text = True, timeout = 15).stdout
@@ -284,7 +292,7 @@ def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
     if not match:
         return None
     version = (int(match.group(1)), int(match.group(2)))
-    _DRIVER_CUDA_MEMO = (exe, stamp, runner, version)
+    _DRIVER_CUDA_MEMO = (exe, stamp, runner, version, time.monotonic())
     return version
 
 

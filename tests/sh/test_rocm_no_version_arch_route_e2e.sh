@@ -35,7 +35,7 @@ _TOOLS="$_ROOT/tools"
 mkdir -p "$_MOCK" "$_TOOLS"
 for _cmd in uname grep sed awk head tail tr ls sort cat cut wc mktemp rm mkdir chmod \
             dirname basename expr readlink id date find stat env timeout sleep sh bash \
-            printf echo test true false touch cp ln; do
+            printf echo test true false touch cp ln mv; do
     _real=$(command -v "$_cmd" 2>/dev/null || true)
     [ -n "$_real" ] && ln -sf "$_real" "$_TOOLS/$_cmd"
 done
@@ -547,6 +547,14 @@ for _probe_host in "gfx1201 gfx1036" "gfx1200 gfx1201"; do
     assert_eq "lspci runs at most once for $_probe_host (index $_probe_index)" \
         "yes" "$([ "$_probe_calls" -le 1 ] && echo yes || echo "no ($_probe_calls)")"
 done
+# A failing lspci (output printed, non-zero exit) is used but not kept, so each reader asks again.
+fedora_no_version_host gfx1200 gfx1201
+mock_lspci_counting "Navi 48 [Radeon RX 9070 XT]"
+printf '#!/bin/sh\necho x >> "$(dirname "$0")/.lspci.calls"\ncat "$(dirname "$0")/.lspci.out"\nexit 1\n' > "$_MOCK/lspci"
+_fail_index=$(run_index)
+_fail_calls=$(lspci_calls)
+assert_eq "a failing lspci is asked again (index $_fail_index)" \
+    "yes" "$([ "$_fail_calls" -ge 2 ] && echo yes || echo "no ($_fail_calls)")"
 
 echo ""
 echo "  passed: $PASS, failed: $FAIL"

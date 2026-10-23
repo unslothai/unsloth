@@ -5381,8 +5381,12 @@ _infer_linux_unsupported_amd_gfx_arch() {
     if [ -n "${_LSPCI_MEMO:-}" ] && [ -f "$_LSPCI_MEMO" ]; then
         _unsup_disp=$(cat "$_LSPCI_MEMO")
     else
-        _unsup_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
-        [ -z "${_LSPCI_MEMO:-}" ] || printf '%s\n' "$_unsup_disp" > "$_LSPCI_MEMO" 2>/dev/null || true
+        _unsup_raw=$(lspci -nn 2>/dev/null) && _unsup_ok=1 || _unsup_ok=""
+        _unsup_disp=$(printf '%s\n' "$_unsup_raw" | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        # Only a successful query is kept, written whole (temp file + rename) so a failed write leaves no memo.
+        if [ -n "$_unsup_ok" ] && [ -n "${_LSPCI_MEMO:-}" ]; then
+            { printf '%s\n' "$_unsup_disp" > "$_LSPCI_MEMO.tmp" && mv -f "$_LSPCI_MEMO.tmp" "$_LSPCI_MEMO"; } 2>/dev/null || rm -f "$_LSPCI_MEMO.tmp" 2>/dev/null || true
+        fi
     fi
     while IFS= read -r _unsup_ln; do
         [ -n "$_unsup_ln" ] || continue
@@ -5440,8 +5444,12 @@ _infer_linux_amd_gfx_arch() {
         if [ -n "${_LSPCI_MEMO:-}" ] && [ -f "$_LSPCI_MEMO" ]; then
             _amd_disp=$(cat "$_LSPCI_MEMO")
         else
-            _amd_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
-            [ -z "${_LSPCI_MEMO:-}" ] || printf '%s\n' "$_amd_disp" > "$_LSPCI_MEMO" 2>/dev/null || true
+            _amd_raw=$(lspci -nn 2>/dev/null) && _amd_ok=1 || _amd_ok=""
+            _amd_disp=$(printf '%s\n' "$_amd_raw" | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+            # Only a successful query is kept, written whole (temp file + rename) so a failed write leaves no memo.
+            if [ -n "$_amd_ok" ] && [ -n "${_LSPCI_MEMO:-}" ]; then
+                { printf '%s\n' "$_amd_disp" > "$_LSPCI_MEMO.tmp" && mv -f "$_LSPCI_MEMO.tmp" "$_LSPCI_MEMO"; } 2>/dev/null || rm -f "$_LSPCI_MEMO.tmp" 2>/dev/null || true
+            fi
         fi
         while IFS= read -r _ln; do
             [ -n "$_ln" ] || continue

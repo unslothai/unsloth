@@ -9564,9 +9564,11 @@ main()
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                $amdWmiErr = $null
+                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue -ErrorVariable amdWmiErr |
                     Where-Object { $_.Name -match "AMD|Radeon" })
-                $amdWmiScanned = $true
+                # A scan that reported an error may be partial: the peer scan then asks again, as before.
+                $amdWmiScanned = (-not $amdWmiErr)
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
