@@ -23,7 +23,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 
 MEMORY_MODE_AUTO = "auto"
@@ -1269,6 +1269,11 @@ _LOAD_BUDGET_LOCK = threading.Lock()
 _BUDGET_SCOPE: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
     "unsloth_vram_budget_scope", default = None
 )
+# The live value snapshotted once for an upcoming load, before the route ranks GPUs for it, so the ranking, the
+# download plan, begin_load and its worker all charge one fraction rather than the previous pipeline's snapshot.
+_UPCOMING_LOAD_FRACTION: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "unsloth_vram_budget_upcoming_load", default = None
+)
 
 
 def _live_vram_budget_fraction() -> float:
@@ -1278,14 +1283,19 @@ def _live_vram_budget_fraction() -> float:
 
 def _vram_budget_fraction() -> float:
     """The fraction the reserve readers charge. A load reads the value it began with; a generation reads its
-    pipeline's load-time snapshot; any other thread the tighter committed snapshot, else the live setting. Raises
-    like the setting read."""
+    pipeline's load-time snapshot; a request preparing a load (GPU ranking, download plan) the value it snapshotted
+    for that load; any other thread the tighter committed snapshot, else the live setting. Raises like the setting
+    read."""
     scope = _BUDGET_SCOPE.get()
     with _LOAD_BUDGET_LOCK:
         if scope is not None and scope[0] == "load" and scope[2] is not None:
             return float(scope[2])
         if scope is not None and scope[1] in _LOAD_BUDGET_FRACTIONS:
             return _LOAD_BUDGET_FRACTIONS[scope[1]]
+        if scope is None:
+            upcoming = _UPCOMING_LOAD_FRACTION.get()
+            if upcoming is not None:
+                return float(upcoming)
         pinned = tuple(_LOAD_BUDGET_FRACTIONS.values())
     return min(pinned) if pinned else _live_vram_budget_fraction()
 
@@ -1301,10 +1311,12 @@ def vram_budget_scope(owner: str, *, load: bool = False) -> Callable:
             if load and outer is not None and outer[0] == "load" and outer[1] == owner:
                 return fn(*args, **kwargs)
             if load:
-                try:
-                    fraction: Optional[float] = _live_vram_budget_fraction()
-                except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
-                    fraction = None
+                fraction: Optional[float] = _UPCOMING_LOAD_FRACTION.get()
+                if fraction is None:
+                    try:
+                        fraction = _live_vram_budget_fraction()
+                    except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
+                        fraction = None
                 scope = ("load", owner, fraction)
             else:
                 scope = ("generate", owner, None)
@@ -1317,6 +1329,60 @@ def vram_budget_scope(owner: str, *, load: bool = False) -> Callable:
         return scoped
 
     return wrap
+
+
+def snapshot_upcoming_load_budget() -> Optional[float]:
+    """Snapshot the live VRAM Budget for the load this request is preparing, before it ranks GPUs, so the ranking,
+    the plan and the load itself agree. Once per request context: a later call keeps the first value. Never raises
+    (None, and the readers fall back as before, when the setting cannot be read)."""
+    fraction = _UPCOMING_LOAD_FRACTION.get()
+    if fraction is not None:
+        return fraction
+    try:
+        fraction = _live_vram_budget_fraction()
+    except Exception:  # noqa: BLE001
+        return None
+    _UPCOMING_LOAD_FRACTION.set(fraction)
+    return fraction
+
+
+@contextlib.contextmanager
+def upcoming_load_budget() -> Iterator[Optional[float]]:
+    """``snapshot_upcoming_load_budget`` for a block only (a ranking helper that runs outside a request's own
+    context): keeps a snapshot the caller already took, else takes one and drops it on exit."""
+    if _UPCOMING_LOAD_FRACTION.get() is not None:
+        yield _UPCOMING_LOAD_FRACTION.get()
+        return
+    try:
+        fraction: Optional[float] = _live_vram_budget_fraction()
+    except Exception:  # noqa: BLE001
+        fraction = None
+    token = _UPCOMING_LOAD_FRACTION.set(fraction)
+    try:
+        yield fraction
+    finally:
+        _UPCOMING_LOAD_FRACTION.reset(token)
+
+
+def carry_load_budget(fn: Callable) -> Callable:
+    """Wrap a load's worker-thread target so it inherits the fraction the calling load began with. A plain
+    ``threading.Thread`` starts with an empty context, which would snapshot the live setting a second time."""
+    scope = _BUDGET_SCOPE.get()
+    fraction = (
+        scope[2] if scope is not None and scope[0] == "load" else _UPCOMING_LOAD_FRACTION.get()
+    )
+    if fraction is None:
+        return fn
+
+    @functools.wraps(fn)
+    def carried(*args: Any, **kwargs: Any) -> Any:
+        token = _UPCOMING_LOAD_FRACTION.set(float(fraction))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _UPCOMING_LOAD_FRACTION.reset(token)
+
+    return carried
 
 
 def commit_load_budget_fraction(owner: str) -> None:

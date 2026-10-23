@@ -51323,7 +51323,11 @@ async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optio
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
+    from core.inference.diffusion_memory import snapshot_upcoming_load_budget
 
+    # Ranking (and the plan / load after it, same request context) charges the budget THIS load will plan with, not
+    # the committed snapshot of the pipeline it is about to replace. Carried into the threads below by to_thread.
+    snapshot_upcoming_load_budget()
     if not gpu_ids:
         if not allow_ranking:
             return None

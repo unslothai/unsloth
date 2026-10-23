@@ -128,6 +128,7 @@ from .diffusion_memory import (
     commit_load_budget_fraction,
     release_load_budget_fraction,
     vram_budget_scope,
+    carry_load_budget,
     DEFAULT_BASE_OVERHEAD_MIB,
     DEFAULT_GROUP_BLOCKS,
     MEMORY_MODE_AUTO,
@@ -4661,7 +4662,7 @@ class VideoBackend:
             )
 
         account_thread(
-            target = self._run_load,
+            target = carry_load_budget(self._run_load),
             kwargs = dict(
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,

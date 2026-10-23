@@ -276,8 +276,11 @@ def plan_gpu_ordinal() -> Optional[int]:
     if pinned:
         return ordinal
     from core.inference.diffusion_device import auto_cuda_ordinal_for_load
+    from core.inference.diffusion_memory import upcoming_load_budget
 
-    return auto_cuda_ordinal_for_load()
+    # Ranked under the budget the upcoming load will plan with, not the committed pipeline's snapshot.
+    with upcoming_load_budget():
+        return auto_cuda_ordinal_for_load()
 
 
 def catalog_gpu_ordinal() -> Optional[int]:

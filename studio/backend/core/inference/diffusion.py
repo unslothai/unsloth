@@ -172,6 +172,7 @@ from .diffusion_memory import (
     commit_load_budget_fraction,
     release_load_budget_fraction,
     vram_budget_scope,
+    carry_load_budget,
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     ACTIVATION_TILE,
@@ -4769,7 +4770,7 @@ class DiffusionBackend:
             )
 
         account_thread(
-            target = self._run_load,
+            target = carry_load_budget(self._run_load),
             kwargs = dict(
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,
