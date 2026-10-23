@@ -19,6 +19,7 @@ import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
 import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
+import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
@@ -41,6 +42,7 @@ function OutputValue({ value }: { value: unknown }) {
       </div>
     );
   }
+  if (isStructuredValue(value)) return <StructuredOutput value={value} />;
   if (typeof value === "string") {
     return (
       <p className="max-h-72 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-zinc-200">

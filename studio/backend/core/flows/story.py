@@ -10,6 +10,7 @@ Player conventions (see `studio/frontend/src/features/flows/player/story/reducer
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Optional
 
@@ -134,13 +135,121 @@ STORY_ENTRY_TYPES = {"story.next_scene": "next_scene", "story.scene_art": "scene
 _LINE_RE = re.compile(r"^\s*([^:\n]{1,40}?)\s*(?:\(([^)]{1,30})\))?\s*:\s*(.+)$")
 
 
+_DIRECTIONS_RE = re.compile(r"^(?:\s*\[[^\[\]\n]{1,160}\])+\s*$")
+TRANSITIONS = {
+    "dissolve": "dissolve",
+    "fade": "fade",
+    "flash": "flash",
+    "slide": "slideleft",
+    "slideleft": "slideleft",
+    "slideright": "slideright",
+    "moveinleft": "slideleft",
+    "moveinright": "slideright",
+    "none": "none",
+}
+DIRECTION_VERBS = ("show", "hide", "scene", "with", "sound", "sfx", "play", "pause")
+POSITIONS = {
+    "left": "left",
+    "center": "center",
+    "centre": "center",
+    "right": "right",
+    "twoleft": "twoleft",
+    "tworight": "tworight",
+}
+
+
+def _find_character(words: list[str], by_name: dict, by_id: dict) -> tuple[Optional[dict], int]:
+    for n in range(min(3, len(words)), 0, -1):
+        key = " ".join(words[:n]).lower()
+        hit = by_name.get(key) or by_id.get(key) or by_id.get(slug(key))
+        if hit is not None:
+            return hit, n
+    return None, 0
+
+
+def parse_direction(
+    raw: str, by_name: dict, by_id: dict, warnings: Optional[list[str]], scene: Optional[dict]
+) -> Optional[dict]:
+    """One `[...]` direction -> a StoryStage dict, or None (scene-level, or unknown: warned and skipped)."""
+
+    def warn(msg: str) -> None:
+        if warnings is not None:
+            warnings.append(f"[{raw}]: {msg}")
+
+    words = raw.split()
+    verb = words[0].lower() if words else ""
+    rest = words[1:]
+    stage: dict[str, Any] = {}
+    if "with" in (w.lower() for w in rest):
+        i = [w.lower() for w in rest].index("with")
+        trans = TRANSITIONS.get("".join(rest[i + 1 :]).lower())
+        if trans is None:
+            warn(f"unknown transition {' '.join(rest[i + 1:])!r}")
+        else:
+            stage["with"] = trans
+        rest = rest[:i]
+    if verb in ("scene", "with"):
+        if verb == "with":
+            trans = TRANSITIONS.get("".join(rest).lower())
+            if trans is None:
+                warn("unknown transition")
+                return None
+            stage["with"] = trans
+        if scene is None:
+            warn("scene transitions only work in a Scene's dialogue")
+        elif stage.get("with"):
+            scene["transition"] = stage["with"]
+        return None
+    if verb in ("show", "hide"):
+        char, used = _find_character(rest, by_name, by_id)
+        if char is None:
+            warn("no character by that name")
+            return None
+        rest = rest[used:]
+        stage[verb] = char["id"]
+        if verb == "show":
+            if "at" in (w.lower() for w in rest):
+                i = [w.lower() for w in rest].index("at")
+                pos = POSITIONS.get("".join(rest[i + 1 :]).lower())
+                if pos is None:
+                    warn(f"unknown position {' '.join(rest[i + 1:])!r}")
+                else:
+                    stage["at"] = pos
+                rest = rest[:i]
+            if rest:
+                stage["expression"] = " ".join(rest).lower()[:30]
+        return stage
+    if verb in ("sound", "sfx", "play"):
+        if verb == "play" and rest[:1] and rest[0].lower() == "sound":
+            rest = rest[1:]
+        if not rest:
+            warn("name the sound")
+            return None
+        stage["sound"] = slug(" ".join(rest), "sound")
+        return stage
+    if verb == "pause":
+        try:
+            secs = float(rest[0]) if rest else 1.0
+        except ValueError:
+            secs = math.nan
+        if not math.isfinite(secs):
+            warn("pause takes a number of seconds")
+            return None
+        stage["pause"] = min(max(secs, 0.0), 30.0)
+        return stage
+    return None
+
+
 def parse_lines(
     text: str,
     characters: list[dict],
     *,
     auto_characters: bool = True,
+    warnings: Optional[list[str]] = None,
+    scene: Optional[dict] = None,
 ) -> list[dict]:
-    """`Name: text` / `Name (expression): text` lines; `Narrator:` or no prefix = narrator."""
+    """`Name: text` / `Name (expression): text` lines; `Narrator:` or no prefix = narrator.
+    A line made only of `[show Mo happy at left with dissolve]`-style directions becomes text-less stage lines."""
     by_name = {c["name"].lower(): c for c in characters}
     by_id = {c["id"]: c for c in characters}
     taken = {c["id"] for c in characters}
@@ -148,6 +257,18 @@ def parse_lines(
     for raw in str(text or "").splitlines():
         if not raw.strip():
             continue
+        found = re.findall(r"\[([^\[\]]+)\]", raw) if _DIRECTIONS_RE.match(raw) else []
+        if found and all(d.split()[0].lower() in DIRECTION_VERBS for d in found if d.split()):
+            for d in found:
+                stage = parse_direction(d.strip(), by_name, by_id, warnings, scene)
+                if stage:
+                    lines.append({"speaker": None, "text": "", "stage": stage})
+            continue
+        # `[Thunder rumbles]` stays narration as before; a lowercase unknown verb is likely a typo.
+        if found and warnings is not None and raw.strip()[1:2].islower():
+            warnings.append(
+                f"{raw.strip()}: not a direction (show, hide, scene, sound, pause); shown as narration"
+            )
         m = _LINE_RE.match(raw)
         speaker, expression, body = None, None, raw.strip()
         if m:
@@ -219,6 +340,10 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
         cid = _unique(slug(name, "character"), taken)
         char_by_node[n["id"]] = cid
         portraits = input_values(doc, node_outputs, n["id"], "portrait")
+        expressions: dict[str, Any] = {}
+        for v in input_values(doc, node_outputs, n["id"], "expressions"):
+            if isinstance(v, dict):
+                expressions.update({str(k).lower(): m for k, m in v.items() if isinstance(m, dict)})
         characters.append(
             {
                 "id": cid,
@@ -229,6 +354,7 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
                 "voice": p.get("voice") or None,
                 "side": p.get("side") or "left",
                 "portrait": portraits[0] if portraits else None,
+                "expressions": expressions,
             }
         )
 
@@ -255,7 +381,8 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
                 or p.get("lines")
                 or ""
             )
-            lines = parse_lines(text, characters)
+            transition: dict[str, Any] = {}
+            lines = parse_lines(text, characters, warnings = warnings, scene = transition)
             on_stage: list[str] = []
             for v in input_values(doc, node_outputs, nid, "characters"):
                 for c in v if isinstance(v, list) else [v]:
@@ -278,8 +405,16 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
                 ):
                     if char_by_node[e["source"]] not in on_stage:
                         on_stage.append(char_by_node[e["source"]])
+            directed: set[str] = set()
             for ln in lines:
-                if ln["speaker"] and ln["speaker"] not in on_stage:
+                st = ln.get("stage") or {}
+                directed.update(x for x in (st.get("show"), st.get("hide")) if x)
+                # A character a direction brings on (or takes off) is not on stage from the start.
+                if (
+                    ln["speaker"]
+                    and ln["speaker"] not in on_stage
+                    and ln["speaker"] not in directed
+                ):
                     on_stage.append(ln["speaker"])
             bg = input_values(doc, node_outputs, nid, "background")
             music = input_values(doc, node_outputs, nid, "music")
@@ -297,6 +432,13 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
                     "on_enter": p.get("on_enter") or {},
                     "generate_background": bool(p.get("generate_background")),
                     "generate_lines": bool(p.get("generate_lines")),
+                    "transition": transition.get("transition")
+                    or (
+                        p.get("transition")
+                        if p.get("transition") in TRANSITIONS.values()
+                        and p.get("transition") != "dissolve"
+                        else None
+                    ),
                 }
             )
         elif t == "story.choice":
@@ -369,7 +511,9 @@ def compile_authored(doc: dict, node_outputs: dict, warnings: list[str]) -> Opti
                 {
                     "id": nid,
                     "title": p.get("title") or "The End",
-                    "lines": parse_lines(text, characters, auto_characters = False) if text else [],
+                    "lines": parse_lines(text, characters, auto_characters = False, warnings = warnings)
+                    if text
+                    else [],
                     "choices": [],
                     "ending": {
                         "title": p.get("title") or "The End",
@@ -474,9 +618,28 @@ def finalize(
     char_ids = {c["id"] for c in manifest.get("characters") or []}
     for s in scenes.values():
         s["on_stage"] = [c for c in s.get("on_stage") or [] if c in char_ids]
+        kept = []
         for ln in s.get("lines") or []:
             if ln.get("speaker") and ln["speaker"] not in char_ids:
                 ln["speaker"] = None
+            st = ln.get("stage")
+            if isinstance(st, dict):
+                for k in ("show", "hide"):
+                    if st.get(k) and st[k] not in char_ids:
+                        warnings.append(f"{s['id']}: {k} of unknown character {st[k]!r} ignored")
+                        st.pop(k)
+                if not (set(st) - {"with", "at", "expression"}):
+                    ln.pop("stage")
+                    if not ln.get("text"):
+                        continue
+            kept.append(ln)
+        s["lines"] = kept
+    sounds = manifest.get("sounds") or {}
+    used = {
+        (ln.get("stage") or {}).get("sound") for s in scenes.values() for ln in s.get("lines") or []
+    }
+    for name in sorted(x for x in used if x and x not in sounds):
+        warnings.append(f"sound {name!r} is not defined; add a Sound block with that name")
     manifest["scenes"] = list(scenes.values())
     return StoryManifest.model_validate(manifest).model_dump(by_alias = True, exclude_none = True)
 
@@ -552,12 +715,13 @@ def repair_generated(
             if not isinstance(ln, dict) or not str(ln.get("text") or "").strip():
                 continue
             spk = str(ln.get("speaker") or "").strip().lower()
-            lines.append(
-                {
-                    "speaker": char_lookup.get(spk) or char_lookup.get(slug(spk)),
-                    "text": str(ln["text"]).strip()[:1200],
-                }
-            )
+            line = {
+                "speaker": char_lookup.get(spk) or char_lookup.get(slug(spk)),
+                "text": str(ln["text"]).strip()[:1200],
+            }
+            if line["speaker"] and _expression(ln):
+                line["expression"] = _expression(ln)
+            lines.append(line)
         choices = []
         for j, c in enumerate(s.get("choices") or []):
             if not isinstance(c, dict) or not str(c.get("text") or "").strip():
@@ -669,10 +833,16 @@ def repair_generated(
     return finalize(manifest, [])
 
 
+def _expression(ln: dict) -> Optional[str]:
+    e = str(ln.get("expression") or "").strip().lower()
+    return e if re.fullmatch(r"[a-z][a-z ]{0,29}", e) and e not in ("neutral", "none") else None
+
+
 def story_schema(
     scenes: int,
     characters: int,
     choices_max: int = 3,
+    expressions: Optional[list[str]] = None,
 ) -> dict:
     """The JSON schema `story.generator` asks the model to fill (kept flat for grammar-constrained decoding)."""
     line = {
@@ -680,6 +850,11 @@ def story_schema(
         "properties": {"speaker": {"type": "string"}, "text": {"type": "string"}},
         "required": ["speaker", "text"],
     }
+    if expressions:
+        line["properties"]["expression"] = {
+            "type": "string",
+            "enum": ["neutral", *[e for e in expressions if e != "neutral"]],
+        }
     effect = {
         "type": "object",
         "properties": {"var": {"type": "string"}, "add": {"type": "integer"}},
@@ -745,8 +920,8 @@ def story_schema(
     }
 
 
-def scene_schema(choices: int) -> dict:
-    s = story_schema(1, 1, choices)["properties"]["scenes"]["items"]
+def scene_schema(choices: int, expressions: Optional[list[str]] = None) -> dict:
+    s = story_schema(1, 1, choices, expressions)["properties"]["scenes"]["items"]
     s = {**s, "properties": dict(s["properties"])}
     s["properties"]["choices"] = {
         "type": "array",
@@ -788,7 +963,10 @@ def repair_live_scene(
     for ln in raw.get("lines") or []:
         if isinstance(ln, dict) and str(ln.get("text") or "").strip():
             spk = str(ln.get("speaker") or "").strip().lower()
-            lines.append({"speaker": char_lookup.get(spk), "text": str(ln["text"]).strip()[:1200]})
+            line = {"speaker": char_lookup.get(spk), "text": str(ln["text"]).strip()[:1200]}
+            if line["speaker"] and _expression(ln):
+                line["expression"] = _expression(ln)
+            lines.append(line)
     scene: dict[str, Any] = {
         "id": sid,
         "title": str(raw.get("title") or "")[:120] or None,
@@ -840,6 +1018,22 @@ def repair_live_scene(
     return StoryScene.model_validate(scene).model_dump(by_alias = True, exclude_none = True)
 
 
+def authored_sounds(doc: dict, node_outputs: dict, warnings: list[str]) -> dict[str, dict]:
+    sounds: dict[str, dict] = {}
+    for n in doc.get("nodes") or []:
+        if n.get("type") != "story.sound" or n.get("disabled"):
+            continue
+        name = slug((n.get("params") or {}).get("name"), "sound")
+        audio = input_values(doc, node_outputs, n["id"], "audio")
+        if not audio or not isinstance(audio[0], dict):
+            warnings.append(
+                f"sound {name!r} has no audio yet: connect an upload or run its generator"
+            )
+            continue
+        sounds[name] = audio[0]
+    return sounds
+
+
 # Entry point used by GET /api/flows/{id}/story
 def compile_story_report(doc: dict, node_outputs: Optional[dict] = None) -> tuple[dict, list[str]]:
     node_outputs = node_outputs or {}
@@ -854,6 +1048,9 @@ def compile_story_report(doc: dict, node_outputs: Optional[dict] = None) -> tupl
         raise StoryCompileError(
             "This flow has no story yet: add Story and Scene nodes, or run a Story Generator."
         )
+    sounds = authored_sounds(doc, node_outputs, warnings)
+    if sounds:
+        manifest["sounds"] = {**sounds, **(manifest.get("sounds") or {})}
     eps = dict(manifest.get("entry_points") or {})
     eps.update({k: v for k, v in _entry_points(doc, STORY_ENTRY_TYPES).items() if k not in eps})
     manifest["entry_points"] = eps
