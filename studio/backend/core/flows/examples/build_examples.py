@@ -1365,6 +1365,148 @@ def sticker_pack() -> B:
     return b
 
 
+MUSIC = {"repo": "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF", "variant": None}
+
+
+def meme_maker() -> B:
+    b = B(
+        "meme-maker",
+        "Meme Maker",
+        "pipeline",
+        "Give it a topic: the LLM writes the joke, the image model draws the scene, and the captions go on "
+        "top and bottom.",
+        tags = ["image", "text overlay", "fun"],
+        seed = 51,
+    ).need("chat", "image")
+    b.n("topic", "input.text", 0, 1, value = "when the code works on the first try")
+    b.n(
+        "joke",
+        "llm.generate",
+        1,
+        1,
+        label = "Joke writer",
+        model = CHAT,
+        temperature = 0.9,
+        max_tokens = 300,
+        prompt = "Write a funny two-line meme about: {{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "scene": {"type": "string"},
+                "top": {"type": "string"},
+                "bottom": {"type": "string"},
+            },
+            "required": ["scene", "top", "bottom"],
+        },
+    )
+    b.e("topic.text", "joke.prompt")
+    for i, part in enumerate(("scene", "top", "bottom")):
+        b.n(part, "json.get", 2, 0.4 + i * 0.8, path = part)
+        b.e("joke.json", f"{part}.json")
+    b.n("draw", "image.generate", 3, 0.4, model = IMAGE, size = "1024x1024", style = "photo, no text")
+    b.e("scene.value", "draw.prompt")
+    b.n("top_text", "image.text", 4, 0.8, label = "Top caption", size = 72, position = "top", outline = 4)
+    b.n(
+        "bottom_text",
+        "image.text",
+        5,
+        1.2,
+        label = "Bottom caption",
+        size = 72,
+        position = "bottom",
+        outline = 4,
+    )
+    b.e("draw.image", "top_text.image")
+    b.e("top.value", "top_text.text")
+    b.e("top_text.image", "bottom_text.image")
+    b.e("bottom.value", "bottom_text.text")
+    b.n("show", "output.preview", 6, 1.2)
+    b.e("bottom_text.image", "show.value")
+    return b
+
+
+def postcard() -> B:
+    b = B(
+        "postcard",
+        "Postcard",
+        "pipeline",
+        "Paint a scene and a paper background, warm up the photo, place it on the card and write the greeting.",
+        tags = ["image", "composite", "adjust", "text overlay"],
+        seed = 52,
+    ).need("image")
+    b.n("place", "input.text", 0, 1, value = "a sunny seaside town with colourful houses")
+    b.n("scene", "image.generate", 1, 0.5, label = "Photo", model = IMAGE, size = "1024x768")
+    b.e("place.text", "scene.prompt")
+    b.n(
+        "paper",
+        "image.generate",
+        1,
+        1.6,
+        label = "Card",
+        model = IMAGE,
+        size = "1344x768",
+        prompt = "blank vintage postcard paper, cream, subtle texture, empty, no text",
+    )
+    b.n("warm", "image.adjust", 2, 0.5, saturation = 1.25, contrast = 1.1, brightness = 1.05)
+    b.e("scene.image", "warm.image")
+    b.n("card", "image.composite", 3, 1, x = 0.42, y = 0.5, scale = 0.7)
+    b.e("paper.image", "card.image")
+    b.e("warm.image", "card.overlay")
+    b.n(
+        "greeting",
+        "image.text",
+        4,
+        1,
+        text = "Greetings from the seaside!",
+        size = 56,
+        color = "#7c2d12",
+        position = "bottom-right",
+        outline = 0,
+    )
+    b.e("card.image", "greeting.image")
+    b.n("show", "output.preview", 5, 1)
+    b.e("greeting.image", "show.value")
+    return b
+
+
+def social_clip() -> B:
+    b = B(
+        "social-clip",
+        "Social Clip",
+        "pipeline",
+        "Cut the best ten seconds of your video, speed it up a little and lay a fresh music track under it.",
+        tags = ["video", "edit", "music"],
+        seed = 53,
+    )
+    b.doc["requirements"]["models"].append(
+        {
+            "ref": "band",
+            "kind": "audio",
+            "note": "Small Stable Audio music model; any music model works.",
+            "optional": False,
+            **MUSIC,
+        }
+    )
+    b.n("clip", "input.video", 0, 0.5, label = "Your video")
+    b.n("vibe", "input.text", 0, 1.6, value = "upbeat lo-fi hip hop beat, warm, 90 bpm")
+    b.n("track", "audio.music", 1, 1.6, model = MUSIC, mode = "song", duration_s = 12)
+    b.e("vibe.text", "track.prompt")
+    b.n("cut", "video.edit", 2, 1, start_s = 0, end_s = 10, speed = 1.25)
+    b.e("clip.video", "cut.video")
+    b.e("track.audio", "cut.audio")
+    b.n("show", "output.preview", 3, 1)
+    b.e("cut.video", "show.value")
+    b.note(
+        "tip",
+        "Upload a video in the first block, set where the cut starts and ends, then Run.",
+        0,
+        2.6,
+        1.6,
+        0.6,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1518,9 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    meme_maker,
+    postcard,
+    social_clip,
 )
 
 
