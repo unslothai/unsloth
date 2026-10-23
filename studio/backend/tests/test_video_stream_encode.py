@@ -116,9 +116,7 @@ def test_a_compiled_decode_runs_the_chunk_hook_as_one_eager_island(device):
         reference = pipe.video_processor.postprocess_video(
             pipe.vae.decode(z, return_dict = False)[0], output_type = "np"
         )[0]
-    pipe.vae.decode = torch.compile(
-        pipe.vae.decode, backend = "eager", fullgraph = False, dynamic = True
-    )
+    pipe.vae.decode = torch.compile(pipe.vae.decode, backend = "eager", fullgraph = False, dynamic = True)
     try:
         for _ in range(2):
             session = vse.StreamEncode(pipe.vae, pipe.video_processor, 8)

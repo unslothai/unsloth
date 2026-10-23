@@ -591,7 +591,10 @@ def resolve_specs(
 
 
 def materialize_native_dir(
-    resolved: list[ResolvedLora], dest: Path, *, hardlink: bool = False
+    resolved: list[ResolvedLora],
+    dest: Path,
+    *,
+    hardlink: bool = False,
 ) -> list[ResolvedLora]:
     """Populate ``dest`` with symlinks (copy fallback) to the resolved LoRA files.
 
