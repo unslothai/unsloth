@@ -208,7 +208,7 @@ def _scale_dequant_one_pass_ok(x, s, dtype):
     # NVIDIA e4m3fn only. Compiled regions fuse the torch expression, except where Inductor cannot emit
     # fp8e4nv (below sm89): there the expression fails to compile, so the byte kernel runs as one op.
     if torch.compiler.is_compiling():
-        if not _fp8_kernel_unsupported(x):
+        if not _fp8_e4m3fn_unsupported_in_trace(x):
             return False
     elif x.numel() <= _SCALE_DEQUANT_MIN_NUMEL:
         return False
@@ -770,6 +770,25 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
         and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
         and _fp8_device_lacks_kernel(tensor.device)
     )
+
+
+def _fp8_lacks_kernel_per_device():
+    try:
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        return tuple(_fp8_device_lacks_kernel(torch.device("cuda", i)) for i in range(count))
+    except Exception:
+        return ()
+
+
+# Read once: a capability query while tracing can graph-break a compiled region.
+_FP8_DEVICE_LACKS_KERNEL = _fp8_lacks_kernel_per_device()
+
+
+def _fp8_e4m3fn_unsupported_in_trace(tensor):
+    if not tensor.is_cuda or tensor.dtype != torch.float8_e4m3fn:
+        return False
+    index = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
+    return index < len(_FP8_DEVICE_LACKS_KERNEL) and _FP8_DEVICE_LACKS_KERNEL[index]
 
 
 @triton.jit
