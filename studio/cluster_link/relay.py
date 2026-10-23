@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 CONNECT_TIMEOUT_S = 10.0
 FIRST_BYTE_TIMEOUT_S = 30.0
 REPLY_TIMEOUT_S = 10.0
+# Covers the agent's 60 s RPC_READY_TIMEOUT_S when open_rpc first leaves native mode.
 OPEN_RPC_REPLY_TIMEOUT_S = 75.0
+# Lets a client reconnect while its last session is still closing without being refused as busy.
 BUSY_GRACE_S = 0.25
 REVALIDATE_S = 2.0
 NATIVE_CLOSE_RETRY_MAX_S = 30.0
