@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
-from core.flows import compiler, package
+from core.flows import capabilities, compiler, package, triggers
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -36,6 +36,9 @@ from utils.account_context import current_account
 logger = get_logger(__name__)
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
+# Webhook triggers: authenticated by the secret in the URL alone, so outside services can call them.
+hooks_router = APIRouter()
+WEBHOOK_MAX_BYTES = 256 * 1024
 
 KEEPALIVE_S = 15.0
 _SLOT = r"^[A-Za-z0-9_-]{1,64}$"
@@ -99,7 +102,7 @@ def _flow_or_404(flow_id: str) -> dict:
 
 def _save(doc: dict, base: Optional[int]) -> dict:
     try:
-        return flows_db.save_flow(doc, base)
+        record = flows_db.save_flow(doc, base)
     except flows_db.FlowDeleted:
         raise HTTPException(status_code = 410, detail = "This flow was deleted")
     except flows_db.FlowConflict:
@@ -107,6 +110,11 @@ def _save(doc: dict, base: Optional[int]) -> dict:
             status_code = 409,
             detail = "This flow was changed in another window. Reload it to keep editing.",
         )
+    try:
+        triggers.sync(record["id"], record["doc"])
+    except Exception:
+        logger.warning("flows: could not update the triggers of %s", record["id"], exc_info = True)
+    return record
 
 
 @router.get("/nodes")
@@ -701,3 +709,121 @@ async def export_flow(
         media_type = media_type,
         headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
+
+
+# Capabilities: what a flow reaches outside itself, and the owner's approval of it
+
+
+class ApproveBody(BaseModel):
+    """What the owner saw and approves; only what the flow still needs is stored."""
+
+    python: list[str] = Field(default_factory = list, max_length = 500)
+    hosts: list[str] = Field(default_factory = list, max_length = 500)
+    mcp: bool = False
+    providers: list[str] = Field(default_factory = list, max_length = 100)
+    triggers: bool = False
+
+
+def _owner_hand() -> bool:
+    account = current_account()
+    return account.is_owner and not account.via_api_key
+
+
+def _capability_report(record: dict) -> dict:
+    approved = flows_db.get_capabilities(record["id"])
+    return {
+        "needs": capabilities.doc_needs(record["doc"]),
+        "pending": capabilities.pending(record["doc"], approved),
+        "approved": approved,
+        "can_approve": _owner_hand(),
+    }
+
+
+@router.get("/{flow_id}/capabilities")
+def get_capabilities(flow_id: str) -> dict:
+    return _capability_report(_flow_or_404(flow_id))
+
+
+@router.post("/{flow_id}/approve")
+def approve_capabilities(flow_id: str, body: ApproveBody) -> dict:
+    if not _owner_hand():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the Studio owner can approve this, from Unsloth Studio itself",
+        )
+    record = _flow_or_404(flow_id)
+    need = capabilities.doc_needs(record["doc"])
+    # Approve what the owner was shown and the flow still needs; anything added since stays pending.
+    approved = {
+        "python": [h for h in need["python"] if h in body.python],
+        "hosts": [h for h in need["hosts"] if h in body.hosts],
+        "mcp": need["mcp"] and body.mcp,
+        "providers": [p for p in need["providers"] if p in body.providers],
+        "triggers": need["triggers"] and body.triggers,
+    }
+    flows_db.set_capabilities(flow_id, approved)
+    return _capability_report(record)
+
+
+def _trigger_view(row: dict) -> dict:
+    view = {"node_id": row["node_id"], "kind": row["kind"], **row["config"]}
+    if row["kind"] == "webhook" and row.get("token"):
+        view["path"] = f"/api/flows/hooks/{row['token']}"
+    view["last_fired_at"] = row.get("last_fired_at")
+    return view
+
+
+@router.get("/{flow_id}/triggers")
+def list_flow_triggers(flow_id: str) -> dict:
+    _flow_or_404(flow_id)
+    if not _owner_hand():
+        return {"triggers": [], "owner_only": True}
+    return {
+        "triggers": [_trigger_view(r) for r in flows_db.list_triggers(flow_id)],
+        "owner_only": False,
+    }
+
+
+@router.post("/{flow_id}/triggers/{node_id}/rotate")
+def rotate_trigger(flow_id: str, node_id: str) -> dict:
+    if not _owner_hand():
+        raise HTTPException(status_code = 403, detail = "Only the Studio owner can change webhooks")
+    _flow_or_404(flow_id)
+    if not flows_db.rotate_trigger_token(flow_id, node_id, triggers.new_token()):
+        raise HTTPException(status_code = 404, detail = "No webhook on that block; save the flow first")
+    return list_flow_triggers(flow_id)
+
+
+@hooks_router.post("/{token}")
+async def call_webhook(request: Request, token: str) -> dict:
+    from utils.account_context import OWNER, run_as
+
+    if not triggers.TOKEN_RE.match(token):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    if triggers.rate_limited(token):
+        raise HTTPException(status_code = 429, detail = "Too many calls; wait a minute")
+    data = await _read_body(request, WEBHOOK_MAX_BYTES)
+    try:
+        payload = json.loads(data) if data.strip() else {}
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "The body must be JSON")
+    row = await asyncio.to_thread(run_as, OWNER, flows_db.trigger_by_token, token)
+    if row is None:
+        raise HTTPException(status_code = 404, detail = "Not found")
+    if not row["config"].get("enabled"):
+        raise HTTPException(status_code = 409, detail = "This webhook is switched off")
+    from utils.account_context import arun_as
+
+    received = {
+        "payload": payload,
+        "received_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    run_id = await arun_as(
+        OWNER, triggers.fire(request.app, row["flow_id"], row["node_id"], received)
+    )
+    if run_id is None:
+        raise HTTPException(
+            status_code = 409,
+            detail = "Not started: triggers are not approved for this flow, or its last run is still going",
+        )
+    return {"run_id": run_id}

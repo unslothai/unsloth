@@ -19,6 +19,7 @@ import { nodeIcon } from "./icons";
 import { MediaThumb, isMediaValue } from "./media";
 import { ParamField } from "./param-fields";
 import { runFlow } from "./run-controller";
+import { TriggerPanel } from "./trigger-panel";
 
 function OutputValue({ value }: { value: unknown }) {
   if (value === null || value === undefined)
@@ -256,6 +257,9 @@ function InspectorImpl() {
             </div>
           ))}
         </section>
+        {spec.type.startsWith("trigger.") && (
+          <TriggerPanel nodeId={node.id} kind={spec.type} />
+        )}
         <NodeOutputs nodeId={node.id} spec={spec} />
       </div>
     </aside>

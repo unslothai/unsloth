@@ -185,6 +185,25 @@ class NodeContext(Protocol):
         """Register a coroutine the engine awaits when the run is cancelled while this node is in flight."""
         ...
 
+    # Who started the run: {"kind": "ui" | "api_key" | "trigger" | "player", "owner": bool}.
+    origin: dict[str, Any]
+
+    def capability_refusal(
+        self,
+        cap: str,
+        detail: Optional[str] = None,
+    ) -> Optional[str]:
+        """Why this run may not use ``cap`` (python, http + host, mcp, provider + id), or None. A spec listing the
+        capability in ``requires_approval`` is checked by the engine before the handler runs; call this for a
+        capability a handler only sometimes uses (an agent turning on MCP tools)."""
+        ...
+
+    def capability_allowed(
+        self,
+        cap: str,
+        detail: Optional[str] = None,
+    ) -> bool: ...
+
 
 Handler = Callable[[NodeContext], Awaitable[dict[str, Any]]]
 

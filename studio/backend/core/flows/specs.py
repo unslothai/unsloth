@@ -23,6 +23,7 @@ CATEGORIES = [
     {"id": "video", "title": "Video", "color": "#ef4444"},
     {"id": "audio", "title": "Audio", "color": "#10b981"},
     {"id": "data", "title": "Data & Training", "color": "#3b82f6"},
+    {"id": "automation", "title": "Automation", "color": "#14b8a6"},
     {"id": "output", "title": "Output", "color": "#0ea5e9"},
     {"id": "story", "title": "Story Game", "color": "#a855f7"},
     {"id": "world", "title": "World Game", "color": "#22c55e"},
@@ -139,6 +140,7 @@ def spec(
     flow_out: Optional[list[str]] = None,
     requires: Optional[list[str]] = None,
     exclusive_gpu: bool = False,
+    requires_approval: Optional[list[str]] = None,
 ) -> dict:
     inputs = list(inputs)
     # A bindable param also gets an optional input; a connected value replaces the field (the engine overlays it).
@@ -184,6 +186,10 @@ def spec(
     if exclusive_gpu:
         # exclusive_gpu: hold the Studio-wide GPU lease while the node runs (measurements).
         found["exclusive_gpu"] = True
+    if requires_approval:
+        # requires_approval: python | http | mcp | provider | trigger; owner-started runs only, once the owner
+        # approved it for the flow (core/flows/capabilities.py).
+        found["requires_approval"] = list(requires_approval)
     return found
 
 
@@ -1221,6 +1227,77 @@ NODE_SPECS: list[dict] = [
         entrypoint = True,
         cacheable = False,
         icon = "chat",
+    ),
+    spec(
+        "trigger.schedule",
+        "Schedule",
+        "automation",
+        "Runs the flow every few minutes or on a cron schedule, only while Unsloth Studio is open (missed times are "
+        "not made up). Owner account only, after you approve it. Run by hand it fires once now.",
+        outputs = [out("fired_at", "text"), out("payload", "json")],
+        params = [
+            P("enabled", "bool", False, "On"),
+            P("every_minutes", "int", 60, "Every (minutes)", min = 1, max = 10080),
+            P("cron", "text", "", "Cron (optional, overrides Every)"),
+        ],
+        cacheable = False,
+        requires_approval = ["trigger"],
+        icon = "repeat",
+    ),
+    spec(
+        "trigger.webhook",
+        "Webhook",
+        "automation",
+        "Runs the flow when its secret URL gets a POST with a JSON body, only while Unsloth Studio is open. Owner "
+        "account only, after you approve it. Run by hand it passes the test payload.",
+        outputs = [out("payload", "json"), out("received_at", "text")],
+        params = [
+            P("enabled", "bool", False, "On"),
+            P("test_payload", "json", {"hello": "world"}, "Test payload"),
+        ],
+        cacheable = False,
+        requires_approval = ["trigger"],
+        icon = "login",
+    ),
+    spec(
+        "http.request",
+        "HTTP Request",
+        "automation",
+        "Calls a public web address (no local or private hosts). Owner-run flows only, and only hosts you approved.",
+        inputs = [inp("body", "json", "Body", optional = True)],
+        outputs = [out("data", "json"), out("text", "text"), out("status", "number")],
+        params = [
+            P(
+                "method",
+                "select",
+                "GET",
+                "Method",
+                options = ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            ),
+            P("url", "text", "https://", "URL"),
+            P("headers", "json", {}, "Headers"),
+            P("body", "json", None, "Body (JSON)"),
+            P("timeout_s", "int", 30, "Timeout (seconds)", min = 1, max = 120),
+        ],
+        side_effect = True,
+        requires_approval = ["http"],
+        icon = "globe",
+    ),
+    spec(
+        "code.python",
+        "Python",
+        "automation",
+        "Runs your Python in Studio's sandbox. `inputs` holds the connected value; set `result` to what the block "
+        "outputs (anything JSON). Owner-run flows only, and only code you approved.",
+        inputs = [inp("input", "any", "Input", optional = True)],
+        outputs = [out("result", "json"), out("log", "text")],
+        params = [
+            P("code", "textarea", "result = {'count': len(inputs or [])}", "Code"),
+            P("timeout_s", "int", 60, "Timeout (seconds)", min = 1, max = 600),
+        ],
+        side_effect = True,
+        requires_approval = ["python"],
+        icon = "braces",
     ),
     spec(
         "world.play",
