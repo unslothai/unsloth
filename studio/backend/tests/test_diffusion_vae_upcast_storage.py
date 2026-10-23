@@ -269,3 +269,51 @@ def test_hires_encode_under_model_offload_keeps_pinned_host_weights_cuda(
         ref, pipe.image_processor, image, (128, 128), pipe.vae_scale_factor
     )
     assert torch.equal(lat, expect)
+
+
+def test_nested_load_dtype_casts_still_restore_the_original_tensors():
+    # diffusers < 0.37 upcast_vae(): whole VAE to fp32, then these submodules back to the load dtype.
+    vu = _vu()
+    vae = _tiny_vae()
+    before = _storage(vae)
+    with vu.pipeline_upcasts_keep_storage(types.SimpleNamespace(vae = vae)):
+        vae.to(dtype = torch.float32)
+        for module in (vae.post_quant_conv, vae.decoder.conv_in, vae.decoder.mid_block):
+            module.to(torch.float16)
+        vae.to(dtype = torch.float16)
+    assert _storage(vae) == before
+
+
+def test_a_changed_same_dtype_replacement_is_left_alone():
+    vu = _vu()
+    vae = _tiny_vae()
+    token = vu.upcast_keeping_storage(vae)
+    vae.decoder.conv_out.to(torch.float16)
+    with torch.no_grad():
+        vae.decoder.conv_out.weight.zero_()
+    vu.restore_storage(token)
+    assert bool((vae.decoder.conv_out.weight == 0).all())
+
+
+@pytest.mark.parametrize("route", ["helper", "pipeline"])
+def test_sequential_offload_replacement_parameters_return_to_the_load_dtype(route):
+    # accelerate's leaf hooks register new Parameter objects on every onload / offload.
+    pytest.importorskip("accelerate")
+    from accelerate import cpu_offload
+
+    vu = _vu()
+    vae = _tiny_vae()
+    ref = _stock_fp32(vae)
+    cpu_offload(vae, execution_device = torch.device("cpu"))
+    assert next(vae.parameters()).device.type == "meta"
+    x = torch.randn(1, 3, 32, 32, dtype = torch.float16)
+    if route == "helper":
+        with vu.fp32_keeping_storage(vae):
+            got = vae.encode(x.float()).latent_dist.mean
+    else:
+        with vu.pipeline_upcasts_keep_storage(types.SimpleNamespace(vae = vae)):
+            vae.to(dtype = torch.float32)
+            got = vae.encode(x.float()).latent_dist.mean
+            vae.to(dtype = torch.float16)
+    assert {p.dtype for p in vae.parameters()} == {torch.float16}
+    assert torch.equal(got, ref.encode(x.float()).latent_dist.mean)

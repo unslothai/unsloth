@@ -41,12 +41,20 @@ def _onload_through_kept_hook(owner: Any) -> None:
 
 
 def _float_tensors(parts: Iterable[Any], dtype: Any) -> tuple[list, list]:
-    params, buffers = [], []
+    """``(module, name)`` of every floating parameter and buffer not already in ``dtype``. Keyed by registration, not
+    object: sequential offload's leaf hooks register a new Parameter on every onload and offload."""
+    params, buffers, seen = [], [], set()
     for part in parts:
-        for p in part.parameters():
-            if p.is_floating_point() and p.dtype != dtype:
-                params.append(p)
         for module in part.modules():
+            for name, p in list(getattr(module, "_parameters", {}).items()):
+                if (
+                    p is not None
+                    and p.is_floating_point()
+                    and p.dtype != dtype
+                    and id(p) not in seen
+                ):
+                    seen.add(id(p))
+                    params.append((module, name))
             for name, b in list(getattr(module, "_buffers", {}).items()):
                 if b is not None and b.is_floating_point() and b.dtype != dtype:
                     buffers.append((module, name))
@@ -65,39 +73,52 @@ def upcast_keeping_storage(
     parts = [owner] if parts is None else [p for p in parts if p is not None]
     _onload_through_kept_hook(owner)
     params, buffers = _float_tensors(parts, dtype)
-    saved_params = [(p, p.data) for p in params]
-    saved_buffers = [(m, name, m._buffers[name]) for m, name in buffers]
+    saved = [("p", m, name, m._parameters[name].data) for m, name in params]
+    saved += [("b", m, name, m._buffers[name]) for m, name in buffers]
     for part in parts:
         # The class method: an instance-level ``to`` (ours, an offload arena's) only handles device moves.
         type(part).to(part, dtype = dtype)
     token: list = []
-    for p, orig in saved_params:
-        token.append(("p", p, orig, p.data_ptr()))
-    for m, name, orig in saved_buffers:
-        cast = m._buffers.get(name)
-        token.append(("b", (m, name), orig, cast.data_ptr() if cast is not None else None))
+    for kind, m, name, orig in saved:
+        cast = (m._parameters if kind == "p" else m._buffers).get(name)
+        token.append((kind, m, name, orig, cast.data_ptr() if cast is not None else None))
     return token
 
 
+def _restorable(current: Any, orig: Any, cast_ptr: Any) -> bool:
+    """``current`` holds ``orig``'s values: our untouched fp32 cast (meta included), or a load-dtype cast of it made
+    inside the block (diffusers < 0.37 ``upcast_vae`` casts a few submodules back). fp16 / bf16 -> fp32 is exact."""
+    import torch
+
+    if current.device != orig.device or current.shape != orig.shape:
+        return False
+    if current.dtype != orig.dtype:
+        return current.data_ptr() == cast_ptr
+    if current.device.type == "meta" or current.data_ptr() == orig.data_ptr():
+        return current.device.type == "meta"
+    return bool(torch.equal(current, orig))
+
+
 def restore_storage(token: list) -> None:
-    """Put back the original tensors; one that has since moved or been replaced is cast back to its load dtype."""
-    for kind, ref, orig, cast_ptr in token:
+    """Put back the original tensors on the current registrations; one that has since moved or been changed is cast
+    back to its load dtype instead, as the stock cast does."""
+    for kind, m, name, orig, cast_ptr in token:
         try:
-            if kind == "p":
-                p = ref
-                if p.data_ptr() == cast_ptr and p.device == orig.device:
-                    p.data = orig
-                elif p.dtype != orig.dtype:
-                    p.data = p.data.to(orig.dtype)
-            else:
-                m, name = ref
-                current = m._buffers.get(name)
-                if current is None:
-                    continue
-                if current.data_ptr() == cast_ptr and current.device == orig.device:
-                    m._buffers[name] = orig
-                elif current.dtype != orig.dtype:
-                    m._buffers[name] = current.to(orig.dtype)
+            table = m._parameters if kind == "p" else m._buffers
+            current = table.get(name)
+            if current is None:
+                continue
+            data = current.data if kind == "p" else current
+            if _restorable(data, orig, cast_ptr):
+                if kind == "p":
+                    current.data = orig
+                else:
+                    table[name] = orig
+            elif data.dtype != orig.dtype:
+                if kind == "p":
+                    current.data = data.to(orig.dtype)
+                else:
+                    table[name] = data.to(orig.dtype)
         except Exception:  # noqa: BLE001 - best effort; leaves that tensor as the cast made it
             pass
     token.clear()
