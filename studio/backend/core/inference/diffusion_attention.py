@@ -2079,6 +2079,16 @@ def _rocm_flash_dits(pipe: Any) -> list:
     return found
 
 
+def _with_rocm_flash_replicas(dits: list) -> list:
+    """``dits`` followed by their live CFG replicas (``track_rocm_flash_replica``)."""
+    out = list(dits)
+    for source in dits:
+        replicas = getattr(source, _ROCM_FLASH_REPLICAS_ATTR, None)
+        if isinstance(replicas, weakref.WeakSet):
+            out.extend(r for r in list(replicas) if not any(r is d for d in out))
+    return out
+
+
 def _compiling() -> bool:
     try:
         import torch
@@ -2232,7 +2242,7 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
     if not dits:
         return None
     total: dict[str, int] = {}
-    for dit in dits:
+    for dit in _with_rocm_flash_replicas(dits):  # a CFG replica's calls are this generation's too
         tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
         if isinstance(tally, dict):
             for name, count in tally.items():
@@ -2262,15 +2272,13 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
 def begin_attention_run(state: Any) -> None:
     """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone, and
     this run's DiTs retry buckets whose probe could not run."""
-    for source in _rocm_flash_dits(getattr(state, "pipe", None)):
-        replicas = getattr(source, _ROCM_FLASH_REPLICAS_ATTR, None)
-        for dit in [source, *(list(replicas) if isinstance(replicas, weakref.WeakSet) else ())]:
-            if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
-                try:
-                    setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
-                    setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
-                except Exception:  # noqa: BLE001
-                    pass
+    for dit in _with_rocm_flash_replicas(_rocm_flash_dits(getattr(state, "pipe", None))):
+        if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
+            try:
+                setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
+                setattr(dit, ROCM_FLASH_DEFERRED_ATTR, set())
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def report_attention_run(state: Any) -> None:

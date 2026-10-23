@@ -1350,6 +1350,22 @@ def test_cfg_replica_retries_its_deferred_bucket_at_the_next_generation(monkeypa
     assert timed == [4096, 32768] and ran[-1] == "flash"
 
 
+def test_cfg_replica_routes_count_in_the_generation_report(monkeypatch):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 90.0})
+    replica = _Dit()
+    att.track_rocm_flash_replica(dit, replica, "cpu")
+    pipe = types.SimpleNamespace(transformer = dit)
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    dit.run(guarded, [(5000, None)])
+    replica.run(guarded, [(40000, None)])
+    assert ran == ["flash", "native"]
+    value, reason = att.rocm_flash_ran(pipe)
+    assert value == "flash" and "on 1 of 2 attention calls" in reason
+    att.begin_attention_run(types.SimpleNamespace(pipe = pipe))
+    replica.run(guarded, [(40000, None)])
+    assert att.rocm_flash_ran(pipe)[0] == "native"
+
+
 def test_a_moved_sdpa_baseline_drops_the_in_memory_verdicts(monkeypatch):
     baseline = ["sdpafem,aotriton-exp1"]
     monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: baseline[0])
