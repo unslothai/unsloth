@@ -38,10 +38,15 @@ requires_backend = pytest.mark.skipif(
 
 @pytest.fixture(autouse = True)
 def _restore(monkeypatch):
+    import transformers.modeling_layers as modeling_layers
+
     original = modeling_utils.safe_open
+    original_layers = getattr(modeling_layers, "safe_open", None)
     monkeypatch.delenv(ws.PREAD_ENV, raising = False)
     yield
     modeling_utils.safe_open = original
+    if original_layers is not None:
+        modeling_layers.safe_open = original_layers
 
 
 def _spy(monkeypatch):
@@ -234,3 +239,26 @@ def test_windows_converting_load_commits_about_one_copy(tmp_path):
     # windows-latest, 1426 MiB: mmap 3477, pread 2077 (both carry ~0.6 GB of load-time allocations besides the
     # fp16 copy); pread drops the copy-on-write charge for the stored bytes
     assert peaks["mmap"] - peaks["pread"] >= stored_mib * 0.85, peaks
+
+
+@requires_backend
+def test_the_mtp_loaders_own_reference_is_wrapped(monkeypatch):
+    # transformers 5.16's MtpModel loader imports safe_open into modeling_layers and opens its files through it
+    import transformers.modeling_layers as modeling_layers
+
+    received = []
+
+    def real(
+        filename,
+        framework = None,
+        **kw,
+    ):
+        received.append(kw)
+
+    monkeypatch.setattr(modeling_layers, "safe_open", real, raising = False)
+    monkeypatch.setenv(ws.PREAD_ENV, "1")
+    assert ws.patch_windows_safetensors_pread()
+    assert getattr(modeling_layers.safe_open, "_unsloth_windows_pread", False)
+    modeling_layers.safe_open("mtp.safetensors", framework = "pt", device = "cpu")
+    assert received[0].get("backend") == "pread"
+    assert ws.patch_windows_safetensors_pread() and modeling_layers.safe_open.__wrapped__ is real
