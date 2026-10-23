@@ -169,9 +169,13 @@ class PMC(ctypes.Structure):
         "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage",
         "PeakPagefileUsage")]
 
+k = ctypes.WinDLL("kernel32", use_last_error = True)
+k.GetCurrentProcess.restype = ctypes.c_void_p
+k.K32GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(PMC), ctypes.c_ulong]
+
 def counters():
-    k = ctypes.WinDLL("kernel32"); c = PMC(); c.cb = ctypes.sizeof(PMC)
-    assert k.K32GetProcessMemoryInfo(k.GetCurrentProcess(), ctypes.byref(c), c.cb)
+    c = PMC(); c.cb = ctypes.sizeof(PMC)
+    assert k.K32GetProcessMemoryInfo(k.GetCurrentProcess(), ctypes.byref(c), c.cb), ctypes.get_last_error()
     return c
 
 spec = importlib.util.spec_from_file_location("ws", sys.argv[1]); ws = importlib.util.module_from_spec(spec)
