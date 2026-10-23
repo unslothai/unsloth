@@ -232,7 +232,7 @@ def test_runs_whose_heartbeat_stopped_are_failed_and_live_ones_kept():
 
 def test_a_run_the_scheduler_could_not_settle_does_not_hold_its_task(monkeypatch):
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler = new_scheduler()
     make_task(schedule = {"kind": "once", "at": "2026-10-14T09:00"}, nextRunAt = db.now_ms() - DAY)
     assert scheduler._claim() is not None
     later = db.now_ms() + scheduler_module._STALE_RUN_MS + 1
@@ -405,25 +405,21 @@ def test_pause_clears_the_next_run_and_resume_schedules_from_now(client, monkeyp
     assert resumed["nextRunAt"] == ms("2026-10-21T09:00:00+00:00")
 
 
-def test_a_rename_or_resent_timing_keeps_an_overdue_run_due(client):
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"title": "Evening brief"},
+        {"notify": "none"},
+        {"named": False},
+        {"enabled": True, "schedule": {"kind": "daily", "time": "09:00"}, "timezone": "UTC"},
+    ],
+)
+def test_an_edit_that_keeps_the_timing_keeps_an_overdue_run_due(client, patch):
     make_task(nextRunAt = ms("2026-10-14T09:00:00+00:00"))
-    renamed = client.patch("/api/scheduled-tasks/task-1", json = {"title": "Evening brief"}).json()
-    assert renamed["title"] == "Evening brief"
-    assert renamed["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
-    resent = client.patch(
-        "/api/scheduled-tasks/task-1",
-        json = {"enabled": True, "schedule": {"kind": "daily", "time": "09:00"}, "timezone": "UTC"},
-    ).json()
-    assert resent["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
-
-
-def test_a_notification_setting_is_kept_and_keeps_an_overdue_run_due(client):
-    make_task(nextRunAt = ms("2026-10-14T09:00:00+00:00"))
-    muted = client.patch("/api/scheduled-tasks/task-1", json = {"notify": "none"}).json()
-    assert muted["notify"] == "none"
-    assert muted["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
-    assert client.get("/api/scheduled-tasks/task-1").json()["notify"] == "none"
-    assert create(client, notify = "failures").json()["notify"] == "failures"
+    edited = client.patch("/api/scheduled-tasks/task-1", json = patch).json()
+    assert edited["nextRunAt"] == ms("2026-10-14T09:00:00+00:00")
+    stored = client.get("/api/scheduled-tasks/task-1").json()
+    assert all(stored[key] == value for key, value in patch.items())
 
 
 def test_whether_a_task_was_named_is_kept(client):
@@ -537,10 +533,24 @@ def test_activity_pages_through_more_runs_than_one_answer_holds(client, monkeypa
     assert rest["more"] is False
 
 
+def new_scheduler():
+    return ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+
+
+def execute(task, run):
+    scheduler = new_scheduler()
+    scheduler.worker_id = "worker-under-test"
+    asyncio.run(scheduler._execute(OWNER, task, run))
+
+
+def claim():
+    return db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+
+
 def claim_manual_run(**task_overrides):
     task = make_task(**task_overrides)
     db.request_run(task["id"])
-    return db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    return claim()
 
 
 def run_scheduler(
@@ -550,21 +560,13 @@ def run_scheduler(
     failure = None,
     monkeypatch = None,
 ):
-    async def fake_generate(
-        app,
-        task,
-        run,
-        cancel_event,
-        holder = None,
-    ):
+    async def fake_generate(app, task, run, *_):
         if failure is not None:
             raise failure
         return answer
 
     monkeypatch.setattr(scheduler_module, "generate_answer", fake_generate)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
 
 def test_a_run_saves_the_exchange_as_a_new_chat(monkeypatch):
@@ -649,32 +651,18 @@ def test_a_failed_run_records_why_and_writes_no_chat(monkeypatch, failure, code,
 def test_a_task_deleted_mid_run_writes_no_chat(monkeypatch):
     task, run = claim_manual_run()
 
-    async def delete_then_answer(
-        app,
-        task,
-        run,
-        cancel_event,
-        holder = None,
-    ):
+    async def delete_then_answer(app, task, run, *_):
         await asyncio.to_thread(db.delete_task, task["id"])
         return Answer(content = "Too late.", reasoning = "", model = "gemma-3")
 
     monkeypatch.setattr(scheduler_module, "generate_answer", delete_then_answer)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
     assert studio_db.list_chat_threads() == []
 
 
 def recording_generate(asked):
-    async def generate(
-        app,
-        task,
-        run,
-        cancel_event,
-        holder = None,
-    ):
+    async def generate(app, task, run, *_):
         asked.append(run["id"])
         return Answer(content = "Done.", reasoning = "", model = "gemma-3")
 
@@ -686,9 +674,7 @@ def test_a_task_deleted_before_its_claimed_run_starts_is_not_run(monkeypatch):
     asked = []
     monkeypatch.setattr(scheduler_module, "generate_answer", recording_generate(asked))
     db.delete_task(task["id"])
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
     assert asked == []
     assert studio_db.list_chat_threads() == []
@@ -699,9 +685,7 @@ def test_a_run_claimed_for_an_account_disabled_since_is_not_run(monkeypatch):
     asked = []
     monkeypatch.setattr(scheduler_module, "generate_answer", recording_generate(asked))
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [])
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
     assert asked == []
     last_run = db.get_task(task["id"])["lastRun"]
@@ -767,9 +751,7 @@ def test_a_run_that_fails_after_writing_its_chat_leaves_none_however_soon_studio
     monkeypatch.setattr(scheduler_module, "save_chat", save_then_fail)
     monkeypatch.setattr(scheduler_module, "_discard_chat", lambda thread_id: None)
     monkeypatch.setattr(scheduler_module, "_discard_run_output", lambda run_id, kept: None)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
     assert db.get_task(task["id"])["lastRun"]["status"] == "failed"
     assert studio_db.list_chat_threads() == []
@@ -782,7 +764,7 @@ def test_deleting_a_task_removes_only_the_chat_its_running_run_may_be_writing():
     )
     assert db.finish_run(run["id"], "worker-under-test", status = "succeeded", thread_id = kept)
     db.request_run(task["id"])
-    _task, running = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    _task, running = claim()
     scheduler_module.save_chat(
         task, running, Answer(content = "Mid-run.", reasoning = "", model = "gemma-3"), 3_000, 4_000
     )
@@ -796,15 +778,7 @@ def test_deleting_a_task_removes_only_the_chat_its_running_run_may_be_writing():
 def test_a_task_deleted_while_its_chat_is_saved_keeps_no_chat(monkeypatch):
     task, run = claim_manual_run()
 
-    async def answer(
-        app,
-        task,
-        run,
-        cancel_event,
-        holder = None,
-    ):
-        return Answer(content = "Just in time?", reasoning = "", model = "gemma-3")
-
+    answer = answer_with("Just in time?")
     save_chat = scheduler_module.save_chat
 
     def save_then_delete(*args):
@@ -814,22 +788,14 @@ def test_a_task_deleted_while_its_chat_is_saved_keeps_no_chat(monkeypatch):
 
     monkeypatch.setattr(scheduler_module, "generate_answer", answer)
     monkeypatch.setattr(scheduler_module, "save_chat", save_then_delete)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
     assert db.get_task(task["id"]) is None
     assert studio_db.list_chat_threads() == []
 
 
 def answer_with(content):
-    async def generate(
-        app,
-        task,
-        run,
-        cancel_event,
-        holder = None,
-    ):
+    async def generate(app, task, run, *_):
         return Answer(content = content, reasoning = "", model = "gemma-3")
 
     return generate
@@ -849,9 +815,7 @@ def test_settling_a_run_is_tried_again_over_a_locked_database(monkeypatch):
     monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Done."))
     monkeypatch.setattr(scheduler_module, "_SETTLE_RETRY_SECONDS", 0)
     monkeypatch.setattr(db, "finish_run", locked_once)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
     assert len(attempts) == 2
     last_run = db.get_task(task["id"])["lastRun"]
@@ -868,9 +832,7 @@ def test_a_chat_whose_run_cannot_be_settled_is_removed(monkeypatch):
     monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Stranded."))
     monkeypatch.setattr(scheduler_module, "_SETTLE_RETRY_SECONDS", 0)
     monkeypatch.setattr(db, "finish_run", locked)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, task, run))
+    execute(task, run)
 
     assert studio_db.list_chat_threads() == []
     assert db.get_task(task["id"])["lastRun"]["status"] == "running"
@@ -1376,7 +1338,7 @@ def test_the_scheduler_switches_back_after_a_timed_out_run_but_not_at_shutdown(m
         task_id = "task-1",
         attended = keepwarm_module().attended_stamp(),
     )
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler = new_scheduler()
     scheduler._swap.pending = swap
     scheduler._stopping = True
     asyncio.run(scheduler._restore_swap())
@@ -1466,7 +1428,7 @@ def test_a_scheduled_run_waits_for_a_reply_being_generated(monkeypatch):
     busy = iter([True, True, False])
     monkeypatch.setattr(keepwarm, "inference_in_flight", lambda: next(busy))
     monkeypatch.setattr(scheduler_module, "_YIELD_POLL_SECONDS", 0.0)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler = new_scheduler()
     asyncio.run(scheduler._yield_to_inference(threading.Event()))
     assert next(busy, "done") == "done"
     monkeypatch.setattr(keepwarm, "inference_in_flight", lambda: True)
@@ -1701,13 +1663,7 @@ def test_the_scheduler_runs_a_due_task_and_wakes_for_run_now(monkeypatch):
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
     answered = []
 
-    async def fake_generate(
-        app,
-        task,
-        run,
-        cancel_event,
-        holder = None,
-    ):
+    async def fake_generate(app, task, run, *_):
         answered.append(run["source"])
         return Answer(content = "Done.", reasoning = "", model = "gemma-3")
 
@@ -1723,7 +1679,7 @@ def test_the_scheduler_runs_a_due_task_and_wakes_for_run_now(monkeypatch):
         raise AssertionError(f"run {count} never settled")
 
     async def scenario():
-        scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+        scheduler = new_scheduler()
         scheduler.start()
         try:
             await settled(1)
@@ -1781,7 +1737,7 @@ def test_a_claim_made_as_shutdown_begins_is_given_back(monkeypatch):
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
     due_at = db.now_ms() - DAY
     make_task(nextRunAt = due_at)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler = new_scheduler()
     claim_next = db.claim_next
 
     def claim_as_stop_begins(*args):
@@ -1800,7 +1756,7 @@ def test_the_loop_gives_back_a_claim_that_returns_after_shutdown_began(monkeypat
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
     due_at = db.now_ms() - DAY
     make_task(nextRunAt = due_at)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler = new_scheduler()
     claim = scheduler._claim
     started = []
 
@@ -1830,13 +1786,7 @@ def test_a_cancellation_raised_for_a_run_ends_the_run_not_the_scheduler(monkeypa
     monkeypatch.setattr(scheduler_module, "job_accounts", lambda: [OWNER])
     calls = []
 
-    async def fake_generate(
-        app,
-        task,
-        run,
-        cancel_event,
-        holder = None,
-    ):
+    async def fake_generate(app, task, run, *_):
         calls.append(run["id"])
         if len(calls) == 1:
             raise asyncio.CancelledError()
@@ -1855,7 +1805,7 @@ def test_a_cancellation_raised_for_a_run_ends_the_run_not_the_scheduler(monkeypa
         raise AssertionError(f"run {count} never settled")
 
     async def scenario():
-        scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+        scheduler = new_scheduler()
         scheduler.start()
         try:
             first = await settled(1)
@@ -1889,7 +1839,7 @@ def test_a_stale_snapshot_prune_keeps_a_scheduled_exchange_it_never_saw():
     task, chat = ongoing_task_with_one_run()
     seen = studio_db.list_chat_messages(chat)
     db.request_run(task["id"])
-    _task, second = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    _task, second = claim()
     scheduler_module.save_chat(task, second, Answer("Second.", "", "m"), 3_000, 4_000)
 
     studio_db.sync_chat_messages(
@@ -1918,7 +1868,7 @@ def test_an_explicit_delete_still_removes_a_scheduled_message():
 def test_an_unsettled_ongoing_run_leaves_no_exchange_behind(ending):
     task, chat = ongoing_task_with_one_run()
     db.request_run(task["id"])
-    _task, second = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    _task, second = claim()
     scheduler_module.save_chat(task, second, Answer("Unsettled.", "", "m"), 3_000, 4_000)
     assert len(studio_db.list_chat_messages(chat)) == 4
 
@@ -1965,7 +1915,7 @@ _STALE_MS = 10 * 60 * 1000
 def test_an_ongoing_exchange_whose_run_cannot_be_settled_is_removed(monkeypatch):
     task, chat = ongoing_task_with_one_run()
     db.request_run(task["id"])
-    _task, run = db.claim_next(db.now_ms(), "worker-under-test", next_run_for)
+    _task, run = claim()
 
     def locked(*args, **kwargs):
         raise sqlite3.OperationalError("database is locked")
@@ -1973,7 +1923,7 @@ def test_an_ongoing_exchange_whose_run_cannot_be_settled_is_removed(monkeypatch)
     monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Stranded."))
     monkeypatch.setattr(scheduler_module, "_SETTLE_RETRY_SECONDS", 0)
     monkeypatch.setattr(db, "finish_run", locked)
-    scheduler = ScheduledTaskScheduler(SimpleNamespace(state = SimpleNamespace()))
+    scheduler = new_scheduler()
     scheduler.worker_id = "worker-under-test"
     asyncio.run(scheduler._execute(OWNER, _task, run))
 
