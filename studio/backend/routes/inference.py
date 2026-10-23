@@ -149,7 +149,7 @@ from core.inference.orchestrator import (
     _summed_tool_loop_stats,
     routed_slot,
 )
-from core.inference.inference_gate import gated_async_client
+from core.inference.inference_gate import gated_async_client, holds_inference
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -27296,6 +27296,7 @@ async def _transcribe_audio_bytes(
     )
 
 
+@holds_inference
 async def _transcribe_audio_result(
     raw: bytes,
     model: Optional[str],

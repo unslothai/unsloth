@@ -15,6 +15,24 @@ import httpx
 def holds_inference(fn):
     """The archive's gap worker pauses (waiting out its batch in flight) for ``fn``'s whole run; a generator
     holds it until exhausted or closed. Imported lazily: this module must stay free of the RAG stack."""
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def coroutine(*args, **kwargs):
+            import asyncio
+
+            from core.rag.conversation_archive import _pause_prewarm, hold_inference
+
+            release = hold_inference()
+            try:
+                # The join waits out the batch in flight, so off the event loop.
+                await asyncio.to_thread(_pause_prewarm)
+                return await fn(*args, **kwargs)
+            finally:
+                release()
+
+        return coroutine
+
     if inspect.isgeneratorfunction(fn):
 
         @functools.wraps(fn)

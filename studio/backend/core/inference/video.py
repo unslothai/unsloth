@@ -296,7 +296,7 @@ from .video_nvenc import encode_nvenc, nvenc_gpu
 from .video_stream_encode import claim_stream, offer_stream, open_stream_encode
 from utils.hardware import clear_gpu_cache
 
-from core.inference.inference_gate import holds_inference
+from core.inference.inference_gate import holds_inference, pauses_background_embedding
 
 # Shared with the image backend so both pin every loader call to the same live cache root
 from core.inference.diffusion import hub_cache_dir
@@ -4371,6 +4371,7 @@ class VideoBackend:
 
     # ── background load + progress ───────────────────────────────────────────
 
+    @pauses_background_embedding
     def begin_load(
         self,
         repo_id: str,

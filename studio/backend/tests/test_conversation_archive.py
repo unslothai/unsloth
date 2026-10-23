@@ -1772,6 +1772,7 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     from core.inference.video import VideoBackend
     from core.training.diffusion_training_service import DiffusionTrainingService
     from core.training.training import TrainingBackend
+    from routes import inference as inference_routes
 
     for fn in (
         InferenceOrchestrator._generate_dispatched,
@@ -1786,6 +1787,11 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
         SdCppDiffusionBackend.generate,
         MlxDiffusionBackend.generate,
         VideoBackend.generate,
+        DiffusionBackend.begin_load,
+        SdCppDiffusionBackend.begin_load,
+        MlxDiffusionBackend.begin_load,
+        VideoBackend.begin_load,
+        inference_routes._transcribe_audio_result,
         TrainingBackend.start_training,
         DiffusionTrainingService.start,
     ):
@@ -1815,6 +1821,19 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     assert list(tokens()) == [1]
     assert seen == {"depth": 1, "worker_alive": False, "embedded_during": 0}
     assert load() == 1
+    assert conversation_archive._inference_depth == 0
+
+    # Async entry points (speech to text) hold it too, waiting out the batch off the event loop.
+    import asyncio
+
+    conversation_archive._start_prewarm()
+
+    @holds_inference
+    async def transcribe():
+        worker = conversation_archive._prewarm_worker
+        return conversation_archive._inference_depth, worker is not None and worker.is_alive()
+
+    assert asyncio.run(transcribe()) == (1, False)
     assert conversation_archive._inference_depth == 0
     assert threading.current_thread().name != "archive-prewarm"
 
@@ -1859,7 +1878,8 @@ def test_api_passthrough_clients_hold_the_gap_closed_until_closed(conn, monkeypa
         conversation_archive._inference_depth == 1 and conversation_archive._prewarm_stop.is_set()
     )
     conversation_archive._start_prewarm()
-    assert conversation_archive._prewarm_worker is None and calls == []
+    worker = conversation_archive._prewarm_worker
+    assert (worker is None or not worker.is_alive()) and calls == []
 
     asyncio.run(client.aclose())
     asyncio.run(client.aclose())
