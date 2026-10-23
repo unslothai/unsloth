@@ -393,8 +393,13 @@ export const BUDGET = {
   // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_085_018,
-  rawBytes: 6_922_543,
+  // A chat going back to its model when it is still loaded (#14568): the eager chat model notice and the
+  // adopt-only pick in the chat runtime, +1,970 B raw / +627 B transfer (6,922,858 -> 6,924,828 B raw,
+  // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
+  // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
+  // about 100 B over a local one).
+  transferBytes: 2_085_990,
+  rawBytes: 6_925_130,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

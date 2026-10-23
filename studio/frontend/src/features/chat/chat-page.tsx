@@ -3842,16 +3842,26 @@ export function ChatPage({
     onAttachVideo: handleNativeVideoDrop,
   });
 
+  // Every user pick, staged and no-op included: an automatic switch dispatched earlier must not land after it.
+  const userPickCountRef = useRef(0);
   const handleCheckpointChange = useCallback(
     (
       value: string,
       // Partial: the switch-back carries only what the resolver cannot recover.
-      meta?: Partial<ModelSelectorChangeMeta>,
+      meta?: Partial<ModelSelectorChangeMeta> & {
+        adoptOnly?: boolean;
+        stillWanted?: () => boolean;
+      },
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
+      if (!meta?.adoptOnly) userPickCountRef.current += 1;
       if (!value) return;
+      // NPU picks have no adopt path: loadNpuModel always reaches /load.
+      if (meta?.adoptOnly && (isNpuModelId(value) || isExternalModelId(value))) {
+        return;
+      }
       setPendingHubAutoLoad(null);
       const isExternalSelection =
         meta?.source === "external" || isExternalModelId(value);
@@ -4117,6 +4127,8 @@ export function ChatPage({
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
           forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
+          adoptOnly: meta?.adoptOnly,
+          stillWanted: meta?.stillWanted,
         };
         await stageOrLoad(selection);
       })();
@@ -4496,6 +4508,19 @@ export function ChatPage({
     },
     [handleCheckpointChange, loraModels],
   );
+  // Opening a chat may only take a slot that already serves its model as is: a reload stays a click.
+  const handleAutoSwitchToChatModel = useCallback(
+    (target: ChatModelSwitchTarget, stillWanted: () => boolean) => {
+      const picks = userPickCountRef.current;
+      handleCheckpointChange(target.modelId, {
+        ...chatModelSwitchMeta(target, loraModels),
+        isDownloaded: true,
+        adoptOnly: true,
+        stillWanted: () => stillWanted() && userPickCountRef.current === picks,
+      });
+    },
+    [handleCheckpointChange, loraModels],
+  );
 
   const inventoryRefreshStartedRef = useRef(false);
   const refreshDeferredModelInventories = useCallback(() => {
@@ -4790,7 +4815,9 @@ export function ChatPage({
                 checkpoint={inferenceCheckpoint}
                 activeGgufVariant={activeGgufVariant}
                 selectableModelIds={selectableModelIds}
+                loadedModels={loadedModels}
                 onSwitch={handleSwitchBackToChatModel}
+                onAutoSwitch={handleAutoSwitchToChatModel}
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
