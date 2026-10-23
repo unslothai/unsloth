@@ -1507,10 +1507,8 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
         # keeps the uncapped 10%.
         return max(2048, int(base * 0.10))
-    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations: the
-    # runtime headroom prices those, and the base overhead (CUDA context, scheduler state) is charged on top. So it is
-    # a fixed reserve as in ComfyUI, not a share of the card (10% capped at 4 GiB kept 4 GiB idle on a big partly used
-    # card, and 2.4-4 GiB on 24-40 GiB cards).
+    # Fixed, not a share of the card: activations and base overhead are priced separately (10% capped at 4 GiB kept
+    # 2.4-4 GiB idle on 24-40 GiB cards).
     return discrete_reserve_mib(base)
 
 

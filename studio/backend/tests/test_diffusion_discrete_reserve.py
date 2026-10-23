@@ -3,9 +3,7 @@
 
 """The discrete VRAM reserve is fixed (ComfyUI's ``minimum_inference_memory``, floored at 2 GiB), not a share of the card.
 
-The previous rule, ``max(2 GiB, min(10% of total, 4 GiB))``, kept 2.4-4 GiB idle on every card above 20 GiB. Cards up to
-20 GiB (8-16 GB consumer cards, T4) already sat on the 2 GiB floor, so their reserve, budget and every plan are
-unchanged; bigger cards only gain budget. CPU only.
+Cards up to 20 GiB already sat on the old 2 GiB floor, so their plans are unchanged. CPU only.
 """
 
 from __future__ import annotations
