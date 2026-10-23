@@ -555,12 +555,13 @@ export function KeyboardShortcutsTab() {
         );
       })}
 
-      {/* Pinned to the pane's foot, edge to edge: -mx-10 undoes this page's px-4 and the scroller's p-6,
-          and -bottom-6 its padding, which sticky otherwise insets by. */}
-      <div className="sticky -bottom-6 z-10 -mx-10 -mb-6 mt-auto flex justify-end border-t border-border/60 bg-background px-10 py-4">
+      {/* Floats over the rows at the pane's foot; the strip itself is see-through and click-through.
+          -bottom-6 undoes the scroller's padding, which sticky otherwise insets by. */}
+      <div className="pointer-events-none sticky -bottom-6 z-10 -mb-6 mt-auto flex justify-end py-4">
         <Button
           type="button"
           variant="dark"
+          className="pointer-events-auto shadow-md"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {
             stopRecording();
