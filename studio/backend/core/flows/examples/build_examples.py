@@ -1365,6 +1365,75 @@ def sticker_pack() -> B:
     return b
 
 
+def remembering_assistant() -> B:
+    b = B(
+        "remembering-assistant",
+        "Remembering Assistant",
+        "pipeline",
+        "An assistant with a memory stream (after Park et al. 2023, Generative Agents): it recalls what matters "
+        "for your message by recency, importance and meaning, answers with it, and remembers the exchange.",
+        tags = ["memory", "agent", "chat"],
+        seed = 41,
+    ).need("chat")
+    b.n(
+        "past",
+        "input.list",
+        0,
+        0.4,
+        label = "What it already knows",
+        items = [
+            "Maya is training for a half marathon in May.",
+            "Maya hurt her left knee running hills last Tuesday.",
+            "Maya's favourite breakfast is oatmeal with blueberries.",
+            "Maya's sister Ana visits next weekend.",
+            "Maya said she wants to cook more at home this month.",
+        ],
+    )
+    b.n("seed", "memory.add", 1, 0.4, label = "Remember", model = CHAT)
+    b.e("past.items", "seed.items")
+    b.n(
+        "message",
+        "input.text",
+        0,
+        1.4,
+        label = "Your message",
+        value = "Should I run hills again tomorrow?",
+    )
+    b.n("recall", "memory.retrieve", 2, 1, label = "Recall", top_k = 3)
+    b.e("seed.memory", "recall.memory")
+    b.e("message.text", "recall.query")
+    b.n(
+        "answer",
+        "llm.generate",
+        3,
+        1,
+        label = "Answer",
+        model = CHAT,
+        temperature = 0.6,
+        max_tokens = 400,
+        system = "You are Maya's friendly assistant. Use what you remember when it helps; keep it short.",
+        prompt = "What you remember:\n{{context}}\n\nMaya says: {{prompt}}",
+    )
+    b.e("recall.context", "answer.context")
+    b.e("message.text", "answer.prompt")
+    b.n("keep", "memory.add", 4, 1, label = "Remember the answer", model = CHAT)
+    b.e("recall.memory", "keep.memory")
+    b.e("answer.text", "keep.items")
+    b.n("show", "output.preview", 5, 1)
+    b.e("answer.text", "show.value")
+    b.e("recall.records", "show.value")
+    b.note(
+        "tip",
+        "Recall scores every memory by how recent, how important and how related it is to the message. "
+        "Everything runs on the local chat and embedding models.",
+        2,
+        2.0,
+        1.8,
+        0.6,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1445,7 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    remembering_assistant,
 )
 
 

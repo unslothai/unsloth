@@ -9,6 +9,7 @@ from core.flows.nodes import (  # noqa: F401
     image,
     inputs,
     logic,
+    memory,
     output,
     story,
     text,
