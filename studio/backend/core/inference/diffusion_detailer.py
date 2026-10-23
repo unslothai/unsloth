@@ -584,8 +584,15 @@ def detect(
             for image in images:
                 if stop is not None and stop():
                     raise DetailerCancelled("cancelled")
+                # Only the planes kept below (sized, then the first MAX_DETECTIONS) leave the device, and no union
+                # mask is built: the pass never reads it.
                 result = segmenter.segment(
-                    image.convert("RGB"), prompt, threshold = settings.confidence, instance_masks = True
+                    image.convert("RGB"),
+                    prompt,
+                    threshold = settings.confidence,
+                    instance_masks = True,
+                    plane_filter = lambda box: _big_enough(box, settings.drop_size),
+                    max_planes = MAX_DETECTIONS,
                 )
                 pairs = list(zip(result.instances, result.instance_logits))
                 found.append(len(pairs))

@@ -613,7 +613,15 @@ def test_detect_builds_full_size_instance_masks(monkeypatch):
     seen = {}
 
     class _Seg:
-        def segment(self, image, prompt, threshold, instance_masks):
+        def segment(
+            self,
+            image,
+            prompt,
+            threshold,
+            instance_masks,
+            plane_filter = None,
+            max_planes = None,
+        ):
             seen.update(prompt = prompt, threshold = threshold, instance_masks = instance_masks)
             return types.SimpleNamespace(
                 instances = [diffusion_segment.Instance("face", 0.9, (64.0, 48.0, 192.0, 144.0))],
@@ -648,7 +656,15 @@ def _many_detections_segmenter(count, calls):
     from core.inference import diffusion_segment
 
     class _Seg:
-        def segment(self, image, prompt, threshold, instance_masks):
+        def segment(
+            self,
+            image,
+            prompt,
+            threshold,
+            instance_masks,
+            plane_filter = None,
+            max_planes = None,
+        ):
             calls.append(image)
             return types.SimpleNamespace(
                 instances = [
@@ -1055,7 +1071,15 @@ def test_undersized_detections_take_no_cap_slot(monkeypatch):
     big = [diffusion_segment.Instance("face", 0.8, (10.0, 10.0, 60.0, 70.0)) for _ in range(20)]
 
     class _Seg:
-        def segment(self, image, prompt, threshold, instance_masks):
+        def segment(
+            self,
+            image,
+            prompt,
+            threshold,
+            instance_masks,
+            plane_filter = None,
+            max_planes = None,
+        ):
             return types.SimpleNamespace(
                 instances = tiny + big,
                 instance_logits = [torch.zeros(8, 8) for _ in tiny + big],
@@ -1082,7 +1106,14 @@ def test_detect_keeps_sam_loaded_across_the_batch(monkeypatch):
     seg.device = "cpu"
     monkeypatch.setattr(seg, "_unload_locked", lambda reason: events.append(("unload", reason)))
 
-    def _segment(image, prompt, threshold, instance_masks):
+    def _segment(
+        image,
+        prompt,
+        threshold,
+        instance_masks,
+        plane_filter = None,
+        max_planes = None,
+    ):
         seg._after_call()  # what every real call ends with
         events.append(("segment", None))
         return types.SimpleNamespace(

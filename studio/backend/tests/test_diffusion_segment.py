@@ -362,6 +362,72 @@ def test_instance_masks_are_the_union_split_per_detection(tiny_sam3):
     assert "instance_logits" not in result.to_json()
 
 
+def test_detailer_budget_moves_only_the_planes_it_keeps(tiny_sam3, monkeypatch):
+    """The Detailer's call (``plane_filter`` + ``max_planes``): the same instances as a plain instance-mask call,
+    bit-identical planes for exactly the detections it keeps (filter first, then the cap, in ``instances`` order),
+    no union mask, and at most ``max_planes`` planes moved off the device."""
+    import torch
+    from PIL import Image
+
+    from core.inference import diffusion_detailer as det
+
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    image = Image.new("RGB", (64, 40), (120, 80, 40))
+    # A repeat with a larger cap after a smaller one: its extra planes are only picked on the second occurrence.
+    prompt = "pillow:1, sofa:2, pillow:4"
+    full = segmenter.segment(
+        image, prompt, threshold = 0.0, allow_gpu = False, path = tiny_sam3, instance_masks = True
+    )
+    assert len(full.instances) == 7
+    dropped = {full.instances[1].box, full.instances[4].box}
+
+    def keep(box):
+        return box not in dropped
+
+    # What the Detailer kept before: every plane moved, then filtered, then capped.
+    cap = 3
+    before = [p for p in zip(full.instances, full.instance_logits) if keep(p[0].box)][:cap]
+
+    def _no_union(*a, **k):
+        raise AssertionError("the Detailer's call built the union mask")
+
+    monkeypatch.setattr(seg, "union_mask", _no_union)
+    monkeypatch.setattr(seg, "mask_to_png", _no_union)
+    plane_shape = full.instance_logits[0].shape
+    real_float = torch.Tensor.float
+    moved = []
+
+    def _counting_float(self, *a, **k):
+        out = real_float(self, *a, **k)
+        if self.shape == plane_shape:  # a mask plane, not the (N, 4) boxes
+            moved.append(out)
+        return out
+
+    monkeypatch.setattr(torch.Tensor, "float", _counting_float)
+    budgeted = segmenter.segment(
+        image,
+        prompt,
+        threshold = 0.0,
+        allow_gpu = False,
+        path = tiny_sam3,
+        instance_masks = True,
+        plane_filter = keep,
+        max_planes = cap,
+    )
+    monkeypatch.setattr(torch.Tensor, "float", real_float)
+    assert budgeted.mask_png == b""
+    assert budgeted.instances == full.instances and budgeted.concepts == full.concepts
+    assert len(budgeted.instance_logits) == len(budgeted.instances)
+    after = [p for p in zip(budgeted.instances, budgeted.instance_logits) if p[1] is not None]
+    assert len(after) == cap and len(moved) <= cap
+    assert [i for i, _ in after] == [i for i, _ in before]
+    assert all(torch.equal(a, b) for (_, a), (_, b) in zip(after, before))
+    # The Detailer's own selection over the budgeted result is today's.
+    sized = [p for p in zip(budgeted.instances, budgeted.instance_logits) if keep(p[0].box)]
+    assert all(plane is not None for _, plane in sized[:cap])
+    assert det.MAX_DETECTIONS >= cap
+
+
 def _small_model():
     """Stands in for a loaded Sam3Model: real parameters and a buffer, one of them tied (shared storage)."""
     import torch

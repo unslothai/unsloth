@@ -46,7 +46,7 @@ import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from loggers import get_logger
 
@@ -911,7 +911,8 @@ class SegmentResult:
     elapsed_ms: float = 0.0
     precision: Optional[str] = None
     # One CPU float (h, w) mask-logit plane per instance, in ``instances`` order, only when the call asked for
-    # instance masks (the Images detailer); never part of the route body.
+    # instance masks (the Images detailer); never part of the route body. None for an instance the call's
+    # ``plane_filter`` / ``max_planes`` left on the device.
     instance_logits: list = field(default_factory = list)
 
     def to_json(self) -> dict:
@@ -1604,7 +1605,12 @@ class MaskSegmenter:
         allow_gpu: bool = True,
         path: Optional[str] = None,
         instance_masks: bool = False,
+        plane_filter: Optional[Callable[[tuple[float, float, float, float]], bool]] = None,
+        max_planes: Optional[int] = None,
     ) -> SegmentResult:
+        """``plane_filter`` / ``max_planes`` (with ``instance_masks``, the Detailer's call): only planes of instances
+        whose box passes the filter, the first ``max_planes`` of those in ``instances`` order, leave the device (the
+        rest are None), and no union mask is built (``mask_png`` is empty)."""
         concepts = parse_prompt(prompt)
         if not concepts:
             raise ValueError("Describe what to mask, for example: sofa, red lamp, pillow:2")
@@ -1631,7 +1637,14 @@ class MaskSegmenter:
                 self._call_device, self._call_settled = "", False
             try:
                 return self._segment_locked(
-                    image, concepts, threshold, path, allow_gpu, instance_masks
+                    image,
+                    concepts,
+                    threshold,
+                    path,
+                    allow_gpu,
+                    instance_masks,
+                    plane_filter,
+                    max_planes,
                 )
             finally:
                 with self._state_lock:
@@ -1645,12 +1658,16 @@ class MaskSegmenter:
         path: str,
         allow_gpu: bool,
         instance_masks: bool = False,
+        plane_filter: Optional[Callable[[tuple[float, float, float, float]], bool]] = None,
+        max_planes: Optional[int] = None,
     ) -> SegmentResult:
         started = time.perf_counter()
         device, dtype = choose_device(allow_gpu)
         self._call_device = device
         # Passed only when asked, so the plain Find call is the one it always was.
-        extra = {"instance_masks": True} if instance_masks else {}
+        extra: dict = {"instance_masks": True} if instance_masks else {}
+        if instance_masks and (plane_filter is not None or max_planes is not None):
+            extra.update(plane_filter = plane_filter, max_planes = max_planes)
         oom = False
         try:
             result = self._segment_on(image, concepts, threshold, path, device, dtype, **extra)
@@ -1688,6 +1705,8 @@ class MaskSegmenter:
         device: str,
         dtype: Any,
         instance_masks: bool = False,
+        plane_filter: Optional[Callable[[tuple[float, float, float, float]], bool]] = None,
+        max_planes: Optional[int] = None,
     ) -> SegmentResult:
         import torch
 
@@ -1695,7 +1714,11 @@ class MaskSegmenter:
         model, tokenizer = self._model, self._tokenizer
         width, height = image.size
         scale = torch.tensor([width, height, width, height], dtype = torch.float32)
-        union = torch.zeros(height, width, dtype = torch.bool, device = device)
+        # The Detailer's call: it never reads the union, and only planes it can process leave the device, picked in
+        # the order it ranks them (``instances`` order, filter first, then the cap).
+        budgeted = instance_masks and (plane_filter is not None or max_planes is not None)
+        slots = 0
+        union = None if budgeted else torch.zeros(height, width, dtype = torch.bool, device = device)
         instances: list[Instance] = []
         logits_out: list = []
         summary: list[dict] = []
@@ -1737,29 +1760,40 @@ class MaskSegmenter:
                         presence_logit = None if presence is None else presence[0],
                     )
                     del out, presence
-                    union |= union_mask(masks, height, width)
-                    # Low resolution (SAM 3's 288x288 planes), so a capped list stays small on the host.
-                    planes = [m.float().cpu() for m in masks] if instance_masks else []
-                    del masks
-                    kept[concept.text] = (scores, boxes, planes)
+                    if budgeted:
+                        # Kept (capped, low resolution) until the occurrences below pick which planes to move.
+                        kept[concept.text] = (scores, boxes, (masks, {}))
+                    else:
+                        union |= union_mask(masks, height, width)
+                        # Low resolution (SAM 3's 288x288 planes), so a capped list stays small on the host.
+                        planes = [m.float().cpu() for m in masks] if instance_masks else []
+                        del masks
+                        kept[concept.text] = (scores, boxes, planes)
                 scores, boxes, planes = kept[concept.text]
                 scores, boxes = scores[: concept.max_detections], boxes[: concept.max_detections]
-                logits_out.extend(planes[: concept.max_detections])
+                if not budgeted:
+                    logits_out.extend(planes[: concept.max_detections])
                 boxes_px = (boxes.float().cpu() * scale).tolist()
-                for score, box in zip(scores.tolist(), boxes_px):
+                for j, (score, box) in enumerate(zip(scores.tolist(), boxes_px)):
                     x1, y1, x2, y2 = (float(v) for v in box)
-                    instances.append(
-                        Instance(
-                            concept.text,
-                            float(score),
-                            (
-                                max(0.0, x1),
-                                max(0.0, y1),
-                                min(float(width), x2),
-                                min(float(height), y2),
-                            ),
-                        )
+                    clipped = (
+                        max(0.0, x1),
+                        max(0.0, y1),
+                        min(float(width), x2),
+                        min(float(height), y2),
                     )
+                    instances.append(Instance(concept.text, float(score), clipped))
+                    if budgeted:
+                        device_masks, moved = planes
+                        plane = None
+                        if (max_planes is None or slots < max_planes) and (
+                            plane_filter is None or plane_filter(clipped)
+                        ):
+                            slots += 1
+                            if j not in moved:
+                                moved[j] = device_masks[j].float().cpu()
+                            plane = moved[j]
+                        logits_out.append(plane)
                 summary.append(
                     {
                         "text": concept.text,
@@ -1769,7 +1803,7 @@ class MaskSegmenter:
                 )
             del kept, vision, pixels
         return SegmentResult(
-            mask_png = mask_to_png(union),
+            mask_png = b"" if union is None else mask_to_png(union),
             width = width,
             height = height,
             instances = instances,
