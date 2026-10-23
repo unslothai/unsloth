@@ -152,11 +152,54 @@ def test_guidance_off_and_unarmed_calls_are_untouched():
     assert zs.zimage_cfg_split_status(pipe)["split"] == 0
 
 
-@pytest.mark.parametrize("policy", ["group", "streaming", "sequential"])
+@pytest.mark.parametrize("policy", ["streaming", "sequential"])
 def test_streamed_denoiser_is_not_armed(policy):
     pipe = types.SimpleNamespace(transformer = _model())
     assert "streamed" in zs.install_zimage_cfg_split(pipe, offload_policy = policy)
     assert zs.zimage_cfg_split_status(pipe)["armed"] is False
+
+
+def test_group_offload_with_every_group_resident_splits():
+    """Studio's 12 GiB plan for Z-Image-Turbo int8 / fp8 is group offload with all 37 offload groups pinned resident
+    (only the prompt encode streams some, re-pinned before step 0). The split used to decline every 'group' load as
+    "streamed", so the first guided render compiled the three block kinds again at batch 2 (3 recompiles)."""
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
+    assert zs.zimage_cfg_split_status(pipe)["armed"] is True
+    model._unsloth_stream_state = {
+        "streamed": 0
+    }  # what _keep_groups_resident records when every group is pinned
+    _compile_blocks(model)
+    t = torch.tensor([0.4])
+    with zs.render(pipe, 1):
+        _run(model, [_latent(0)], t, [_caption(9, 0)])
+        _run(model, [_latent(1)], t, [_caption(45, 1)])
+        warm = _graphs()
+        _run(model, *_guided_args(_latent(2), t, 45, 9, 2))
+        _run(model, *_guided_args(_latent(3), t, 7, 9, 3))
+    assert _graphs() == warm
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 2
+
+
+@pytest.mark.parametrize("state", [None, {"streamed": 3}, {"streamed": "?"}])
+def test_group_offload_while_groups_stream_keeps_the_batched_call(state):
+    """A group-offloaded denoiser whose groups stream (partial residency, an oversized request's release, or no
+    residency record at all) would upload its weights twice per guided step: it keeps the batched call."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group") is None
+    if state is not None:
+        model._unsloth_stream_state = state
+    t = torch.tensor([0.4])
+    with zs.render(pipe, 1):
+        out = _run(model, *_guided_args(_latent(2), t, 45, 9, 2))
+    stats = zs.zimage_cfg_split_status(pipe)
+    assert stats["split"] == 0 and stats["batched"] == 1
+    zs.uninstall_zimage_cfg_split(pipe)
+    stock = _run(model, *_guided_args(_latent(2), t, 45, 9, 2))  # the unpatched, batched call
+    assert all(torch.equal(a, b) for a, b in zip(out, stock))
 
 
 def test_step_cache_and_step_skip_keep_the_batched_call():
@@ -455,3 +498,40 @@ def test_compiled_only_eager_oom_retries_split_for_the_render(monkeypatch):
     )
     with pytest.raises(ValueError), zs.render(pipe, 1):
         _run(model, *args)
+
+
+def test_request_guard_sizes_a_split_guided_render_as_guidance_off():
+    """The generate-time request guard priced a guided render as a doubled denoiser batch ("placed from a peak recorded
+    without CFG"), released 5 GiB of the resident groups for it, and the now-streamed denoiser declined the split: the
+    first guided render compiled the batched call after all. Where the split will run, the render is a guidance-off one
+    twice over and needs no extra memory."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # not armed
+    zs.install_zimage_cfg_split(pipe, offload_policy = "group")
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # no residency record: groups stream
+    model._unsloth_stream_state = {"streamed": 0}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+    model._unsloth_stream_state = {"streamed": 2}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    model._unsloth_stream_state = {"streamed": 0}
+    model._unsloth_step_cache = object()
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False  # FBCache keeps the batched call
+    del model._unsloth_step_cache
+    resident = types.SimpleNamespace(transformer = _model())
+    zs.install_zimage_cfg_split(resident, offload_policy = "none")
+    assert zs.guided_runs_at_guidance_off_batch(resident) is True
+
+
+def test_request_guard_prices_an_eager_compiled_only_load_as_doubled():
+    """compiled_only: an eager denoiser keeps the batched guided call, so the guard sizes it doubled even with every
+    offload group resident; once compiled the split runs and the guidance-off price applies."""
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    assert zs.install_zimage_cfg_split(pipe, offload_policy = "group", compiled_only = True) is None
+    model._unsloth_stream_state = {"streamed": 0}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False
+    model._unsloth_regional_compile_kwargs = {"dynamic": True}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is True
+    model._unsloth_stream_state = {"streamed": 1}
+    assert zs.guided_runs_at_guidance_off_batch(pipe) is False

@@ -18,7 +18,10 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
+recompile. Group offload counts as resident while every one of the denoiser's offload groups is pinned on the card (the
+measured placement keeps the whole int8 / fp8 Z-Image transformer resident at a 12 GiB budget, and only the prompt
+encode streams some of it, re-pinned before step 0); it is checked per call, so a render whose groups stream keeps the
+batched call. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
 Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 
 Studio arms it ``compiled_only``: a render splits only while the denoiser runs compiled code or replays CUDA graphs,
@@ -38,7 +41,9 @@ from typing import Any, Optional
 
 ZIMAGE_CFG_SPLIT_ENV = "UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT"
 _TRANSFORMER_CLASS = "ZImageTransformer2DModel"
-_STREAMED_POLICIES = ("group", "streaming", "sequential")
+_STREAMED_POLICIES = ("streaming", "sequential")
+# Group offload streams blocks only when some of the denoiser's offload groups are not pinned resident.
+_GROUP_POLICY = "group"
 # Instance attributes: armed at load, images per guidance-off call during a render, per-load counters.
 _ARMED_ATTR = "_unsloth_zimage_cfg_split"
 _SAMPLES_ATTR = "_unsloth_zimage_cfg_samples"
@@ -47,6 +52,9 @@ _COMPILED_ONLY_ATTR = "_unsloth_zimage_cfg_split_compiled_only"
 # During an eager compiled_only render: the guided call runs batched and splits only once it ran out of memory.
 _EAGER_ATTR = "_unsloth_zimage_cfg_eager"
 _OOM_ATTR = "_unsloth_zimage_cfg_oom"
+_POLICY_ATTR = "_unsloth_zimage_cfg_policy"
+# diffusion_memory._keep_groups_resident / release_resident_groups keep {"streamed": <groups not resident>} here.
+_STREAM_STATE_ATTR = "_unsloth_stream_state"
 # Keyword arguments a split call may carry (anything else, e.g. siglip / controlnet / noise masks, runs batched).
 _PLAIN_KWARGS = frozenset({"return_dict", "joint_attention_kwargs", "patch_size", "f_patch_size"})
 
@@ -76,8 +84,21 @@ def _skip_keys_calls_apart(skip: Any) -> bool:
     return getattr(skip, "context", None) is None and bool(getattr(skip, "step_signal", False))
 
 
+def _groups_stream(slots: dict) -> bool:
+    """Under group offload: whether any of the denoiser's offload groups streams now (unknown counts as streaming)."""
+    state = slots.get(_STREAM_STATE_ATTR)
+    if not isinstance(state, dict):
+        return True
+    try:
+        return int(state.get("streamed", 1)) > 0
+    except (TypeError, ValueError):
+        return True
+
+
 def _declined_now(module: Any) -> Optional[str]:
     slots = getattr(module, "__dict__", {})
+    if slots.get(_POLICY_ATTR) == _GROUP_POLICY and _groups_stream(slots):
+        return "denoiser blocks stream (group offload)"
     # FBCache keeps one residual per cache_context; two calls in one context would compare cond against uncond.
     if getattr(module, "_unsloth_step_cache", None):
         return "step cache"
@@ -261,6 +282,7 @@ def uninstall_zimage_cfg_split(pipe: Any = None) -> None:
             _COMPILED_ONLY_ATTR,
             _EAGER_ATTR,
             _OOM_ATTR,
+            _POLICY_ATTR,
         ):
             slots.pop(name, None)
     with _LOCK:
@@ -299,12 +321,21 @@ def install_zimage_cfg_split(
             denoiser.__dict__[_ARMED_ATTR] = True
             denoiser.__dict__[_STATS_ATTR] = {"split": 0, "batched": 0}
             denoiser.__dict__[_COMPILED_ONLY_ATTR] = bool(compiled_only)
+            denoiser.__dict__[_POLICY_ATTR] = offload_policy
         else:
             denoiser.__dict__.pop(_ARMED_ATTR, None)
+            denoiser.__dict__.pop(_POLICY_ATTR, None)
         if logger is not None:
             logger.info(
                 "diffusion.zimage_cfg_split: %s",
-                "armed (guided steps run as two calls at the guidance-off batch)"
+                (
+                    "armed (guided steps run as two calls at the guidance-off batch"
+                    + (
+                        ", while every offload group is resident)"
+                        if offload_policy == _GROUP_POLICY
+                        else ")"
+                    )
+                )
                 if reason is None
                 else f"not armed ({reason})",
             )
@@ -313,6 +344,24 @@ def install_zimage_cfg_split(
         if logger is not None:
             logger.info("diffusion.zimage_cfg_split: not armed (%s: %s)", type(exc).__name__, exc)
         return f"{type(exc).__name__}: {exc}"
+
+
+def guided_runs_at_guidance_off_batch(pipe: Any) -> bool:
+    """Whether a guided render of this load would run its transformer calls at the guidance-off batch (the split is
+    armed and nothing declines it now), so it needs no more activation memory than a guidance-off render. The request
+    guard sizes the render from this: priced as a doubled batch it released resident offload groups, which then
+    declined the split and compiled the batched call after all. A ``compiled_only`` load whose denoiser runs eager
+    keeps the batched guided call, so it is priced doubled. False when unknown."""
+    denoiser = getattr(pipe, "transformer", None)
+    slots = getattr(denoiser, "__dict__", None)
+    if not isinstance(slots, dict) or not slots.get(_ARMED_ATTR) or zimage_cfg_split_disabled():
+        return False
+    try:
+        if slots.get(_COMPILED_ONLY_ATTR) and not _graphs_engaged(pipe, denoiser):
+            return False
+        return _declined_now(denoiser) is None
+    except Exception:  # noqa: BLE001 - unknown: sized as the batched call
+        return False
 
 
 def zimage_cfg_split_status(pipe: Any) -> Optional[dict]:

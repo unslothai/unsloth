@@ -115,6 +115,7 @@ from .diffusion_device import (
 )
 from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
 from .diffusion_zimage_cfg_split import (
+    guided_runs_at_guidance_off_batch,
     install_zimage_cfg_split,
     uninstall_zimage_cfg_split,
     zimage_cfg_split_status,
@@ -13070,6 +13071,14 @@ class DiffusionBackend:
                         guard_cfg = _negative_prompt_engaged(fam, guidance)
                     except Exception:  # noqa: BLE001 - unknown: sized as a CFG request
                         guard_cfg = None
+                    if (
+                        guard_cfg is not False
+                        and workflow in ("txt2img", "img2img", "inpaint")
+                        and guided_runs_at_guidance_off_batch(state.pipe)
+                    ):
+                        # Z-Image's CFG split runs each guided step as two guidance-off calls: no doubled batch.
+                        # Only the plain pipelines: a control call carries kwargs the split leaves batched.
+                        guard_cfg = False
                     # a reference family's source image joins the denoiser's sequence, and only FLUX.3 and the
                     # ``reference_resolutions`` families price it in guard_condition_pixels
                     guard_unpriced_refs = bool(
