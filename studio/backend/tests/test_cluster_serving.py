@@ -45,7 +45,7 @@ def clean(monkeypatch, tmp_path):
     for name in (cs.ENV_NODES, cs.ENV_MANAGED, cs.ENV_TOPOLOGY, ss.ENV_TOGGLE):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setattr(cs, "_config_path", lambda: tmp_path / "cluster.json")
-    # A machine paired as a cluster master must not leak its workers into these tests.
+    # This host's paired workers must not leak in.
     monkeypatch.setattr(cs, "_paired_workers", lambda: [])
     cs.reset_for_tests()
     ss.reset_for_tests()
@@ -3213,9 +3213,7 @@ def test_an_unread_hub_projector_listing_keeps_the_load_local(monkeypatch):
 
 
 def test_removing_the_last_paired_worker_does_not_reuse_the_split(monkeypatch):
-    """Regression: the served split ran over paired-worker relays. Removing its worker closes that
-    relay; with the other paired worker unreachable no node is left, and a same-model, same-settings
-    reload must not relaunch with --rpc at the closed relay."""
+    """Regression: a same-settings reload with no usable paired worker must not --rpc a closed relay."""
     _serve(monkeypatch)
     block = list(cs.state().block)
     assert block and cs.state().topology == "layer_split"

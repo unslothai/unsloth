@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import json
 import os
 import ssl
@@ -24,6 +25,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from studio.cluster_link import framing, identity, pairing, tls, tokens  # noqa: E402
+from studio.cluster_link.model import Peer  # noqa: E402
 
 
 @pytest.fixture
@@ -33,7 +35,9 @@ def master_dir(tmp_path, monkeypatch):
     return d
 
 
-WORKER_JOIN = textwrap.dedent(
+# `connect PORT` echoes over mutual TLS; else joins, with MODE dropping (`drop_ack`) or holding
+# until RELEASE exists (`slow_ack`) the pair_ack.
+WORKER = textwrap.dedent(
     """
     import asyncio, json, os, sys
     sys.path.insert(0, {repo!r})
@@ -41,51 +45,51 @@ WORKER_JOIN = textwrap.dedent(
         sys.path.insert(0, os.path.join({repo!r}, "studio", "backend", "vendor"))
         import truststore
         truststore.inject_into_ssl()
-    from studio.cluster_link import pairing
-    try:
-        ident = asyncio.run(pairing.join(sys.argv[1], name = "w-" + sys.argv[2]))
-        print(json.dumps({{"ok": True, "node_id": ident.node_id, "fp": ident.fingerprint}}))
-    except Exception as exc:
-        print(json.dumps({{"ok": False, "error": type(exc).__name__ + ": " + str(exc)}}))
-    """
-).format(repo = str(REPO))
-
-WORKER_CONNECT = textwrap.dedent(
-    """
-    import asyncio, json, sys
-    sys.path.insert(0, {repo!r})
-    from studio.cluster_link import identity, tls
-    async def main():
+    from studio.cluster_link import framing, identity, pairing, tls
+    async def connect(port):
         me = identity.worker_identity()
         ctx = tls.mutual_context(server = False, certfile = me.certfile, keyfile = me.keyfile, rootfile = me.rootfile)
-        reader, writer = await asyncio.open_connection("127.0.0.1", int(sys.argv[1]), ssl = ctx)
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl = ctx)
         pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
         peer = identity.Registry().load().authorize(pid, "master")
         writer.write(b"ping")
         await writer.drain()
         echo = await reader.readexactly(4)
         writer.close()
-        print(json.dumps({{"master_ok": peer is not None, "echo": echo.decode()}}))
-    asyncio.run(main())
+        return {{"master_ok": peer is not None, "echo": echo.decode()}}
+    if sys.argv[1] == "connect":
+        print(json.dumps(asyncio.run(connect(int(sys.argv[2])))))
+        sys.exit()
+    mode, plain = os.environ.get("MODE"), framing.write_frame
+    async def write_frame(writer, obj):
+        if obj.get("type") == "pair_ack" and mode == "drop_ack":
+            writer.transport.abort()  # the link drops after the master issued, before it hears back
+            raise ConnectionResetError("dropped")
+        if obj.get("type") == "pair_ack" and mode == "slow_ack":
+            for _ in range(600):
+                if os.path.exists(os.environ["RELEASE"]):
+                    break
+                await asyncio.sleep(0.05)
+        await plain(writer, obj)
+    framing.write_frame = write_frame
+    try:
+        kw = json.loads(os.environ.get("JOIN_KW", "{{}}"))
+        ident = asyncio.run(pairing.join(sys.argv[1], name = "w-" + sys.argv[2], **kw))
+        print(json.dumps({{"ok": True, "node_id": ident.node_id, "fp": ident.fingerprint,
+                          "port": identity.worker_agent_port()}}))
+    except BaseException as exc:
+        me = identity.worker_identity()
+        print(json.dumps({{"ok": False, "paired": me is not None, "node_id": me.node_id if me else None,
+                          "type": type(exc).__name__, "error": type(exc).__name__ + ": " + str(exc)}}))
     """
 ).format(repo = str(REPO))
 
 
-async def _worker(
-    script,
-    state_dir: Path,
-    *args,
-    inject = False,
-):
-    env = dict(os.environ, UNSLOTH_CLUSTER_STATE_DIR = str(state_dir), INJECT = "1" if inject else "0")
+async def _run(state_dir: Path, *args, **env):
+    env = dict(os.environ, UNSLOTH_CLUSTER_STATE_DIR = str(state_dir), **env)
+    pipe = asyncio.subprocess.PIPE
     proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-c",
-        script,
-        *args,
-        env = env,
-        stdout = asyncio.subprocess.PIPE,
-        stderr = asyncio.subprocess.PIPE,
+        sys.executable, "-c", WORKER, *args, env = env, stdout = pipe, stderr = pipe
     )
     out, err = await asyncio.wait_for(proc.communicate(), 60)
     lines = out.decode().strip().splitlines()
@@ -93,50 +97,69 @@ async def _worker(
     return json.loads(lines[-1])
 
 
-def _window(**kw):
+def _join(
+    state_dir,
+    token,
+    tag = "1",
+    **env,
+):
+    return _run(state_dir, token, tag, **env)
+
+
+async def _open(**kw):
+    """Master identity, an open pairing window and its token."""
     master = identity.master_identity()
-    kw.setdefault("host", "127.0.0.1")
-    kw.setdefault("port", 0)
-    kw.setdefault("addrs", ["127.0.0.1"])
-    return master, pairing.PairingWindow(master, **kw)
+    window = pairing.PairingWindow(
+        master, **dict(dict(host = "127.0.0.1", port = 0, addrs = ["127.0.0.1"]), **kw)
+    )
+    return master, window, await window.start()
 
 
-def test_happy_path_then_mutual_tls(master_dir, tmp_path):
-    async def main():
-        master, window = _window()
-        token = await window.start()
-        result = await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
-        assert result["ok"], result
-        peer = await window.wait(5)
-        assert peer.node_id == result["node_id"] and peer.fingerprint == result["fp"]
-        assert peer.agent_port == 50070
-        reg = identity.Registry().load()
-        assert [p.node_id for p in reg.workers()] == [peer.node_id]
+def _async(fn):
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        asyncio.run(fn(*args, **kwargs))
 
-        seen = {}
-        ctx = tls.mutual_context(
-            server = True, certfile = master.certfile, keyfile = master.keyfile, rootfile = master.rootfile
-        )
-
-        async def handle(reader, writer):
-            pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
-            seen["worker"] = identity.Registry().load().authorize(pid, "worker")
-            writer.write(await reader.readexactly(4))
-            await writer.drain()
-            writer.close()
-
-        server = await asyncio.start_server(handle, "127.0.0.1", 0, ssl = ctx)
-        port = server.sockets[0].getsockname()[1]
-        out = await _worker(WORKER_CONNECT, tmp_path / "w1", str(port))
-        server.close()
-        assert out == {"master_ok": True, "echo": "ping"}
-        assert seen["worker"] is not None and seen["worker"].node_id == peer.node_id
-
-    asyncio.run(main())
+    return run
 
 
-def test_keys_are_owner_only(master_dir):
+def _workers():
+    return [p.node_id for p in identity.Registry().load().workers()]
+
+
+@_async
+async def test_happy_path_then_mutual_tls(master_dir, tmp_path):
+    master, window, token = await _open()
+    result = await _join(tmp_path / "w1", token)
+    assert result["ok"], result
+    peer = await window.wait(5)
+    assert peer.node_id == result["node_id"] and peer.fingerprint == result["fp"]
+    assert peer.agent_port == 50070
+    assert _workers() == [peer.node_id]
+
+    seen = {}
+    files = dict(certfile = master.certfile, keyfile = master.keyfile, rootfile = master.rootfile)
+    ctx = tls.mutual_context(server = True, **files)
+
+    async def handle(reader, writer):
+        pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
+        seen["worker"] = identity.Registry().load().authorize(pid, "worker")
+        writer.write(await reader.readexactly(4))
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0, ssl = ctx)
+    out = await _run(tmp_path / "w1", "connect", str(server.sockets[0].getsockname()[1]))
+    server.close()
+    assert out == {"master_ok": True, "echo": "ping"}
+    assert seen["worker"] is not None and seen["worker"].node_id == peer.node_id
+
+
+def test_master_identity_is_stable_and_its_keys_owner_only(master_dir):
+    assert identity.master_identity() == identity.master_identity()
+    root = (master_dir / "ca" / "root.pem").read_bytes()
     identity.master_identity()
+    assert (master_dir / "ca" / "root.pem").read_bytes() == root
     if os.name == "nt":
         pytest.skip("POSIX modes")
     for path in (master_dir / "identity" / "key.pem", master_dir / "ca" / "root_key.pem"):
@@ -146,8 +169,7 @@ def test_keys_are_owner_only(master_dir):
 
 def test_an_interrupted_first_root_write_is_recovered(master_dir, monkeypatch):
     # The first `cluster pair` dies between the two cluster-root writes: the next one must still work.
-    real = identity.write_private
-    calls = []
+    real, calls = identity.write_private, []
 
     def dies_after_one(path, data):
         calls.append(path)
@@ -164,7 +186,6 @@ def test_an_interrupted_first_root_write_is_recovered(master_dir, monkeypatch):
 
 
 def test_a_root_key_left_without_its_certificate_is_replaced(master_dir):
-    # State an older interrupted write left behind: a root key, no root certificate, nothing issued.
     identity.master_identity()
     (master_dir / "ca" / "root.pem").unlink()
     (master_dir / "identity" / "identity.json").unlink()
@@ -174,148 +195,106 @@ def test_a_root_key_left_without_its_certificate_is_replaced(master_dir):
         assert stat.S_IMODE((master_dir / "ca" / "root_key.pem").stat().st_mode) == 0o600
 
 
-def test_master_identity_is_stable(master_dir):
-    a = identity.master_identity()
-    b = identity.master_identity()
-    assert a == b
-    root = (master_dir / "ca" / "root.pem").read_bytes()
-    identity.master_identity()
-    assert (master_dir / "ca" / "root.pem").read_bytes() == root
-
-
-def test_wrong_master_fingerprint_sends_nothing(master_dir, tmp_path):
-    async def main():
-        master, window = _window()
-        token = await window.start()
-        invite = tokens.decode(token)
-        invite.master_fp = "0" * 64
-        result = await _worker(WORKER_JOIN, tmp_path / "w", tokens.encode(invite), "x")
-        assert not result["ok"] and "certificate mismatch" in result["error"]
-        assert window._attempts == 0  # no hello frame reached the master
-        assert identity.Registry().load().workers() == []
-        window.close()
-
-    asyncio.run(main())
-
-
-def test_wrong_secret_is_refused(master_dir, tmp_path):
-    async def main():
-        _, window = _window()
-        invite = tokens.decode(await window.start())
-        invite.secret = bytes(32)
-        result = await _worker(WORKER_JOIN, tmp_path / "w", tokens.encode(invite), "x")
-        assert not result["ok"] and "refused" in result["error"]
-        assert identity.Registry().load().workers() == []
-        assert not (tmp_path / "w" / "identity" / "identity.json").exists()
-        window.close()
-
-    asyncio.run(main())
-
-
-def test_a_worker_whose_clock_is_ahead_still_pairs_while_the_window_is_open(master_dir, tmp_path):
-    # The worker's clock may be off: its view of expiry must not refuse what the pinned master accepts.
-    async def main():
-        _, window = _window()
-        invite = tokens.decode(await window.start())
-        invite.exp = time.time() - 3600  # what a worker an hour ahead would see
-        result = await _worker(WORKER_JOIN, tmp_path / "w", tokens.encode(invite), "x")
+@pytest.mark.parametrize(
+    "field, value, error",
+    [
+        pytest.param(
+            "master_fp",
+            "0" * 64,
+            "certificate mismatch",
+            id = "wrong_master_fingerprint_sends_nothing",
+        ),
+        pytest.param("secret", bytes(32), "refused", id = "wrong_secret"),
+        pytest.param("now", 10_000, "refused", id = "window_expiry_refuses_on_master_side"),
+        pytest.param(
+            "exp", -3600, None, id = "worker_clock_ahead_still_pairs_while_the_window_is_open"
+        ),
+    ],
+)
+@_async
+async def test_invite_checks(master_dir, tmp_path, field, value, error):
+    clock = [time.time()]
+    _, window, token = await _open(now = lambda: clock[0])
+    invite = tokens.decode(token)
+    if field == "now":
+        clock[0] += value
+    elif field == "exp":
+        invite.exp = time.time() + value  # what a worker an hour ahead would see
+    else:
+        setattr(invite, field, value)
+    result = await _join(tmp_path / "w", tokens.encode(invite), "x")
+    if error is None:
         assert result["ok"], result
         await window.wait(5)
-
-    asyncio.run(main())
-
-
-def test_window_expiry_refuses_on_master_side(master_dir, tmp_path):
-    async def main():
-        clock = [time.time()]
-        _, window = _window(now = lambda: clock[0])
-        token = await window.start()
-        clock[0] += 10_000
-        result = await _worker(WORKER_JOIN, tmp_path / "w", token, "x")
-        assert not result["ok"]
-        window.close()
-
-    asyncio.run(main())
+        return
+    assert not result["ok"] and error in result["error"]
+    if field == "master_fp":
+        assert window._attempts == 0  # no hello frame reached the master
+    assert identity.Registry().load().workers() == []
+    assert not (tmp_path / "w" / "identity" / "identity.json").exists()
+    window.close()
 
 
-def test_replayed_token_fails(master_dir, tmp_path):
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        first = await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
-        second = await _worker(WORKER_JOIN, tmp_path / "w2", token, "2")
-        assert first["ok"] and not second["ok"]
-        assert len(identity.Registry().load().workers()) == 1
-
-    asyncio.run(main())
-
-
-def test_two_concurrent_joins_exactly_one_wins(master_dir, tmp_path):
-    async def main():
-        _, window = _window()
-        token = await window.start()
+@pytest.mark.parametrize("concurrent", [False, True], ids = ["replayed_token", "concurrent_joins"])
+@_async
+async def test_one_token_pairs_exactly_one_worker(master_dir, tmp_path, concurrent):
+    _, _, token = await _open()
+    if concurrent:
         results = await asyncio.gather(
-            *(_worker(WORKER_JOIN, tmp_path / f"w{i}", token, str(i)) for i in range(3))
+            *(_join(tmp_path / f"w{i}", token, str(i)) for i in range(3))
         )
-        assert sum(r["ok"] for r in results) == 1, results
-        assert len(identity.Registry().load().workers()) == 1
+    else:
+        results = [await _join(tmp_path / f"w{i}", token, str(i)) for i in range(2)]
+        assert results[0]["ok"]
+    assert sum(r["ok"] for r in results) == 1, results
+    assert len(_workers()) == 1
 
-    asyncio.run(main())
+
+@_async
+async def test_a_spent_invitation_refuses_a_replayed_hello_before_any_challenge(
+    master_dir, tmp_path
+):
+    _, window, token = await _open()
+    assert (await _join(tmp_path / "w", token))["ok"]
+    await window.wait(5)
+    hello = dict(type = "pair_hello", v = pairing.PROTOCOL_VERSION, invite_id = window.invite_id)
+    reader = asyncio.StreamReader()
+    reader.feed_data(framing.encode(dict(hello, worker_nonce = "", name = "replay", csr_pem = "")))
+    reader.feed_eof()
+    with pytest.raises(pairing.PairingError, match = "window closed"):
+        await window._pair(reader, None)  # a connection accepted before the window closed
+    assert window._attempts == 1
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason = "the vendored truststore needs Python 3.10+")
-def test_truststore_injected_worker_pairs(master_dir, tmp_path):
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        result = await _worker(WORKER_JOIN, tmp_path / "w", token, "t", inject = True)
-        assert result["ok"], result
-
-    asyncio.run(main())
-
-
-@pytest.mark.skipif(sys.version_info < (3, 10), reason = "the vendored truststore needs Python 3.10+")
-def test_truststore_injected_master_pairs(master_dir, tmp_path):
+@pytest.mark.parametrize("side", ["worker", "master"])
+@_async
+async def test_truststore_injected_side_pairs(master_dir, tmp_path, side):
     sys.path.insert(0, str(REPO / "studio" / "backend" / "vendor"))
     import truststore
 
-    truststore.inject_into_ssl()
+    if side == "master":
+        truststore.inject_into_ssl()
     try:
-
-        async def main():
-            _, window = _window()
-            token = await window.start()
-            result = await _worker(WORKER_JOIN, tmp_path / "w", token, "t")
-            assert result["ok"], result
-
-        asyncio.run(main())
+        _, _, token = await _open()
+        result = await _join(tmp_path / "w", token, "t", INJECT = "1" if side == "worker" else "0")
+        assert result["ok"], result
     finally:
-        truststore.extract_from_ssl()
-
-
-def _fields():
-    return dict(
-        cluster_id = "c" * 32,
-        invite_id = "i" * 32,
-        session = b"s" * 16,
-        worker_nonce = b"w" * 32,
-        master_nonce = b"m" * 32,
-        master_fp = "f" * 64,
-        csr_digest = b"d" * 32,
-    )
+        if side == "master":
+            truststore.extract_from_ssl()
 
 
 def test_transcript_binds_every_field():
-    secret = b"k" * 32
-    base = pairing._proof(secret, pairing.transcript(**_fields()))
-    for name, value in _fields().items():
-        changed = _fields()
-        changed[name] = value[:-1] + (b"X" if isinstance(value, bytes) else "X")
+    secret, fields = b"k" * 32, dict(cluster_id = "c" * 32, invite_id = "i" * 32, session = b"s" * 16)
+    fields.update(
+        worker_nonce = b"w" * 32, master_nonce = b"m" * 32, master_fp = "f" * 64, csr_digest = b"d" * 32
+    )
+    base = pairing._proof(secret, pairing.transcript(**fields))
+    for name, value in fields.items():
+        changed = dict(fields, **{name: value[:-1] + (b"X" if isinstance(value, bytes) else "X")})
         assert pairing._proof(secret, pairing.transcript(**changed)) != base, name
     # length prefixes keep a byte moved between neighbouring fields from colliding
-    moved = _fields()
-    moved["cluster_id"] = "c" * 31
-    moved["invite_id"] = "c" + "i" * 32
+    moved = dict(fields, cluster_id = "c" * 31, invite_id = "c" + "i" * 32)
     assert pairing._proof(secret, pairing.transcript(**moved)) != base
 
 
@@ -325,20 +304,13 @@ def test_csr_san_is_overridden(master_dir):
     from cryptography.hazmat.primitives.asymmetric import ec
 
     identity.master_identity()
-    key = ec.generate_private_key(ec.SECP256R1())
+    uris = ("unsloth-node:evil", "unsloth-role:master")
+    san = x509.SubjectAlternativeName([x509.UniformResourceIdentifier(u) for u in uris])
     csr = (
         x509.CertificateSigningRequestBuilder()
         .subject_name(x509.Name([]))
-        .add_extension(
-            x509.SubjectAlternativeName(
-                [
-                    x509.UniformResourceIdentifier("unsloth-node:evil"),
-                    x509.UniformResourceIdentifier("unsloth-role:master"),
-                ]
-            ),
-            critical = False,
-        )
-        .sign(key, hashes.SHA256())
+        .add_extension(san, critical = False)
+        .sign(ec.generate_private_key(ec.SECP256R1()), hashes.SHA256())
     )
     cert = identity.issue_worker_cert(csr.public_bytes(serialization.Encoding.PEM), "abc123")
     pid = tls.identity_from_der(identity._der_of_pem(cert))
@@ -348,38 +320,37 @@ def test_csr_san_is_overridden(master_dir):
 
 
 def test_bad_csr_signature_rejected(master_dir):
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
     identity.master_identity()
     _, csr_pem = identity.new_worker_key_and_csr()
     _, other_pem = identity.new_worker_key_and_csr()
     with pytest.raises(ValueError):
         identity.issue_worker_cert(b"not a csr", "x")
-    from cryptography import x509
-    from cryptography.hazmat.primitives import serialization
-
     # A well-formed CSR whose signature no longer matches: flip one byte inside the signature.
     der = bytearray(x509.load_pem_x509_csr(csr_pem).public_bytes(serialization.Encoding.DER))
     der[-5] ^= 0x01
-    tampered = (
-        b"-----BEGIN CERTIFICATE REQUEST-----\n"
-        + base64.encodebytes(bytes(der))
-        + b"-----END CERTIFICATE REQUEST-----\n"
-    )
+    tampered = b"-----BEGIN CERTIFICATE REQUEST-----\n" + base64.encodebytes(bytes(der))
+    tampered += b"-----END CERTIFICATE REQUEST-----\n"
     assert x509.load_pem_x509_csr(tampered) is not None
     with pytest.raises(ValueError):
         identity.issue_worker_cert(tampered, "x")
-    # and a valid CSR still issues, with the master's node id, not one the CSR asked for
-    assert identity.issue_worker_cert(other_pem, "abc")
+    assert identity.issue_worker_cert(other_pem, "abc")  # a valid CSR still issues
 
 
-def _peer(node_id, role, fp):
-    from studio.cluster_link.model import Peer
+def _peer(
+    node_id,
+    role = "worker",
+    fp = "a" * 64,
+):
     return Peer(node_id = node_id, name = node_id, role = role, fingerprint = fp, cert_pem = "")
 
 
 def test_registry_authorize_rules(master_dir):
     reg = identity.Registry()
     with reg.transaction():
-        reg.add(_peer("w1", "worker", "a" * 64))
+        reg.add(_peer("w1"))
         reg.add(_peer("m1", "master", "b" * 64))
     reg = identity.Registry().load()
     good = tls.PeerIdentity(fingerprint = "a" * 64, node_id = "w1", role = "worker")
@@ -399,27 +370,31 @@ def test_registry_authorize_rules(master_dir):
     assert reg.workers() == [] and reg.master().node_id == "m1"
 
 
-def test_registry_record_address(master_dir):
+@pytest.mark.parametrize(
+    "start, calls, addrs, port",
+    [
+        (
+            None,
+            [("10.0.0.5", 50070), ("10.0.0.6",), ("10.0.0.5",)],
+            ["10.0.0.5:50070", "10.0.0.6:50070"],
+            50070,
+        ),
+        # Seen once on a temporary port, back on its paired port: history keeps the usual pair.
+        ("10.0.0.5", [("10.0.0.5", 50099)], ["10.0.0.5:50099", "10.0.0.5:50070"], 50099),
+    ],
+    ids = ["record_address", "a_temporary_port_keeps_the_usual_pair_in_the_history"],
+)
+def test_registry_record_address(master_dir, start, calls, addrs, port):
     reg = identity.Registry()
     with reg.transaction():
-        reg.add(_peer("w1", "worker", "a" * 64))
-        reg.record_address("w1", "10.0.0.5", 50070)
-        reg.record_address("w1", "10.0.0.6")
-        reg.record_address("w1", "10.0.0.5")
-    peer = identity.Registry().load().peers["w1"]
-    assert peer.addrs == ["10.0.0.5:50070", "10.0.0.6:50070"] and peer.agent_port == 50070
-
-
-def test_a_temporary_port_keeps_the_usual_pair_in_the_history(master_dir):
-    # Seen once on a temporary port, back on its paired port with multicast blocked: history keeps the pair.
-    reg = identity.Registry()
-    with reg.transaction():
-        peer = _peer("w1", "worker", "a" * 64)
-        peer.addrs, peer.agent_port = ["10.0.0.5"], 50070  # as pairing records it
+        peer = _peer("w1")
+        if start:
+            peer.addrs, peer.agent_port = [start], 50070  # as pairing records it
         reg.add(peer)
-        reg.record_address("w1", "10.0.0.5", 50099)
+        for call in calls:
+            reg.record_address("w1", *call)
     peer = identity.Registry().load().peers["w1"]
-    assert peer.addrs == ["10.0.0.5:50099", "10.0.0.5:50070"] and peer.agent_port == 50099
+    assert peer.addrs == addrs and peer.agent_port == port
 
 
 def test_token_round_trip_and_rejections():
@@ -441,137 +416,109 @@ def test_token_round_trip_and_rejections():
             tokens.decode(bad)
 
 
-def _raw_frame(body: bytes) -> bytes:
+def _raw_frame(obj) -> bytes:
+    body = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
     return struct.pack(">I", len(body)) + body
 
 
+def _hello(
+    invite_id,
+    csr = "x",
+    name = "x",
+    worker_nonce = None,
+):
+    worker_nonce = worker_nonce or pairing._b64e(os.urandom(32))
+    hello = dict(type = "pair_hello", v = 1, invite_id = invite_id, worker_nonce = worker_nonce)
+    return dict(hello, name = name, csr_pem = csr)
+
+
+async def _bootstrap_connect(invite):
+    return await asyncio.open_connection(
+        "127.0.0.1", invite.port, ssl = tls.bootstrap_client_context()
+    )
+
+
 @pytest.mark.parametrize(
-    "payloads",
+    "payload",
     [
-        [struct.pack(">I", framing.MAX_FRAME + 1)],
-        [_raw_frame(b"not json")],
-        [_raw_frame(b"[1,2]")],
-        [_raw_frame(json.dumps({"type": "pair_hello", "v": "1"}).encode())],
-        [_raw_frame(json.dumps({"type": "pair_proof", "proof": "00"}).encode())],
-        [struct.pack(">I", 100) + b"short"],
-        [
-            _raw_frame(
-                json.dumps(
-                    {
-                        "type": "pair_hello",
-                        "v": 1,
-                        "invite_id": "0" * 32,
-                        "worker_nonce": "AAAA",
-                        "name": "x",
-                        "csr_pem": "x",
-                    }
-                ).encode()
-            )
-        ],
+        struct.pack(">I", framing.MAX_FRAME + 1),
+        _raw_frame(b"not json"),
+        _raw_frame(b"[1,2]"),
+        _raw_frame({"type": "pair_hello", "v": "1"}),
+        _raw_frame({"type": "pair_proof", "proof": "00"}),
+        struct.pack(">I", 100) + b"short",
+        _raw_frame(_hello("0" * 32, worker_nonce = "AAAA")),
+    ],
+    ids = [
+        "oversized",
+        "not_json",
+        "not_object",
+        "string_version",
+        "proof_first",
+        "truncated",
+        "short_nonce",
     ],
 )
-def test_malformed_frames_fail_closed(master_dir, payloads):
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        invite = tokens.decode(token)
-        reader, writer = await asyncio.open_connection(
-            "127.0.0.1", invite.port, ssl = tls.bootstrap_client_context()
-        )
-        for chunk in payloads:
-            writer.write(chunk)
-        await writer.drain()
-        if payloads[0].endswith(b"short"):
-            writer.write_eof() if writer.can_write_eof() else None
-        try:
-            reply = await asyncio.wait_for(reader.read(65536), 15)
-        except (ConnectionError, ssl.SSLError):
-            reply = b""
+@_async
+async def test_malformed_frames_fail_closed(master_dir, payload):
+    _, window, token = await _open()
+    reader, writer = await _bootstrap_connect(tokens.decode(token))
+    writer.write(payload)
+    await writer.drain()
+    if payload.endswith(b"short"):
+        writer.write_eof() if writer.can_write_eof() else None
+    try:
+        reply = await asyncio.wait_for(reader.read(65536), 15)
+    except (ConnectionError, ssl.SSLError):
+        reply = b""
+    writer.close()
+    assert b"pair_issued" not in reply
+    assert identity.Registry().load().workers() == []
+    assert not window._used  # a malformed attempt does not burn the invitation
+    window.close()
+
+
+@_async
+async def test_real_hello_then_wrong_order_fails_closed(master_dir):
+    _, window, token = await _open()
+    invite = tokens.decode(token)
+    _, csr = identity.new_worker_key_and_csr()
+    reader, writer = await _bootstrap_connect(invite)
+    hello = _hello(invite.invite_id, csr.decode())
+    await framing.write_frame(writer, hello)
+    assert (await framing.read_frame(reader))["type"] == "pair_challenge"
+    await framing.write_frame(writer, hello)  # hello again instead of a proof
+    assert (await framing.read_frame(reader))["type"] == "pair_error"
+    writer.close()
+    assert identity.Registry().load().workers() == []
+    window.close()
+
+
+@_async
+async def test_hellos_without_the_token_cannot_close_the_window(master_dir, tmp_path):
+    # A LAN attacker who never saw the token must not burn the window's attempt budget.
+    _, window, token = await _open()
+    invite = tokens.decode(token)
+    _, csr = identity.new_worker_key_and_csr()
+    for _ in range(pairing.MAX_ATTEMPTS + 5):
+        reader, writer = await _bootstrap_connect(invite)
+        await framing.write_frame(writer, _hello("0" * 32, csr.decode(), name = "attacker"))
+        assert (await framing.read_frame(reader))["type"] == "pair_error"
         writer.close()
-        assert b"pair_issued" not in reply
-        assert identity.Registry().load().workers() == []
-        assert not window._used  # a malformed attempt does not burn the invitation
-        window.close()
-
-    asyncio.run(main())
+    assert not window._used
+    result = await _join(tmp_path / "w1", token)
+    assert result["ok"], result
+    await window.wait(5)
 
 
-def test_real_hello_then_wrong_order_fails_closed(master_dir):
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        invite = tokens.decode(token)
-        _, csr = identity.new_worker_key_and_csr()
-        reader, writer = await asyncio.open_connection(
-            "127.0.0.1", invite.port, ssl = tls.bootstrap_client_context()
-        )
-        hello = {
-            "type": "pair_hello",
-            "v": 1,
-            "invite_id": invite.invite_id,
-            "worker_nonce": pairing._b64e(os.urandom(32)),
-            "name": "x",
-            "csr_pem": csr.decode(),
-        }
-        await framing.write_frame(writer, hello)
-        challenge = await framing.read_frame(reader)
-        assert challenge["type"] == "pair_challenge"
-        await framing.write_frame(writer, hello)  # hello again instead of a proof
-        reply = await framing.read_frame(reader)
-        assert reply["type"] == "pair_error"
-        writer.close()
-        assert identity.Registry().load().workers() == []
-        window.close()
-
-    asyncio.run(main())
-
-
-def test_hellos_without_the_token_cannot_close_the_window(master_dir, tmp_path):
-    """A LAN attacker who never saw the token must not be able to burn the window's attempt budget."""
-
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        invite = tokens.decode(token)
-        _, csr = identity.new_worker_key_and_csr()
-        for _ in range(pairing.MAX_ATTEMPTS + 5):
-            reader, writer = await asyncio.open_connection(
-                "127.0.0.1", invite.port, ssl = tls.bootstrap_client_context()
-            )
-            await framing.write_frame(
-                writer,
-                {
-                    "type": "pair_hello",
-                    "v": 1,
-                    "invite_id": "0" * 32,
-                    "worker_nonce": pairing._b64e(os.urandom(32)),
-                    "name": "attacker",
-                    "csr_pem": csr.decode(),
-                },
-            )
-            reply = await framing.read_frame(reader)
-            assert reply["type"] == "pair_error"
-            writer.close()
-        assert not window._used
-        result = await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
-        assert result["ok"], result
-        await window.wait(5)
-
-    asyncio.run(main())
-
-
-def test_a_failure_after_the_proof_reaches_the_waiting_master(master_dir, tmp_path):
-    """If recording the new worker fails, `pair` must say so now, not hang until the window expires."""
-
-    async def main():
-        _, window = _window(ttl = 120)
-        token = await window.start()
-        (master_dir / "peers.json").write_text("{not json")
-        await _worker(WORKER_JOIN, tmp_path / "w1", token, "1")
-        with pytest.raises(pairing.PairingError):
-            await window.wait(10)
-
-    asyncio.run(main())
+@_async
+async def test_a_failure_after_the_proof_reaches_the_waiting_master(master_dir, tmp_path):
+    # Recording the worker fails: `pair` must say so now, not hang until the window expires.
+    _, window, token = await _open(ttl = 120)
+    (master_dir / "peers.json").write_text("{not json")
+    await _join(tmp_path / "w1", token)
+    with pytest.raises(pairing.PairingError):
+        await window.wait(10)
 
 
 def test_registry_keeps_peers_with_fields_from_a_newer_version(master_dir):
@@ -587,9 +534,8 @@ def test_registry_keeps_peers_with_fields_from_a_newer_version(master_dir):
     assert saved["future"] == {"x": 1} and saved["removed"] is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "flock path")
 def test_a_lock_that_cannot_be_taken_fails_loudly(master_dir, monkeypatch):
-    if os.name == "nt":
-        pytest.skip("flock path")
     import fcntl
 
     def refuse(fd, op):
@@ -602,43 +548,29 @@ def test_a_lock_that_cannot_be_taken_fails_loudly(master_dir, monkeypatch):
 
 
 def test_concurrent_master_creation_makes_one_cluster_root(master_dir):
-    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
 
-    made, barrier = [], threading.Barrier(4)
+    barrier = Barrier(4)
 
-    def make():
+    def make(_):
         barrier.wait()
-        made.append(identity.master_identity(create = True))
+        return identity.master_identity(create = True)
 
-    threads = [threading.Thread(target = make) for _ in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    with ThreadPoolExecutor(4) as pool:
+        made = list(pool.map(make, range(4)))
     assert len({(m.cluster_id, m.node_id, m.fingerprint) for m in made}) == 1
     assert identity.master_identity(create = False).fingerprint == made[0].fingerprint
 
 
-WORKER_JOIN_ON_PORT = textwrap.dedent(
-    """
-    import asyncio, json, sys
-    sys.path.insert(0, {repo!r})
-    from studio.cluster_link import identity, pairing
-    ident = asyncio.run(pairing.join(sys.argv[1], name = "w-port", agent_port = int(sys.argv[2])))
-    print(json.dumps({{"node_id": ident.node_id, "port": identity.worker_agent_port()}}))
-    """
-).format(repo = str(REPO))
-
-
-def test_the_port_a_worker_pairs_with_is_what_both_sides_remember(master_dir, tmp_path):
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        result = await _worker(WORKER_JOIN_ON_PORT, tmp_path / "w", token, "50111")
-        peer = await window.wait(5)
-        assert peer.agent_port == 50111 and result == {"node_id": peer.node_id, "port": 50111}
-
-    asyncio.run(main())
+@_async
+async def test_the_port_a_worker_pairs_with_is_what_both_sides_remember(master_dir, tmp_path):
+    _, window, token = await _open()
+    result = await _join(tmp_path / "w", token, JOIN_KW = '{"agent_port": 50111}')
+    peer = await window.wait(5)
+    assert (
+        peer.agent_port == 50111 and result["port"] == 50111 and result["node_id"] == peer.node_id
+    )
 
 
 def test_forget_master_leaves_nothing_that_blocks_joining_elsewhere(master_dir):
@@ -646,381 +578,212 @@ def test_forget_master_leaves_nothing_that_blocks_joining_elsewhere(master_dir):
     identity.forget_master()
     assert identity.master_identity(create = False) is None
     assert not list((master_dir / "ca").glob("*.pem"))
-    # A later master on this machine is a different cluster, not the old root.
-    assert identity.master_identity().cluster_id != first.cluster_id
+    assert (
+        identity.master_identity().cluster_id != first.cluster_id
+    )  # a new cluster, not the old root
 
 
-WORKER_JOIN_DROPS_ACK = textwrap.dedent(
-    """
-    import asyncio, json, sys
-    sys.path.insert(0, {repo!r})
-    from studio.cluster_link import framing, identity, pairing
-    plain = framing.write_frame
-    async def write_frame(writer, obj):
-        if obj.get("type") == "pair_ack":
-            writer.transport.abort()  # the link drops after the master issued, before it hears back
-            raise ConnectionResetError("dropped")
-        await plain(writer, obj)
-    framing.write_frame = write_frame
-    try:
-        asyncio.run(pairing.join(sys.argv[1], name = "w-drop"))
-        print(json.dumps({{"ok": True}}))
-    except Exception as exc:
-        print(json.dumps({{"ok": False, "paired": identity.worker_identity() is not None, "error": type(exc).__name__}}))
-    """
-).format(repo = str(REPO))
+@pytest.mark.parametrize(
+    "concurrent", [False, True], ids = ["join_again_without_leaving", "two_at_once"]
+)
+@_async
+async def test_a_paired_machine_cannot_join_twice(master_dir, tmp_path, concurrent):
+    # At once: both would pass an unlocked "not paired yet" check, then overwrite each other's key.
+    (_, w1, t1), (_, w2, t2) = await _open(), await _open()
+    state = tmp_path / "w"
+    if concurrent:
+        r1, r2 = await asyncio.gather(_join(state, t1, "a"), _join(state, t2, "b"))
+    else:
+        r1 = await _join(state, t1)
+        assert r1["ok"], r1
+        await w1.wait(5)
+        r2 = await _join(state, t2)
+    w1.close()
+    w2.close()
+    assert sorted([r1["ok"], r2["ok"]]) == [False, True], (r1, r2)
+    loser = r1 if not r1["ok"] else r2
+    assert "already paired" in loser["error"] and "cluster leave" in loser["error"]
+    assert len(_workers()) == 1  # no dead duplicate on the master
 
 
-def test_a_pairing_cut_before_the_ack_records_nothing_on_the_master(master_dir, tmp_path):
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        result = await _worker(WORKER_JOIN_DROPS_ACK, tmp_path / "w", token)
-        # The worker keeps its identity and is told how to check; the master recorded nothing (no ghost).
-        assert result == {"ok": False, "paired": True, "error": "PairingUnconfirmed"}
-        with pytest.raises(pairing.PairingError):
-            await window.wait(5)
-        assert identity.Registry().load().workers() == []
-
-    asyncio.run(main())
-
-
-def test_a_paired_worker_cannot_join_again_without_leaving(master_dir, tmp_path):
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        assert (await _worker(WORKER_JOIN, tmp_path / "w", token, "1"))["ok"]
-        await window.wait(5)
-        _, again = _window()
-        token2 = await again.start()
-        second = await _worker(WORKER_JOIN, tmp_path / "w", token2, "1")
-        again.close()
-        assert not second["ok"] and "cluster leave" in second["error"]
-        assert len(identity.Registry().load().workers()) == 1  # no dead duplicate on the master
-
-    asyncio.run(main())
-
-
-WORKER_JOIN_STATUS = textwrap.dedent(
-    """
-    import asyncio, json, sys
-    sys.path.insert(0, {repo!r})
-    from studio.cluster_link import identity, pairing
-    try:
-        asyncio.run(pairing.join(sys.argv[1], name = "w-status"))
-        print(json.dumps({{"ok": True}}))
-    except Exception as exc:
-        me = identity.worker_identity()
-        print(json.dumps({{"ok": False, "paired": me is not None, "node_id": me.node_id if me else None,
-                          "error": type(exc).__name__}}))
-    """
-).format(repo = str(REPO))
-
-
-def test_a_lost_final_confirmation_keeps_both_sides_paired(master_dir, tmp_path, monkeypatch):
-    # Master recorded it and only pair_ok was lost: the worker keeps its identity, or the master has a ghost.
+@pytest.mark.parametrize("pair_ok", ["lost", "slow"])
+@_async
+async def test_a_lost_or_slow_final_confirmation_keeps_both_sides_paired(
+    master_dir, tmp_path, monkeypatch, pair_ok
+):
+    # Lost: the worker keeps its identity (else the master has a ghost). Slow: past the worker's 2 s
+    # join timeout once the identity is saved, it is waited for, never a bare timeout.
     plain = pairing.framing.write_frame
 
     async def write_frame(writer, obj):
+        if obj.get("type") == "pair_ok" and pair_ok == "lost":
+            return writer.transport.abort()
         if obj.get("type") == "pair_ok":
-            writer.transport.abort()
-            return
+            await asyncio.sleep(3.5)
         await plain(writer, obj)
 
     monkeypatch.setattr(pairing.framing, "write_frame", write_frame)
-
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        result = await _worker(WORKER_JOIN_STATUS, tmp_path / "w", token)
-        peer = await window.wait(5)
-        assert result == {
-            "ok": False,
-            "paired": True,
-            "node_id": peer.node_id,
-            "error": "PairingUnconfirmed",
-        }
-        assert [p.node_id for p in identity.Registry().load().workers()] == [peer.node_id]
-
-    asyncio.run(main())
-
-
-def test_a_master_reset_during_pairing_records_nothing(master_dir, tmp_path, monkeypatch):
-    # `cluster leave` between certificate and commit: the commit sees no master under the lock, refuses.
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        monkeypatch.setattr(pairing.identity, "master_identity", lambda create = True: None)
-        result = await _worker(WORKER_JOIN_STATUS, tmp_path / "w", token)
-        with pytest.raises(pairing.PairingError):
-            await window.wait(5)
-        assert result["ok"] is False
-
-    asyncio.run(main())
-    monkeypatch.undo()
-    assert identity.Registry().load().workers() == []
-
-
-def test_pair_rejects_addresses_no_worker_could_decode(master_dir):
-    async def main():
-        # IPv6 literals too: the pairing listener and the agent bind IPv4 only.
-        for bad in (
-            ["10.0.0.%d" % i for i in range(17)],
-            ["a" * 254],
-            ["has space"],
-            ["fe80::1"],
-            ["::1"],
-        ):
-            _, window = _window(addrs = bad)
-            with pytest.raises(pairing.PairingError, match = "--addr"):
-                await window.start()
-            assert window._server is None  # refused before listening
-
-    asyncio.run(main())
-
-
-def test_two_joins_at_once_on_one_machine_do_not_interleave(master_dir, tmp_path):
-    # Both pass an unlocked "not paired yet" check, then overwrite each other's key and cert.
-    async def main():
-        _, w1 = _window()
-        _, w2 = _window()
-        t1, t2 = await w1.start(), await w2.start()
-        state = tmp_path / "w"
-        r1, r2 = await asyncio.gather(
-            _worker(WORKER_JOIN, state, t1, "a"), _worker(WORKER_JOIN, state, t2, "b")
-        )
-        assert sorted([r1["ok"], r2["ok"]]) == [False, True], (r1, r2)
-        loser = r1 if not r1["ok"] else r2
-        assert "already paired" in loser["error"]
-        w1.close()
-        w2.close()
-
-    asyncio.run(main())
-
-
-WORKER_JOIN_SHORT_TIMEOUT = textwrap.dedent(
-    """
-    import asyncio, json, sys
-    sys.path.insert(0, {repo!r})
-    from studio.cluster_link import identity, pairing
-    try:
-        asyncio.run(pairing.join(sys.argv[1], name = "w-slow", timeout = 2.0))
-        print(json.dumps({{"ok": True}}))
-    except BaseException as exc:
-        print(json.dumps({{"ok": False, "paired": identity.worker_identity() is not None, "error": type(exc).__name__}}))
-    """
-).format(repo = str(REPO))
-
-
-def test_the_join_deadline_does_not_cut_the_final_confirmation(master_dir, tmp_path, monkeypatch):
-    # Once the identity is saved a slow pair_ok is waited for (or unconfirmed), never a bare timeout.
-    plain = pairing.framing.write_frame
-
-    async def write_frame(writer, obj):
-        if obj.get("type") == "pair_ok":
-            await asyncio.sleep(3.5)  # past the worker's 2 s join timeout
-        await plain(writer, obj)
-
-    monkeypatch.setattr(pairing.framing, "write_frame", write_frame)
-
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        result = await _worker(WORKER_JOIN_SHORT_TIMEOUT, tmp_path / "w", token)
-        await window.wait(10)
-        assert result == {"ok": True}, result
-
-    asyncio.run(main())
-
-
-WORKER_JOIN_SLOW_ACK = textwrap.dedent(
-    """
-    import asyncio, json, os, sys
-    sys.path.insert(0, {repo!r})
-    from studio.cluster_link import framing, pairing
-    plain = framing.write_frame
-    async def write_frame(writer, obj):
-        if obj.get("type") == "pair_ack":
-            for _ in range(600):  # hold the ack until the test has expired the window
-                if os.path.exists(sys.argv[2]):
-                    break
-                await asyncio.sleep(0.05)
-        await plain(writer, obj)
-    framing.write_frame = write_frame
-    try:
-        ident = asyncio.run(pairing.join(sys.argv[1], name = "w-slow-ack"))
-        print(json.dumps({{"ok": True, "node_id": ident.node_id}}))
-    except Exception as exc:
-        print(json.dumps({{"ok": False, "error": type(exc).__name__ + ": " + str(exc)}}))
-    """
-).format(repo = str(REPO))
-
-
-def test_expiry_after_the_proof_does_not_fail_a_pairing_that_completes(master_dir, tmp_path):
-    # Token proved just before the TTL, acked just after: `cluster pair` reports the worker, not expiry.
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        release = tmp_path / "release_ack"
-        worker = asyncio.ensure_future(
-            _worker(WORKER_JOIN_SLOW_ACK, tmp_path / "w", token, str(release))
-        )
-        deadline = time.monotonic() + 60
-        while not window._used and time.monotonic() < deadline:
-            await asyncio.sleep(0.05)
-        assert window._used, "the worker never proved the token"
-        window._expire()  # the TTL timer firing while the worker holds its ack
-        release.write_text("go")
-        result = await worker
+    _, window, token = await _open()
+    result = await _join(
+        tmp_path / "w", token, JOIN_KW = '{"timeout": 2.0}' if pair_ok == "slow" else "{}"
+    )
+    peer = await window.wait(10)
+    if pair_ok == "slow":
         assert result["ok"], result
-        peer = await window.wait(5)
-        assert peer.node_id == result["node_id"]
-        assert [w.node_id for w in identity.Registry().load().workers()] == [peer.node_id]
-
-    asyncio.run(main())
-
-
-def _self_signed(directory: Path):
-    import datetime
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
-
-    key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "somebody else")])
-    now = datetime.datetime.now(datetime.timezone.utc)
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(minutes = 5))
-        .not_valid_after(now + datetime.timedelta(days = 1))
-        .sign(key, hashes.SHA256())
-    )
-    directory.mkdir(parents = True, exist_ok = True)
-    certfile, keyfile = directory / "cert.pem", directory / "key.pem"
-    certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    keyfile.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
+    else:
+        assert (result["ok"], result["paired"], result["type"]) == (
+            False,
+            True,
+            "PairingUnconfirmed",
         )
+        assert result["node_id"] == peer.node_id
+    assert _workers() == [peer.node_id]
+
+
+@pytest.mark.parametrize("cut", ["before_the_ack", "master_reset"])
+@_async
+async def test_an_interrupted_pairing_records_nothing_on_the_master(
+    master_dir, tmp_path, monkeypatch, cut
+):
+    _, window, token = await _open()
+    real = identity.master_identity
+    if cut == "master_reset":  # `cluster leave` between certificate and commit: the commit refuses
+        monkeypatch.setattr(pairing.identity, "master_identity", lambda create = True: None)
+    result = await _join(tmp_path / "w", token, MODE = "drop_ack" if cut == "before_the_ack" else "")
+    if cut == "before_the_ack":  # the worker keeps its identity and is told how to check
+        assert (result["ok"], result["paired"], result["type"]) == (
+            False,
+            True,
+            "PairingUnconfirmed",
+        )
+    assert result["ok"] is False
+    with pytest.raises(pairing.PairingError):
+        await window.wait(5)
+    monkeypatch.setattr(pairing.identity, "master_identity", real)
+    assert identity.Registry().load().workers() == []  # no ghost
+
+
+@pytest.mark.parametrize(
+    "addrs",
+    [["10.0.0.%d" % i for i in range(17)], ["a" * 254], ["has space"], ["fe80::1"], ["::1"]],
+    ids = ["too_many", "too_long", "space", "ipv6_link_local", "ipv6_loopback"],
+)
+@_async
+async def test_pair_rejects_addresses_no_worker_could_decode(master_dir, addrs):
+    # IPv6 literals too: the pairing listener and the agent bind IPv4 only.
+    window = pairing.PairingWindow(
+        identity.master_identity(), host = "127.0.0.1", port = 0, addrs = addrs
     )
-    return str(certfile), str(keyfile)
+    with pytest.raises(pairing.PairingError, match = "--addr"):
+        await window.start()
+    assert window._server is None  # refused before listening
+
+
+@pytest.mark.parametrize("deadline", ["ttl_timer", "caller_wait"])
+@_async
+async def test_a_deadline_after_the_proof_does_not_fail_a_pairing_that_completes(
+    master_dir, tmp_path, deadline
+):
+    # Token proved, then the TTL timer fires or `cluster pair`'s own wait deadline passes mid-ack.
+    _, window, token = await _open()
+    release = tmp_path / "release_ack"
+    worker = asyncio.ensure_future(
+        _join(tmp_path / "w", token, MODE = "slow_ack", RELEASE = str(release))
+    )
+    end = time.monotonic() + 60
+    while not window._used and time.monotonic() < end:
+        await asyncio.sleep(0.05)
+    assert window._used, "the worker never proved the token"
+    waiting = None
+    if deadline == "ttl_timer":
+        window._expire()
+    else:
+        waiting = asyncio.ensure_future(window.wait(0.2))
+        await asyncio.sleep(0.6)  # past the caller's deadline
+    release.write_text("go")
+    peer = await waiting if waiting else None
+    result = await worker
+    assert result["ok"], result
+    peer = peer or await window.wait(5)
+    assert peer.node_id == result["node_id"]
+    assert _workers() == [peer.node_id]
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "needs 127.0.0.2 on loopback")
-def test_a_mismatched_first_address_falls_through_to_the_master(master_dir, tmp_path):
+@_async
+async def test_a_mismatched_first_address_falls_through_to_the_master(
+    master_dir, tmp_path, monkeypatch
+):
     # Multihomed token whose first address is another machine: nothing sent, try the next address.
-    async def main():
-        master, window = _window(addrs = ["127.0.0.2", "127.0.0.1"])
-        token = await window.start()
-        port = window.bound_port
-        certfile, keyfile = _self_signed(tmp_path / "decoy")
+    master, window, token = await _open(addrs = ["127.0.0.2", "127.0.0.1"])
+    port = window.bound_port
+    monkeypatch.setenv("UNSLOTH_CLUSTER_STATE_DIR", str(tmp_path / "decoy"))
+    other = (
+        identity.master_identity()
+    )  # another cluster's master: a certificate that does not match
+    monkeypatch.setenv("UNSLOTH_CLUSTER_STATE_DIR", str(master_dir))
 
-        async def decoy(reader, writer):
-            writer.close()
+    async def decoy(reader, writer):
+        writer.close()
 
-        decoy_server = await asyncio.start_server(
-            decoy,
-            "127.0.0.2",
-            port,
-            ssl = tls.bootstrap_server_context(certfile = certfile, keyfile = keyfile),
+    ctx = tls.bootstrap_server_context(certfile = other.certfile, keyfile = other.keyfile)
+    decoy_server = await asyncio.start_server(decoy, "127.0.0.2", port, ssl = ctx)
+    try:
+        addr, _, writer = await pairing._connect(
+            ["127.0.0.2", "127.0.0.1"], port, master.fingerprint
         )
-        try:
-            addr, _, writer = await pairing._connect(
-                ["127.0.0.2", "127.0.0.1"], port, master.fingerprint
-            )
-            writer.close()
-            assert addr == "127.0.0.1"
-            result = await _worker(WORKER_JOIN, tmp_path / "w", token, "1")
-            assert result["ok"], result
-            assert (await window.wait(5)).node_id == result["node_id"]
-            with pytest.raises(pairing.PairingError, match = "certificate mismatch"):
-                await pairing._connect(["127.0.0.2"], port, master.fingerprint)
-        finally:
-            decoy_server.close()
-            window.close()
-
-    asyncio.run(main())
-
-
-def test_waiting_for_the_identity_lock_does_not_block_the_event_loop(master_dir):
-    # Two joins in one process: the second waits for the lock without freezing the loop.
-    async def main():
-        holding, release = asyncio.Event(), asyncio.Event()
-        order = []
-
-        async def first():
-            async with pairing._identity_lock():
-                holding.set()
-                await release.wait()
-                order.append("first")
-
-        async def second():
-            await holding.wait()
-            async with pairing._identity_lock():
-                order.append("second")
-
-        async def ticker():
-            await holding.wait()
-            await asyncio.sleep(0.2)  # runs only if the loop is free while `second` waits
-            order.append("tick")
-            release.set()
-
-        await asyncio.wait_for(asyncio.gather(first(), second(), ticker()), 20)
-        assert order == ["tick", "first", "second"]
-
-        # Cancelled while waiting: the lock is still handed back once the thread gets it.
-        holding.clear()
-        release.clear()
-        holder = asyncio.ensure_future(first())
-        await holding.wait()
-        waiter = asyncio.ensure_future(second())
-        await asyncio.sleep(0.2)
-        waiter.cancel()
-        release.set()
-        await holder
-        with pytest.raises(asyncio.CancelledError):
-            await waiter
-
-        async def third():
-            async with pairing._identity_lock():
-                return True
-
-        assert await asyncio.wait_for(third(), 20)
-
-    asyncio.run(main())
-
-
-def test_a_caller_deadline_waits_out_a_claimed_pairing(master_dir, tmp_path):
-    # `cluster pair`'s own deadline passes mid-ack: the master must still record the worker.
-    async def main():
-        _, window = _window()
-        token = await window.start()
-        release = tmp_path / "release_ack"
-        worker = asyncio.ensure_future(
-            _worker(WORKER_JOIN_SLOW_ACK, tmp_path / "w", token, str(release))
-        )
-        deadline = time.monotonic() + 60
-        while not window._used and time.monotonic() < deadline:
-            await asyncio.sleep(0.05)
-        assert window._used, "the worker never proved the token"
-        waiting = asyncio.ensure_future(window.wait(0.2))
-        await asyncio.sleep(0.6)  # past the caller's deadline
-        release.write_text("go")
-        peer = await waiting
-        result = await worker
+        writer.close()
+        assert addr == "127.0.0.1"
+        result = await _join(tmp_path / "w", token)
         assert result["ok"], result
-        assert peer.node_id == result["node_id"]
-        assert [w.node_id for w in identity.Registry().load().workers()] == [peer.node_id]
+        assert (await window.wait(5)).node_id == result["node_id"]
+        with pytest.raises(pairing.PairingError, match = "certificate mismatch"):
+            await pairing._connect(["127.0.0.2"], port, master.fingerprint)
+    finally:
+        decoy_server.close()
+        window.close()
 
-    asyncio.run(main())
+
+@_async
+async def test_waiting_for_the_identity_lock_does_not_block_the_event_loop(master_dir):
+    # Two joins in one process: the second waits for the lock without freezing the loop.
+    holding, release = asyncio.Event(), asyncio.Event()
+    order = []
+
+    async def first():
+        async with pairing._identity_lock():
+            holding.set()
+            await release.wait()
+            order.append("first")
+
+    async def second():
+        await holding.wait()
+        async with pairing._identity_lock():
+            order.append("second")
+
+    async def ticker():
+        await holding.wait()
+        await asyncio.sleep(0.2)  # runs only if the loop is free while `second` waits
+        order.append("tick")
+        release.set()
+
+    await asyncio.wait_for(asyncio.gather(first(), second(), ticker()), 20)
+    assert order == ["tick", "first", "second"]
+
+    # Cancelled while waiting: the lock is still handed back once the thread gets it.
+    holding.clear()
+    release.clear()
+    holder = asyncio.ensure_future(first())
+    await holding.wait()
+    waiter = asyncio.ensure_future(second())
+    await asyncio.sleep(0.2)
+    waiter.cancel()
+    release.set()
+    await holder
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await asyncio.wait_for(second(), 20)
+    assert order[-1] == "second"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX shared temp directory")
@@ -1042,6 +805,23 @@ def test_a_run_dir_another_user_could_have_planted_is_refused(tmp_path, monkeypa
     real_uid = os.getuid()
     run.mkdir(mode = 0o777)
     monkeypatch.setattr(paths.os, "getuid", lambda: real_uid + 1)
-    monkeypatch.setattr(paths.tempfile, "gettempdir", lambda: str(tmp_path))
     with pytest.raises(RuntimeError, match = "not a directory owned by this user"):
         paths._own_shared_tmp_dir(run)
+
+
+def test_the_state_dir_defaults_under_the_studio_root(tmp_path, monkeypatch):
+    import types
+
+    from studio.cluster_link import paths
+
+    for var in (paths.ENV_STATE_DIR, "UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
+        monkeypatch.delenv(var, raising = False)
+    roots = types.SimpleNamespace(studio_root = lambda: tmp_path / "root")
+    monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", roots)
+    assert paths.state_dir() == tmp_path / "root" / "cluster"
+    monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", None)  # no Studio backend
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert paths.state_dir() == tmp_path / ".unsloth" / "studio" / "cluster"
+    monkeypatch.setenv("STUDIO_HOME", str(tmp_path / "alt"))
+    assert paths.state_dir() == tmp_path / "alt" / "cluster"
