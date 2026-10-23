@@ -1435,3 +1435,45 @@ def test_running_chats_block_a_load_with_a_wait_or_cancel_hint(monkeypatch):
     )
     assert "thread" not in message
     assert "force_cancel_active" not in message
+
+
+def _replacement_failed_studio(*, held):
+    # The UI's model (token held) is resident; this caller's replacement t1 was in flight at the status
+    # read and then failed, so its token unload answers superseded and the old model stays loaded.
+    state = {"resident": LTX}
+
+    def status(request, body):
+        if state["resident"] is None:
+            return UNLOADED
+        return {"loaded": True, "repo_id": LTX, "load_id": "t1", "resident_load_id": held}
+
+    def unload(request, body):
+        expected = json.loads(body).get("expected_load_id") if body else None
+        if expected is not None and expected == held and state["resident"] is not None:
+            state["resident"] = None
+            return {"loaded": False, "unloaded": True, "outcome": "unloaded"}
+        return {"unloaded": False, "outcome": "superseded"}
+
+    return fake_studio({VIDEO_STATUS: status, ("POST", "/api/inference/video/unload"): unload}), state
+
+
+def test_an_unload_ends_the_model_a_failed_replacement_left_resident(monkeypatch):
+    studio, state = _replacement_failed_studio(held = "ui-1")
+    caller = make_caller(studio_app = studio)
+    loading._remember_media_token(caller, "video", "t1")
+    unloaded = asyncio.run(loading.unload_media(caller, "video"))
+    assert bodies(studio, "/api/inference/video/unload") == [
+        {"expected_load_id": "t1"},
+        {"expected_load_id": "ui-1"},
+    ]
+    assert unloaded.unloaded is True and state["resident"] is None
+
+
+def test_an_unload_names_no_resident_id_studio_does_not_report(monkeypatch):
+    # An older Studio reports no resident_load_id: only the token unload goes out, as before.
+    studio, state = _replacement_failed_studio(held = None)
+    caller = make_caller(studio_app = studio)
+    loading._remember_media_token(caller, "video", "t1")
+    unloaded = asyncio.run(loading.unload_media(caller, "video"))
+    assert bodies(studio, "/api/inference/video/unload") == [{"expected_load_id": "t1"}]
+    assert unloaded.unloaded is False and state["resident"] == LTX

@@ -919,8 +919,8 @@ async def video_status(
 
     backend = get_video_backend()
     # With the load id of the same state, so an unload can name exactly what this answer shows.
-    status_dict, load_id = await asyncio.to_thread(
-        media_load_ids.snapshot, "video", backend, backend.status
+    status_dict, load_id, resident_load_id = await asyncio.to_thread(
+        media_load_ids.snapshot_ids, "video", backend, backend.status
     )
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
@@ -937,7 +937,7 @@ async def video_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("video")}
-    status_dict = {**status_dict, "load_id": load_id}
+    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
     # This route answers long after the request that resolved the reference ended, so there is
     # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)

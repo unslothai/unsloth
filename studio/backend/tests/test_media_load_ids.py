@@ -409,3 +409,22 @@ def test_the_real_engine_states_are_weakly_referable():
     for cls in (_LoadState, _VideoLoadState):
         state = cls(**{f.name: None for f in fields(cls) if f.init})
         assert media_load_ids._weak(state)() is state
+
+
+def test_the_resident_load_id_names_the_model_under_a_load_in_flight():
+    engine = _Engine()
+    read = lambda: {"loaded": engine._state is not None}
+    assert media_load_ids.snapshot_ids("video", engine, read) == ({"loaded": False}, None, None)
+    _load(engine, "t1")
+    engine.finish()
+    assert media_load_ids.snapshot_ids("video", engine, read) == ({"loaded": True}, "t1", "t1")
+    # A replacement in flight: load_id names it, resident_load_id the model still loaded under it.
+    _load(engine, "t2")
+    assert media_load_ids.snapshot_ids("video", engine, read)[1:] == ("t2", "t1")
+    engine.finish()
+    assert media_load_ids.snapshot_ids("video", engine, read)[1:] == ("t2", "t2")
+    # Replaced again, and that replacement fails: the resident stays named by both ids.
+    _load(engine, "t3")
+    engine.fail()
+    assert media_load_ids.snapshot_ids("video", engine, read)[1:] == ("t2", "t2")
+    assert media_load_ids.snapshot("video", engine, read) == ({"loaded": True}, "t2")

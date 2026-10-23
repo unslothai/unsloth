@@ -203,6 +203,23 @@ def _slot_token(modality: str, engine: Any) -> Optional[str]:
     return None
 
 
+def _resident_token(modality: str, engine: Any) -> Optional[str]:
+    # The token of the state resident in ``engine`` (under _lock). Unlike _slot_token, a load in
+    # flight over it does not hide it: a replacement that fails leaves this model loaded.
+    state = getattr(engine, "_state", None)
+    if state is None:
+        return None
+    record = _current.get(modality)
+    loading = getattr(engine, "loading_repo_ids", None)
+    in_flight = callable(loading) and bool(loading())
+    if record is not None and not in_flight and _describes(record, engine):
+        return record.token
+    published = _published.get(modality)
+    if published is not None and published[1] is engine and published[2]() is state:
+        return published[0]
+    return None
+
+
 def snapshot(
     modality: str, engine: Any, read_status: Callable[[], Any]
 ) -> tuple[Any, Optional[str]]:
@@ -215,6 +232,15 @@ def snapshot(
     records its token only at its admission, which moves the generation, and an engine that began a
     load since its record was taken is not named by it, so neither pairing can mix two states.
     """
+    status, load_id, _ = snapshot_ids(modality, engine, read_status)
+    return status, load_id
+
+
+def snapshot_ids(
+    modality: str, engine: Any, read_status: Callable[[], Any]
+) -> tuple[Any, Optional[str], Optional[str]]:
+    """``snapshot`` plus ``resident_load_id``: the token of the model resident under a load still in
+    flight (the same as ``load_id`` when none is), taken under the same generation check."""
     status = None
     for _ in range(_SNAPSHOT_TRIES):
         with _lock:
@@ -222,8 +248,8 @@ def snapshot(
         status = read_status()
         with _lock:
             if _generation == generation:
-                return status, _slot_token(modality, engine)
-    return status, None
+                return status, _slot_token(modality, engine), _resident_token(modality, engine)
+    return status, None, None
 
 
 def current_id(modality: str, engine: Any) -> Optional[str]:

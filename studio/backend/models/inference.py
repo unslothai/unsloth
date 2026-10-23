@@ -5914,6 +5914,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "The load_token of the load in flight or resident (one Studio made up for a "
         "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
     )
+    resident_load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the model resident in the slot, also while another load is "
+        "in flight over it (equal to load_id when none is); a failed replacement leaves this model loaded.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",
@@ -7619,6 +7624,11 @@ class VideoStatusResponse(BaseModel):
         None,
         description = "The load_token of the load in flight or resident (one Studio made up for a "
         "load sent without one); POST unload with expected_load_id set to it unloads that load only.",
+    )
+    resident_load_id: Optional[str] = Field(
+        None,
+        description = "The load_token of the model resident in the slot, also while another load is "
+        "in flight over it (equal to load_id when none is); a failed replacement leaves this model loaded.",
     )
     resident_mib: Optional[int] = Field(
         None,

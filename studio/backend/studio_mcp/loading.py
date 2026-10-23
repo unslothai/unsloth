@@ -801,6 +801,13 @@ async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
     elif resident not in tokens:
         answer = as_dict(await _media_unload_post(caller, kind, {"expected_load_id": resident}))
         unloaded = unloaded or answer.get("outcome") == "unloaded"
+    # load_id names a load in flight; the model it was replacing is resident_load_id. A replacement
+    # that failed before its unload above left that model loaded, so end it too, by its own id
+    # (a load admitted since is never it). Studio without the field: nothing more to name.
+    held = opt_text(before.get("resident_load_id"))
+    if held is not None and held != resident and held not in tokens:
+        answer = as_dict(await _media_unload_post(caller, kind, {"expected_load_id": held}))
+        unloaded = unloaded or answer.get("outcome") == "unloaded"
     return UnloadResult(kind = kind, model = model, unloaded = unloaded)
 
 
