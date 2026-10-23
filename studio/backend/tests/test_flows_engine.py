@@ -508,3 +508,36 @@ def test_an_imported_media_cover_shows_in_the_flow_list():
     )
     summary = next(f for f in flows_db.list_flows() if f["id"] == "covered")
     assert summary["cover"] == "/api/flows/assets/abc.png"
+
+
+@run_async
+async def test_forcing_a_for_each_reruns_its_body():
+    calls = []
+
+    async def counted(ctx):
+        calls.append(ctx.inputs["values"][0])
+        return {"text": str(ctx.inputs["values"][0]).upper()}
+
+    eng = _engine(
+        {**BASE, "input.list": lambda ctx: _ret({"items": ["a", "b"]}), "text.template": counted}
+    )
+    d = doc(
+        [
+            node("l", "input.list"),
+            node("fe", "logic.for_each"),
+            node("t", "text.template", group = "fe"),
+            node("o", "output.result", name = "all"),
+        ],
+        [
+            edge("l", "items", "fe", "items"),
+            edge("fe", "item", "t", "values"),
+            edge("t", "text", "fe", "collect"),
+            edge("fe", "results", "o", "value"),
+        ],
+    )
+    await _run(eng, d)
+    await _run(eng, d)
+    assert calls == ["a", "b"]
+    rs = await _run(eng, d, force_nodes = ["fe"])
+    assert rs.status == "completed", rs.error
+    assert calls == ["a", "b", "a", "b"]

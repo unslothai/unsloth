@@ -722,6 +722,15 @@ class FlowEngine:
             flows_db.update_run(rs.id, status = "running", started_at = flows_db.now_ms())
             rs.emit("run.started", data = {"order": rs.plan.order})
             targets = rs.options.get("target_nodes") or []
+            # Re-rolling a For Each re-rolls what it runs: its body, nested loops included.
+            forced = set(rs.options.get("force_nodes") or [])
+            stack = [n for n in forced if n in rs.plan.bodies]
+            while stack:
+                for member in rs.plan.bodies.get(stack.pop(), ()):
+                    if member not in forced:
+                        forced.add(member)
+                        stack.append(member)
+            rs.options["force_nodes"] = sorted(forced)
             # Entrypoints (Next Scene, Scene Art, NPC Reply) answer the player through /invoke, not a full run.
             need = (
                 rs.plan.ancestors(targets)
