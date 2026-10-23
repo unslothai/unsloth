@@ -132,3 +132,63 @@ def test_warm_refuses_a_node_that_is_not_an_entry_point(client):  # noqa: F811
     )
     res = client.post("/api/flows/plain/invoke", json = {"entry": "a", "warm": True})
     assert res.status_code == 422 and "entry point" in res.json()["detail"]
+
+
+def test_in_process_streams_arrive_as_the_route_writes_them():
+    import time
+
+    from core.flows import caller as flow_caller
+
+    finished = []
+
+    async def app(scope, receive, send):
+        await receive()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        for i in range(3):
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": f'data: {{"i": {i}}}\n\n'.encode(),
+                    "more_body": True,
+                }
+            )
+            await asyncio.sleep(0.2)
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+        finished.append(True)
+
+    from types import SimpleNamespace
+
+    caller = SimpleNamespace(studio_app = app)
+
+    monkey_headers = flow_caller._headers
+    flow_caller._headers = lambda caller, content_type, extra = None: {"content-type": content_type}
+    flow_caller.checked_path, saved = (lambda url: url.path), flow_caller.checked_path
+
+    async def go():
+        t0 = time.monotonic()
+        seen = []
+        async for event in flow_caller.stream_sse(caller, "/v1/chat/completions", {}):
+            seen.append((event["i"], time.monotonic() - t0))
+        return seen
+
+    async def leave_early():
+        async for _ in flow_caller.stream_sse(caller, "/v1/chat/completions", {}):
+            break
+        await asyncio.sleep(0.3)
+
+    try:
+        seen = asyncio.run(go())
+        # httpx's own ASGITransport would hand all three over together, after 0.6 s.
+        assert [i for i, _ in seen] == [0, 1, 2] and seen[0][1] < 0.15 and seen[2][1] > 0.35
+        finished.clear()
+        asyncio.run(leave_early())
+        assert finished == []  # the route was stopped, not run to the end
+    finally:
+        flow_caller._headers = monkey_headers
+        flow_caller.checked_path = saved
