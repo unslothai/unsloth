@@ -499,13 +499,17 @@ def _h3_telemetry(monkeypatch, *, rocm, smi):
     touched = []
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
     monkeypatch.setattr(hardware, "IS_ROCM", rocm)
-    monkeypatch.setattr(hardware, "_get_parent_visible_gpu_spec", lambda: {"raw": "0", "numeric_ids": [0]})
+    monkeypatch.setattr(
+        hardware, "_get_parent_visible_gpu_spec", lambda: {"raw": "0", "numeric_ids": [0]}
+    )
     monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0])
     row = {"index": 0, "visible_ordinal": 0, "vram_total_gb": 48.0, "vram_used_gb": 8.0}
     monkeypatch.setattr(
         hardware,
         "_smi_visible_utilization",
-        lambda spec: {"available": True, "devices": [dict(row)], "index_kind": "physical"} if smi else None,
+        lambda spec: {"available": True, "devices": [dict(row)], "index_kind": "physical"}
+        if smi
+        else None,
     )
     monkeypatch.setattr(
         hardware,
@@ -536,7 +540,9 @@ def test_h3_residency_reads_fall_back_to_torch_on_rocm(monkeypatch):
     assert video_mod._h3_card_memory_bytes("cuda", 0) == (40 * GiB, 48 * GiB)
 
 
-@pytest.mark.parametrize("rocm, smi", [(True, True), (False, False)], ids = ["rocm_amd_smi", "nvidia_no_smi"])
+@pytest.mark.parametrize(
+    "rocm, smi", [(True, True), (False, False)], ids = ["rocm_amd_smi", "nvidia_no_smi"]
+)
 def test_h3_auto_runs_resident_when_the_card_fits(monkeypatch, rocm, smi):
     """48 GiB total, 40 free, 39 needed: Auto drops the streaming flags, as it did before the launch budget."""
     _h3_telemetry(monkeypatch, rocm = rocm, smi = smi)
