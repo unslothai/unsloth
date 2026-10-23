@@ -20,6 +20,8 @@ import shutil
 import logging
 import subprocess
 
+from ._msvc_env import _have_crt_headers
+
 logger = logging.getLogger(__name__)
 
 # The environment cl needs to compile and link. Nothing else from vcvars is taken.
@@ -27,14 +29,10 @@ _VCVARS_KEYS = ("PATH", "INCLUDE", "LIB", "LIBPATH")
 
 
 def _triton_is_xpu() -> bool:
-    """XPU Triton and triton-windows own the same top-level name; only the distribution says which."""
-    try:
-        import importlib.metadata as md  # noqa: PLC0415
-        dists = md.packages_distributions().get("triton") or ()
-    except Exception:  # noqa: BLE001
-        logger.debug("Could not resolve which distribution owns `triton`", exc_info = True)
-        return False
-    return any("xpu" in d.lower() for d in dists)
+    """Intel's fork is the only Triton with an `intel` backend (triton-windows ships amd + nvidia). The
+    gate has imported it already; a directory check, since `packages_distributions()` scans every dist."""
+    path = getattr(sys.modules.get("triton"), "__file__", None)
+    return bool(path) and os.path.isdir(os.path.join(os.path.dirname(path), "backends", "intel"))
 
 
 def _basename(path: str) -> str:
@@ -53,15 +51,6 @@ def _triton_cl_spelling(cl_path: str) -> str:
     """The same file, spelled so Triton's case-sensitive `"cl.EXE" in cc` test picks MSVC flags.
     Windows paths are case-insensitive, so only the spelling changes."""
     return os.path.join(os.path.dirname(cl_path), "cl.EXE")
-
-
-def _have_crt_headers() -> bool:
-    dirs = os.environ.get("INCLUDE", "").split(os.pathsep)
-
-    def found(name: str) -> bool:
-        return any(d and os.path.isfile(os.path.join(d, name)) for d in dirs)
-
-    return found("stdlib.h") and found("vcruntime.h")
 
 
 def _msvc_environment_loaded() -> bool:
@@ -101,12 +90,12 @@ def _vcvars_path() -> str | None:
 
 
 def _vcvars_environment(vcvars: str) -> dict | None:
-    """The variables vcvars64.bat sets, read back from the shell that ran it."""
+    """The variables vcvars64.bat sets, read back from the shell that ran it. `/u` makes `set` write
+    UTF-16: the default OEM code page would garble a non-ASCII PATH entry (setuptools' _get_vc_env)."""
     try:
         done = subprocess.run(
-            f'cmd /d /s /c ""{vcvars}" >nul 2>&1 && set"',
+            f'cmd /d /u /s /c ""{vcvars}" >nul 2>&1 && set"',
             capture_output = True,
-            text = True,
             timeout = 120,
         )
     except Exception:  # noqa: BLE001
@@ -115,7 +104,7 @@ def _vcvars_environment(vcvars: str) -> dict | None:
     if done.returncode != 0:
         return None
     env = {}
-    for line in (done.stdout or "").splitlines():
+    for line in (done.stdout or b"").decode("utf-16-le", errors = "replace").splitlines():
         key, sep, value = line.partition("=")
         if sep and key.upper() in _VCVARS_KEYS:
             env[key.upper()] = value

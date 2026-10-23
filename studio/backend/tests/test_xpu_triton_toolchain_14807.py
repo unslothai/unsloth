@@ -99,6 +99,20 @@ def test_no_compiler_anywhere_warns_and_sets_nothing(xpu_windows, monkeypatch, c
     assert "Build Tools" in caplog.text
 
 
+@pytest.mark.parametrize(
+    "backends, expected", [(("amd", "nvidia"), False), (("amd", "intel", "nvidia"), True)]
+)
+def test_only_a_triton_with_an_intel_backend_is_xpu(tmp_path, monkeypatch, backends, expected):
+    pkg = tmp_path / "triton"
+    for name in backends:
+        (pkg / "backends" / name).mkdir(parents = True)
+    fake = types.ModuleType("triton")
+    fake.__file__ = str(pkg / "__init__.py")
+    monkeypatch.setitem(sys.modules, "triton", fake)
+
+    assert toolchain._triton_is_xpu() is expected
+
+
 def test_triton_windows_is_not_touched(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(toolchain, "_triton_is_xpu", lambda: False)
@@ -129,7 +143,7 @@ def test_a_failure_never_reaches_the_worker(xpu_windows, monkeypatch):
 def test_vcvars_environment_keeps_only_what_cl_needs(monkeypatch):
     out = "\n".join(
         [
-            r"Path=C:\VS\bin;C:\Windows",
+            r"Path=C:\VS\bin;C:\Users\José\bin",
             r"INCLUDE=C:\VS\include",
             r"LIB=C:\VS\lib",
             r"LIBPATH=C:\VS\libpath",
@@ -140,13 +154,13 @@ def test_vcvars_environment_keeps_only_what_cl_needs(monkeypatch):
     monkeypatch.setattr(
         toolchain.subprocess,
         "run",
-        lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = out),
+        lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = out.encode("utf-16-le")),
     )
 
     env = toolchain._vcvars_environment(r"C:\VS\vcvars64.bat")
 
     assert env == {
-        "PATH": r"C:\VS\bin;C:\Windows",
+        "PATH": r"C:\VS\bin;C:\Users\José\bin",
         "INCLUDE": r"C:\VS\include",
         "LIB": r"C:\VS\lib",
         "LIBPATH": r"C:\VS\libpath",
@@ -157,7 +171,7 @@ def test_a_failed_vcvars_yields_nothing(monkeypatch):
     monkeypatch.setattr(
         toolchain.subprocess,
         "run",
-        lambda *a, **k: types.SimpleNamespace(returncode = 1, stdout = ""),
+        lambda *a, **k: types.SimpleNamespace(returncode = 1, stdout = b""),
     )
 
     assert toolchain._vcvars_environment(r"C:\VS\vcvars64.bat") is None
