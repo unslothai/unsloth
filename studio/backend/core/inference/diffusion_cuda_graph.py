@@ -484,13 +484,8 @@ _CAPTURE_STREAMS: dict = {}
 
 
 def _capture_stream(index: int) -> Any:
-    """The capture stream for card ``index``, one per card for the process.
-
-    ``torch.cuda.graph`` without ``stream=`` records on ONE process-wide stream, created on whichever card captured
-    first. Entering it makes that card current, so a later capture for a model on another card began on the first
-    card's stream while the forward's kernels ran uncaptured on their own card: the graph recorded none of them and
-    every replay returned the recording's output. torch's stream is kept for the card it belongs to (the same stream as
-    before there), and pool blocks are reused only from the stream that recorded them, so each card keeps one."""
+    """One capture stream per card: torch's default capture stream lives on the first card that captured, so a
+    capture for another card recorded none of its kernels. Pool blocks are reused only from the recording stream."""
     torch = _torch()
     stream = _CAPTURE_STREAMS.get(index)
     if stream is None:
@@ -1826,7 +1821,6 @@ class GraphedForward:
             if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
                 pool = torch.cuda.graph_pool_handle()
             recorder = _graph_without_flush if recapture else torch.cuda.graph
-            # The card the step's inputs live on, not torch's process-wide default capture stream's card.
             card = next((t.device.index for t in live if t.device.index is not None), None)
             if card is None:
                 card = torch.cuda.current_device()

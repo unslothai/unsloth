@@ -298,8 +298,7 @@ def test_capture_then_replay_uses_one_graph_and_copies_statics(stub_torch):
 
 
 def test_each_card_records_on_its_own_capture_stream(stub_torch):
-    """torch.cuda.graph's default capture stream is one per process, made on the first card that captured: a later
-    model on another card recorded on it, so none of its kernels were in the graph. Each card gets its own."""
+    """torch's default capture stream lives on the first card that captured; each card needs its own."""
     first = _armed()
     first(_t(device_index = 0), timestep = _t((1,), device_index = 0), return_dict = False)
     second = _armed()

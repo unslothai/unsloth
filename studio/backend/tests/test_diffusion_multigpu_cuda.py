@@ -274,8 +274,7 @@ def test_an_in_place_edit_of_inference_weights_rebuilds_the_replica():
 
 
 def test_a_step_graph_on_the_second_card_records_its_forward():
-    # torch.cuda.graph's default capture stream is made on the first card that captures. A later model on cuda:1
-    # recorded on that cuda:0 stream: its kernels ran uncaptured, and every replay returned the recording's output.
+    # Regression: cuda:1 captured on torch's cuda:0 default capture stream, so replays returned the recording's output.
     from core.inference import diffusion_cuda_graph as cg
 
     def graphed_steps(card):
