@@ -1687,13 +1687,36 @@ def native_fsdp2_unsharded(model):
                 _reshard_after_forward_restore(unit, saved[id(unit)])
 
 
+def _ga_mode():
+    """Non-final gradient accumulation micro-batches (Trainer / accelerate no_sync):
+    "skip" (default) = no reduce-scatter, units resharded after each backward;
+    "defer" = also keep units unsharded until the last micro-batch (torchtitan
+    fsdp_defer_gradient_reduction): no re-all-gather per micro-batch, gathered weights stay resident;
+    "each" = reduce-scatter every micro-batch (sharded gradients, no unsharded fp32 accumulation)."""
+    mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "skip").strip().lower() or "skip"
+    return mode if mode in ("skip", "defer", "each") else "skip"
+
+
 @contextlib.contextmanager
 def _no_grad_sync(model):
+    mode = _ga_mode()
+    if mode == "each":
+        yield
+        return
+    defer = mode == "defer" and hasattr(model, "set_reshard_after_backward")
     model.set_requires_gradient_sync(False)
+    if defer:
+        model.set_reshard_after_backward(False)
+        if hasattr(model, "set_is_last_backward"):
+            model.set_is_last_backward(False)
     try:
         yield
     finally:
         model.set_requires_gradient_sync(True)
+        if defer:
+            model.set_reshard_after_backward(True)
+            if hasattr(model, "set_is_last_backward"):
+                model.set_is_last_backward(True)
 
 
 def _native_models(accelerator):
