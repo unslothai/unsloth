@@ -145,7 +145,9 @@ def test_a_listed_device_or_unproven_probe_keeps_vulkan(monkeypatch, tmp_path, o
     # Every Vulkan launch of an eligible load is capped, renewals included.
     assert sink["health_kwargs"][0]["max_total_s"] >= expected
     # Only a suspect probe stops CPU work from renewing the stall window.
-    assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is (outcome not in ("timeout", "crashed"))
+    assert sink["health_kwargs"][0]["cpu_counts_as_progress"] is (
+        outcome not in ("timeout", "crashed")
+    )
     if outcome not in ("timeout", "crashed"):
         # That stall only ever fails with advice: a slow disk gets three times the room.
         assert sink["health_kwargs"][0]["max_total_s"] >= (
@@ -572,7 +574,9 @@ def test_a_reload_after_a_vulkan_cpu_route_leaves_the_decision_to_its_own_probe(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/fake/llama-server")
     )
     monkeypatch.setattr(
-        LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary: probes.append(binary) or [])
+        LlamaCppBackend,
+        "_run_vulkan_probe",
+        staticmethod(lambda binary: probes.append(binary) or []),
     )
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -678,7 +682,11 @@ def test_one_vulkan_probe_per_load(monkeypatch, tmp_path):
     monkeypatch.setattr(LlamaCppBackend, "_vulkan_probe_outcome", staticmethod(real_outcome))
     sink = {}
 
-    def _placement_probe(self, binary = None, **_kw):
+    def _placement_probe(
+        self,
+        binary = None,
+        **_kw,
+    ):
         LlamaCppBackend._run_vulkan_probe(binary or "/fake/llama-server")
         return []
 
