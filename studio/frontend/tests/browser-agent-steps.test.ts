@@ -90,3 +90,28 @@ test("Back through a router's own history goes back in the page", async () => {
   assert.deepEqual(sent, [{ command: "go", delta: -1 }]);
   assert.doesNotMatch(result?.note ?? "", /no previous page/);
 });
+
+test("Back prefers the page's own history over the tab entry behind it", async () => {
+  const tabId = agentChat(CHAT).tabId ?? "";
+  const store = useBrowserStore.getState();
+  await runBrowserAction({ id: "b4", sessionId: "s", op: "navigate", url: "https://example.com/two", direction: "down", policy }, run);
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const index = tab()?.index ?? 0;
+  assert.ok(index > 0, "a stored entry is behind the page");
+  store.updateTab(tabId, { pageHistory: { back: true, forward: false } });
+  const sent: Array<Record<string, unknown>> = [];
+  globals.__frameCommand = (id: string, command: Record<string, unknown>) => {
+    sent.push(command);
+    store.updateTab(id, { displayUrl: "https://example.com/two#list" });
+    return true;
+  };
+  try {
+    await runBrowserAction({ id: "b5", sessionId: "s", op: "back", direction: "down", policy }, run);
+  } finally {
+    delete globals.__frameCommand;
+    store.updateTab(tabId, { pageHistory: null });
+  }
+  assert.equal(resultOf("b5")?.ok, true, resultOf("b5")?.error);
+  assert.deepEqual(sent, [{ command: "go", delta: -1 }]);
+  assert.equal(tab()?.index, index, "the stored entry was not left");
+});

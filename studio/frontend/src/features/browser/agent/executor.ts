@@ -801,16 +801,18 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
           : entry?.kind === "web"
             ? entry.url
             : "";
-    if (action.op !== "reload" && !nativeMove && !entry) {
-      const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
-      if (!ready) return { ok: false, error: "the browser tab closed." };
-      // A router's pushState / hash history lives in the page, as the toolbar's Back finds it.
+    // A router's pushState / hash history lives in the page and comes first, as the toolbar's Back does.
+    if (action.op !== "reload" && !nativeMove && tab.pageHistory?.[action.op]) {
       const since = Date.now();
-      if (ready.pageHistory?.[action.op] && sendFrameCommand(ready.id, { command: "go", delta: action.op === "back" ? -1 : 1 })) {
-        const after = await settle(ready.id, before, since, signal);
+      if (sendFrameCommand(tab.id, { command: "go", delta: action.op === "back" ? -1 : 1 })) {
+        const after = await settle(tab.id, before, since, signal);
         if (!after) return { ok: false, error: "the browser tab closed." };
         return arrive(after, before, action, context, since);
       }
+    }
+    if (action.op !== "reload" && !nativeMove && !entry) {
+      const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
+      if (!ready) return { ok: false, error: "the browser tab closed." };
       const refused = await stillAllowed(ready, action, context);
       if (refused) return { ok: false, error: refused };
       return observe(ready, context, `There is no ${action.op === "back" ? "previous" : "next"} page in this tab's history; this is still the same page.`);
