@@ -1022,13 +1022,11 @@ def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
     pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part)."""
     held = 0
     try:
-        # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
         held += int(_block_graph_pool_bytes(device))
     except Exception:  # noqa: BLE001
         pass
     try:
-        # The whole-step graphs' shared pool: only its unallocated part sits inside the difference.
         from .diffusion_cuda_graph import live_pool_free_bytes
         held += int(live_pool_free_bytes())
     except Exception:  # noqa: BLE001 -- no graph layer: nothing held
@@ -4539,7 +4537,6 @@ def measured_request_extra_mib(
         8192 * cond / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT) * _MEASURED_PEAK_MARGIN
     )
     if need is not None:
-        # the seed / base estimate plus the condition-image allowance is one complete estimate
         need += allowance
     if isinstance(identity, tuple) and len(identity) == 3:
         keyed = with_workflow(identity[1], workflow)

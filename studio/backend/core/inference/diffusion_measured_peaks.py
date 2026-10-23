@@ -207,7 +207,6 @@ def _read(path: Path, fresh: bool = False) -> dict:
             and data.get("runtime") == runtime_stamp()
             and isinstance(data.get("entries"), dict)
         ):
-            # rewritten as version 2 by the next record
             data = dict(data, version = _VERSION, entries = _migrate_v1(data["entries"]))
         if (
             not isinstance(data, dict)

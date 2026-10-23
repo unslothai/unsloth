@@ -2979,12 +2979,9 @@ def _record_peak_probe(
         if PHASE_PRE_DECODE in split and PHASE_DECODE in split:
             pre, dec = int(split[PHASE_PRE_DECODE]), int(split[PHASE_DECODE])
             phases = {
-                # whole-render scale (prefetch window included)
                 PHASE_PRE_DECODE: pre + pad,
                 PHASE_DECODE: dec + pad,
-                # nothing streams during the decode, so no window
                 PHASE_DECODE_UNPADDED: dec,
-                # what an all-resident load holds
                 PHASE_UNPADDED: max(pre, dec),
             }
         quant = with_workflow(quant, _peak_workflow(getattr(state, "family", None), workflow))
@@ -9996,7 +9993,6 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_static_seed", True),
                                 plan.estimates.get("measured_learned_cfg_off", False),
                             )
-                            # encoder residency the plan lent to the VAE decode (release_for_decode)
                             setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
@@ -13625,7 +13621,6 @@ class DiffusionBackend:
                             )
                             continue
                         finally:
-                            # what the decode streamed again goes back before the next prompt's encode
                             while decode_restores:
                                 try:
                                     decode_restores.pop()()
