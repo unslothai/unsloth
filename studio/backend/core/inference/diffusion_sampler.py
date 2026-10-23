@@ -266,12 +266,22 @@ def _recorded_marks(repo_id: str, commit: Optional[str]) -> list[dict[str, Any]]
         hit = json.loads(path.read_text()).get(_marks_key(repo_id, commit))
     except Exception:  # noqa: BLE001 - absent / unreadable record: nothing recorded
         return []
-    if not isinstance(hit, list) or not all(isinstance(m, dict) for m in hit):
+    if not isinstance(hit, list) or not all(_well_formed_marks(m) for m in hit):
         return []
     return [_marker_overrides(set(m.get("markers") or ())) for m in hit]
 
 
+def _well_formed_marks(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    markers = entry.get("markers")
+    return markers is None or (
+        isinstance(markers, list) and all(isinstance(m, str) for m in markers)
+    )
+
+
 def _record_marks(repo_id: str, commit: Optional[str], markers: list[list[str]]) -> None:
+    import contextlib
     import json
     import os
     import threading
@@ -279,24 +289,34 @@ def _record_marks(repo_id: str, commit: Optional[str], markers: list[list[str]])
     path = _marks_record_path()
     if not commit or path is None:
         return
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
         try:
-            record = json.loads(path.read_text())
-            if not isinstance(record, dict):
+            from filelock import FileLock
+            lock: Any = FileLock(f"{path}.lock", timeout = 30)
+        except ImportError:
+            lock = contextlib.nullcontext()
+        # One read / evict / write under a cross-process lock, so concurrent probes never drop entries.
+        with lock:
+            try:
+                record = json.loads(path.read_text())
+                if not isinstance(record, dict):
+                    record = {}
+            except Exception:  # noqa: BLE001 - absent / corrupt: start over
                 record = {}
-        except Exception:  # noqa: BLE001 - absent / corrupt: start over
-            record = {}
-        key = _marks_key(repo_id, commit)
-        record.pop(key, None)
-        while len(record) >= _MAX_RECORDED_MARKS:
-            record.pop(next(iter(record)))
-        record[key] = [{"markers": sorted(m)} for m in markers]
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(record))
-        os.replace(tmp, path)
-    except Exception:  # noqa: BLE001 - a read-only cache only costs the next offline load the markers
-        return
+            key = _marks_key(repo_id, commit)
+            record.pop(key, None)
+            while len(record) >= _MAX_RECORDED_MARKS:
+                record.pop(next(iter(record)))
+            record[key] = [{"markers": sorted(m)} for m in markers]
+            tmp.write_text(json.dumps(record))
+            os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - read-only cache / lock timeout: the next offline load lacks the markers
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _root_single_marks(
@@ -339,6 +359,9 @@ def _root_single_marks(
     if not allow_network:
         # A cache-only load of a snapshot an online load already read keeps that read's verdict.
         return _recorded_marks(rid, commit)
+    if commit:
+        # Read the snapshot the record is keyed on, never a HEAD that moved past the staged copy.
+        rev = {"revision": commit}
     try:
         from huggingface_hub import HfApi
 

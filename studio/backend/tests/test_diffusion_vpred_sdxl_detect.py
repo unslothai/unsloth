@@ -805,3 +805,82 @@ def test_the_load_hands_the_uncollapsed_token_to_the_marker_probe():
     assert len(probe) == 1
     token_kw = next(k for k in probe[0].keywords if k.arg == "hf_token")
     assert isinstance(token_kw.value, ast.Name) and token_kw.value.id == "hub_token"
+
+
+def test_the_marker_probe_reads_the_snapshot_it_records(hub_cache, monkeypatch):
+    import huggingface_hub
+
+    snap = _staged_snapshot(hub_cache)
+    revisions = []
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        revisions.append(kw.get("revision"))
+        return ["model_index.json", NOOB_FILE]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        revisions.append(kw.get("revision"))
+        keys = SDXL_UNET_KEYS + ["v_pred", "ztsnr"]
+        return types.SimpleNamespace(tensors = {k: None for k in keys}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    # No revision pin: both Hub reads still target the staged commit, not the moving HEAD.
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    assert revisions == [SHA, SHA]
+
+
+@pytest.mark.parametrize("markers", [5, [["v_pred"]], "v_pred", [1]])
+def test_a_malformed_recorded_entry_is_a_cache_miss(hub_cache, monkeypatch, markers):
+    from core.inference.diffusion_sampler import _marks_key, _marks_record_path
+
+    snap = _staged_snapshot(hub_cache)
+    path = _marks_record_path()
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(json.dumps({_marks_key(NOOB, SHA): [{"markers": markers}]}))
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
+    _stub_noob_hub(monkeypatch, None, [])
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == {}
+
+
+def test_concurrent_marker_records_keep_every_entry(hub_cache, monkeypatch):
+    import os
+    import threading
+
+    import core.inference.diffusion_sampler as sampler
+
+    real_replace = os.replace
+    first_read = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def slow_replace(src, dst):
+        # The first writer has read the record; hold it until the second writer has had its turn.
+        if not calls:
+            calls.append(1)
+            first_read.set()
+            release.wait(5)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", slow_replace)
+    a = threading.Thread(target = sampler._record_marks, args = (NOOB, "a" * 40, [["v_pred"]]))
+    a.start()
+    assert first_read.wait(5)
+    b = threading.Thread(target = sampler._record_marks, args = (NOOB, "b" * 40, [["v_pred"]]))
+    b.start()
+    b.join(1)
+    release.set()
+    a.join(5)
+    b.join(5)
+    record = json.loads(sampler._marks_record_path().read_text())
+    assert {sampler._marks_key(NOOB, "a" * 40), sampler._marks_key(NOOB, "b" * 40)} <= set(record)
