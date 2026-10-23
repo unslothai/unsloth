@@ -383,7 +383,14 @@ def _raw_accelerator_wants_fsdp2(kwargs):
         return False
     if any(
         kwargs.get(name) is not None
-        for name in ("fsdp_plugin", "deepspeed_plugin", "deepspeed_plugins", "megatron_lm_plugin")
+        for name in (
+            "fsdp_plugin",
+            "deepspeed_plugin",
+            "deepspeed_plugins",
+            "megatron_lm_plugin",
+            "torch_tp_plugin",
+            "parallelism_config",
+        )
     ):
         return False
     if kwargs.get("cpu") or _env_flag("ACCELERATE_USE_CPU"):
@@ -415,12 +422,29 @@ def install_raw_accelerator_fsdp2_fallback():
     if getattr(Accelerator, _RAW_ACCELERATOR_PATCHED, False):
         return True
     import functools
+    import inspect
 
     original_init = Accelerator.__init__
 
+    try:
+        signature = inspect.signature(original_init)
+    except (TypeError, ValueError):
+        signature = None
+
+    def _named(self, args, kwargs):
+        # Options passed positionally count as explicit too.
+        if signature is None or not args:
+            return kwargs
+        try:
+            return dict(signature.bind_partial(self, *args, **kwargs).arguments)
+        except TypeError:
+            return kwargs
+
     @functools.wraps(original_init)
     def __init__(self, *args, **kwargs):
-        if _raw_accelerator_wants_fsdp2(kwargs) and not _built_by_trainer(sys._getframe(1)):
+        if _raw_accelerator_wants_fsdp2(_named(self, args, kwargs)) and not _built_by_trainer(
+            sys._getframe(1)
+        ):
             _export_accelerate_fsdp2_env()
             if str(os.environ.get("RANK", "0")).strip() in ("", "0"):
                 print(

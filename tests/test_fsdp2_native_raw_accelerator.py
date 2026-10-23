@@ -89,7 +89,17 @@ def test_trainer_accelerator_stays_native(launch):
 
 @pytest.mark.parametrize(
     "setup",
-    ["backend_native", "backend_accelerate", "plugin", "cpu", "state", "sharded", "single"],
+    [
+        "backend_native",
+        "backend_accelerate",
+        "plugin",
+        "tp_plugin",
+        "parallelism_config",
+        "cpu",
+        "state",
+        "sharded",
+        "single",
+    ],
 )
 def test_left_alone(launch, monkeypatch, setup):
     kwargs = {}
@@ -99,6 +109,10 @@ def test_left_alone(launch, monkeypatch, setup):
         monkeypatch.setenv("UNSLOTH_FSDP2_BACKEND", "accelerate")
     elif setup == "plugin":
         kwargs["fsdp_plugin"] = object()
+    elif setup == "tp_plugin":
+        kwargs["torch_tp_plugin"] = object()
+    elif setup == "parallelism_config":
+        kwargs["parallelism_config"] = object()
     elif setup == "cpu":
         kwargs["cpu"] = True
     elif setup == "state":
@@ -115,3 +129,29 @@ def test_install_is_idempotent(launch):
     patched = launch.Accelerator.__init__
     assert launch.module.install_raw_accelerator_fsdp2_fallback() is True
     assert launch.Accelerator.__init__ is patched
+
+
+def test_positional_options_count_as_explicit(launch, monkeypatch):
+    # Accelerator(True, False, None, 1, True) selects the CPU positionally.
+    seen = []
+
+    class Accelerator:
+        def __init__(
+            self,
+            device_placement = None,
+            split_batches = None,
+            mixed_precision = None,
+            gradient_accumulation_steps = 1,
+            cpu = False,
+            deepspeed_plugin = None,
+            fsdp_plugin = None,
+        ):
+            seen.append(os.environ.get("ACCELERATE_USE_FSDP"))
+
+    monkeypatch.setattr(sys.modules["accelerate"], "Accelerator", Accelerator)
+    assert launch.module.install_raw_accelerator_fsdp2_fallback() is True
+    Accelerator(True, False, None, 1, True)
+    Accelerator(None, None, None, 1, False, None, object())
+    assert seen == [None, None]
+    Accelerator(True)
+    assert seen == [None, None, "true"]
