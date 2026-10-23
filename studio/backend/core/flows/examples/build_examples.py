@@ -1573,6 +1573,109 @@ def controlnet_canny() -> B:
     return b
 
 
+def xy_plot() -> B:
+    b = B(
+        "xy-plot",
+        "XY Plot: Style x Seed",
+        "pipeline",
+        "Draw every style with every seed and lay the results out as a labelled grid, to pick a look "
+        "before a final render.",
+        tags = ["image", "xy plot", "compare", "for each"],
+        seed = 36,
+    ).need("image")
+    styles = ["watercolor", "pixel art", "film photo"]
+    seeds = [1, 2, 3]
+    b.n("grid", "logic.product", 0, 1, label = "Combinations", axes = {"style": styles, "seed": seeds})
+    b.n("each", "logic.for_each", 1, 1, group = "xy_loop", max_items = 9)
+    b.e("grid.items", "each.items")
+    b.n(
+        "prompt",
+        "text.template",
+        2,
+        0.6,
+        group = "xy_loop",
+        template = "a red fox in a snowy forest, {{style}} style",
+    )
+    b.n("seed", "json.get", 2, 1.6, group = "xy_loop", path = "seed")
+    b.e("each.item", "prompt.values")
+    b.e("each.item", "seed.json")
+    b.n("paint", "image.generate", 3, 1, group = "xy_loop", model = IMAGE, size = "512x512")
+    b.e("prompt.text", "paint.prompt")
+    b.e("seed.value", "paint.seed")
+    b.e("paint.image", "each.collect")
+    b.group("xy_loop", "For each combination", (1, 0.2, 3, 2.2), "#06b6d4")
+    b.n(
+        "sheet",
+        "image.grid",
+        4.4,
+        1,
+        columns = len(seeds),
+        caption_style = "none",
+        cell_size = 384,
+        row_labels = styles,
+        column_labels = [f"seed {s}" for s in seeds],
+    )
+    b.e("each.results", "sheet.images")
+    b.n("show", "output.preview", 5.4, 1)
+    b.e("sheet.image", "show.value")
+    b.note(
+        "tip",
+        "Edit the lists in Combinations to sweep other styles or seeds; keep the grid labels in step.",
+        0,
+        2.2,
+        1.6,
+        0.6,
+    )
+    return b
+
+
+def animate_photo() -> B:
+    b = B(
+        "animate-photo",
+        "Animate a Photo",
+        "pipeline",
+        "Bring your own photo to life with Wan 2.2 image-to-video, with steps, guidance and length set "
+        "on the block.",
+        tags = ["video", "image to video"],
+        seed = 37,
+    ).need("video")
+    b.n("photo", "input.image", 0, 0.5, label = "Your photo")
+    b.n(
+        "what",
+        "input.text",
+        0,
+        1.6,
+        value = "the camera slowly pushes in, hair and leaves move gently in the wind",
+    )
+    b.n(
+        "clip",
+        "video.generate",
+        1,
+        1,
+        model = VIDEO,
+        size = "1280x720",
+        steps = 20,
+        guidance = 5.0,
+        # Wan takes 4k+1 frames: 73 frames at 24 fps is a 3 second clip.
+        num_frames = 73,
+        fps = 24,
+        seed = 3,
+    )
+    b.e("photo.image", "clip.first_frame")
+    b.e("what.text", "clip.prompt")
+    b.n("show", "output.preview", 2, 1)
+    b.e("clip.video", "show.value")
+    b.note(
+        "tip",
+        "Upload a photo in the first block and describe the motion, then Run.",
+        0,
+        2.6,
+        1.6,
+        0.6,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1589,6 +1692,8 @@ BUILDERS = (
     face_fix,
     outpaint,
     controlnet_canny,
+    xy_plot,
+    animate_photo,
 )
 
 

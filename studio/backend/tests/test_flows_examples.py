@@ -21,8 +21,8 @@ def _example(name: str) -> dict:
     return json.loads(json.dumps(BUILT[name]))
 
 
-def test_there_are_fifteen_examples():
-    assert len(BUILT) == 15
+def test_there_are_seventeen_examples():
+    assert len(BUILT) == 17
 
 
 @pytest.mark.parametrize("name", IDS)
@@ -31,6 +31,12 @@ def test_example_is_valid(name):
     FlowDocument.model_validate(doc)
     result = compiler.validate(doc)
     assert result["ok"], result["errors"]
+    assert [w for w in result["warnings"] if not w["message"].startswith("Disabled")] == []
+    for n in doc["nodes"]:
+        known = {p["id"]: p for p in SPECS_BY_TYPE[n["type"]]["params"]}
+        assert set(n["params"]) <= set(known), f"{n['id']} sets params its block does not have"
+        for key, value in n["params"].items():
+            assert value in (known[key].get("options") or [value]), f"{n['id']}.{key}={value!r}"
     assert doc["meta"]["example"] is True and doc["meta"]["tags"]
     model_nodes = [
         n for n in doc["nodes"] if SPECS_BY_TYPE[n["type"]]["model_kind"] and not n.get("disabled")
