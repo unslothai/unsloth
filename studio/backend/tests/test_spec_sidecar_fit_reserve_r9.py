@@ -198,3 +198,59 @@ def test_an_embedding_server_is_probed_through_embeddings(monkeypatch, embedding
 )
 def test_the_per_slot_limit_sizes_the_priced_context(args, env, want):
     assert _lc._sidecar_child_ctx(args, env, 131072, 4, True) == want
+
+
+@pytest.mark.parametrize(
+    "args, want",
+    [
+        (["--split_mode=tensor"], "tensor"),
+        (["--split_mode", "row"], "row"),
+        (["-sm", "layer"], "layer"),
+    ],
+)
+def test_the_underscore_split_mode_spelling_is_read(args, want):
+    assert _lc._extra_args_split_mode(args, {}) == want
+
+
+def test_one_card_keeps_its_own_emitted_base_under_the_reserve():
+    """A lowered budget sizes the host-wide scalar by the largest card; a child masked to a
+    smaller one carries that card's own margin, which the reserve sits on."""
+    flags = _lc._sidecar_reserve_margin_flags(
+        ["--model-draft", "/d.gguf", "--fit", "on"],
+        [],
+        {},
+        4000,
+        5000,
+        base_by_device = [1000],
+    )
+    assert flags == ["--fit-target", "6000"]
+
+
+@pytest.mark.parametrize(
+    "extras, caps_fit_target, fit_sized",
+    [
+        ([], True, True),
+        (["--rpc", "10.0.0.2:50052"], True, False),
+        (["--device", "CUDA0,CUDA1"], True, False),
+        ([], False, False),
+    ],
+)
+def test_fit_sized_is_reported_only_where_the_spawn_can_price(
+    tmp_path, monkeypatch, extras, caps_fit_target, fit_sized
+):
+    monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    caps = dict(_r2._CAPS, supports_fit_target = caps_fit_target)
+    backend.probe_server_capabilities = lambda _binary = None: dict(caps)
+    seen = {}
+    build = backend._build_speculative_flags
+
+    def spy(**kw):
+        seen["fit_sized"] = kw.get("dspark_fit_sized")
+        return build(**kw)
+
+    backend._build_speculative_flags = spy
+    _r7._dspark(backend, gguf, tmp_path, extra_args = extras)
+    assert seen["fit_sized"] is fit_sized

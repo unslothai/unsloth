@@ -6683,6 +6683,10 @@ def _sidecar_reserve_margin_flags(
         if _last_flag_value(args, {"-fitt", "--fit-target"}) == want_list:
             return []
         return ["--fit-target", want_list]
+    # One card (or every card the same): Studio's emitted per-card margin, not the
+    # host-wide scalar, which a lowered budget sizes by the largest card.
+    if base_by_device and len(set(base_by_device)) == 1:
+        base_margin_mib = base_by_device[0]
     want = math.ceil(
         max(base_margin_mib, _single_device_fit_margin(user_args or (), env) or 0.0) + reserve_mib
     )
@@ -7497,8 +7501,9 @@ def _extra_args_split_mode(
         found = str(raw).strip().lower()
     args = [str(a) for a in extra_args] if extra_args else []
     for i, arg in enumerate(args):
-        name, _, inline = arg.partition("=")
-        if name not in _SPLIT_MODE_FLAGS:
+        _, _, inline = arg.partition("=")
+        # llama.cpp reads --split_mode as --split-mode (common/arg.cpp).
+        if _flag_name(arg) not in _SPLIT_MODE_FLAGS:
             continue
         value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
         if value.strip():
@@ -27697,6 +27702,8 @@ class LlamaCppBackend:
                 _sidecar_fit_reserve_mib = 0
                 _sidecar_fit_reserve_eligible_mib = 0
                 _sidecar_compute_mib = 0
+                # The child's planned device count, set where the reserve is priced.
+                _fit_device_count = 1
                 # Set by the last reprice: the draft graph's vocabulary-wide part, in MiB.
                 _sidecar_reserve_graph_mib = [0]
                 # The drafter's block count, for rounding a multi-device share to whole layers.
@@ -32448,6 +32455,34 @@ class LlamaCppBackend:
                 _sidecar_reserve_at_spawn = bool(_sidecar_fit_reserve_eligible_mib) and (
                     _extra_args_split_mode(extra_args, os.environ) != "tensor"
                 )
+                if _sidecar_reserve_at_spawn:
+                    # Only where the spawn can price it: a server with --fit-target, no
+                    # --rpc devices ahead of the local list, and an unpinned drafter only
+                    # across an unnamed CUDA / ROCm list in a provable device order.
+                    _named_devices = _extra_args_main_device(extra_args) or os.environ.get(
+                        "LLAMA_ARG_DEVICE"
+                    )
+                    _rpc_devices = (_extra_args_device(extra_args, {"--rpc"}) or "").strip() or str(
+                        os.environ.get("LLAMA_ARG_RPC", "")
+                    ).strip()
+                    _sidecar_reserve_at_spawn = bool(
+                        server_caps.get("supports_fit_target")
+                    ) and not (_rpc_devices and not _named_devices)
+                    if (
+                        _sidecar_reserve_at_spawn
+                        and _fit_device_count > 1
+                        and _extra_args_draft_device_pin(extra_args) is None
+                    ):
+                        _sidecar_reserve_at_spawn = (
+                            not is_vulkan_backend
+                            and not _named_devices
+                            and not (
+                                self._GPU_IDS_ARE_PCI_INDICES is True
+                                and str(os.environ.get("CUDA_DEVICE_ORDER", "")).strip().upper()
+                                != "PCI_BUS_ID"
+                                and self._smi_uuid_mask_order() is None
+                            )
+                        )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
