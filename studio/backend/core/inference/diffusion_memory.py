@@ -1464,7 +1464,33 @@ def calibrated_image_activation(
     )
 
 
-DISCRETE_RESERVE_CAP_MIB = 4096
+# ComfyUI's minimum_inference_memory() (comfy/model_management.py): 0.8 GiB + EXTRA_RESERVED_VRAM, 400 MiB on Linux,
+# 600 MiB on Windows plus 100 MiB on a card above 15 GiB. ComfyUI loads weights against free memory minus
+# max(that, the model's activation estimate + EXTRA_RESERVED_VRAM); the planner prices activations separately.
+COMFY_MIN_INFERENCE_MIB = 800
+COMFY_EXTRA_RESERVED_MIB = 400
+COMFY_EXTRA_RESERVED_WINDOWS_MIB = 600
+COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB = 100
+# The fixed floor every 8-20 GB card already ran with: the placements measured on T4 / 8-16 GB consumer cards (Q21
+# int8 on 8 GB, Wan on 2x T4, the reported 16 GB card) are tuned against it, and ComfyUI's 1.2 GiB alone flips them.
+DISCRETE_RESERVE_FLOOR_MIB = 2048
+
+
+def comfy_min_inference_mib(total_mib: Optional[int] = None) -> int:
+    """ComfyUI's ``minimum_inference_memory()`` in MiB: 1200 on Linux, 1400 / 1500 (card above 15 GiB) on Windows."""
+    if sys.platform != "win32":
+        return COMFY_MIN_INFERENCE_MIB + COMFY_EXTRA_RESERVED_MIB
+    extra = COMFY_EXTRA_RESERVED_WINDOWS_MIB
+    if int(total_mib or 0) > 15 * 1024:
+        extra += COMFY_EXTRA_RESERVED_WINDOWS_BIG_CARD_MIB
+    return COMFY_MIN_INFERENCE_MIB + extra
+
+
+def discrete_reserve_mib(total_mib: Optional[int] = None) -> int:
+    """A discrete card's fixed reserve: ComfyUI's, floored at 2 GiB. The same on every card size."""
+    return max(DISCRETE_RESERVE_FLOOR_MIB, comfy_min_inference_mib(total_mib))
+
+
 _ROCM_APU_POOL = "rocm_apu_pool"
 
 
@@ -1481,11 +1507,11 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
         # The amdgpu GTT pool of an APU whose host RAM already covers the OS: still shared with the CPU side, so it
         # keeps the uncapped 10%.
         return max(2048, int(base * 0.10))
-    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations (the
-    # runtime headroom prices those). 10% of the TOTAL grew with the card: 17.8 GiB on a 178 GiB card, which refused
-    # a resident or companion-split plan on a partly used big card with plenty free. Capped near ComfyUI's fixed
-    # reserve (~1.2 GiB plus its activation estimate); cards up to 40 GiB keep 10% (the 2 GiB floor below 20 GiB).
-    return max(2048, min(int(base * 0.10), DISCRETE_RESERVE_CAP_MIB))
+    # A discrete card's reserve covers fragmentation and other tenants' growth, not the load's own activations: the
+    # runtime headroom prices those, and the base overhead (CUDA context, scheduler state) is charged on top. So it is
+    # a fixed reserve as in ComfyUI, not a share of the card (10% capped at 4 GiB kept 4 GiB idle on a big partly used
+    # card, and 2.4-4 GiB on 24-40 GiB cards).
+    return discrete_reserve_mib(base)
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:

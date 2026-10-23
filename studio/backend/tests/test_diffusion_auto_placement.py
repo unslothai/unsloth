@@ -460,12 +460,9 @@ def test_encoder_card_pricing_never_admits_an_encoder_that_does_not_fit_the_free
 
 
 # The discrete reserve: a partly used big card.
-@pytest.mark.parametrize(
-    "total, expected",
-    [(15360, 2048), (24576, 2457), (40960, 4096), (81920, 4096), (182272, 4096)],
-)
-def test_discrete_reserve_is_capped(total, expected):
-    assert dm._reserve_mib("discrete_vram", total) == expected
+@pytest.mark.parametrize("total", [15360, 24576, 40960, 81920, 182272])
+def test_discrete_reserve_is_fixed(total):
+    assert dm._reserve_mib("discrete_vram", total) == 2048
 
 
 def test_partly_used_big_cards_get_the_companion_split(monkeypatch):
@@ -480,6 +477,21 @@ def test_partly_used_big_cards_get_the_companion_split(monkeypatch):
     )
     d = decide(monkeypatch, host, _sizes(dit = 7400, te = 7600), headroom = 3000)
     assert d.plan.secondary_ordinal == 1 and d.plan.offload_policy == dm.OFFLOAD_NONE
+
+
+def test_partly_used_big_card_places_the_companion_split_with_the_fixed_reserve(monkeypatch):
+    # 2x B200 with 20 / 12 GiB free, a 12 GiB denoiser and a 9 GiB encoder: the 4 GiB capped reserve left the primary
+    # short and the load offloaded on one card; the fixed 2 GiB reserve puts the encoder on cuda:1.
+    b200 = 182272
+    host = Host(
+        [
+            Card(0, b200, b200 - 20 * GIB, cap = (10, 0), name = "B200"),
+            Card(1, b200, b200 - 12 * GIB, cap = (10, 0), name = "B200"),
+        ]
+    )
+    d = decide(monkeypatch, host, _sizes(dit = 12000, te = 9000), headroom = 3000)
+    assert d.plan.secondary_ordinal == 1 and d.plan.offload_policy == dm.OFFLOAD_NONE
+    assert _placement(d)["chosen"] == "companion_split"
 
 
 def test_the_apu_pool_keeps_the_uncapped_reserve(monkeypatch):
