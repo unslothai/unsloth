@@ -19,7 +19,7 @@ const formatNumber = (n: number): string => {
   return n.toLocaleString();
 };
 
-/** Plain words for the stream's last finish_reason; a user stop wins over whatever came before it. */
+/** A user stop wins over the stream's last finish_reason. */
 function stopReasonLabel(
   finishReason: unknown,
   incompleteReason?: unknown,
@@ -75,7 +75,6 @@ export const MessageTiming: FC<{
     | undefined;
   const st = custom?.serverTimings;
   const stopReason = stopReasonLabel(custom?.stopReason, custom?.incomplete?.reason);
-  // llama.cpp speculative decoding: how many drafted tokens the target model kept.
   const draftN = st?.draft_n ?? 0;
   const draftAccepted = st?.draft_n_accepted;
   const draftText =

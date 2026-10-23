@@ -5885,7 +5885,6 @@ export function createOpenAIStreamAdapter(
       let responseModelId = externalSelection?.modelId ?? params.checkpoint;
       let firstTokenTime: number | undefined;
       let totalChunks = 0;
-      // Last finish_reason the stream sent, for the timing tooltip's Stop reason.
       let lastFinishReason: string | null = null;
       let resolveFirstToken: (() => void) | null = null;
       let rejectFirstToken: ((err: unknown) => void) | null = null;
@@ -7505,8 +7504,7 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // Live prefill / decode figures: transient like the diffusion canvas, never transcript text and
-              // never a first token.
+              // Transient like the diffusion canvas: never transcript text, never a first token.
               const generationProgress = (
                 chunk as unknown as { _generationProgress?: unknown }
               )._generationProgress;

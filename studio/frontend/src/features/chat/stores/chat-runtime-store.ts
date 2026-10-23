@@ -437,14 +437,12 @@ export type LoadedPlacement = {
   /** Set when every routed expert is in RAM with a GPU cache of the busiest (--moe-cache-mib auto). */
   expertCacheMib: number | null;
 };
-/** Latest llama.cpp prompt processing figures of a running reply (one sample per batch). */
 export type LivePrefillProgress = {
   processed: number;
   total: number | null;
   cached: number | null;
   tokPerS: number | null;
 };
-/** Latest decode figures of a running reply, at most one sample a second. */
 export type LiveDecodeProgress = {
   tokens: number;
   tokPerS: number | null;

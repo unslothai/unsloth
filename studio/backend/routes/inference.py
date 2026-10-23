@@ -7671,7 +7671,6 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
 
 
 def _live_count(value: Any) -> Optional[int]:
-    """A non-negative token count from a llama.cpp sample, or None."""
     if isinstance(value, bool):
         return None
     try:
@@ -7684,7 +7683,6 @@ def _live_count(value: Any) -> Optional[int]:
 
 
 def _live_rate(value: Any) -> Optional[float]:
-    """A finite, positive tokens-per-second figure rounded for the wire, or None."""
     if isinstance(value, bool):
         return None
     try:
@@ -7701,8 +7699,7 @@ class _PrefillProgressSignal:
 
     Native GGUF generators yield nothing until the first token, and ``: keep-alive`` does not renew the lease.
 
-    With ``live`` it also keeps the latest prefill and decode figures for ``live_frame``, which turns them into
-    ``generation_progress`` frames for the Unsloth chat UI."""
+    With ``live`` it also feeds ``live_frame``, the chat UI's ``generation_progress`` frames."""
 
     def __init__(
         self,
@@ -7781,10 +7778,8 @@ class _PrefillProgressSignal:
         self._decode = frame
 
     def live_frame(self) -> Optional[str]:
-        """The next ``generation_progress`` SSE line, or None when nothing new is due.
-
-        Every new prefill sample is sent (llama-server reports one per batch); decode figures at most once per
-        ``_LIVE_DECODE_FRAME_INTERVAL_S``, since a reply streams many tokens a second."""
+        """The next ``generation_progress`` line: the newest unsent prefill sample, else decode figures at most
+        once per ``_LIVE_DECODE_FRAME_INTERVAL_S``. None when nothing is due."""
         if not self._live:
             return None
         prefill = self._prefill
@@ -7808,12 +7803,9 @@ class _PrefillProgressSignal:
 
 
 async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
-    """Wait for a silent GGUF generator step, yielding what the client is owed meanwhile.
-
-    As before, ``: prefill-progress`` (or ``: keep-alive``) after ``first_timeout`` and then every stall interval.
-    For a live signal it also wakes every ``_LIVE_PROGRESS_POLL_S`` to send new ``generation_progress`` frames, so
-    the chat can show prefill moving instead of "Working...". Never cancels ``next_task``: the caller's finally
-    drains it, as for the plain wait this replaces."""
+    """Wait for a silent GGUF generator step: ``: prefill-progress`` / ``: keep-alive`` after ``first_timeout`` and
+    every stall interval after, and for a live signal new ``generation_progress`` frames every
+    ``_LIVE_PROGRESS_POLL_S``. Never cancels ``next_task``: the caller's finally drains it."""
     timeout = first_timeout
     waited = 0.0
     while True:
@@ -34190,8 +34182,7 @@ async def produce_openai_chat_completions(
             if not _wants_multiple_choices(payload)
             else None
         )
-        # Only a stream has a stall loop to feed; elsewhere the monitor callback (or None) stands. Live frames
-        # go only to a client that asked for Unsloth's UI events, the only one that can read them.
+        # Only a stream has a stall loop to feed; elsewhere the monitor callback (or None) stands.
         _gguf_prefill_signal = _PrefillProgressSignal(
             _gguf_monitor_callback,
             live = bool(payload.stream and _ui_events and not _wants_multiple_choices(payload)),

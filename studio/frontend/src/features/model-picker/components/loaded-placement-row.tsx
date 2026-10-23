@@ -7,10 +7,8 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 
-/** Where the resident GGUF actually landed, under the estimate for the settings being edited.
- *  Auto mode lets llama.cpp's --fit decide, so this is the only account of its choice: the
- *  layer count alone hides a MoE spill, which is why the experts and the RAM side are said too.
- *  Shown with Settings > Chat > Generation details. */
+/** Where the resident GGUF landed. Under Auto, --fit decides, and the layer count alone hides a MoE
+ *  spill, so the experts and the RAM side are shown too. */
 export function LoadedPlacementRow() {
   const enabled = useChatPreferencesStore((s) => s.showGenerationDetails);
   const placement = useChatRuntimeStore((s) => s.loadedPlacement);

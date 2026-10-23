@@ -2063,7 +2063,6 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // Live llama.cpp prefill / decode figures for the reply being generated.
         if ("type" in parsed && parsed.type === "generation_progress") {
           yield { _generationProgress: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);

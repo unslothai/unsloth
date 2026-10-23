@@ -108,8 +108,7 @@ function mibAsGiB(mib: number): string {
   return formatGiB(mib / 1024);
 }
 
-/** The placement fields of the inference status, or null when it reported none (not a GGUF).
- * --fit reports its own expert spill; a Manual load says it through n_cpu_moe instead. */
+/** --fit reports its own expert spill; a Manual load says it through n_cpu_moe instead. */
 export function loadedPlacementFrom(response: {
   is_gguf?: boolean | null;
   offloaded_layers?: number | null;
@@ -137,8 +136,7 @@ export function loadedPlacementFrom(response: {
     : placement;
 }
 
-/** Two short lines for the Run settings readout: where the layers are, and how much memory each side holds.
- * Both memory figures are shown: token embeddings stay in RAM even when every layer is on the GPU. */
+/** Both memory figures are shown: token embeddings stay in RAM even when every layer is on the GPU. */
 export function describePlacement(p: LoadedPlacement): { layers: string | null; memory: string | null } {
   const { offloaded, total, overflowLayers, gpuWeightsMib, hostWeightsMib, expertCacheMib } = p;
   let layers: string | null = null;

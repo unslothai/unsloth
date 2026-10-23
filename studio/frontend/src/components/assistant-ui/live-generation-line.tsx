@@ -10,9 +10,8 @@ import { useLocale } from "@/i18n";
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** Opt-in live decode figures under a streaming reply (Settings > Chat > Generation details).
- *  Gated on the preference first so that, while off, a reply mounts no assistant-ui selector
- *  (composer-keystroke-subscription-budget), the same as AssistantMessageTime. */
+/** Gated on the preference first so a reply mounts no assistant-ui selector while it is off
+ *  (composer-keystroke-subscription-budget), like AssistantMessageTime. */
 export const LiveGenerationLine: FC = () => {
   const enabled = useChatPreferencesStore((state) => state.showGenerationDetails);
   return enabled ? <RunningGate /> : null;

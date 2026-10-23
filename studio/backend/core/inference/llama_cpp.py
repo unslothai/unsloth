@@ -1046,8 +1046,7 @@ _GPU_DEVICE_PREFIXES = (
 )
 
 
-# Any backend's "model buffer size" line: CUDA0, CUDA_Host, CPU_Mapped, CPU_REPACK, AMX, ROCm0, Vulkan0,
-# MTL0_Mapped, RPC0[host:port]...
+# Any backend's "model buffer size" line (CUDA0, CPU_Mapped, RPC0[host:port], ...).
 _MODEL_BUFFER_RE = re.compile(
     r"\b([A-Za-z][^\s=]*)\s+model buffer size\s*=\s*([0-9]+(?:\.[0-9]+)?)\s+MiB\b"
 )
@@ -1073,8 +1072,7 @@ _FIT_MOE_CACHE_RE = re.compile(
 
 
 def _host_buffer(name: str) -> bool:
-    """Whether a ggml buffer type lives in system memory: CPU, CPU_Mapped, CPU_REPACK, CPU_KLEIDIAI, CPU_HBM,
-    the AMX repack buffer, or a GPU backend's pinned host buffer (CUDA_Host)."""
+    """CPU* buffers, AMX and a GPU backend's pinned host buffer (CUDA_Host) live in system memory."""
     upper = name.upper()
     return "CPU" in upper or upper.endswith("_HOST") or upper == "AMX"
 
@@ -1082,20 +1080,13 @@ def _host_buffer(name: str) -> bool:
 def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
     """Where llama.cpp put the main model's weights, from its startup log.
 
-    ``gpu_mib`` / ``host_mib`` sum the "model buffer size" lines that follow the main model's
-    "offloaded N/M layers" line (the largest M, as parse_gpu_offload_counts reads it; a drafter
-    logs its own block after). That layer count says nothing of a MoE spill: llama.cpp still logs
-    "offloaded 31/31 layers" when the experts of eight of them stay in RAM. The spill is read from
-    --fit instead:
-
-    - ``overflow_layers``: layers whose experts --fit left in system memory, from its final
-      per-device lines. A MoE fit that stops after the dense-only fill prints those lines without a
-      count, but every GPU layer there holds dense weights only (all but the output layer on the last
-      device). On every device but the last, an extra partial layer overflows to the next GPU, so it
-      is not counted. None when --fit did not run (Manual, or a build without it).
-    - ``all_experts_in_ram`` / ``expert_cache_mib``: the --moe-cache-mib auto path, where every
-      routed expert is in host RAM with a GPU cache of ``expert_cache_mib``. --fit prints no
-      per-device line there, so the caller supplies the MoE layer count."""
+    ``gpu_mib`` / ``host_mib`` sum the buffer lines after the main model's "offloaded N/M layers"
+    line (largest M; a drafter logs its own block after). llama.cpp still logs "offloaded 31/31" when
+    eight layers keep their experts in RAM, so ``overflow_layers`` comes from --fit's final per-device
+    lines: after a dense-only fill every GPU layer holds dense weights only (all but the output layer
+    on the last device), and an extra partial layer on any device but the last overflows to the next
+    GPU, not RAM. None when --fit did not run. ``expert_cache_mib`` marks the --moe-cache-mib auto
+    path, where every routed expert is in RAM and --fit prints no per-device line."""
     blocks: list[list] = []
     current: Optional[list] = None
     moe = False
@@ -1176,15 +1167,13 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
     }
 
 
-# The projector and drafter a llama-server command line names; it reads them during the load like the shards.
 _EXTRA_WEIGHT_FILE_FLAGS = frozenset(
     {"--mmproj", "-mm", "--model-draft", "--spec-draft-model", "-md"}
 )
 
 
 def _extra_weight_file_bytes(argv) -> int:
-    """Sizes of the projector and draft model a llama-server command line names, in either the
-    ``--flag value`` or the ``--flag=value`` form."""
+    """Sizes of the projector and draft model ``argv`` names, as ``--flag value`` or ``--flag=value``."""
     if not isinstance(argv, (list, tuple)):
         return 0
     paths: list[str] = []
@@ -8778,7 +8767,7 @@ class LlamaCppBackend:
         self._gpu_offload_active: Optional[bool] = None
         # (offloaded, total) layers llama.cpp reported for this load, when it said.
         self._gpu_offload_layers: Optional[tuple[int, int]] = None
-        # gpu_mib / host_mib / overflow_layers from parse_weight_placement, set with the counts above.
+        # parse_weight_placement's result for this load.
         self._weight_placement: Optional[dict] = None
         # Whether the user's own extras pinned the layer split for this load.
         self._offload_overridden: bool = False
@@ -9313,27 +9302,21 @@ class LlamaCppBackend:
 
     @property
     def gpu_weights_mib(self) -> Optional[float]:
-        """MiB of model weights in GPU buffers, from llama.cpp's load log."""
         return self._placement_value("gpu_mib")
 
     @property
     def host_weights_mib(self) -> Optional[float]:
-        """MiB of model weights in system memory (CPU, mapped or pinned host buffers)."""
         return self._placement_value("host_mib")
 
     @property
     def overflow_layers(self) -> Optional[int]:
-        """Layers whose MoE experts are in system memory, or None when nothing said so (no --fit).
-
-        On the --moe-cache-mib auto path every routed expert is in RAM and --fit names no layer, so
-        this is the model's MoE layer count."""
+        """Under --moe-cache-mib auto every routed expert is in RAM, so this is every MoE layer."""
         if self._placement_value("all_experts_in_ram"):
             return self.n_moe_layers or None
         return self._placement_value("overflow_layers")
 
     @property
     def expert_cache_mib(self) -> Optional[float]:
-        """GPU cache for routed experts under --moe-cache-mib auto, from --fit; None otherwise."""
         return self._placement_value("expert_cache_mib")
 
     @property
@@ -9467,14 +9450,11 @@ class LlamaCppBackend:
 
     @staticmethod
     def _read_load_bytes(pid: int) -> Optional[int]:
-        """How much of the model ``pid`` has taken in, by the counter each OS offers.
+        """Bytes ``pid`` has taken in, for a load that streams weights to VRAM and keeps little RSS.
 
-        What tracks a load that streams weights straight to VRAM, where RSS stays at the few
-        hundred MiB kept on the host. Linux: ``rchar`` from /proc/<pid>/io, the bytes read()
-        returned, page cache hits included. Windows: psutil's read_bytes (ReadTransferCount).
-        macOS (no read counter): the larger of the bytes read from disk, which follow a cold
-        memory-mapped Metal load, and the physical footprint, which follows a copy into Metal or
-        CPU buffers. None when the process is gone or the platform has none of these."""
+        Linux: ``rchar`` (page cache hits included). Windows: psutil read_bytes. macOS: the larger of
+        disk bytes read (a cold mmap Metal load) and physical footprint (a copy into Metal or CPU
+        buffers)."""
         if os.path.isdir("/proc"):
             try:
                 with open(f"/proc/{pid}/io", "r", encoding = "utf-8") as f:
@@ -9540,17 +9520,10 @@ class LlamaCppBackend:
     def load_progress(self) -> Optional[dict]:
         """Return live model-load progress, or None if not loading.
 
-        During warm-up llama-server reads the weight files before it can answer, a window
-        where status only reports ``loading`` and the UI spinner looks stuck for minutes on
-        large MoEs. On Linux ``bytes_loaded`` is the larger of two samples of the llama-server
-        process: the bytes it has read (a load that streams tensors to VRAM keeps almost none of
-        them on the host) and its resident memory (what a memory-mapped load pages in, which
-        read() counters never see). Windows uses the bytes read alone: its working set takes in
-        the buffers llama.cpp allocates before reading a byte, so it reads ~100% a second into
-        the load. macOS uses disk bytes read and physical footprint (``_read_load_bytes``): its
-        RSS stays at a fraction of a Metal load. Measured against the shard sizes plus a
-        vision projector or draft model named on its command line. Returns ``None`` when no load
-        is in flight.
+        ``bytes_loaded`` is the larger of the bytes read (``_read_load_bytes``) and Linux RSS, which
+        is what a memory-mapped load pages in. Windows skips its working set: it counts buffers
+        llama.cpp allocates before reading a byte. The total is the shards plus a projector or draft
+        model named on the command line.
 
         Shape::
 
@@ -9560,8 +9533,6 @@ class LlamaCppBackend:
                 "bytes_total":  int,   # weight files the server loads
                 "fraction": float,     # bytes_loaded / bytes_total, 0..1
             }
-
-        Returns ``None`` where neither sample is available or the process is gone.
         """
         proc = self._process
         if proc is None:

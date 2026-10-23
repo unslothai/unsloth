@@ -6,7 +6,6 @@ import type {
   LivePrefillProgress,
 } from "../stores/chat-runtime-store";
 
-/** A `generation_progress` frame from the GGUF chat stream, read into store shape. */
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
   | { phase: "decode"; decode: LiveDecodeProgress };
@@ -82,7 +81,6 @@ export function formatPrefillDetails(
 
 const MIN_TOKENS_FOR_PREFILL_RATE = 512;
 
-/** Whole percent of the prompt processed, or null before llama.cpp reports a total. */
 export function prefillPercent(prefill: LivePrefillProgress): number | null {
   if (!prefill.total) return null;
   return Math.min(100, Math.max(0, Math.floor((prefill.processed / prefill.total) * 100)));
