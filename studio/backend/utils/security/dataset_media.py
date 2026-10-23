@@ -145,7 +145,9 @@ def _record_extraction(extract):
                 )
                 with os.fdopen(fd, "w", encoding = "utf-8") as f:
                     f.write(source)
-                os.chmod(temp, 0o644)  # mkstemp's 0600 would hide the record from other users of the cache
+                os.chmod(
+                    temp, 0o644
+                )  # mkstemp's 0600 would hide the record from other users of the cache
                 os.replace(temp, top + _SOURCE_SUFFIX)
                 temp = None
             except OSError:
