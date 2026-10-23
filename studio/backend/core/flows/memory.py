@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Memory streams for agents, after Park et al. 2023, "Generative Agents: Interactive Simulacra of Human Behavior"
-(arXiv:2304.03442), section 4.
+"""Memory streams after Park et al. 2023, "Generative Agents" (arXiv:2304.03442), section 4.
 
-A stream is a plain JSON value, so it rides on ordinary json ports and in saves:
-``{"kind": "memory_stream", "records": [...], "since_reflection": float, "next_id": int}``. A record is
-``{"id", "text", "kind": "observation" | "reflection" | "plan", "t_created", "t_access", "importance": 1..10,
-"embedding"?: [float], "cites"?: [ids]}``. Times are hours (a game clock, or wall-clock hours when no clock is wired).
-
-Retrieval scores each record as ``w_recency * recency + w_importance * importance + w_relevance * relevance``, each
-term min-max normalised over the candidates (paper section 4.1). The paper weights the three equally; the authors'
-released simulation uses 0.5 / 2 / 3 (recency / importance / relevance) and decays recency by access rank. The
-defaults here take the released weights, because a question should surface what is about it and what mattered rather
-than whatever was seen last, but decay recency by elapsed hours at the paper's 0.995 per hour, since these streams
-carry real timestamps; ``recency_mode = "rank"`` reproduces the released behaviour. Every weight is a block param.
+Defaults use the released simulation's weights (recency 0.5 / importance 2 / relevance 3, not the paper's equal
+weights) but decay recency by elapsed hours at the paper's 0.995/hour; ``recency_mode = "rank"`` reproduces release.
 """
 
 from __future__ import annotations

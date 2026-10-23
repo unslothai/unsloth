@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Memory and agent blocks after Park et al. 2023, "Generative Agents" (arXiv:2304.03442): a memory stream with
-recency / importance / relevance retrieval, reflection, a self summary and a day plan. Scoring lives in
-``core.flows.memory``; these handlers only add the local LLM and embedding calls."""
+"""Generative Agents memory blocks; scoring lives in ``core.flows.memory``."""
 
 from __future__ import annotations
 

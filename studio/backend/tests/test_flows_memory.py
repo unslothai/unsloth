@@ -72,9 +72,6 @@ def stream_of(*rows):
     return s
 
 
-# Scoring
-
-
 def test_normalise_is_min_max_and_flat_terms_count_for_nothing():
     assert mem.normalise([2.0, 4.0, 3.0]) == [0.0, 1.0, 0.5]
     assert mem.normalise([5.0, 5.0]) == [0.0, 0.0]
@@ -124,9 +121,6 @@ def test_as_stream_accepts_a_record_list_and_continues_ids():
     assert s["next_id"] == 5 and s["kind"] == mem.STREAM_KIND
     with pytest.raises(ValueError):
         mem.as_stream("not a stream")
-
-
-# Blocks
 
 
 def test_remember_rates_importance_in_one_call_and_embeds_in_one_call():
