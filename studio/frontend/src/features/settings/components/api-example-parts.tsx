@@ -99,7 +99,55 @@ export function ExampleField({
   );
 }
 
-/** The Agents tab's shell toggle, stretched to its column. */
+/** A segmented toggle in the Agents tab's style; "sm" sits in a code box's header. */
+export function ExampleToggle<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  size = "md",
+}: {
+  label: string;
+  value: T;
+  options: { id: T; label: string }[];
+  onChange: (next: T) => void;
+  size?: "sm" | "md";
+}) {
+  const pillId = useId();
+  const height = size === "sm" ? "h-7" : "h-9";
+  return (
+    <fieldset className="flex min-w-0">
+      <legend className="sr-only">{label}</legend>
+      <div
+        className={cn(
+          "hub-tab-toggle flex w-fit max-w-full min-w-0 items-center rounded-full",
+          height,
+        )}
+      >
+        {options.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.id)}
+            aria-pressed={value === option.id}
+            className={cn(
+              "relative inline-flex min-w-0 items-center justify-center whitespace-nowrap rounded-full font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              height,
+              size === "sm" ? "px-2.5 text-ui-11" : "px-3 text-ui-12",
+              value === option.id
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {value === option.id && <SegmentedPill group={pillId} />}
+            <span className="relative truncate">{option.label}</span>
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 export function PlatformToggle({
   value,
   onChange,
@@ -108,32 +156,14 @@ export function PlatformToggle({
   onChange: (os: ExampleOs) => void;
 }) {
   const t = useT();
-  const pillId = useId();
   return (
-    <fieldset className="flex min-w-0">
-      <legend className="sr-only">
-        {t("settings.apiKeys.examplePlatform")}
-      </legend>
-      <div className="hub-tab-toggle flex h-9 w-full min-w-0 items-center rounded-full">
-        {OS_OPTIONS.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            onClick={() => onChange(option.id)}
-            aria-pressed={value === option.id}
-            className={cn(
-              "relative inline-flex h-9 min-w-0 flex-auto items-center justify-center whitespace-nowrap rounded-full px-2.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              value === option.id
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {value === option.id && <SegmentedPill group={`${pillId}-os`} />}
-            <span className="relative truncate">{t(option.labelKey)}</span>
-          </button>
-        ))}
-      </div>
-    </fieldset>
+    <ExampleToggle
+      label={t("settings.apiKeys.examplePlatform")}
+      value={value}
+      options={OS_OPTIONS.map((o) => ({ id: o.id, label: t(o.labelKey) }))}
+      onChange={onChange}
+      size="sm"
+    />
   );
 }
 
@@ -179,18 +209,20 @@ export function HighlightedCode({
   );
 }
 
-/** An example's code: icon copy on the first line, no language label (the Language picker
- *  says it), starts about eight lines tall and drags taller from its corner grip. */
+/** An example's code under a header of its toggles and an icon copy, with no language label
+ *  (the Language toggle says it); starts about eight lines tall and drags taller from its grip. */
 export function ExampleCodeBox({
   code,
   language,
   label,
   redactFromReload,
+  toolbar,
 }: {
   code: string;
   language: string;
   label: string;
   redactFromReload: boolean;
+  toolbar?: ReactNode;
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
@@ -231,21 +263,24 @@ export function ExampleCodeBox({
 
   return (
     <div className="relative min-w-0 rounded-lg border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
-      <button
-        type="button"
-        onClick={handleCopy}
-        className="absolute top-2.5 right-1.5 z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        aria-label={
-          copied
-            ? t("settings.apiKeys.copied")
-            : t("settings.apiKeys.copySnippet")
-        }
-      >
-        <HugeiconsIcon
-          icon={copied ? Tick02Icon : Copy01Icon}
-          className={cn("size-3.5", copied && "text-control-accent")}
-        />
-      </button>
+      <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/60 px-2 py-1.5 dark:border-white/5">
+        {toolbar}
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-label={
+            copied
+              ? t("settings.apiKeys.copied")
+              : t("settings.apiKeys.copySnippet")
+          }
+        >
+          <HugeiconsIcon
+            icon={copied ? Tick02Icon : Copy01Icon}
+            className={cn("size-3.5", copied && "text-control-accent")}
+          />
+        </button>
+      </div>
       {/* HighlightedCode's max-h-96 is lifted so a drag can grow the box past it. */}
       <div
         ref={boxRef}
@@ -255,7 +290,7 @@ export function ExampleCodeBox({
             : ({ "--example-h": `${height}px` } as CSSProperties)
         }
         className={cn(
-          "[&>section]:max-h-none [&>section]:min-h-24 [&_[data-streamdown=code-block-header]]:hidden",
+          "[&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 [&_[data-streamdown=code-block-header]]:hidden",
           height === null
             ? tall && "[&>section]:h-46"
             : "[&>section]:h-(--example-h)",

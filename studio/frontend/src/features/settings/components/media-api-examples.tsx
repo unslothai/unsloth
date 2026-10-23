@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -24,7 +17,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
   ExampleCodeBox,
-  ExampleField,
+  ExampleToggle,
   PlatformToggle,
   useExampleOs,
 } from "./api-example-parts";
@@ -148,6 +141,15 @@ export function MediaApiExamples({
   const shikiLang =
     lang === "curl" ? (os === "windows" ? "powershell" : "bash") : lang;
 
+  const pickLang = (next: AudioApiLang) => {
+    setLang(next);
+    const stored = audioLangToStore(
+      useSettingsPanelPrefsStore.getState().apiExampleLang,
+      next,
+    );
+    if (stored) setStoredLang(stored);
+  };
+
   return (
     <section
       ref={sectionRef}
@@ -162,69 +164,19 @@ export function MediaApiExamples({
           {t("settings.apiKeys.mediaApi.description")}
         </p>
       </div>
-      <div className="@container">
-        <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
-          <ExampleField label={t("settings.apiKeys.exampleKind")}>
-            <Select
-              value={kind}
-              onValueChange={(next) => {
-                const picked = MEDIA_API_KINDS.find((id) => id === next);
-                if (picked) setKind(picked);
-              }}
-            >
-              <SelectTrigger
-                aria-label={t("settings.apiKeys.exampleKind")}
-                className="w-full rounded-lg"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {MEDIA_API_KINDS.map((id) => (
-                  <SelectItem key={id} value={id}>
-                    {t(
-                      id === "images"
-                        ? "settings.apiKeys.mediaApi.images"
-                        : "settings.apiKeys.mediaApi.video",
-                    )}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </ExampleField>
-          <ExampleField label={t("settings.apiKeys.exampleLanguage")}>
-            <Select
-              value={lang}
-              onValueChange={(next) => {
-                const picked = LANGS.find((item) => item.id === next);
-                if (!picked) return;
-                setLang(picked.id);
-                const stored = audioLangToStore(
-                  useSettingsPanelPrefsStore.getState().apiExampleLang,
-                  picked.id,
-                );
-                if (stored) setStoredLang(stored);
-              }}
-            >
-              <SelectTrigger
-                aria-label={t("settings.apiKeys.exampleLanguage")}
-                className="w-full rounded-lg"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {LANGS.map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </ExampleField>
-          <ExampleField label={t("settings.apiKeys.examplePlatform")}>
-            <PlatformToggle value={os} onChange={setOs} />
-          </ExampleField>
-        </div>
-      </div>
+      <ExampleToggle
+        label={t("settings.apiKeys.exampleKind")}
+        value={kind}
+        options={MEDIA_API_KINDS.map((id) => ({
+          id,
+          label: t(
+            id === "images"
+              ? "settings.apiKeys.mediaApi.images"
+              : "settings.apiKeys.mediaApi.video",
+          ),
+        }))}
+        onChange={setKind}
+      />
       {pageModel == null || autoSwitch === false ? (
         <div className="flex min-w-0 flex-col gap-1 text-ui-11 leading-relaxed text-muted-foreground">
           {pageModel == null ? (
@@ -240,6 +192,18 @@ export function MediaApiExamples({
         language={shikiLang}
         label={t("settings.apiKeys.mediaApi.title")}
         redactFromReload={Boolean(apiKey)}
+        toolbar={
+          <>
+            <ExampleToggle
+              label={t("settings.apiKeys.exampleLanguage")}
+              value={lang}
+              options={LANGS}
+              onChange={pickLang}
+              size="sm"
+            />
+            <PlatformToggle value={os} onChange={setOs} />
+          </>
+        }
       />
     </section>
   );

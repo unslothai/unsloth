@@ -69,7 +69,7 @@ import {
 import { AgentIcon } from "./agent-command-block";
 import {
   ExampleCodeBox,
-  ExampleField,
+  ExampleToggle,
   type ExampleOs,
   PlatformToggle,
   isLoopbackUrl,
@@ -896,57 +896,15 @@ export function UsageExamples({
           </button>
         </div>
       ) : null}
-      <div className="@container">
-        <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
-          <ExampleField label={t("settings.apiKeys.exampleLanguage")}>
-            <Select
-              value={language}
-              onValueChange={(next) =>
-                pickExample(exampleType(next as Language, variant))
-              }
-            >
-              <SelectTrigger
-                aria-label={t("settings.apiKeys.exampleLanguage")}
-                className="w-full rounded-lg"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {LANGUAGES.map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </ExampleField>
-          <ExampleField label={t("settings.apiKeys.exampleRequest")}>
-            <Select
-              value={variant}
-              onValueChange={(next) =>
-                pickExample(exampleType(language, next as Variant))
-              }
-            >
-              <SelectTrigger
-                aria-label={t("settings.apiKeys.exampleRequest")}
-                className="w-full rounded-lg"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {VARIANTS.map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    {t(option.labelKey)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </ExampleField>
-          <ExampleField label={t("settings.apiKeys.examplePlatform")}>
-            <PlatformToggle value={os} onChange={setOs} />
-          </ExampleField>
-        </div>
-      </div>
+      <ExampleToggle
+        label={t("settings.apiKeys.exampleRequest")}
+        value={variant}
+        options={VARIANTS.map((option) => ({
+          id: option.id,
+          label: t(option.labelKey),
+        }))}
+        onChange={(next) => pickExample(exampleType(language, next))}
+      />
       {model ? null : (
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.usageNoModel")}
@@ -957,6 +915,18 @@ export function UsageExamples({
         language={shikiLang}
         label={t("settings.apiKeys.usageExamples")}
         redactFromReload={Boolean(apiKey)}
+        toolbar={
+          <>
+            <ExampleToggle
+              label={t("settings.apiKeys.exampleLanguage")}
+              value={language}
+              options={LANGUAGES}
+              onChange={(next) => pickExample(exampleType(next, variant))}
+              size="sm"
+            />
+            <PlatformToggle value={os} onChange={setOs} />
+          </>
+        }
       />
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
         <div className="flex h-5 items-center justify-between gap-3">

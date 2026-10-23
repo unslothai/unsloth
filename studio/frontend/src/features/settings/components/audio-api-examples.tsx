@@ -49,6 +49,7 @@ import {
 import {
   ExampleCodeBox,
   ExampleField,
+  ExampleToggle,
   PlatformToggle,
   useExampleOs,
 } from "./api-example-parts";
@@ -229,6 +230,15 @@ export function AudioApiExamples({
     }
   };
 
+  const pickLang = (next: AudioApiLang) => {
+    setLang(next);
+    const stored = audioLangToStore(
+      useSettingsPanelPrefsStore.getState().apiExampleLang,
+      next,
+    );
+    if (stored) setStoredLang(stored);
+  };
+
   return (
     <section
       ref={sectionRef}
@@ -276,38 +286,6 @@ export function AudioApiExamples({
               </SelectContent>
             </Select>
           </ExampleField>
-          <ExampleField label={t("settings.apiKeys.exampleLanguage")}>
-            <Select
-              value={lang}
-              onValueChange={(next) => {
-                const picked = LANGS.find((item) => item.id === next);
-                if (!picked) return;
-                setLang(picked.id);
-                const stored = audioLangToStore(
-                  useSettingsPanelPrefsStore.getState().apiExampleLang,
-                  picked.id,
-                );
-                if (stored) setStoredLang(stored);
-              }}
-            >
-              <SelectTrigger
-                aria-label={t("settings.apiKeys.exampleLanguage")}
-                className="w-full rounded-lg"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                {LANGS.map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </ExampleField>
-          <ExampleField label={t("settings.apiKeys.examplePlatform")}>
-            <PlatformToggle value={os} onChange={setOs} />
-          </ExampleField>
         </div>
       </div>
       {placeholder || needsLoad ? (
@@ -325,6 +303,18 @@ export function AudioApiExamples({
         language={shikiLang}
         label={t("settings.apiKeys.audioApi.title")}
         redactFromReload={Boolean(apiKey)}
+        toolbar={
+          <>
+            <ExampleToggle
+              label={t("settings.apiKeys.exampleLanguage")}
+              value={lang}
+              options={LANGS}
+              onChange={pickLang}
+              size="sm"
+            />
+            <PlatformToggle value={os} onChange={setOs} />
+          </>
+        }
       />
     </section>
   );

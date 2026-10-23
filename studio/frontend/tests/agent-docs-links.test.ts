@@ -50,7 +50,32 @@ test("every API example section has a platform toggle that follows the user's ma
     );
     // no section hides the toggle behind its curl pick any more
     assert.doesNotMatch(src, /lang === "curl" \? \(\s*<div/, name);
+    // Language and Platform toggle from the code box's own header
+    assert.match(
+      src,
+      /toolbar=\{\s*<>\s*<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleLanguage"\)\}[\s\S]*?size="sm"\s*\/>\s*<PlatformToggle value=\{os\} onChange=\{setOs\} \/>\s*<\/>\s*\}/,
+      name,
+    );
   }
+});
+
+test("Request and Image or video are toggles; Audio keeps its grouped Example dropdown", () => {
+  const usage = readSrc("features/settings/components/usage-examples.tsx");
+  const media = readSrc("features/settings/components/media-api-examples.tsx");
+  const audio = readSrc("features/settings/components/audio-api-examples.tsx");
+  assert.match(
+    usage,
+    /<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleRequest"\)\}/,
+  );
+  assert.match(
+    media,
+    /<ExampleToggle\s*label=\{t\("settings\.apiKeys\.exampleKind"\)\}/,
+  );
+  assert.doesNotMatch(media, /@\/components\/ui\/select/);
+  assert.match(
+    audio,
+    /<Select value=\{example\} onValueChange=\{pickExample\}>/,
+  );
 });
 
 test("with no model loaded the example still renders, naming a placeholder", () => {
@@ -70,7 +95,7 @@ test("the example code box starts short, drags taller, and its copy button is ic
   // the cap is lifted so a drag can grow it; a height is set, from the drag once there is one
   assert.match(
     src,
-    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
+    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:pr-8 \[&_\[data-streamdown=code-block-header\]\]:hidden",\s*height === null\s*\? tall && "\[&>section\]:h-46"\s*: "\[&>section\]:h-\(--example-h\)"/,
   );
   // our own handle: CSS resize draws a native grabber the rounded corner clips into an arc
   assert.doesNotMatch(src, /resize-y|webkit-resizer/);
