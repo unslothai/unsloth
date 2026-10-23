@@ -17,6 +17,7 @@ import {
   previewCell,
   useRlWorkspaceStore,
   useTrainingConfigStore,
+  useTrainingRuntimeStore,
   RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
@@ -214,16 +215,19 @@ export function RlDatasetRoles({
     };
   }, [loadColumns]);
 
+  const starting = useTrainingRuntimeStore((s) => s.isStarting);
   useEffect(() => {
-    if (!columns) {
+    // A Start in flight compares its whole request: filling roles now would cancel it. The
+    // backend resolves unmapped roles the same way, so the write can wait until it settles.
+    if (!columns || starting) {
       return;
     }
     const next = syncRlMapping(objective, columns, mapping);
     if (JSON.stringify(next) !== JSON.stringify(mapping)) {
-      // Derived, not a user edit: a start in flight must not read it as "setup changed".
+      // Derived, not a user edit.
       useTrainingConfigStore.setState({ rlRoleMapping: next });
     }
-  }, [columns, objective, mapping]);
+  }, [columns, objective, mapping, starting]);
 
   const setRole = (column: string, role: string) => {
     const next = { ...config.mapping };
