@@ -8,11 +8,17 @@ import types
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
 F = torch.nn.functional
 attention = pytest.importorskip("torch.nn.attention")
 from torch.utils._python_dispatch import TorchDispatchMode  # noqa: E402
 
 from core.inference import diffusion_vae_attn_chunked as C  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 
 def _math():
@@ -194,6 +200,7 @@ def test_install_gates(monkeypatch, rocm):
     assert C.install(vae, rocm) == 0
     monkeypatch.delenv(C.VAE_ATTN_CHUNK_ENV)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
     assert C.install(vae, rocm) == 0
     assert not any(getattr(m, C._PATCHED, False) for m in vae.modules())
     assert C.install(None, rocm) == 0
