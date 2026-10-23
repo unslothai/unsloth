@@ -5135,6 +5135,7 @@ def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
                 "parent_visible_gpu_ids": [d["index"] for d in devices],
                 "devices": devices,
                 "index_kind": "cuda_device",
+                "mig_corrected": True,
             }
     if no_context and IS_ROCM and device == DeviceType.CUDA:
         return {
@@ -6600,7 +6601,9 @@ def auto_select_gpu_ids(
     else:
         utilization = get_visible_gpu_utilization()
     devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
-    if not utilization.get("mig_corrected"):
+    # Instance rows (R570+ MIG, CUDA device ids) already carry their own slice memory; the
+    # physical-card correction would key them by nvidia-smi row and overwrite it.
+    if not utilization.get("mig_corrected") and utilization.get("index_kind") != "cuda_device":
         devices = _with_mig_instance_memory(devices)
     parent_ids = _covered(get_parent_visible_gpu_ids())
 

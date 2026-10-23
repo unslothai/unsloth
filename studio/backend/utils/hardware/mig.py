@@ -5,7 +5,6 @@
 A physical card index and a CUDA device ordinal are separate namespaces. Keep the
 UUID with each ordinal so a worker can reproduce exactly the set that was sized.
 """
-
 import json
 import os
 import re
@@ -69,20 +68,17 @@ def rows_from_payload(payload):
         if row is None or key in seen:
             return None  # never guess an ordinal-to-UUID mapping
         seen.add(key)
-        rows.append(
-            {
-                **row,
-                "physical_index": row["index"],
-                "index": str(ids[ordinal] if ids is not None else ordinal),
-            }
-        )
+        rows.append({**row, "physical_index": row["index"],
+                     "index": str(ids[ordinal] if ids is not None else ordinal)})
     return rows
 
 
 def _mig_instances(listing):
     """Physical cards with MIG instances, from the ``nvidia-smi -L`` the NVIDIA paths already
-    read. Only ``listing`` callers (GGUF placement, which lists on every host anyway) may start
-    one; the rest reuse a fresh answer, and skip when the last answer of any age found none."""
+    read. ``listing`` callers (GGUF placement, which lists on every host anyway) always may start
+    one. The rest reuse a fresh answer, skip when the last answer of any age found none, and
+    start one only when no listing has run this hardware generation, so the first read on a MIG
+    host already uses the instance namespace instead of switching it after the first placement."""
     if listing:
         return nvidia.get_mig_gpu_indices_or_none()
     cached = nvidia._mig_cached()
@@ -94,7 +90,7 @@ def _mig_instances(listing):
     return nvidia.get_mig_gpu_indices_or_none()
 
 
-def visible_devices(*, fresh = False, listing = False):
+def visible_devices(*, fresh=False, listing=False):
     """Bounded out-of-process probe, gated off ordinary hosts; cache identities only.
 
     Memory callers request a fresh sample. Failed probes back off and retire at the
@@ -108,12 +104,7 @@ def visible_devices(*, fresh = False, listing = False):
         # unknown) keeps the existing rule, and the NVML probe never starts.
         os.environ.pop(_ENV, None)
         return None
-    key = (
-        raw,
-        os.environ.get("CUDA_DEVICE_ORDER"),
-        gpu_query._static_gen,
-        os.environ.get("UNSLOTH_NVIDIA_PROBE"),
-    )
+    key = _current_key()
     hit = _cached_answer(key, fresh)
     if hit is not _MISS:
         return hit
@@ -138,6 +129,11 @@ def visible_devices(*, fresh = False, listing = False):
 _MISS = object()
 
 
+def _current_key():
+    return (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"),
+            gpu_query._static_gen, os.environ.get("UNSLOTH_NVIDIA_PROBE"))
+
+
 def _cached_answer(key, fresh):
     entry = _cache.get(key)
     if entry is None:
@@ -159,20 +155,13 @@ def _probe():
     """(rows, answered). ``answered`` is False when the probe child gave no NVML answer."""
     try:
         from utils.prebuilt.update_flow import find_installer_script
-
-        script = find_installer_script(
-            env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py"
-        )
+        script = find_installer_script(env_var="UNSLOTH_NVIDIA_PROBE", script_name="nvidia_probe.py")
         if script is None:
             return None, False
         result = subprocess.run(
             [sys.executable, "-I", str(script), "--json"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            env = utf8_child_env(child_env_without_native_path_secret()),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env=utf8_child_env(child_env_without_native_path_secret()),
             **windows_hidden_subprocess_kwargs(),
         )
         if result.returncode != 0:
@@ -199,12 +188,14 @@ def _refresh(key, raw):
             # physical cards. Retain identities, but never reuse stale free memory.
             rows = [{**r, "memory_free_mib": "0", "memory_total_mib": "0"} for r in previous[1]]
     _cache[key] = (time.monotonic(), rows, state)
+    if key != _current_key():
+        # Retired while it ran (re-detection, a new mask): the worker map belongs to the
+        # current key's probe, never to this one.
+        return rows
     if rows is not None:
         os.environ[_ENV] = json.dumps(
-            {
-                "key": [raw, os.environ.get("CUDA_DEVICE_ORDER")],
-                "uuids": {str(r["index"]): r["uuid"] for r in rows},
-            }
+            {"key": [raw, os.environ.get("CUDA_DEVICE_ORDER")],
+             "uuids": {str(r["index"]): r["uuid"] for r in rows}}
         )
     else:
         os.environ.pop(_ENV, None)
@@ -215,10 +206,7 @@ def _inherited_uuids():
     """The parent's map when it was made under this process's own mask and order, else None."""
     try:
         data = json.loads(os.environ.get(_ENV) or "null")
-        if data["key"] != [
-            os.environ.get("CUDA_VISIBLE_DEVICES"),
-            os.environ.get("CUDA_DEVICE_ORDER"),
-        ]:
+        if data["key"] != [os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")]:
             return None
         return {int(k): str(v) for k, v in data["uuids"].items()}
     except Exception:

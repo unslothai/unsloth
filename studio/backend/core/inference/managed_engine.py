@@ -59,6 +59,14 @@ def _offline(env) -> bool:
 def validate_load(engine: str, request) -> list[int]:
     """Returns the physical GPU ids to launch on, all inside the GPUs Studio may use."""
     profile(engine)
+    from utils.hardware.hardware import _get_parent_visible_gpu_spec
+
+    if _get_parent_visible_gpu_spec().get("index_kind") == "cuda_device":
+        # R570+ MIG: Studio's ids are CUDA devices, while this launcher, its capability check and
+        # its memory budget all address physical cards; a numeric mask would escape the instance.
+        raise ValueError(
+            "Optional engines do not yet support MIG GPU instances. Use Default to run on a MIG GPU instance."
+        )
     gpu_ids = list(request.gpu_ids or [])
     if len(set(gpu_ids)) != len(gpu_ids) or any(gpu_id < 0 for gpu_id in gpu_ids):
         raise ValueError("Select distinct, non-negative GPU indices.")

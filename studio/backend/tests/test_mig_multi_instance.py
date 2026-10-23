@@ -678,3 +678,56 @@ def test_a_legacy_answer_is_not_re_probed_by_fresh_callers():
                 assert mig.visible_devices(fresh = True, listing = True) is None
                 _age_cache(mig._FAILED_BACKOFF_S + 1)
         assert len(calls) == 1
+
+
+def test_the_physical_card_correction_never_touches_instance_rows(monkeypatch):
+    def correction(devices):
+        raise AssertionError("physical-card MIG correction ran on CUDA device rows")
+
+    with host():
+        monkeypatch.setattr(hw, "_with_mig_instance_memory", correction)
+        selection, _ = hw.auto_select_gpu_ids("fixture", required_override_gb = 30)
+        assert selection == [0]
+
+
+def test_diffusion_gemma_pins_the_instance_uuid_not_a_numeric_id():
+    with host(f"{B_UUID},{A}"):
+        assert len(B._get_gpu_memory()) == 2
+        assert B._mig_pinned_gpu_token("0") == B_UUID
+        assert B._mig_pinned_gpu_token("1,0") == f"{A},{B_UUID}"
+        assert B._mig_pinned_gpu_token("") == ""
+        assert B._mig_pinned_gpu_token(B_UUID) == B_UUID
+
+
+def test_diffusion_gemma_launch_uses_the_pinned_token():
+    import inspect
+
+    assert "gpu = self._mig_pinned_gpu_token(gpu)" in inspect.getsource(lc)
+
+
+def test_optional_engines_refuse_mig_instances_instead_of_a_numeric_mask():
+    from core.inference import managed_engine
+
+    request = types.SimpleNamespace(gpu_ids = [0], gguf_variant = None, model_path = "org/model")
+    with host(f"{B_UUID},{A}"):
+        with pytest.raises(ValueError, match = "MIG"):
+            managed_engine.validate_load("vllm", request)
+
+
+def test_a_retired_probe_does_not_replace_the_worker_map():
+    with host() as probe:
+        assert len(B._get_gpu_memory()) == 3
+        current = os.environ[mig._ENV]
+        _age_cache(mig._FRESH_SHARE_S + 1)
+        probe["cuda_devices"] = probe["cuda_devices"][:1]
+        inner = subprocess.run
+
+        def run(cmd, *args, **kw):
+            if "--json" in cmd:
+                # Hardware re-detection lands while this probe runs.
+                gpu_query.invalidate_static("re-detect during probe")
+            return inner(cmd, *args, **kw)
+
+        with patch.object(subprocess, "run", run):
+            assert len(mig.visible_devices(fresh = True)) == 1
+        assert os.environ[mig._ENV] == current

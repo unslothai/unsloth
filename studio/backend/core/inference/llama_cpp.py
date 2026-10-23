@@ -20828,6 +20828,17 @@ class LlamaCppBackend:
         return _shim_supports_ngl(shim_cmd)
 
     @staticmethod
+    def _mig_pinned_gpu_token(gpu: str) -> str:
+        """The visual engine replaces its child's CUDA mask with ``gpu``. On an R570+ MIG host
+        numeric ids are CUDA devices, which the child would resolve against the whole host: pin
+        the exact instance UUIDs the parent sized. Anything else (CPU "", UUIDs, other hosts) as is."""
+        if gpu and all(token.strip().isdigit() for token in gpu.split(",")):
+            from utils.hardware import mig
+
+            return mig.mask_for([int(token) for token in gpu.split(",")]) or gpu
+        return gpu
+
+    @staticmethod
     def _diffusion_gpu_arg(
         gpu_ids: Optional[List[int]],
         *,
@@ -21068,6 +21079,7 @@ class LlamaCppBackend:
                 holds_no_gpu = True
                 gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only, force_cpu = True)
 
+        gpu = self._mig_pinned_gpu_token(gpu)
         cmd = list(shim_cmd) + [
             "--gguf",
             model_path,
