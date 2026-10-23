@@ -110,8 +110,12 @@ def test_live_mapped_pages_count_and_allocations_do_not(tmp_path):
         assert out["phase"] == "mmap"
         assert out["bytes_total"] == 400 * 1024 * 1024
         # The 100 MB mapping plus the interpreter's own files; the 200 MB allocation is left out.
-        assert out["bytes_loaded"] >= 90 * 1024 * 1024, f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"
-        assert out["bytes_loaded"] < 200 * 1024 * 1024, f"the allocation counted: {out['bytes_loaded']}"
+        assert (
+            out["bytes_loaded"] >= 90 * 1024 * 1024
+        ), f"bytes_loaded unexpectedly low: {out['bytes_loaded']}"
+        assert (
+            out["bytes_loaded"] < 200 * 1024 * 1024
+        ), f"the allocation counted: {out['bytes_loaded']}"
         assert 0.0 < out["fraction"] < 0.5
     finally:
         proc.terminate()
