@@ -4,7 +4,9 @@
 """Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
 
 Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
-for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm90, sm100), resident only.
+for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm86, sm90, sm100), resident
+only. There the rotation and the act quant run as one fast-Hadamard kernel (``diffusion_convrot_quant.rotq_fht_i8``)
+on a card that passed its probe and latency check, else as the rotation GEMM + act quant.
 Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
 """
 
@@ -204,6 +206,25 @@ def install(
     return {"fused_qkv": None, "out": None}
 
 
+def _fht_note(cards: Any, armed: list) -> str:
+    """Log suffix: whether the fused fast-Hadamard rotation + quant serves these cards, with its latency check."""
+    try:
+        from .diffusion_convrot_quant import _FHT_TIMING
+        timing = {i: _FHT_TIMING.get(i) for i in cards if _FHT_TIMING.get(i)}
+    except Exception:  # noqa: BLE001
+        timing = {}
+    shown = "; ".join(
+        f"cuda:{i} {min(v for k, v in t.items() if k != 'gemm'):.0f} vs {t['gemm']:.0f} us stock"
+        for i, t in timing.items()
+        if "gemm" in t and len(t) > 1
+    )
+    if armed:
+        return ", rotation fused into the act quant (fast Hadamard kernel" + (
+            f": {shown})" if shown else ")"
+        )
+    return f", fast Hadamard rotation kept off ({shown})" if shown else ""
+
+
 def install_modules(root: Any, logger: Any = None) -> dict:
     result = {"fused_qkv": 0, "out": 0}
     if q21_convrot_fused_disabled():
@@ -229,6 +250,10 @@ def install_modules(root: Any, logger: Any = None) -> dict:
         todo.append((module, parts))
     if not todo or not _patch_prepare(logger):
         return result
+    from .diffusion_int8_fused import arm_rotated
+
+    fht = [index for index in cards if arm_rotated(index)]
+    note = _fht_note(cards, fht)
     with _LOCK:
         for module, parts in todo:
             if _QKV_ATTR not in module.__dict__ and all(_plain(p) for p in parts):
@@ -247,9 +272,10 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     if logger is not None:
         logger.info(
             "diffusion.q21_convrot_fused: one ConvRot rotation + act quant for QKV on %d attention module(s), "
-            "probed act quant on %d output projection(s)",
+            "probed act quant on %d output projection(s)%s",
             result["fused_qkv"],
             result["out"],
+            note,
         )
     return result
 
