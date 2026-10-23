@@ -1076,7 +1076,12 @@ def test_hub_coords_of_legacy_and_copied_snapshots_keep_their_names(tmp_path):
     base.mkdir(parents = True)
     (base / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
     link, blob = _hub_snapshot(tmp_path, tmp_path / "base")
-    assert C._hub_coords(link) == ("org/tiny", "transformer/diffusion_pytorch_model.safetensors", blob, "c" * 40)
+    assert C._hub_coords(link) == (
+        "org/tiny",
+        "transformer/diffusion_pytorch_model.safetensors",
+        blob,
+        "c" * 40,
+    )
     copy = _copy_snapshot(tmp_path, tmp_path / "base")
     assert C._hub_coords(copy)[2] == "diffusion_pytorch_model.safetensors"
 

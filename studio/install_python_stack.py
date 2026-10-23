@@ -10634,7 +10634,9 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
     if found.get("unsloth"):
         # The zoo it resolved against as a floor: the no-torch install is --no-deps, so a bare
         # unsloth-zoo under UV_RESOLUTION=lowest could pick one below unsloth's own zoo floor.
-        return spec, (f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec)
+        return spec, (
+            f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec
+        )
     requested_present = newest(spec) is not None
     # The newest zoo, then the newest unsloth not above it (an unsloth never needs a newer zoo).
     zoo = newest(zoo_spec, "unsloth-zoo")
