@@ -563,7 +563,7 @@ def apply_speed_optims(
         "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
-    if getattr(target, "backend", None) == "rocm":
+    if getattr(target, "backend", None) in ("rocm", "mps"):
         # Memory, not speed, so before the `off` return: ROCm has no fused SDPA for the VAE's head dim 384 / 512.
         try:
             from .diffusion_vae_attn_chunked import install as install_vae_attn_chunks
@@ -1388,13 +1388,27 @@ def _carries_torchao_weights(module: Any) -> bool:
     the same two representations ``transformer_is_quantised`` covers. Only torchao's own types count, so a GGUF or
     bitsandbytes parameter subclass keeps its existing compile policy."""
 
+    return any(True for _ in torchao_weight_tensors(module))
+
+
+def torchao_weight_tensors(module: Any) -> Iterator[Any]:
+    """Each torchao tensor subclass holding a parameter of ``module``: the parameter itself, or its ``.data`` when a
+    plain ``nn.Parameter`` wraps the subclass. Yields nothing for a module that cannot be read (tests/fakes)."""
+
     def _torchao(t: Any) -> bool:
         return t is not None and type(t).__module__.startswith("torchao")
 
     try:
-        return any(_torchao(p) or _torchao(getattr(p, "data", None)) for p in module.parameters())
+        parameters = list(module.parameters())
     except Exception:  # noqa: BLE001 - not a torch module (tests/fakes)
-        return False
+        return
+    for p in parameters:
+        if _torchao(p):
+            yield p
+        else:
+            data = getattr(p, "data", None)
+            if _torchao(data):
+                yield data
 
 
 def is_compile_failure(exc: BaseException) -> bool:

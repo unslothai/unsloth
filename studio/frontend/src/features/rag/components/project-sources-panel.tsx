@@ -6,9 +6,9 @@ import { useNativeFileDrop } from "@/features/native-intents";
 import type { NativeIntent } from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
 import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
-import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useRef } from "react";
 import {
@@ -167,6 +167,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       onClick={pickFolder}
       title="Upload every supported file in a folder. Linking a folder that stays in sync needs the desktop app."
     >
+      <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
       Add folder
     </Button>
   );
@@ -185,7 +186,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           void handleItems(fileItems(files));
         }}
       />
-      <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">
+      <div className="mb-4 rounded-2xl bg-muted/30 px-5 py-4">
         <LinkedFoldersManager
           scope={{ type: "project", id: projectId }}
           compact={true}
@@ -195,13 +196,14 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       {empty ? (
         <div
           className={cn(
-            "flex flex-col items-center justify-center gap-3 rounded-[26px] border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
-            dragging && "border-primary/60 bg-primary/5",
+            "flex flex-col items-center justify-center gap-3 rounded-2xl border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5",
           )}
         >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
-              icon={FolderPlusIcon}
+              icon={PlusSignIcon}
               strokeWidth={1.75}
               className="size-6"
             />
@@ -223,6 +225,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               disabled={loading}
               onClick={() => fileInputRef.current?.click()}
             >
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add sources
             </Button>
             {addFolderButton}
@@ -234,8 +237,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       ) : (
         <div
           className={cn(
-            "flex flex-col gap-4 rounded-[26px] border border-transparent bg-muted/30 px-6 py-5 transition-colors",
-            dragging && "border-primary/60 bg-primary/5",
+            "flex flex-col gap-4 rounded-2xl border border-transparent bg-muted/30 px-6 py-5 transition-colors",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5",
           )}
         >
           <div className="flex items-center justify-between gap-3">
@@ -253,6 +257,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 className="border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
                 onClick={() => fileInputRef.current?.click()}
               >
+                <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                 Add sources
               </Button>
             </div>

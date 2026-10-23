@@ -675,5 +675,76 @@ def test_every_load_route_and_the_residency_estimate_pass_loras_to_engine_select
         ]
         assert len(calls) >= minimum, rel
         for call in calls:
-            names = {k.arg for k in call.keywords}
-            assert {"with_loras", "mlx_blocker"} <= names, f"{rel}: {ast.unparse(call)[:120]}"
+            kw = {k.arg: k.value for k in call.keywords}
+            assert {"with_loras", "mlx_blocker"} <= set(kw), f"{rel}: {ast.unparse(call)[:120]}"
+            # A zero-weight entry is dropped before loading, so it must not count as a LoRA load.
+            assert getattr(kw["with_loras"].func, "id", None) in (
+                "_has_active_loras",
+                "has_active_loras",
+            ), f"{rel}: {ast.unparse(call)[:120]}"
+
+
+# ── a LoRA load never lands on MLX, which refuses adapters ───────────────────
+
+
+@pytest.mark.parametrize(
+    "gguf",
+    [
+        "z-image-turbo-Q4_K_M.gguf",
+        "z-image-turbo-Q5_K_M.gguf",
+        "z-image-turbo-Q6_K.gguf",
+        "z-image-turbo-Q5_0.gguf",
+        "z-image-turbo-Q5_1.gguf",
+        _Q4,
+    ],
+)
+def test_a_lora_load_keeps_sd_cpp_under_the_mlx_opt_in(monkeypatch, gguf):
+    # An MPS Mac running native sd.cpp today with a LoRA: the opt-in must not divert it into MLX's refusal.
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: "/usr/bin/sd-cli")
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "v0"))
+    fam = detect_family("z-image")
+    assert _predict(gguf = gguf) == _select(gguf = gguf) == ENGINE_MLX
+    kw = dict(model_kind = "gguf", gguf_filename = gguf, with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_SD_CPP
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_SD_CPP
+    assert "LoRA" in (r.annotate_status({})["mlx_fallback_reason"] or "")
+
+
+def test_a_lora_load_without_the_mlx_opt_in_still_falls_back_to_diffusers(monkeypatch):
+    _apple(monkeypatch)
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = "z-image-turbo-Q4_K_M.gguf", with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_DIFFUSERS
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+
+
+@pytest.mark.parametrize(
+    "loras, active",
+    [
+        (None, False),
+        ([], False),
+        ([("a", 0.0)], False),
+        ([("a", 0), ("b", 0.0)], False),
+        ([SimpleNamespace(id = "a", weight = 0.0)], False),
+        ([("a", 0.0), ("b", 0.5)], True),
+        ([SimpleNamespace(id = "a", weight = 1.0)], True),
+        ([object()], True),
+    ],
+)
+def test_has_active_loras_ignores_zero_weight_entries(loras, active):
+    assert r.has_active_loras(loras) is active
+
+
+def test_a_zero_weight_lora_load_still_lands_on_mlx(monkeypatch):
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    gguf = "z-image-turbo-Q4_K_M.gguf"
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = gguf, with_loras = r.has_active_loras([("a", 0.0)]))
+    assert r.predict_engine(fam, **kw) == ENGINE_MLX
+    assert r.mlx_load_blocker(loras = [("a", 0.0)]) is None

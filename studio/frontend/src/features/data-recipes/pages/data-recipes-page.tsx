@@ -275,7 +275,7 @@ function LearningRecipeCards({
               >
                 {template.difficulty}
               </Badge>
-              <div className="inline-flex size-10 items-center justify-center rounded-xl border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-background/80">
+              <div className="inline-flex size-10 items-center justify-center rounded-md border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-background/80">
                 <HugeiconsIcon
                   icon={template.icon}
                   className="size-5 text-foreground/90"
@@ -449,7 +449,7 @@ export function DataRecipesPage(): ReactElement {
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
-              <Button type="button" data-tour="recipes-new" disabled={isBusy}>
+              <Button variant="secondary" type="button" data-tour="recipes-new" disabled={isBusy}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 New Recipe
                 <HugeiconsIcon
@@ -519,14 +519,14 @@ export function DataRecipesPage(): ReactElement {
               {recipes.map((recipe) => (
                 <div
                   key={recipe.id}
-                  className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3"
+                  className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3"
                 >
                   <button
                     type="button"
                     className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     onClick={() => openRecipe(recipe)}
                   >
-                    <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
+                    <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/20">
                       <HugeiconsIcon
                         icon={CookBookIcon}
                         className="size-4 text-muted-foreground"

@@ -73,7 +73,10 @@ def load_blocker(
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
     """The first LOAD option the MLX engine cannot honour, else None. Such a load stays on diffusers."""
-    if loras:
+    from core.inference.diffusion_engine_router import has_active_loras
+
+    # Zero-weight entries are dropped before loading, as in the route's MLX LoRA refusal.
+    if has_active_loras(loras):
         return "LoRA adapters selected at load time need the diffusers engine"
     if component_files:
         return "separate text-encoder / VAE files need the diffusers engine"

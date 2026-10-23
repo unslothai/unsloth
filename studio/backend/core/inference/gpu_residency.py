@@ -220,7 +220,11 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         resolve_model_kind,
     )
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-    from core.inference.diffusion_engine_router import mlx_load_blocker, predict_engine
+    from core.inference.diffusion_engine_router import (
+        has_active_loras,
+        mlx_load_blocker,
+        predict_engine,
+    )
     from core.inference.diffusion_families import (
         detect_family_for_pick,
         local_pipeline_components_are_complete,
@@ -249,7 +253,7 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
             model_kind = kind,
             gpu_ordinal = gpu_ordinal,
             gguf_filename = name,
-            with_loras = bool(getattr(request, "loras", None)),
+            with_loras = has_active_loras(getattr(request, "loras", None)),
             # An explicit precision keeps a default-routed Apple Silicon load on diffusers, as the load does.
             mlx_blocker = mlx_load_blocker(
                 transformer_quant = getattr(request, "transformer_quant", None),
