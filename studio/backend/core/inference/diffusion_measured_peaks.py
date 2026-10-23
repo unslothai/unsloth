@@ -40,7 +40,10 @@ PHASE_DECODE_UNPADDED = "decode_unpadded"
 PHASE_UNPADDED = "unpadded"
 PHASES = (PHASE_PRE_DECODE, PHASE_DECODE, PHASE_DECODE_UNPADDED, PHASE_UNPADDED)
 _FILE_NAME = "diffusion_measured_peaks.json"
-_VERSION = 1
+# 2: non-txt2img workflows record under their own ``wf:`` key. Version 1 kept every workflow's max-wins peak on the
+# load key (an edit's larger peak inflated txt2img forever), so ``_migrate_v1`` keeps only what the phase format wrote.
+_VERSION = 2
+_WORKFLOW_KEY_PART = "|wf:"
 _MAX_ENTRIES = 512
 _MEGAPIXEL = 1024 * 1024
 # Smallest bucket: a quarter megapixel. Below it the activation is dominated by fixed costs.
@@ -156,6 +159,34 @@ def _empty() -> dict:
     return {"version": _VERSION, "runtime": runtime_stamp(), "entries": {}}
 
 
+def _migrate_v1(entries: dict) -> dict:
+    """A version 1 store's entries on the version 2 scale. ``wf:`` keys and the phase tables only ever came from the
+    per-workflow format and stay as they are. A load key's whole-render peaks may hold another workflow's sample, so
+    a bucket keeps only the larger of its pre-decode / decode phases (each a whole-render peak of a phase-recorded
+    render, which ran under the per-workflow key); a bucket or entry with no phase is dropped and relearned, the
+    load placing from its seed or the flat estimate meanwhile, as on a fresh store."""
+    kept: dict = {}
+    for key, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        if _WORKFLOW_KEY_PART in str(key):
+            kept[key] = entry
+            continue
+        table = entry.get("phases") if isinstance(entry.get("phases"), dict) else {}
+        peaks: dict = {}
+        for name in (PHASE_PRE_DECODE, PHASE_DECODE):
+            for bucket, value in (table.get(name) or {}).items():
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if value > int(peaks.get(bucket) or 0):
+                    peaks[str(bucket)] = value
+        if peaks:
+            kept[key] = dict(entry, peaks = peaks)
+    return kept
+
+
 def _read(path: Path, fresh: bool = False) -> dict:
     try:
         mtime = path.stat().st_mtime_ns
@@ -170,6 +201,14 @@ def _read(path: Path, fresh: bool = False) -> dict:
         return _cache["data"]
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
+        if (
+            isinstance(data, dict)
+            and data.get("version") == 1
+            and data.get("runtime") == runtime_stamp()
+            and isinstance(data.get("entries"), dict)
+        ):
+            # rewritten as version 2 by the next record
+            data = dict(data, version = _VERSION, entries = _migrate_v1(data["entries"]))
         if (
             not isinstance(data, dict)
             or data.get("version") != _VERSION

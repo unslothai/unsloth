@@ -589,3 +589,69 @@ def test_render_whose_decode_released_lent_groups_records_nothing(store, monkeyp
     assert finished == [1]  # the probe's window still closes
     assert mp.lookup(**KEY) is None
     assert mp.lookup(**KEY, phase = mp.PHASE_DECODE_UNPADDED) is None
+
+
+# ---------------------------------------------------------------------------------------------------- v1 store
+
+
+def _write_v1(store, entries):
+    store.write_text(
+        json.dumps({"version": 1, "runtime": mp.runtime_stamp(), "entries": entries}),
+        encoding = "utf-8",
+    )
+    mp._cache.update(path = None, mtime = None, data = None)
+
+
+def test_pre_workflow_store_peak_no_longer_sizes_txt2img(qwen_pipe, store):
+    """Before workflow keys every workflow recorded max-wins under the load key: an old edit peak there must not
+    reserve for text-to-image (nor block the phase split) once a txt2img render records its own peak."""
+    plan = _qwen_flat_plan()
+    fresh = _refine(qwen_pipe, plan)
+    base = mp.model_key(
+        KEY["family"], KEY["quant"], KEY["speed_mode"], 1, "NVIDIA GeForce RTX 3090"
+    )
+    bucket = str(1024 * 1024)
+    edit = mp.model_key(
+        KEY["family"], KEY["quant"] + "|wf:edit", KEY["speed_mode"], 1, "NVIDIA GeForce RTX 3090"
+    )
+    other = mp.model_key(
+        "flux.1-dev", KEY["quant"], KEY["speed_mode"], 1, "NVIDIA GeForce RTX 3090"
+    )
+    phased = {name: {bucket: value} for name, value in _phases(900, 1864).items()}
+    _write_v1(
+        store,
+        {
+            base: {"peaks": {bucket: 13000}},  # an edit render's peak, pre-PR
+            edit: {"peaks": {bucket: 9000}},
+            # the per-workflow format: the inflated whole-render value falls back to its phases
+            other: {"peaks": {bucket: 13000}, "phases": phased},
+        },
+    )
+    assert mp.lookup(**KEY) is None
+    assert mp.lookup(**dict(KEY, quant = KEY["quant"] + "|wf:edit")) == 9000
+    assert mp.lookup(family = "flux.1-dev", quant = KEY["quant"], speed_mode = "default") == 6051
+    assert (
+        mp.lookup(
+            family = "flux.1-dev",
+            quant = KEY["quant"],
+            speed_mode = "default",
+            phase = mp.PHASE_UNPADDED,
+        )
+        == 1864
+    )
+    legacy = _refine(qwen_pipe, plan)
+    assert legacy.estimates.get("measured_learned_peak_mib") is None
+    assert (
+        legacy.estimates["measured_runtime_headroom_mib"]
+        == fresh.estimates["measured_runtime_headroom_mib"]
+    )
+    assert legacy.resident_text_encoder_mib == fresh.resident_text_encoder_mib == 8917
+    # a fresh txt2img sample is learned, the split works again, and the store is rewritten as version 2
+    _record(**B200)
+    assert mp.lookup(**KEY) == B200["peak"]
+    assert dm.learned_phase_split(KEY["family"], KEY["quant"], KEY["speed_mode"]) is not None
+    later = _refine(qwen_pipe, plan)
+    assert later.resident_text_encoder_mib == 8917
+    assert later.estimates["decode_lend_text_encoder_mib"] == 8917 - 4621
+    data = json.loads(store.read_text(encoding = "utf-8"))
+    assert data["version"] == mp._VERSION and set(data["entries"]) == {edit, other, base}
