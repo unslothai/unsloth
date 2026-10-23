@@ -53,7 +53,6 @@ class SysmemFallbackWatch:
         self._floor = float(floor_gen_tok_s)
         self._log = logger
         self._free_fraction_max = float(free_fraction_max)
-        # One slow measurement is a cold prompt or a scrape boundary; the fingerprint is sustained.
         self._consecutive = max(1, int(consecutive))
         self._streak = 0
         self._reported = False
@@ -145,7 +144,6 @@ class LlamaServerStatsLogger:
         self._stall_since = None
         self._stall_reported = False
         self._unmeasurable_reported = False
-        # Windows CUDA only and None everywhere else, so every other platform runs the loop it did.
         self._sysmem_watch = sysmem_watch
 
     def start(self):

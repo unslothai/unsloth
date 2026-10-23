@@ -5407,9 +5407,6 @@ def test_only_the_probed_lazy_spelling_is_honoured(flag, extra_args, env, expect
     assert backend.last_load_warning is None
 
 
-# ------------------------------------------------- the PCIe link the cost model prices prefill at
-
-
 def _link(rows, indices = None):
     return LlamaCppBackend._nvidia_link_gib_s(indices, runner = lambda: rows)
 
@@ -5488,9 +5485,6 @@ def test_the_link_query_never_raises_and_never_guesses():
         assert LlamaCppBackend._nvidia_link_query() is None
     with patch("subprocess.run", side_effect = FileNotFoundError("nvidia-smi")):
         assert LlamaCppBackend._nvidia_link_query() is None
-
-
-# --------------------------------------------------------- flash attention pricing
 
 
 def _flash_attn_priced(
@@ -5582,7 +5576,6 @@ def test_the_flash_attention_off_retry_still_gives_the_placement_back(tmp_path):
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_spawn_and_wait"
     )
-    # The revocation is unconditional on `label`, so any rung added later is covered.
     guard = next(
         node
         for node in ast.walk(spawn)

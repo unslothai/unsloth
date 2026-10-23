@@ -33,8 +33,6 @@ MIB = 1024 * 1024
 GIB = 1024 * MIB
 Q4 = 0.5625
 
-# nvidia/NVIDIA-Nemotron-Nano-9B-v2 config.json: hybrid_override_pattern, 4480 wide, FFN 15680,
-# Mamba 128 heads x 80 (inner 10240), state 128, 8 groups; attention 40 heads, 8 KV heads x 128.
 NANO9B = "M-M-M-MM-M-M-M*-M-M-M*-M-M-M-M*-M-M-M-M*-M-MM-M-M-M-M-M-"
 MAMBA_ROWS = tuple(i for i, c in enumerate(NANO9B) if c == "M")
 
@@ -147,7 +145,6 @@ def _approved(plan):
 def test_the_layout_names_nemotron_h_mamba_rows():
     layout = _nemotron_h_layout()
     assert layout.complete
-    # 52 cache-free rows, of which 25 are MLP-only and hold no state either.
     assert sum(1 for h in layout.kv_heads_by_layer if h == 0) == 52
     assert layout.recurrent_rows == MAMBA_ROWS
     assert len(MAMBA_ROWS) == 27
@@ -173,7 +170,6 @@ def test_the_fitter_arm_carries_the_mamba_share_of_its_prefix(card_mib):
     )
     assert arm is not None and arm.host_groups
     moved_layers = next(g.bytes_total for g in arm.host_groups if g.name == "layers")
-    # The fitter moves a LEADING prefix: recover its length from the resident bytes it moved.
     running, moved = 0, 0
     for block in layout.blocks:
         if running >= moved_layers:

@@ -45,8 +45,6 @@ def _launch_with(
     n_parallel = 4,
     caps = None,
     avail_mib = 64 * 1024,
-    # 30 GiB on the 12 GiB card: nothing fits, so the fit arm is reached. Named so a case can
-    # state its own spill instead.
     model_mib = 30 * 1024,
     speculative_type = "off",
     **load_kwargs,
@@ -788,8 +786,6 @@ def test_the_auto_cache_ram_clamp_charges_the_host_only_allocations(tmp_path, mo
         return backend, gguf
 
     monkeypatch.setitem(globals(), "_backend", hooked)
-    # The stub projector has no readable image tower, which raises the micro-batch for an unknown
-    # one and grows the compute buffer; held at the default so only the pinned projector moves.
     import core.inference.llama_cpp as llama_mod
 
     monkeypatch.setattr(llama_mod, "_mmproj_required_ubatch", lambda *a, **k: 0)
@@ -984,7 +980,6 @@ def test_the_snapshot_carries_the_windowed_half_of_the_cache(tmp_path, monkeypat
         n_ubatch = inputs["n_ubatch"],
         ctx_checkpoints = 0,
     )
-    # The sum pins the ARGUMENTS: a split priced at another geometry would not add back up.
     assert sum(parts) == inputs["kv_cache_bytes"]
     assert parts[1] == swa
 
@@ -998,7 +993,6 @@ def test_the_snapshot_carries_the_windowed_half_as_a_callable(tmp_path, monkeypa
     inputs = seen["inputs"]
     at = inputs["kv_swa_bytes_at"]
     assert callable(at)
-    # Agrees with the scalar where the two overlap, and moves with the slots where it does not.
     assert at(inputs["n_ctx"], inputs["n_parallel"]) == inputs["kv_swa_bytes"]
     one = at(inputs["n_ctx"], 1)
     assert 0 < one < inputs["kv_swa_bytes"]
@@ -1120,7 +1114,6 @@ def test_a_launch_recovered_under_fit_on_is_not_watched_for_sysmem_fallback(tmp_
     monkeypatch.delenv("UNSLOTH_SMART_OFFLOAD", raising = False)
 
     def run(returncodes):
-        # A card the 1 KiB stub fits on outright, so the launch is a proved full offload.
         backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, CARD_MIB, CARD_MIB)])
         backend.probe_server_capabilities = lambda _binary = None: {"supports_metrics": True}
         launches: list = []
@@ -1147,7 +1140,6 @@ def test_a_launch_recovered_under_fit_on_is_not_watched_for_sysmem_fallback(tmp_
         real_popen = subprocess.Popen
 
         def popen(cmd, **kwargs):
-            # Only the server is faked; anything else the launch runs is real.
             if not cmd or str(cmd[0]) != "/fake/llama-server":
                 return real_popen(cmd, **kwargs)
             launches.append(list(cmd))

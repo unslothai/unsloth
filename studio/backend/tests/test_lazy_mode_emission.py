@@ -57,7 +57,6 @@ class _Backend:
         binary,
         gpu_indices = None,
     ):
-        # A probe that answered with every device type known.
         return not self.vulkan_igpu
 
     def _integrated_cuda_unified_memory(self, gpu_indices = None):
@@ -74,7 +73,6 @@ class _Backend:
         binary,
         gpu_indices = None,
     ):
-        # A probe that answered with every device type known.
         return True
 
     _selected_devices_can_mmap = LlamaCppBackend._selected_devices_can_mmap

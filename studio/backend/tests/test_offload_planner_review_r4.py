@@ -56,9 +56,6 @@ def _per_cell(b, **kw) -> float:
     return (hi - lo) / 8192
 
 
-# ------------------------------------------------ findings 1 / 3: the hybrid attention rows
-
-
 def test_a_hybrid_cache_sums_each_attention_rows_own_heads():
     """[0,0,0,8,0,0,0,4] is 12 heads of cache; charging both rows the widest one priced 16."""
     b = _hybrid([0, 0, 0, 8, 0, 0, 0, 4])
@@ -74,12 +71,8 @@ def test_a_legacy_hybrid_prices_v_at_its_own_element_size():
     bpe_k = _kv_bytes_per_elem("q8_0")
     got = _per_cell(b, cache_type_kv = "q8_0", flash_attn = False)
     assert abs(got - 16 * head_dim * (bpe_k + 2)) < 1e-6
-    # Flash on keeps both at q8_0.
     got_fa = _per_cell(b, cache_type_kv = "q8_0", flash_attn = True)
     assert abs(got_fa - 16 * head_dim * 2 * bpe_k) < 1e-6
-
-
-# ------------------------------------------------ findings 2 / 5: lazy-mode emission
 
 
 def _lazy(
@@ -127,9 +120,7 @@ def test_a_default_hip_selection_beside_an_apu_is_left_to_auto(monkeypatch):
     it resident while the planner priced it paged."""
     b = _lazy(monkeypatch, unified = {1})
     assert _emit(b, None) is None
-    # A mask holding both cards: the child still drops the APU.
     assert _emit(b, [0, 1]) == "on"
-    # Only the APU: off, as auto would resolve it.
     assert _emit(b, [1]) == "off"
     assert _emit(b, [0]) == "on"
 
@@ -140,9 +131,6 @@ def test_an_unread_vulkan_type_is_left_to_auto(monkeypatch):
     assert _emit(b, [0], vulkan = True) is None
     known = [{"index": 0, "is_igpu": True, "type_known": True}]
     assert _emit(_lazy(monkeypatch, vulkan_rows = known), [0], vulkan = True) == "off"
-
-
-# ------------------------------------------------ finding 6: --swa-full traffic
 
 
 def test_a_full_size_window_is_charged_its_populated_prefix():
@@ -169,9 +157,6 @@ def test_a_full_size_window_is_charged_its_populated_prefix():
     assert placed.kv_host_bytes <= full(2048, 1), placed.kv_host_bytes / MIB
 
 
-# ------------------------------------------------ findings 4 / 8 / 9: one layer-count bound
-
-
 def test_a_layer_count_past_llamas_cap_is_absent_metadata():
     from test_kv_cache_estimation import _backend_from_gguf
 
@@ -182,12 +167,8 @@ def test_a_layer_count_past_llamas_cap_is_absent_metadata():
     assert over._n_layers is None
     assert not over._can_estimate_kv()
     assert over._estimate_kv_cache_bytes(8192) == 0
-    # Set by any other route, the estimator still refuses it.
     ok._n_layers = 1 << 40
     assert not ok._can_estimate_kv()
-
-
-# ------------------------------------------------ finding 10: the paging watch on ROCm
 
 
 def test_the_paging_watch_stands_down_on_a_rocm_host(monkeypatch):

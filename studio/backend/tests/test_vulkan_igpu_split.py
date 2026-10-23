@@ -202,8 +202,6 @@ def test_the_launch_hands_placement_back_wherever_it_cannot_price_it():
 
 
 def test_the_launch_hands_the_host_projector_to_the_split_guard():
-    # The guard above only abstains on a host projector the launch reports, so the input has
-    # to stay next to the planner's own drafter and projector inputs.
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert (
         '_spill_inputs["host_mmproj_bytes"]=_mmproj_pinned_bytes+('

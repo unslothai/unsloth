@@ -2733,14 +2733,8 @@ class TestTheLaunchWithdrawsTheDio:
             self._src(),
             inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch),
         )
-        # --fit on retry, arch-crash retry and the proactive arch gate here, plus the
-        # revocation of a spill plan that kept every layer on the GPU (it hands placement to
-        # the same --fit on), CPU replay in the builder. The gate strips as well as adds, or
-        # a narrowed set keeps the pair.
         assert launch.count("self._drop_managed_dio(") == 4
         assert replay.count("self._drop_managed_dio(") == 1
-        # Only the rung that strips `cmd` itself may forget the tokens: the --fit on retry and
-        # the revocation both strip a copy.
         assert launch.count("clear_record = False") == 2
         assert replay.count("clear_record = False") == 1
 
@@ -2858,7 +2852,6 @@ class TestEveryDeviceSetChangeReAsks:
         src = self._src()
         assert src.count("_dio_decision_for(") == 4
         flat = "".join(src.split())
-        # The gate: a fitter placement, or the full offload of a plan that survived it.
         assert (
             "_dio_decision_for(_survivors,fully_offloaded=fully_gpu_offloaded"
             "or_spill_keeps_every_layer_on_gpu,child_env=env,)" in flat

@@ -35,9 +35,6 @@ from test_offload_cost_gate import (  # noqa: E402
 MIB = 1024 * 1024
 
 
-# ------------------------------------------------ finding 1: dense --fit on moves whole layers
-
-
 def _ungraded(layout):
     return replace(
         layout,
@@ -114,9 +111,6 @@ def test_the_moe_fitter_still_grades_its_boundary_block():
     )
     assert placement is not None
     assert sum(g.bytes_total for g in placement.host_groups) == 3 * whole + down
-
-
-# ------------------------------------------------ findings 2 / 3: both CPU replays revoke the plan
 
 
 def _planned_vulkan_backend(tmp_path, monkeypatch, plan):
@@ -204,12 +198,9 @@ def _launch_crashing(backend, gguf, crash_text, **load_kwargs):
 
 
 _OOM = "ggml_vulkan: Device memory allocation failed"
-# A capability crash: _spawn_and_wait's own --fit on retry does not take it, so the argv reaching
-# the rungs below is the plan's.
 _SPLIT_AXIS = "GGML_ASSERT(axis == GGML_BACKEND_SPLIT_AXIS_0) failed"
 
 _PATHS = {
-    # (crash text, flash-attn rung available)
     "direct": (None, True),
     "reactive-oom": (_OOM, True),
     "reactive-noflash": (_SPLIT_AXIS, True),
@@ -235,7 +226,6 @@ def test_a_cpu_replay_does_not_inherit_a_plan_priced_for_gpu_memory(
         kwargs["cpu_fallback"] = True
     cmds = _launch_crashing(backend, gguf, crash_text, **kwargs)
     if crash_text is not None:
-        # The fixture really planned: the first launch carries the plan.
         planned = cmds[0]
         assert _flag(planned, "--fit") == "off" and "-ngl" in planned, planned
         assert len(cmds) > 1 and backend._cpu_fallback_reason == "vulkan_startup_crash"
@@ -257,9 +247,6 @@ def test_a_cpu_replay_without_a_plan_is_unchanged(tmp_path, monkeypatch):
     assert "-ot" not in replay and backend._effective_context_length == 8192
 
 
-# ------------------------------------------------ finding 4: an inherited order nothing verified
-
-
 def _split_plan() -> Plan:
     return Plan(
         changed = True,
@@ -274,14 +261,9 @@ def _split_plan() -> Plan:
 @pytest.mark.parametrize(
     "order, mask, picked, keeps_split",
     [
-        # A user's FASTEST_FIRST under an inherited mask: the child's device 0 is the fastest
-        # card, the plan's row 0 the lowest PCI index.
         ("FASTEST_FIRST", "0,1", None, False),
-        # Controls. Studio's default: PCI_BUS_ID, set at import.
         ("PCI_BUS_ID", "0,1", None, True),
-        # No mask: the launch emits its own and pins PCI_BUS_ID for the child.
         ("FASTEST_FIRST", None, None, True),
-        # A picked set pins PCI_BUS_ID whatever was inherited.
         ("FASTEST_FIRST", "0,1", (0, 1), True),
     ],
 )

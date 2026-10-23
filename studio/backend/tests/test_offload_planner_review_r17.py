@@ -134,9 +134,6 @@ def test_the_resident_shortcut_is_unchanged_on_one_card():
     assert "resident" in plan.reason
 
 
-# --- revocation bookkeeping -------------------------------------------------------------------
-
-
 def _launch_refused_then_ok(
     tmp_path,
     monkeypatch,
@@ -327,13 +324,9 @@ def test_a_revoked_all_on_gpu_plan_drops_the_dio_applicability(tmp_path, monkeyp
 @pytest.mark.parametrize(
     "env, extra_args",
     [
-        # -otd .*=CPU: the drafter's weights go to host RAM while the seam charges them, whole,
-        # on the GPU; a partial pattern moves an unknown share. Either way it is user placement.
         ({}, ["-otd", ".*=CPU"]),
         ({}, ["--override-tensor-draft", "ffn=CPU"]),
         ({}, ["--spec-draft-override-tensor=.*=CPU"]),
-        # A projector on a named card: its bytes ride extra_resident_bytes, which
-        # _per_device_shortfall books onto device 0, the same reason a pinned drafter declines.
         ({}, ["--mmproj-device", "CUDA1"]),
         ({}, ["-mmdev", "ROCm0"]),
         ({"MTMD_BACKEND_DEVICE": "CUDA1"}, None),

@@ -280,8 +280,6 @@ def test_a_multi_device_plan_pins_the_split_it_was_budgeted_on():
     them (tensor_split[id] = ngl_per_device[id].n_layer).
     """
     layout = q4_layout()
-    # A hybrid layout needs the per-layer cache vector before the per-device arithmetic will run
-    # at all; 0 marks the rows that hold recurrent state.
     weights = [1 if i % 4 == 3 else 0 for i in range(layout.n_layers)]
     opts = PlanOptions(trust_device_row_model = True)
     rows = layout.n_layers + 1
@@ -302,7 +300,6 @@ def test_a_multi_device_plan_pins_the_split_it_was_budgeted_on():
         rows, [24 * GIB, 10 * GIB]
     )
 
-    # One device: no split to pin, and #28218 measured a 20x slowdown from -ts on one GPU.
     single = plan_placement(layout, [24 * GIB], 64 * GIB, 8192, opts = opts)
     assert single.device_layer_counts == ()
     assert "--tensor-split" not in plan_to_args(single)
@@ -867,9 +864,6 @@ def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
 # Arithmetic against a stated overhead, not measurements; the constant is pinned by
 # test_the_overhead_reserve_covers_the_measured_prefill_buffer.
 FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
-# The context-linear part of the reserve is pinned to zero here for the same reason the flat
-# part is pinned to 1 GiB: these ladders are arithmetic about the CACHE, and the term itself
-# is pinned by test_the_reserve_grows_with_context_and_max_context_agrees.
 
 
 @pytest.mark.parametrize("budget_gib,expected_k", [(6, 25), (8, 57), (12, 121), (20, 249)])
@@ -998,8 +992,6 @@ def test_a_block_count_above_llama_cpp_s_layer_cap_abstains(monkeypatch):
     """llama.cpp asserts n_layer_all <= LLAMA_MAX_LAYERS (512) in load_hparams, so a file
     declaring more is one the child refuses. Both readers abstain above the cap rather than
     allocating a per-layer list off the declared count first."""
-    # A plain dense file one block over the cap, every block present, so the ONLY thing stopping
-    # a complete layout is the cap itself.
     over = LLAMA_MAX_LAYERS + 1
     fields = _shard_fields(**{"llama.block_count": over})
     layout = _layout_from_reader(_StubReader(fields, _shard_tensors(range(over))))
@@ -1007,10 +999,7 @@ def test_a_block_count_above_llama_cpp_s_layer_cap_abstains(monkeypatch):
     fields = _shard_fields(**{"llama.block_count": LLAMA_MAX_LAYERS})
     layout = _layout_from_reader(_StubReader(fields, _shard_tensors(range(LLAMA_MAX_LAYERS))))
     assert layout.complete and len(layout.blocks) == LLAMA_MAX_LAYERS
-    # The hybrid split, which the KV estimator also calls, abstains on its own.
     assert hybrid_layer_split("qwen35", 100_000, n_kv_head = [8, 0]) == (0, 0, False)
-    # And the reader refuses BEFORE asking the split: the per-layer padding after the split call
-    # is sized off the declared count too.
     import core.inference.offload_layout as _layout_mod
 
     def _never(*a, **k):
@@ -1019,7 +1008,6 @@ def test_a_block_count_above_llama_cpp_s_layer_cap_abstains(monkeypatch):
     monkeypatch.setattr(_layout_mod, "hybrid_layer_split", _never)
     fields = _shard_fields(**{"llama.block_count": over})
     assert not _layout_from_reader(_StubReader(fields, _shard_tensors(range(64)))).complete
-    # The cap itself is still readable: one layer under it is a normal file.
     assert hybrid_layer_split("qwen35", LLAMA_MAX_LAYERS, n_kv_head = [8, 0])[2] is True
 
 
@@ -1477,8 +1465,6 @@ def test_the_spill_pattern_never_reaches_an_excluded_mtp_block():
     assert len(plan.spilled_blocks) == len(layout.blocks), "every block goes"
     assert len(plan.ot_patterns) >= 1
 
-    # The UNION, not patterns[0]: boundary grading emits the last block taken as its own pattern,
-    # so a single-pattern assertion reads that block as missing.
     def spills(tensor: str) -> bool:
         return any(re.compile(p).search(tensor) for p in plan.ot_patterns)
 
@@ -1785,9 +1771,6 @@ def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path):
     shards[1].unlink()
     assert not layout_from_gguf(str(shards[0]), all_shards = True).complete
 
-
-# The owner's priority order for what a launch KEEPS: generation speed, context, the prompt
-# cache, the MTP / speculative draft, --parallel, the projector resident.
 
 _R_CTX = 4096
 _R_OPTS = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
@@ -2464,7 +2447,6 @@ def test_the_ladder_from_an_explicit_request_can_stop_above_the_training_window(
     plan = plan_placement(layout, [26 * GIB], 256 * GIB, asked, opts = opts)
     assert plan.changed and not plan.insufficient, plan
     assert layout.n_ctx_train < plan.n_ctx < asked, plan.n_ctx
-    # The default still reads the window.
     default = plan_placement(layout, [26 * GIB], 256 * GIB, 0, opts = opts)
     assert default.n_ctx <= layout.n_ctx_train
 
@@ -3092,9 +3074,6 @@ def test_a_windowed_cache_across_devices_is_not_shrunk_on_a_stale_layer_vector()
     assert one.priced and one.n_ctx < 65536, one.reason
 
 
-# ----------------------------------------------- lazily-read per-layer embeddings
-
-
 def test_the_per_layer_embeddings_are_their_own_bucket_inside_token_embd():
     """A slice, not a second charge: the seam has to take the PLE back out of the host side
     without the tied-output duplicate going with it."""
@@ -3169,7 +3148,6 @@ def test_the_none_branch_does_not_pay_for_a_table_llama_cpp_keeps_mapped():
     assert lazy.host_bytes == charged.host_bytes - 5 * GIB
     assert lazy.ple_charged_to_host is False
 
-    # RAM that holds the spill but not the table: the plan still takes none.
     ram = lazy.host_bytes + lazy_opts.host_ram_headroom_bytes
     tight = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
     assert tight.load_mode_none is True
@@ -3185,7 +3163,6 @@ def test_a_host_that_holds_only_the_mapped_plan_takes_it_unmapped_rather_than_re
     charged_opts = PlanOptions(require_cost_win = True)
     lazy_opts = PlanOptions(require_cost_win = True, ple_read_lazily = True)
     full = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = charged_opts).host_bytes
-    # Room for everything but the per-layer embeddings.
     ram = full - 20 * GIB + charged_opts.host_ram_headroom_bytes
 
     charged = plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts)
@@ -3238,7 +3215,6 @@ def test_the_lora_rank_alone_is_not_the_latent_cache():
     )
     assert latent.has_mla is True
 
-    # One of the two alone is not is_mla() either.
     half = _layout_from_reader(
         _StubReader(
             _deepseek2_fields(**{"deepseek2.attention.key_length_mla": 192}),
@@ -3280,12 +3256,9 @@ def test_a_kda_hybrid_is_charged_its_recurrent_state():
     layout = _layout_from_reader(_StubReader(_kimi_k3_fields(), _shard_tensors(range(93))))
     assert layout.complete
     assert layout.n_attention_layers == 24
-    # 69 KDA rows x (3*3*96*128 + 128*128*96) x 4 B.
     assert layout.recurrent_bytes == 69 * (110592 + 1572864) * 4
     assert round(layout.recurrent_bytes / MIB) == 443
 
-    # GLM-5.3-Flash: 46 blocks, one of them nextn, 11 of the remaining 45 attention. Its indexer
-    # cache is priced by neither reader, so the layout abstains and --fit on keeps the placement.
     glm_heads = [1 if (i % 4) == 3 else 0 for i in range(46)]
     glm_heads[45] = 1
     glm = _layout_from_reader(
@@ -3335,7 +3308,6 @@ def test_an_lfm2_hybrid_is_charged_its_shortconv_state():
     layout = _layout_from_reader(_StubReader(_lfm2_fields(), _shard_tensors(range(18))))
     assert layout.complete
     assert layout.n_attention_layers == 6
-    # 12 shortconv rows x n_embd x (l_cache - 1) x 4 B.
     assert layout.recurrent_bytes == 12 * 2048 * 2 * 4
 
 

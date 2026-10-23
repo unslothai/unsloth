@@ -63,7 +63,6 @@ class ReportedCell:
         return n if n > 0.0 else 0.0
 
 
-# Ordered as published: descending generation ratio.
 REPORTED_CELLS: tuple[ReportedCell, ...] = (
     ReportedCell("Llama-3.3-70B Q4", "Ada", 38016, 38, 80, 267.3, 309.1, 15.27, 7.68),
     ReportedCell("Qwen3.6-35B-A3B Q4", "3090", 9344, 37, 40, 118.1, 132.5, 15.66, 12.31),
@@ -84,7 +83,6 @@ REPORTED_CELLS: tuple[ReportedCell, ...] = (
     ReportedCell("Qwen3.6-35B-A3B Q4", "Ada", 23296, 8, 40, 1536.6, 3142.7, 121.26, 165.49),
     ReportedCell("Qwen3.6-35B-A3B Q2", "3090", 7168, 39, 40, 197.2, 237.5, 19.76, 28.24),
     ReportedCell("Llama-3.3-70B Q4", "Ada", 25984, 70, 80, 169.5, 204.1, 2.88, 4.28),
-    # "full" in the published table: every block spilled.
     ReportedCell("Qwen3.6-35B-A3B Q2", "Ada", 7168, 40, 40, 650.9, 816.1, 53.09, 84.43),
     ReportedCell("Qwen3-32B Q4", "3090", 18560, 53, 64, 111.0, 166.0, 11.92, 20.99),
     ReportedCell("GLM-4.7-Flash Q4", "Ada", 16768, 23, 46, 781.1, 1466.5, 97.41, 172.17),

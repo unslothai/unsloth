@@ -30,9 +30,6 @@ from test_offload_cost_gate import GIB, MIB, dense_layout, gated  # noqa: E402
 from test_offload_cost_gate import swa_split_layout  # noqa: E402
 
 
-# ------------------------------------------------ findings 1 / 2: SWA expansion past the cap
-
-
 def test_the_scalar_swa_period_is_not_expanded_past_llamas_layer_cap():
     """The layout reader and the per-layer vector refuse a block_count above LLAMA_MAX_LAYERS, but
     the header parser expanded the scalar period into a list of that length first."""
@@ -52,9 +49,6 @@ def test_the_swa_resolver_does_not_expand_past_llamas_layer_cap():
     assert llama_mod._resolve_swa_pattern("gpt-oss", LLAMA_MAX_LAYERS + 1) is None
 
 
-# ------------------------------------------------ finding 3: the reported VRAM of an exact cache
-
-
 def test_the_reported_vram_uses_the_exact_cache_admission_priced():
     """Admission trusts kv_bytes_at; the reported figure re-ran the product and over-stated the
     resident footprint by the product's excess."""
@@ -63,7 +57,6 @@ def test_the_reported_vram_uses_the_exact_cache_admission_priced():
     opts = PlanOptions(kv_bytes_at = lambda _ctx, _slots: exact)
     plan = plan_placement(layout, [12 * GIB], 94 * GIB, 32768, kv_bytes_floor = exact, opts = opts)
     assert plan.spills_anything and not plan.spilled_lm_head, plan.reason
-    # The product at 32K is 2 GiB, four times the exact cache.
     assert layout.kv_bytes(plan.n_ctx, 2) == 4 * exact
     spilled = sum(layout.blocks[i].spillable_bytes for i in plan.spilled_blocks)
     admitted = all_resident_bytes(layout, plan.n_ctx, kv_bytes_floor = exact, trust_floor = True)
@@ -71,9 +64,6 @@ def test_the_reported_vram_uses_the_exact_cache_admission_priced():
         plan.vram_bytes / GIB,
         (admitted - spilled) / GIB,
     )
-
-
-# ------------------------------------------------ finding 4: one request's window stream
 
 
 def test_a_non_unified_window_charges_one_stream_to_the_request():
@@ -94,13 +84,8 @@ def test_a_non_unified_window_charges_one_stream_to_the_request():
     private = placed(kv_swa_bytes_floor = windowed)
     shared = placed(kv_swa_bytes_floor = windowed, kv_unified = True)
     assert whole.kv_host_bytes > 0
-    # A quarter of the 4 GiB window, plus the 1 GiB full-context part over a 2048-token prefix.
     assert abs(private.kv_host_bytes / whole.kv_host_bytes - (1 + 1 / 64) / 5) < 0.001
-    # One shared stream keeps the whole window, and its prefix is over n_ctx.
     assert abs(shared.kv_host_bytes / whole.kv_host_bytes - (4 + 1 / 64) / 5) < 0.001
-
-
-# ------------------------------------------------ finding 5: lazy tables in the cache clamp
 
 
 def test_a_lazily_read_table_does_not_clamp_the_prompt_cache(tmp_path, monkeypatch):
@@ -128,9 +113,6 @@ def test_the_cache_clamp_still_binds_without_a_lazy_table(tmp_path, monkeypatch)
     )
     got = cmd[cmd.index("--cache-ram") + 1] if "--cache-ram" in cmd else None
     assert got is not None and int(got) < 8192, cmd
-
-
-# ------------------------------------------------ finding 6: a picker order under a split plan
 
 
 def _split_plan() -> Plan:
@@ -170,9 +152,6 @@ def test_a_picker_order_that_reverses_the_cards_declines_a_split_plan(tmp_path, 
     assert not backend._spill_plan_flags
 
 
-# ------------------------------------------------ findings 7 / 8: the MLA predicate in scratch
-
-
 def _legacy_deepseek() -> LlamaCppBackend:
     """unsloth/DeepSeek-R1-GGUF's shape: kv_lora_rank with no MLA head lengths, so llama.cpp runs
     it as MHA over a full per-head K+V cache (deepseek2.cpp: wkv_b, not wk_b/wv_b)."""
@@ -207,7 +186,6 @@ def test_the_dequant_width_follows_the_cache_llama_allocates():
     legacy = _legacy_deepseek()
     assert not legacy._uses_mla_cache()
     assert legacy._attention_dequant_width() == 128 * (192 + 128)
-    # Genuine MLA keeps the K-only latent width.
     assert _genuine_mla()._attention_dequant_width() == 576
 
 

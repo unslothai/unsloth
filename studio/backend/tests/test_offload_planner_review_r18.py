@@ -65,11 +65,7 @@ def test_the_launch_hands_the_unsized_cpu_drafter_verdict_to_the_seam(
     plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
     _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan)
     assert seen["inputs"]["cpu_draft_unsized"] is unsized
-    # The known sizes still reach the host budget the plan admits against.
     assert seen["inputs"]["host_ram_unpriced_bytes"] >= int(draft_bytes or 0)
-
-
-# --- draft CPU-MoE pass-through ----------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -82,7 +78,6 @@ def test_the_launch_hands_the_unsized_cpu_drafter_verdict_to_the_seam(
         ({}, ["--spec-draft-n-cpu-moe=3"]),
         ({}, ["--spec-draft-ncmoe", "1"]),
         ({}, ["--n-cpu-moe-draft", "4"]),
-        # Counts append: a later 0 does not take an earlier count back.
         ({}, ["-ncmoed", "2", "-ncmoed", "0"]),
         # std::stoi reads the leading digits; a value it throws on never runs the plan either.
         ({}, ["-ncmoed", "2x"]),
@@ -92,7 +87,6 @@ def test_the_launch_hands_the_unsized_cpu_drafter_verdict_to_the_seam(
         ({"LLAMA_ARG_CPU_MOE_DRAFT": "on"}, None),
         ({"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "2"}, None),
         ({"LLAMA_ARG_N_CPU_MOE_DRAFT": "5"}, None),
-        # An env count survives an argv 0: env first, argv on top, both append.
         ({"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "2"}, ["-ncmoed", "0"]),
     ],
     ids = [
@@ -151,8 +145,6 @@ def test_the_main_model_cpu_moe_flags_are_not_the_draft_ones():
     for args in (["-cmoed"], ["-ncmoed", "2"], ["--n-cpu-moe-draft", "2"]):
         assert _args_place_tensors_on_cpu(args) is False
 
-
-# --- the proactive ROCm arch gate and the plan's --tensor-split ------------------------------
 
 SURVIVORS = [1, 2]
 GIB_MIB = 1024
@@ -306,16 +298,12 @@ def test_a_surviving_plan_that_keeps_every_layer_on_the_gpu_is_a_full_offload_at
     assert all(verdicts), verdicts
 
 
-# --- a projector device of any value -----------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "env, extra_args",
     [
         ({}, ["-mmdev", "cpu"]),
         ({}, ["--mmproj-device", "none"]),
         ({}, ["--mmproj-device="]),
-        # -mmdev after --no-mmproj-offload sets mmproj_use_gpu back to true (arg.cpp handler).
         ({}, ["--no-mmproj-offload", "-mmdev", "CUDA0"]),
         ({"MTMD_BACKEND_DEVICE": "cpu"}, None),
         ({"MTMD_BACKEND_DEVICE": "none"}, None),
@@ -348,18 +336,12 @@ def test_no_projector_device_still_plans():
     assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"})
 
 
-# --- --moe-cache-mib precedence ----------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "env, extra_args, plans",
     [
-        # An argv 0 overrides an inherited cache: nothing is allocated, the plan may run.
         ({"LLAMA_ARG_MOE_CACHE_MIB": "2048"}, ["--moe-cache-mib", "0"], True),
         ({"LLAMA_ARG_MOE_CACHE_MIB": "2048"}, ["--moe-cache-mib=0"], True),
-        # An argv cache overrides an inherited 0.
         ({"LLAMA_ARG_MOE_CACHE_MIB": "0"}, ["--moe-cache-mib", "1024"], False),
-        # An empty value is not a known "none", in argv or env.
         ({}, ["--moe-cache-mib="], False),
         ({"LLAMA_ARG_MOE_CACHE_MIB": "0"}, ["--moe-cache-mib="], False),
         ({"LLAMA_ARG_MOE_CACHE_MIB": ""}, None, False),

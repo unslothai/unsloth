@@ -97,9 +97,6 @@ def _real_fallback_ms(card_gib: float, opts: PlanOptions, outside: int) -> float
     return _score_arms(Placement(host_groups = []), fallback, opts, n_prompt, 1, 1)[1]
 
 
-# ------------------------------------------------ finding 1: the draft reserve at the fitter's -c
-
-
 @pytest.mark.parametrize("card_gib", [14, 16, 18])
 def test_the_fallback_draft_is_priced_at_the_context_it_launches(card_gib):
     """The cache and reserve followed fitter_n_ctx but the draft stayed at 131072 (6.3 GiB here
@@ -131,9 +128,6 @@ def test_the_stale_draft_really_admitted_a_losing_spill():
     assert plan.predicted_request_ms > real * (1.0 - stale.min_penalty_reduction)
 
 
-# ------------------------------------------------ findings 3 / 4: a fallback with no draft at all
-
-
 @pytest.mark.parametrize("card_gib", [14, 16, 18])
 def test_a_fallback_that_stands_the_draft_down_is_priced_without_it(card_gib):
     """Auto's embedded Hybrid Mamba MTP under a partial --fit on emits --spec-type none, so the
@@ -151,7 +145,6 @@ def test_a_fallback_that_stands_the_draft_down_is_priced_without_it(card_gib):
         plan.predicted_request_ms,
         real,
     )
-    # Non-vacuous: the same cell priced with the draft on the fallback (finding 1 alone) loses.
     with_draft = _outside_layout_bytes(probe) - _draft_at(NATIVE) + _draft_at(AUTO_CAP)
     stale = plan_placement(
         _layout(),
@@ -185,7 +178,6 @@ def test_dropping_a_draft_the_fallback_also_drops_costs_no_penalty():
     from core.inference.offload_planner import _Knobs, _knob_only_gate
 
     layout = _layout()
-    # Without the draft the target fits at 8192; with it the fallback spills.
     card = 20 * GIB
     base = dict(
         require_cost_win = True,
@@ -203,15 +195,11 @@ def test_dropping_a_draft_the_fallback_also_drops_costs_no_penalty():
     budget = _usable_vram([card], drops, 8192, outside_layout_bytes = outside)
     _, plan_ms, fit_ms = _knob_only_gate(layout, drops, 8192, budget, **args)
     assert plan_ms == 0.0 and fit_ms == 0.0
-    # The control: a fallback that keeps the draft still charges the penalty when it spills.
     _, k_plan, k_fit = _knob_only_gate(
         layout, keeps, 8192, _usable_vram([card], keeps, 8192), **args
     )
     assert k_fit > 0
     assert k_plan == pytest.approx(k_fit * keeps.draft_drop_penalty_frac)
-
-
-# ------------------------------------------------ the seam: what reaches PlanOptions
 
 
 def _seam(monkeypatch, **kw):
@@ -290,9 +278,6 @@ def test_load_model_reads_the_fallback_spec_policy_the_flag_builder_reads():
         assert term in rule[:4000], term
 
 
-# ------------------------------------------------ finding 2: one card, the same CUDA order rule
-
-
 def _one_card_launch(tmp_path, monkeypatch, plan):
     from test_llama_cpp_placement import _backend, _launch
     from test_offload_planner_launch import DENSE
@@ -330,7 +315,6 @@ def _one_card_plan() -> Plan:
 @pytest.mark.parametrize(
     "order, mask, picked, keeps_plan",
     [
-        # The child's CUDA device 0 is the fastest card; the plan's VRAM and link are PCI row 0.
         ("FASTEST_FIRST", "0", None, False),
         ("PCI_BUS_ID", "0", None, True),
         ("FASTEST_FIRST", None, None, True),
@@ -382,9 +366,6 @@ def test_the_order_clause_is_not_gated_on_a_split():
     src = _load_model_source()
     guard = src[src.index("_cuda_order_unverified = bool(") : src.index("_user_split_in_force")]
     assert re.search(r"_spill is not None\s+and \(\s+_cuda_order_unverified\s+or", guard), guard
-
-
-# ------------------------------------- an unmasked split budgeted on torch ordinals (r23)
 
 
 def _two_card_split_launch(
@@ -450,15 +431,10 @@ def _two_card_split_launch(
 @pytest.mark.parametrize(
     "order, ids_are_pci, rocm, keeps_plan",
     [
-        # torch ordinals are FASTEST_FIRST indices; the pin re-reads the rows in PCI order.
         ("FASTEST_FIRST", False, False, False),
-        # A user's own unset order is CUDA's default, FASTEST_FIRST, all the same.
         (None, False, False, False),
-        # nvidia-smi rows ARE PCI indices, which the pin makes true.
         ("FASTEST_FIRST", True, False, True),
-        # torch ordinals under PCI_BUS_ID already are PCI indices.
         ("PCI_BUS_ID", False, False, True),
-        # HIP enumeration does not follow CUDA_DEVICE_ORDER.
         ("FASTEST_FIRST", False, True, True),
     ],
 )
@@ -476,9 +452,6 @@ def test_an_unmasked_split_on_torch_ordinals_is_declined_unless_the_order_is_pci
         assert "-ot" not in cmd and cmd[cmd.index("--fit") + 1] == "on", cmd
         assert "--tensor-split" not in cmd, cmd
         assert not backend._spill_plan_flags
-
-
-# ------------------------------- -sm none budgets row 0, the child keeps its own device 0 (r24)
 
 
 def _sm_none_launch(
@@ -543,11 +516,8 @@ def _sm_none_launch(
 @pytest.mark.parametrize(
     "mask, picked, keeps_plan",
     [
-        # CUDA_VISIBLE_DEVICES=1,0 makes the 24 GiB card device 0; the plan priced the 48 GiB row.
         ("1,0", None, False),
-        # A dragged pick reaches the child mask in its own order, the same way.
         (None, (1, 0), False),
-        # Same order as the rows: device 0 is the card the plan priced.
         ("0,1", None, True),
         (None, None, True),
         (None, (0, 1), True),

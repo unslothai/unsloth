@@ -125,7 +125,6 @@ class _Stub:
             ),
             lm_head_bytes = self._lm_head_bytes or 0,
             token_embd_bytes = 512 * MIB,
-            # 96 KiB per token, i.e. 3 GiB at the 32768 these tests plan at.
             kv_bytes_per_token_f16 = 98304,
             n_ctx_train = 262144,
             is_moe = bool(self.n_moe_layers),
@@ -344,8 +343,6 @@ def test_a_moe_load_at_a_long_prompt_is_left_to_the_fitter_before_it_is_ranked()
 def test_lm_head_is_only_spilled_after_ffn():
     """43% of generation on its own, 16% on top of an already host-bound step, so
     it is never the first rung."""
-    # Stated over a sweep rather than one hand-picked card size, since the cost gate can decline
-    # any given one and a single fixture would retire its own assertion silently.
     spilled_anything = False
     for free_mib in (4096, 4608, 5632, 6144, 8192, 10240, 12288, 14336):
         plan = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = free_mib)
@@ -465,9 +462,6 @@ def test_repeated_ot_flags_rather_than_a_joined_value():
     assert ";" not in " ".join(tokens)
 
 
-# ------------------------------------------ free VRAM that exceeds the card
-
-
 def _warnings_of(monkeypatch) -> list:
     """Collect logger.warning messages; the logger is structlog, so caplog never sees them."""
     seen: list[str] = []
@@ -487,24 +481,17 @@ def test_a_free_reading_above_the_cards_total_is_clamped(monkeypatch):
     """
     LlamaCppBackend._free_over_total_reported.clear()
 
-    # 14 GiB free on a card whose total says 14 GiB: a real spill.
     honest = _plan(_Stub(), free_mib = 14 * 1024, gpu_total_mib = {0: 14 * 1024})
     assert honest is not None and honest.spills_anything
 
-    # The same card reporting 64 GiB free: believed, the load "fits" and nothing is spilled,
-    # #12138's symptom exactly, and the plan then pins it.
     believed = _plan(_Stub(), free_mib = 64 * 1024)
     assert believed is not None and not believed.spills_anything
 
-    # Clamped, it is budgeted as the card it is, and the plan is the honest one.
     over = _plan(_Stub(), free_mib = 64 * 1024, gpu_total_mib = {0: 14 * 1024})
     assert over is not None
     assert over.ot_patterns == honest.ot_patterns
     assert over.vram_bytes == honest.vram_bytes, "the clamped card is budgeted as itself"
 
-    # gpu_usable_mib comes off the same reading, so the budget is capped with it rather than
-    # left as the only unclamped way in, and its reserve comes off the clamped figure: the same
-    # plan as the honest card with that reserve.
     over_usable = _plan(
         _Stub(), free_mib = 64 * 1024, usable_mib = 63 * 1024, gpu_total_mib = {0: 14 * 1024}
     )
@@ -515,7 +502,6 @@ def test_a_free_reading_above_the_cards_total_is_clamped(monkeypatch):
     assert over_usable.ot_patterns == honest_usable.ot_patterns
     assert over_usable.reason == honest_usable.reason
 
-    # Once per device, not once per load.
     warned = _warnings_of(monkeypatch)
     for _ in range(3):
         _plan(_Stub(), free_mib = 64 * 1024, gpu_total_mib = {0: 14 * 1024})
@@ -541,12 +527,8 @@ def test_the_clamp_leaves_an_honest_or_unstated_total_alone(monkeypatch):
     assert len(warned) == 1, "warned once per device, not once per probe"
     assert "12138" in warned[0]
 
-    # And the seam hands the totals over in the first place.
     compact = "".join(_load_model_source().split())
     assert '"gpu_total_mib":dict(total_by_idx)' in compact
-
-
-# ------------------------------------------------ the split the plan modelled
 
 
 def _multi_device_plan(counts = (46, 19)) -> Plan:
@@ -573,7 +555,6 @@ def test_a_multi_device_plan_emits_the_split_it_was_budgeted_on():
     flags = LlamaCppBackend._spill_plan_flags_for(_multi_device_plan())
     assert flags[:4] == ["-ngl", "-1", "--fit", "off"]
     assert flags[-2:] == ["--tensor-split", "46,19"]
-    # Integer layer counts, as common/fit.cpp:555 writes them, not a ratio.
     assert re.fullmatch(r"\d+(,\d+)+", flags[-1])
 
 
@@ -624,13 +605,10 @@ def test_the_launch_path_pins_the_device_order_it_split_against(monkeypatch):
     """
     compact = "".join(_load_model_source().split())
     assert 'if"--tensor-split"in_spill_flagsor(' in compact
-    # Two sites set it now: the manual per-GPU ratio, and the plan's own split.
     assert compact.count("manual_tensor_split_emitted=True") == 2
-    # And the predicate really is read from the launch, not defaulted.
     assert "_user_split_in_force=bool(" in compact
     assert "user_tensor_split=_user_split_in_force," in compact
     assert "_extra_args_set_any_flag(extra_args,_TENSOR_SPLIT_FLAGS)" in compact
-    # A plan budgeted across devices under the user's ratio pins the enumeration too.
     assert "_user_split_in_forceandlen(_spill.device_layer_counts)>1" in compact
 
 
@@ -1216,8 +1194,6 @@ def test_a_card_the_build_has_no_kernels_for_declines_the_plan(monkeypatch):
     pair = [(0, 24 * 1024), (1, 24 * 1024)]
     assert _plan(_Stub(), gpus = pair) is None
 
-    # Not vacuous, and per DEVICE rather than per host: the same pair plans as soon as the
-    # uncovered card is not one being budgeted, absent or pinned away.
     assert _plan(_Stub(), gpus = [(0, 24 * 1024), (2, 24 * 1024)]) is not None
     assert _plan(_Stub(), gpus = pair, indices = [0]) is not None
 
@@ -1240,15 +1216,12 @@ def test_the_sm_coverage_probe_answers_per_device(monkeypatch):
     assert LlamaCppBackend._cuda_sm_gate_error() is None
     assert LlamaCppBackend._cuda_sm_uncovered_devices() == ((0, 86),)
 
-    # A single card, covered or not, answers as the gate does, so the one-device launch is
-    # unchanged.
     monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 89}))
     assert LlamaCppBackend._cuda_sm_uncovered_devices() == ()
     monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 86}))
     assert LlamaCppBackend._cuda_sm_uncovered_devices() == ((0, 86),)
     assert LlamaCppBackend._cuda_sm_gate_error() is not None
 
-    # Unknown coverage and unknown caps both fail open.
     monkeypatch.setattr(
         LlamaCppBackend, "_installed_llama_cuda_sms", staticmethod(lambda binary = None: None)
     )
@@ -1263,8 +1236,6 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
         model_size = 21 * GIB,
         kv = 2 * GIB,
         extra_gpu = 3 * GIB,
-        # 9 GiB, not 10: the split reserve is charged once for the SECOND card rather than to
-        # both, and a partial multi-GPU spill abstains before the per-device check this is about.
         gpus = [(0, 9 * 1024), (1, 3 * 1024 + 256)],
     )
     assert _plan(stub, separate_draft = True, **two_cards) is None
@@ -1272,7 +1243,6 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
     without = _plan(stub, **two_cards)
     assert without is not None, "the drafter is what the seam refuses, not the cards"
     if not without.spills_anything:
-        # here would mean the cards were the problem and the assertion above proved nothing.
         assert "not worth it" in without.reason, without.reason
         assert "device by device" not in without.reason, without.reason
 
@@ -1604,7 +1574,6 @@ def test_a_single_card_pays_no_split_reserve():
     assert _usable_vram([card, card], opts, short) == 2 * card - 1 * GIB
     assert _usable_vram([card, card, card], opts, short) == 3 * card - 2 * GIB
 
-    # And the context-linear term is charged on every card.
     over = 4096
     step = over * opts.overhead_bytes_per_token
     assert _usable_vram([card], opts, short + over) == card - step
@@ -2174,7 +2143,6 @@ def _captured_opts(monkeypatch, stub, **kw):
 
     monkeypatch.setattr(offload_planner, "plan_placement", capture)
     extra_args = kw.pop("extra_args", None)
-    # Popped, not passed through as an input: the seam reads the environment itself.
     env = {"UNSLOTH_SMART_OFFLOAD": "1", **(kw.pop("env", None) or {})}
     inputs = _inputs(**{k: v for k, v in kw.items() if k in _inputs.__code__.co_varnames})
     inputs.update({k: v for k, v in kw.items() if k not in _inputs.__code__.co_varnames})
@@ -2224,7 +2192,6 @@ def test_the_floor_map_and_the_knob_inputs_reach_the_planner(monkeypatch):
     assert opts.workload_prompt_tokens == 4096
     assert opts.context_policy is ContextPolicy.FIT_ONLY and opts.min_ctx == 8192
     assert opts.cache_ram_default_mib == 3000
-    # The scalar floor is the map's entry at the launched count.
     assert seen["kwargs"]["kv_bytes_floor"] == _inputs()["kv_cache_bytes"]
 
 
@@ -2308,7 +2275,6 @@ def test_a_knob_only_plan_earns_the_pin_and_never_a_load_mode():
     )
     assert spilled == ["-ngl", "-1", "--fit", "off", "-ot", "x=CPU"]
     assert "--load-mode" not in spilled
-    # A load mode alone is not a reshaping, and neither is a plan that changed nothing.
     assert flags(Plan(changed = True, load_mode_none = True)) == []
     assert flags(Plan(changed = False, n_parallel = 2)) == []
     assert flags(Plan(changed = True, n_parallel = 2, insufficient = True)) == []
@@ -2365,15 +2331,12 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
 
     from core.inference import llama_cpp, offload_planner
 
-    # The helper: whichever device had the least withheld anchors the floor.
     assert llama_cpp._reserve_floor_bytes([369 * MIB]) == 1536 * MIB - 369 * MIB
     assert llama_cpp._reserve_floor_bytes([1600 * MIB]) == 0
     assert llama_cpp._reserve_floor_bytes([1600 * MIB, 369 * MIB]) == 1536 * MIB - 369 * MIB
     assert llama_cpp._reserve_floor_bytes([]) == 0
     assert llama_cpp._reserve_floor_bytes([-5]) == 1536 * MIB
 
-    # The seam charges max(its own terms, the floor), and the floor is applied
-    # AFTER the projector surcharge leaves the fused terms.
     captured = {}
 
     def capture(layout, vram, host, ctx, **kw):
@@ -2392,8 +2355,6 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
     )
     assert captured["opts"].overhead_bytes_per_device + withheld_12 >= 1536 * MIB
     assert captured["opts"].overhead_bytes_per_device == 1536 * MIB - withheld_12
-    # Where the withheld share already covers the intercept the seam's own terms stand (the
-    # fixture's soft_overhead is 0, so that is the context term alone).
     withheld_40 = 1600 * MIB
     _plan(
         _Stub(),
@@ -2406,7 +2367,6 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
     assert captured["opts"].overhead_bytes_per_device == 14 * MIB
     assert captured["opts"].overhead_bytes_per_device + withheld_40 >= 1536 * MIB
 
-    # And load_model really prices it from the same usable budget it hands over.
     src = inspect.getsource(llama_cpp.LlamaCppBackend)
     assert '"reserve_floor_bytes": _reserve_floor_bytes(' in src
     seam = inspect.getsource(llama_cpp.LlamaCppBackend._planned_tensor_spill)
@@ -2419,7 +2379,6 @@ def test_a_sharded_gguf_is_read_whole_before_the_planner_sees_it():
     it."""
     stub = _Stub()
     stub.sharded = True
-    # Shard 1 alone is what the seam used to read, and it is incomplete.
     assert stub._tensor_spill_layout("/models/stub-00001-of-00004.gguf").complete is False
     plan = _plan(stub, free_mib = 14 * 1024)
     assert stub._layout_all_shards is True
@@ -2433,7 +2392,6 @@ def test_host_ram_the_launch_has_already_spent_is_taken_off_the_planner_pool():
     assert roomy is not None and roomy.spills_anything
     assert roomy.load_mode_none
 
-    # The same load on the same host, with 60 GiB of the 64 already promised.
     tight = _plan(_Stub(), free_mib = 14 * 1024, host_unpriced = 60 * GIB)
     assert tight is not None
     assert not tight.load_mode_none, tight.reason
@@ -2571,7 +2529,6 @@ def test_the_launch_cache_type_reaches_the_planner_as_a_mode(monkeypatch):
     assert opts.cache_quantised is True and opts.kv_quant_type == "q8_0"
     opts, _ = _captured_opts(monkeypatch, _Stub(), cache_type_kv = "f16")
     assert opts.cache_quantised is False
-    # The extras win per axis and the heavier axis is what the reserve budgets.
     opts, _ = _captured_opts(
         monkeypatch, _Stub(), cache_type_kv = "q8_0", extra_args = ["--cache-type-k", "f16"]
     )
@@ -2598,7 +2555,6 @@ def test_a_loader_mode_the_user_picked_stands_the_planner_down(load_mode, env, e
     inputs = _inputs()
     inputs["load_mode"] = load_mode
     assert _Stub()._planned_tensor_spill(inputs, extra_args = extra_args, env = env) is None
-    # "none" is what the plan assumes, and an unset field is the default.
     assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}, load_mode = "none")
     assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}, load_mode = None)
 
@@ -2621,7 +2577,6 @@ def test_the_drafts_decode_graph_goes_with_the_draft_rung_2_may_drop(monkeypatch
     assert droppable.draft_bytes == 3 * GIB // 2 + 224 * MIB
     kept, _ = _captured_opts(monkeypatch, stub, draft_droppable = False, **common)
     assert kept.draft_bytes == 0
-    # The per-device term gives the graph up only when the draft may go.
     assert kept.overhead_bytes_per_device == 700 * MIB
     assert droppable.overhead_bytes_per_device == 700 * MIB - 224 * MIB
 
@@ -2688,9 +2643,6 @@ def test_the_compute_reserve_reaches_the_planner_priced_per_context(monkeypatch)
     seen.clear()
     _plan(_Stub(), free_mib = 14 * 1024, ctx_compute = 512 * MIB)
     assert seen["opts"].overhead_bytes_at is None
-
-
-# ------------------------------------------------- the link the prefill term is priced at
 
 
 def test_the_measured_link_reaches_the_cost_model(monkeypatch):
@@ -2763,9 +2715,6 @@ def test_the_windowed_half_of_the_cache_reaches_the_planner(monkeypatch):
 
     plain, _ = _captured_opts(monkeypatch, _Stub(), free_mib = 14 * 1024)
     assert plain.kv_swa_bytes_floor == 0, "a snapshot from before this field plans as it did"
-
-
-# ------------------------------------- which launches read the PLE instead of holding it
 
 
 class _PleStub(_Stub):
@@ -2866,7 +2815,6 @@ def test_the_price_follows_the_lazy_mode_load_model_emitted(monkeypatch):
     assert _ple_lazily(monkeypatch, small, emitted_lazy_mode = "on") is True
     assert _ple_lazily(monkeypatch, _ple_stub()) is True
     assert _ple_lazily(monkeypatch, _ple_stub(), emitted_lazy_mode = "off") is False
-    # No emission (an arch or a build Studio says nothing about) keeps the old resolution.
     assert _ple_lazily(monkeypatch, _ple_stub(), emitted_lazy_mode = None) is True
     assert _ple_lazily(monkeypatch, _ple_stub(ple_bytes = 0)) is False
 
@@ -2978,7 +2926,6 @@ def test_a_hybrid_without_the_interval_key_is_still_a_hybrid_to_the_estimator():
     total = b._estimate_kv_cache_bytes(
         8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
     )
-    # 12 attention layers of 2 heads x (256 + 256) f16, plus 36 rows of Mamba state.
     assert total == 12 * 8192 * 2 * (256 + 256) * 2 + 36 * (24576 + 524288) * 4
     assert b._mamba_recurrent_state_bytes(1) == 36 * (24576 + 524288) * 4
 
@@ -2991,7 +2938,6 @@ def test_a_hybrid_without_the_interval_key_is_still_a_hybrid_to_the_estimator():
     assert layout.n_attention_layers == 12
     assert total == layout.kv_bytes(8192) + layout.recurrent_bytes
 
-    # Spelling the key out changes nothing.
     spelled = _qwen3next_backend(_full_attention_interval = 4)
     assert (
         spelled._estimate_kv_cache_bytes(
@@ -3112,7 +3058,6 @@ def test_the_indexer_cache_is_charged_on_the_architecture_that_builds_one(
     )
     assert total == layout.kv_bytes(n_ctx) + layout.recurrent_bytes
 
-    # Only that architecture: the same shape under any other arch keeps two caches.
     plain = _qwen4exp_backend(_architecture = "qwen3next")
     assert (
         plain._estimate_kv_cache_bytes(

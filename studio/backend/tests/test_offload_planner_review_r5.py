@@ -23,9 +23,6 @@ from core.inference.offload_planner import Plan  # noqa: E402
 MIB = 1024**2
 
 
-# ------------------------------------------------ findings 1 / 7: the indexer cache per build
-
-
 @pytest.mark.parametrize(
     "build, ratios, widths",
     [
@@ -87,9 +84,6 @@ def test_the_reader_keeps_the_compress_ratios():
     assert b._indexer_compress_ratios == [0, 4, 0, 4]
 
 
-# ------------------------------------------------ findings 2-5: what a revoked plan puts back
-
-
 def test_a_revoked_slot_cut_redecides_the_checkpoint_cap_and_the_shared_cache(
     tmp_path, monkeypatch
 ):
@@ -118,9 +112,6 @@ def test_a_revoked_slot_cut_redecides_the_checkpoint_cap_and_the_shared_cache(
     assert backend._kv_cache_unified is True
 
 
-# ------------------------------------------------ finding 6: a device-changing retry
-
-
 def test_a_device_changing_retry_hands_the_lazy_mode_back_to_auto(tmp_path, monkeypatch):
     """ "on" was decided for the crashed card; the respawn on an integrated sibling is one llama.cpp's
     auto turns off, so Studio's choice has to leave with the device it was made for."""
@@ -134,8 +125,6 @@ def test_a_device_changing_retry_hands_the_lazy_mode_back_to_auto(tmp_path, monk
     card = 24 * 1024
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, card, card), (1, card, card)])
     backend._studio_lazy_mode = lambda **_kw: "on"
-    # Studio emits its mode only on a launch the planner may own; the seam still declines (it
-    # asks the class), so this exercises the strip on a launch that carries the emission.
     backend._planner_may_run = lambda *a, **k: True
     backend._select_gpus = lambda *a, **k: ([0], False)
     backend._select_gpus_split_aware = lambda *a, **k: ([0], False)
@@ -150,7 +139,6 @@ def test_a_device_changing_retry_hands_the_lazy_mode_back_to_auto(tmp_path, monk
         cmds.append(list(cmd))
         env = kwargs.get("env") or {}
         masks.append((env.get("CUDA_VISIBLE_DEVICES"), env.get("HIP_VISIBLE_DEVICES")))
-        # Every launch on the crashed card fails; the retry is pinned to device 1.
         crashed = "1" not in masks[-1]
         return type(
             "Process",

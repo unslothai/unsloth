@@ -68,9 +68,7 @@ def _declined(monkeypatch):
 @pytest.mark.parametrize(
     "free_mib, ubatch_mib_per_token, cache, ubatch",
     [
-        # ~53% of 15 GiB of experts resident: inside the cache band, the raise is free.
         (20_000, 0, True, ["2048"]),
-        # 1 MiB per micro-batch token: the raise would push >10% of the resident experts off.
         (10_000, 1, False, []),
     ],
     ids = ["cache_in_band", "raise_withheld"],
@@ -161,11 +159,7 @@ def _flash_next_launch(tmp_path, free_mib, *, indexer):
 @pytest.mark.parametrize(
     "free_mib, ubatch",
     [
-        # The 10% loss edge: main's share keeps the raise; with the indexer cache in the
-        # share the same launch dropped it. q38s_18's side of the edge.
         (16_000, ["2048"]),
-        # The unpriced edge: the indexer cache pushed the share to unknown, which keeps the
-        # raise, where main prices a share the raise would cut by more than 10%.
         (10_000, []),
     ],
     ids = ["loss_edge", "unknown_edge"],
@@ -186,7 +180,6 @@ def test_flash_next_keeps_the_micro_batch_raise_its_share_band_was_measured_on(
     _compute_buffer_per_ubatch(monkeypatch, 128 * 1024)
     full_cmd, full_kv = _flash_next_launch(tmp_path / "full", free_mib, indexer = True)
     main_cmd, main_kv = _flash_next_launch(tmp_path / "main", free_mib, indexer = False)
-    # 12 attention rows x 131072 cells x 2 pooled 128-wide f16 keys, plus the PLE rows.
     assert full_kv - main_kv >= 768 * 1024 * 1024, (full_kv, main_kv)
     assert full_cmd[full_cmd.index("--fit") + 1] == "on", full_cmd
     assert _ubatch_values(main_cmd) == ubatch, main_cmd

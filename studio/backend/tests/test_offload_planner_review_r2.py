@@ -26,9 +26,6 @@ from test_offload_cost_gate import GIB, MIB, dense_layout, gated, moe_layout  # 
 PLE = 8 * GIB
 
 
-# ------------------------------------------------ findings 1 / 5: the build's lazy-mode spelling
-
-
 def test_a_legacy_lazy_off_keeps_the_table_resident_in_the_planners_price():
     """A build that predates --lazy-mode reads only --tensor-read-lazy (and its env twin). Its
     explicit "off" holds the table resident, and the planner discounted it as paged anyway."""
@@ -38,7 +35,6 @@ def test_a_legacy_lazy_off_keeps_the_table_resident_in_the_planners_price():
     assert read("gemma4", PLE, env = {"LLAMA_ARG_TENSOR_READ_LAZY": "off"}, **legacy) is False
     # Unset is llama.cpp's auto in either spelling, which pages a table this size.
     assert read("gemma4", PLE, env = {}, **legacy) is True
-    # The current spelling is unchanged.
     assert read("gemma4", PLE, supports_lazy_mode = True, extra_args = ["-lzm", "off"], env = {}) is False
 
 
@@ -47,9 +43,6 @@ def test_the_seam_hands_the_probed_spelling_to_the_planner():
     assert '"lazy_mode_flag":server_caps.get("lazy_mode_flag")or"--lazy-mode",' in load
     seam = "".join(inspect.getsource(LlamaCppBackend._planned_tensor_spill).split())
     assert 'lazy_mode_flag=str(inputs.get("lazy_mode_flag")or"--lazy-mode"),' in seam
-
-
-# ------------------------------------------------ finding 4: what the fitter keeps on the card
 
 
 def test_the_fitter_arm_keeps_the_drafter_the_spill_dropped():
@@ -71,9 +64,6 @@ def test_the_fitter_arm_keeps_the_drafter_the_spill_dropped():
     assert dropped.predicted_fit_request_ms > kept.predicted_fit_request_ms
 
 
-# ------------------------------------------------ finding 11: a veto further down the ladder
-
-
 def test_a_veto_further_down_the_ladder_still_ends_the_walk():
     """The first attempt is refused for host RAM, not vetoed, so FIT_ONLY walks down; every rung
     at or above 32K per slot is then the MoE long-prompt veto, and skipping those as ordinary
@@ -90,14 +80,10 @@ def test_a_veto_further_down_the_ladder_still_ends_the_walk():
     assert got.veto and got.declined_by_gate and not got.spills_anything, got.reason
     assert got.n_ctx == 65536, got.reason
     assert "tokens per slot" in got.reason and "--fit on" in got.reason, got.reason
-    # Without the veto the ladder may still settle lower: the walk itself is unchanged.
     walked = plan_placement(
         layout, [13 * GIB], 12 * GIB, 65536, opts = replace(opts, moe_long_prompt_ctx = 0)
     )
     assert walked.spills_anything and walked.n_ctx < 65536, walked.reason
-
-
-# ------------------------------------------------ findings 9 / 10: Vulkan lazy-mode emission
 
 
 def _lazy_backend(monkeypatch, rows):
@@ -131,7 +117,6 @@ def test_a_default_vulkan_selection_is_left_to_auto(monkeypatch):
     ]
     b = _lazy_backend(monkeypatch, rows)
     assert _mode(b, None) is None
-    # An explicit selection still decides.
     assert _mode(b, [0]) == "on"
     assert _mode(b, [0, 1]) == "off"
 
@@ -143,9 +128,6 @@ def test_an_unread_vulkan_device_type_is_not_taken_as_mmap_capable(monkeypatch):
     rows = [{"index": 0, "is_igpu": False, "type_known": False}]
     b = _lazy_backend(monkeypatch, rows)
     assert _mode(b, [0]) is None
-
-
-# ------------------------------------------------ findings 6 / 7: a reordered mask under a split
 
 
 def _two_card_launch(tmp_path, monkeypatch, plan):
@@ -170,7 +152,6 @@ def _two_card_launch(tmp_path, monkeypatch, plan):
         "supports_cache_ram": True,
     }
     backend._available_system_memory_mib = lambda: 64 * 1024
-    # Both cards selected and the fit unproved: the planner's branch, with a device list.
     backend._select_gpus = lambda *a, **k: ([0, 1], True)
     backend._select_gpus_split_aware = lambda *a, **k: ([0, 1], True)
     asked = []

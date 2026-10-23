@@ -21,7 +21,6 @@ import pytest  # noqa: E402
 from core.inference.offload_planner import Plan  # noqa: E402
 from test_offload_cost_gate import GIB  # noqa: E402
 
-# nvidia-smi index,gen,width: card 0 on a gen4 x16 slot, card 1 on a gen3 x1 riser.
 _LINK_ROWS = "0, 4, 16\n1, 3, 1\n"
 _GEN4_X16 = 16 * 1.969 * 0.85 * 1e9 / float(1024**3)
 
@@ -98,19 +97,11 @@ def _resident_plan() -> Plan:
     return Plan(changed = True, priced = True, n_ctx = 8192, n_parallel = 1)
 
 
-# --------------------------- an unmasked -sm none plan outside PCI order (r25 finding 5)
-
-
 @pytest.mark.parametrize(
     "order, pci, keeps_plan",
     [
-        # No mask, no pick: the child inherits FASTEST_FIRST, so device 0 is CUDA's fastest card,
-        # while the plan priced nvidia-smi's PCI row 0.
         ("FASTEST_FIRST", True, False),
-        # PCI order: device 0 is PCI row 0, the card the plan priced.
         ("PCI_BUS_ID", True, True),
-        # Torch-fallback rows are CUDA ordinals in the parent's own order, which the unmasked
-        # child shares: row 0 is device 0.
         ("FASTEST_FIRST", False, True),
     ],
 )
@@ -145,14 +136,10 @@ def test_an_unmasked_layer_split_plan_is_not_touched_by_the_split_mode_none_rule
     assert "-ot" in cmd and cmd[cmd.index("--fit") + 1] == "off", cmd
 
 
-# --------------------------------------- the link probe reads the -sm none card (finding 4)
-
-
 def test_the_link_probe_reads_only_the_card_an_sm_none_plan_uses(tmp_path, monkeypatch):
     _cmd, _env, inputs, _watch, _backend = _sm_none(
         tmp_path, monkeypatch, _spilling_plan(), order = "PCI_BUS_ID"
     )
-    # Card 1's x1 riser (0.78 GiB/s) carries none of this plan's traffic.
     assert inputs["link_gib_s"] == pytest.approx(_GEN4_X16), inputs["link_gib_s"]
 
 
@@ -163,9 +150,6 @@ def test_the_link_probe_still_reads_every_card_a_layer_split_uses(tmp_path, monk
     assert inputs["link_gib_s"] < 1.0, inputs["link_gib_s"]
 
 
-# ------------------------------------------- the paging watch reads the -sm none card (finding 7)
-
-
 def test_the_paging_watch_samples_only_the_card_an_sm_none_plan_uses(tmp_path, monkeypatch):
     cmd, _env, _inputs, watch, _backend = _sm_none(
         tmp_path, monkeypatch, _resident_plan(), order = "PCI_BUS_ID"
@@ -173,9 +157,6 @@ def test_the_paging_watch_samples_only_the_card_an_sm_none_plan_uses(tmp_path, m
     assert cmd[cmd.index("--fit") + 1] == "off" and "-ot" not in cmd, cmd
     assert watch.get("fully_gpu_offloaded") is True, watch
     assert list(watch.get("gpu_indices") or ()) == [0], watch
-
-
-# ---------------------------- the text-only projector retry after a planned launch (finding 6)
 
 
 def test_the_text_only_projector_retry_does_not_respawn_the_revoked_plan(tmp_path, monkeypatch):

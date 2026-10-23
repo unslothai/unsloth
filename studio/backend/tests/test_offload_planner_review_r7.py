@@ -58,9 +58,6 @@ def _opts(**kw) -> PlanOptions:
     return PlanOptions(**base)
 
 
-# ------------------------------------------------ findings 1 / 2: the fitter keeps the caller's slots
-
-
 def test_the_spill_gate_prices_the_fitter_at_the_slots_a_decline_launches():
     """Rung 1 cuts 4 slots to 1 and the rest still spills. Declining launches --parallel 4, which
     holds four recurrent states, but the fitter arm was priced with one: 8542 ms against the
@@ -76,14 +73,9 @@ def test_the_spill_gate_prices_the_fitter_at_the_slots_a_decline_launches():
     )
 
 
-# ------------------------------------------------ findings 3 / 4: each arm at its own micro-batch
-
-
 @pytest.mark.parametrize(
     "card_gib, ubatch, declined",
     [
-        # The cut plan runs a 4096 micro-batch, the 4-slot fitter 512: scoring the fitter at 4096
-        # under-charges its prefill and declined a spill that wins.
         (12.5, {4: 512, 1: 4096}, False),
         # The mirror: the fitter's own 4096 makes it cheaper than the 512 the cut plan runs.
         (11.5, {4: 4096, 1: 512}, True),
@@ -113,9 +105,6 @@ def test_the_fitter_score_does_not_follow_the_cut_plans_micro_batch():
     assert plain.predicted_fit_request_ms > 0
     assert mapped.predicted_fit_request_ms == plain.predicted_fit_request_ms
     assert mapped.predicted_request_ms < plain.predicted_request_ms
-
-
-# ------------------------------------------------ finding 5: GLM-5.3-Flash's indexer cache
 
 
 def test_glm5next_abstains_while_its_indexer_cache_is_unpriced():
@@ -150,12 +139,8 @@ def test_glm5next_abstains_while_its_indexer_cache_is_unpriced():
         )
     )
     assert not glm.complete
-    # Kimi-K3 has no indexer and keeps its priced KDA state.
     kimi = _layout_from_reader(_StubReader(_kimi_k3_fields(), _shard_tensors(range(93))))
     assert kimi.complete and round(kimi.recurrent_bytes / MIB) == 443
-
-
-# ------------------------------------------------ finding 6: the CPU recovery's lazy mode
 
 
 @pytest.mark.parametrize(
@@ -176,7 +161,6 @@ def test_the_cpu_recovery_hands_studios_lazy_mode_back_to_auto(
         tmp_path, monkeypatch, gguf_gb = 2.0, free_mib = 24 * 1024, avail_mib = 64 * 1024
     )
     backend._studio_lazy_mode = lambda **_kw: emitted
-    # Emitted only on a launch the planner may own (the seam itself still declines).
     backend._planner_may_run = lambda *a, **k: True
     kwargs = {"extra_args": tuple(extras)} if extras else {}
     captured = _launch_with_vulkan_cpu_replay(backend, gguf, **kwargs)

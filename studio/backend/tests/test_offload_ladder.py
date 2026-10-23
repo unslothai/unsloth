@@ -845,8 +845,6 @@ def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
             "kda.attention.value_length": 32,
         }
         if 0 in heads:
-            # Zero-head rows need a state the layout can size, or it abstains; the all-attention
-            # control carries no state keys, since keys without a map abstain too.
             fields.update(
                 {
                     "kda.ssm.inner_size": 64,
@@ -966,7 +964,6 @@ def test_an_interval_hybrid_sums_the_attention_rows_of_its_per_layer_vector():
         "kda.embedding_length": 256,
         "kda.attention.key_length": 32,
         "kda.attention.value_length": 32,
-        # Zero-head rows need a state the layout can size, or it abstains.
         "kda.ssm.inner_size": 64,
         "kda.ssm.state_size": 8,
         "kda.ssm.conv_kernel": 4,
@@ -1038,7 +1035,6 @@ def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monk
         opts = opts(**base, n_ubatch_by_parallel = {2: 256, 1: 64}),
     )
     assert plan.n_parallel == 1, plan.reason
-    # The plan arm at the cut count's 64; the fitter arm launches the caller's 2 slots, so 256.
     assert seen[-2:] == [64, 256], seen
     seen.clear()
     plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))

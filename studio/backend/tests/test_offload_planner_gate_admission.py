@@ -80,7 +80,6 @@ def test_a_knob_only_plan_with_a_host_cache_is_admitted_against_host_ram():
     assert tight.declined_by_gate and not tight.draft_dropped and not tight.changed, tight.reason
     assert "host RAM" in tight.reason and "--fit on" in tight.reason, tight.reason
 
-    # Without a host cache the host side is the embedding --fit on pays as well: nothing to refuse.
     no_nkvo = {**base, "kv_on_host": False}
     plain_card = [all_resident_bytes(layout, 32768) + _device_reserve(PlanOptions(), 32768)]
     plain_card = [plain_card[0] + draft - GIB // 2]
@@ -96,7 +95,6 @@ def test_an_over_reported_card_keeps_its_reserve(monkeypatch):
     from test_offload_planner_seam import _Stub, _plan
 
     LlamaCppBackend._free_over_total_reported.clear()
-    # A 12 GiB card's reserve, the case #12138 is: reporting 64 GiB free against that total.
     total = 12 * 1024
     reserve = 1536
     honest = _plan(_Stub(), free_mib = total, usable_mib = total - reserve, gpu_total_mib = {0: total})
@@ -142,7 +140,6 @@ def test_a_discarded_inherited_split_does_not_suppress_the_plans_split(tmp_path,
     assert cmd.count("--tensor-split") == 1, cmd
     assert cmd[cmd.index("--tensor-split") + 1] == "30,18", cmd
 
-    # An inherited ratio under a layer split DOES reach the child, so the plan still adds none.
     monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "layer")
     cmd, _b, _s = _launch_with(tmp_path, monkeypatch, plan)
     assert "--tensor-split" not in cmd, cmd

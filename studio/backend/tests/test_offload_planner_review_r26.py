@@ -50,13 +50,9 @@ class _Reader:
         self.tensors = tuple(tensors)
 
 
-# ------------------------------------------------ finding 1: a hybrid's cache in the fitter arm
-
 N_HYBRID = 64
 CTX = 8192
-# 4 heads x (256 + 256) x 2 bytes on each of 16 attention rows: 512 MiB at 8192.
 ATTN_BYTES = 512 * MIB
-# 48 recurrent rows x (3 x (6144 + 2 x 16 x 128) + 128 x 6144) x 4 bytes: 149.625 MiB.
 STATE_BYTES = 48 * (3 * (6144 + 2 * 16 * 128) + 128 * 6144) * 4
 
 
@@ -190,15 +186,11 @@ def test_the_row_map_follows_the_files_own_markers():
         2,
         0,
     )
-    # Zeros in the head list beat the interval, as in hybrid_layer_split.
     assert OL.layer_kv_heads("qwen35", 4, n_kv_head = [0, 2, 2, 0]) == (0, 2, 2, 0)
     assert OL.layer_kv_heads("llama", 4, n_kv_head = 8) == ()
     assert OL.layer_kv_heads("openelm", 4, n_kv_head = [3, 3, 6, 6]) == (3, 3, 6, 6)
 
 
-# ------------------------------------------------ finding 2: unequal KV heads across devices
-
-# apple/OpenELM-3B-Instruct config.json: 36 rows, model_dim 3072, head_dim 128.
 _OPENELM_KV = [3] * 4 + [4] * 14 + [5] * 12 + [6] * 6
 _OPENELM_Q = [12] * 4 + [16] * 14 + [20] * 12 + [24] * 6
 _OPENELM_FFN = [int((m * 3072 + 255) // 256 * 256) for m in [0.5 + 0.1 * i for i in range(36)]]

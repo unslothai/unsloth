@@ -47,7 +47,6 @@ def _watch(
 
 # 16 GiB card with 160 MiB free: 1 percent, the ollama#16725 reading.
 _PEGGED = [(0, 160, 16303)]
-# The same card with 6 GiB free.
 _ROOMY = [(0, 6144, 16303)]
 
 
@@ -55,7 +54,6 @@ def test_warns_once_on_the_full_fingerprint():
     cap = _Capture()
     w = _watch([_PEGGED] * 6, cap)
     fired = [w.observe(running = 1, gen_tok_s = 0.8) for _ in range(6)]
-    # Third sustained sample, not the first: one slow tick is a cold prompt.
     assert fired == [False, False, True, False, False, False]
     events = [e for e, _ in cap.events]
     assert events == ["cuda_sysmem_fallback_suspected"], events
@@ -77,7 +75,6 @@ def test_silent_when_vram_is_not_pegged():
 def test_silent_when_generation_is_healthy():
     cap = _Capture()
     w = _watch([_PEGGED] * 6, cap)
-    # A resident placement fills VRAM too; only the throughput separates the two.
     assert not any(w.observe(running = 1, gen_tok_s = 45.0) for _ in range(6))
     assert cap.events == []
 
@@ -143,7 +140,6 @@ def test_sequential_requests_reach_the_warning():
     lg._run()
     warned = [i for i, (e, _) in enumerate(cap.events) if e == "cuda_sysmem_fallback_suspected"]
     assert len(warned) == 1, cap.events
-    # On the third completed request, not before.
     assert [e for e, _ in cap.events[: warned[0]]].count("engine_stats") == 8
 
 
@@ -261,7 +257,6 @@ def test_factory_builds_a_watch_on_windows_cuda(monkeypatch):
         fully_gpu_offloaded = True,
     )
     assert w is not None
-    # 25 GiB/s over an 8 GiB read per token: nothing paging can beat 3.125 tok/s.
     assert w._floor == pytest.approx(25.0 / 8.0)
 
 
@@ -316,7 +311,6 @@ def test_nvidia_smi_probe_drops_unreadable_totals(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    # "N/A" on MIG/vGPU, and a literal 0 total, are both unusable to a fraction-of-total test.
     out = "0, 160, 16303\n1, 900, N/A\n3, 100, 0\n2, 512, 24564\n"
     rows = LlamaCppBackend._nvidia_smi_free_total_mib(runner = lambda: out)
     assert rows == [(0, 160, 16303), (2, 512, 24564)]

@@ -185,8 +185,6 @@ def test_the_dense_fallback_does_move_whole_layers_and_the_cache_with_them():
     assert placement is not None
     names = {g.name for g in placement.host_groups}
     assert "layers" in names, "a dense fit moves attention weights too"
-    # ``kv_host_bytes``, not a host group named "kv": the moved cache is charged at
-    # Access.KV_CACHE's calibrated rate, and this fails if it is ever demoted back.
     assert (
         placement.kv_host_bytes > 0
     ), "a dense fit drags the moved layers' cache to host with them"
@@ -759,7 +757,6 @@ def test_a_caller_nkvo_cache_is_host_ram_the_refusal_has_to_see():
 def test_the_fallback_places_the_cache_by_the_per_layer_vector():
     layout = dense_layout()
     args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
-    # 11 GiB moves 28 whole layers, 5 of the 12 cache rows: 5/12 of the cache against 28/64.
     uniform = _fit_fallback_placement(layout, gated(), 11 * GIB, 32768, **args)
     hybrid = [1 if i % 5 == 4 else 0 for i in range(layout.n_layers)]
     spread = _fit_fallback_placement(
@@ -984,7 +981,6 @@ def test_the_windowed_fallback_charges_only_the_live_prefix_of_the_global_layers
     )
     assert whole is not None and split is not None
     assert whole.kv_host_bytes > 0
-    # Both arms move the same layers: only the RATE the moved cache is charged at changes.
     live = (4 + 1 / 64) / 5
     assert abs(split.kv_host_bytes / whole.kv_host_bytes - live) < 0.001
 
@@ -1022,7 +1018,6 @@ def test_the_windowed_split_is_repriced_for_the_slots_rung_1_leaves():
     n_ctx, floor_at_one, windowed_at_four = 131072, 2 * GIB, 4 * GIB
     shape = dict(workload_prompt_tokens = 2048, workload_generated_tokens = 0, n_parallel = 4)
     args = dict(quantised = False, kv_bytes_floor = floor_at_one, kv_on_host = False, n_seq = 1)
-    # The scalar alone: scaled with the slots, which is what per-stream storage does.
     scaled = _fit_fallback_placement(
         layout, gated(kv_swa_bytes_floor = windowed_at_four, **shape), 8 * GIB, n_ctx, **args
     )
@@ -1040,8 +1035,6 @@ def test_the_windowed_split_is_repriced_for_the_slots_rung_1_leaves():
     whole = _fit_fallback_placement(layout, gated(**shape), 8 * GIB, n_ctx, **args)
     assert all(p is not None for p in (scaled, measured, whole))
     assert whole.kv_host_bytes > 0
-    # One slot's window is a quarter of the four-slot part, and the rest is read over its live
-    # prefix; the stale scalar read all of the smaller cache as live.
     live = (1 + 1 / 64) / 2
     assert abs(measured.kv_host_bytes / whole.kv_host_bytes - live) < 0.001
     assert scaled.kv_host_bytes == measured.kv_host_bytes
@@ -1117,17 +1110,13 @@ def test_the_moved_prefix_carries_the_recurrent_state_of_the_rows_it_spans():
         return state, round(layers / hybrid.blocks[0].resident_bytes)
 
     uniform_state, uniform_moved = state_and_layers(())
-    # Every recurrent row in the leading quarter: the prefix takes the WHOLE state early.
     leading = [0 if i < n // 4 else 1 for i in range(n)]
     lead_state, lead_moved = state_and_layers(leading)
     assert lead_moved >= n // 4
     assert lead_state == 4 * GIB, lead_state
-    # Every recurrent row in the trailing quarter: a prefix that stops short of it carries none.
     trailing = [0 if i >= 3 * n // 4 else 1 for i in range(n)]
     trail_state, trail_moved = state_and_layers(trailing)
     assert trail_moved < 3 * n // 4
     assert trail_state == 0, trail_state
-    # The uniform split, the only reading with no vector, sits between the two: a prefix that
-    # frees the whole state early has fewer layers left to move, one that frees none has more.
     assert trail_state < uniform_state < lead_state
     assert lead_moved <= uniform_moved <= trail_moved

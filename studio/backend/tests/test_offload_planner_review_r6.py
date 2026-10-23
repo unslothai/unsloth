@@ -61,9 +61,6 @@ def _plan(
     return plan_placement(_moe(), [int(card_gib * GIB)], 94 * GIB, n_ctx, opts = opts)
 
 
-# ------------------------------------------------ finding 1: the veto under a context search
-
-
 @pytest.mark.parametrize(
     "n_ctx, n_parallel, unified",
     [
@@ -95,9 +92,6 @@ def test_a_short_moe_request_still_searches_and_spills():
     """Below the threshold the veto does not apply, so the context search keeps its say."""
     plan = _plan(6, 16384)
     assert not plan.veto, plan.reason
-
-
-# ------------------------------------------------ finding 2: the no-flash symmetric cache
 
 
 def _legacy_deepseek() -> LlamaCppBackend:
@@ -137,9 +131,7 @@ def test_a_symmetric_model_without_flash_is_priced_at_the_f16_cache_it_launches(
         q8_off = b._estimate_kv_cache_bytes(n_ctx, "q8_0", flash_attn = False)
         f16_off = b._estimate_kv_cache_bytes(n_ctx, "f16", flash_attn = False)
         assert q8_off == f16_off
-        # Flash on keeps the quantized cache.
         assert b._estimate_kv_cache_bytes(n_ctx, "q8_0", flash_attn = True) < f16_off
-        # A wider type is kept as typed.
         assert b._estimate_kv_cache_bytes(n_ctx, "f32", flash_attn = False) > f16_off
 
 

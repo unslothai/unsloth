@@ -22,9 +22,6 @@ from core.inference.offload_planner import _fit_fallback_placement  # noqa: E402
 from test_offload_cost_gate import GIB, dense_layout, gated  # noqa: E402
 
 
-# ------------------------------------------------ finding 1: the direct CPU replay's lazy mode
-
-
 @pytest.mark.parametrize(
     "emitted, extras, expected",
     [
@@ -57,9 +54,6 @@ def test_a_restored_cpu_fallback_hands_studios_lazy_mode_back_to_auto(
     assert modes == ([] if expected is None else [expected]), replay
 
 
-# ------------------------------------------------ finding 2: manual placement owns its own fit
-
-
 @pytest.mark.parametrize("smart_offload", [True, False])
 def test_a_manual_placement_keeps_the_prompt_cache_the_flag_off_launch_has(
     tmp_path, monkeypatch, smart_offload
@@ -83,9 +77,6 @@ def test_a_manual_placement_keeps_the_prompt_cache_the_flag_off_launch_has(
         gpu_layers = 99,
     )
     assert "--cache-ram" not in cmd, cmd
-
-
-# ------------------------------------------------ findings 3 / 4: the fitter's live cache split
 
 
 _N, _WINDOW, _RESERVED, _SLOTS, _UBATCH = 62, 1024, 131072, 4, 512
@@ -129,7 +120,6 @@ def _place(layout, *, with_live_weights: bool):
     )
     floor = _bytes_at(_RESERVED, _SLOTS)
     args = dict(quantised = False, kv_bytes_floor = floor, kv_on_host = False, n_seq = _SLOTS)
-    # Enough short that whole leading layers leave, all of them window layers.
     from core.inference.offload_planner import all_resident_bytes
 
     resident = all_resident_bytes(
@@ -166,7 +156,6 @@ def test_the_fitters_live_cache_is_split_by_the_live_prefix(moe):
     live_total = min(_bytes_at(_RESERVED, _SLOTS), _bytes_at(_LIVE, 1))
     expected = int(live_total * sum(live[:moved]) / sum(live))
     assert placement.kv_host_bytes == expected, (placement.kv_host_bytes, expected)
-    # The gap the reserved vector left: a third of the traffic.
     reserved = _weights_at(_RESERVED, _SLOTS)
     stale = int(live_total * sum(reserved[:moved]) / sum(reserved))
     assert expected > 3 * stale

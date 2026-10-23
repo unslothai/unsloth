@@ -278,9 +278,6 @@ def test_a_partial_prefill_batch_still_copies_every_spilled_tensor():
     assert short == pytest.approx(full)
 
 
-# --------------------------------------------------------------- the PCIe link
-
-
 def test_prefill_is_priced_at_the_hosts_own_link():
     """The 55 GiB/s default was measured on PCIe 5 x16. A Colab L4 moves 12.3 GiB/s and a desktop
     x4 slot about 6.5, so the reference rate under-prices a spill's prefill several fold."""

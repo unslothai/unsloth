@@ -775,7 +775,6 @@ class TestTransformersIntrospection:
                 monkeypatch.delitem(sys.modules, k, raising = False)
 
         assert lc._resolve_swa_pattern("gpt-oss", 24) == [(i + 1) % 2 != 0 for i in range(24)]
-        # And the HF spelling still resolves, so folding costs the old key nothing.
         assert lc._resolve_swa_pattern("gpt_oss", 24) == [(i + 1) % 2 != 0 for i in range(24)]
 
     def test_returns_none_for_arch_unknown_to_transformers(self):

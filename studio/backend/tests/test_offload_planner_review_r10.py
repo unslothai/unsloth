@@ -97,7 +97,6 @@ def test_an_accepted_auto_context_plan_beats_the_launch_a_decline_really_makes(c
         plan.predicted_request_ms,
         real,
     )
-    # The context still comes back above the cap: the ladder walks down, it does not freeze.
     assert AUTO_CAP < plan.n_ctx < NATIVE
 
 

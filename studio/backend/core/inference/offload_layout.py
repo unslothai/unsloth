@@ -45,28 +45,19 @@ class SpillClass(Enum):
     """
 
     FFN_DOWN = "ffn_down"
-    # Fused ``gate_up`` counts here: it IS the up projection with the gate welded on, so such a
-    # model has no separate gate rung left.
     FFN_UP = "ffn_up"
     FFN_GATE = "ffn_gate"
-    # Shared experts and any non-expert FFN on a MoE model: fully activated, so dense-FFN
-    # bandwidth. Empty on a dense model, whose FFN is already rungs 1-3.
     DENSE_FFN = "dense_ffn"
     ATTENTION = "attention"
 
 
-# Ordered by what the ladder gives up first.
 FFN_SPILL_CLASSES = (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
 BLOCK_SPILL_CLASSES = FFN_SPILL_CLASSES + (SpillClass.DENSE_FFN, SpillClass.ATTENTION)
 
-# Which tail names fall in which class, for a MoE and for a dense model.
 _CLASS_BODIES: dict[SpillClass, tuple[str, str]] = {
-    #                     MoE                              dense
     SpillClass.FFN_DOWN: ("ffn_down_(exps|chexps)", "ffn_down"),
     SpillClass.FFN_UP: ("ffn_(up|gate_up)_(exps|chexps)", "ffn_up"),
     SpillClass.FFN_GATE: ("ffn_gate_(exps|chexps)", "ffn_gate"),
-    # Shared experts, and the dense FFN MoE architectures put in their first k layers: read in full
-    # every token, unlike the routed experts above, so a later rung.
     SpillClass.DENSE_FFN: ("ffn_(up|gate|down|gate_up)(_shexp)?", ""),
     SpillClass.ATTENTION: ("attn_(q|k|v|qkv|output)", "attn_(q|k|v|qkv|output)"),
 }
@@ -95,17 +86,12 @@ class BlockLayout:
     index: int
     # ffn_*_exps (MoE) or plain ffn_* (dense). Safe to push to host RAM.
     spillable_bytes: int
-    # attention, norms, routers, shared experts, ssm: on the critical path every token, or the KV
-    # cache hangs off them.
     resident_bytes: int
-    # The same bytes again, split by rung.
     ffn_down_bytes: int = 0
     ffn_up_bytes: int = 0
     ffn_gate_bytes: int = 0
     dense_ffn_bytes: int = 0
     attn_bytes: int = 0
-    # The GGUF quant type of each rung's tensors ("" when unknown): a rung's CPU cost is not a
-    # function of its BYTES alone, and the ladder wins where the tensor it keeps RESIDENT is IQ.
     ffn_down_type: str = ""
     ffn_up_type: str = ""
     ffn_gate_type: str = ""
@@ -156,9 +142,6 @@ class ModelLayout:
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
-    # offloaded experts move only expert_used/expert_count per token, a dense FFN all of it
-    # Sparse-MoE routing: experts read per token is expert_used/expert_count. Offloaded experts move only that fraction
-    # per token, a dense FFN all of it.
     n_expert: int = 0
     n_expert_used: int = 0
     # ``blocks`` drops the trailing nextn/MTP blk.<N> tensors: block_count counts them (llama-model.cpp reads it into
@@ -174,7 +157,6 @@ class ModelLayout:
     # from n_layer_all (llama-model.cpp:1449) puts those blocks on a GPU FIRST. llama.cpp's own fitter widens its
     # offloadable-layer count the same way (common/fit.cpp:139-142). Zero when nothing was dropped.
     excluded_block_bytes: int = 0
-    # sliding-window attention interleaves window-sized and full-context caches per layer
     # Sliding-window attention: some layers keep a window-sized cache, some the full context
     # (llama-kv-cache-iswa.cpp:69-104 builds two caches and filters each by hparams.is_swa(il)), interleaved per layer.
     # Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A
@@ -192,8 +174,6 @@ class ModelLayout:
     # not say. Only the fitter comparison reads it: a multi-device check still abstains without a
     # caller-supplied vector, since it says nothing about windows or a padded V.
     kv_heads_by_layer: tuple[int, ...] = ()
-    # The rows holding ``recurrent_bytes``: the cache-free rows above, less nemotron_h's MLP-only
-    # rows, which hold neither (hybrid_layer_split). Empty when no row map says.
     recurrent_rows: tuple[int, ...] = ()
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
@@ -385,8 +365,6 @@ _KDA_STATE_ARCHS: frozenset[str] = frozenset({"kimi-k3"})
 LLAMA_MAX_LAYERS = 512
 
 
-# Architectures whose zero-KV-head rows are recurrent only when their FFN width is 0 as well
-# (models/nemotron-h.cpp:17, inherited by nemotron_h_moe at models/models.h:1516).
 _RECURRENT_NEEDS_ZERO_FFN: frozenset[str] = frozenset({"nemotron_h", "nemotron_h_moe"})
 
 
@@ -440,8 +418,6 @@ def hybrid_layer_split(
                 n_attention = attention_rows
                 n_recurrent = n_layers - n_attention
                 known = True
-                # ...except on nemotron_h, where a zero-head row is recurrent only if its FFN is 0
-                # too. MLP-only rows are neither, so the two counts stop summing to n_layers here.
                 if arch in _RECURRENT_NEEDS_ZERO_FFN and isinstance(
                     feed_forward_length, (list, tuple)
                 ):
@@ -535,7 +511,6 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     if not n_kv_head or not key_len or not val_len:
         return ModelLayout()
 
-    # hybrid_layer_split already reads nemotron_h's per-layer head_count_kv and FFN map.
     nemotron_h = arch in _NEMOTRON_H_ARCHS
     n_attention, n_recurrent, recurrent_known = hybrid_layer_split(
         arch,
@@ -552,7 +527,6 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         n_kv_head = n_kv_head,
         full_attention_interval = int(_field(reader, f"{arch}.full_attention_interval") or 0),
     )
-    # Only a map that agrees with the row count the cache total was priced over.
     if sum(1 for h in kv_heads_by_layer if h > 0) != int(n_attention):
         kv_heads_by_layer = ()
     recurrent_rows = tuple(i for i, h in enumerate(kv_heads_by_layer) if h <= 0)
@@ -560,13 +534,9 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     if arch in _RECURRENT_NEEDS_ZERO_FFN and isinstance(ffn_lengths, (list, tuple)) and ffn_lengths:
         ffs = [int(f) for f in ffn_lengths]
         recurrent_rows = tuple(i for i in recurrent_rows if ffs[min(i, len(ffs) - 1)] <= 0)
-    # Likewise only the rows the state total was priced over.
     if len(recurrent_rows) != int(n_recurrent):
         recurrent_rows = ()
 
-    # A per-layer list with zeros names the rows carrying NO attention cache (a KDA /
-    # linear-attention hybrid); summing them away would let a multi-device check spread the cache
-    # over rows that hold none of it.
     if isinstance(n_kv_head, (list, tuple)) and n_attention < n_layers:
         _heads = [int(h) for h in n_kv_head]
         if _heads:
@@ -580,8 +550,6 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
 
     kv_per_token = kv_heads_total * (int(key_len) + int(val_len)) * 2
 
-    # The indexer cache holds the full n_ctx_seq like the attention one does, so the product CAN
-    # express it: one head on every dense-attention row, as wide as this build allocates it.
     indexer_key_len = (
         int(_field(reader, f"{arch}.attention.indexer.key_length") or 0)
         if arch in INDEXER_CACHE_ARCHS
@@ -647,15 +615,11 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         )
         recurrent += len(ple_layers) * ple_conv_state * 4
 
-    # ssm.*/kda.*/shortconv.* keys say the model HAS recurrent layers; nothing above says which.
     if not recurrent_known and (
         (d_inner and d_state and d_conv) or kda_head_dim or shortconv_l_cache > 1
     ):
         logger.debug("offload layout: %s has recurrent keys but no recurrent-layer map", arch)
         return ModelLayout()
-    # Rows that hold no cache and no branch above could size (RWKV token shifts, MiniMax linear
-    # attention, an unread key). A complete layout would let the planner emit --fit off while a
-    # per-slot allocation is missing from every check, so abstain and the seam keeps --fit on.
     if n_recurrent and not recurrent:
         logger.debug(
             "offload layout: %s has %d recurrent rows of unknown state size", arch, n_recurrent
@@ -706,7 +670,6 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
                     tb[cls] = (nbytes, getattr(tname, "name", "") or "")
             continue
         if name.startswith("per_layer_token_embd"):
-            # gemma3/gemma4 per-layer embeddings.
             per_layer_embd += nbytes
         # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
         elif "token_embd" in name and not name.startswith("token_embd_norm"):

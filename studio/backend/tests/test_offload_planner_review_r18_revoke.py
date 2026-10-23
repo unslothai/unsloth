@@ -236,6 +236,4 @@ def test_the_plan_is_revoked_on_cmd_before_any_recovery_rung_derives_from_it(tmp
     plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
     cmds, _backend = _launch_planned_mtp(tmp_path, monkeypatch, plan)
     assert _fit(cmds[-1]) == "on" and "--spec-default" in cmds[-1], cmds[-1]
-    # The inner startup-failure retry, then `cmd` itself, still carrying the drafter: the
-    # drafterless argv is built from an already-revoked command, so its spawn revokes nothing.
     assert seen == [("startup failure", True, False), ("recovery", True, False)], seen
