@@ -278,8 +278,49 @@ def threaded_sessions() -> bool:
     return os.environ.get(THREADED_SPLICE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _loopback_owner_uid(client_port: int, server_port: int) -> Optional[int]:
-    """The uid owning the client end of a loopback TCP connection, from /proc/net/tcp{,6} (Linux)."""
+_TCP_ESTABLISHED = "01"  # the `st` column of /proc/net/tcp{,6}
+
+
+def _endpoint(addr: str, port: int) -> Optional[tuple]:
+    """(address, port) with IPv4-mapped IPv6 folded to IPv4, so both spellings compare equal."""
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return None
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip, int(port)
+
+
+def _proc_endpoint(field: str) -> Optional[tuple]:
+    """Decode a /proc/net/tcp{,6} ``ADDR:PORT`` field: the address is printed as 32-bit words in
+    host byte order, the port as plain hex."""
+    try:
+        addr_hex, port_hex = field.rsplit(":", 1)
+        if len(addr_hex) not in (8, 32):
+            return None
+        packed = b"".join(
+            int(addr_hex[i : i + 8], 16).to_bytes(4, sys.byteorder)
+            for i in range(0, len(addr_hex), 8)
+        )
+        ip = ipaddress.ip_address(packed)
+        return _endpoint(str(ip), int(port_hex, 16))
+    except ValueError:
+        return None
+
+
+def _loopback_owner_uid(client: tuple, server: tuple) -> Optional[int]:
+    """The uid owning the client end of a live loopback TCP connection, from /proc/net/tcp{,6}
+    (Linux). ``client`` and ``server`` are the accepted socket's peer and local (addr, port). Only
+    an ESTABLISHED row whose full local and remote address and port equal the client's view of
+    the connection counts: a port-only match could pick another account's connection from a
+    different loopback address (127.0.0.2) or a stale row. No exact row, or rows that disagree on
+    the owner, gives None."""
+    want_local = _endpoint(*client[:2])
+    want_remote = _endpoint(*server[:2])
+    if want_local is None or want_remote is None:
+        return None
+    uids = set()
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
             with open(path, encoding = "ascii") as f:
@@ -288,16 +329,15 @@ def _loopback_owner_uid(client_port: int, server_port: int) -> Optional[int]:
             continue
         for row in rows:
             cols = row.split()
-            if len(cols) < 8:
+            if len(cols) < 8 or cols[3].upper() != _TCP_ESTABLISHED:
+                continue
+            if _proc_endpoint(cols[1]) != want_local or _proc_endpoint(cols[2]) != want_remote:
                 continue
             try:
-                local = int(cols[1].rsplit(":", 1)[1], 16)
-                remote = int(cols[2].rsplit(":", 1)[1], 16)
-            except (IndexError, ValueError):
-                continue
-            if local == client_port and remote == server_port:
-                return int(cols[7])
-    return None
+                uids.add(int(cols[7]))
+            except ValueError:
+                return None
+    return uids.pop() if len(uids) == 1 else None
 
 
 def local_client_is_ours(sock: socket.socket) -> bool:
@@ -307,11 +347,11 @@ def local_client_is_ours(sock: socket.socket) -> bool:
     if not sys.platform.startswith("linux") or not hasattr(os, "getuid"):
         return True
     try:
-        client_port = sock.getpeername()[1]
-        server_port = sock.getsockname()[1]
+        client = sock.getpeername()
+        server = sock.getsockname()
     except OSError:
         return False
-    return _loopback_owner_uid(client_port, server_port) == os.getuid()
+    return _loopback_owner_uid(client, server) == os.getuid()
 
 
 def tune_raw_socket(sock: socket.socket) -> None:

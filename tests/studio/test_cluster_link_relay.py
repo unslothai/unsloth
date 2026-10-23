@@ -1666,11 +1666,162 @@ def test_the_loopback_owner_of_a_real_connection_is_found():
     client = socket.create_connection(server.getsockname())
     conn, _ = server.accept()
     try:
-        assert _loopback_owner_uid(client.getsockname()[1], server.getsockname()[1]) == os.getuid()
+        assert _loopback_owner_uid(conn.getpeername(), conn.getsockname()) == os.getuid()
         assert local_client_is_ours(conn)
     finally:
         for s in (client, conn, server):
             s.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "owner lookup is Linux-only")
+def test_the_owner_lookup_matches_the_exact_tuple_of_a_real_connection_from_another_address():
+    # Two live connections share the client port but not the client address: each is attributed to
+    # its own row, and the 127.0.0.2 one is still found (its exact tuple, not the 127.0.0.1 one).
+    from studio.cluster_link.splice import _loopback_owner_uid, local_client_is_ours
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(2)
+    first = socket.create_connection(server.getsockname())
+    conn1, _ = server.accept()
+    second = socket.socket()
+    try:
+        second.bind(("127.0.0.2", first.getsockname()[1]))
+    except OSError:
+        second.close()
+        for s in (first, conn1, server):
+            s.close()
+        pytest.skip("127.0.0.2 is not bindable here")
+    second.connect(server.getsockname())
+    conn2, _ = server.accept()
+    try:
+        assert conn2.getpeername() == ("127.0.0.2", first.getsockname()[1])
+        assert _loopback_owner_uid(conn2.getpeername(), conn2.getsockname()) == os.getuid()
+        assert local_client_is_ours(conn1) and local_client_is_ours(conn2)
+        # A tuple no live connection has: refused.
+        assert (
+            _loopback_owner_uid(("127.0.0.3", first.getsockname()[1]), conn2.getsockname()) is None
+        )
+    finally:
+        for s in (first, second, conn1, conn2, server):
+            s.close()
+
+
+_TCP_HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+_OUR_UID = 4242
+_OTHER_UID = 31337
+# Client port 0xA1B2 (41394), listener port 0x1F90 (8080). Addresses are host-order 32-bit words
+# (little-endian here): 0100007F = 127.0.0.1, 0200007F = 127.0.0.2.
+_V4_LOCAL = "0100007F:1F90"
+_V4_CLIENT1 = "0100007F:A1B2"
+_V4_CLIENT2 = "0200007F:A1B2"
+_V6_LOOP = "00000000000000000000000001000000"  # ::1
+_V6_MAPPED_LOOP = "0000000000000000FFFF00000100007F"  # ::ffff:127.0.0.1
+
+
+def _tcp_row(i, local, remote, state, uid):
+    return f"  {i:>2}: {local} {remote} {state} 00000000:00000000 00:00000000 00000000 {uid:>5}        0 {1000 + i} 1 0000000000000000 20 4 30 10 -1"
+
+
+class _FakeSock:
+    def __init__(self, peer, local):
+        self._peer, self._local = peer, local
+
+    def getpeername(self):
+        return self._peer
+
+    def getsockname(self):
+        return self._local
+
+
+def _proc_owner(monkeypatch, tcp_rows, tcp6_rows, peer, local):
+    import builtins
+    import io
+
+    import studio.cluster_link.splice as splice_mod
+
+    files = {
+        "/proc/net/tcp": "\n".join([_TCP_HEADER, *tcp_rows]) + "\n",
+        "/proc/net/tcp6": "\n".join([_TCP_HEADER, *tcp6_rows]) + "\n",
+    }
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if path in files:
+            return io.StringIO(files[path])
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(splice_mod, "open", fake_open, raising = False)
+    monkeypatch.setattr(splice_mod.os, "getuid", lambda: _OUR_UID)
+    return splice_mod.local_client_is_ours(_FakeSock(peer, local))
+
+
+_skip_proc_fixture = pytest.mark.skipif(
+    not sys.platform.startswith("linux") or sys.byteorder != "little",
+    reason = "Linux owner lookup; fixture addresses are little-endian",
+)
+
+
+@_skip_proc_fixture
+def test_a_client_on_another_loopback_address_with_our_ports_is_refused(monkeypatch):
+    # Another account binds 127.0.0.2 with the same source port as this user's old connection,
+    # which is now in TIME_WAIT. A port-only lookup returned this user's uid and admitted it.
+    tcp = [
+        _tcp_row(0, _V4_CLIENT1, _V4_LOCAL, "06", _OUR_UID),  # TIME_WAIT, ours
+        _tcp_row(1, _V4_LOCAL, _V4_CLIENT2, "01", _OUR_UID),  # the listener's accepted end
+        _tcp_row(2, _V4_CLIENT2, _V4_LOCAL, "01", _OTHER_UID),  # the attacker's live client end
+    ]
+    assert not _proc_owner(monkeypatch, tcp, [], ("127.0.0.2", 0xA1B2), ("127.0.0.1", 0x1F90))
+
+
+@_skip_proc_fixture
+def test_a_client_whose_exact_tuple_has_no_live_row_is_refused(monkeypatch):
+    # This user's ESTABLISHED connection uses 127.0.0.1 with the same ports; the attacker's own
+    # row is absent (or unreadable): no exact live row means refuse, never borrow a near match.
+    tcp = [_tcp_row(0, _V4_CLIENT1, _V4_LOCAL, "01", _OUR_UID)]
+    assert not _proc_owner(monkeypatch, tcp, [], ("127.0.0.2", 0xA1B2), ("127.0.0.1", 0x1F90))
+    # Exact tuple, ours, but not ESTABLISHED (TIME_WAIT, FIN_WAIT2, CLOSE): refused too.
+    for state in ("06", "05", "07"):
+        tcp = [_tcp_row(0, _V4_CLIENT1, _V4_LOCAL, state, _OUR_UID)]
+        assert not _proc_owner(monkeypatch, tcp, [], ("127.0.0.1", 0xA1B2), ("127.0.0.1", 0x1F90))
+
+
+@_skip_proc_fixture
+def test_the_exact_live_tuple_owned_by_this_user_is_admitted(monkeypatch):
+    tcp = [
+        _tcp_row(0, _V4_CLIENT2, _V4_LOCAL, "06", _OTHER_UID),  # stale, someone else, other address
+        _tcp_row(1, _V4_CLIENT1, _V4_LOCAL, "01", _OUR_UID),
+    ]
+    assert _proc_owner(monkeypatch, tcp, [], ("127.0.0.1", 0xA1B2), ("127.0.0.1", 0x1F90))
+    # The same tuple owned by another account: refused.
+    tcp = [_tcp_row(0, _V4_CLIENT1, _V4_LOCAL, "01", _OTHER_UID)]
+    assert not _proc_owner(monkeypatch, tcp, [], ("127.0.0.1", 0xA1B2), ("127.0.0.1", 0x1F90))
+
+
+@_skip_proc_fixture
+def test_the_owner_lookup_handles_ipv6_and_ipv4_mapped_rows(monkeypatch):
+    v4 = (("127.0.0.1", 0xA1B2), ("127.0.0.1", 0x1F90))
+    mapped = (("::ffff:127.0.0.1", 0xA1B2, 0, 0), ("::ffff:127.0.0.1", 0x1F90, 0, 0))
+    mapped_row = _tcp_row(0, f"{_V6_MAPPED_LOOP}:A1B2", f"{_V6_MAPPED_LOOP}:1F90", "01", _OUR_UID)
+    # An AF_INET6 client of an AF_INET listener: its row is in tcp6 in mapped form.
+    assert _proc_owner(monkeypatch, [], [mapped_row], *v4)
+    # A dual-stack listener sees mapped names for a plain IPv4 client.
+    assert _proc_owner(
+        monkeypatch, [_tcp_row(0, _V4_CLIENT1, _V4_LOCAL, "01", _OUR_UID)], [], *mapped
+    )
+    # ::1 on both ends.
+    v6_row = _tcp_row(0, f"{_V6_LOOP}:A1B2", f"{_V6_LOOP}:1F90", "01", _OUR_UID)
+    assert _proc_owner(monkeypatch, [], [v6_row], ("::1", 0xA1B2, 0, 0), ("::1", 0x1F90, 0, 0))
+    # A mapped 127.0.0.2 client is not the ::1 or 127.0.0.1 one, and a TIME_WAIT ::1 row is not live.
+    v6_tw = _tcp_row(1, f"{_V6_LOOP}:A1B2", f"{_V6_LOOP}:1F90", "06", _OUR_UID)
+    assert not _proc_owner(
+        monkeypatch,
+        [_tcp_row(0, _V4_CLIENT1, _V4_LOCAL, "06", _OUR_UID)],
+        [v6_tw],
+        ("::ffff:127.0.0.2", 0xA1B2, 0, 0),
+        ("::ffff:127.0.0.1", 0x1F90, 0, 0),
+    )
+    assert not _proc_owner(monkeypatch, [], [v6_tw], ("::1", 0xA1B2, 0, 0), ("::1", 0x1F90, 0, 0))
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "a shebang script stands in for ggml-rpc-server")
