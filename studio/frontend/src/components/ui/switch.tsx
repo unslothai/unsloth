@@ -29,7 +29,7 @@ function Switch({
     >
       <SwitchPrimitive.Thumb
         data-slot="switch-thumb"
-        className="pointer-events-none block rounded-full bg-white transition-transform duration-200 ease-out group-data-[size=default]/switch:size-[calc(16px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:size-[calc(12px*var(--ui-space-scale,1))] data-unchecked:translate-x-0 data-unchecked:shadow-[0_0_0_0.5px_rgb(0_0_0_/_0.06),0_1px_2px_rgb(0_0_0_/_0.12)] group-data-[size=default]/switch:data-checked:translate-x-[calc(14px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:data-checked:translate-x-[calc(10px*var(--ui-space-scale,1))] data-checked:bg-control-accent-foreground motion-reduce:transition-none"
+        className="pointer-events-none block rounded-full bg-white transition-transform duration-200 ease-out group-data-[size=default]/switch:size-[calc(16px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:size-[calc(12px*var(--ui-space-scale,1))] data-unchecked:translate-x-0 group-data-[size=default]/switch:data-checked:translate-x-[calc(14px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:data-checked:translate-x-[calc(10px*var(--ui-space-scale,1))] data-checked:bg-control-accent-foreground motion-reduce:transition-none"
       />
     </SwitchPrimitive.Root>
   );
