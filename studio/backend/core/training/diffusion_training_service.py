@@ -16,8 +16,8 @@ runs a scripted target on a thread.
 """
 
 from __future__ import annotations
-from core.inference.inference_gate import pauses_background_embedding
 
+from core.inference.inference_gate import pauses_background_embedding
 from core.training.account_jobs import (
     account_is_retired,
     init_job_owner,

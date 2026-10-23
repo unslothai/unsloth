@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from core.inference.engine_transport import engine_messages, engine_request_timeout
+from core.inference.inference_gate import gated_async_client
 from core.inference.http_stream import closing_response_lines
 from core.inference.studio_tool_loop import ToolLoopPolicy, ToolLoopRun, stream_with_studio_tools
 
@@ -276,7 +277,7 @@ async def managed_tool_chat(
     tracker.__enter__()
 
     async def events():
-        client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+        client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
         watcher = asyncio.create_task(
             api._await_cancel_or_disconnect_then_close_client(
                 cancel_event = cancel, request = request, client = client
@@ -504,7 +505,7 @@ async def managed_engine_completions(request, current_subject, backend, body):
     cancel = threading.Event()
     tracker = api._TrackedCancel(cancel, model = public, kind = "completions")
     tracker.__enter__()
-    client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+    client = gated_async_client(trust_env = False, timeout = engine_request_timeout())
     watcher = asyncio.create_task(
         api._await_cancel_or_disconnect_then_close_client(
             cancel_event = cancel, request = request, client = client

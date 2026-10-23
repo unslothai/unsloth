@@ -149,6 +149,7 @@ from core.inference.orchestrator import (
     _summed_tool_loop_stats,
     routed_slot,
 )
+from core.inference.inference_gate import gated_async_client
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -5959,7 +5960,7 @@ async def _await_stt_disconnect_then_cancel(request, sidecar, cancel_event) -> N
 
 
 def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
+    return gated_async_client(
         limits = httpx.Limits(max_connections = 1, max_keepalive_connections = 0),
         trust_env = False,
         verify = _local_ssl_context(),
@@ -40076,7 +40077,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             from core.inference.llama_cpp import LlamaCppBackend
             from core.inference.llama_keepwarm import mark_response_failed
 
-            client = httpx.AsyncClient(
+            client = gated_async_client(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
                 verify = _local_ssl_context(),
@@ -43306,7 +43307,7 @@ async def _responses_stream(
                     _relay_recording_tool_extras(upstream.body_iterator, current_subject)
                 )
             else:
-                client = httpx.AsyncClient(
+                client = gated_async_client(
                     timeout = _llama_streaming_generation_timeout(),
                     trust_env = False,
                     verify = _local_ssl_context(),
@@ -48489,7 +48490,7 @@ async def _anthropic_passthrough_stream(
         # finalizer has anything orphaned to finalize. Each aclose is wrapped in
         # `try: ... except Exception: pass` so nested anyio cleanup noise can't
         # bubble out.
-        client = httpx.AsyncClient(
+        client = gated_async_client(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
@@ -49806,7 +49807,7 @@ async def _openai_passthrough_stream_admitted(
 
         # Keep the pre-header window short so accepted SSE clients receive
         # immediate headers in the common timeout-reduced stall.
-        client = httpx.AsyncClient(
+        client = gated_async_client(
             timeout = _llama_streaming_generation_timeout(),
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,

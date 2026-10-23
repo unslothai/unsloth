@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import functools
 import inspect
+import weakref
+
+import httpx
 
 
 def holds_inference(fn):
@@ -42,3 +45,23 @@ def pauses_background_embedding(fn):
         return fn(*args, **kwargs)
 
     return call
+
+
+def gated_async_client(*args, **kwargs):
+    """A per-request ``httpx.AsyncClient`` to a local engine (API passthroughs): background embedding stays paused
+    until it is ``aclose``d, or collected if a path never closes it. Built through ``httpx.AsyncClient`` at call
+    time, so a patched client class is honoured."""
+    from core.rag.conversation_archive import hold_inference
+
+    client = httpx.AsyncClient(*args, **kwargs)
+    release = weakref.finalize(client, hold_inference())
+    close = client.aclose
+
+    async def aclose():
+        try:
+            return await close()
+        finally:
+            release()
+
+    client.aclose = aclose
+    return client

@@ -541,6 +541,23 @@ def inference_running():
     return _busy(restart = True)
 
 
+def hold_inference() -> Callable[[], None]:
+    """``inference_running`` for the event loop: never blocks (the batch in flight, at most ``_PREWARM_BATCH``
+    chunks, finishes on its own) and returns the release, to be called exactly once."""
+    global _inference_depth
+    with _gap:
+        _inference_depth += 1
+    _prewarm_stop.set()
+
+    def release() -> None:
+        global _inference_depth
+        with _gap:
+            _inference_depth -= 1
+        _start_prewarm()
+
+    return release
+
+
 def _pause_prewarm() -> None:
     """Stop the gap worker and wait out its batch in flight; it restarts at the next stream's end. Bounded, so a
     wedged embedder can never hold a generation back."""

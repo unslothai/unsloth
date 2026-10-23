@@ -29,7 +29,6 @@ family's official base repos, or a local path the user explicitly picked.
 """
 
 from __future__ import annotations
-from core.inference.inference_gate import holds_inference
 
 import contextlib
 import dataclasses
@@ -296,6 +295,8 @@ from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
 from .video_stream_encode import claim_stream, offer_stream, open_stream_encode
 from utils.hardware import clear_gpu_cache
+
+from core.inference.inference_gate import holds_inference
 
 # Shared with the image backend so both pin every loader call to the same live cache root
 from core.inference.diffusion import hub_cache_dir

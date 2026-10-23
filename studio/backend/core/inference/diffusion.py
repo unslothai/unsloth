@@ -18,7 +18,6 @@ in the arbiter the routes call, not here.
 """
 
 from __future__ import annotations
-from core.inference.inference_gate import holds_inference
 
 from contextlib import contextmanager
 import contextvars
@@ -36,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from core.inference.inference_gate import holds_inference
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,

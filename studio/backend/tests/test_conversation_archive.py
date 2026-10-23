@@ -1766,6 +1766,8 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     from core.inference.diffusion import DiffusionBackend
     from core.inference.inference_gate import holds_inference, pauses_background_embedding
     from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.mlx_diffusion_backend import MlxDiffusionBackend
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
     from core.inference.orchestrator import InferenceOrchestrator
     from core.inference.video import VideoBackend
     from core.training.diffusion_training_service import DiffusionTrainingService
@@ -1781,6 +1783,8 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
         LlamaCppBackend.generate_audio_response,
         LlamaCppBackend.load_model,
         DiffusionBackend.generate,
+        SdCppDiffusionBackend.generate,
+        MlxDiffusionBackend.generate,
         VideoBackend.generate,
         TrainingBackend.start_training,
         DiffusionTrainingService.start,
@@ -1823,6 +1827,49 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
         return worker is not None and worker.is_alive()
 
     assert start() is False
+
+
+def test_api_passthrough_clients_hold_the_gap_closed_until_closed(conn, monkeypatch):
+    """OpenAI / Anthropic / managed-engine passthroughs talk to the engine over their own per-request client."""
+    import asyncio
+    import gc
+
+    import httpx
+
+    from core.inference import inference_gate
+
+    closed = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def aclose(self):
+            closed.append(self.kwargs)
+
+    # Passthrough tests fake the client class on the httpx module; the gate must build through it.
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    thread_id = "passthrough-thread"
+    conversation_archive.note_branch(thread_id, _gap_thread(thread_id, 3, tag = "pass"))
+    calls = _counting_encoder(monkeypatch)
+
+    client = inference_gate.gated_async_client(trust_env = False)
+    assert isinstance(client, FakeClient)
+    assert (
+        conversation_archive._inference_depth == 1 and conversation_archive._prewarm_stop.is_set()
+    )
+    conversation_archive._start_prewarm()
+    assert conversation_archive._prewarm_worker is None and calls == []
+
+    asyncio.run(client.aclose())
+    asyncio.run(client.aclose())
+    assert closed == [{"trust_env": False}] * 2
+    assert conversation_archive._inference_depth == 0
+
+    # A path that never closes its client still reopens the gap once it is collected.
+    inference_gate.gated_async_client()
+    gc.collect()
+    assert conversation_archive._inference_depth == 0
 
 
 @pytest.mark.parametrize("held", ["compute", "llama_serve", "backend_build"])
