@@ -9,7 +9,7 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { formatPrefillDetails, prefillPercent, readGenerationProgress } = await import(
+const { formatLiveDecode, formatPrefillDetails, prefillPercent, readGenerationProgress } = await import(
   "../src/features/chat/lib/generation-progress.ts"
 );
 const { describePlacement, loadedPlacementFrom } = await import(
@@ -64,6 +64,29 @@ test("the prefill details hide the first sample's noisy rate", () => {
     formatPrefillDetails({ processed: 4118, total: 18880, cached: 0, tokPerS: 1401.2 }, "en-US"),
     "4,118 / 18,880 tokens · 1,401 tok/s",
   );
+});
+
+test("the live line writes every number in the reader's locale", () => {
+  const decode = { tokens: 3060, tokPerS: 58.25, draftN: 5030, draftAccepted: 1791 };
+  assert.equal(
+    formatLiveDecode(decode, "en-US"),
+    "3,060 tokens · 58.3 tok/s · draft 1,791/5,030 accepted (36%)",
+  );
+  // A locale that groups with "." must not get "." as the rate's decimal point too.
+  assert.equal(
+    formatLiveDecode(decode, "de-DE"),
+    "3.060 tokens · 58,3 tok/s · draft 1.791/5.030 accepted (36%)",
+  );
+});
+
+test("both live lines wrap instead of clipping on a narrow chat column", () => {
+  // .generating-glint is nowrap and overflow: hidden; at 390 px the prefill details and the decode line ran past the edge.
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const prefill = thread.slice(thread.indexOf('data-slot="prefill-progress"'), thread.indexOf("Processing prompt"));
+  assert.match(prefill, /whitespace-normal!/);
+  const line = readSrc("components/assistant-ui/live-generation-line.tsx");
+  assert.doesNotMatch(line, /\bshrink-0\b/);
+  assert.match(line, /\bmin-w-0\b/);
 });
 
 test("Generation details is off by default and wired into Settings > Chat > Display", () => {

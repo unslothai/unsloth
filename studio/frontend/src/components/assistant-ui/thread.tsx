@@ -7906,7 +7906,7 @@ const GeneratingStatus: FC = () => {
   return (
     <span
       data-slot="prefill-progress"
-      className="generating-glint text-sm text-muted-foreground tabular-nums"
+      className="generating-glint text-sm text-muted-foreground tabular-nums whitespace-normal!"
     >
       Processing prompt {percent}%
       {showDetails ? ` · ${formatPrefillDetails(prefill, locale)}` : null}

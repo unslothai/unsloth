@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  type LiveDecodeProgress,
+  formatLiveDecode,
   useChatPreferencesStore,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -36,23 +36,9 @@ const LiveDecodeFigures: FC = () => {
   return (
     <span
       data-slot="live-generation-line"
-      className="aui-live-generation-line ml-[var(--icon-btn-inset)] mr-2 shrink-0 select-none font-mono text-ui-11p5 text-muted-foreground tabular-nums"
+      className="aui-live-generation-line ml-[var(--icon-btn-inset)] mr-2 min-w-0 select-none font-mono text-ui-11p5 text-muted-foreground tabular-nums"
     >
       {formatLiveDecode(decode, locale)}
     </span>
   );
 };
-
-function formatLiveDecode(decode: LiveDecodeProgress, locale?: string): string {
-  const parts = [
-    `${decode.tokens.toLocaleString(locale)} ${decode.tokens === 1 ? "token" : "tokens"}`,
-  ];
-  if (decode.tokPerS !== null) {
-    parts.push(`${decode.tokPerS.toFixed(1)} tok/s`);
-  }
-  if (decode.draftN && decode.draftAccepted !== null) {
-    const share = Math.round((decode.draftAccepted / decode.draftN) * 100);
-    parts.push(`draft ${decode.draftAccepted}/${decode.draftN} accepted (${share}%)`);
-  }
-  return parts.join(" · ");
-}

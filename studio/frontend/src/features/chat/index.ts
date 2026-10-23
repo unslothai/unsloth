@@ -91,7 +91,7 @@ export {
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
-export { formatPrefillDetails, prefillPercent } from "./lib/generation-progress";
+export { formatLiveDecode, formatPrefillDetails, prefillPercent } from "./lib/generation-progress";
 export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,

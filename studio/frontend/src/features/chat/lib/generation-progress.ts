@@ -81,6 +81,27 @@ export function formatPrefillDetails(
 
 const MIN_TOKENS_FOR_PREFILL_RATE = 512;
 
+/** "4,306 tokens · 58.3 tok/s · draft 1,791/5,030 accepted (36%)", every number in the reader's locale. */
+export function formatLiveDecode(decode: LiveDecodeProgress, locale?: string): string {
+  const parts = [
+    `${decode.tokens.toLocaleString(locale)} ${decode.tokens === 1 ? "token" : "tokens"}`,
+  ];
+  if (decode.tokPerS !== null) {
+    const rate = decode.tokPerS.toLocaleString(locale, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+    parts.push(`${rate} tok/s`);
+  }
+  if (decode.draftN && decode.draftAccepted !== null) {
+    const share = Math.round((decode.draftAccepted / decode.draftN) * 100);
+    parts.push(
+      `draft ${decode.draftAccepted.toLocaleString(locale)}/${decode.draftN.toLocaleString(locale)} accepted (${share}%)`,
+    );
+  }
+  return parts.join(" · ");
+}
+
 export function prefillPercent(prefill: LivePrefillProgress): number | null {
   if (!prefill.total) return null;
   return Math.min(100, Math.max(0, Math.floor((prefill.processed / prefill.total) * 100)));
