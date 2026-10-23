@@ -1365,6 +1365,103 @@ def sticker_pack() -> B:
     return b
 
 
+def summarise_pdf() -> B:
+    b = B(
+        "summarise-pdf",
+        "Summarise a Document",
+        "pipeline",
+        "Load a PDF, Word or text file, cut it into chunks, summarise each chunk, then write one summary of the "
+        "whole document.",
+        tags = ["documents", "llm", "for each"],
+        seed = 12,
+    ).need("chat")
+    b.n("doc", "input.file", 0, 1, label = "Your document")
+    b.n("read", "doc.load", 1, 1)
+    b.e("doc.file", "read.file")
+    b.n("chunks", "text.split", 2, 1, mode = "chunks", unit = "words", chunk_size = 700, overlap = 50)
+    b.e("read.text", "chunks.text")
+    b.n("each", "logic.for_each", 3, 1, group = "s_loop", max_items = 32)
+    b.n(
+        "part",
+        "llm.generate",
+        4,
+        1,
+        group = "s_loop",
+        label = "Summarise a part",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 300,
+        prompt = "Summarise this part of a document in 3 short bullet points:\n\n{{prompt}}",
+    )
+    b.group("s_loop", "For each chunk", (3, 0.4, 2.2, 1.6), "#0d9488")
+    b.e("chunks.items", "each.items")
+    b.e("each.item", "part.prompt")
+    b.e("part.text", "each.collect")
+    b.n("joined", "list.join", 5.4, 1)
+    b.e("each.results", "joined.items")
+    b.n(
+        "summary",
+        "llm.generate",
+        6.4,
+        1,
+        label = "Whole summary",
+        model = CHAT,
+        temperature = 0.3,
+        max_tokens = 700,
+        prompt = "These are notes on each part of one document, in order:\n{{context}}\n\nWrite a clear summary "
+        "of the whole document in one paragraph, then list the 5 key points.",
+    )
+    b.e("joined.text", "summary.context")
+    b.n("show", "output.preview", 7.4, 1)
+    b.e("summary.text", "show.value")
+    b.note("tip", "Upload a document in the first block, then Run.", 0, 2.2, 1.6, 0.6)
+    return b
+
+
+def ask_documents() -> B:
+    b = B(
+        "ask-documents",
+        "Ask Your Documents",
+        "pipeline",
+        "Add a document to a knowledge base (the same ones chat searches), then answer a question from the passages "
+        "that match it, with the sources cited.",
+        tags = ["documents", "knowledge base", "rag", "llm"],
+        seed = 13,
+    ).need("chat")
+    b.n("doc", "input.file", 0, 0.5, label = "Your document")
+    b.n("add", "kb.add", 1, 0.5, knowledge_base = "Flows")
+    b.e("doc.file", "add.file")
+    b.n("question", "input.text", 0, 1.6, value = "What are the main points of this document?")
+    b.n("search", "kb.search", 2, 1.2, knowledge_base = "Flows", top_k = 6)
+    b.e("question.text", "search.query")
+    b.e("add.knowledge_base", "search.after")
+    b.n(
+        "answer",
+        "llm.generate",
+        3,
+        1.2,
+        label = "Answer",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 600,
+        prompt = "Answer the question using only these passages, and cite them like [1].\n\n{{context}}\n\n"
+        "Question: {{prompt}}",
+    )
+    b.e("question.text", "answer.prompt")
+    b.e("search.context", "answer.context")
+    b.n("show", "output.preview", 4, 1.2)
+    b.e("answer.text", "show.value")
+    b.note(
+        "tip",
+        "Upload a document, then Run. Later runs can drop the first two blocks and search what is already indexed.",
+        0,
+        2.5,
+        1.8,
+        0.7,
+    )
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1376,6 +1473,8 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    summarise_pdf,
+    ask_documents,
 )
 
 

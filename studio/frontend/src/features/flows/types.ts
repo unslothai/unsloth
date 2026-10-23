@@ -142,7 +142,7 @@ export interface ParamSpec {
   max?: number;
   step?: number;
   model_kind?: string;
-  accept?: "image" | "audio" | "video";
+  accept?: "image" | "audio" | "video" | "document";
   /** A Studio GET route that lists the choices, and the dotted path to them (`tasks[].id`). */
   options_from?: string;
   options_path?: string;

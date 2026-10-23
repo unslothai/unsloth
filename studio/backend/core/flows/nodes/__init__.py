@@ -8,11 +8,13 @@ from core.flows.nodes import (  # noqa: F401
     data,
     image,
     inputs,
+    knowledge,
     logic,
     output,
     story,
     text,
     training,
+    transform,
     video,
     world,
 )
