@@ -259,7 +259,7 @@ def test_examples_list_and_copy(client, monkeypatch):
 
 def test_bundled_examples_are_listed_and_copy(client):
     listed = client.get("/api/flows/examples").json()["examples"]
-    assert len(listed) == 40 and "lantern-picnic" in {e["id"] for e in listed}
+    assert len(listed) == 43 and "lantern-picnic" in {e["id"] for e in listed}
     copied = client.post("/api/flows/examples/lantern-picnic/copy").json()
     assert copied["doc"]["kind"] == "story"
 
@@ -358,25 +358,94 @@ def test_many_side_runs_keep_the_older_outputs(client):
     assert latest["a"]["outputs"] == {"text": "story"}
 
 
-def test_text_upload_is_sniffed_off_the_event_loop(client, monkeypatch):
-    import threading
+def test_an_m4a_upload_is_audio_not_video(client):
+    # A phone voice memo: an MP4 box file whose brand says audio. A plain MP4 stays video.
+    m4a = b"\x00\x00\x00\x20ftypM4A \x00\x00\x02\x00M4A isommp42" + b"\x00" * 64
+    media = client.post("/api/flows/assets?name=memo.m4a", content = m4a).json()["media"]
+    assert media["kind"] == "audio" and media["mime"] == "audio/mp4"
+    assert client.get(media["url"]).content == m4a
+    mp4 = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64
+    assert (
+        client.post("/api/flows/assets?name=clip.mp4", content = mp4).json()["media"]["kind"]
+        == "video"
+    )
+
+
+def test_an_aac_file_with_a_generic_mp4_brand_is_audio(client):
+    pytest.importorskip("av")
+    from .test_audio_dataset_decode import _m4a_bytes
+    from .test_flows_media_utils import _clip
+
+    audio = _m4a_bytes()
+    # PyAV's generic mp4 muxer writes an isom brand, not M4A: the track handlers say it is sound only.
+    assert audio[8:12] != b"M4A "
+    assert (
+        client.post("/api/flows/assets?name=a.m4a", content = audio).json()["media"]["kind"]
+        == "audio"
+    )
+    for clip in (_clip(), _clip(tone_s = 0.5)):
+        assert (
+            client.post("/api/flows/assets?name=c.mp4", content = clip).json()["media"]["kind"]
+            == "video"
+        )
+
+
+def test_mp4_handler_scan_stops_early_on_a_crafted_file():
+    import time as _time
 
     from core.flows import assets as asset_store
 
-    real, seen = asset_store.sniff_text, []
+    crafted = b"\x00\x00\x00\x20ftypisom" + b"hdlrxxxxxxxxsoun" * 2_000_000
+    started = _time.perf_counter()
+    asset_store.sniff_mime(crafted)
+    assert _time.perf_counter() - started < 0.5
 
-    def sniff(data, hint):
-        seen.append(threading.current_thread() is threading.main_thread() or _on_loop())
-        return real(data, hint)
 
-    def _on_loop():
-        try:
-            asyncio.get_running_loop()
-            return True
-        except RuntimeError:
-            return False
+def _webm(video):
+    import io
+    from fractions import Fraction
 
-    monkeypatch.setattr(asset_store, "sniff_text", sniff)
-    media = client.post("/api/flows/assets?name=notes.md", content = b"# Notes").json()["media"]
-    # store() sniffs again in its own worker thread; no call may run on the loop.
-    assert media["kind"] == "document" and seen and not any(seen)
+    av = pytest.importorskip("av")
+    import numpy as np
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format = "webm") as out:
+        vs = None
+        if video:
+            vs = out.add_stream("libvpx", rate = 4)
+            vs.width = vs.height = 32
+            vs.pix_fmt = "yuv420p"
+        a = out.add_stream("libopus", rate = 48000)
+        a.layout = "mono"
+        if vs is not None:
+            for i in range(3):
+                f = av.VideoFrame.from_ndarray(np.zeros((32, 32, 3), np.uint8), format = "rgb24")
+                f.pts, f.time_base = i, Fraction(1, 4)
+                for p in vs.encode(f):
+                    out.mux(p)
+            for p in vs.encode(None):
+                out.mux(p)
+        for k in range(200):
+            fr = av.AudioFrame.from_ndarray(
+                (np.random.rand(1, 960) - 0.5).astype(np.float32), format = "flt", layout = "mono"
+            )
+            fr.sample_rate, fr.pts, fr.time_base = 48000, k * 960, Fraction(1, 48000)
+            for p in a.encode(fr):
+                out.mux(p)
+        for p in a.encode(None):
+            out.mux(p)
+    return buf.getvalue()
+
+
+def test_an_audio_only_webm_recording_is_audio(client):
+    try:
+        audio, clip = _webm(False), _webm(True)
+    except Exception as exc:  # noqa: BLE001 - a PyAV without libopus / libvpx
+        pytest.skip(f"cannot encode WebM here: {exc}")
+    media = client.post("/api/flows/assets?name=memo.webm", content = audio).json()["media"]
+    assert media["kind"] == "audio" and media["mime"] == "audio/webm"
+    assert client.get(media["url"]).content == audio
+    assert (
+        client.post("/api/flows/assets?name=c.webm", content = clip).json()["media"]["kind"]
+        == "video"
+    )

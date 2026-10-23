@@ -281,11 +281,24 @@ export async function uploadAsset(file: File): Promise<MediaValue> {
   return result.media;
 }
 
+const GALLERY_ROUTES: Record<string, string> = {
+  image: "images",
+  audio: "audio",
+  video: "video",
+};
+
 /** Same-origin URL for a MediaValue; authenticated media is fetched as a blob by `useMediaUrl`. */
 export function mediaPath(media: MediaValue): string | null {
   if (isStudioMediaUrl(media.url)) return media.url;
   if (media.ref.startsWith("sha256:") || media.ref.startsWith("flowasset:")) {
     return `${FLOWS_API}/assets/${encodeURIComponent(media.ref)}`;
+  }
+  // Generated audio carries a /v1/ gallery URL; its authenticated copy lives under /api/ like images and video.
+  const colon = media.ref.indexOf(":");
+  const gallery = GALLERY_ROUTES[media.ref.slice(0, colon)];
+  const id = media.ref.slice(colon + 1);
+  if (colon > 0 && gallery && id) {
+    return `/api/inference/${gallery}/gallery/${encodeURIComponent(id)}/file`;
   }
   return null;
 }
