@@ -965,12 +965,12 @@ async def unload_video_model(
     if expected_load_id:
         from core.inference import media_load_ids
 
-        def unload():
+        def unload(only_if):
             # The same checks as below, once the token is known to name the load in the slot.
             account_access.require_resident_control("video")
             if account_access.managed_account():
                 account_access.require_resident_control("video", backend.status().get("repo_id"))
-            return backend.unload(**unload_kwargs)
+            return backend.unload(**unload_kwargs, only_if = only_if)
 
         # Only the load that token started, checked and unloaded under the admission lock; any other
         # load (a newer one, the UI's, another account's) is left alone and not described.

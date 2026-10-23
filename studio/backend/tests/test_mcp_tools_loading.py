@@ -858,6 +858,7 @@ class _TokenVideo:
         # Called while an unload is out, before it answers (another client acting meanwhile).
         self.during_unload = None
         self.stall_status = False
+        self.status_s = 0.0
         self.made = 0
 
     def admit(self, model, token) -> bool:
@@ -899,6 +900,9 @@ class _TokenVideo:
     async def status(self, request, body):
         if self.stall_status:
             await asyncio.sleep(30)
+        # Only the next read is slow.
+        delay, self.status_s = self.status_s, 0.0
+        await asyncio.sleep(delay)
         if not self.resident:
             return UNLOADED
         return {"loaded": True, "repo_id": self.resident, "load_id": self.current[1]}
@@ -1219,6 +1223,37 @@ def test_a_stalled_status_read_still_ends_the_stopped_load(monkeypatch, fast_pol
     (token,) = _tokens_sent(backend)
     assert ("unload answered", token) in backend.events
     assert backend.current is None
+
+
+def test_a_load_started_during_the_unload_status_read_waits_for_the_unload(monkeypatch, fast_polls):
+    # The status read is slow and this process starts a load of the slot meanwhile: that load posts
+    # only once the unload answered, so status never names it and the unload never ends it.
+    backend = _TokenVideo()
+    backend.admit(LTX, None)
+    backend.finish()
+    caller = make_caller(studio_app = backend.app())
+
+    async def scenario():
+        backend.status_s = 0.3
+        unload = asyncio.ensure_future(loading.unload_media(caller, "video"))
+        await asyncio.sleep(0.05)
+        load = asyncio.ensure_future(_video_load(caller))
+        result = await unload
+        await load
+        (job,) = loading.LOADS.jobs_of("owner")
+        await asyncio.wait({job.post}, timeout = 5)
+        return result
+
+    result = asyncio.run(scenario())
+    assert result.unloaded is True
+    (token,) = [t for t in _tokens_sent(backend) if not t.startswith("studio-")]
+    events = [e for e in backend.events if e[0] in ("unload answered", "admitted")]
+    assert events == [
+        ("admitted", "studio-1"),
+        ("unload answered", "studio-1"),
+        ("admitted", token),
+    ]
+    assert backend.current == [LTX, token, "loading"]
 
 
 def test_unloading_stt_lets_a_load_past_its_download_finish_then_unloads_it(

@@ -3332,6 +3332,9 @@ def token_client(client, monkeypatch):
         return begin(model_path, **kwargs)
 
     def counted_unload(**kwargs):
+        only_if = kwargs.get("only_if")
+        if only_if is not None and not only_if():
+            return None
         backend.unloads += 1
         backend._load_token += 1
         backend._state = None

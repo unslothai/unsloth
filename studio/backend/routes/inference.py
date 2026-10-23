@@ -53719,13 +53719,13 @@ async def unload_diffusion_model(
     if expected_load_id:
         from core.inference import media_load_ids
 
-        def guarded_unload():
+        def guarded_unload(only_if):
             # The same checks as the plain unload, once the token is known to name the load in the slot.
             account_access.require_resident_control("diffusion")
             if account_access.managed_account():
                 account_access.require_resident_control("diffusion", active.status().get("repo_id"))
             _cancel_upsampler_warm_start()
-            return unload()
+            return unload(only_if = only_if)
 
         # Only the load that token started, checked and unloaded under the admission lock; any other
         # load (a newer one, the UI's, another account's) is left alone and not described.

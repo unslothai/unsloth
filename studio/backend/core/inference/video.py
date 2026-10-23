@@ -13362,8 +13362,17 @@ class VideoBackend:
             reclaim_host_memory(logger = logger)
 
     @_invalidates_gpu_memory("video unload")
-    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
+    def unload(
+        self,
+        *,
+        expected_account: Optional[str] = None,
+        only_if: Optional[Callable[[], bool]] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
+            # A conditional unload (a load token naming the load): checked under the lock the load
+            # worker settles under, so a load that ended since the check costs no other model.
+            if only_if is not None and not only_if():
+                return None
             if expected_account is not None:
                 from .gpu_arbiter import VIDEO, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control

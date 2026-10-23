@@ -744,6 +744,19 @@ async def _media_ready(
 
 
 async def unload_media(caller: Caller, kind: str) -> UnloadResult:
+    # Raised before anything is read and held until the unload has answered: a load of the slot this
+    # process starts meanwhile posts after it, so the status read below never names that load.
+    barrier = asyncio.get_running_loop().create_future()
+    unloading = _MEDIA_UNLOADING.setdefault(kind, set())
+    unloading.add(barrier)
+    try:
+        return await _unload_media(caller, kind)
+    finally:
+        unloading.discard(barrier)
+        barrier.set_result(None)
+
+
+async def _unload_media(caller: Caller, kind: str) -> UnloadResult:
     routes = MEDIA_ROUTES[kind]
     # A load_model still loading runs on in the job store; its load is ended below by its token.
     stopped = _stop_loads(caller, (kind,))

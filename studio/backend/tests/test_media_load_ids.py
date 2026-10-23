@@ -39,7 +39,9 @@ class _Engine:
     def loading_repo_ids(self) -> tuple:
         return self.loading
 
-    def unload(self) -> dict:
+    def unload(self, only_if = None) -> dict:
+        if only_if is not None and not only_if():
+            return None
         self.unloads += 1
         self._load_token += 1
         self._state = None
@@ -167,9 +169,9 @@ def test_the_unload_runs_under_the_admission_lock():
     _load(engine, "t1")
     held = []
 
-    def unload():
+    def unload(only_if):
         held.append(account_access.media_load_lock.locked())
-        return engine.unload()
+        return engine.unload(only_if)
 
     assert media_load_ids.unload_if_current("video", engine, "t1", unload)[0] == "unloaded"
     assert held == [True]
@@ -325,3 +327,41 @@ def test_a_token_another_account_used_is_cancelled_for_this_account():
     with pytest.raises(media_load_ids.LoadCancelledError):
         _as("b", _load, engine, "t1")
     assert engine.unloads == 0 and engine._load_token == 2
+
+
+@pytest.mark.parametrize("named", ["t2", "t1"])
+def test_a_load_that_ends_before_the_teardown_costs_no_other_model(named):
+    # t2 is in flight over t1's resident model; between the check and the engine's own recheck,
+    # t2's worker fails (naming t2) or the resident is replaced (naming t1).
+    engine = _Engine()
+    _load(engine, "t1")
+    engine.finish()
+    resident = engine._state
+    _load(engine, "t2")
+    if named == "t1":
+        engine.fail()
+
+    def unload(only_if):
+        # The settle lands just before the engine takes its lock.
+        if named == "t2":
+            engine.fail()
+        else:
+            engine._state = object()
+        return engine.unload(only_if)
+
+    assert media_load_ids.unload_if_current("video", engine, named, unload) == ("superseded", None)
+    assert engine.unloads == 0
+    assert engine._state is (resident if named == "t2" else engine._state)
+
+
+def test_the_real_engines_tear_nothing_down_when_the_recheck_fails():
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+    for engine in (VideoBackend(), DiffusionBackend()):
+        epoch = engine._load_token
+        assert engine.unload(only_if = lambda: False) is None
+        assert engine._load_token == epoch
+        # The recheck reads the engine's in-flight marker without its lock.
+        assert media_load_ids._in_flight_unlocked(engine) is False
+        assert engine.unload(only_if = lambda: True)["loaded"] is False
+        assert engine._load_token == epoch + 1

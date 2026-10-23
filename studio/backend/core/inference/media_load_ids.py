@@ -215,10 +215,43 @@ def current_id(modality: str, engine: Any) -> Optional[str]:
         return _slot_token(modality, engine)
 
 
+def _in_flight_unlocked(engine: Any) -> bool:
+    # Read inside the engine's own lock (from its unload), so never through loading_repo_ids(),
+    # which takes that lock: its in-flight marker, as loading_repo_ids() reads it.
+    if not hasattr(engine, "_loading"):
+        loading = getattr(engine, "loading_repo_ids", None)
+        return bool(callable(loading) and loading())
+    loading = engine._loading
+    return loading is not None and getattr(loading, "error", None) is None
+
+
+def _still_named(record: Optional[_Record], published: Any, engine: Any) -> Callable[[], bool]:
+    """What the engine's unload rechecks under the lock its load worker settles under: the load the
+    token named is still the one in flight or resident (no load ended or began since the check)."""
+    if record is not None:
+
+        def guard() -> bool:
+            if getattr(engine, "_load_token", None) != record.epoch:
+                return False
+            if _in_flight_unlocked(engine):
+                return True
+            state = getattr(engine, "_state", None)
+            return state is not None and state is not record.prior
+
+        return guard
+    state = published[2]
+    return lambda: getattr(engine, "_state", None) is state and not _in_flight_unlocked(engine)
+
+
 def unload_if_current(
-    modality: str, engine: Any, load_token: str, unload: Callable[[], Any]
+    modality: str, engine: Any, load_token: str, unload: Callable[[Callable[[], bool]], Any]
 ) -> tuple[str, Any]:
-    """Unload only the load ``load_token`` names: ("unloaded", unload()), ("superseded", None) or ("cancelled", None)."""
+    """Unload only the load ``load_token`` names: ("unloaded", status), ("superseded", None) or ("cancelled", None).
+
+    ``unload(only_if)`` runs the engine's unload with that recheck: it answers None, and tears
+    nothing down, if the named load ended in between (a replacement whose worker failed leaves the
+    previous model resident, which is not this token's to unload).
+    """
     global _generation
     with _media_lock():
         with _lock:
@@ -230,9 +263,13 @@ def unload_if_current(
                 # Only for this account, so no account can cancel another's load in advance.
                 _cancel(modality, load_token)
                 return "cancelled", None
+            named = record if record is not None and record.token == load_token else None
+            only_if = _still_named(named, _published.get(modality), engine)
         # Still under media_load_lock, so no load is admitted before this unload has run
         # (as retire_media_load does).
-        status = unload()
+        status = unload(only_if)
+        if status is None:
+            return "superseded", None
         with _lock:
             _generation += 1
             if _current.get(modality) is record:
