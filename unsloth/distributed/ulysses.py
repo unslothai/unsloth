@@ -355,6 +355,9 @@ def apply_ulysses_attention(
                 **kwargs,
             ):
                 seq_len = query.shape[2]
+                v_head_dim = getattr(module, "v_head_dim", None)
+                if v_head_dim is not None and value.shape[-1] > v_head_dim:
+                    value = value[..., :v_head_dim]
                 query = query.transpose(1, 2)
                 key = key.transpose(1, 2)
                 value = value.transpose(1, 2)

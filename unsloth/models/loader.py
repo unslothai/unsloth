@@ -1906,10 +1906,30 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         elif any(
             x in model_types_all
-            for x in ("deepseek_v2", "deepseek_v3", "deepseek_v4", "minimax", "minimax_m2")
+            for x in (
+                "deepseek_v2",
+                "deepseek_v3",
+                "deepseek_v4",
+                "minimax",
+                "minimax_m2",
+                "kimi_linear",
+                "kimi",
+            )
         ):
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            if "kimi_linear" in model_types_all or "kimi" in model_types_all:
+                try:
+                    import transformers.utils.generic as _tf_generic
+
+                    if not hasattr(_tf_generic, "OutputRecorder"):
+                        class _OutputRecorder:
+                            def __init__(self, *args, **kwargs):
+                                pass
+
+                        _tf_generic.OutputRecorder = _OutputRecorder
+                except Exception:
+                    pass
             if "deepseek_v4" in model_types_all:
                 try:
                     from transformers.models.deepseek_v4 import modeling_deepseek_v4
@@ -2259,6 +2279,16 @@ class FastModel(FastBaseModel):
         # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
+        if "kimi_linear" in model_types_all or getattr(model_config, "model_type", None) == "kimi_linear":
+            try:
+                _kimi_cls = resolve_model_class(auto_model, model_config, **_probe_hub_kwargs)
+                if _kimi_cls is not None:
+                    for _base in _kimi_cls.__mro__:
+                        if _base.__name__.startswith("Kimi"):
+                            _base._supports_sdpa = True
+            except Exception:
+                pass
+
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -2305,6 +2335,14 @@ class FastModel(FastBaseModel):
             *args,
             **kwargs,
         )
+
+        if "kimi_linear" in model_types_all or getattr(model_config, "model_type", None) == "kimi_linear":
+            try:
+                from unsloth.distributed.kda_cp import patch_kimi_model
+
+                patch_kimi_model(model)
+            except Exception:
+                pass
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)

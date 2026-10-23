@@ -331,6 +331,229 @@ def _tiny_gemma4():
     return model
 
 
+def _tiny_kimi_linear():
+    from types import SimpleNamespace
+    import torch.nn as nn
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+    from unsloth.distributed.kda_cp import patch_kimi_model
+
+    class _ShortConv(nn.Conv1d):
+        def __init__(self, hidden_size, kernel_size, activation = "silu"):
+            super().__init__(
+                hidden_size,
+                hidden_size,
+                kernel_size,
+                groups = hidden_size,
+                bias = False,
+                padding = kernel_size - 1,
+            )
+            self.activation = activation
+
+    class _RMSNormGated(nn.Module):
+        def __init__(self, hidden_size, eps = 1e-5):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.eps = eps
+
+        def forward(self, x, g):
+            dt = x.dtype
+            xf = x.float()
+            xf = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim = True) + self.eps)
+            return (self.weight * xf * torch.sigmoid(g.float())).to(dt)
+
+    class KimiRMSNorm(nn.Module):
+        def __init__(self, hidden_size, eps = 1e-5):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(hidden_size))
+            self.variance_epsilon = eps
+
+        def forward(self, hidden_states):
+            dt = hidden_states.dtype
+            hidden_states = hidden_states.float()
+            var = hidden_states.pow(2).mean(-1, keepdim = True)
+            return (self.weight * hidden_states * torch.rsqrt(var + self.variance_epsilon)).to(dt)
+
+    class KimiDeltaAttention(nn.Module):
+        def __init__(self, cfg, layer_idx):
+            super().__init__()
+            self.config = cfg
+            self.layer_idx = layer_idx
+            self.hidden_size = cfg.hidden_size
+            self.conv_size = cfg.linear_attn_config["short_conv_kernel_size"]
+            self.head_dim = cfg.linear_attn_config["head_dim"]
+            self.num_heads = cfg.linear_attn_config["num_heads"]
+            self.head_k_dim = self.head_dim
+            self.num_k_heads = self.num_heads
+            proj = self.head_dim * self.num_heads
+            self.q_proj = nn.Linear(self.hidden_size, proj, bias = False)
+            self.k_proj = nn.Linear(self.hidden_size, proj, bias = False)
+            self.v_proj = nn.Linear(self.hidden_size, proj, bias = False)
+            self.q_conv1d = _ShortConv(proj, self.conv_size)
+            self.k_conv1d = _ShortConv(proj, self.conv_size)
+            self.v_conv1d = _ShortConv(proj, self.conv_size)
+            self.A_log = nn.Parameter(torch.zeros(1, 1, self.num_heads, 1))
+            self.f_a_proj = nn.Linear(self.hidden_size, self.head_dim, bias = False)
+            self.f_b_proj = nn.Linear(self.head_dim, proj, bias = False)
+            self.dt_bias = nn.Parameter(torch.zeros(proj))
+            self.b_proj = nn.Linear(self.hidden_size, self.num_heads, bias = False)
+            self.g_a_proj = nn.Linear(self.hidden_size, self.head_dim, bias = False)
+            self.g_b_proj = nn.Linear(self.head_dim, proj, bias = False)
+            self.o_norm = _RMSNormGated(self.head_dim, eps = cfg.rms_norm_eps)
+            self.o_proj = nn.Linear(proj, self.hidden_size, bias = False)
+
+    class KimiMLAAttention(nn.Module):
+        def __init__(self, cfg, layer_idx):
+            super().__init__()
+            self.config = cfg
+            self.layer_idx = layer_idx
+            self.hidden_size = cfg.hidden_size
+            self.num_heads = cfg.num_attention_heads
+            self.num_key_value_heads = cfg.num_key_value_heads
+            self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+            self.qk_nope_head_dim = cfg.qk_nope_head_dim
+            self.qk_rope_head_dim = cfg.qk_rope_head_dim
+            self.v_head_dim = cfg.v_head_dim
+            self.q_head_dim = self.qk_nope_head_dim + self.qk_rope_head_dim
+            self.kv_lora_rank = cfg.kv_lora_rank
+            self.scaling = self.q_head_dim ** -0.5
+            self.attention_dropout = 0.0
+            self.is_causal = True
+            self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.q_head_dim, bias = False)
+            self.kv_a_proj_with_mqa = nn.Linear(
+                self.hidden_size, self.kv_lora_rank + self.qk_rope_head_dim, bias = False
+            )
+            self.kv_a_layernorm = KimiRMSNorm(self.kv_lora_rank)
+            self.kv_b_proj = nn.Linear(
+                self.kv_lora_rank,
+                self.num_heads * (self.qk_nope_head_dim + self.v_head_dim),
+                bias = False,
+            )
+            self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, self.hidden_size, bias = False)
+
+        def forward(self, hidden_states, attention_mask = None, **kwargs):
+            bsz, seq_len, _ = hidden_states.shape
+            q = self.q_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.q_head_dim).transpose(1, 2)
+            q_pass, q_rot = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim = -1)
+            ckv = self.kv_a_proj_with_mqa(hidden_states)
+            k_pass, k_rot = torch.split(ckv, [self.kv_lora_rank, self.qk_rope_head_dim], dim = -1)
+            k_pass = self.kv_b_proj(self.kv_a_layernorm(k_pass)).view(
+                bsz, seq_len, self.num_heads, self.qk_nope_head_dim + self.v_head_dim
+            ).transpose(1, 2)
+            k_pass, v = torch.split(k_pass, [self.qk_nope_head_dim, self.v_head_dim], dim = -1)
+            k_rot = k_rot.view(bsz, 1, seq_len, self.qk_rope_head_dim).expand_as(q_rot)
+            q_states = torch.cat((q_pass, q_rot), dim = -1)
+            k_states = torch.cat((k_pass, k_rot), dim = -1)
+            if self.config._attn_implementation == "flash_attention_2" and self.q_head_dim != self.v_head_dim:
+                v = torch.nn.functional.pad(v, [0, self.q_head_dim - self.v_head_dim])
+            attn_fn = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+            out, _ = attn_fn(
+                self, q_states, k_states, v, attention_mask, dropout = 0.0, scaling = self.scaling, **kwargs
+            )
+            if self.config._attn_implementation == "flash_attention_2" and self.q_head_dim != self.v_head_dim:
+                out = out[:, :, :, : self.v_head_dim]
+            return self.o_proj(out.reshape(bsz, seq_len, -1).contiguous())
+
+    class KimiBlockSparseMLP(nn.Module):
+        def __init__(self, hidden_dim, ffn_dim):
+            super().__init__()
+            self.w1 = nn.Linear(hidden_dim, ffn_dim, bias = False)
+            self.w2 = nn.Linear(ffn_dim, hidden_dim, bias = False)
+            self.w3 = nn.Linear(hidden_dim, ffn_dim, bias = False)
+
+        def forward(self, x):
+            return self.w2(torch.nn.functional.silu(self.w1(x)) * self.w3(x))
+
+    class KimiMoEGate(nn.Module):
+        def __init__(self, cfg):
+            super().__init__()
+            self.top_k = cfg.num_experts_per_token
+            self.num_experts = cfg.num_experts
+            self.routed_scaling_factor = cfg.routed_scaling_factor
+            self.moe_router_activation_func = "sigmoid"
+            self.num_expert_group = 1
+            self.topk_group = 1
+            self.moe_renormalize = True
+            self.weight = nn.Parameter(torch.empty(self.num_experts, cfg.hidden_size))
+            self.e_score_correction_bias = nn.Parameter(torch.zeros(self.num_experts))
+            nn.init.kaiming_uniform_(self.weight, a = 5 ** 0.5)
+
+    class KimiSparseMoeBlock(nn.Module):
+        def __init__(self, cfg):
+            super().__init__()
+            self.config = cfg
+            self.ep_rank = 0
+            self.experts_per_rank = cfg.num_experts
+            self.experts = nn.ModuleList(
+                [KimiBlockSparseMLP(cfg.hidden_size, cfg.moe_intermediate_size) for _ in range(cfg.num_experts)]
+            )
+            self.gate = KimiMoEGate(cfg)
+            self.shared_experts = KimiBlockSparseMLP(cfg.hidden_size, cfg.moe_intermediate_size)
+
+    class KimiDecoderLayer(nn.Module):
+        def __init__(self, cfg, idx):
+            super().__init__()
+            self.is_linear_attn = idx == 0
+            self.self_attn = KimiDeltaAttention(cfg, idx) if self.is_linear_attn else KimiMLAAttention(cfg, idx)
+            self.block_sparse_moe = KimiSparseMoeBlock(cfg)
+            self.input_layernorm = KimiRMSNorm(cfg.hidden_size)
+            self.post_attention_layernorm = KimiRMSNorm(cfg.hidden_size)
+
+        def forward(self, h, position_ids = None):
+            h = h + self.self_attn(self.input_layernorm(h), position_ids = position_ids)
+            h = h + self.block_sparse_moe(self.post_attention_layernorm(h))
+            return h
+
+    class KimiLinearModel(nn.Module):
+        def __init__(self, cfg):
+            super().__init__()
+            self.config = cfg
+            self.embed_tokens = nn.Embedding(cfg.vocab_size, cfg.hidden_size)
+            self.layers = nn.ModuleList([KimiDecoderLayer(cfg, i) for i in range(2)])
+            self.norm = KimiRMSNorm(cfg.hidden_size)
+
+        def forward(self, input_ids = None, position_ids = None, use_cache = False):
+            h = self.embed_tokens(input_ids)
+            for layer in self.layers:
+                h = layer(h, position_ids = position_ids)
+            return SimpleNamespace(last_hidden_state = self.norm(h))
+
+    class KimiLinearForCausalLM(nn.Module):
+        def __init__(self, cfg):
+            super().__init__()
+            self.config = cfg
+            self.model = KimiLinearModel(cfg)
+            self.lm_head = nn.Linear(cfg.hidden_size, cfg.vocab_size, bias = False)
+
+    cfg = SimpleNamespace(
+        model_type = "kimi_linear",
+        vocab_size = 128,
+        hidden_size = 64,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        qk_nope_head_dim = 16,
+        qk_rope_head_dim = 8,
+        v_head_dim = 16,
+        kv_lora_rank = 32,
+        num_experts = 4,
+        num_experts_per_token = 2,
+        moe_intermediate_size = 32,
+        num_shared_experts = 1,
+        routed_scaling_factor = 1.0,
+        rms_norm_eps = 1e-5,
+        linear_attn_config = {
+            "short_conv_kernel_size": 4,
+            "head_dim": 16,
+            "num_heads": 4,
+        },
+        _attn_implementation = "sdpa",
+        use_cache = False,
+    )
+    torch.manual_seed(3407)
+    model = KimiLinearForCausalLM(cfg).float()
+    patch_kimi_model(model)
+    return model
+
+
 def _generic_worker(rank, world, port, seq, out, builder):
     dist.init_process_group(
         "gloo", rank = rank, world_size = world, init_method = f"tcp://127.0.0.1:{port}"
@@ -350,7 +573,14 @@ def _generic_worker(rank, world, port, seq, out, builder):
 
 @pytest.mark.parametrize(
     "builder",
-    [_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2, _tiny_gemma4],
+    [
+        _tiny_deepseek_v2,
+        _tiny_deepseek_v4,
+        _tiny_minimax,
+        _tiny_minimax_m2,
+        _tiny_gemma4,
+        _tiny_kimi_linear,
+    ],
 )
 def test_deepseek_cp_matches_single_process(builder):
     seq = 16
@@ -377,6 +607,13 @@ if __name__ == "__main__":
     for s in (32, 33):
         test_cp_matches_single_process(s)
         print(f"test_cp_matches_single_process(seq={s}): PASS")
-    for b in (_tiny_deepseek_v2, _tiny_deepseek_v4, _tiny_minimax, _tiny_minimax_m2, _tiny_gemma4):
+    for b in (
+        _tiny_deepseek_v2,
+        _tiny_deepseek_v4,
+        _tiny_minimax,
+        _tiny_minimax_m2,
+        _tiny_gemma4,
+        _tiny_kimi_linear,
+    ):
         test_deepseek_cp_matches_single_process(b)
         print(f"test_deepseek_cp_matches_single_process({b.__name__}): PASS")
