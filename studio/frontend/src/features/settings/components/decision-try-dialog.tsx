@@ -1226,7 +1226,7 @@ export function DecisionTryDialog({
                 className="gap-2 pl-3.5 pr-2"
               >
                 {running ? (
-                  <Spinner className="size-4 text-primary-foreground" />
+                  <Spinner className="size-4 text-background" />
                 ) : (
                   <HugeiconsIcon
                     icon={PlayIcon}
@@ -1235,7 +1235,7 @@ export function DecisionTryDialog({
                   />
                 )}
                 {t("decisions.run")}
-                <kbd className="rounded-full bg-primary-foreground/20 px-1.5 py-0.5 font-mono text-ui-10 text-primary-foreground/90">
+                <kbd className="rounded-full bg-background/20 px-1.5 py-0.5 font-mono text-ui-10 text-background/90">
                   {SHORTCUT}
                 </kbd>
               </Button>

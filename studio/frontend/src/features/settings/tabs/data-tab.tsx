@@ -84,7 +84,6 @@ import {
   Image03Icon,
   LibrariesIcon,
   Tick02Icon,
-  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -906,11 +905,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             // history, and on desktop it retires the running import's handle.
             disabled={importing}
           >
-            {importing ? (
-              <Spinner className="size-3.5 mr-1.5" />
-            ) : (
-              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
-            )}
+            {importing && <Spinner className="size-3.5 mr-1.5" />}
             {t("settings.chat.importChatsAction")}
           </Button>
           <input
@@ -942,13 +937,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 onClick={() => void handleExternalImport(source)}
                 disabled={externalImporting !== null}
               >
-                {externalImporting === source ? (
+                {externalImporting === source && (
                   <Spinner className="size-3.5 mr-1.5" />
-                ) : (
-                  <HugeiconsIcon
-                    icon={Upload01Icon}
-                    className="size-3.5 mr-1.5"
-                  />
                 )}
                 {externalImporting === source
                   ? t("settings.chat.importingAction")
@@ -967,7 +957,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             onClick={handleExport}
             disabled={exporting || count === 0}
           >
-            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
             {exporting
               ? t("settings.chat.exportingAction")
               : t("settings.chat.exportAction")}
@@ -981,10 +970,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
               <Button variant="outline" size="sm" disabled={count === 0}>
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  className="size-3.5 mr-1.5"
-                />
                 {t("settings.chat.exportConversationsAction")}
               </Button>
             </DropdownMenuTrigger>
