@@ -182,7 +182,8 @@ class RunState:
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
     gpu_ops: int = 0
-    cancel_hooks: dict[str, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
+    # Keyed by (node id, For Each iteration): parallel iterations of one node each keep their own hooks.
+    cancel_hooks: dict[tuple, list[Callable[[], Awaitable[None]]]] = field(default_factory = dict)
     node_tasks: dict[str, asyncio.Task] = field(default_factory = dict)
     _last_progress: dict[str, float] = field(default_factory = dict)
     _pending_progress: dict[str, dict] = field(default_factory = dict)
@@ -469,7 +470,7 @@ class NodeContextImpl:
             _LATE_HOOKS.add(task)
             task.add_done_callback(_LATE_HOOKS.discard)
             return
-        self._rs.cancel_hooks.setdefault(self.node_id, []).append(fn)
+        self._rs.cancel_hooks.setdefault((self.node_id, self.iteration), []).append(fn)
 
     @property
     def resident(self) -> dict[str, Optional[str]]:
@@ -733,9 +734,19 @@ class FlowEngine:
                     rs.node(nid).status = "idle"
             env = Env()
             flusher = asyncio.create_task(self._flusher(rs))
+            scope = asyncio.create_task(self._run_scope(rs, top, env))
             try:
-                await asyncio.wait_for(self._run_scope(rs, top, env), timeout = MAX_RUN_SECONDS)
+                done, _ = await asyncio.wait({scope}, timeout = MAX_RUN_SECONDS)
+                if not done:
+                    # Stop external jobs while their hooks are registered, then the node tasks themselves.
+                    rs.cancel_event.set()
+                    await self._fire_cancel_hooks(rs)
+                    raise asyncio.TimeoutError
+                scope.result()
             finally:
+                if not scope.done():
+                    scope.cancel()
+                    await asyncio.gather(scope, return_exceptions = True)
                 flusher.cancel()
                 rs.flush()
             if rs.options.get("bake") and not rs.cancelled:
@@ -798,9 +809,26 @@ class FlowEngine:
         env: Env,
         iteration: Optional[tuple] = None,
     ) -> None:
-        plan = rs.plan
         pending = list(node_ids)
         running: dict[asyncio.Task, str] = {}
+        try:
+            await self._scope_loop(rs, pending, running, env, iteration)
+        except asyncio.CancelledError:
+            # Node tasks are not children of this one: cancel and await them, or they outlive the run.
+            for task in running:
+                task.cancel()
+            await asyncio.gather(*running, return_exceptions = True)
+            raise
+
+    async def _scope_loop(
+        self,
+        rs: RunState,
+        pending: list[str],
+        running: dict[asyncio.Task, str],
+        env: Env,
+        iteration: Optional[tuple],
+    ) -> None:
+        plan = rs.plan
         gpu_running = 0
         cpu_running = 0
         while pending or running:
@@ -1035,7 +1063,7 @@ class FlowEngine:
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
         finally:
-            rs.cancel_hooks.pop(nid, None)
+            rs.cancel_hooks.pop((nid, iteration), None)
         outputs = dict(outputs or {})
         if key is not None and spec["cacheable"]:
             try:

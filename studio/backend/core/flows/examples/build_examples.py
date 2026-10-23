@@ -17,6 +17,8 @@ VISION = {"repo": "unsloth/Qwen3.5-4B-GGUF", "variant": "Q4_K_M"}
 IMAGE = {"repo": "black-forest-labs/FLUX.2-klein-4B", "variant": None}
 VIDEO = {"repo": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "variant": None}
 TTS = {"repo": "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", "variant": None}
+CLONE = {"repo": "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF", "variant": None}
+MUSIC = {"repo": "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", "variant": None}
 
 REQ = {
     "chat": {
@@ -38,6 +40,18 @@ REQ = {
         "kind": "tts",
         "note": "82M multi-voice TTS (voices af_heart, am_michael, ...).",
         **TTS,
+    },
+    "clone": {
+        "ref": "dubber",
+        "kind": "tts",
+        "note": "0.6B voice-cloning TTS that speaks 10 languages; any cloning voice model works.",
+        **CLONE,
+    },
+    "music": {
+        "ref": "band",
+        "kind": "audio",
+        "note": "Songs with vocals from lyrics; any music model works.",
+        **MUSIC,
     },
 }
 
@@ -1380,6 +1394,385 @@ def sticker_pack() -> B:
     return b
 
 
+def photo_restyle() -> B:
+    b = B(
+        "photo-restyle",
+        "Photo Restyle",
+        "pipeline",
+        "Pick a photo and say how to change it: the image model edits it to match, keeping the subject, "
+        "then the result is upscaled 2x and saved to your Library.",
+        tags = ["image", "edit", "upscale"],
+        seed = 41,
+    ).need("image")
+    b.n("photo", "input.image", 0, 1, label = "Your photo")
+    b.n(
+        "how",
+        "input.text",
+        0,
+        2,
+        label = "Instruction",
+        value = "Turn this into a soft watercolor illustration, keep the people and their poses the same",
+    )
+    b.n("edit", "image.edit", 1, 1, model = IMAGE)
+    b.e("photo.image", "edit.image")
+    b.e("how.text", "edit.instruction")
+    b.n("big", "image.upscale", 2, 1, factor = "2")
+    b.e("edit.image", "big.image")
+    b.n("show", "output.preview", 3, 1)
+    b.e("big.image", "show.value")
+    b.n("save", "output.library", 3, 2, folder = "Restyled")
+    b.e("big.image", "save.value")
+    b.note(
+        "n1",
+        "Pick a photo on Your photo, then Run. Try: 'make it night', 'add snow', 'pixel art'.",
+        1,
+        2.2,
+    )
+    return b
+
+
+def animate_photo() -> B:
+    b = B(
+        "animate-photo",
+        "Animate a Photo",
+        "pipeline",
+        "Bring a still image to life: the video model starts from your photo and follows the motion you describe.",
+        tags = ["video", "image to video"],
+        seed = 24,
+    ).need("video")
+    b.n("photo", "input.image", 0, 1, label = "Your photo")
+    b.n(
+        "motion",
+        "input.text",
+        0,
+        2,
+        label = "Motion",
+        value = "Slow camera push in, hair and leaves move gently in the wind, soft natural light",
+    )
+    b.n("clip", "video.generate", 1, 1, model = VIDEO, size = "832x480", seconds = 4)
+    b.e("photo.image", "clip.first_frame")
+    b.e("motion.text", "clip.prompt")
+    b.n("show", "output.preview", 2, 1)
+    b.e("clip.video", "show.value")
+    b.n("save", "output.library", 2, 2, folder = "Videos")
+    b.e("clip.video", "save.value")
+    b.note(
+        "n1",
+        "Pick a photo, then Run. Pick 480x832 for a portrait photo. Describe motion and camera, not the scene.",
+        0,
+        3,
+    )
+    return b
+
+
+def meeting_notes() -> B:
+    b = B(
+        "meeting-notes",
+        "Meeting Notes",
+        "pipeline",
+        "Drop in a recording of a meeting, call or lecture. It is transcribed on your machine, then the LLM writes "
+        "a summary, the decisions made and a list of action items with owners.",
+        tags = ["audio", "transcribe", "summarize"],
+        seed = 5,
+    ).need("chat")
+    b.n("recording", "input.audio", 0, 1, label = "Recording")
+    b.n("words", "audio.transcribe", 1, 1)
+    b.e("recording.audio", "words.audio")
+    b.n(
+        "notes",
+        "llm.generate",
+        2,
+        1,
+        label = "Note taker",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 1500,
+        system = "You take clear, factual meeting notes. Only use what the transcript says.",
+        prompt = "Transcript:\n{{context}}\n\nWrite the notes.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "decisions": {"type": "array", "items": {"type": "string"}},
+                "action_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "owner": {"type": "string"},
+                            "task": {"type": "string"},
+                            "due": {"type": "string"},
+                        },
+                        "required": ["owner", "task"],
+                    },
+                },
+            },
+            "required": ["summary", "decisions", "action_items"],
+        },
+    )
+    b.e("words.text", "notes.context")
+    for i, (key, label) in enumerate(
+        (("summary", "Summary"), ("decisions", "Decisions"), ("action_items", "Action items"))
+    ):
+        b.n(key, "json.get", 3, i, path = key)
+        b.e("notes.json", f"{key}.json")
+        b.n(f"show_{key}", "output.preview", 4, i, label = label)
+        b.e(f"{key}.value", f"show_{key}.value")
+    b.n("transcript", "output.preview", 2, 2.2, label = "Transcript")
+    b.e("words.text", "transcript.value")
+    return b
+
+
+def translate_and_dub() -> B:
+    b = B(
+        "translate-and-dub",
+        "Translate and Dub",
+        "pipeline",
+        "Record yourself in one language and hear it in another, in your own voice: the clip is transcribed, "
+        "translated by the LLM, and spoken by a voice-cloning model that uses your clip as the reference.",
+        tags = ["audio", "transcribe", "translate", "voice clone"],
+        seed = 11,
+    ).need("chat", "clone")
+    b.n("recording", "input.audio", 0, 1, label = "Your voice")
+    b.n(
+        "language",
+        "input.select",
+        0,
+        2,
+        label = "Into",
+        options = [
+            "Spanish",
+            "French",
+            "German",
+            "Italian",
+            "Portuguese",
+            "Japanese",
+            "Korean",
+            "Chinese",
+        ],
+        value = "Spanish",
+    )
+    b.n("words", "audio.transcribe", 1, 1)
+    b.e("recording.audio", "words.audio")
+    b.n(
+        "translate",
+        "llm.generate",
+        2,
+        1,
+        label = "Translator",
+        model = CHAT,
+        temperature = 0.2,
+        max_tokens = 1500,
+        system = "You are a professional translator. Keep the meaning, tone and names.",
+        prompt = "Translate into {{prompt}}. Reply with only the translation.\n\n{{context}}",
+    )
+    b.e("language.value", "translate.prompt")
+    b.e("words.text", "translate.context")
+    b.n("dub", "audio.speak", 3, 1, label = "Speak in your voice", model = CLONE)
+    b.e("translate.text", "dub.text")
+    b.e("recording.audio", "dub.reference")
+    b.n("show", "output.preview", 4, 1)
+    b.e("dub.audio", "show.value")
+    b.n("text", "output.preview", 3, 2.2, label = "Translation")
+    b.e("translate.text", "text.value")
+    b.note(
+        "n1",
+        "A clean 10 to 30 second clip clones best. Remove Reference on Speak to use a stock voice.",
+        1,
+        2.2,
+    )
+    return b
+
+
+def product_listing() -> B:
+    b = B(
+        "product-listing",
+        "Product Listing",
+        "pipeline",
+        "One product photo in, a shop listing out: the vision model looks at the product, the LLM writes a title, "
+        "selling points and a description, and the background is cut away for a clean product shot.",
+        tags = ["vision", "image", "remove background", "writing"],
+        seed = 8,
+    ).need("chat", "vision")
+    b.n("photo", "input.image", 0, 1, label = "Product photo")
+    b.n(
+        "look",
+        "llm.vision",
+        1,
+        1,
+        model = VISION,
+        question = "Describe this product for a shop listing: what it is, material, colors, size cues and "
+        "anything notable. Facts only.",
+        max_tokens = 400,
+    )
+    b.e("photo.image", "look.image")
+    b.n(
+        "copy",
+        "llm.generate",
+        2,
+        1,
+        label = "Copywriter",
+        model = CHAT,
+        temperature = 0.7,
+        max_tokens = 800,
+        system = "You write honest, punchy e-commerce listings. Never invent specs the description does not give.",
+        prompt = "Product:\n{{context}}\n\nWrite the listing.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "bullets": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 5,
+                    "items": {"type": "string"},
+                },
+                "description": {"type": "string"},
+            },
+            "required": ["title", "bullets", "description"],
+        },
+    )
+    b.e("look.text", "copy.context")
+    b.n("listing", "output.preview", 3, 1, label = "Listing")
+    b.e("copy.json", "listing.value")
+    b.n("cut", "image.remove_bg", 1, 2.2, subject = "the product", trim = True)
+    b.e("photo.image", "cut.image")
+    b.n("shot", "output.preview", 2, 2.2, label = "Product shot")
+    b.e("cut.image", "shot.value")
+    b.n("save", "output.library", 3, 2.2, folder = "Products")
+    b.e("cut.image", "save.value")
+    return b
+
+
+def song_maker() -> B:
+    b = B(
+        "song-maker",
+        "Song Maker",
+        "pipeline",
+        "Give a theme, get a song: the LLM writes lyrics and a style, the music model sings them, and the image "
+        "model paints the cover.",
+        tags = ["audio", "music", "image"],
+        seed = 77,
+    ).need("chat", "music", optional = ("image",))
+    b.n("theme", "input.text", 0, 1, value = "a sloth who finally wins a race")
+    b.n(
+        "writer",
+        "llm.generate",
+        1,
+        1,
+        label = "Songwriter",
+        model = CHAT,
+        temperature = 0.9,
+        max_tokens = 900,
+        system = "You write catchy song lyrics with [verse] and [chorus] tags, two verses and a chorus.",
+        prompt = "Write a song about: {{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "style": {
+                    "type": "string",
+                    "description": "genre, mood, instruments, tempo, voice",
+                },
+                "lyrics": {"type": "string"},
+            },
+            "required": ["title", "style", "lyrics"],
+        },
+    )
+    b.e("theme.text", "writer.prompt")
+    for i, key in enumerate(("style", "lyrics", "title")):
+        b.n(key, "json.get", 2, i, path = key)
+        b.e("writer.json", f"{key}.json")
+    b.n("song", "audio.music", 3, 0.5, model = MUSIC, mode = "song", duration_s = 60)
+    b.e("style.value", "song.prompt")
+    b.e("lyrics.value", "song.lyrics")
+    b.n("play", "output.preview", 4, 0.5)
+    b.e("song.audio", "play.value")
+    b.n(
+        "cover_prompt",
+        "text.template",
+        3,
+        2,
+        template = "Album cover for a song called '{{values}}', bold graphic illustration, vivid colors, no text",
+    )
+    b.e("title.value", "cover_prompt.values")
+    b.n("cover", "image.generate", 4, 2, model = IMAGE, size = "1024x1024")
+    b.e("cover_prompt.text", "cover.prompt")
+    b.n("cover_show", "output.preview", 5, 2)
+    b.e("cover.image", "cover_show.value")
+    return b
+
+
+def long_form_writer() -> B:
+    b = B(
+        "long-form-writer",
+        "Long-form Writer",
+        "pipeline",
+        "Write an article longer than one reply can hold: the LLM plans an outline, writes each section with the "
+        "outline in view, and the sections are joined into one document.",
+        tags = ["writing", "for each"],
+        seed = 19,
+    ).need("chat")
+    b.n("topic", "input.text", 0, 1, value = "A beginner's guide to growing tomatoes on a balcony")
+    b.n(
+        "plan",
+        "llm.generate",
+        1,
+        1,
+        label = "Outline",
+        model = CHAT,
+        temperature = 0.6,
+        max_tokens = 800,
+        system = "You plan clear, well-structured articles.",
+        prompt = "Plan an article about: {{prompt}}. Each section is one line: its heading, then what it covers.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "sections": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 6,
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["title", "sections"],
+        },
+    )
+    b.e("topic.text", "plan.prompt")
+    b.n("title", "json.get", 2, 0, path = "title")
+    b.n("sections", "json.get", 2, 1, path = "sections")
+    b.e("plan.json", "title.json")
+    b.e("plan.json", "sections.json")
+    b.n("each", "logic.for_each", 3, 1, group = "w_loop", max_items = 6)
+    b.n(
+        "write",
+        "llm.generate",
+        4,
+        1,
+        group = "w_loop",
+        label = "Write section",
+        model = CHAT,
+        temperature = 0.7,
+        max_tokens = 900,
+        prompt = "Article outline:\n{{context}}\n\nWrite only this section, about 250 words of markdown, starting "
+        "with its heading as '## ':\n{{prompt}}",
+    )
+    b.group("w_loop", "For each section", (3, 0.6, 2, 1.4), "#0ea5e9")
+    b.e("sections.value", "each.items")
+    b.e("each.item", "write.prompt")
+    b.e("sections.value", "write.context")
+    b.e("write.text", "each.collect")
+    b.n("body", "list.join", 5.4, 1, separator = "\\n\\n")
+    b.e("each.results", "body.items")
+    b.n("doc", "text.template", 6.4, 1, template = "# {{values.0}}\n\n{{values.1}}")
+    b.e("title.value", "doc.values")
+    b.e("body.text", "doc.values")
+    b.n("show", "output.preview", 7.4, 1)
+    b.e("doc.text", "show.value")
+    return b
+
+
 BUILDERS = (
     lantern_picnic,
     sloth_moon,
@@ -1391,6 +1784,13 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
+    photo_restyle,
+    animate_photo,
+    meeting_notes,
+    translate_and_dub,
+    product_listing,
+    song_maker,
+    long_form_writer,
 )
 
 
