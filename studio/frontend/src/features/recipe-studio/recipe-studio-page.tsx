@@ -85,6 +85,8 @@ import type { RecipePayload } from "./utils/payload/types";
 import { buildDefaultSchemaTransform } from "./utils/processors";
 import { buildDialogOptions } from "./utils/recipe-studio-view";
 
+const SUPER_CARD_FOCUS_MIN_ZOOM = 0.8;
+
 const NODE_TYPES: NodeTypes = {
   builder: RecipeNode,
   aux: RecipeGraphAuxNode,
@@ -641,7 +643,8 @@ export function RecipeStudioPage({
     ({
       delayMs = 0,
       nodeIds,
-    }: { delayMs?: number; nodeIds?: string[] } = {}) => {
+      minZoom,
+    }: { delayMs?: number; nodeIds?: string[]; minZoom?: number } = {}) => {
       if (!reactFlowInstance) {
         // eslint-disable-next-line @typescript-eslint/no-empty-function
         return () => {
@@ -681,6 +684,7 @@ export function RecipeStudioPage({
           maxZoom: FIT_VIEW_MAX_ZOOM,
           padding: FIT_VIEW_PADDING,
           nodes: targets.map((n) => ({ id: n.id })),
+          ...(minZoom ? { minZoom } : {}),
         });
       };
 
@@ -735,7 +739,8 @@ export function RecipeStudioPage({
     [reactFlowInstance],
   );
 
-  // Frame the new card and what it wires to, so it lands at a readable zoom.
+  // Frame the new card and what it wires to, but never below a readable zoom;
+  // far neighbours can sit past the edge.
   const handleCombine = useCallback(() => {
     combineSelectionIntoSuperCard();
     const state = useRecipeStudioStore.getState();
@@ -743,6 +748,7 @@ export function RecipeStudioPage({
     if (cardId && state.superCards[cardId]) {
       scheduleFitView({
         nodeIds: superCardFocusIds(cardId, state.superCards, state.edges),
+        minZoom: SUPER_CARD_FOCUS_MIN_ZOOM,
       });
     }
   }, [combineSelectionIntoSuperCard, scheduleFitView]);
