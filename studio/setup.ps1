@@ -1087,17 +1087,14 @@ function Test-MirrorConfigured {
     param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
     if ($Tool -ne 'pip') {
         if ($Tool -eq 'python') {
-            # UV_ASTRAL_MIRROR_URL also serves Python builds, but UV_PYTHON_INSTALL_MIRROR would win over it; a
-            # custom downloads manifest names its own URLs, which uv rejects combined with a mirror.
+            # UV_PYTHON_INSTALL_MIRROR would override UV_ASTRAL_MIRROR_URL; uv rejects a mirror beside a custom manifest.
             if ("$env:UV_PYTHON_INSTALL_MIRROR$env:UV_ASTRAL_MIRROR_URL$env:UV_PYTHON_DOWNLOADS_JSON_URL") { return $true }
             $pattern = '^\s*(python-install-mirror|python-downloads-json-url)\s*='
         } else {
             if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
             $pattern = '^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
         }
-        # uv reads UV_CONFIG_FILE in place of every discovered file (even with UV_NO_CONFIG), none with
-        # UV_NO_CONFIG, and no system file with UV_NO_SYSTEM_CONFIG. It changes to --directory first, then
-        # resolves relative --project / --config-file paths from there and discovers from the project.
+        # uv's discovery: UV_CONFIG_FILE alone (even with UV_NO_CONFIG); relative paths from --directory.
         # uv's bool parser (Test-UvEnvFlag), inlined: setup.ps1 reaches this before it defines that helper.
         $uvTrue = @('1', 't', 'true', 'y', 'yes', 'on')
         $files = @("$env:APPDATA\uv\uv.toml")
