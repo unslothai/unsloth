@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, seedImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, seedImageComponents, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -1969,9 +1969,21 @@ export function ImagesPage({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  // Every settled loaded status, after the first-status reconcile (which needs the entry this may drop): the resident
+  // model's own entry, which that check never reaches when the page remembers another model or the build changes
+  // later. Not mid-load: that load's finish records or forgets its files against the new build.
+  const reconcileResidentComponents = useCallback(
+    (loaded: DiffusionStatus) => {
+      if (initialLoadProbe === "pending" || busy === "loading") return;
+      forgetStaleResidentComponents(loaded);
+    },
+    [initialLoadProbe, busy],
+  );
   useEffect(() => {
-    if (status?.loaded) reconcileInitialComponents(status);
-  }, [status, reconcileInitialComponents]);
+    if (!status?.loaded) return;
+    reconcileInitialComponents(status);
+    reconcileResidentComponents(status);
+  }, [status, reconcileInitialComponents, reconcileResidentComponents]);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
   // A connection is not bound by the resident model's size grid or presets.
   const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;

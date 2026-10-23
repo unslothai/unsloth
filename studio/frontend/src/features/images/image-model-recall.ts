@@ -206,6 +206,24 @@ export function forgetStaleImageComponents(
   if (saved && !componentFilesMatch(saved, status.component_files)) rememberImageComponents(model, {});
 }
 
+/** Forget the resident model's own saved files when its build does not use them, on every settled loaded status: the
+ *  page may remember another model, or the resident build may change after the first status, and a pick or Reapply of
+ *  the resident model would otherwise send paths the status shows it no longer loads. */
+export function forgetStaleResidentComponents(status: {
+  loaded: boolean;
+  repo_id?: string | null;
+  model_kind?: string | null;
+  gguf_filename?: string | null;
+  engine?: string | null;
+  component_files?: Record<string, string> | null;
+}): void {
+  const kind = status.model_kind;
+  if (!status.loaded || !status.repo_id) return;
+  if (kind === "pipeline") forgetStaleImageComponents({ repoId: status.repo_id, kind }, status);
+  else if ((kind === "gguf" || kind === "single_file") && status.gguf_filename)
+    forgetStaleImageComponents({ repoId: status.repo_id, kind, filename: status.gguf_filename }, status);
+}
+
 /** On the first loaded status: forget the remembered model's saved files when that same model is resident on a
  *  build that does not use them (another client reloaded it without them), so the page does not reload them as
  *  untouched fields. The last-model slot loses them too, since seed and recall fall back to it. Returns the model

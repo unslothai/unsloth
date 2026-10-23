@@ -8,6 +8,7 @@ import {
   componentFieldsOwnerAfterLoad,
   componentFilesForModel,
   forgetStaleImageComponents,
+  forgetStaleResidentComponents,
   readImageComponents,
   readImageModel,
   recalledComponentFiles,
@@ -502,5 +503,76 @@ test("the first loaded status forgets the remembered model's stale files and cle
   assert.equal(pending.scope.componentsReconciled.current, false);
   // The probe settles only after the progress read, which runs after the first status refresh.
   assert.match(source, /setInitialLoadProbe\(inFlight \? "loading" : "idle"\)/);
-  assert.match(source, /useEffect\(\(\) => \{\s*if \(status\?\.loaded\) reconcileInitialComponents\(status\);\s*\}, \[status, reconcileInitialComponents\]\);/);
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{\s*if \(!status\?\.loaded\) return;\s*reconcileInitialComponents\(status\);\s*reconcileResidentComponents\(status\);\s*\}, \[status, reconcileInitialComponents, reconcileResidentComponents\]\);/,
+  );
+});
+
+test("every settled loaded status forgets the resident model's stale files, not only the remembered model's", () => {
+  store.clear();
+  // The page remembers z-image, but another client reloaded flux without its overrides while the page was closed.
+  rememberImageModel({ ...zImage, ...zFiles });
+  rememberImageComponents(zImage, zFiles);
+  rememberImageComponents(flux, { vaeFile: "../vae/flux_ae.safetensors" });
+  const fluxResident = {
+    loaded: true,
+    repo_id: flux.repoId,
+    model_kind: "single_file",
+    gguf_filename: flux.filename,
+    engine: "diffusers",
+    component_files: {},
+  };
+  // The remembered model's check does not reach flux's entry.
+  assert.equal(reconcileRememberedComponents(zImage, fluxResident), null);
+  assert.deepEqual(readImageComponents(flux), { vaeFile: "../vae/flux_ae.safetensors" });
+  forgetStaleResidentComponents(fluxResident);
+  assert.equal(readImageComponents(flux), null);
+  // So a pick or Reapply of the resident model with untouched fields sends no stale VAE.
+  assert.deepEqual(componentFilesForModel(zFiles, zFiles, flux).files, {});
+  assert.deepEqual(readImageComponents(zImage), zFiles);
+  // Kept: a build that uses the files, a native build, or nothing loaded.
+  const kept = [
+    { ...fluxResident, component_files: { vae: "flux_ae.safetensors" } },
+    { ...fluxResident, engine: "sd_cpp", component_files: null },
+    { loaded: false },
+  ];
+  for (const status of kept) {
+    rememberImageComponents(flux, { vaeFile: "../vae/flux_ae.safetensors" });
+    forgetStaleResidentComponents(status);
+    assert.deepEqual(readImageComponents(flux), { vaeFile: "../vae/flux_ae.safetensors" });
+  }
+  // A pipeline is keyed without a file.
+  const pipe = { repoId: "black-forest-labs/FLUX.1-dev", kind: "pipeline" } as const;
+  rememberImageComponents(pipe, { vaeFile: "/vae/ae.safetensors" });
+  forgetStaleResidentComponents({ loaded: true, repo_id: pipe.repoId, model_kind: "pipeline", engine: "diffusers", component_files: {} });
+  assert.equal(readImageComponents(pipe), null);
+
+  // The page runs it on every loaded status once the mount probe settled, not mid-load, and after the first-status
+  // reconcile, which needs the remembered model's entry this may drop.
+  const source = readSrc("features/images/images-page.tsx");
+  const tree = ts.createSourceFile("images-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let declaration = "";
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "reconcileResidentComponents")
+      declaration = `const ${node.getText(tree)};`;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(`${declaration}\nreturn reconcileResidentComponents;`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  });
+  const run = (initialLoadProbe: string, busy: string | null) => {
+    rememberImageComponents(flux, { vaeFile: "../vae/flux_ae.safetensors" });
+    const scope = { useCallback: (fn: unknown) => fn, initialLoadProbe, busy, forgetStaleResidentComponents };
+    new Function(...Object.keys(scope), outputText)(...Object.values(scope))(fluxResident);
+    return readImageComponents(flux);
+  };
+  assert.equal(run("idle", null), null);
+  // A resumed load leaves the probe at "loading"; once it finished, later statuses still count.
+  assert.equal(run("loading", null), null);
+  assert.equal(run("idle", "generating"), null);
+  assert.deepEqual(run("pending", null), { vaeFile: "../vae/flux_ae.safetensors" });
+  assert.deepEqual(run("idle", "loading"), { vaeFile: "../vae/flux_ae.safetensors" });
 });
