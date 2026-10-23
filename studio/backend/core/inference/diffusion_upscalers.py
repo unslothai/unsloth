@@ -464,8 +464,7 @@ def upscale_with_model(
         scale = int(descriptor.scale)
 
         def _run(piece: Any) -> Any:
-            # Through the descriptor, not descriptor.model: spandrel pads to the arch's size_requirements,
-            # unwraps tuple outputs (MMRealSR returns (image, degradation)) and clamps to [0, 1] there.
+            # Not descriptor.model: the descriptor pads, unwraps tuple outputs (MMRealSR) and clamps.
             return descriptor(piece.to(dtype)).float()
 
         boxes = tile_boxes(x.shape[3], x.shape[2], tile, overlap)

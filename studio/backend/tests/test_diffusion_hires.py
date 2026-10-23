@@ -1142,7 +1142,6 @@ def test_stop_during_an_upscale_only_resize_returns_no_image(monkeypatch):
 
 
 def test_a_drop_in_runs_through_the_spandrel_descriptor(tmp_path, monkeypatch):
-    # MMRealSR's raw module returns (image, degradation); only the descriptor's call_fn unwraps it.
     torch = pytest.importorskip("torch")
     pytest.importorskip("spandrel")
     from PIL import Image
@@ -1228,7 +1227,6 @@ def _fake_model_upscaler(tmp_path, monkeypatch, fn):
     monkeypatch.setattr(ups, "resolve_model_path", lambda upscaler_id, cancel = None: path)
 
     class _Descriptor:
-        # spandrel's ImageModelDescriptor is called directly; ``model`` is the raw module behind it.
         scale = 2
 
         def __call__(self, image):
