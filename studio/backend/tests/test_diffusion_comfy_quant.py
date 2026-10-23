@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for loading ComfyUI-format quantized single files (``diffusion_comfy_quant.py``).
-
-Detection and refusal read only the safetensors header, so they run on tiny synthetic files. The
-loader runs on CPU against a two-block stand-in transformer whose converter does what the real
-diffusers converters do to a ComfyUI checkpoint: split a fused qkv by rows and rename the rest. That
-is enough to prove the codes and scales land on the right diffusers weight unchanged, that the
-ConvRot rotation is installed on exactly those, and that what cannot be mapped is refused.
-"""
+"""ComfyUI quantised single-file loader; ConvRot must be installed on exactly the recorded layers."""
 
 from __future__ import annotations
 

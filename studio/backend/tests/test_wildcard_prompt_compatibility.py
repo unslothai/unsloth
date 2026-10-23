@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Compatibility surface of the raw-bind password prompt.
-
-The prompt itself is covered by test_password_prompt.py and the gate wiring by
-test_password_prompt_backstop.py. This file covers what only breaks somewhere
-else: other platforms, old installs, and the no-hardware-coupling claim.
-"""
+"""Platform, old-install and no-hardware-coupling checks for the raw-bind password prompt."""
 
 from __future__ import annotations
 
@@ -24,21 +19,13 @@ if str(_BACKEND) not in sys.path:
 from auth import terminal_prompt  # noqa: E402
 
 
-# ── platform seams ───────────────────────────────────────────────────
-
-
 def test_the_windows_getch_path_decodes_a_password(monkeypatch):
-    """`_getch` is selected by os.name at import; exercise the Windows half.
-
-    CI is Linux, so the msvcrt branch is otherwise never executed. A stub module
-    puts the two-wchar arrow-key sequence and ordinary characters through the
-    real handler.
-    """
+    """CI is Linux, so the msvcrt branch of `_getch` never runs there; a stub module drives it."""
     import types
 
     keys = list("pw1\r")
     fake = types.ModuleType("msvcrt")
-    # An arrow key arrives as \xe0 then a second wchar that must be swallowed.
+    # An arrow key arrives as \xe0 plus a second wchar that must be swallowed.
     queue = ["\xe0", "H"] + keys
 
     def _getwch():
@@ -61,7 +48,6 @@ def test_the_windows_getch_path_decodes_a_password(monkeypatch):
             pass
 
     assert terminal_prompt._read_password("pw: ", out = _Out()) == "pw1"
-    # The arrow key is swallowed, not masked: one star per character.
     assert "".join(out).count("*") == 3
 
 
@@ -74,11 +60,7 @@ class _NullCtx:
 
 
 def test_a_stream_with_no_fileno_is_not_interactive():
-    """pythonw / a Windows service has no console; isatty must not raise.
-
-    The gate's isatty helpers treat a broken stream as non-interactive, so such a
-    launch takes the headless path rather than crashing.
-    """
+    """pythonw or a service has no console; isatty raising must read as non-interactive, not crash."""
 
     class _Broken:
         def isatty(self):
@@ -108,15 +90,8 @@ def test_a_split_terminal_never_prompts(stdin_tty, stderr_tty):
     )
 
 
-# ── old installs ─────────────────────────────────────────────────────
-
-
 def test_an_old_caller_that_omits_bind_is_exposed_behaves_as_before():
-    """The new kwarg is optional and defaults off.
-
-    A studio venv can hold an older backend than the CLI that launched it, so a
-    caller predating this change must keep tunnel-only semantics.
-    """
+    """The new kwarg defaults off: a studio venv can hold an older backend than the CLI that launched it."""
     assert (
         terminal_prompt.should_prompt_password_change(
             tunnel_will_start = False,
@@ -143,22 +118,13 @@ def test_the_prompt_signature_stays_keyword_compatible():
 
     params = inspect.signature(terminal_prompt.prompt_for_password_change).parameters
     assert params["exposure"].default == "on the public internet"
-    # An old run.py still passes refusal_aborts, and it still picks the banner.
     assert "refusal_aborts" in params
     for name, param in params.items():
         assert param.kind is not inspect.Parameter.POSITIONAL_ONLY, name
 
 
-# ── no hardware coupling ─────────────────────────────────────────────
-
-
 def test_the_password_gate_imports_no_gpu_or_torch_module():
-    """The hardware-independence claim, checked not asserted.
-
-    In a subprocess: importing torch in THIS interpreter would poison the rest of
-    the session, and a sys.modules probe after the fact proves nothing about what
-    the import graph pulls in.
-    """
+    """Checked in a subprocess: importing torch here would poison the session's other tests."""
     probe = (
         "import sys;"
         f"sys.path.insert(0, {str(_BACKEND)!r});"

@@ -189,7 +189,6 @@ def test_a_small_dataset_probes_its_last_row(monkeypatch):
 
 
 def test_tool_rows_between_the_sampled_rows_are_still_dropped(monkeypatch):
-    # Row 37 falls between sampled indices.
     tokenizer = _TemplatedTokenizer()
     one_agentic = lambda index: (_agentic_convo(index) if index == 37 else _plain_convo(index))
 
@@ -225,7 +224,6 @@ def test_an_eval_split_does_not_move_the_template_training_chose(monkeypatch):
 
 
 def test_fallback_restores_the_template_on_a_processor_and_its_tokenizer():
-    # Restore both copies, matching get_chat_template.
     class _Processor(_TemplatedTokenizer):
         def __init__(self):
             super().__init__()
