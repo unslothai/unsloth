@@ -343,7 +343,7 @@ async def _ensure_model(
 
     loaded_with = _LOADED_OPTIONS.get(slot)
     # Any other load since then (another caller may have reloaded this repo with defaults) voids the record.
-    if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count():
+    if loaded_with is not None and loaded_with[2] != gpu_arbiter.load_count(gpu_arbiter.CHAT):
         _LOADED_OPTIONS.pop(slot, None)
         loaded_with = None
     # Without settings anything Studio loaded counts, as before; only a model Flows loaded with settings differs.
@@ -399,7 +399,7 @@ async def _ensure_model(
     if settings is None:
         _LOADED_OPTIONS.pop(slot, None)
     else:
-        _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count())
+        _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count(gpu_arbiter.CHAT))
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
 

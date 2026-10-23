@@ -43,6 +43,8 @@ _owner: Optional[str] = None
 _owner_epoch = 0
 # Counts real loads and replacements only (a re-assert by a chat request leaves it alone).
 _loads = 0
+# The same count per owner, so a media load never voids a chat model's recorded settings.
+_owner_loads: dict[str, int] = {}
 # Account whose load put the current owner on the GPU, so routes can refuse to evict it.
 _owner_account: Optional[str] = None
 _prior_account: Optional[str] = None
@@ -800,7 +802,8 @@ def acquire_for(
     with _lock, _handover_fence() if handover else nullcontext():
         # Checked under _lock, which a lease also takes to install, so no residency change starts after a lease does.
         # A plain re-assert of a resident model changes nothing, so generation keeps working under a lease.
-        if register is not None or replacing or owner not in _view(current_owner()):
+        reassert = not (register is not None or replacing or owner not in _view(current_owner()))
+        if not reassert:
             raise_if_leased()
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
@@ -819,6 +822,9 @@ def acquire_for(
         # Read before evicting: dropping the current owner promotes a parked resident and pops its accounts.
         parked = owner in _accounts
         others = [name for name in _residents if name != owner]
+        if others and reassert and lease_refusal() is not None:
+            # Under another holder's lease a re-assert evicts nothing either: that would unload the leased model.
+            others = []
         if others and coreside:
             from core.inference.gpu_residency import coreside_locked
             coreside_locked(
@@ -898,12 +904,14 @@ def acquire_for(
         counted = register is not None or replacing
         if counted:
             _loads += 1
+            _owner_loads[owner] = _owner_loads.get(owner, 0) + 1
         try:
             result = register() if register is not None else None
         except BaseException:
             if counted:
                 # A refused load changed nothing, so a loaded model's settings stay current.
                 _loads -= 1
+                _owner_loads[owner] -= 1
             if held_before is not ...:
                 # The model already loaded stays where it was.
                 _residents[owner] = held_before
@@ -1051,9 +1059,10 @@ def owner_account(owner: Optional[str] = None) -> Optional[str]:
     return _accounts.get(owner, (None, None))[0]
 
 
-def load_count() -> int:
-    """How many residency-changing loads have gone through; a changed value means some model was (re)loaded."""
-    return _loads
+def load_count(owner: Optional[str] = None) -> int:
+    """How many residency-changing loads have gone through; a changed value means some model was (re)loaded.
+    With ``owner``, only that owner's loads count."""
+    return _loads if owner is None else _owner_loads.get(owner, 0)
 
 
 def owner_snapshot() -> tuple[Optional[str], int]:

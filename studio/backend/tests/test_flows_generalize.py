@@ -300,8 +300,27 @@ def test_a_load_elsewhere_voids_the_remembered_settings(monkeypatch):
     asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
     # Another caller swaps models and later reloads the same repo with defaults.
     monkeypatch.setattr(gpu_arbiter, "_loads", gpu_arbiter._loads + 2)
+    monkeypatch.setitem(
+        gpu_arbiter._owner_loads,
+        gpu_arbiter.CHAT,
+        gpu_arbiter._owner_loads.get(gpu_arbiter.CHAT, 0) + 2,
+    )
     asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
     assert len(loads) == 2 and loads[1]["extra_body"] == kv8
+
+
+def test_a_media_load_keeps_the_chat_models_settings(no_lease, monkeypatch):
+    # Keep multiple models loaded: an image load beside an unchanged chat model must not force a chat reload.
+    loads, _ = _llm_fakes(monkeypatch)
+    monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: None)
+    monkeypatch.setattr(arb, "_owner_loads", {})
+    ctx = _ModelCtx()
+    choice = {"repo": "unsloth/Qwen3-0.6B-GGUF"}
+    kv8 = {"cache_type_kv": "q8_0"}
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    arb.acquire_for(arb.DIFFUSION, lambda: None)
+    asyncio.run(_common.ensure_model(ctx, "chat", choice, kv8))
+    assert len(loads) == 1
 
 
 def test_without_settings_a_model_loaded_elsewhere_is_reused_as_before(monkeypatch):
@@ -501,6 +520,33 @@ def test_while_leased_other_callers_get_409_and_plain_reasserts_pass(no_lease, m
                 pass
     finally:
         arb._lease = None
+
+
+def test_a_reassert_under_a_lease_never_evicts_the_leased_model(no_lease, monkeypatch):
+    from core.inference import gpu_residency
+
+    made_room = []
+    monkeypatch.setattr(gpu_residency, "coreside_locked", lambda *a, **k: made_room.append(a))
+    monkeypatch.setattr(arb, "_owner", arb.CHAT)
+    monkeypatch.setattr(arb, "_residents", {arb.DIFFUSION: None, arb.CHAT: None})
+    arb.acquire_for(arb.CHAT, policy = "fit")  # no lease: a re-assert makes room as before
+    assert len(made_room) == 1
+    lease = arb.operation_lease("bench", "run-1", 60, label = "Benchmark Image")
+    lease.__enter__()
+    arb._lease_holder.set(None)  # a chat request from outside the lease
+    try:
+        arb.acquire_for(arb.CHAT, policy = "fit")
+        arb.acquire_for(arb.CHAT)  # Off would evict the other resident outright
+    finally:
+        arb._lease = None
+    assert len(made_room) == 1
+    assert arb.DIFFUSION in arb._residents
+
+
+def test_an_exclusive_node_always_runs_on_the_gpu_lane():
+    from core.flows.specs import spec
+    assert spec("t.x", "X", "c", "d", exclusive_gpu = True)["lane"] == "gpu"
+    assert spec("t.y", "Y", "c", "d")["lane"] == "cpu"
 
 
 def test_an_abandoned_lease_expires(no_lease, monkeypatch):
