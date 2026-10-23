@@ -32,7 +32,7 @@ requires_backend = pytest.mark.skipif(
 def _clean(monkeypatch):
     monkeypatch.delenv(sp.PREAD_ENV, raising = False)
     yield
-    assert sp._depth == 0 and sp._original is None
+    assert sp._depth == 0 and sp._original is None and not sp._active_rules()
 
 
 def _record_backends(monkeypatch):
@@ -236,7 +236,7 @@ def test_converted_shard_backend_choice(monkeypatch, tmp_path, stored, convert_t
         with modeling_utils.safe_open(str(path), framework = "pt", device = "cpu") as handle:
             handle.get_slice("w")[...]
     assert seen == [expected]
-    assert not sp._rules
+    assert not sp._active_rules()
 
 
 @requires_backend
@@ -405,3 +405,49 @@ def test_kept_shard_overrides_a_callers_pread(monkeypatch, tmp_path, passed, exp
         with modeling_utils.safe_open(str(path), framework = "pt", device = "cpu", **kwargs) as handle:
             handle.get_slice("w")[...]
     assert seen == [expected]
+
+
+@requires_backend
+def test_concurrent_loads_keep_their_own_rules(monkeypatch, tmp_path):
+    """An image load's keep / convert rules never reach a video load running in another thread (multi-model policy)."""
+    from safetensors.torch import save_file
+
+    image, video = tmp_path / "image" / "text_encoder", tmp_path / "video" / "text_encoder"
+    for d, dtype in ((image, torch.bfloat16), (video, torch.float32)):
+        d.mkdir(parents = True)
+        save_file({"w": torch.zeros(64, 64, dtype = dtype)}, str(d / "model.safetensors"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    seen = {}
+    real = modeling_utils.safe_open
+
+    def spy(filename, *args, **kwargs):
+        seen[str(filename)] = kwargs.get("backend")
+        return real(filename, *args, **kwargs)
+
+    spy.__text_signature__ = real.__text_signature__
+    monkeypatch.setattr(modeling_utils, "safe_open", spy)
+    opened, release = threading.Event(), threading.Event()
+
+    def video_load():
+        with sp.pread_safetensors():
+            with modeling_utils.safe_open(
+                str(video / "model.safetensors"), framework = "pt", device = "cpu"
+            ) as h:
+                h.get_slice("w")[...]
+            opened.set()
+            release.wait(5)
+
+    with sp.pread_safetensors(convert_to = torch.float16, keep = ("text_encoder",)):
+        worker = threading.Thread(target = video_load)
+        worker.start()
+        assert opened.wait(5)
+        with modeling_utils.safe_open(
+            str(image / "model.safetensors"), framework = "pt", device = "cpu"
+        ) as h:
+            h.get_slice("w")[...]
+        release.set()
+        worker.join(5)
+    assert (
+        seen[str(video / "model.safetensors")] == "pread"
+    )  # its fp32 encoder, despite the image's keep entry
+    assert seen[str(image / "model.safetensors")] is None  # the image's routed encoder stays mapped

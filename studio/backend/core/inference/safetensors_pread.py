@@ -27,8 +27,13 @@ PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 _lock = threading.Lock()
 _depth = 0
 _original: Any = None
-# per open scope: (dtype name the load converts to, or None for the fp32-only video rule; component dirs it keeps)
-_rules: list[tuple[Optional[str], frozenset[str]]] = []
+# per open scope, per load thread (a concurrent image and video load never see each other's rules): (dtype name the
+# load converts to, or None for the fp32-only video rule; component dirs it keeps)
+_local = threading.local()
+
+
+def _active_rules() -> tuple[tuple[Optional[str], frozenset[str]], ...]:
+    return getattr(_local, "rules", ())
 
 
 def pread_wanted() -> bool:
@@ -70,8 +75,7 @@ def _backend_for(filename: Any) -> Optional[str]:
     from .diffusion_small_host import _safetensors_bytes_by_dtype
 
     path = Path(filename)
-    with _lock:
-        rules = list(_rules)
+    rules = _active_rules()
     if any(path.parent.name in keep for _, keep in rules):
         return "keep"
     stored = {k: v for k, v in _safetensors_bytes_by_dtype(path).items() if k != "kept"}
@@ -123,7 +127,7 @@ def pread_safetensors(convert_to: Any = None, keep: Iterable[str] = ()) -> Itera
     load in another thread only gets the same bytes through another backend."""
     global _depth, _original
     installed = False
-    rule: Optional[tuple[str, frozenset[str]]] = None
+    previous_rules = None
     if pread_wanted():
         try:
             import transformers.modeling_utils as modeling_utils
@@ -137,18 +141,18 @@ def pread_safetensors(convert_to: Any = None, keep: Iterable[str] = ()) -> Itera
                     installed = True
                 if installed:
                     _depth += 1
-                    to = None if convert_to is None else str(convert_to).replace("torch.", "")
-                    rule = (to, frozenset(keep))
-                    _rules.append(rule)
         except Exception:  # noqa: BLE001 - the mmap backend still loads wherever commit allows
             installed = False
+        if installed:
+            to = None if convert_to is None else str(convert_to).replace("torch.", "")
+            previous_rules = _active_rules()
+            _local.rules = previous_rules + ((to, frozenset(keep)),)
     try:
         yield installed
     finally:
         if installed:
+            _local.rules = previous_rules
             with _lock:
-                if rule is not None:
-                    _rules.remove(rule)
                 _depth -= 1
                 if not _depth:
                     import transformers.modeling_utils as modeling_utils
