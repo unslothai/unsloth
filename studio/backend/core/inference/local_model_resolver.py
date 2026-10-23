@@ -419,21 +419,22 @@ def _local_gguf_entry(
             else:
                 selected_variants, _has_vision, complete, load_dir = selected
                 variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
-                if complete:
-                    complete_keys = {str(quant).casefold() for quant in complete}
-                    complete_files = {
-                        str(variant.filename).casefold()
-                        for variant in selected_variants
-                        if getattr(variant, "filename", None)
-                        and getattr(variant, "quant", None)
-                        and str(variant.quant).casefold() in complete_keys
-                    }
-                    variants = [
-                        variant
-                        for variant in variants
-                        if getattr(variant, "filename", None)
-                        and str(variant.filename).casefold() in complete_files
-                    ]
+                # Filter even when nothing is complete: the selector can fall back to a snapshot
+                # with no whole quant, and its torn split shards must not be offered.
+                complete_keys = {str(quant).casefold() for quant in complete}
+                complete_files = {
+                    str(variant.filename).casefold()
+                    for variant in selected_variants
+                    if getattr(variant, "filename", None)
+                    and getattr(variant, "quant", None)
+                    and str(variant.quant).casefold() in complete_keys
+                }
+                variants = [
+                    variant
+                    for variant in variants
+                    if getattr(variant, "filename", None)
+                    and str(variant.filename).casefold() in complete_files
+                ]
         else:
             load_dir = _resolve_load_dir(p) if p.name.startswith("models--") else p
             variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)

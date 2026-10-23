@@ -1775,10 +1775,9 @@ def is_gguf_repo_partial(
             ):
                 variants.add(variant)
     if not variants:
-        # Nothing named a quant: an interrupted attempt leaves only torn shards.
-        return has_legacy_partial or _recovered_snapshot_cannot_serve(
-            repo_cache_dir, snapshot_dir, quants = True
-        )
+        # Nothing named a quant: an interrupted attempt leaves only torn shards. An `hf download`
+        # stopped between shards leaves no marker or .incomplete blob, so the files decide.
+        return has_legacy_partial or _snapshot_cannot_serve_its_payload(snapshot_dir, quants = True)
     has_clean = False
     has_broken = has_legacy_partial
     for variant in variants:
