@@ -75,6 +75,10 @@ class InvokeBody(BaseModel):
     params: dict[str, Any] = Field(default_factory = dict)
     session_id: Optional[str] = Field(default = None, max_length = 128)
     rev: Optional[int] = None
+    # Answer as server-sent events: `delta` text while it is written, then `result` (or `error`).
+    stream: bool = False
+    # Only load the model this entry point answers with, ahead of the first call.
+    warm: bool = False
 
 
 class SessionBody(BaseModel):
@@ -571,26 +575,122 @@ def _node_outputs(record: dict) -> dict[str, dict]:
     return outputs
 
 
-@router.post("/{flow_id}/invoke")
-async def invoke(request: Request, flow_id: str, body: InvokeBody) -> dict:
+def _invoke_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, CompileError):
+        return _compile_error(exc)
+    status = exc.status if isinstance(exc, FlowNodeError) and exc.status in (409, 503) else 422
+    return HTTPException(status_code = status, detail = str(exc))
+
+
+@router.post("/{flow_id}/invoke", response_model = None)
+async def invoke(request: Request, flow_id: str, body: InvokeBody) -> Any:
     record = _flow_or_404(flow_id)
+    engine = get_engine()
+    if body.warm:
+        try:
+            ready = await engine.warm(
+                app = request.app,
+                flow_id = flow_id,
+                doc = record["doc"],
+                entry = body.entry,
+                hf_token = _hf_token(request),
+            )
+        except (CompileError, FlowNodeError) as exc:
+            raise _invoke_error(exc)
+        return {"warm": ready}
+    call = dict(
+        app = request.app,
+        flow_id = flow_id,
+        doc = record["doc"],
+        entry = body.entry,
+        inputs = body.inputs,
+        params = body.params,
+        hf_token = _hf_token(request),
+    )
+    if body.stream:
+        return _invoke_stream(request, engine, call, body)
     try:
-        outputs = await get_engine().invoke(
-            app = request.app,
-            flow_id = flow_id,
-            doc = record["doc"],
-            entry = body.entry,
-            inputs = body.inputs,
-            params = body.params,
-            hf_token = _hf_token(request),
-        )
-    except CompileError as exc:
-        raise _compile_error(exc)
-    except FlowNodeError as exc:
-        raise HTTPException(
-            status_code = exc.status if exc.status in (409, 503) else 422, detail = str(exc)
-        )
+        outputs = await engine.invoke(**call)
+    except (CompileError, FlowNodeError) as exc:
+        raise _invoke_error(exc)
     return {"outputs": outputs, "session_id": body.session_id, "rev": body.rev}
+
+
+def _invoke_stream(
+    request: Request, engine: Any, call: dict, body: InvokeBody
+) -> StreamingResponse:
+    events: asyncio.Queue = asyncio.Queue(maxsize = 10_000)
+    entry = body.entry
+
+    def frame(data: dict) -> str:
+        return f"data: {json.dumps(data, default = str)}\n\n"
+
+    async def gen():
+        task = asyncio.create_task(engine.invoke(**call, events = events))
+        try:
+            while True:
+                getter = asyncio.ensure_future(events.get())
+                done, _ = await asyncio.wait(
+                    {getter, task}, timeout = KEEPALIVE_S, return_when = asyncio.FIRST_COMPLETED
+                )
+                if getter in done:
+                    event = getter.result()
+                    if event["type"] == "node.text_delta" and event.get("node_id") == entry:
+                        yield frame(
+                            {
+                                "type": "delta",
+                                "port": event["data"].get("port"),
+                                "text": event["data"].get("delta", ""),
+                            }
+                        )
+                    continue
+                getter.cancel()
+                if task in done:
+                    break
+                if await request.is_disconnected():
+                    return
+                yield ": keepalive\n\n"
+            # Deltas flushed as the entry point finished are still queued.
+            while not events.empty():
+                event = events.get_nowait()
+                if event["type"] == "node.text_delta" and event.get("node_id") == entry:
+                    yield frame(
+                        {
+                            "type": "delta",
+                            "port": event["data"].get("port"),
+                            "text": event["data"].get("delta", ""),
+                        }
+                    )
+            try:
+                outputs = task.result()
+            except (CompileError, FlowNodeError) as exc:
+                error = _invoke_error(exc)
+                yield frame({"type": "error", "status": error.status_code, "detail": error.detail})
+                return
+            except Exception as exc:
+                logger.exception("flows: streamed invoke of %s failed", entry)
+                yield frame(
+                    {"type": "error", "status": 500, "detail": f"The entry point failed: {exc}"}
+                )
+                return
+            yield frame(
+                {
+                    "type": "result",
+                    "outputs": outputs,
+                    "session_id": body.session_id,
+                    "rev": body.rev,
+                }
+            )
+        finally:
+            # A player that left (or loaded a save) does not need the rest of this answer.
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        gen(),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/{flow_id}/story")

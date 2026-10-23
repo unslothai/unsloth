@@ -184,6 +184,33 @@ async def test_partial_rows_stream_but_never_feed_the_next_step(monkeypatch):
 
 
 @run_async
+async def test_stored_partials_keep_their_position_but_not_the_value(monkeypatch):
+    from core.flows import engine as engine_mod
+
+    _add_spec(monkeypatch, _rows_spec())
+    stored = []
+    real = engine_mod.flows_db.append_event
+
+    def capture(run_id, seq, event):
+        stored.append(event)
+        return real(run_id, seq, event)
+
+    monkeypatch.setattr(engine_mod.flows_db, "append_event", capture)
+
+    async def rows(ctx):
+        ctx.partial("rows", list(range(500)), step = 1, total = 2)
+        await asyncio.sleep(0.3)
+        return {"rows": [1]}
+
+    rs = await _run(_engine({"test.rows": rows}), doc([node("r", "test.rows")]))
+    live = [e for e in rs.events if e["type"] == "node.partial"]
+    kept = [e for e in stored if e["type"] == "node.partial"]
+    assert live and live[-1]["data"]["value"] == list(range(500))
+    assert kept and all("value" not in e["data"] for e in kept)
+    assert kept[-1]["data"]["step"] == 1
+
+
+@run_async
 async def test_a_failed_step_keeps_its_last_partial(monkeypatch):
     _add_spec(monkeypatch, _rows_spec())
 
@@ -440,6 +467,20 @@ def test_a_lease_refuses_other_loads_and_training_but_not_its_holder(no_lease, m
     assert arb.lease_refusal() is None  # released
 
 
+def test_a_refused_load_keeps_the_load_generation(no_lease, monkeypatch):
+    monkeypatch.setitem(arb._EVICTORS, arb.CHAT, lambda: None)
+    arb.acquire_for(arb.CHAT, lambda: None)
+    before = arb.load_count()
+
+    def refuse():
+        raise RuntimeError("a load is already in progress")
+
+    with pytest.raises(RuntimeError):
+        arb.acquire_for(arb.CHAT, refuse)
+    # Flows keeps the loaded model's settings while the generation is unchanged.
+    assert arb.load_count() == before
+
+
 def test_while_leased_other_callers_get_409_and_plain_reasserts_pass(no_lease, monkeypatch):
     monkeypatch.setitem(arb._EVICTORS, arb.CHAT, lambda: None)
     monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: None)
@@ -554,6 +595,54 @@ def test_training_start_is_refused_while_another_holder_has_the_lease(no_lease):
         assert "lease_refusal()" in source[start : start + 1500]
         start = source.index("async def start_diffusion_training(")
         assert "lease_refusal()" in source[start : start + 1500]
+    finally:
+        arb._lease = None
+
+
+def test_unloads_and_training_teardown_respect_a_lease_taken_later(no_lease):
+    import fastapi
+    from routes import inference, training, video
+
+    lease = arb.operation_lease("bench", "run-1", 60, label = "Benchmark Model")
+    lease.__enter__()
+    arb._lease_holder.set(None)
+    try:
+        with pytest.raises(fastapi.HTTPException) as err:
+            inference._refuse_while_leased()
+        assert err.value.status_code == 409
+        # A training start that passed its first check meets the lease again where it frees the GPU.
+        with pytest.raises(arb.GpuLeaseHeldError):
+            training._free_gpu_for_diffusion_training()
+        source = open(training.__file__).read()
+        hook = source.index("def _free_vram_for_training(")
+        assert "raise_if_leased()" in source[hook : hook + 600]
+        assert arb.GpuLeaseHeldError.blocks_training is True
+        vsource = open(video.__file__).read()
+        start = vsource.index("async def unload_video_model(")
+        assert "lease_refusal()" in vsource[start : start + 1200]
+        isource = open(inference.__file__).read()
+        start = isource.index("async def unload_diffusion_model(")
+        assert "_refuse_while_leased()" in isource[start : start + 900]
+    finally:
+        arb._lease = None
+    # The holder's own unload passes.
+    with arb.operation_lease("bench", "run-1", 60):
+        inference._refuse_while_leased()
+
+
+def test_every_unload_path_shares_the_lease_guard(no_lease):
+    import fastapi
+    from models.inference import UnloadRequest
+    from routes import inference
+
+    lease = arb.operation_lease("bench", "run-1", 60, label = "Benchmark Model")
+    lease.__enter__()
+    arb._lease_holder.set(None)
+    try:
+        # The llama-compatible /models/unload calls the shared implementation, not the route wrapper.
+        with pytest.raises(fastapi.HTTPException) as err:
+            asyncio.run(inference._unload_model_impl(UnloadRequest(model_path = "x"), "owner"))
+        assert err.value.status_code == 409
     finally:
         arb._lease = None
 
