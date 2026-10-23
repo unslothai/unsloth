@@ -1365,10 +1365,10 @@ def sticker_pack() -> B:
     return b
 
 
-def ask_documents() -> B:
+def chat_with_documents() -> B:
     b = B(
-        "ask-documents",
-        "Ask My Documents",
+        "chat-with-documents",
+        "Chat With My Documents",
         "pipeline",
         "A chat assistant that answers from one of your knowledge bases, fully offline with a local model. Open it "
         "in the player to chat; pick the knowledge base in the Agent block.",
@@ -1614,7 +1614,7 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
-    ask_documents,
+    chat_with_documents,
     support_bot,
     research_agent,
     invoice_extractor,
