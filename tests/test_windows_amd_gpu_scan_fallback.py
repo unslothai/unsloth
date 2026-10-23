@@ -404,7 +404,11 @@ def _installer_scan_block() -> str:
     return src[start:end]
 
 
-def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]], cim_error: bool = False) -> dict:
+def _run_installer_scan(
+    tmp_path: Path,
+    adapters: list[tuple[str, int]],
+    cim_error: bool = False,
+) -> dict:
     items = ", ".join(
         f"[pscustomobject]@{{ Name = '{name}'; ConfigManagerErrorCode = {code} }}"
         for name, code in adapters
