@@ -1337,7 +1337,11 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None" in src
+    at = src.index("pipe._unsloth_phase_seeds = (")
+    window = " ".join(src[at : at + 300].split())  # the formatter may wrap the expression
+    assert (
+        "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None" in window
+    )
 
 
 def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
@@ -1418,7 +1422,9 @@ def test_the_setup_oom_retry_frees_what_the_failed_setup_allocated(monkeypatch):
     assert policy == dm.OFFLOAD_GROUP and dm.applied_plan(pipe, plan).estimates["setup_oom_retry"]
     assert alive_at_retry == [False]
     assert scratch_refs[0]() is None
-    assert getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR, None) is None  # cleared once the retry took over
+    assert (
+        getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR, None) is None
+    )  # cleared once the retry took over
 
 
 def test_a_stored_setup_failure_keeps_its_kind_but_not_its_traceback():
