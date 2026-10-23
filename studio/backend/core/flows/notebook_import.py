@@ -240,6 +240,8 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         reader.visit(tree)
     if _category(name) == "decision":
         reader.unsupported.add("decision fine-tuning (use the Train page)")
+    elif _category(name) == "cpt":
+        reader.unsupported.add("continued pretraining on raw text (open it in Colab)")
     found, tune = reader.found, dict(reader.tune)
     report: dict[str, Any] = {
         "imported": [],

@@ -341,3 +341,13 @@ def test_no_step_or_epoch_setting_keeps_the_trainers_three_epochs():
     )
     tune = _tune(doc)
     assert "max_steps" not in tune and tune["num_epochs"] == 3
+
+
+def test_a_cpt_notebook_is_not_imported_as_sft():
+    doc, report = notebook_import.read_notebook(
+        _plain(
+            "dataset = load_dataset('imdb', split = 'train')", "args = SFTConfig(max_steps = 60)"
+        ),
+        "Mistral_v0.3_(7B)-CPT.ipynb",
+    )
+    assert doc is None and any("continued pretraining" in line for line in report["unsupported"])
