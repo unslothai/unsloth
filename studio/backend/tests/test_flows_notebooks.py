@@ -457,3 +457,16 @@ def test_other_trl_objectives_are_reported_not_imported_as_sft(trainer):
             "x.ipynb",
         )
         assert doc is not None, ok
+
+
+def test_streaming_is_dropped_on_apple_silicon(monkeypatch):
+    nb = _plain(
+        "dataset = load_dataset('a/b', split = 'train', streaming = True)",
+        "args = SFTConfig(max_steps = 30)",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "x.ipynb")
+    assert _tune(doc)["dataset_streaming"] is True
+    monkeypatch.setattr(notebook_import, "_on_mlx", lambda: True)
+    doc, report = notebook_import.read_notebook(nb, "x.ipynb")
+    assert "dataset_streaming" not in _tune(doc)
+    assert any("Apple Silicon" in line for line in report["approximated"])

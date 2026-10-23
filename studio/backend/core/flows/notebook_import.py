@@ -245,6 +245,14 @@ def _cells(data: bytes) -> list[str]:
     return [_source(c) for c in cells if isinstance(c, dict) and c.get("cell_type") == "code"]
 
 
+def _on_mlx() -> bool:
+    try:
+        from utils.hardware import hardware
+        return hardware.DEVICE == hardware.DeviceType.MLX
+    except Exception:
+        return False
+
+
 def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[dict], dict]:
     """(flow document or None, report). None means Studio cannot run this notebook: open it in Colab."""
     if len(data) > MAX_NOTEBOOK_BYTES:
@@ -310,12 +318,16 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
             f"Streaming: Studio's {found['task']} training loads the whole dataset instead"
         )
     elif tune.get("dataset_streaming") and (
-        tune.get("train_on_completions") or not tune.get("max_steps")
+        tune.get("train_on_completions") or not tune.get("max_steps") or _on_mlx()
     ):
-        # The training route refuses streaming with responses-only loss or without a step count.
+        # The training route refuses streaming with responses-only loss, without a step count, or on MLX.
         tune.pop("dataset_streaming")
         why = (
-            "responses-only training" if tune.get("train_on_completions") else "training by epochs"
+            "responses-only training"
+            if tune.get("train_on_completions")
+            else "training by epochs"
+            if not tune.get("max_steps")
+            else "Apple Silicon training"
         )
         report["approximated"].append(f"Streaming: Studio loads the whole dataset for {why}")
     tune["base_model"] = found["model"]

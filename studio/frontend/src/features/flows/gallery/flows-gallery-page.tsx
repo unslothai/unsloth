@@ -43,6 +43,7 @@ import {
 import { MediaThumb } from "../editor/media";
 import type { FlowKind, FlowRecord, FlowSummary } from "../types";
 import { NotebooksSection } from "./notebooks-section";
+import { notebookName } from "./notebooks";
 import { templateDocument } from "./templates";
 
 const KIND_STYLE: Record<
@@ -213,9 +214,11 @@ function ImportDialog({
   const submit = useCallback(async (data: Blob | string, name?: string) => {
     setBusy(true);
     try {
+      // A picked or dropped file carries its own name; only a notebook goes to the notebook importer.
+      const notebook = notebookName(data, name);
       setResult(
-        name?.toLowerCase().endsWith(".ipynb")
-          ? await importNotebook(data, name)
+        notebook
+          ? await importNotebook(data, notebook)
           : await importFlow(data, name),
       );
     } catch (error) {

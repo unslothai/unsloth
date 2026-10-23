@@ -8,7 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { notebookActions, visibleNotebooks } = await import(
+const { notebookActions, notebookName, visibleNotebooks } = await import(
   "../src/features/flows/gallery/notebooks.ts"
 );
 type Entry = import("../src/features/flows/api.ts").NotebookEntry;
@@ -68,4 +68,12 @@ test("templates list first, Colab-only last, and search matches the file name", 
     visibleNotebooks([GRPO, GEMMA, ALPACA], "grpo").map((e) => e.notebook_file),
     [GRPO.notebook_file],
   );
+});
+
+test("a picked or dropped .ipynb file goes to the notebook importer by its own name", () => {
+  const file = new File(["{}"], "Llama3.1_(8B)-Alpaca.ipynb");
+  assert.equal(notebookName(file), "Llama3.1_(8B)-Alpaca.ipynb");
+  assert.equal(notebookName(new File(["{}"], "story.unslothflow")), null);
+  assert.equal(notebookName('{"nodes": []}'), null);
+  assert.equal(notebookName(new Blob(["{}"]), "x.ipynb"), "x.ipynb");
 });

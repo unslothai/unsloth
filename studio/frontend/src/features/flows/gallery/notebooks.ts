@@ -53,3 +53,16 @@ export function visibleNotebooks(
     )
     .sort((a, b) => rank(a) - rank(b));
 }
+
+/** The filename to import as an Unsloth notebook (a picked or dropped `.ipynb` file), else null. */
+export function notebookName(
+  data: Blob | string,
+  name?: string,
+): string | null {
+  const picked =
+    name ??
+    (typeof data === "object" && typeof (data as File).name === "string"
+      ? (data as File).name
+      : undefined);
+  return picked?.toLowerCase().endsWith(".ipynb") ? picked : null;
+}
