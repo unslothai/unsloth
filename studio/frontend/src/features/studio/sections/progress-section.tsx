@@ -287,7 +287,7 @@ export function ProgressSection({
       icon={<HugeiconsIcon icon={ChartAverageIcon} className="size-5" />}
       title={t("studio.progress.title")}
       description={data.message || t("studio.progress.liveMetrics")}
-      accent="emerald"
+      accent="neutral"
       className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
       headerAction={
         <div className="flex items-center gap-2">

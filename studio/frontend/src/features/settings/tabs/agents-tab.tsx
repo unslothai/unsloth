@@ -1277,7 +1277,7 @@ export function AgentsTab() {
                           {localDetection &&
                           loaded &&
                           detectedAgents.has(agent.id) ? (
-                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                            <span className="shrink-0 rounded-full bg-wash-10 px-2 py-1 text-ui-10 leading-none font-semibold text-foreground">
                               {t("settings.agents.quickstart.installed")}
                             </span>
                           ) : null}

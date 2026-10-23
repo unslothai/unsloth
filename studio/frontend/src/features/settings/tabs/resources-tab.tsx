@@ -967,11 +967,11 @@ export function ResourcesTab() {
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
                     ) : sharedSplit ? (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span className="shrink-0 rounded-full bg-wash-10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-foreground">
                         {percentText}
                       </span>
                     ) : (
-                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                      <span className="shrink-0 rounded-full bg-wash-10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-foreground">
                         {percentText}{" "}
                         {t("settings.resources.gpu.vramUtilization")}
                       </span>

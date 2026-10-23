@@ -317,8 +317,8 @@ export function GuidedTour({
                   />
                   {/* Rounded to match the card. A square-cornered rectangle here reads as a
                       second, boxier outline whenever it is not clipped to the card's radius. */}
-                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-[28px] bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
-                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-control-accent/20 blur-2xl dark:bg-control-accent/26" />
+                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-[28px] bg-gradient-to-b from-foreground/6 via-foreground/2 to-transparent dark:from-foreground/8 dark:via-foreground/4" />
+                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-wash-8 blur-2xl dark:bg-wash-10" />
                   <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl dark:bg-cyan-300/24" />
 
                   <div className="relative p-5">
@@ -326,7 +326,7 @@ export function GuidedTour({
                       <div className="min-w-0">
                         <div className="inline-flex items-center gap-2 rounded-full bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-2.5 py-1 text-ui-10 font-mono text-foreground/60 ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-zinc-200/75 dark:ring-[rgb(255_255_255_/_calc(0.14*var(--contrast-edge-gain,1)))]">
                           {idx + 1}/{total}
-                          <span className="size-1 rounded-full bg-control-accent/70" />
+                          <span className="size-1 rounded-full bg-muted-foreground" />
                           guided tour
                         </div>
                         <DialogPrimitive.Title

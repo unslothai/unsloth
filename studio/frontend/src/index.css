@@ -6109,11 +6109,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 			var(--chip-tint, transparent) 12%,
 			transparent
 		);
-		color: color-mix(
-			in srgb,
-			var(--control-accent) 60%,
-			var(--foreground)
-		);
+		color: var(--foreground);
 	}
 }
 

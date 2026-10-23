@@ -1171,7 +1171,7 @@ export function ExportPage() {
           icon={<HugeiconsIcon icon={PackageIcon} className="size-5" />}
           title="Export Configuration"
           description="Select source, method, and quantization"
-          accent="emerald"
+          accent="neutral"
           featured={true}
           className="ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >

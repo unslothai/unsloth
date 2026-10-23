@@ -2392,7 +2392,7 @@ export function ChatProvidersSettings({
             onClick={openAddProvider}
             className="group/add flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
           >
-            <span className="flex min-w-0 items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-colors group-hover/add:border-control-accent/25 group-hover/add:text-control-accent">
+            <span className="flex min-w-0 items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-colors group-hover/add:border-wash-25 group-hover/add:text-foreground">
               <HugeiconsIcon icon={PlusSignIcon} className="size-4 shrink-0" />
               <span>Add connection</span>
             </span>
@@ -2439,12 +2439,12 @@ export function ChatProvidersSettings({
                           <span className="truncate text-sm font-medium text-foreground">
                             {provider.name}
                           </span>
-                          <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
+                          <span className="shrink-0 rounded-full border border-wash-15 bg-wash-8 px-1.5 py-0.5 text-ui-10 leading-none text-foreground">
                             {provider.models.length}{" "}
                             {provider.models.length === 1 ? "model" : "models"}
                           </span>
                           {isDecisionConnection(provider) ? (
-                            <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
+                            <span className="shrink-0 rounded-full border border-wash-15 bg-wash-8 px-1.5 py-0.5 text-ui-10 leading-none text-foreground">
                               {t("settings.apiKeys.decisionApi.title")}
                             </span>
                           ) : null}

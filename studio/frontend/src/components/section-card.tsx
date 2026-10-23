@@ -8,7 +8,7 @@ interface SectionCardProps {
   icon: ReactNode;
   title: string;
   description: string;
-  accent?: "emerald" | "indigo" | "orange" | "blue";
+  accent?: "neutral" | "indigo" | "orange" | "blue";
   featured?: boolean;
   className?: string;
   badge?: string;
@@ -17,10 +17,9 @@ interface SectionCardProps {
 }
 
 const accentStyles = {
-  // Brand accent variant; follows the active palette via --control-accent.
-  emerald: {
-    border: "ring-control-accent/20",
-    iconBox: "ring-control-accent/25 bg-control-accent/10 text-control-accent",
+  neutral: {
+    border: "ring-wash-15",
+    iconBox: "ring-border bg-muted text-foreground",
   },
   indigo: {
     border: "ring-indigo-500/20",
@@ -43,7 +42,7 @@ export function SectionCard({
   icon,
   title,
   description,
-  accent = "emerald",
+  accent = "neutral",
   featured,
   className,
   badge,
@@ -61,7 +60,7 @@ export function SectionCard({
       )}
     >
       {featured && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-control-accent/[0.04] to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-foreground/[0.02] to-transparent" />
       )}
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -77,7 +76,7 @@ export function SectionCard({
           <div className="flex items-center gap-2 pb-1">
             <h3 className="text-sm font-semibold">{title}</h3>
             {badge && (
-              <span className="rounded-full bg-control-accent/15 px-2 py-0.5 text-ui-10 font-semibold text-control-accent">
+              <span className="rounded-full bg-wash-10 px-2 py-0.5 text-ui-10 font-semibold text-foreground">
                 {badge}
               </span>
             )}

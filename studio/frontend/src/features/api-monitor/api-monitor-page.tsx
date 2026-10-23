@@ -1364,9 +1364,7 @@ export function ApiMonitorPage(): ReactElement {
           <div className="flex min-w-0 items-center gap-3">
             <span
               className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
-              style={
-                { "--chip-tint": "var(--control-accent)" } as CSSProperties
-              }
+              style={{ "--chip-tint": "var(--foreground)" } as CSSProperties}
             >
               <HugeiconsIcon
                 icon={ApiIcon}
