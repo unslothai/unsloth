@@ -52,8 +52,6 @@ def test_reserve_helper_is_zero_at_the_default_and_off_cuda(fraction):
     assert user_budget_reserve_bytes("cuda", None) == 0
 
 
-
-
 def test_image_vae_tile_budget_reads_free_less_the_reserve(fraction, card, monkeypatch):
     """#14816 r8: a lowered budget prices the floor tile, so the runtime tile must not grow into the reserve."""
     from core.inference import diffusion_vae_tiling as vt
@@ -95,8 +93,6 @@ def test_image_vae_floor_shortfall_charges_the_reserve(fraction, card, monkeypat
     assert vt.floor_shortfall(vae, z)
 
 
-
-
 def test_fused_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkeypatch):
     from core.inference import diffusion_vae_fused as F
 
@@ -123,8 +119,6 @@ def test_fused_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkey
     assert F._tile_batch_cap(vae, z) == F._TILE_BATCH_MAX
 
 
-
-
 def test_h3_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkeypatch):
     from core.inference import video_minimax_h3_vae as H
 
@@ -136,8 +130,6 @@ def test_h3_vae_tile_batch_reads_free_less_the_reserve(fraction, card, monkeypat
     fraction["value"] = 0.50
     assert H._tile_batch_size(z) == min(H._TILE_BATCH_MAX, 2)
     assert H._tile_batch_size(z) < default
-
-
 
 
 def test_video_vae_free_bytes_less_the_reserve(fraction, card):
@@ -162,7 +154,6 @@ def test_untiled_video_decode_stays_tiled_when_only_raw_free_fits(fraction, card
     assert U._free_bytes(torch.device("cuda", 0)) >= gate
     fraction["value"] = 0.50
     assert U._free_bytes(torch.device("cuda", 0)) < gate
-
 
 
 _COMMITTED = ["--offload-to-cpu", "--diffusion-fa", "--max-vram", "-1", "--stream-layers"]
@@ -399,8 +390,6 @@ def test_h3_single_card_refusal_checks_the_rounded_spare(fraction, monkeypatch, 
     raw = reserve + GIB + 64 * MIB
     out = launch_at(raw)
     assert out[2] == "-3.43" and raw + float(out[2]) * GIB > 0
-
-
 
 
 def test_encoder_prefetch_window_reads_free_less_the_reserve(fraction, card):

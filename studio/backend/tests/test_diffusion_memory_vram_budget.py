@@ -115,8 +115,6 @@ def test_unreadable_setting_keeps_the_planner_budget(monkeypatch):
     assert dm._safe_device_budget_mib(card) == default
 
 
-
-
 def test_encoder_only_secondary_card_honours_the_budget(fraction, monkeypatch):
     import core.inference.diffusion_multigpu as mg
     from core.inference.diffusion_layer_split_plan import secondary_reserve_mib
@@ -422,8 +420,6 @@ def test_video_h3_residency_budget_keeps_the_reserve_deficit(fraction, monkeypat
     )  # the plain free reading still never goes negative
 
 
-
-
 def test_video_request_available_reading_charges_the_reserve(fraction, monkeypatch):
     import core.inference.video as vid
     from utils import hardware
@@ -632,8 +628,6 @@ def test_primary_card_rank_uses_the_reserve_the_planner_enforces(fraction, monke
     safe = {o: dm._safe_device_budget_mib(_card(f >> 20, t >> 20)) for o, (f, t) in cards.items()}
     assert safe[1] > safe[0]
     assert dd.rank_cuda_ordinals([0, 1]) == [1, 0]
-
-
 
 
 @pytest.fixture
