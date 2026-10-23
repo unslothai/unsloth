@@ -1519,15 +1519,18 @@ def _registered_generations():
     return {g for slot in loading._MEDIA_REGISTERED.values() for g in slot}
 
 
-def test_another_accounts_refused_unload_keeps_this_accounts_registration(
-    monkeypatch, fast_polls
-):
+def test_another_accounts_refused_unload_keeps_this_accounts_registration(monkeypatch, fast_polls):
     # Managed multi-user install: another account sees the resident slot, but the unload route
     # refuses it for that account. The owner's registration must survive.
     _late_unload_scenario(monkeypatch, post_s = (0.05,))
     fake = loading.route_json
 
-    async def route_json(method, path, caller = None, **kw):
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        **kw,
+    ):
         if path == "/api/inference/video/unload" and caller.account_id == "other":
             raise ToolError("This model was loaded by another account")
         return await fake(method, path, caller = caller, **kw)
@@ -1587,7 +1590,12 @@ def test_a_newer_load_waits_for_a_late_unload_already_sent(monkeypatch, fast_pol
     fake = loading.route_json
     state.update(unloading = False, overlaps = [])
 
-    async def route_json(method, path, caller = None, **kw):
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        **kw,
+    ):
         if path == "/api/inference/video/load":
             state["overlaps"].append(state["unloading"])
         if path == "/api/inference/video/unload":

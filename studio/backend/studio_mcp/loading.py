@@ -989,7 +989,10 @@ def _settle_media_generation(
 
 
 def _newer_media_outcomes(
-    key: tuple[str, str], generation: int, *, preparing: bool = True
+    key: tuple[str, str],
+    generation: int,
+    *,
+    preparing: bool = True,
 ) -> list[asyncio.Future]:
     """Newer requests of the slot, from any account, whose outcome is not known yet.
 
