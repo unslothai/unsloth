@@ -1495,6 +1495,9 @@ def embedding_sft() -> B:
             "max_seq_length": 1024,
             "batch_size": 64,
             "gradient_accumulation_steps": 2,
+            # The notebook's dataset has 4.4M rows; stream the first 20k instead of downloading it all.
+            "dataset_streaming": True,
+            "dataset_slice_end": 19999,
         },
         export = {"format": "gguf", "quant": "q4_k_m"},
         tags = ["embedding"],

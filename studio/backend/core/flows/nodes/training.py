@@ -22,7 +22,13 @@ TASK_FLAGS = {
     "embedding": {"is_embedding": True},
 }
 # Optional settings sent only when filled in, so a flow that leaves them blank starts the same run as before.
-OPTIONAL_INTS = ("batch_size", "gradient_accumulation_steps", "warmup_steps", "vision_image_size")
+OPTIONAL_INTS = (
+    "batch_size",
+    "gradient_accumulation_steps",
+    "warmup_steps",
+    "vision_image_size",
+    "dataset_slice_end",
+)
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
@@ -54,6 +60,8 @@ async def finetune(ctx: NodeContext) -> dict:
     for key in OPTIONAL_INTS:
         if ctx.params.get(key) not in (None, ""):
             config[key] = int(ctx.params[key])
+    if ctx.params.get("dataset_streaming"):
+        config["dataset_streaming"] = True
     if ctx.params.get("weight_decay") not in (None, ""):
         config["weight_decay"] = float(ctx.params["weight_decay"])
     mapping = ctx.params.get("custom_format_mapping")
