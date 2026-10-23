@@ -1050,9 +1050,7 @@ def _link_identity() -> Any:
 
 
 def _registry(identity: Any) -> Any:
-    registry = identity.Registry()
-    registry.load()
-    return registry
+    return identity.Registry().load()
 
 
 def _record_address(identity: Any, node_id: str, host: str, port: int) -> None:
@@ -1331,26 +1329,16 @@ def _link_nodes(verify: bool = True) -> List[Node]:
                 _NATIVE[peer.node_id] = native_port
         elif not verify:
             native_port = _NATIVE.get(peer.node_id)
-        if native_port:
-            node = Node(
-                host = host,
-                rpc_port = port,
-                node_id = peer.node_id,
-                transport = "native_tls",
-                relay = endpoint,
-                name = getattr(peer, "name", None),
-                native_port = native_port,
-                tls_fp = str(peer.fingerprint).lower(),
-            )
-        else:
-            node = Node(
-                host = host,
-                rpc_port = port,
-                node_id = peer.node_id,
-                transport = "link",
-                relay = endpoint,
-                name = getattr(peer, "name", None),
-            )
+        node = Node(
+            host = host,
+            rpc_port = port,
+            node_id = peer.node_id,
+            transport = "native_tls" if native_port else "link",
+            relay = endpoint,
+            name = getattr(peer, "name", None),
+            native_port = native_port or 0,
+            tls_fp = str(peer.fingerprint).lower() if native_port else None,
+        )
         with _LINKS_LOCK:
             _LINK_ENDPOINTS[node.endpoint] = peer.node_id
             for old in [

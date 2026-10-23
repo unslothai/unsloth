@@ -273,9 +273,7 @@ def pair(
     """Print a one-time token that adds one worker to this machine's cluster."""
     identity = _link(crypto = True)
     from studio.cluster_link import PAIR_PORT_DEFAULT
-    from studio.cluster_link.pairing import PairingWindow
-
-    from studio.cluster_link.pairing import PairingError
+    from studio.cluster_link.pairing import PairingError, PairingWindow
 
     seconds = parse_duration(ttl)
     try:
@@ -337,11 +335,7 @@ def join(
     """Pair this machine to a master as a worker."""
     _link(crypto = True)
     from studio.cluster_link.pairing import PairingError, PairingUnconfirmed, join as join_cluster
-
-    try:
-        from studio.cluster_link.tokens import TokenError
-    except ImportError:
-        TokenError = PairingError
+    from studio.cluster_link.tokens import TokenError
 
     # Only stdin or a hidden prompt: a token in argv is readable by every local user while join runs.
     if token_stdin:

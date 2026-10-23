@@ -58,49 +58,57 @@ def pem_fingerprint(pem: bytes) -> str:
     return tls.fingerprint(_der_of_pem(pem))
 
 
-def _leaf(public_key, ca_key, ca_cert, node_id: str, role: str, days: int):
-    x509, hashes, _, _, eku, name_oid = _x509()
+_KEY_USAGES = (
+    "digital_signature",
+    "content_commitment",
+    "key_encipherment",
+    "data_encipherment",
+    "key_agreement",
+    "key_cert_sign",
+    "crl_sign",
+    "encipher_only",
+    "decipher_only",
+)
+
+
+def _build_cert(subject, issuer, public_key, signing_key, days: int, path_length, usages, extras):
+    """A certificate: a CA when ``path_length`` is not None, ``usages`` its key usages, ``extras``
+    its further (non-critical) extensions."""
+    x509, hashes, _, _, _, _ = _x509()
     now = _now()
-    return (
+    builder = (
         x509.CertificateBuilder()
-        .subject_name(
-            x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, f"unsloth {role} {node_id}")])
-        )
-        .issuer_name(ca_cert.subject)
+        .subject_name(subject)
+        .issuer_name(issuer)
         .public_key(public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(minutes = 5))
         .not_valid_after(now + datetime.timedelta(days = days))
-        .add_extension(x509.BasicConstraints(ca = False, path_length = None), critical = True)
         .add_extension(
-            x509.KeyUsage(
-                digital_signature = True,
-                content_commitment = False,
-                key_encipherment = False,
-                data_encipherment = False,
-                key_agreement = True,
-                key_cert_sign = False,
-                crl_sign = False,
-                encipher_only = False,
-                decipher_only = False,
-            ),
+            x509.BasicConstraints(ca = path_length is not None, path_length = path_length),
             critical = True,
         )
-        .add_extension(x509.ExtendedKeyUsage([eku.SERVER_AUTH, eku.CLIENT_AUTH]), critical = False)
-        .add_extension(
-            x509.SubjectAlternativeName(
-                [
-                    x509.UniformResourceIdentifier(tls.NODE_URI_PREFIX + node_id),
-                    x509.UniformResourceIdentifier(tls.ROLE_URI_PREFIX + role),
-                ]
-            ),
-            critical = False,
-        )
-        .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical = False
-        )
-        .sign(ca_key, hashes.SHA256())
+        .add_extension(x509.KeyUsage(**{u: u in usages for u in _KEY_USAGES}), critical = True)
     )
+    for extension in extras:
+        builder = builder.add_extension(extension, critical = False)
+    return builder.sign(signing_key, hashes.SHA256())
+
+
+def _leaf(public_key, ca_key, ca_cert, node_id: str, role: str, days: int):
+    x509, _, _, _, eku, name_oid = _x509()
+    subject = x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, f"unsloth {role} {node_id}")])
+    san = [
+        x509.UniformResourceIdentifier(tls.NODE_URI_PREFIX + node_id),
+        x509.UniformResourceIdentifier(tls.ROLE_URI_PREFIX + role),
+    ]
+    extras = [
+        x509.ExtendedKeyUsage([eku.SERVER_AUTH, eku.CLIENT_AUTH]),
+        x509.SubjectAlternativeName(san),
+        x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+    ]
+    usages = ("digital_signature", "key_agreement")
+    return _build_cert(subject, ca_cert.subject, public_key, ca_key, days, None, usages, extras)
 
 
 def _identity_dir() -> Path:
@@ -143,36 +151,12 @@ def _load_ca():
 
 
 def _create_ca(cluster_id: str):
-    x509, hashes, _, ec, _, name_oid = _x509()
+    x509, _, _, ec, _, name_oid = _x509()
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, f"unsloth cluster {cluster_id}")])
-    now = _now()
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(minutes = 5))
-        .not_valid_after(now + datetime.timedelta(days = ROOT_DAYS))
-        .add_extension(x509.BasicConstraints(ca = True, path_length = 0), critical = True)
-        .add_extension(
-            x509.KeyUsage(
-                digital_signature = False,
-                content_commitment = False,
-                key_encipherment = False,
-                data_encipherment = False,
-                key_agreement = False,
-                key_cert_sign = True,
-                crl_sign = True,
-                encipher_only = False,
-                decipher_only = False,
-            ),
-            critical = True,
-        )
-        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical = False)
-        .sign(key, hashes.SHA256())
-    )
+    ski = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
+    usages = ("key_cert_sign", "crl_sign")
+    cert = _build_cert(name, name, key.public_key(), key, ROOT_DAYS, 0, usages, [ski])
     # Certificate first: the key is the marker of an existing root, so an interrupted write never
     # leaves a key whose certificate is missing (a lone certificate is simply overwritten next time).
     write_private(_ca_dir() / "root.pem", _cert_pem(cert))
@@ -212,11 +196,15 @@ def _create_master_identity() -> LocalIdentity:
     node_id = secrets.token_hex(8)
     key = ec.generate_private_key(ec.SECP256R1())
     cert = _leaf(key.public_key(), ca_key, ca_cert, node_id, "master", MASTER_CERT_DAYS)
-    d = private_dir(_identity_dir())
-    write_private(d / "key.pem", _key_pem(key))
-    write_private(d / "cert.pem", _cert_pem(cert))
-    write_private(d / "root.pem", _cert_pem(ca_cert))
     meta = {"node_id": node_id, "role": "master", "cluster_id": cluster_id}
+    return _write_identity(meta, _key_pem(key), _cert_pem(cert), _cert_pem(ca_cert))
+
+
+def _write_identity(meta: dict, key_pem: bytes, cert_pem: bytes, root_pem: bytes) -> LocalIdentity:
+    d = private_dir(_identity_dir())
+    write_private(d / "key.pem", key_pem)
+    write_private(d / "cert.pem", cert_pem)
+    write_private(d / "root.pem", root_pem)
     write_private(d / "identity.json", json.dumps(meta).encode("utf-8"))
     return _local_identity(meta)
 
@@ -237,15 +225,10 @@ def save_worker_identity(
     root_pem: bytes,
     agent_port: Optional[int] = None,
 ) -> LocalIdentity:
-    d = private_dir(_identity_dir())
-    write_private(d / "key.pem", key_pem)
-    write_private(d / "cert.pem", cert_pem)
-    write_private(d / "root.pem", root_pem)
     meta = {"node_id": node_id, "role": "worker", "cluster_id": cluster_id}
     if agent_port:
         meta["agent_port"] = int(agent_port)
-    write_private(d / "identity.json", json.dumps(meta).encode("utf-8"))
-    return _local_identity(meta)
+    return _write_identity(meta, key_pem, cert_pem, root_pem)
 
 
 def worker_agent_port() -> Optional[int]:
@@ -258,14 +241,13 @@ def worker_agent_port() -> Optional[int]:
 
 
 def new_worker_key_and_csr() -> Tuple[bytes, bytes]:
-    x509, hashes, _, ec, _, name_oid = _x509()
+    x509, hashes, serialization, ec, _, name_oid = _x509()
     key = ec.generate_private_key(ec.SECP256R1())
     csr = (
         x509.CertificateSigningRequestBuilder()
         .subject_name(x509.Name([x509.NameAttribute(name_oid.COMMON_NAME, "unsloth worker")]))
         .sign(key, hashes.SHA256())
     )
-    _, _, serialization, _, _, _ = _x509()
     return _key_pem(key), csr.public_bytes(serialization.Encoding.PEM)
 
 
@@ -309,19 +291,24 @@ def own_cert_pem() -> bytes:
     return (_identity_dir() / "cert.pem").read_bytes()
 
 
-def forget_identity() -> None:
-    """Drop this node's identity and registry (``unsloth cluster leave`` on a worker)."""
-    for path in (
-        _identity_dir() / "identity.json",
-        _identity_dir() / "key.pem",
-        _identity_dir() / "cert.pem",
-        _identity_dir() / "root.pem",
-        state_dir() / "peers.json",
-    ):
+def _unlink(*paths: Path) -> None:
+    for path in paths:
         try:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def forget_identity() -> None:
+    """Drop this node's identity and registry (``unsloth cluster leave`` on a worker)."""
+    d = _identity_dir()
+    _unlink(
+        d / "identity.json",
+        d / "key.pem",
+        d / "cert.pem",
+        d / "root.pem",
+        state_dir() / "peers.json",
+    )
 
 
 @contextlib.contextmanager
@@ -334,11 +321,29 @@ def identity_lock() -> Iterator[None]:
 def forget_master() -> None:
     """Drop a master's identity, its cluster root and registry."""
     forget_identity()
-    for path in (_ca_dir() / "root_key.pem", _ca_dir() / "root.pem"):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+    _unlink(_ca_dir() / "root_key.pem", _ca_dir() / "root.pem")
+
+
+def lock_fd(fd: int, blocking: bool = True) -> None:
+    """An exclusive lock on ``fd``: waits for it, or raises OSError at once when not ``blocking``."""
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+
+
+def unlock_fd(fd: int) -> None:
+    """Release lock_fd's lock and close ``fd``."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    os.close(fd)
 
 
 @contextlib.contextmanager
@@ -347,24 +352,12 @@ def _locked(path: Path) -> Iterator[None]:
     fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_fd(fd)
         except OSError as exc:
             raise RuntimeError(f"could not lock {path}: {exc}") from None
         yield
     finally:
-        try:
-            if os.name == "nt":
-                import msvcrt
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
-        os.close(fd)
+        unlock_fd(fd)
 
 
 class Registry:

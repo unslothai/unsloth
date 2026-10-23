@@ -20,34 +20,29 @@ import time
 from .splice import (
     STREAM_LIMIT,
     SpliceSession,
+    accept_loop,
     close_writer,
+    drop_socket as _drop,
     local_client_is_ours,
     socket_splice,
     splice,
     threaded_sessions,
     tune_raw_socket,
     tune_socket,
+    until_unauthorized,
+    watch_authorized,
 )
 
 logger = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT_S = 10.0
 FIRST_BYTE_TIMEOUT_S = 30.0
-REPLY_TIMEOUT_S = 10.0
 # Covers the agent's 60 s RPC_READY_TIMEOUT_S when open_rpc first leaves native mode.
 OPEN_RPC_REPLY_TIMEOUT_S = 75.0
 # Lets a client reconnect while its last session is still closing without being refused as busy.
 BUSY_GRACE_S = 0.25
 REVALIDATE_S = 2.0
 NATIVE_CLOSE_RETRY_MAX_S = 30.0
-
-
-def _drop(sock: Any) -> None:
-    for step in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
-        try:
-            step()
-        except (OSError, ValueError):
-            pass
 
 
 class RelayError(RuntimeError):
@@ -74,6 +69,30 @@ class _Relay:
     @property
     def endpoint(self) -> str:
         return f"127.0.0.1:{self.local_port}"
+
+
+def _opened(
+    relay: _Relay,
+    reply: Any,
+    first: bytes,
+    exc: Optional[BaseException] = None,
+    threaded: bool = False,
+) -> bool:
+    """Record how an open_rpc went: True and the stream counted for rpc_ok, else the error."""
+    if exc is not None:
+        relay.last_error = str(exc)
+        logger.warning("cluster relay %s: %s", relay.node_id, exc)
+        return False
+    if reply.get("type") != "rpc_ok":
+        relay.last_error = str(reply.get("error") or reply.get("type"))
+        logger.warning("cluster relay %s: worker said %s", relay.node_id, relay.last_error)
+        return False
+    relay.streams += 1
+    relay.last_error = ""
+    if threaded:
+        relay.counters["threaded_streams"] = relay.counters.get("threaded_streams", 0) + 1
+    relay.counters["to_worker"] = relay.counters.get("to_worker", 0) + len(first)
+    return True
 
 
 class RelayManager:
@@ -260,26 +279,17 @@ class RelayManager:
     async def _revoke_native_when_unauthorized(
         self, relay: _Relay, pid: Optional[tls.PeerIdentity]
     ) -> None:
-        while True:
-            await asyncio.sleep(REVALIDATE_S)
-            try:
-                ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
-            except Exception:
-                ok = False
-            if ok:
-                continue
-            relay.last_error = f"{relay.node_id} is no longer paired; native session closed"
-            logger.warning("cluster relay: %s", relay.last_error)
-            break
+        await until_unauthorized(self._authorize, pid, REVALIDATE_S)
+        relay.last_error = f"{relay.node_id} is no longer paired; native session closed"
+        logger.warning("cluster relay: %s", relay.last_error)
         delay = REVALIDATE_S
         while True:
             try:
                 reply = await self._control(relay, {"type": "native_close"}, 15.0, paired = False)
-                if isinstance(reply, dict) and reply.get("type") == "ok":
-                    break
-                logger.warning(
-                    "cluster relay: %s answered native_close with %s", relay.node_id, reply
-                )
+                if not isinstance(reply, dict) or reply.get("type") != "ok":
+                    logger.warning(
+                        "cluster relay: %s answered native_close with %s", relay.node_id, reply
+                    )
                 break
             except Exception as exc:
                 logger.warning("cluster relay: could not close %s natively: %s", relay.node_id, exc)
@@ -347,7 +357,22 @@ class RelayManager:
             raise RelayError(
                 f"cannot reach {relay.node_id} at {relay.host}:{relay.agent_port}: {exc}"
             ) from None
-        pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
+        try:
+            self._check_worker(relay, writer.get_extra_info("ssl_object"), paired)
+        except RelayError:
+            await close_writer(writer, abort = True)
+            raise
+        tune_socket(writer)
+        return reader, writer
+
+    def _check_worker(
+        self,
+        relay: _Relay,
+        ssl_object: Any,
+        paired: bool = True,
+    ) -> None:
+        """RelayError unless the peer's certificate names this relay's worker (and it is paired)."""
+        pid = tls.peer_identity(ssl_object)
         ok = pid is not None and pid.role == "worker" and pid.node_id == relay.node_id
         if ok and paired:
             try:
@@ -356,12 +381,9 @@ class RelayManager:
                 logger.exception("cluster relay: authorization check failed")
                 ok = False
         if not ok:
-            await close_writer(writer, abort = True)
             raise RelayError(
                 f"{relay.host}:{relay.agent_port} is not the paired worker {relay.node_id}"
             )
-        tune_socket(writer)
-        return reader, writer
 
     async def _revoke_when_unauthorized(
         self,
@@ -370,18 +392,11 @@ class RelayManager:
         upstream: asyncio.StreamWriter,
         local: asyncio.StreamWriter,
     ) -> None:
-        while True:
-            await asyncio.sleep(REVALIDATE_S)
-            try:
-                ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
-            except Exception:
-                ok = False
-            if not ok:
-                relay.last_error = f"{relay.node_id} is no longer paired; session closed"
-                logger.warning("cluster relay: %s", relay.last_error)
-                upstream.transport.abort()
-                local.transport.abort()
-                return
+        await until_unauthorized(self._authorize, pid, REVALIDATE_S)
+        relay.last_error = f"{relay.node_id} is no longer paired; session closed"
+        logger.warning("cluster relay: %s", relay.last_error)
+        upstream.transport.abort()
+        local.transport.abort()
 
     async def _wait_idle(self, relay: _Relay) -> bool:
         if not relay.active:
@@ -407,22 +422,12 @@ class RelayManager:
             await close_writer(writer)
 
     def _accept_loop(self, relay: _Relay, listener: socket.socket) -> None:
-        while relay.listener is listener:
-            try:
-                conn, _ = listener.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                if relay.listener is not listener:
-                    return
-                time.sleep(0.05)
-                continue
-            threading.Thread(
-                target = self._on_local_threaded,
-                args = (relay, conn),
-                name = "unsloth-cluster-relay-conn",
-                daemon = True,
-            ).start()
+        accept_loop(
+            listener,
+            lambda: relay.listener is listener,
+            lambda conn, _addr: self._on_local_threaded(relay, conn),
+            "unsloth-cluster-relay-conn",
+        )
 
     def _wait_idle_threaded(self, relay: _Relay) -> bool:
         deadline = time.monotonic() + BUSY_GRACE_S
@@ -467,19 +472,11 @@ class RelayManager:
             raise RelayError(
                 f"cannot reach {relay.node_id} at {relay.host}:{relay.agent_port}: {exc}"
             ) from None
-        pid = tls.peer_identity(sock)
-        ok = pid is not None and pid.role == "worker" and pid.node_id == relay.node_id
-        if ok:
-            try:
-                ok = bool(self._authorize(pid))
-            except Exception:
-                logger.exception("cluster relay: authorization check failed")
-                ok = False
-        if not ok:
+        try:
+            self._check_worker(relay, sock)
+        except RelayError:
             _drop(sock)
-            raise RelayError(
-                f"{relay.host}:{relay.agent_port} is not the paired worker {relay.node_id}"
-            )
+            raise
         tune_raw_socket(sock)
         return sock
 
@@ -512,17 +509,10 @@ class RelayManager:
                 framing.send_frame(upstream, {"type": "open_rpc"})
                 reply = framing.recv_frame(upstream, timeout = OPEN_RPC_REPLY_TIMEOUT_S)
             except (RelayError, framing.FrameError, OSError, ssl.SSLError) as exc:
-                relay.last_error = str(exc)
-                logger.warning("cluster relay %s: %s", relay.node_id, exc)
+                _opened(relay, None, first, exc)
                 return
-            if reply.get("type") != "rpc_ok":
-                relay.last_error = str(reply.get("error") or reply.get("type"))
-                logger.warning("cluster relay %s: worker said %s", relay.node_id, relay.last_error)
+            if not _opened(relay, reply, first, threaded = True):
                 return
-            relay.streams += 1
-            relay.last_error = ""
-            relay.counters["threaded_streams"] = relay.counters.get("threaded_streams", 0) + 1
-            relay.counters["to_worker"] = relay.counters.get("to_worker", 0) + len(first)
 
             def release() -> None:
                 nonlocal claimed
@@ -530,26 +520,19 @@ class RelayManager:
                     claimed = False
                     self._unclaim(relay)
 
-            pid = tls.peer_identity(upstream)
             session = SpliceSession()
             relay.sessions.add(session)
             ended = threading.Event()
 
-            def watch() -> None:
-                while not ended.wait(REVALIDATE_S):
-                    try:
-                        ok = pid is not None and bool(self._authorize(pid))
-                    except Exception:
-                        ok = False
-                    if not ok:
-                        relay.last_error = f"{relay.node_id} is no longer paired; session closed"
-                        logger.warning("cluster relay: %s", relay.last_error)
-                        session.abort()
-                        return
+            def revoked() -> None:
+                relay.last_error = f"{relay.node_id} is no longer paired; session closed"
+                logger.warning("cluster relay: %s", relay.last_error)
+                session.abort()
 
-            threading.Thread(
-                target = watch, name = "unsloth-cluster-relay-revalidate", daemon = True
-            ).start()
+            watch_authorized(
+                self._authorize, tls.peer_identity(upstream), REVALIDATE_S, ended, revoked,
+                "unsloth-cluster-relay-revalidate",
+            )  # fmt: skip
             stream, upstream = upstream, None
             try:
                 socket_splice(
@@ -608,16 +591,10 @@ class RelayManager:
                 await framing.write_frame(upstream, {"type": "open_rpc"})
                 reply = await framing.read_frame(up_reader, timeout = OPEN_RPC_REPLY_TIMEOUT_S)
             except (RelayError, framing.FrameError, OSError, ssl.SSLError) as exc:
-                relay.last_error = str(exc)
-                logger.warning("cluster relay %s: %s", relay.node_id, exc)
+                _opened(relay, None, first, exc)
                 return
-            if reply.get("type") != "rpc_ok":
-                relay.last_error = str(reply.get("error") or reply.get("type"))
-                logger.warning("cluster relay %s: worker said %s", relay.node_id, relay.last_error)
+            if not _opened(relay, reply, first):
                 return
-            relay.streams += 1
-            relay.last_error = ""
-            relay.counters["to_worker"] = relay.counters.get("to_worker", 0) + len(first)
             upstream.write(first)
             await upstream.drain()
             stream, upstream = upstream, None

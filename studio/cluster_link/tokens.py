@@ -50,17 +50,17 @@ def _b64d(text: str) -> bytes:
 def check_addrs(addrs) -> list:
     """The address list a token may carry; the same rule decode() enforces."""
     addrs = list(addrs)
-    if (
-        not addrs
-        or len(addrs) > 16
-        or not all(isinstance(a, str) and _ADDR.match(a) for a in addrs)
-    ):
+    if not _addrs_ok(addrs):
         raise TokenError(
             "bad addresses: 1 to 16 host names or IPs, letters, digits, '.', ':' and '-' only"
         )
     if any(_is_ipv6(a) for a in addrs):
         raise TokenError("IPv6 addresses are not supported yet: use an IPv4 address or a host name")
     return addrs
+
+
+def _addrs_ok(addrs: list) -> bool:
+    return 0 < len(addrs) <= 16 and all(isinstance(a, str) and _ADDR.match(a) for a in addrs)
 
 
 def _is_ipv6(addr: str) -> bool:
@@ -102,12 +102,7 @@ def decode(token: str) -> Invite:
     if not isinstance(body, dict) or body.get("v") != VERSION:
         raise TokenError("unsupported pairing token version")
     addrs = body.get("a")
-    if (
-        not isinstance(addrs, list)
-        or not addrs
-        or len(addrs) > 16
-        or not all(isinstance(a, str) and _ADDR.match(a) for a in addrs)
-    ):
+    if not isinstance(addrs, list) or not _addrs_ok(addrs):
         raise TokenError("bad addresses")
     port = body.get("p")
     if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:

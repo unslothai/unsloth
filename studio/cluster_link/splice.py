@@ -74,6 +74,11 @@ class _Trace:
             pass
 
 
+def _new_trace(a_to_b: str, b_to_a: str) -> Optional[_Trace]:
+    path = os.environ.get(TRACE_ENV)
+    return _Trace(path, (a_to_b, b_to_a)) if path else None
+
+
 KEEPALIVE_IDLE_S = 30
 KEEPALIVE_INTERVAL_S = 10
 KEEPALIVE_PROBES = 6
@@ -81,8 +86,11 @@ KEEPALIVE_PROBES = 6
 
 def tune_socket(writer: asyncio.StreamWriter) -> None:
     sock = writer.get_extra_info("socket")
-    if sock is None:
-        return
+    if sock is not None:
+        tune_raw_socket(sock)
+
+
+def tune_raw_socket(sock: socket.socket) -> None:
     options = [
         (socket.IPPROTO_TCP, getattr(socket, "TCP_NODELAY", None), 1),
         (socket.SOL_SOCKET, getattr(socket, "SO_KEEPALIVE", None), 1),
@@ -100,13 +108,81 @@ def tune_socket(writer: asyncio.StreamWriter) -> None:
 
 
 def is_private_address(host: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(host.split("%", 1)[0])
-    except ValueError:
+    found = _endpoint(host, 0)
+    if found is None:
         return False
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-        addr = addr.ipv4_mapped
+    addr = found[0]
     return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
+def drop_socket(sock: Any) -> None:
+    for step in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
+        try:
+            step()
+        except (OSError, ValueError):
+            pass
+
+
+def accept_loop(
+    listener: socket.socket, alive: Callable[[], bool], handle: Callable[..., None], name: str
+) -> None:
+    """Hand each accepted (conn, addr) to ``handle`` on its own thread while ``alive()``."""
+    while alive():
+        try:
+            conn, addr = listener.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            if not alive():
+                return
+            time.sleep(0.05)  # EMFILE and the like: do not spin
+            continue
+        threading.Thread(target = handle, args = (conn, addr), name = name, daemon = True).start()
+
+
+def authorized(authorize: Callable[[Any], bool], pid: Any) -> bool:
+    """``authorize(pid)``, False for a missing identity or a check that raises."""
+    try:
+        return pid is not None and bool(authorize(pid))
+    except Exception:
+        return False
+
+
+async def authorized_async(authorize: Callable[[Any], bool], pid: Any) -> bool:
+    """authorized() off the event loop."""
+    try:
+        return await asyncio.to_thread(authorized, authorize, pid)
+    except Exception:
+        return False
+
+
+async def until_unauthorized(authorize: Callable[[Any], bool], pid: Any, every: float) -> None:
+    """Returns once a periodic re-check finds ``pid`` no longer paired."""
+    while True:
+        await asyncio.sleep(every)
+        if not await authorized_async(authorize, pid):
+            return
+
+
+def watch_authorized(
+    authorize: Callable[[Any], bool],
+    pid: Any,
+    every: float,
+    ended: threading.Event,
+    on_revoked: Callable[[], None],
+    name: str,
+) -> threading.Thread:
+    """until_unauthorized for the threaded path: calls ``on_revoked`` unless ``ended`` is set first."""
+
+    def watch() -> None:
+        while not ended.wait(every):
+            if not authorized(authorize, pid):
+                on_revoked()
+                return
+
+    thread = threading.Thread(target = watch, name = name, daemon = True)
+    thread.start()
+    return thread
 
 
 async def close_writer(writer: Optional[asyncio.StreamWriter], abort: bool = False) -> None:
@@ -226,8 +302,7 @@ async def splice(
     tune_socket(a_writer)
     tune_socket(b_writer)
     done: asyncio.Future = asyncio.get_running_loop().create_future()
-    trace_path = os.environ.get(TRACE_ENV)
-    trace = _Trace(trace_path, (a_to_b, b_to_a)) if trace_path else None
+    trace = _new_trace(a_to_b, b_to_a)
     a, a_pending, a_eof = _take_over(a_reader, a_writer, counters, a_to_b, done, trace)
     b, b_pending, b_eof = _take_over(b_reader, b_writer, counters, b_to_a, done, trace)
     a.peer, b.peer = b, a
@@ -325,18 +400,6 @@ def local_client_is_ours(sock: socket.socket) -> bool:
     return _loopback_owner_uid(client, server) == os.getuid()
 
 
-def tune_raw_socket(sock: socket.socket) -> None:
-    class _W:  # tune_socket reads the socket from a StreamWriter
-        def get_extra_info(
-            self,
-            name,
-            default = None,
-        ):
-            return sock if name == "socket" else default
-
-    tune_socket(_W())
-
-
 class SpliceSession:
     """One session's two sockets; ``abort`` may be called from any thread (revocation, stop)."""
 
@@ -347,9 +410,6 @@ class SpliceSession:
     def abort(self) -> None:
         self.aborted = True
         _shutdown_all(self.sockets)
-
-    def close(self) -> None:
-        pass
 
 
 def _shutdown_all(socks) -> None:
@@ -363,25 +423,20 @@ def _shutdown_all(socks) -> None:
 TLS_RECORD = 16 * 1024 + 256
 
 
-def _readable_now(sock: socket.socket) -> bool:
-    import select
-    if hasattr(select, "poll"):
-        poller = select.poll()
-        poller.register(sock.fileno(), select.POLLIN)
-        return bool(poller.poll(0))
-    return bool(select.select([sock], [], [], 0)[0])
+_WOULD_BLOCK = (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError, InterruptedError)
 
 
-def _wait_fd(sock: socket.socket, write: bool, timeout: float) -> None:
+def _wait_fd(sock: socket.socket, write: bool, timeout: float) -> bool:
+    """Wait until ``sock`` is writable (or readable); whether it is."""
     import select
+
     if hasattr(select, "poll"):
         poller = select.poll()
         poller.register(sock.fileno(), select.POLLOUT if write else select.POLLIN)
-        poller.poll(timeout * 1000.0)
-    elif write:
-        select.select([], [sock], [sock], timeout)
-    else:
-        select.select([sock], [], [sock], timeout)
+        return bool(poller.poll(timeout * 1000.0))
+    if write:
+        return bool(select.select([], [sock], [sock], timeout)[1])
+    return bool(select.select([sock], [], [sock], timeout)[0])
 
 
 class _End:
@@ -423,12 +478,7 @@ def _pump(
             with dst_lock:
                 try:
                     n = dst.send(mv[off : off + n_try])
-                except (
-                    ssl.SSLWantWriteError,
-                    ssl.SSLWantReadError,
-                    BlockingIOError,
-                    InterruptedError,
-                ):
+                except _WOULD_BLOCK:
                     n = None
             if n is None:
                 if session.aborted or end.first is not None:
@@ -453,24 +503,14 @@ def _pump(
                 with src_lock:
                     try:
                         n = src.recv_into(view)
-                    except (
-                        ssl.SSLWantReadError,
-                        ssl.SSLWantWriteError,
-                        BlockingIOError,
-                        InterruptedError,
-                    ):
+                    except _WOULD_BLOCK:
                         continue
                     while 0 < n <= len(view) - TLS_RECORD:
-                        if not src.pending() and not _readable_now(src):
+                        if not src.pending() and not _wait_fd(src, False, 0):
                             break
                         try:
                             more = src.recv_into(view[n:])
-                        except (
-                            ssl.SSLWantReadError,
-                            ssl.SSLWantWriteError,
-                            BlockingIOError,
-                            InterruptedError,
-                        ):
+                        except _WOULD_BLOCK:
                             break
                         if not more:
                             break  # EOF: the bytes in hand go first, the next read sees it again
@@ -515,8 +555,7 @@ def socket_splice(
     session.sockets = [a, b]
     if session.aborted:
         _shutdown_all(session.sockets)
-    trace_path = os.environ.get(TRACE_ENV)
-    trace = _Trace(trace_path, (a_to_b, b_to_a)) if trace_path else None
+    trace = _new_trace(a_to_b, b_to_a)
     end = _End()
     other = threading.Thread(
         target = _pump,

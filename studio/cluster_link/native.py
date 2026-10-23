@@ -51,10 +51,6 @@ def endpoint(fingerprint: str, host: str, port: int) -> str:
     return f"{TLS_SCHEME}{fingerprint}@{host}:{int(port)}"
 
 
-def is_endpoint(value: str) -> bool:
-    return str(value).startswith(TLS_SCHEME)
-
-
 def allowlist_path(port: int) -> Path:
     return run_dir() / f"rpc-allow-{int(port)}.txt"
 
