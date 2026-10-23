@@ -3437,7 +3437,7 @@ def _drafter_path_kind(path: str) -> Optional[str]:
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
 # Mirrors hub.utils.gguf._IMATRIX_WEIGHTED_RE.
 _IMATRIX_WEIGHTED_RE = re.compile(
-    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[._\-]imatrix$", re.IGNORECASE
+    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
 )
 
 

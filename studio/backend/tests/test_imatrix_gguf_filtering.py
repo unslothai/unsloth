@@ -41,6 +41,9 @@ IMATRIX_NAMES = [
     "Qwen3.5-9B-NEO-IMATRIX-MAX-MTP.imatrix.gguf",
     # A float label is no quant: llama.cpp has no imatrix-weighted F16.
     "Qwen3-8B-BF16-imatrix.gguf",
+    # mradermacher's calibration file, even when the model name carries a quant-like token.
+    "GPT-oss-20B-RoleplaySFT-mxfp4.imatrix.gguf",
+    "gemma-4-12B-it-qat-q4_0-unquantized-uncensored-heretic-v3.imatrix.gguf",
 ]
 
 MODEL_NAMES = [

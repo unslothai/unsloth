@@ -94,9 +94,10 @@ def is_mmproj_filename(filename: str) -> bool:
 # Anchored at an END of the stem, never a substring, for the reason is_mtp_drafter_path documents: a name that merely contains the word (Qwen3-Imatrix-Tuned-Q4_K_M.gguf) is a real model, while every published imatrix leads or closes with it.
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
 # llama.cpp reads an imatrix only to quantize, so a quant label before a trailing token marks imatrix-weighted
-# weights (Lewdiculous `<model>-Q4_K_M-imatrix.gguf`), not the calibration file. Float labels do not count.
+# weights (Lewdiculous `<model>-Q4_K_M-imatrix.gguf`), not the calibration file. Float labels do not count, nor does
+# `.imatrix`: mradermacher names its calibration file `<model>.imatrix.gguf`, and model names carry `mxfp4` / `q4_0`.
 _IMATRIX_WEIGHTED_RE = re.compile(
-    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[._\-]imatrix$", re.IGNORECASE
+    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
 )
 
 
