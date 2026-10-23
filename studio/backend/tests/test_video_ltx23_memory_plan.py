@@ -235,12 +235,15 @@ def test_fast_that_offloaded_is_recorded_as_a_fallback_naming_the_policy():
     assert (entry["status"], entry["value"]) == ("applied", "fast")
 
 
-def test_resident_proof_uses_the_budget_fast_was_placed_with():
+def test_resident_proof_uses_the_budget_fast_was_placed_with(monkeypatch):
     """Auto precision keeps bf16 only on a proven fit; a fast plan placed resident under its own budget is one."""
+    import core.inference.diffusion_memory as dm
     from core.inference.diffusion import _plan_proves_resident
 
-    # Free memory between the auto and the fast budget (the discrete reserve is capped at 4 GiB, fast keeps 2 GiB).
-    fast = _plan(79_500, LTX23_DIT_MIB)
+    # The discrete reserve is a flat 2 GiB, the same as fast's floor, so widen it to 8 GiB (fast keeps half) to put
+    # free memory between the auto and the fast budget.
+    monkeypatch.setattr(dm, "_reserve_mib", lambda kind, base: 8192)
+    fast = _plan(81_500, LTX23_DIT_MIB)
     assert fast.offload_policy == OFFLOAD_NONE
     assert fast.estimates["resident_required_mib"] > fast.estimates["safe_device_budget_mib"]
     assert _plan_proves_resident(fast)
