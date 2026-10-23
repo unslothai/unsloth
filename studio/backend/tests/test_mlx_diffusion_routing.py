@@ -214,8 +214,6 @@ def _img2img(engine, **extra):
     )
 
 
-
-
 def test_plain_txt2img_runs_on_mlx_and_never_loads_diffusers(rig):
     result = _txt2img(rig.engine, sampler = "default", schedule_type = "automatic", live_preview = True)
     assert result["engine"] == "mlx"
@@ -371,8 +369,6 @@ def test_status_advertises_the_fallback_workflows_while_mlx_is_resident(rig):
     assert status["hires"] == {"available": True}
 
 
-
-
 @pytest.mark.parametrize(
     "mlx_gib, diffusers_gib, budget_gib, expected",
     [
@@ -433,8 +429,6 @@ def test_the_real_fit_check_reads_the_mlx_plan_and_the_budget(tmp_path, monkeypa
     big = routing.RoutedMlxEngine(mlx_factory = lambda: mlx, budget_fn = lambda: 11 * GIB)
     assert small._engines_fit_together() is False  # 6 + 4 > 9
     assert big._engines_fit_together() is True
-
-
 
 
 def test_a_failed_fallback_reports_the_error_and_restores_mlx(rig):
@@ -527,8 +521,6 @@ def test_repo_ids_cover_both_engines(rig):
     assert rig.engine.loaded_repo_ids() == ("unsloth/Z-Image-Turbo-GGUF",)
 
 
-
-
 def test_generate_signature_is_the_union_of_both_engines(rig):
     params = inspect.signature(rig.engine.generate).parameters
     for name in (
@@ -554,3 +546,102 @@ def test_load_blocker_matrix():
     assert "VAE" in routing.load_blocker(component_files = {"vae_file": "v"})
     assert "int8" in routing.load_blocker(transformer_quant = "int8")
     assert "fp8" in routing.load_blocker(text_encoder_quant = "fp8")
+
+
+def test_unload_during_the_fallback_begin_load_waits_for_its_teardown(rig):
+    # diffusers' begin_load validates synchronously before its worker starts; an unload in that window
+    # must not return while the fallback can still allocate, nor may the fallback then generate.
+    entered, release = threading.Event(), threading.Event()
+    real_begin_load = rig.diffusers.begin_load
+
+    def _slow_begin_load(repo_id, **kwargs):
+        entered.set()
+        release.wait(5)
+        return real_begin_load(repo_id, **kwargs)
+
+    rig.diffusers.begin_load = _slow_begin_load
+    outcome: list = []
+
+    def _run():
+        try:
+            outcome.append(_img2img(rig.engine)["engine"])
+        except RuntimeError as exc:
+            outcome.append(str(exc))
+
+    worker = threading.Thread(target = _run)
+    worker.start()
+    assert entered.wait(5)
+    unloaded: list = []
+    unloader = threading.Thread(target = lambda: unloaded.append(rig.engine.unload()))
+    unloader.start()
+    time.sleep(0.05)
+    assert unloaded == []  # still draining the fallback
+    release.set()
+    unloader.join(5)
+    worker.join(5)
+    assert unloaded and unloaded[0]["loaded"] is False
+    assert outcome == [DIFFUSION_CANCELLED_MSG]
+    assert rig.diffusers._state is None
+    assert ("diffusers", "generate") not in rig.log
+
+
+def test_a_cancel_is_honoured_even_when_the_fallback_turns_ready(rig):
+    rig.diffusers.hang_load = True
+    outcome: list = []
+
+    def _run():
+        try:
+            outcome.append(_img2img(rig.engine)["engine"])
+        except RuntimeError as exc:
+            outcome.append(str(exc))
+
+    worker = threading.Thread(target = _run)
+    worker.start()
+    deadline = time.time() + 5
+    while rig.engine._fallback_cancel is None and time.time() < deadline:
+        time.sleep(0.005)
+    # The cancel and the load finishing land inside one poll interval.
+    rig.engine._fallback_cancel.set()
+    rig.diffusers._loading = False
+    rig.diffusers._state = SimpleNamespace(
+        family = _FAM,
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        timings = {},
+        gguf_path = None,
+        convert_dir = None,
+    )
+    worker.join(5)
+    assert outcome == [DIFFUSION_CANCELLED_MSG]
+    assert ("diffusers", "generate") not in rig.log
+
+
+def test_no_fallback_while_a_replacement_mlx_load_is_pending(rig):
+    # MLX keeps model A resident while model B loads; the saved load options are already B's.
+    a_identity = load_identity("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image-Turbo", "z-image")
+    rig.mlx.hang_load = True
+    real_begin_load = rig.mlx.begin_load
+
+    def _keep_resident(repo_id, **kwargs):
+        resident = rig.mlx._state
+        out = real_begin_load(repo_id, **kwargs)
+        rig.mlx._state = resident
+        return out
+
+    rig.mlx.begin_load = _keep_resident
+    rig.engine.begin_load("someone/Other-GGUF", gguf_filename = "other-Q8_0.gguf")
+    rig.log.clear()
+    with pytest.raises(RuntimeError, match = "load is in progress"):
+        _img2img(rig.engine, expected_load = a_identity)
+    assert ("diffusers", "load") not in rig.log
+    assert ("mlx", "unload") not in rig.log
+
+
+def test_an_option_mlx_never_receives_is_refused_without_a_fallback(rig, monkeypatch):
+    monkeypatch.setattr(families, "family_pipeline_available", lambda _f: False)
+    with pytest.raises(ValueError, match = "sampler choice is not supported on the MLX engine"):
+        _txt2img(rig.engine, sampler = "euler")
+    with pytest.raises(ValueError, match = "shift override"):
+        _txt2img(rig.engine, shift = 3.0)
+    assert ("mlx", "generate") not in rig.log
+    # Neutral values still run.
+    assert _txt2img(rig.engine, sampler = "default")["engine"] == "mlx"

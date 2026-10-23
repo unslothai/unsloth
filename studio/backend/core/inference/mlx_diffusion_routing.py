@@ -27,6 +27,8 @@ ENGINE_MLX = "mlx"
 ENGINE_DIFFUSERS = "diffusers"
 
 COEXIST_ENV = "UNSLOTH_DIFFUSION_MLX_COEXIST"
+# How long unload() / a new load waits for an in-flight fallback load to tear itself down.
+_FALLBACK_DRAIN_S = 120.0
 _ENABLE_TOKENS = frozenset({"1", "on", "true", "yes"})
 _DISABLE_TOKENS = frozenset({"0", "off", "false", "no"})
 _UNSET_TOKENS = frozenset({"", "auto", "none", "default"})
@@ -331,6 +333,8 @@ class RoutedMlxEngine:
         self._serving: Optional[str] = None
         self._last: Optional[dict[str, Any]] = None
         self._fallback_cancel: Optional[threading.Event] = None
+        # Set when the in-flight fallback load has finished or torn itself down; unload() waits on it.
+        self._fallback_done: Optional[threading.Event] = None
         self._active_generate_account: Optional[str] = None
         self.generate = _RoutedGenerate(self)
 
@@ -406,14 +410,22 @@ class RoutedMlxEngine:
         )
         return fits
 
-    def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
-        """A new load replaces everything: the old model's diffusers copy goes first, then MLX loads."""
+    def _drain_fallback(self) -> bool:
+        """Cancel an in-flight fallback load and wait until it has torn itself down; returns ``_diffusers_ours``."""
         with self._lock:
             self._epoch += 1
             cancel = self._fallback_cancel
-            ours = self._diffusers_ours
+            done = self._fallback_done
         if cancel is not None:
             cancel.set()
+        if done is not None and not done.wait(_FALLBACK_DRAIN_S):
+            logger.warning("mlx_routing.fallback_drain_timeout: %.0fs", _FALLBACK_DRAIN_S)
+        with self._lock:
+            return self._diffusers_ours
+
+    def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
+        """A new load replaces everything: the old model's diffusers copy goes first, then MLX loads."""
+        ours = self._drain_fallback()
         if ours:
             self._diffusers().unload()
         with self._lock:
@@ -441,9 +453,10 @@ class RoutedMlxEngine:
         mlx, diffusers = self._mlx(), self._diffusers()
         kwargs = self._diffusers_load_kwargs()
         repo_id = kwargs.pop("repo_id")
-        cancel = threading.Event()
+        cancel, done = threading.Event(), threading.Event()
         with self._lock:
             self._fallback_cancel = cancel
+            self._fallback_done = done
             self._active_generate_account = current_account_id()
         dropped = False
         started = time.perf_counter()
@@ -460,6 +473,10 @@ class RoutedMlxEngine:
             with self._lock:
                 self._diffusers_ours = True
             while True:
+                # Cancellation first: a load that turned ready after an unload or cancel is not served.
+                if cancel.is_set() or self._epoch != epoch:
+                    diffusers.unload()
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 progress = diffusers.load_progress() or {}
                 phase = progress.get("phase")
                 if phase == "ready" and getattr(diffusers, "_state", None) is not None:
@@ -469,7 +486,7 @@ class RoutedMlxEngine:
                         "Could not load the diffusers engine this request needs: "
                         f"{progress.get('error') or 'unknown error'}"
                     )
-                if cancel.is_set() or self._epoch != epoch or phase is None:
+                if phase is None:
                     diffusers.unload()
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 time.sleep(self._poll_s)
@@ -496,7 +513,9 @@ class RoutedMlxEngine:
             with self._lock:
                 if self._fallback_cancel is cancel:
                     self._fallback_cancel = None
+                    self._fallback_done = None
                     self._active_generate_account = None
+            done.set()
 
     def _accepted_identities(self) -> list[Any]:
         ids = []
@@ -544,6 +563,20 @@ class RoutedMlxEngine:
                 accepted = self._accepted_identities()
                 if accepted and expected not in accepted:
                     raise DiffusionModelReplacedError(expected, accepted[0])
+            if route.load_diffusers and (mlx.load_progress() or {}).get("phase") != "ready":
+                # A replacement load is pending (or failed) with the old model still resident: the saved load
+                # options are the replacement's, so a fallback now would serve a different model.
+                raise RuntimeError(
+                    "A diffusion load is in progress; retry once it finishes or load the model again."
+                )
+            if blocker and route.engine == ENGINE_MLX and mlx_resident:
+                mlx_call = {k: v for k, v in kwargs.items() if k in mlx_params}
+                if request_blocker(mlx_call, family = getattr(family, "name", None)) is None:
+                    # The option MLX lacks would be filtered out before MLX could refuse it: refuse here.
+                    raise ValueError(
+                        f"{blocker[0].upper()}{blocker[1:]} is not supported on the MLX engine, and "
+                        "this install has no diffusers pipeline for the model to fall back to."
+                    )
             if route.load_diffusers:
                 logger.info("mlx_routing.fallback: %s", route.reason)
                 self._load_fallback(unload_mlx = route.unload_mlx, epoch = epoch)
@@ -601,12 +634,8 @@ class RoutedMlxEngine:
             self._mlx().unload()
         else:
             self._mlx().unload(expected_account = expected_account)
-        with self._lock:
-            self._epoch += 1
-            cancel = self._fallback_cancel
-            ours = self._diffusers_ours
-        if cancel is not None:
-            cancel.set()
+        # An in-flight fallback finishes tearing down before this returns: the caller reads it as memory freed.
+        ours = self._drain_fallback()
         if ours:
             self._diffusers().unload()
         with self._lock:
