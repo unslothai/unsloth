@@ -302,7 +302,7 @@ export function ArtifactCard({
             disabled={isStreaming}
             onClick={() => open("preview")}
             aria-pressed={showing}
-            className="cursor-pointer bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] pl-3.5 pr-2.5 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none disabled:cursor-default disabled:hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+            className="btn-fill cursor-pointer pl-3.5 pr-2.5 transition-colors focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none disabled:cursor-default disabled:hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
           >
             Open in
           </button>
@@ -312,7 +312,7 @@ export function ArtifactCard({
                 type="button"
                 disabled={isStreaming}
                 aria-label="More ways to open"
-                className="flex cursor-pointer items-center bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] pl-1.5 pr-2.5 text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none aria-expanded:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] disabled:cursor-default dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:aria-expanded:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                className="btn-fill flex cursor-pointer items-center pl-1.5 pr-2.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none aria-expanded:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] disabled:cursor-default dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:aria-expanded:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
                   icon={ChevronDownStandardIcon}

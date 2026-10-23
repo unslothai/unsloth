@@ -14,7 +14,7 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
       type="button"
       onClick={onRetry}
       className={cn(
-        "mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-ui-11 font-medium text-foreground transition-colors bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+        "btn-fill mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-ui-11 font-medium text-foreground transition-colors ",
         PICKER_OPTION_FOCUS_VISIBLE_CLASS,
       )}
     >

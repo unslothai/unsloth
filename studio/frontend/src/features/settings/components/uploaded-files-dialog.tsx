@@ -674,7 +674,7 @@ export function UploadedFilesView() {
                 type="button"
                 disabled={loadingMore}
                 onClick={() => void loadChatPage(chatNextOffset, true)}
-                className="rounded-full px-3 py-1.5 text-sm font-medium bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] disabled:cursor-wait disabled:opacity-60"
+                className="btn-fill rounded-full px-3 py-1.5 text-sm font-medium disabled:cursor-wait disabled:opacity-60"
               >
                 {loadingMore ? "Loading..." : "Load more chat attachments"}
               </button>

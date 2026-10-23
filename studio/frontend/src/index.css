@@ -15,17 +15,18 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* A clickable button's fill: a grey wash in light, a white wash in dark. No border. */
+/* A clickable button's fill: the segmented toggles' track (.hub-tab-toggle in hub.css), so a filled
+   button and a toggle are the same grey in both themes, panels included. No border. */
 @utility btn-fill {
-	background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
 	&:hover {
-		background-color: rgb(0 0 0 / calc(0.09 * var(--contrast-wash-gain, 1)));
+		background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
 	}
 	&:where(.dark *) {
-		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
+		background-color: var(--hub-tab-track);
 	}
 	&:where(.dark *):hover {
-		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+		background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), transparent);
 	}
 }
 
@@ -3115,6 +3116,12 @@ html[data-chat-font] .aui-root {
 	}
 	html:not(.dark) .unsloth-model-selector-menu .btn-fill:hover {
 		background-color: color-mix(in oklab, var(--accent) 50%, transparent);
+	}
+	html.dark .unsloth-model-selector-menu .btn-fill {
+		background-color: rgb(255 255 255 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	html.dark .unsloth-model-selector-menu .btn-fill:hover {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
@@ -6497,10 +6504,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel-action {
 	/* pt-px: centred by its line box, the cap-height text sits half a pixel high. */
 	@apply inline-flex h-7 shrink-0 items-center rounded-full px-3 pt-px text-ui-12 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
-	background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
-}
-.unsloth-files-panel-action:hover {
-	background-color: rgb(0 0 0 / calc(0.09 * var(--contrast-wash-gain, 1)));
+	@apply btn-fill;
 }
 .unsloth-files-add-card:disabled {
 	@apply pointer-events-none opacity-50;

@@ -7868,7 +7868,7 @@ const MessageError: FC = () => {
           <ActionBarPrimitive.Reload asChild={true}>
             <button
               type="button"
-              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+              className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
               <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
               Retry

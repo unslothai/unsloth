@@ -1115,7 +1115,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onClick={bulkDownload}
               className={cn(
                 BAR_PILL,
-                "transition-colors bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+                "btn-fill transition-colors ",
               )}
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />

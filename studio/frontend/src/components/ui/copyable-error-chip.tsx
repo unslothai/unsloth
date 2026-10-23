@@ -71,7 +71,7 @@ export function CopyableErrorChip({
             onClick={handleCopy}
             aria-label={copied ? "Copied" : "Copy error message"}
             className={cn(
-              "inline-flex items-center gap-1 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-2 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "btn-fill inline-flex items-center gap-1 rounded-full px-2 py-1 text-ui-11 text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               copied && "text-emerald-600 dark:text-emerald-500",
             )}
           >

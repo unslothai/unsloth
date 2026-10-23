@@ -234,7 +234,7 @@ export function MediaApiExamples({
           <button
             type="button"
             onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="btn-fill absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full px-1.5 py-1 text-ui-11 text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon

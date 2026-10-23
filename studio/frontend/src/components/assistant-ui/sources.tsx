@@ -102,7 +102,7 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "rounded-full cursor-pointer border-transparent outline-none bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-chat-icon-fg-hover! focus-visible:border-ring",
+        "btn-fill rounded-full cursor-pointer border-transparent outline-none hover:text-chat-icon-fg-hover! focus-visible:border-ring",
         className,
       )}
     >
@@ -302,7 +302,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(true)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer border-transparent text-muted-foreground bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             +{hiddenCount} more
@@ -314,7 +314,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
             onClick={() => setExpanded(false)}
             className={cn(
               badgeVariants({ variant: "outline", size: "default" }),
-              "rounded-full cursor-pointer border-transparent text-muted-foreground bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-chat-icon-fg-hover!",
+              "btn-fill rounded-full cursor-pointer border-transparent text-muted-foreground hover:text-chat-icon-fg-hover!",
             )}
           >
             Show less

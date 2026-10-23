@@ -157,7 +157,7 @@ const BAR_PILL =
 const BAR_ROUND =
   "flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring";
 const BAR_OUTLINE =
-  "transition-colors bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
+  "btn-fill transition-colors ";
 
 const CHAT_SORTS: SortChoice<ChatSortKey>[] = [
   { value: "updated", label: "library.chats.list.lastActive" },
