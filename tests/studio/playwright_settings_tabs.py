@@ -441,16 +441,15 @@ def assert_persisted_monitor_restores(page) -> None:
     report["steps"].append("persisted-monitor-reload")
 
 
-def run_keystroke_search(page) -> None:
-    """Chord press must beat both the shortcut it names and the dialog's own Escape to the search box."""
+def run_shortcut_recorder(page) -> None:
+    """Selecting a chord records the next one ahead of the shortcut it names and of the dialog's
+    own Escape; the row's switch and Backspace turn the action off without losing the dialog."""
     open_dialog(page, "keyboard-shortcuts")
     settle_panel(page)
-    rows_js = """() => [...document.querySelectorAll('[data-settings-label]')]
-        .map(r => r.dataset.settingsLabel)"""
-    box = page.locator(f"{PANEL} input")
-    toggle = page.locator(f"{PANEL} button[aria-pressed]")
-    click_forced(toggle, timeout = 15000)
-    until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
+    row = page.locator(f'{PANEL} [data-settings-label="New chat"]')
+    chord = row.locator('button[aria-label^="Change shortcut"]').first
+    box = row.locator("input")
+    stored_js = "() => localStorage.getItem('unsloth_keyboard_shortcuts')"
     # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
     # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
     # runner. Same read as isMacPlatform(), which is what the app itself goes by.
@@ -458,69 +457,65 @@ def run_keystroke_search(page) -> None:
         "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
     )
     mod = "Meta" if mac else "Control"
-    state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
+    state: dict = {"mod": mod}
 
-    page.keyboard.press(f"{mod}+Shift+KeyO")
-    until(
-        page,
-        f"() => {{ const rows = {ROWS}; return rows.includes('New chat')"
-        " && !rows.includes('New standalone chat'); }",
-    )
-    state["chord"] = box.input_value()
-    state["chord_rows"] = page.evaluate(rows_js)
-
-    page.keyboard.press("KeyO")
-    until(page, f"() => {ROWS}.includes('New standalone chat')")
-    state["bare_rows"] = page.evaluate(rows_js)
-
-    # A dialog gone here means the press reached Radix before the box.
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    state["placeholder"] = box.get_attribute("placeholder")
+    # A dialog gone here means the press reached Radix before the recorder.
     page.keyboard.press("Escape")
-    # Observation window, not a readiness guess: the bug is the dialog closing, and a closing
-    # dialog stays mounted through its exit animation, so it needs the time to finish leaving.
     page.wait_for_timeout(SETTLE_MS)
-    open_after_first = page.locator('div[role="dialog"]').count()
-    state["after_first_escape"] = {
-        "dialog": open_after_first,
-        "value": box.input_value() if open_after_first else None,
-        "rows": len(page.evaluate(rows_js)) if open_after_first else 0,
+    state["after_escape"] = {
+        "dialog": page.locator('div[role="dialog"]').count(),
+        "recording": box.count(),
     }
-    if open_after_first:
-        page.keyboard.press("Escape")
-        until(
-            page, "el => el?.getAttribute('aria-pressed') === 'false'", arg = toggle.element_handle()
-        )
-        open_after_second = page.locator('div[role="dialog"]').count()
-        state["after_second_escape"] = {
-            "dialog": open_after_second,
-            "armed": toggle.get_attribute("aria-pressed") if open_after_second else None,
-        }
-    else:
-        state["after_second_escape"] = {"dialog": 0, "armed": None}
-    report["keystroke_search"] = state
 
-    if state["armed"] != "true":
-        fail(f"keystroke search: the toggle did not arm ({state['armed']})")
-    if not state["chord"]:
-        fail("keystroke search: the pressed chord did not reach the box")
-    if "New chat" not in state["chord_rows"]:
-        fail(f"keystroke search: chord matched {state['chord_rows']}")
-    if "New standalone chat" in state["chord_rows"]:
-        fail(f"keystroke search: chord matched a lesser chord {state['chord_rows']}")
-    if "New standalone chat" not in state["bare_rows"]:
-        fail(
-            f"keystroke search: the bare key did not widen "
-            f"({state['bare_rows']} vs {state['chord_rows']})"
-        )
-    if state["after_first_escape"]["value"]:
-        fail("keystroke search: the first Escape left the chord in the box")
-    if state["after_first_escape"]["dialog"] != 1:
-        fail("keystroke search: the first Escape closed the dialog")
-    if state["after_second_escape"]["armed"] != "false":
-        fail("keystroke search: the second Escape left the mode armed")
-    if state["after_second_escape"]["dialog"] != 1:
-        fail("keystroke search: the second Escape closed the dialog")
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    page.keyboard.press(f"{mod}+Shift+KeyY")
+    until(page, f"() => ({stored_js})()?.includes('Mod+Shift+KeyY')")
+    state["recorded"] = {"stored": page.evaluate(stored_js), "shown": chord.inner_text()}
+
+    switch = row.locator('button[role="switch"]')
+    click_forced(switch, timeout = 15000)
+    until(page, f"() => ({stored_js})()?.includes('\"disabled\":true')")
+    state["switched_off"] = {
+        "checked": switch.get_attribute("aria-checked"),
+        "stored": page.evaluate(stored_js),
+    }
+
+    click_forced(chord, timeout = 15000)
+    box.wait_for(state = "visible", timeout = 5000)
+    page.keyboard.press("Backspace")
+    until(page, "el => el && !el.isConnected", arg = box.element_handle())
+    state["cleared"] = {"shown": chord.inner_text(), "stored": page.evaluate(stored_js)}
+
+    click_forced(page.get_by_role("button", name = "Reset all to defaults"), timeout = 15000)
+    until(page, f"() => ({stored_js})() === null")
+    state["reset"] = {
+        "stored": page.evaluate(stored_js),
+        "checked": switch.get_attribute("aria-checked"),
+    }
+    report["shortcut_recorder"] = state
+
+    if state["placeholder"] != "Press key sequence":
+        fail(f"shortcut recorder: no recorder box ({state['placeholder']})")
+    if state["after_escape"]["dialog"] != 1:
+        fail("shortcut recorder: Escape closed the dialog instead of cancelling")
+    if state["after_escape"]["recording"] != 0:
+        fail("shortcut recorder: Escape left the recorder open")
+    if "Mod+Shift+KeyY" not in (state["recorded"]["stored"] or ""):
+        fail(f"shortcut recorder: the chord was not stored ({state['recorded']})")
+    if "Y" not in state["recorded"]["shown"]:
+        fail(f"shortcut recorder: the row does not show the chord ({state['recorded']})")
+    if state["switched_off"]["checked"] != "false":
+        fail(f"shortcut recorder: the switch did not turn off ({state['switched_off']})")
+    if state["cleared"]["shown"].strip() != "none":
+        fail(f"shortcut recorder: Backspace did not clear the chord ({state['cleared']})")
+    if state["reset"]["stored"] is not None or state["reset"]["checked"] != "true":
+        fail(f"shortcut recorder: Reset all left overrides ({state['reset']})")
     page.evaluate("() => window.__settingsSmoke.close()")
-    report["steps"].append("keystroke-search")
+    report["steps"].append("shortcut-recorder")
 
 
 def assert_model_memory_rows() -> None:
@@ -677,7 +672,7 @@ def run(page) -> None:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
 
-    run_keystroke_search(page)
+    run_shortcut_recorder(page)
 
     run_scroll_resets_on_tab_switch(page)
 

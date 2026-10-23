@@ -1187,32 +1187,29 @@ export const sv = {
     },
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
-      searchPlaceholder: "Sök genvägar …",
-      keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
-      searchByKeystrokes: "Sök efter tangenttryckningar",
-      searchByName: "Sök efter namn",
-      noResults: "Inga genvägar matchar sökningen.",
+      intro: "Om du vill ändra en genväg markerar du tangentkombinationen och skriver sedan de nya tangenterna",
       unassigned: "Ej tilldelad",
       recording: "Tryck på tangenter …",
-      recordingHint:
-        "Tryck på den nya tangentkombinationen eller Esc för att avbryta.",
+      recordingNote: "Tryck på de nya tangenterna. Backsteg tar bort genvägen, Esc avbryter.",
       needsModifier:
         "Lägg till ⌘, Ctrl eller Alt. En ensam tangent skulle fånga upp textinmatning.",
       conflict: "Används också av en annan genväg",
       conflictShadowed:
         "En annan genväg har denna tangentkombination och körs i stället",
       edit: "Ändra genväg",
-      clear: "Ta bort genväg",
       reset: "Återställ standard",
       resetAll: "Återställ alla till standard",
-      primarySlot: "Genväg",
-      alternateSlot: "Alternativ genväg",
       browserReserved:
         "Din webbläsare kan reservera denna tangentkombination. Den fungerar i skrivbordsappen.",
       metaUnsupported: "Windows-tangenten kan inte användas i kortkommandon.",
       altGraphUnsupported: "AltGr-kombinationer kan inte användas som kortkommandon.",
       desktopOnly: "Endast i skrivbordsappen",
-      builtInKey: "Inbyggt: {key}",
+      groups: {
+        composer: "Meddelandefält",
+        chat: "Chatt",
+        navigation: "Navigering",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Sök på sidan",

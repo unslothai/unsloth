@@ -13,7 +13,6 @@ import {
   SHORTCUT_DEFS,
   SHORTCUT_SLOTS,
   bindingFromEvent,
-  bindingMatchesQuery,
   defaultBindingFor,
   formatBindingValueLabel,
   formatCode,
@@ -236,40 +235,6 @@ test("formatCode names the ISO, JIS, keypad and navigation keys", () => {
     "Ctrl+Backspace",
   );
   assert.equal(formatBindingValueLabel("Mod+Backspace", true), "⌘⌫");
-});
-
-test("searching by modifier words finds the chord", () => {
-  const cmdShiftO = parseBinding("Mod+Shift+KeyO");
-  const optCmdR = parseBinding("Mod+Alt+KeyR");
-  const ctrlShiftP = parseBinding("Ctrl+Shift+KeyP");
-  assert.ok(cmdShiftO && optCmdR && ctrlShiftP);
-  for (const q of [
-    "cmd",
-    "command",
-    "⌘",
-    "shift o",
-    "⇧",
-    "cmd+shift+o",
-    "⇧⌘o",
-  ]) {
-    assert.ok(bindingMatchesQuery(cmdShiftO, q, true), q);
-  }
-  for (const q of ["opt", "option", "alt", "⌥", "⌥⌘r", "opt cmd r"]) {
-    assert.ok(bindingMatchesQuery(optCmdR, q, true), q);
-  }
-  for (const q of ["ctrl", "control", "⌃", "ctrl shift p"]) {
-    assert.ok(bindingMatchesQuery(ctrlShiftP, q, true), q);
-  }
-  assert.ok(bindingMatchesQuery(cmdShiftO, "ctrl shift o", false));
-  assert.ok(bindingMatchesQuery(cmdShiftO, "control", false));
-  assert.equal(bindingMatchesQuery(cmdShiftO, "cmd", false), false);
-  assert.equal(bindingMatchesQuery(cmdShiftO, "alt", true), false);
-  assert.equal(bindingMatchesQuery(optCmdR, "cmd o", true), false);
-  assert.equal(bindingMatchesQuery(cmdShiftO, "c", true), false);
-  assert.match(
-    readSrc("features/settings/tabs/keyboard-shortcuts-tab.tsx"),
-    /return parsed \? bindingMatchesQuery\(parsed, q, mac\) : false;/,
-  );
 });
 
 test("Mod+Enter is the platform's own modifier, and never mid-composition", () => {
