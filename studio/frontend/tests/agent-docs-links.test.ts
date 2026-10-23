@@ -55,7 +55,12 @@ test("the usage example starts short, drags taller, and its copy button is icon-
   // resize cannot grow past max-height, so the cap is lifted and a height set instead.
   assert.match(
     src,
-    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:resize-y",\s*tall && "\[&>section\]:h-56"/,
+    /"\[&>section\]:max-h-none \[&>section\]:min-h-24 \[&>section\]:resize-y [^"]*\[&_\[data-streamdown=code-block-header\]\]:hidden",\s*tall && "\[&>section\]:h-46"/,
+  );
+  // a visible grip over the native handle, which must not swallow the drag
+  assert.match(
+    src,
+    /className="pointer-events-none absolute right-1 bottom-1 size-3/,
   );
   assert.doesNotMatch(src, /exampleExpand|exampleCollapse|setExpanded/);
   assert.doesNotMatch(src, /t\("settings\.apiKeys\.copy"\)/);

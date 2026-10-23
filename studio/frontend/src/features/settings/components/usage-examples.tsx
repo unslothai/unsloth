@@ -411,7 +411,7 @@ function buildSnippets(
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const MODEL_PLACEHOLDER = "YOUR_MODEL";
-// Lines that fit the example box's starting height (h-56); longer ones start there and scroll.
+// Lines that fit the example box's starting height (h-46); longer ones start there and scroll.
 const START_LINES = 8;
 // OpenAI SDKs require an api_key value even for keyless access.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
@@ -1089,7 +1089,7 @@ export function UsageExamples({
         <button
           type="button"
           onClick={handleCopy}
-          className="absolute top-1.5 right-1.5 z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="absolute top-2.5 right-1.5 z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           aria-label={
             copied
               ? t("settings.apiKeys.copied")
@@ -1103,10 +1103,11 @@ export function UsageExamples({
         </button>
         {/* The scroller itself is drag-resizable. A height, not a max-height, since
             resize cannot grow past max-height (HighlightedCode's own max-h-96). */}
+        {/* The language label adds nothing next to the Language picker. */}
         <div
           className={cn(
-            "[&>section]:max-h-none [&>section]:min-h-24 [&>section]:resize-y",
-            tall && "[&>section]:h-56",
+            "[&>section]:max-h-none [&>section]:min-h-24 [&>section]:resize-y [&>section::-webkit-resizer]:bg-transparent [&_[data-streamdown=code-block-header]]:hidden",
+            tall && "[&>section]:h-46",
           )}
         >
           <HighlightedCode
@@ -1117,6 +1118,20 @@ export function UsageExamples({
             redactFromReload={Boolean(apiKey)}
           />
         </div>
+        {/* Drawn over the native resize handle, which is easy to miss; clicks pass through. */}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 12 12"
+          className="pointer-events-none absolute right-1 bottom-1 size-3 text-muted-foreground"
+        >
+          <path
+            d="M11 4 4 11M11 8 8 11"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            fill="none"
+          />
+        </svg>
       </div>
       <div className="flex min-w-0 flex-col gap-2.5 pt-2">
         <div className="flex h-5 items-center justify-between gap-3">
