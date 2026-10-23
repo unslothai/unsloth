@@ -15826,12 +15826,10 @@ def _gguf_memory_breakdown(
     lookup_table_on_disk = False
     # A pin strips the device flags and their env twins at launch, so it does here too.
     _lt_extras, _lt_env = extras, dict(os.environ)
-    # A governing pin strips them even with no card in the list (zero GPU layers).
     if selected_gpu_ids or device_pin_governs:
         _lt_extras = LlamaCppBackend._strip_device_extra_args(extras)
         LlamaCppBackend._clear_device_placement_env(_lt_env)
     if gpu_memory_mode == "manual":
-        # Manual clears the inherited placement env too.
         LlamaCppBackend._clear_manual_placement_env(_lt_env)
     if lookup_table_bytes:
         lookup_table_on_disk = _lt_backend.lookup_tables_stream_by_default(
@@ -15841,7 +15839,6 @@ def _gguf_memory_breakdown(
             tensor_parallel = tensor_parallel,
         )
     if not lookup_table_on_disk:
-        # A resident per-layer table is a host-pinned input: it leaves the GPU share, not the total.
         try:
             _lt_scan = _lt_backend._gguf_tensor_scan(gguf_path)
         except Exception:  # noqa: BLE001 -- unread header: keep the lazy answer
@@ -15854,7 +15851,6 @@ def _gguf_memory_breakdown(
             lookup_table_bytes = min(main_bytes, max(lookup_table_bytes, _resident))
 
     def _lt_override_moves_table() -> bool:
-        # The file's own per-layer table names, against the child's args after a pin.
         try:
             scan = _lt_backend._gguf_tensor_scan(gguf_path)
         except Exception:  # noqa: BLE001 -- unread header: the canonical name alone
@@ -15901,11 +15897,8 @@ def _gguf_memory_breakdown(
         _lt_table_host = lookup_table_bytes + int(lookup_table_bytes * _LAZY_RESIDENT_MARGIN_FRAC)
 
         def _lt_resident_fits() -> bool:
-            # As _table_resident_fits: the whole load fits with the table, prompt cache and margin
-            # in RAM.
             if not _lt_avail or not runtime.kv_estimable:
                 return False  # unsized: the launch keeps llama.cpp's default too
-            # Pass-through adapters (on Metal, any adapter): the launch abstains, so the panel does.
             if _sidecar_adapter_bytes(_lt_extras) is None:
                 return False
             prompt = _prompt_cache_host_bytes(
@@ -15919,10 +15912,8 @@ def _gguf_memory_breakdown(
             if prompt is None:
                 return False
             host_only = _lt_forced_host + _lt_table_host + prompt
-            # --no-kv-offload keeps the whole cache in RAM whatever the layer placement.
             if not _kv_offload_from_args(_lt_extras, env = _lt_env):
                 host_only += runtime.kv_bytes
-            # CPU-pinned companions live in RAM: a -ngld 0 drafter, a --no-mmproj-offload projector.
             if not drafter_on_gpu:
                 host_only += host_drafter_bytes + drafter_runtime_bytes
             _lt_mm = _charged_projector_bytes(config, extras, disable_vision)
@@ -15947,7 +15938,6 @@ def _gguf_memory_breakdown(
             if is_apple_silicon():
                 if _sidecar_adapter_paths(_lt_extras):
                     return False
-                # One unified pool: Metal's ceiling and the RAM the OS can spare, together.
                 budget = _lt_backend._apple_metal_memory_budget_bytes()
                 if budget <= 0:
                     return False
@@ -15965,8 +15955,6 @@ def _gguf_memory_breakdown(
             except Exception:  # noqa: BLE001 -- unread cards: the whole load in RAM
                 rows = []
             pick = sorted(int(i) for i in selected_gpu_ids) if selected_gpu_ids else None
-            # A CPU device or tensor override in the extras: no VRAM credit, as the launch's fit
-            # decides.
             if not rows or _pass_through_overrides_placement(
                 _lt_extras,
                 _lt_env,
@@ -15983,7 +15971,6 @@ def _gguf_memory_breakdown(
                     # Vulkan reports total 0 for an iGPU: its free memory IS host RAM.
                     shared_gpu_ids = {idx for idx, _free, total in rows if total <= 0},
                     host_only_bytes = host_only,
-                    # llama.cpp's --fit-target default, or the pass-through margin.
                     vram_margin_mib = max(1024.0, fit_target_margin_in(_lt_extras, _lt_env) or 0.0),
                     avail_mib = _lt_avail,
                 )
@@ -15991,8 +15978,6 @@ def _gguf_memory_breakdown(
 
         if (
             not _lt_user
-            # Read resident, a device override would apply to the table, so the launch keeps it
-            # streamed.
             and (_lt_arch in HOST_FORCED_TABLE_ARCHS or not _lt_override_moves_table())
             and _lt_resident_fits()
         ):

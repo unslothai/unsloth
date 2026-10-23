@@ -1435,7 +1435,6 @@ export interface QuantVariant {
   filename: string;
   size_bytes: number;
   downloaded?: boolean;
-  /** Streamed lookup tables inside `size_bytes`; see `GgufVariantSizes`. */
   lookup_table_bytes?: number;
 }
 

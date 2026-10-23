@@ -535,8 +535,6 @@ export function useModelMemory(
     // automatic launch preserves that pin. budgetIsMeaningful sees only browser-side pins and saved
     // config, so this is the one placement override it cannot reach.
     if (estimate?.inheritedDevicePin) return computeModelMemory({});
-    // Lookup tables are host-pinned on a discrete card, streamed or resident, and both weightsBytes and
-    // the listing's size carry them.
     const hostTable = source?.lookupTableBytes ?? 0;
     const rawWeights = estimate?.weightsBytes ?? source?.sizeBytes;
     const weights = rawWeights == null ? rawWeights : Math.max(0, rawWeights - hostTable);

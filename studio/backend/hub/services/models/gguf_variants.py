@@ -1363,7 +1363,6 @@ _LOOKUP_ARCH_TTL_S = 6 * 3600.0
 _LOOKUP_ARCH_FAIL_TTL_S = 600.0
 _lookup_arch_cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
 _lookup_arch_lock = threading.Lock()
-# Hub reads in flight, so a re-poll does not queue the same work again.
 _lookup_inflight: set = set()
 # Its own pool (size = concurrency cap): Hub reads never queue a listing or a load behind them.
 _LOOKUP_POOL = ThreadPoolExecutor(
@@ -1583,7 +1582,6 @@ async def _with_lookup_tables(
             and _lookup_remote_enabled()
             and not is_local_path(repo_id)
             and _is_valid_repo_id(repo_id)
-            # A host that reads the tables resident (iGPU / APU) has nothing to ask the Hub for.
             and await listing_thread(True, _host_streams_lookup_tables)
         )
         if remote_ok:
@@ -1592,8 +1590,6 @@ async def _with_lookup_tables(
                 deadline = asyncio.get_running_loop().time() + _LOOKUP_DEADLINE_S
                 if arch is None:
                     known, arch = _cached_hub_repo_architecture(repo_id, hf_token)
-                    # A cold architecture is awaited within the deadline only when a row can hold a
-                    # streamed table.
                     if not known and (
                         mode == "on"
                         or any(
@@ -1602,7 +1598,6 @@ async def _with_lookup_tables(
                         )
                     ):
                         arch = await _lookup_await_once(
-                            # Per credential, as the cache is.
                             ("arch", repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token)),
                             deadline,
                             _hub_repo_architecture,
@@ -1619,8 +1614,6 @@ async def _with_lookup_tables(
                         if cached is not None:
                             found[index] = cached[1]
                             continue
-                        # Per credential: another token's read may be one this caller could not
-                        # make.
                         key = ("table", repo_id, v.filename, identity, mode, _fingerprint)
                         with _lookup_arch_lock:
                             busy = key in _lookup_inflight
@@ -1628,8 +1621,6 @@ async def _with_lookup_tables(
                                 _lookup_inflight.add(key)
                         if busy:
                             continue
-                        # The pool caps concurrency; a row left unstarted is read by the next
-                        # listing.
 
                         started: list = []
 

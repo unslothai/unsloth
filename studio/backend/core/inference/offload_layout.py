@@ -60,9 +60,6 @@ class ModelLayout:
     # llama-model.cpp pins dev_input to the CPU unconditionally, so this is never charged to VRAM. Tracked because it IS
     # charged to host RAM.
     token_embd_bytes: int = 0
-    # Per-layer lookup tables (gemma3n / gemma4 PLE, qwen4exp, deepseek41 Engram): host-pinned input
-    # layer like token_embd but never the tied output head, so kept apart for the tied rule and the
-    # lazy-read discount.
     per_layer_embd_bytes: int = 0
     # Every tensor's bytes, excluded blocks included; the file size less its metadata.
     tensor_bytes: int = 0

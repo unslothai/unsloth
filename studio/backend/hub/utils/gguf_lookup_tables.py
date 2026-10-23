@@ -160,7 +160,6 @@ def shard_names(filename: str) -> list[str]:
     ]
 
 
-# Local answers, keyed on every shard's (path, size, mtime_ns).
 _LOCAL_CACHE: "OrderedDict[tuple, tuple[Optional[str], int]]" = OrderedDict()
 # Remote answers with an expiry: the listed size is not content identity.
 _REMOTE_CACHE: "OrderedDict[tuple, tuple[tuple[Optional[str], int], float]]" = OrderedDict()
@@ -177,8 +176,6 @@ def _remember(cache: OrderedDict, key, value) -> None:
             cache.popitem(last = False)
 
 
-# Shards read per variant at most: the table sits near the front of a split, so one not found by
-# then is left unpriced (0).
 MAX_SHARDS_READ = 8
 
 
@@ -195,7 +192,6 @@ def _scan_shards(
         part_arch, named = read_header(name)
         arch = arch or part_arch
         if not lazy_architecture(arch):
-            # Shard 1 carries the metadata; a non-lazy arch has nothing to find further on.
             return arch, 0
         found = lazy_read_bytes(arch, named, mode)
         if found or named:

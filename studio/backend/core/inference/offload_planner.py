@@ -905,7 +905,6 @@ def _finish(
     spilled_bytes = sum(b.spillable_bytes for b in chosen) + (
         layout.lm_head_bytes if spill_lm_head else 0
     )
-    # token_embd and the per-layer tables are host RAM even when nothing spills, less the lazily read part.
     lazy = min(max(0, int(opts.lazy_read_bytes or 0)), layout.per_layer_embd_bytes)
     host_bytes = layout.token_embd_bytes + layout.per_layer_embd_bytes - lazy + spilled_bytes
     if opts.kv_on_host:

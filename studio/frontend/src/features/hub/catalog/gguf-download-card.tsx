@@ -183,7 +183,6 @@ function QuantBadge({
 }: {
   quant: string;
   fit: GgufFitClass;
-  /** Streamed lookup tables, shown as their own line in the tooltip. */
   lookupTableBytes?: number;
   showFit?: boolean;
   variant?: "trigger" | "menu";
