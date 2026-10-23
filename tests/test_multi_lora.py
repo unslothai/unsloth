@@ -357,6 +357,32 @@ def test_an_adapter_whose_labels_are_all_ignored_does_not_train():
     assert torch.equal(layer.lora_B[1], before) and layer.lora_B[1] not in opt.state
 
 
+def test_gradient_accumulation_weights_microbatches_by_tokens():
+    torch.manual_seed(1)
+    x = torch.randn(4, 16, dtype = torch.float64)
+    ids = torch.tensor([0, 1, 0, 1])
+    labels = torch.tensor([[0, 1, 0, 1], [1, 0, 1, 0], [0, 1, -100, -100], [1, 1, 0, 0]])
+
+    def grads(chunks, num_items):
+        model = _tiny_model(2)
+        for rows in chunks:
+            ml.set_multi_lora_batch(model, ids[rows])
+            logits = model(x[rows]).view(len(rows), 4, 2)
+            total, _ = ml.per_adapter_loss(
+                logits, labels[rows], ids[rows], 2, num_items_in_batch = num_items
+            )
+            total.backward()
+        return [p.grad.clone() for p in model.parameters() if p.requires_grad]
+
+    window = sum(ml.adapter_token_counts(labels[r], ids[r], 2) for r in ([0, 1], [2, 3]))
+    assert window.tolist() == [4.0, 6.0]
+    whole = grads([[0, 1, 2, 3]], None)
+    for a, b in zip(grads([[0, 1], [2, 3]], window), whole):
+        torch.testing.assert_close(a, b)
+    # Per-microbatch means weight adapter 0's 1-token microbatch like its 3-token one.
+    assert any(not torch.allclose(a, b) for a, b in zip(grads([[0, 1], [2, 3]], None), whole))
+
+
 def test_a_step_where_no_adapter_trained_clips_to_zero_norms():
     model = _tiny_model(2)
     ml.set_multi_lora_batch(model, torch.tensor([-1, -1]))

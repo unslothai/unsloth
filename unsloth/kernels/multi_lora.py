@@ -49,6 +49,7 @@ __all__ = [
     "inject_multi_lora",
     "set_multi_lora_batch",
     "per_adapter_loss",
+    "adapter_token_counts",
     "per_adapter_grad_norm",
     "clip_grad_norm_per_adapter_",
     "drop_absent_adapter_grads_",
@@ -736,6 +737,21 @@ def drop_absent_adapter_grads_(model: nn.Module, process_group = None) -> list[i
     return absent
 
 
+def adapter_token_counts(
+    labels: torch.Tensor,
+    row_adapter_ids: torch.Tensor,
+    num_adapters: int,
+    ignore_index: int = -100,
+) -> torch.Tensor:
+    """Valid (shifted) label tokens per adapter in one microbatch; rows with id -1 count for none."""
+    valid = (labels[:, 1:] != ignore_index).sum(1).float()
+    ids = row_adapter_ids.to(labels.device).long()
+    keep = (ids >= 0).to(valid.dtype)
+    return torch.zeros(num_adapters, device = labels.device).index_add(
+        0, ids.clamp_min(0), valid * keep
+    )
+
+
 def per_adapter_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -744,13 +760,16 @@ def per_adapter_loss(
     ignore_index: int = -100,
     process_group = None,
     model: Optional[nn.Module] = None,
+    num_items_in_batch: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal LM loss averaged within each adapter, summed over adapters.
 
     Each adapter's parameters only see its own rows, so the gradient of the sum is, per adapter, the
     gradient of its own mean loss: the same as training it alone. Pass ``model`` so that
-    ``drop_absent_adapter_grads_`` knows which adapters had valid tokens. Returns (total, this rank's
-    per-adapter losses).
+    ``drop_absent_adapter_grads_`` knows which adapters had valid tokens. Under gradient accumulation
+    pass ``num_items_in_batch``, each adapter's valid tokens over the whole accumulation window on this
+    rank (``adapter_token_counts`` summed over the window), so microbatches are weighted by tokens like
+    transformers' ``num_items_in_batch``. Returns (total, this rank's per-adapter losses).
     """
     shift_logits = logits[:, :-1].float()
     shift_labels = labels[:, 1:]
@@ -769,7 +788,8 @@ def per_adapter_loss(
         0, ids, token_loss.sum(1) * keep
     )
     counts = torch.zeros(num_adapters, device = logits.device).index_add(0, ids, valid.sum(1) * keep)
-    losses = sums / counts.clamp_min(1)
+    denom = counts if num_items_in_batch is None else num_items_in_batch.to(counts)
+    losses = sums / denom.clamp_min(1)
     if model is not None:
         # Adapters with valid label tokens: routed rows whose labels are all ignored do not train.
         trained = counts > 0
@@ -779,7 +799,7 @@ def per_adapter_loss(
     if not _distributed():
         return losses.sum(), losses.detach()
     # Undo DDP / FSDP's rank average so each adapter's gradient is its mean over the global batch.
-    total = counts.detach().clone()
+    total = denom.detach().clone()
     torch.distributed.all_reduce(total, group = process_group)
     world = torch.distributed.get_world_size(process_group)
     return (sums / total.clamp_min(1)).sum() * world, losses.detach()
