@@ -527,7 +527,7 @@ function ListLabel({
               type="button"
               onClick={onToggle}
               aria-label={collapsed ? "Expand section" : "Collapse section"}
-              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+              className="-mr-0.5 shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
                 <ChevronRightIcon className="size-3" />
@@ -659,7 +659,7 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
           title={title}
           aria-label={title}
           className={cn(
-            "flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5",
+            "flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full border border-border px-1.5",
             tone,
           )}
         >
@@ -677,7 +677,7 @@ function VisionBadge() {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="Vision"
-          className="flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5 text-indigo-700 dark:text-indigo-300"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full border border-border px-1.5 text-indigo-700 dark:text-indigo-300"
         >
           <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
         </span>
@@ -694,7 +694,7 @@ function ParamChip({ label }: { label: string }) {
     // h-[calc(18px*var(--ui-space-scale,1))], the height every other chip in the row band pins (quant, vision, the disk mark, the
     // Loaded tag). py-px sized this one by its line box instead, the one height here that scales with
     // --ui-font-scale, so the row only looked level at the scale where the two happened to cross.
-    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-full border border-border px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
       {label}
     </span>
   );
@@ -1011,7 +1011,7 @@ export function GgufDownloadFootprintExplanation({
 
 function QuantChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-full items-center overflow-hidden rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-full items-center overflow-hidden rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
       {label}
     </span>
   );
@@ -1100,7 +1100,7 @@ const downloadedRowShellClassName = (
 ) =>
   cn(
     "group flex items-center transition-colors hover:bg-sidebar-accent has-[:focus-visible]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
-    hasMemoryBar ? "rounded-2xl" : "rounded-full",
+    hasMemoryBar ? "rounded-md" : "rounded-full",
     selected && "bg-sidebar-accent",
   );
 
@@ -1125,7 +1125,7 @@ const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 // Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
 // column and hover the same size as the ones on the rows under it.
 const HEADING_ACTION_CLASS =
-  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
+  "flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** A Connected group label. Wider than the On Device section labels, since nothing divides these
  *  groups but the gap, and foldable the same way. */
@@ -1423,7 +1423,7 @@ function ModelRow({
         // pl-[calc(5.5px*var(--ui-space-scale,1))]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it on
         // 10px, level with the section labels at px-2.5.
         "group/row flex w-full flex-col items-stretch py-1.5 pl-[calc(5.5px*var(--ui-space-scale,1))] pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        showMemoryBar ? "rounded-2xl" : "rounded-full",
+        showMemoryBar ? "rounded-md" : "rounded-full",
         selected && "bg-sidebar-accent",
         className,
       )}
@@ -1481,12 +1481,12 @@ function ModelRow({
             <DotTag
               tone="success"
               label="Loaded"
-              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 self-center rounded-md px-1.5"
+              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 self-center rounded-full px-1.5"
               dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
             />
           )}
           {alignMeta !== "device" && quantChip ? (
-            <span className="ml-2 shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-muted">
+            <span className="ml-2 shrink-0 rounded-full bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-muted">
               {quantChip}
             </span>
           ) : null}
@@ -1547,7 +1547,7 @@ function ModelRow({
                 <DotTag
                   tone="success"
                   label="Loaded"
-                  className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
+                  className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-full px-1.5"
                   dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                 />
               )}
@@ -6240,7 +6240,7 @@ export function HubModelPicker({
     "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "picker-option-menu !p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+    "picker-option-menu !p-1 !rounded-lg [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-md";
   // Device-fit toggle inside the sort menu. The whole row is the button: a Checkbox renders as a
   // <button> and label-click forwarding is unreliable, so the Checkbox is presentational.
   const fitOnDeviceFooter = (
@@ -6251,7 +6251,7 @@ export function HubModelPicker({
           role="checkbox"
           aria-checked={fitOnDeviceOnly}
           onClick={() => setFitOnDeviceOnly(!fitOnDeviceOnly)}
-          className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+          className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
           {/* --input is a hairline tuned for the page; on the menu surface this
               14px control needs an outline you can actually find. */}
@@ -6459,7 +6459,7 @@ export function HubModelPicker({
                     onEject?.(checkpoint);
                   }}
                   aria-label={`Eject ${entry.id}`}
-                  className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -7689,7 +7689,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToOtherModels}
                                   aria-label="Go to other models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={Flag01Icon}
@@ -7712,7 +7712,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToFineTuned}
                                   aria-label="Go to fine-tuned models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={TrainIcon}
@@ -7734,7 +7734,7 @@ export function HubModelPicker({
                                 type="button"
                                 onClick={scrollToCustomFolders}
                                 aria-label="Go to custom folders"
-                                className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                                className="shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                               >
                                 <HugeiconsIcon
                                   icon={Folder02Icon}
@@ -7832,7 +7832,7 @@ export function HubModelPicker({
                           }
                           title={fineTunedCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setFineTunedCollapsed((v) => !v)}
-                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {fineTunedCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -7899,7 +7899,7 @@ export function HubModelPicker({
                               return !open;
                             });
                           }}
-                          className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
                             icon={showFolderInput ? Cancel01Icon : Add01Icon}
@@ -7911,7 +7911,7 @@ export function HubModelPicker({
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
                           onClick={() => void browseForFolder()}
-                          className="shrink-0 rounded p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded-full p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
                             icon={Search01Icon}
@@ -7929,7 +7929,7 @@ export function HubModelPicker({
                           }
                           title={customFoldersCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setCustomFoldersCollapsed((v) => !v)}
-                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {customFoldersCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -7973,7 +7973,7 @@ export function HubModelPicker({
                               type="button"
                               onClick={() => void handleRemoveFolder(f)}
                               aria-label={`Remove folder ${f.path}`}
-                              className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                              className="shrink-0 rounded-full p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                             >
                               <HugeiconsIcon
                                 icon={Cancel01Icon}
@@ -8043,7 +8043,7 @@ export function HubModelPicker({
                               }
                             }}
                             placeholder="/path/to/models"
-                            className="h-6 min-w-0 flex-1 rounded border border-border bg-transparent px-1.5 font-mono text-ui-10 text-foreground outline-none placeholder:text-muted-foreground/80 focus:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]"
+                            className="h-6 min-w-0 flex-1 rounded-full border border-border bg-transparent px-1.5 font-mono text-ui-10 text-foreground outline-none placeholder:text-muted-foreground/80 focus:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]"
                             disabled={folderLoading}
                             autoFocus={true}
                           />
@@ -8971,7 +8971,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
               title={ejectsAll ? "Eject all models" : "Eject model"}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />

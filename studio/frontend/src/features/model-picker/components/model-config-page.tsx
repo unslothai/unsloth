@@ -1073,7 +1073,7 @@ function GpuMemorySettings({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
             <SelectItem value="auto">Default</SelectItem>
             <SelectItem value="manual">Manual</SelectItem>
           </SelectContent>
@@ -1140,7 +1140,7 @@ function GpuMemorySettings({
             {showSplit && splitIsCustom && (
               <button
                 type="button"
-                className="ml-auto shrink-0 rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground"
+                className="ml-auto shrink-0 rounded-full px-1 text-ui-12 text-muted-foreground hover:text-foreground"
                 onClick={() => update({ tensorSplit: null })}
               >
                 Reset split
@@ -1189,7 +1189,7 @@ function GpuMemorySettings({
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      className="rounded-full px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} earlier`}
                       disabled={position === 0}
                       onClick={() => moveGpu(d.index, -1)}
@@ -1198,7 +1198,7 @@ function GpuMemorySettings({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      className="rounded-full px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} later`}
                       disabled={position >= orderedGpuIds.length - 1}
                       onClick={() => moveGpu(d.index, 1)}
@@ -1302,7 +1302,7 @@ function MlxOffloadSettings({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
             <SelectItem value="auto">Default</SelectItem>
             <SelectItem value="manual" disabled={!isManual && !decided}>
               Manual
@@ -1531,7 +1531,7 @@ function MlxSpeculativeRows({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
             {MLX_SPECULATIVE_TYPES.map((type) => (
               <SelectItem key={type} value={type}>
                 {MLX_SPECULATIVE_TYPE_LABELS[type]}
@@ -1604,7 +1604,7 @@ function MlxSpeculativeRows({
             >
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
               <SelectItem value="auto">Auto</SelectItem>
               {mlxDrafterChoices(drafters, mode, config.specDraftModel ?? null).map(
                 ([repo, label]) => (
@@ -1683,7 +1683,7 @@ function MlxAdvancedSettings({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
             <SelectItem value={MLX_KV_QUANT_AUTO}>Auto</SelectItem>
             {MLX_KV_QUANTS.map((quant) => (
               <SelectItem key={quant} value={quant}>
@@ -1703,7 +1703,7 @@ function MlxAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Int8 Prefill</span>
-            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+            <span className="shrink-0 rounded-full bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
               Exp
             </span>
             <InfoHint>
@@ -1809,7 +1809,7 @@ function LoadModeRow({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
             {LOAD_MODES.map((mode) => (
               <SelectItem key={mode} value={mode}>
                 {LOAD_MODE_LABELS[mode]}
@@ -1907,7 +1907,7 @@ function GgufAdvancedSettings({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
             <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
               {KV_CACHE_DTYPE_DEFAULT}
             </SelectItem>
@@ -1986,7 +1986,7 @@ function GgufAdvancedSettings({
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
             {SPECULATIVE_TYPES.map((type) => (
               <SelectItem key={type} value={type}>
                 {SPECULATIVE_TYPE_LABELS[type]}
@@ -2055,7 +2055,7 @@ function GgufAdvancedSettings({
             >
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-xl">
               <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
                 {KV_CACHE_DTYPE_DEFAULT}
               </SelectItem>

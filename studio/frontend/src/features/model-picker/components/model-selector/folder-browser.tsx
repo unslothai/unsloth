@@ -174,7 +174,7 @@ export function FolderBrowser({
               <span key={c.value} className="flex items-center gap-0.5">
                 <button
                   type="button"
-                  className="rounded px-1 py-0.5 hover:bg-muted hover:text-foreground"
+                  className="rounded-full px-1 py-0.5 hover:bg-muted hover:text-foreground"
                   onClick={() => navigate(c.value, showHidden)}
                   disabled={loading}
                 >
