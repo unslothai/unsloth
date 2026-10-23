@@ -1070,6 +1070,7 @@ export const zhCN = {
     },
     keyboardShortcuts: {
       title: "键盘快捷键",
+      intro: "要更改快捷键，请选择按键组合，然后输入新的按键",
       searchPlaceholder: "搜索快捷键…",
       keystrokePlaceholder: "按下快捷键进行搜索",
       searchByKeystrokes: "按键搜索",
@@ -1077,22 +1078,23 @@ export const zhCN = {
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",
-      recordingHint: "按下新的组合键，或按 Esc 取消。",
       needsModifier: "请加上 ⌘、Ctrl 或 Alt。单独一个按键会吞掉正常输入。",
       conflict: "另一个快捷键也在使用该组合",
       conflictShadowed: "该组合已被另一个快捷键占用，执行的是那一个",
       edit: "更改快捷键",
-      clear: "移除快捷键",
       reset: "恢复默认",
       resetAll: "全部恢复默认",
-      primarySlot: "快捷键",
-      alternateSlot: "备用快捷键",
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       metaUnsupported: "Windows 键不能用于快捷键。",
       altGraphUnsupported: "AltGr 组合不能用作快捷键。",
       desktopOnly: "仅限桌面应用",
-      builtInKey: "内置：{key}",
+      groups: {
+        composer: "输入框",
+        chat: "聊天",
+        navigation: "导航",
+        app: "应用",
+      },
       actions: {
         findInPage: {
           label: "在页面中查找",
@@ -1282,6 +1284,10 @@ export const zhCN = {
           label: "添加照片和文件",
           description: "为输入框添加附件",
         },
+        openComposerMenu: {
+          label: "打开 + 菜单",
+          description: "打开输入框的工具和附件 + 菜单",
+        },
         sendMessage: {
           label: "发送消息",
           description: "发送输入框中的内容",
@@ -1309,10 +1315,6 @@ export const zhCN = {
         decreaseReasoningEffort: {
           label: "降低推理强度",
           description: "将推理强度降低一级",
-        },
-        toggleFastMode: {
-          label: "切换 Fast 模式",
-          description: "开启或关闭 Fast 模式",
         },
         renameChat: {
           label: "重命名聊天",

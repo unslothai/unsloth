@@ -387,13 +387,20 @@ export const BUDGET = {
   // at c5a9fe021: 6,912,687 B raw / 2,082,221 B transfer (Node 24, 97 chunks). Raised to that plus about 200 B.
   // The MLX PLE and expert offload controls (#14326): +7,406 B raw / +2,073 B transfer, plus about 500 B raw
   // (a CI build measured about 100 B over a local one). Raised by that.
+  // Install Training button under the greyed Train row's hint: +424 B raw / +141 B transfer against ee55c3c9a
+  // (6,920,512 -> 6,920,936 B raw, 2,084,382 -> 2,084,523 B transfer, Node 24, 97 chunks). Raised by that.
+  // MOSS-Image (#14552): its two image catalog groups, family label and generation defaults sit in the eager
+  // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
+  // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
+  // at 97). Raised by that growth so main's margin stays where it was.
   // Scheduled tasks (#13871): the results poll that announces finished runs on any page with its per-account
   // record and API client, the unseen-run dots, the scheduled-chat marks in Recents and over its prompt, the
   // sidebar's new-task "+", the model-load question queue (the question itself is lazy) and the English strings;
-  // the Scheduled page and its dialog are lazy. Merged with main at 4e2838ec5f: 6,938,155 B raw / 2,089,748 B
-  // transfer (Node 26, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_089_937,
-  rawBytes: 6_938_315,
+  // the Scheduled page and its dialog are lazy. +17,637 B raw / +5,480 B transfer against main at d4f1ceb19
+  // (6,923,066 -> 6,940,703 B raw, 2,085,268 -> 2,090,748 B transfer, one machine and build, Node 24, 98
+  // chunks both). Raised by that growth so main's margin stays where it was.
+  transferBytes: 2_090_498,
+  rawBytes: 6_940_180,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

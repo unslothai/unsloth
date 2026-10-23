@@ -190,12 +190,71 @@ def _scale_mul(x, s, dtype):
     # fp16 out= makes TensorIterator compute in fp32 per element without fp32 temporaries. Dynamo
     # refuses a strided out=; under compile Inductor fuses the fp32 expression instead (same bits).
     # Other dtypes keep their dtype-native expression.
+    if _scale_dequant_one_pass_ok(x, s, dtype):
+        return _scale_dequant_one_pass(x, s, dtype)
     if dtype != torch.float16:
         return x.to(dtype) * s.to(dtype)
     if torch.compiler.is_compiling():
         return (x.to(torch.float32) * s.to(torch.float32)).to(dtype)
     x16 = x.to(dtype)
     return torch.mul(x16, s.to(torch.float32), out = torch.empty_like(x16))
+
+
+# At or below 4M elements the launch dominates on A100 and newer, and torch's two passes are no slower.
+_SCALE_DEQUANT_MIN_NUMEL = 1 << 22
+
+
+def _scale_dequant_one_pass_ok(x, s, dtype):
+    # NVIDIA e4m3fn only; under compile only below sm89, where Inductor cannot emit fp8e4nv.
+    if torch.compiler.is_compiling():
+        if not _fp8_e4m3fn_unsupported_in_trace(x):
+            return False
+    elif x.numel() <= _SCALE_DEQUANT_MIN_NUMEL:
+        return False
+    return (
+        x.is_cuda
+        and torch.version.hip is None
+        and x.dtype == torch.float8_e4m3fn
+        and dtype in (torch.float16, torch.bfloat16, torch.float32)
+        and x.dim() == 2
+        and s.device == x.device
+        and s.dtype in (torch.float32, torch.bfloat16, torch.float16)
+        and not (torch.is_grad_enabled() and (x.requires_grad or s.requires_grad))
+        # The kernel indexes dense rows, so a transposed view must be a dense transpose.
+        and (x.is_contiguous() or (_is_transposed_view(x) and x.t().is_contiguous()))
+    )
+
+
+@_opaque_under_compile(
+    "fp8_scale_dequant",
+    lambda x, s, dtype: torch.empty_like(x, dtype = dtype),
+)
+def _scale_dequant_one_pass(x: torch.Tensor, s: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    transposed = _is_transposed_view(x)
+    if transposed:
+        x = x.t()
+    m, n = x.shape
+    out = torch.empty((m, n), dtype = dtype, device = x.device)
+    if out.numel() == 0:
+        return out.t() if transposed else out
+    xb = x.view(torch.uint8)
+    BLOCK_M, BLOCK_N, num_warps = _SCALE_DEQUANT_TILE
+    with _fp8_triton_device_context(x):
+        _e4m3fn_scale_dequant_kernel[(triton.cdiv(m, BLOCK_M), triton.cdiv(n, BLOCK_N))](
+            xb,
+            s,
+            out,
+            m,
+            n,
+            0 if s.numel() == 1 else s.stride(0),
+            BLOCK_M = BLOCK_M,
+            BLOCK_N = BLOCK_N,
+            SCALE_ON_COLS = transposed,
+            ROUND_SCALE = dtype != torch.float16,
+            LONG_INDEXING = long_indexing(xb, out, block = BLOCK_M * n),
+            num_warps = num_warps,
+        )
+    return out.t() if transposed else out
 
 
 def weight_dequant(
@@ -534,7 +593,11 @@ def _small_m_config(M, N, K, device):
 
 def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
-    if not _FP8_BLOCK_SMALL_M or fp8_block_matmul is not w8a8_block_fp8_matmul_triton or torch.compiler.is_compiling():
+    if (
+        not _FP8_BLOCK_SMALL_M
+        or fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        or torch.compiler.is_compiling()
+    ):
         return False
     if not X.is_cuda or X.dtype not in (torch.bfloat16, torch.float16):
         return False
@@ -546,7 +609,9 @@ def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     if not (1 <= M <= _SMALL_M_MAX) or weight.shape[1] != K or K % 128 or N % 16:
         return False
     # Checkpoints store weight_scale_inv in bf16 too; the kernel promotes it exactly as the w8a8 one does.
-    if weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16) or tuple(weight_scale.shape) != (triton.cdiv(N, 128), K // 128):
+    if weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16) or tuple(
+        weight_scale.shape
+    ) != (triton.cdiv(N, 128), K // 128):
         return False
     return not long_indexing(X, weight)
 
@@ -706,6 +771,25 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
     )
 
 
+def _fp8_lacks_kernel_per_device():
+    try:
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        return tuple(_fp8_device_lacks_kernel(torch.device("cuda", i)) for i in range(count))
+    except Exception:
+        return ()
+
+
+# Read once: a capability query while tracing can graph-break a compiled region.
+_FP8_DEVICE_LACKS_KERNEL = _fp8_lacks_kernel_per_device()
+
+
+def _fp8_e4m3fn_unsupported_in_trace(tensor):
+    if not tensor.is_cuda or tensor.dtype != torch.float8_e4m3fn:
+        return False
+    index = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
+    return index < len(_FP8_DEVICE_LACKS_KERNEL) and _FP8_DEVICE_LACKS_KERNEL[index]
+
+
 @triton.jit
 def _fp8_rowwise_gemv_kernel(
     x_ptr,
@@ -742,7 +826,12 @@ def _fp8_rowwise_gemv_kernel(
 # Batched decode (2..16 rows): each weight tile is read once for every row, no 16-bit weight copy.
 # UNSLOTH_FP8_GEMV_ROWS=0 restores the dequantize path.
 _FP8_GEMV_MAX_ROWS = 16
-_FP8_GEMV_ROWS = os.environ.get("UNSLOTH_FP8_GEMV_ROWS", "1").strip().lower() not in ("0", "false", "no", "off")
+_FP8_GEMV_ROWS = os.environ.get("UNSLOTH_FP8_GEMV_ROWS", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 
 
 @triton.jit(do_not_specialize = ["M"])
@@ -789,14 +878,18 @@ def _fp8_rowwise_gemv_rows_kernel(
     if SPLIT_K == 1:
         s = tl.load(s_ptr + offs_n, mask = offs_n < N, other = 0.0).to(tl.float32)
         y = acc * s[None, :]
-        tl.store(y_ptr + offs_m[:, None] * N + offs_n[None, :], y.to(y_ptr.dtype.element_ty), mask = mask)
+        tl.store(
+            y_ptr + offs_m[:, None] * N + offs_n[None, :], y.to(y_ptr.dtype.element_ty), mask = mask
+        )
     else:
         # fp32 partials, summed in a fixed order by the reduce kernel: deterministic, no atomics.
         tl.store(p_ptr + (pid_k * M + offs_m[:, None]) * N + offs_n[None, :], acc, mask = mask)
 
 
 @triton.jit(do_not_specialize = ["M"])
-def _fp8_rowwise_gemv_rows_reduce(p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr):
+def _fp8_rowwise_gemv_rows_reduce(
+    p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr
+):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N
     acc = tl.zeros((BLOCK,), dtype = tl.float32)
@@ -825,7 +918,9 @@ def _fp8_rowwise_gemv_rows(X, weight, scale, out, rows):
     N, K = weight.shape
     block_n, block_k, split_k, warps, stages = _fp8_rows_config(N, K, X.dtype)
     partials = (
-        torch.empty((split_k, rows, N), device = X.device, dtype = torch.float32) if split_k > 1 else out
+        torch.empty((split_k, rows, N), device = X.device, dtype = torch.float32)
+        if split_k > 1
+        else out
     )
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_rows_kernel[(triton.cdiv(N, block_n), split_k)](
@@ -998,7 +1093,12 @@ def _fp8_block_size(weight, weight_scale):
 
 def _fp8_block_gemv_weight_ok(weight, weight_scale):
     # Cached per (weight, scale): 0 = never, else max decode rows.
-    if not weight.is_cuda or weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
+    if (
+        not weight.is_cuda
+        or weight.dtype != torch.float8_e4m3fn
+        or weight.dim() != 2
+        or not weight.is_contiguous()
+    ):
         return 0
     N, K = weight.shape
     # Only where never slower than the block GEMM (L4, RTX PRO 6000; L2 flushed and hot). Small parts cap
@@ -1068,7 +1168,9 @@ def _sm_count(device):
 
 @_opaque_under_compile(
     "fp8_block_gemv",
-    lambda X, weight, weight_scale, group_n, group_k: X.new_empty(X.shape[:-1] + (weight.shape[0],)),
+    lambda X, weight, weight_scale, group_n, group_k: X.new_empty(
+        X.shape[:-1] + (weight.shape[0],)
+    ),
 )
 def _fp8_block_gemv(
     X: torch.Tensor, weight: torch.Tensor, weight_scale: torch.Tensor, group_n: int, group_k: int
@@ -1141,7 +1243,9 @@ def _fp8_block_small_m_first(X, weight, weight_scale):
     # 100+ SM parts: the fused small-M kernel is faster, so try it first (eager only; compiled uses the GEMV).
     if not (torch.is_grad_enabled() and X.requires_grad):
         if (
-            can_use_fp8_block_small_m(X, weight, weight_scale, _fp8_block_size(weight, weight_scale))
+            can_use_fp8_block_small_m(
+                X, weight, weight_scale, _fp8_block_size(weight, weight_scale)
+            )
             and weight.is_contiguous()
             and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
         ):
@@ -1226,6 +1330,46 @@ def _e4m3fn_bytes_dequant_kernel(
 
 # (rows, cols, num_warps) per program, from a tile sweep on T4 and A100.
 _BYTES_DEQUANT_TILE = (8, 512, 4)
+
+
+@triton.jit
+def _e4m3fn_scale_dequant_kernel(
+    x_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    stride_s,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    SCALE_ON_COLS: tl.constexpr,
+    ROUND_SCALE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+):
+    # Scale per tensor (stride_s 0), row or column. ROUND_SCALE mirrors x.to(dtype) * s.to(dtype) (fp16 keeps
+    # the fp32 scale); e4m3 times a bf16 scale is exact in fp32, so one rounding gives torch's bits.
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    if LONG_INDEXING:
+        pid_m = pid_m.to(tl.int64)
+        pid_n = pid_n.to(tl.int64)
+    r = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    c = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = (r[:, None] < M) & (c[None, :] < N)
+    offs = r[:, None] * N + c[None, :]
+    x = _e4m3fn_byte_to_float(tl.load(x_ptr + offs, mask = mask, other = 0).to(tl.int32))
+    if SCALE_ON_COLS:
+        s = tl.load(s_ptr + c * stride_s, mask = c < N, other = 0.0)
+    else:
+        s = tl.load(s_ptr + r * stride_s, mask = r < M, other = 0.0)
+    if ROUND_SCALE:
+        s = s.to(y_ptr.dtype.element_ty)
+    s = s.to(tl.float32)
+    y = x * (s[None, :] if SCALE_ON_COLS else s[:, None])
+    tl.store(y_ptr + offs, y.to(y_ptr.dtype.element_ty), mask = mask)
+
+
+_SCALE_DEQUANT_TILE = (16, 256, 4)
 
 
 @_opaque_under_compile(

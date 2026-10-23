@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from auth import policy, storage
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from models.auth import (
     AccountActiveRequest,
     AccountListResponse,
@@ -26,7 +26,19 @@ from utils.account_context import AccountContext, run_as
 from utils.paths import storage_roots
 
 
-router = APIRouter(dependencies = [Depends(get_current_subject), Depends(policy.require_owner)])
+def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    # A setup code signs in as the account, so an API key or keyless caller must not mint one.
+    if via_api_key:
+        raise HTTPException(status_code = 403, detail = "Account management requires a UI session.")
+
+
+router = APIRouter(
+    dependencies = [
+        Depends(get_current_subject),
+        Depends(policy.require_owner),
+        Depends(_require_ui_session),
+    ]
+)
 
 
 @contextmanager
