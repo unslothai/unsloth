@@ -1943,3 +1943,83 @@ def test_a_carried_swap_restores_the_model_the_user_picked_since(monkeypatch):
     second = make_task(id = "task-2", model = SwapWorld.TASK_MODEL, allowModelLoad = True)
     run_held(world, monkeypatch, second, {"id": "run-2", "source": "schedule"}, holder)
     assert holder.pending.previous == picked
+
+
+def test_switching_back_gives_back_the_restore_requests_admission(monkeypatch):
+    from core.inference import llama_keepwarm
+
+    world = SwapWorld(monkeypatch)
+    before = llama_keepwarm.other_admitted_inference_count()
+    reload = inference_routes._maybe_auto_switch_model
+
+    async def admitting_reload(model, request, subject, **kwargs):
+        # The real hook admits the request it is given.
+        llama_keepwarm.note_admitted_inference(request.scope)
+        await reload(model, request, subject, **kwargs)
+
+    monkeypatch.setattr(inference_routes, "_maybe_auto_switch_model", admitting_reload)
+    world.run(monkeypatch, {"id": "run-1", "source": "schedule"})
+    assert world.loaded == SwapWorld.EARLIER
+    assert llama_keepwarm.other_admitted_inference_count() == before
+
+
+def test_a_connection_run_leaves_a_concurrent_local_request_counted(monkeypatch):
+    import json as jsonlib
+
+    from fastapi.responses import StreamingResponse
+    from core.inference import llama_keepwarm
+    from storage import providers_db
+
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+
+    async def chunks():
+        chunk = {
+            "id": "c1",
+            "model": "gpt-5-mini",
+            "choices": [{"index": 0, "delta": {"content": "Hi."}}],
+        }
+        yield f"data: {jsonlib.dumps(chunk)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    class ExternalProducer(FakeProducer):
+        async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+            # What the real producer does for a connection, while someone's local chat starts.
+            llama_keepwarm.untrack_current_request(request.scope)
+            llama_keepwarm._note_start()
+            return await super().__call__(
+                payload, request, current_subject, cancel_on_disconnect = cancel_on_disconnect
+            )
+
+    producer = ExternalProducer(StreamingResponse(chunks(), media_type = "text/event-stream"))
+    try:
+        generate(monkeypatch, producer, make_task(model = "external::conn-1::gpt-5-mini"))
+        assert llama_keepwarm.inference_in_flight()
+    finally:
+        llama_keepwarm._note_end()
+
+
+@pytest.mark.parametrize("may_load", [False, True])
+def test_a_task_model_loaded_alongside_the_primary_answers_without_a_swap(monkeypatch, may_load):
+    from core.inference import model_slots
+
+    world = SwapWorld(monkeypatch)
+    beside = object()
+    monkeypatch.setattr(model_slots, "visible", lambda: [beside])
+    monkeypatch.setattr(
+        model_slots,
+        "serving_slot",
+        lambda requested, candidates, satisfies: beside
+        if requested == SwapWorld.TASK_MODEL
+        else None,
+    )
+    producer = FakeProducer(completion("Dawn light."))
+    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
+    task = make_task(model = SwapWorld.TASK_MODEL, allowModelLoad = may_load)
+    app = SimpleNamespace(state = SimpleNamespace())
+    answer = asyncio.run(
+        generate_answer(app, task, {"id": "run-1", "source": "schedule"}, threading.Event())
+    )
+    assert answer.content == "Dawn light." and producer.payload.model == SwapWorld.TASK_MODEL
+    # The primary stays as the user left it: nothing unloaded, nothing reloaded.
+    assert world.unloaded == [] and world.reloads == [] and world.loaded == SwapWorld.EARLIER

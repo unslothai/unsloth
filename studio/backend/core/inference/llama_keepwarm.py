@@ -210,13 +210,15 @@ class InferenceActivityReservation:
                 _note_start()
                 self._state = "started"
 
-    def finish(self) -> None:
-        """Balance a pending or started reservation. Idempotent."""
+    def finish(self, scope = None) -> None:
+        """Balance a pending or started reservation. Idempotent. A ``scope`` the producer already
+        untracked (an external-provider request) dropped the started count itself."""
         with self._state_lock:
             if self._state == "pending":
                 _note_unpending()
             elif self._state == "started":
-                _note_end()
+                if not (isinstance(scope, dict) and scope.get(_UNTRACKED_SCOPE_KEY)):
+                    _note_end()
             else:
                 return
             self._state = "finished"

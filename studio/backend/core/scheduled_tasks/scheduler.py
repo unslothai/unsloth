@@ -175,8 +175,17 @@ def _chat_model_loaded() -> bool:
 
 
 def _model_is_loaded(model: str) -> bool:
+    """Loaded as the primary or alongside it; the producer routes to whichever serves it."""
+    from core.inference import model_slots
     from routes.inference import _loaded_identity_satisfies, _loaded_satisfies
-    return _loaded_satisfies(model) or _loaded_identity_satisfies(model)
+
+    def satisfies(requested: str) -> bool:
+        return _loaded_satisfies(requested) or _loaded_identity_satisfies(requested)
+
+    if satisfies(model):
+        return True
+    candidates = model_slots.visible()
+    return bool(candidates) and model_slots.serving_slot(model, candidates, satisfies) is not None
 
 
 # Levels the request accepts; a template may list others, which a run never sends.
@@ -227,11 +236,7 @@ def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: 
 
 def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[dict], bool]:
     """The request fields that pick the task's model, and whether it must be loaded; raises RunFailed."""
-    from routes.inference import (
-        _connection_model_ref,
-        _loaded_identity_satisfies,
-        _loaded_satisfies,
-    )
+    from routes.inference import _connection_model_ref
     from storage import providers_db
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
@@ -255,7 +260,7 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
             config,
             False,
         )
-    if _loaded_satisfies(model) or _loaded_identity_satisfies(model):
+    if _model_is_loaded(model):
         return {"model": model}, None, False
     # Loading replaces Chat's model, so only with the user's yes; otherwise RunFailed asks for it.
     if may_load or get_openai_auto_switch_enabled():
@@ -304,6 +309,7 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
     """Put back what the run's load replaced, unless someone used or loaded a model since. Best effort."""
     from core.inference.llama_keepwarm import (
         attended_stamp,
+        end_in_process_request,
         idle_for,
         loaded_identity,
         stash_for_reload,
@@ -334,7 +340,13 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
                 app, f"{swap.task_id}:restore", threading.Event(), swap.timezone
             )
             allow_model_switch_for_request(request.scope)
-            await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, swap.subject)
+            restored = False
+            try:
+                await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, swap.subject)
+                restored = True
+            finally:
+                # No middleware ends this in-process request; its admission would block previews.
+                end_in_process_request(request.scope, answered = restored)
     except Exception as exc:  # noqa: BLE001 - the run's own outcome stands
         logger.warning(
             "Scheduled task %s could not restore the earlier model: %s", swap.task_id, exc
@@ -477,7 +489,7 @@ async def generate_answer(
                 cancel_event.set()
                 producer.cancel()
                 await asyncio.wait({producer}, timeout = _CANCEL_GRACE_SECONDS)
-            activity.finish()
+            activity.finish(request.scope)
             answered = response is not None and int(getattr(response, "status_code", 200)) < 400
             end_in_process_request(request.scope, answered = answered)
             if holder is None and swap is not None and not cancel_event.is_set():
