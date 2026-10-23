@@ -2512,10 +2512,11 @@ def _scaler_for_native(trainer):
     # world_size times the one GPU one, while the reduce divides it back out. At the same loss scale a
     # backward one GPU fits in float16 overflows here and the step is skipped. Start the scale divided
     # by the data parallel size: the scaled backward then matches one GPU, and the unscaled gradients
-    # are unchanged.
+    # are unchanged. An init_scale the user set (GradScalerKwargs; to_kwargs lists only non-defaults)
+    # is kept as given.
     world = _data_parallel_size(getattr(trainer, "model", None))
-    if world > 1:
-        kwargs["init_scale"] = float(kwargs.get("init_scale", 2.0**16)) / world
+    if world > 1 and "init_scale" not in kwargs:
+        kwargs["init_scale"] = 2.0**16 / world
     accelerator.scaler = _ShardedGradScaler(**kwargs)
     return True
 
