@@ -85,7 +85,6 @@ def _head(torch):
 
 
 def _wrapped(torch, head, registered):
-    """PeftModel -> LoraModel -> base model, with the head on the innermost model."""
     base = torch.nn.Module()
     base.config = None
     if registered:
@@ -297,7 +296,6 @@ def test_nextn_head_round_trips_through_save_pretrained(save_module, tmp_path):
     reloaded = get_mtp_head(fresh, source = str(out))
     assert all(torch.equal(reloaded.mtp_state_dict()[k], v) for k, v in expected.items())
 
-    # Saving again over a checkpoint that now carries the head rewrites it in place.
     report = save_module._stitch_mtp_head(fresh, str(out))
     assert report["mode"] == "replaced"
 
@@ -495,7 +493,6 @@ def test_mtp_push_keeps_the_datasets_metadata(save_module, monkeypatch):
         )
     )
     assert len(calls) == 1 and calls[0][:2] == ("dev", True) and "org/data" in calls[0][2]
-    # A new repo still gets the hub path's model card, with the caller's tags.
     assert "unsloth" in calls[0][2] and "my-tag" in calls[0][2] and "org/base" in calls[0][2]
 
 
@@ -725,7 +722,6 @@ def _two_adapter_model(torch, active):
         selected_adapters = None,
         **kwargs,
     ):
-        # PEFT saves every adapter only when `selected_adapters` is None; [] saves none.
         for name in ("default", "task") if selected_adapters is None else selected_adapters:
             folder = Path(save_directory) / ("" if name == "default" else name)
             folder.mkdir(parents = True, exist_ok = True)
@@ -743,7 +739,7 @@ def test_selected_adapters_save_leaves_other_folders_alone(save_module, tmp_path
     import torch
 
     model = _two_adapter_model(torch, active = "task")
-    (tmp_path / "adapter_config.json").write_text("{}")  # fresh mtime, not part of this save
+    (tmp_path / "adapter_config.json").write_text("{}")
     if positional:
         model.save_pretrained(str(tmp_path), True, ["task"])
     else:
@@ -760,7 +756,6 @@ def test_head_is_written_only_beside_the_active_adapter(save_module, tmp_path):
     model.save_pretrained(str(tmp_path))
     assert (tmp_path / "task" / "mtp_head.safetensors").is_file()
     assert not (tmp_path / "mtp_head.safetensors").exists()
-    # Saving only an inactive adapter writes no head and does not try a full-checkpoint stitch.
     out = tmp_path / "inactive"
     model.save_pretrained(str(out), selected_adapters = ["default"])
     assert (out / "adapter_config.json").is_file()
@@ -833,7 +828,6 @@ def test_a_combined_adapter_head_is_not_split_into_sidecars(save_module, tmp_pat
     assert (tmp_path / "task" / "adapter_config.json").is_file()
     assert not list(tmp_path.rglob("mtp_head.safetensors"))
     assert "active together" in capsys.readouterr().out
-    # Back to one active adapter: that adapter gets the head again.
     object.__setattr__(model, "active_adapter", "task")
     model.save_pretrained(str(tmp_path / "single"))
     assert (tmp_path / "single" / "task" / "mtp_head.safetensors").is_file()
