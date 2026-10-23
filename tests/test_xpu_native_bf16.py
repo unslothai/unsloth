@@ -151,14 +151,31 @@ def test_xpu_bf16_judges_the_devices_a_model_uses(monkeypatch, device, bf16):
 # torchrun imports unsloth before prepare_device_map selects the rank's XPU, so every rank reads
 # current device 0 at import: judge the launch's XPUs together instead, one answer for all ranks.
 LAUNCH_CASES = [
-    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, False, id = "2ranks-mixed"),
-    pytest.param([EMULATED, NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, False, id = "2ranks-mixed-rev"),
-    pytest.param([NATIVE, NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, True, id = "2ranks-native"),
-    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "1", "WORLD_SIZE": "2"}, True, id = "1rank-per-node"),
+    pytest.param(
+        [NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, False, id = "2ranks-mixed"
+    ),
+    pytest.param(
+        [EMULATED, NATIVE],
+        {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"},
+        False,
+        id = "2ranks-mixed-rev",
+    ),
+    pytest.param(
+        [NATIVE, NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, True, id = "2ranks-native"
+    ),
+    pytest.param(
+        [NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "1", "WORLD_SIZE": "2"}, True, id = "1rank-per-node"
+    ),
     pytest.param([NATIVE, EMULATED], {"WORLD_SIZE": "2"}, False, id = "no-local-world-all-visible"),
-    pytest.param([NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, True, id = "affinity-mask-one-visible"),
-    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "1", "WORLD_SIZE": "1"}, True, id = "single-process"),
-    pytest.param([NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "x", "WORLD_SIZE": "y"}, True, id = "garbage-env"),
+    pytest.param(
+        [NATIVE], {"LOCAL_WORLD_SIZE": "2", "WORLD_SIZE": "2"}, True, id = "affinity-mask-one-visible"
+    ),
+    pytest.param(
+        [NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "1", "WORLD_SIZE": "1"}, True, id = "single-process"
+    ),
+    pytest.param(
+        [NATIVE, EMULATED], {"LOCAL_WORLD_SIZE": "x", "WORLD_SIZE": "y"}, True, id = "garbage-env"
+    ),
 ]
 
 
@@ -195,7 +212,9 @@ def test_launch_answer_matches_zoo(monkeypatch, devices, env, _bf16):
         pytest.param([EMULATED, NATIVE], True, id = "emulated-then-native"),
     ],
 )
-def test_is_bfloat16_supported_follows_set_device_after_import(monkeypatch, devices, bf16_after_switch):
+def test_is_bfloat16_supported_follows_set_device_after_import(
+    monkeypatch, devices, bf16_after_switch
+):
     # unsloth#14622 on XPU: import on XPU 0, then torch.xpu.set_device(1) before loading. The loader
     # asks is_bfloat16_supported(); it must answer for XPU 1, as the trainer's zoo probe does.
     import unsloth.models._utils as model_utils

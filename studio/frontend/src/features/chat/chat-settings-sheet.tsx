@@ -71,6 +71,8 @@ import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -131,6 +133,10 @@ import {
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
+
+const SaveForModelButton = lazy(
+  () => import("./components/save-for-model-button"),
+);
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -1312,7 +1318,7 @@ export function ChatSettingsPanel({
               <DropdownMenuContent
                 align="start"
                 sideOffset={0}
-                className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
+                className="menu-soft-surface ring-0 border-0 rounded-lg p-1"
               >
                 {presets.map((p, index) => (
                   <Fragment key={p.name}>
@@ -1736,6 +1742,12 @@ export function ChatSettingsPanel({
             <RetrievalSettingsSection />
           </CollapsibleSection>
             )}
+
+            {!isExternalModel && currentCheckpoint ? (
+          <Suspense fallback={null}>
+            <SaveForModelButton store={useChatRuntimeStore} notify={toast} />
+          </Suspense>
+            ) : null}
       </div>
       </div>
       </div>
@@ -1817,7 +1829,7 @@ export function ChatSettingsPanel({
                   placeholder='{ "env": "staging", "version": "v2.3.1" }'
                   fieldSizing="fixed"
                   className={cn(
-                    "min-h-24 border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
+                    "min-h-24 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
                     systemVariablesError &&
                       "ring-1 ring-destructive focus-visible:ring-destructive",
                   )}
@@ -1839,7 +1851,7 @@ export function ChatSettingsPanel({
             ) : null}
             {/* Squircle on the wrapper: Chrome leaves a scroll area's own
                 corners square. */}
-            <div className="corner-squircle overflow-hidden rounded-xl">
+            <div className="corner-squircle overflow-hidden rounded-xl border border-border transition-colors focus-within:border-ring dark:border-transparent dark:focus-within:border-transparent">
               <Textarea
                 value={systemPromptDraft}
                 onChange={(event) => setSystemPromptDraft(event.target.value)}

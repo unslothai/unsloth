@@ -276,10 +276,10 @@ test("a row is a container, and each of its controls is its own button", () => {
   }
   assert.match(
     PAGE,
-    /className="group\/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted\/70 dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.055\*var\(--contrast-wash-gain,1\)\)\)\]"/,
+    /className="group\/project-row relative flex items-center gap-3 rounded-md px-5 py-4 text-left transition-colors duration-150 hover:bg-muted\/70 dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.055\*var\(--contrast-wash-gain,1\)\)\)\]"/,
   );
   assert.match(
     PAGE,
-    /className="group\/chat-row flex items-center gap-3 rounded-xl py-1\.5 pl-2 pr-5 text-left text-sm/,
+    /className="group\/chat-row flex items-center gap-3 rounded-full py-1\.5 pl-2 pr-5 text-left text-sm/,
   );
 });

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SegmentedPill } from "@/components/segmented-control";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -28,7 +27,7 @@ import { ShieldIcon } from "@/lib/shield-cog-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
@@ -102,17 +101,22 @@ function ToolRow({
   );
   return (
     <SettingsRow label={label} description={description}>
-      <Badge
-        variant="outline"
-        // Grey and sized like the dropdown pills.
-        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
-      >
+      <SandboxStatus>
         {view.isolated ? <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} /> : null}
         {view.isolated
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
-      </Badge>
+      </SandboxStatus>
     </SettingsRow>
+  );
+}
+
+// A read-only value, not a control: plain text, so it is not mistaken for a button.
+function SandboxStatus({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground [&>svg]:size-3.5">
+      {children}
+    </span>
   );
 }
 
@@ -343,7 +347,7 @@ export function SandboxTab() {
             target="_blank"
             rel="noreferrer"
             title={t("settings.sandbox.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {t("settings.sandbox.docs")}
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -731,7 +735,7 @@ function OsSandboxSections() {
                           >
                             {t("settings.sandbox.setupCommandHint")}
                           </span>
-                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-all rounded-lg bg-muted px-2 py-1.5 text-left font-mono text-ui-11">
                             {setupRow.command}
                           </pre>
                           <Button
@@ -821,13 +825,10 @@ function OsSandboxSections() {
                       label={t("settings.sandbox.builtinLabel")}
                       description={t("settings.sandbox.builtinDescription")}
                     >
-                      <Badge
-                        variant="outline"
-                        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
-                      >
+                      <SandboxStatus>
                         <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} />
                         {t("settings.sandbox.builtinInUse")}
-                      </Badge>
+                      </SandboxStatus>
                     </SettingsRow>
                   ) : null}
                   {view.builtinUpdate ? (

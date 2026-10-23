@@ -1149,29 +1149,31 @@ export const en = {
     },
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
+      intro: "To change a shortcut, select the key combination, and then type the new keys",
       searchPlaceholder: "Search shortcuts…",
       keystrokePlaceholder: "Press shortcut to search",
       searchByKeystrokes: "Search by keystrokes",
       searchByName: "Search by name",
       noResults: "No shortcuts match that search.",
-      unassigned: "Unassigned",
-      recording: "Press keys…",
-      recordingHint: "Press the new chord, or Esc to cancel.",
+      unassigned: "none",
+      recording: "Press key sequence",
       needsModifier: "Add ⌘, Ctrl or Alt. A bare key would swallow typing.",
       conflict: "Also used by another shortcut",
       conflictShadowed: "Another shortcut has this chord and runs instead",
       edit: "Change shortcut",
-      clear: "Remove shortcut",
       reset: "Restore default",
-      resetAll: "Reset all to defaults",
-      primarySlot: "Shortcut",
-      alternateSlot: "Alternate shortcut",
+      resetAll: "Restore defaults",
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
       metaUnsupported: "The Windows key can't be used in shortcuts.",
       altGraphUnsupported: "AltGr chords can't be used as shortcuts.",
       desktopOnly: "Desktop app only",
-      builtInKey: "Built in: {key}",
+      groups: {
+        composer: "Composer",
+        chat: "Chat",
+        navigation: "Navigation",
+        app: "App",
+      },
       actions: {
         findInPage: {
           label: "Find in page",
@@ -1361,6 +1363,10 @@ export const en = {
           label: "Attach photos and files",
           description: "Add an attachment to the composer",
         },
+        openComposerMenu: {
+          label: "Open + menu",
+          description: "Open the composer's + menu of tools and attachments",
+        },
         sendMessage: {
           label: "Send message",
           description: "Send what is in the composer",
@@ -1388,10 +1394,6 @@ export const en = {
         decreaseReasoningEffort: {
           label: "Decrease reasoning effort",
           description: "Lower reasoning effort one level",
-        },
-        toggleFastMode: {
-          label: "Toggle Fast mode",
-          description: "Turn Fast mode on or off",
         },
         renameChat: {
           label: "Rename chat",

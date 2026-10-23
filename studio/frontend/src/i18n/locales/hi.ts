@@ -1095,6 +1095,7 @@ export const hi = {
     },
     keyboardShortcuts: {
       title: "कीबोर्ड शॉर्टकट",
+      intro: "शॉर्टकट बदलने के लिए, कुंजी संयोजन चुनें और फिर नई कुंजियाँ दबाएँ",
       searchPlaceholder: "शॉर्टकट खोजें…",
       keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
       searchByKeystrokes: "कीस्ट्रोक से खोजें",
@@ -1102,22 +1103,23 @@ export const hi = {
       noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",
       recording: "कुंजियाँ दबाएँ…",
-      recordingHint: "नया संयोजन दबाएँ, या रद्द करने के लिए Esc।",
       needsModifier: "⌘, Ctrl या Alt जोड़ें। अकेली कुंजी टाइपिंग निगल लेगी।",
       conflict: "यह किसी और शॉर्टकट में भी इस्तेमाल हो रहा है",
       conflictShadowed: "यह संयोजन किसी और शॉर्टकट के पास है और उसके बदले वही चलता है",
       edit: "शॉर्टकट बदलें",
-      clear: "शॉर्टकट हटाएँ",
       reset: "डिफ़ॉल्ट पर लौटाएँ",
       resetAll: "सभी को डिफ़ॉल्ट पर रीसेट करें",
-      primarySlot: "शॉर्टकट",
-      alternateSlot: "वैकल्पिक शॉर्टकट",
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
       metaUnsupported: "Windows कुंजी का उपयोग शॉर्टकट में नहीं किया जा सकता।",
       altGraphUnsupported: "AltGr संयोजनों को शॉर्टकट के रूप में उपयोग नहीं किया जा सकता।",
       desktopOnly: "केवल डेस्कटॉप ऐप में",
-      builtInKey: "अंतर्निहित: {key}",
+      groups: {
+        composer: "कंपोज़र",
+        chat: "चैट",
+        navigation: "नेविगेशन",
+        app: "ऐप",
+      },
       actions: {
         findInPage: {
           label: "पेज में खोजें",
@@ -1307,6 +1309,10 @@ export const hi = {
           label: "फ़ोटो और फ़ाइलें संलग्न करें",
           description: "लिखने के बॉक्स में अनुलग्नक जोड़ें",
         },
+        openComposerMenu: {
+          label: "+ मेनू खोलें",
+          description: "कंपोज़र का टूल और अटैचमेंट वाला + मेनू खोलें",
+        },
         sendMessage: {
           label: "संदेश भेजें",
           description: "लिखने के बॉक्स की सामग्री भेजें",
@@ -1334,10 +1340,6 @@ export const hi = {
         decreaseReasoningEffort: {
           label: "तर्क प्रयास घटाएँ",
           description: "तर्क प्रयास एक स्तर घटाएँ",
-        },
-        toggleFastMode: {
-          label: "Fast मोड टॉगल करें",
-          description: "Fast मोड चालू या बंद करें",
         },
         renameChat: {
           label: "चैट का नाम बदलें",

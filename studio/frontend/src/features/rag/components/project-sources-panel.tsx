@@ -185,7 +185,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           void handleItems(fileItems(files));
         }}
       />
-      <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">
+      <div className="mb-4 rounded-2xl bg-muted/30 px-5 py-4">
         <LinkedFoldersManager
           scope={{ type: "project", id: projectId }}
           compact={true}
@@ -195,7 +195,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       {empty ? (
         <div
           className={cn(
-            "flex flex-col items-center justify-center gap-3 rounded-[26px] border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
+            "flex flex-col items-center justify-center gap-3 rounded-2xl border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
             dragging && "border-primary/60 bg-primary/5",
           )}
         >
@@ -234,7 +234,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       ) : (
         <div
           className={cn(
-            "flex flex-col gap-4 rounded-[26px] border border-transparent bg-muted/30 px-6 py-5 transition-colors",
+            "flex flex-col gap-4 rounded-2xl border border-transparent bg-muted/30 px-6 py-5 transition-colors",
             dragging && "border-primary/60 bg-primary/5",
           )}
         >

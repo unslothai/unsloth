@@ -167,7 +167,7 @@ test("an over budget row dims instead of putting a pill on every line", () => {
   );
   assert.ok(
     PICKERS.includes(
-      '"opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
+      '"opacity-55 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100 dark:opacity-50"',
     ),
   );
   assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[18px]"'));
@@ -191,7 +191,7 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
     2,
     "both model row slots reveal on hover",
   );
-  assert.match(PICKERS, /exceeds &&\n\s*!selected &&/);
+  assert.match(PICKERS, /dimmed &&\n\s*!selected &&/);
 });
 
 test("chat and the Hub answer the fit question with one formula", () => {

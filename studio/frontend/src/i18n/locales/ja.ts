@@ -1093,6 +1093,7 @@ export const ja = {
     },
     keyboardShortcuts: {
       title: "キーボードショートカット",
+      intro: "ショートカットを変更するには、キーの組み合わせを選択してから新しいキーを入力します",
       searchPlaceholder: "ショートカットを検索…",
       keystrokePlaceholder: "ショートカットを押して検索",
       searchByKeystrokes: "キー入力で検索",
@@ -1100,22 +1101,23 @@ export const ja = {
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
-      recordingHint: "新しいキーの組み合わせを押すか、Esc でキャンセルします。",
       needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
       conflict: "別のショートカットでも使われています",
       conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",
       edit: "ショートカットを変更",
-      clear: "ショートカットを削除",
       reset: "既定値に戻す",
       resetAll: "すべて既定値に戻す",
-      primarySlot: "ショートカット",
-      alternateSlot: "代替ショートカット",
       browserReserved:
         "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       metaUnsupported: "Windows キーはショートカットに使用できません。",
       altGraphUnsupported: "AltGr の組み合わせはショートカットに使用できません。",
       desktopOnly: "デスクトップアプリのみ",
-      builtInKey: "組み込み: {key}",
+      groups: {
+        composer: "入力欄",
+        chat: "チャット",
+        navigation: "ナビゲーション",
+        app: "アプリ",
+      },
       actions: {
         findInPage: {
           label: "ページ内検索",
@@ -1305,6 +1307,10 @@ export const ja = {
           label: "写真とファイルを添付",
           description: "入力欄に添付ファイルを追加します",
         },
+        openComposerMenu: {
+          label: "+ メニューを開く",
+          description: "入力欄のツールと添付ファイルの + メニューを開く",
+        },
         sendMessage: {
           label: "メッセージを送信",
           description: "入力欄の内容を送信します",
@@ -1332,10 +1338,6 @@ export const ja = {
         decreaseReasoningEffort: {
           label: "思考の深さを下げる",
           description: "思考の深さを 1 段階下げます",
-        },
-        toggleFastMode: {
-          label: "Fast モードの切り替え",
-          description: "Fast モードをオンまたはオフにします",
         },
         renameChat: {
           label: "チャット名を変更",

@@ -106,7 +106,7 @@ function DownloadSiteRows() {
       description={t("browser.downloadSitesSettingDescription")}
       below={
         origins.length > 0 ? (
-          <ul className="flex w-full flex-col divide-y divide-border/60 rounded-lg border border-border/80">
+          <ul className="flex w-full flex-col divide-y divide-border/60 rounded-xl border border-border/80">
             {origins.map((origin) => (
               <li key={origin} className="flex items-center gap-3 py-1.5 pl-3 pr-1.5">
                 <span className="min-w-0 flex-1 truncate text-sm text-foreground">{origin}</span>

@@ -1091,6 +1091,7 @@ export const ar = {
     },
     keyboardShortcuts: {
       title: "اختصارات لوحة المفاتيح",
+      intro: "لتغيير اختصار، اختر تركيبة المفاتيح ثم اكتب المفاتيح الجديدة",
       searchPlaceholder: "بحث في الاختصارات…",
       keystrokePlaceholder: "اضغط اختصارًا للبحث",
       searchByKeystrokes: "البحث بضغط المفاتيح",
@@ -1098,22 +1099,23 @@ export const ar = {
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
-      recordingHint: "اضغط التركيبة الجديدة، أو Esc للإلغاء.",
       needsModifier: "أضف ⌘ أو Ctrl أو Alt. المفتاح المجرد سيبتلع الكتابة.",
       conflict: "مستخدم أيضاً في اختصار آخر",
       conflictShadowed: "اختصار آخر يملك هذه التركيبة ويعمل بدلاً منه",
       edit: "تغيير الاختصار",
-      clear: "إزالة الاختصار",
       reset: "استعادة الافتراضي",
       resetAll: "إعادة تعيين الكل إلى الافتراضي",
-      primarySlot: "الاختصار",
-      alternateSlot: "اختصار بديل",
       browserReserved:
         "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
       metaUnsupported: "لا يمكن استخدام مفتاح Windows في الاختصارات.",
       altGraphUnsupported: "لا يمكن استخدام تركيبات AltGr كاختصارات.",
       desktopOnly: "تطبيق سطح المكتب فقط",
-      builtInKey: "مدمج: {key}",
+      groups: {
+        composer: "محرر الرسائل",
+        chat: "الدردشة",
+        navigation: "التنقل",
+        app: "التطبيق",
+      },
       actions: {
         findInPage: {
           label: "البحث في الصفحة",
@@ -1303,6 +1305,10 @@ export const ar = {
           label: "إرفاق صور وملفات",
           description: "إضافة مرفق إلى مربع الكتابة",
         },
+        openComposerMenu: {
+          label: "فتح قائمة +",
+          description: "فتح قائمة + للأدوات والمرفقات في محرر الرسائل",
+        },
         sendMessage: {
           label: "إرسال الرسالة",
           description: "إرسال ما في مربع الكتابة",
@@ -1330,10 +1336,6 @@ export const ar = {
         decreaseReasoningEffort: {
           label: "خفض جهد التفكير",
           description: "خفض جهد التفكير مستوى واحدًا",
-        },
-        toggleFastMode: {
-          label: "تبديل وضع Fast",
-          description: "تشغيل وضع Fast أو إيقافه",
         },
         renameChat: {
           label: "إعادة تسمية المحادثة",
