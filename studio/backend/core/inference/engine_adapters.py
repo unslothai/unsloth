@@ -440,13 +440,20 @@ def gpu_memory_fraction(
 def _nvidia_memory_rows(gpu_ids: list[int]) -> list[tuple[float, float]]:
     # R570+ MIG: the ids are CUDA devices. Budget each selected slice, never the card behind it
     # (nvidia-smi --id takes physical ids, so it would answer for a whole card or another one).
-    # A slice without a memory reading, or ids that cannot be translated, keep the nvidia-smi query.
+    # Ids the MIG map does not cover (not a MIG selection) keep the nvidia-smi query.
     try:
         from utils.hardware import mig
         slices = mig.rows_for(gpu_ids)
     except Exception:
         slices = None
-    if slices and all(float(r.get("memory_total_mib") or 0) > 0 for r in slices):
+    if slices is not None:
+        if not all(float(r.get("memory_total_mib") or 0) > 0 for r in slices):
+            # A failed probe keeps the instances with no memory reading; these ids are not
+            # physical cards, so nvidia-smi --id cannot stand in for them.
+            raise RuntimeError(
+                "The selected MIG GPU instance has no memory reading right now because the GPU "
+                "probe did not answer. Retry in a few seconds."
+            )
         return [
             (float(r["memory_total_mib"]), float(r.get("memory_free_mib") or 0)) for r in slices
         ]

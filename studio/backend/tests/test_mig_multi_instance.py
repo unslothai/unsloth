@@ -808,8 +808,11 @@ def test_untranslatable_optional_engine_ids_keep_the_physical_behaviour(monkeypa
         assert managed_engine._child_cuda_mask([1]) == "1"
 
 
-def test_a_slice_without_a_memory_reading_budgets_through_nvidia_smi():
+def test_a_mig_slice_without_a_memory_reading_fails_the_reservation_clearly():
     from core.inference import engine_adapters
+    # Imported here, not first inside host(): its sys.modules patch would drop the module on exit.
+    from utils import vram_budget_settings  # noqa: F401
+
     with host() as probe:
         assert len(B._get_gpu_memory()) == 3
         probe["source"] = "failed"
@@ -820,9 +823,10 @@ def test_a_slice_without_a_memory_reading_budgets_through_nvidia_smi():
         def run(cmd, *args, **kw):
             if "--query-gpu=memory.total,memory.free" in cmd:
                 queried.append(cmd)
-                return types.SimpleNamespace(returncode = 0, stdout = "81920, 78000\n", stderr = "")
             return inner(cmd, *args, **kw)
 
         with patch.object(subprocess, "run", run):
-            assert engine_adapters._nvidia_memory_rows([0]) == [(81920.0, 78000.0)]
-        assert len(queried) == 1
+            with pytest.raises(RuntimeError, match = "MIG GPU instance has no memory reading.*Retry"):
+                engine_adapters.gpu_memory_fraction([0])
+        # CUDA device ids are not physical cards: nvidia-smi --id never stands in for a slice.
+        assert queried == []
