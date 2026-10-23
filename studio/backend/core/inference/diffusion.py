@@ -2550,10 +2550,8 @@ def _release_before_tiling_off() -> bool:
 
 
 def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
-    """MiB the free VRAM is short by, now, for decoding ``z`` in one piece: the rule the wide-tile decode picks its
-    tile by (``decode_tile_budget``: per-latent decode peak within ``FREE_FRACTION`` of the free memory), applied to
-    the whole frame. A whole-frame tile is the untiled decode. None off CUDA, when the VAE's figures are unknown, or
-    when a platform cap of the budget (``decode_platform_cap``: the ROCm Qwen-Image-2.1 floor) is under the frame."""
+    """MiB short for decoding ``z`` untiled, by ``decode_tile_budget``'s rule on the whole frame. None off CUDA,
+    on unknown figures, or when ``decode_platform_cap`` is under the frame."""
     from .diffusion_vae_tiling import (
         FREE_FRACTION,
         _free_mib,
@@ -2580,9 +2578,7 @@ def _untiled_decode_shortfall_mib(vae: Any, z: Any) -> Optional[int]:
 
 
 def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
-    """MiB the free VRAM is short by, now, for encoding the pixels ``x`` in one piece: the encode's per-latent peak
-    (``encode_mib_per_latent``) over the encoded frame within ``FREE_FRACTION`` of the free memory, the decode's rule.
-    None off CUDA or when the VAE's figures are unknown (the encode then tiles)."""
+    """MiB short for encoding ``x`` untiled, the decode's rule; None off CUDA or on unknown figures."""
     from .diffusion_vae_tiling import FREE_FRACTION, _fused, _geometry, encode_mib_per_latent
     try:
         import torch
@@ -2612,12 +2608,8 @@ def _untiled_encode_shortfall_mib(vae: Any, x: Any) -> Optional[int]:
 def _release_for_untiled(
     state_pipe: Any, shortfall: Callable[[], Optional[int]], device: Any, logger: Any, reason: str
 ) -> tuple[bool, Optional[Callable[[], None]]]:
-    """Whether a VAE pass runs untiled, and the restore pinning back what was streamed for it. ``shortfall()`` is
-    the MiB it is short by now (None: unknown). Already fits: untiled, nothing streams. Otherwise the shortfall
-    streams first (plus a quarter for the budget's reserve and 256 MiB; text encoders before the denoiser, as
-    ``release_resident_groups`` orders them), then the rest once if that still falls short. Nothing streams when even
-    every resident group could not cover it (a freed MiB raises the free memory by at most a MiB). A pass that still
-    does not fit pins back and tiles."""
+    """(untiled?, restore). Streams the shortfall plus margin, then the rest once; nothing when even every resident
+    group could not cover it (a freed MiB frees at most a MiB). Still short: pin back and tile."""
     short = shortfall()
     if short is None:
         return False, None
@@ -2658,8 +2650,6 @@ def _release_for_untiled(
 def _release_for_untiled_decode(
     state_pipe: Any, vae: Any, z: Any, device: Any, logger: Any
 ) -> tuple[bool, Optional[Callable[[], None]]]:
-    """At the decode of a tile verdict: whether ``z`` decodes untiled (``_untiled_decode_shortfall_mib``), and the
-    restore pinning back what was streamed for it (``_release_for_untiled``)."""
     return _release_for_untiled(
         state_pipe,
         lambda: _untiled_decode_shortfall_mib(vae, z),
@@ -2672,8 +2662,7 @@ def _release_for_untiled_decode(
 def _release_for_untiled_encode(
     state_pipe: Any, vae: Any, x: Any, device: Any, logger: Any
 ) -> tuple[bool, Optional[Callable[[], None]]]:
-    """The encode's counterpart of ``_release_for_untiled_decode`` (``_untiled_encode_shortfall_mib``): untiled only
-    on a positive fit check, the only guard on WDDM, where an overrun spills to host memory instead of raising."""
+    """Untiled only on a positive fit check: on WDDM an overrun spills to host memory instead of raising."""
     return _release_for_untiled(
         state_pipe,
         lambda: _untiled_encode_shortfall_mib(vae, x),
@@ -2692,19 +2681,10 @@ def _defer_tiling_to_decode(
     restore_vae: Any,
     logger: Any,
 ) -> Any:
-    """A tile verdict while offload groups are resident: the tiling this request just engaged waits for the decode,
-    so the denoise keeps every resident group (ComfyUI frees model weights right before the VAE decode as well). At
-    each decode ``_release_for_untiled_decode`` decides on the latents it got and the memory free then: untiled when
-    the frame fits (streaming the shortfall first if needed), the groups pinned back as soon as the decode returns,
-    raises or is cancelled; tiled as before otherwise. Tiling changes pixels, streaming only costs transfer time.
-    The VAE encode (edits) takes the same check on its pixels (``_release_for_untiled_encode``): untiled when it fits
-    (streaming the shortfall first if needed, pinned back right after), tiled as before when it does not or its figures
-    are unknown; an out-of-memory on an untiled encode retries tiled, only as a backstop. Both wrappers sit on the
-    public ``decode`` / ``encode`` slots, above the OOM scope and outside every compiled or captured region. Returns
-    the request's VAE restore extended to drop them. Changes nothing for a verdict that would not stream (not tile,
-    overridden, nothing resident, a split that decodes on another card, the kill switch
-    ``UNSLOTH_DIFFUSION_RELEASE_BEFORE_TILING=0``) or a tiling that did not engage. A frame short by more than every
-    resident group is judged at the decode, on its own latents, and tiles there with nothing streamed."""
+    """Tile verdict with resident offload groups: keep them through the denoise (as ComfyUI does) and decide at each
+    VAE decode / encode, on its own input, whether streaming lets it run untiled (tiling changes pixels, streaming
+    only costs time); groups pin back right after. An untiled encode OOM retries tiled. Wrappers sit on the public
+    ``decode`` / ``encode`` slots, outside compiled regions. Returns the VAE restore extended to drop them."""
     vae = getattr(pipe, "vae", None)
     if (
         vae is None
@@ -2720,8 +2700,7 @@ def _defer_tiling_to_decode(
     resident = resident_group_mib(state_pipe)
     if resident <= 0:
         return restore_vae
-    # No request-wide "hopeless" gate: the verdict's figures price the conditioning and the denoise, which are no longer
-    # live at the decode, so only the decode-time check (``_untiled_decode_shortfall_mib``) may decide it tiles.
+    # No request-wide "hopeless" gate: the verdict prices the denoise, gone by decode time.
     try:
         if _vae_on_other_card(pipe, guard_target) is not None:
             return restore_vae
@@ -13578,8 +13557,7 @@ class DiffusionBackend:
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
                     )
-                    # tiling changes pixels, streaming resident groups only costs time: the denoise keeps them
-                    # resident, the decode streams the shortfall and runs untiled when that fits
+                    # tiling changes pixels, streaming only costs time: defer the choice to the decode
                     if not tiled_before:
                         restore_vae = _defer_tiling_to_decode(
                             pipe,

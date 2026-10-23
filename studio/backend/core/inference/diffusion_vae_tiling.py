@@ -145,8 +145,7 @@ def encode_mib_per_latent(
     fused: bool = False,
     cls: Optional[str] = None,
 ) -> Optional[float]:
-    """bf16 untiled encode peak MiB per latent: measured by class, else the class / ratio decode figure (above the
-    measured encode on every measured class), else None (unknown: the encode tiles)."""
+    """bf16 untiled encode peak MiB per latent: measured, else the decode figure (an upper bound), else None."""
     known = (
         ENCODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")
         or DECODE_MIB_PER_LATENT_BY_CLASS.get(cls or "")

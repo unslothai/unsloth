@@ -3,13 +3,8 @@
 
 """A tile verdict with offload groups still resident streams them at the decode, not before the denoise.
 
-Seen on a 15 GB T4 (Qwen-Image-2.1 fp16, edit at 1024x1024): with 5374 MiB of the text encoder resident, the request
-guard streamed only the MiB the request was priced at, the verdict then said "tile", and the edit decoded in 40-latent
-tiles (PSNR 52.6 dB, max abs 27/255 against the same edit with the encoder streamed, which decoded untiled). Every text
-encoder and transformer output was bit-identical between the two; the first differing module was the decoder input.
-Streaming the groups before the denoise made every step stream them too, so the tiling now waits for the decode:
-the denoise keeps the groups resident, the decode streams the shortfall, decodes untiled and pins them back.
-CPU-only: the decode figures, the snapshot and the group release are stubbed.
+Seen on a 15 GB T4 (Qwen-Image-2.1 fp16 edit, 1024x1024): streaming before the denoise left the decode tiled
+(PSNR 52.6 dB vs untiled). CPU-only: decode figures, snapshot and group release are stubbed.
 """
 
 from __future__ import annotations
@@ -344,9 +339,7 @@ def test_cases_that_do_not_stream_keep_the_request_tiling(card, monkeypatch, cas
 
 @pytest.mark.parametrize("decode_free", [9500, 6000])
 def test_a_conditioned_request_short_past_the_groups_still_decodes_untiled(card, decode_free):
-    # An edit / ControlNet / layered request: the verdict prices the conditioning and the denoise as well, 20000 MiB
-    # past the budget, more than the 4283 MiB resident. At the decode only the frame is live: it fits as is (9500
-    # free) or once the 3000 MiB shortfall streams (6000 free), so it must decode untiled, not stay tiled.
+    # Verdict short by more than all resident groups, but the frame alone fits at the decode: must decode untiled.
     verdict = ImageActivationVerdict(
         ACTIVATION_TILE, needed_mib = 23952, tiled_needed_mib = 2952, budget_mib = 6000
     )
@@ -423,8 +416,7 @@ def test_unknown_encode_figures_tile(card, monkeypatch):
 
 @pytest.mark.parametrize("need", [None, 20000])
 def test_on_wddm_no_untiled_encode_without_a_fit(card, monkeypatch, need):
-    # Windows WDDM spills an overrun to host RAM instead of raising (the activation guard keys it on sys.platform),
-    # so the out-of-memory retry never fires: only a positive fit check may run the encode untiled.
+    # WDDM spills an overrun to host RAM instead of raising: only a positive fit check may encode untiled.
     monkeypatch.setattr(diffusion.sys, "platform", "win32")
     monkeypatch.setattr(
         diffusion,
@@ -465,8 +457,7 @@ def test_the_untiled_encode_shortfall_uses_the_measured_encode_figures(monkeypat
 
 
 def test_the_untiled_decode_check_keeps_the_budget_caps(monkeypatch):
-    # decode_tile_budget pins Qwen-Image-2.1 on ROCm to the 32x32 floor (the CUDA figures under-predict there): the
-    # whole-frame check must not approve more than that platform cap would.
+    # The whole-frame check must respect the ROCm Qwen-Image-2.1 floor cap.
     import core.inference.diffusion_vae_tiling as tiling
 
     monkeypatch.delenv(tiling.MAX_TILE_ENV, raising = False)
@@ -490,8 +481,7 @@ def test_the_untiled_decode_check_keeps_the_budget_caps(monkeypatch):
 
 
 def test_the_untiled_encode_check_prices_the_fp32_encode_of_an_fp16_decode_vae(monkeypatch):
-    # enable_fp16_vae_decode leaves the SDXL encoder fp16 but its fp32_encode upcasts encoder and input for the
-    # encode: price it at fp32, not at the fp16 parameters the check sees.
+    # fp32_encode upcasts the fp16 SDXL encoder: price the encode at fp32.
     import core.inference.diffusion_vae_tiling as tiling
 
     monkeypatch.setattr(tiling, "_geometry", lambda vae: (8, 32, 4))
