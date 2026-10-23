@@ -1523,7 +1523,10 @@ def native_clip_grad_norm_(
     for p in params:
         g = p.grad
         if isinstance(g, DTensor):
-            local = g.to_local()
+            # The local shard itself (to_local() wraps the same tensor in an autograd op per call).
+            local = getattr(g, "_local_tensor", None)
+            if local is None:
+                local = g.to_local()
             dims = tuple(i for i, pl in enumerate(g.placements) if pl.is_shard())
             groups.setdefault((g.device_mesh, dims), []).append(local)
             sharded.append(local)
@@ -1552,6 +1555,10 @@ def native_clip_grad_norm_(
             norms = list(torch._foreach_norm(live, p)) if live else []
         except Exception:
             norms = [torch.linalg.vector_norm(g, p) for g in live]
+        if len(norms) == len(grads) and len({(n.device, n.dtype) for n in norms}) == 1:
+            # Common case (no empty shard, one device and dtype): one stack and one cast instead of
+            # two small kernels per tensor; the same float64 values in the same order.
+            return torch.stack(norms).double().to(device)
         it = iter(norms)
         return torch.stack(
             [
