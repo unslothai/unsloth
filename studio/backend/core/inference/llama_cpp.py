@@ -4045,7 +4045,12 @@ def _mtp_drafter_loads_standalone(path: str) -> bool:
     return mtp_drafter_loads_standalone(path)
 
 
-def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+def _pick_mmproj(
+    candidates: list[str],
+    *,
+    order: Optional[tuple] = None,
+    weight: Optional[str] = None,
+) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
     # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
@@ -4055,7 +4060,27 @@ def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     )
     if not mmproj_files:
         return None
+    if order:
+        from utils.models.model_config import mmproj_order_rank, mmproj_weight_match
+
+        # Pair with the weight first, so a repo of several checkpoints never hands over another one's projector.
+        return max(
+            mmproj_files,
+            key = lambda f: (mmproj_weight_match(weight, f), mmproj_order_rank(f, order)),
+        )
     return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
+
+
+def _mmproj_picker(
+    model: Optional[str], weight_path: Optional[str] = None
+) -> Callable[[list[str]], Optional[str]]:
+    from utils.models.model_config import mmproj_order
+
+    order = mmproj_order(model, weight_path)
+    if not order:
+        return _pick_mmproj
+    weight = Path(weight_path).name if weight_path else None
+    return functools.partial(_pick_mmproj, order = order, weight = weight)
 
 
 def _hub_download_in_flight(hf_repo: str) -> bool:
@@ -21649,14 +21674,27 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
+        from utils.models.model_config import mmproj_f16_unsafe, mmproj_precision
+
+        names = (hf_repo, near_path)
+        pick = _mmproj_picker(hf_repo, near_path)
+        f16_unsafe = any(mmproj_f16_unsafe(n) for n in names)
+        if f16_unsafe and near_path:
+            # Only a cached MiMo-VL F16 projector is broken; a cached BF16 / F32 one is reused as usual.
+            cached = _companion_snapshot_sibling(near_path, pick)
+            with contextlib.suppress(OSError):
+                if cached and mmproj_precision(cached) != "f16" and Path(cached).stat().st_size > 0:
+                    logger.info("Reusing cached mmproj: %s", cached)
+                    return cached
         outcome: dict = {}
         resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mmproj,
+            pick = pick,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            reuse_snapshot_sibling = not f16_unsafe,
             outcome = outcome,
         )
         if resolved is not None:
