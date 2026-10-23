@@ -612,10 +612,25 @@ def _gap_closed() -> bool:
     return _prewarm_stop.is_set() or _inference_depth > 0 or _other_work_busy()
 
 
+def _requeue(jobs: list) -> None:
+    """Put back what a closed gap interrupted, behind nothing newer: a fresh note for the same chat wins, and a
+    stopped request stays dropped."""
+    with _gap:
+        kept = {
+            (job[0].account_id, job[1]): job
+            for job in jobs
+            if (job[0].account_id, job[1]) not in _noted_branches and not (job[3] and job[3]())
+        }
+        merged = {**kept, **_noted_branches}
+        _noted_branches.clear()
+        _noted_branches.update(list(merged.items())[-_NOTED_MAX:])
+
+
 def _prewarm_jobs(jobs: list) -> None:
     from utils.account_context import run_as
-    for account, thread_id, messages, cancel_check in jobs:
+    for index, (account, thread_id, messages, cancel_check) in enumerate(jobs):
         if _gap_closed():
+            _requeue(jobs[index:])
             return
         # Chat Stop ends this request's background work too, not only its foreground pass.
         stopped = cancel_check or (lambda: False)
@@ -627,6 +642,10 @@ def _prewarm_jobs(jobs: list) -> None:
             logger.debug(
                 "conversation_archive.prewarm_failed thread_id=%s", thread_id, exc_info = True
             )
+        if _gap_closed():
+            # Possibly cut short; cached vectors make the redo cheap.
+            _requeue(jobs[index:])
+            return
 
 
 def _prewarm_thread(

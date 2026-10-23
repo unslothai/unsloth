@@ -1848,6 +1848,37 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     assert start() is False
 
 
+def test_an_interrupted_gap_requeues_what_it_did_not_finish(conn, monkeypatch):
+    """A closed gap keeps unfinished chats queued for the next one; a stopped request is still dropped."""
+    import threading
+    import time
+
+    from core.rag import embeddings
+
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    real = embeddings.encode_with_identity
+    started = threading.Event()
+
+    def slow(texts, **kwargs):
+        started.set()
+        time.sleep(0.02)
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow)
+    stop = threading.Event()
+    for name in ("requeue-a", "requeue-b", "requeue-stopped"):
+        cancel = stop.is_set if name.endswith("stopped") else None
+        conversation_archive.note_branch(name, _gap_thread(name, 20, tag = name), cancel)
+    conversation_archive._start_prewarm()
+    assert started.wait(5)
+    stop.set()
+    with conversation_archive.inference_running():
+        queued = [key[1] for key in conversation_archive._noted_branches]
+        # Nothing left for the stream's end to restart, so teardown has no worker to wait out.
+        conversation_archive._noted_branches.clear()
+    assert queued == ["requeue-a", "requeue-b"]
+
+
 def test_a_job_start_keeps_the_gap_closed_until_it_returns(conn, monkeypatch):
     """A stream ending while a load validates (before it publishes its busy state) must not restart the worker."""
     from core.inference.inference_gate import pauses_background_embedding
