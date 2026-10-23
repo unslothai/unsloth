@@ -636,9 +636,9 @@ def _run(
             p.join(timeout = 60)
             if p.is_alive():
                 p.kill()
-    assert sorted(results) == list(range(world)), (
-        f"{case}: ranks did not report within {timeout} s: {results}"
-    )
+    assert sorted(results) == list(
+        range(world)
+    ), f"{case}: ranks did not report within {timeout} s: {results}"
     for rank, r in results.items():
         print("DCP_RESUME", case, rank, {k: v for k, v in r.items() if k != "crash"})
         assert "crash" not in r, r["crash"]
@@ -738,6 +738,8 @@ def test_sharded_resume_on_another_world_size(save_world, load_world, tmp_path):
     results = _run("reshard_load", str(tmp_path), world = load_world)
     for rank, r in results.items():
         assert r["world"] == load_world, r
-        assert r["calls"] and isinstance(r["calls"][0], int) and r["calls"][0] > 0, r  # sharded read
+        assert (
+            r["calls"] and isinstance(r["calls"][0], int) and r["calls"][0] > 0
+        ), r  # sharded read
         assert r["model_diff"] == [], r["model_diff"]
         assert r["optim_diff"] == [], r["optim_diff"]
