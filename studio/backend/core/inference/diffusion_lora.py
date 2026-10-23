@@ -628,7 +628,15 @@ def materialize_native_dir(
                 os.symlink(os.path.realpath(r.path), link)
         except OSError:
             import shutil
-            shutil.copy2(r.path, link)
+            try:
+                shutil.copy2(r.path, link)
+            except BaseException:
+                # A partial multi-GB copy (disk full, cancelled) must not outlive the failed request.
+                try:
+                    link.unlink()
+                except OSError:
+                    pass
+                raise
         out.append(ResolvedLora(r.id, alias, str(link), r.fmt, r.weight))
     return out
 
