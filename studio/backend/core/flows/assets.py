@@ -102,11 +102,12 @@ def sniff_mime(data: bytes) -> Optional[str]:
 
 def _mp4_audio_only(data: bytes) -> bool:
     """True when every track handler in an MP4 is sound: AAC files often carry a generic isom / mp42 brand."""
-    kinds, at = set(), data.find(b"hdlr")
-    while at != -1 and len(kinds) < 8:
+    kinds, at, seen = set(), data.find(b"hdlr"), 0
+    # A real file has a few handlers (one per track, plus metadata); stop early so a crafted upload cannot spin here.
+    while at != -1 and seen < 32:
         # hdlr box: type, version + flags (4), pre_defined (4), then the handler type.
         kinds.add(data[at + 12 : at + 16])
-        at = data.find(b"hdlr", at + 4)
+        at, seen = data.find(b"hdlr", at + 4), seen + 1
     return b"soun" in kinds and b"vide" not in kinds
 
 

@@ -388,3 +388,14 @@ def test_an_aac_file_with_a_generic_mp4_brand_is_audio(client):
             client.post("/api/flows/assets?name=c.mp4", content = clip).json()["media"]["kind"]
             == "video"
         )
+
+
+def test_mp4_handler_scan_stops_early_on_a_crafted_file():
+    import time as _time
+
+    from core.flows import assets as asset_store
+
+    crafted = b"\x00\x00\x00\x20ftypisom" + b"hdlrxxxxxxxxsoun" * 2_000_000
+    started = _time.perf_counter()
+    asset_store.sniff_mime(crafted)
+    assert _time.perf_counter() - started < 0.5
