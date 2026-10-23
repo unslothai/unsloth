@@ -22912,7 +22912,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     ``_unload_model_impl`` (as preview awaits ``load_model_gated``), since the padded
     path returns a StreamingResponse, not the payload.
     """
-    _refuse_while_leased()
     return await _tunnel_safe_json(
         _unload_model_impl(request, current_subject), label = "Model unload"
     )
@@ -22933,6 +22932,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
     """
+    # Every unload path (this route, the llama-compatible /models/unload) honours the GPU lease.
+    _refuse_while_leased()
     extra = (
         await _route_to_extra_slot(request.model_path)
         if request.cancel_load_request_id is None
