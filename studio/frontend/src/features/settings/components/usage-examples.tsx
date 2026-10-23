@@ -147,7 +147,6 @@ function exampleParts(type: ExampleType): [Language, Variant] {
   return [language, variant];
 }
 
-/** A labelled control in the Agents tab's style: fixed-height header, then the control. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
@@ -992,7 +991,6 @@ export function UsageExamples({
           </button>
         </div>
       ) : null}
-      {/* Same breakpoint as the Agents tab: three columns once all three stay usable. */}
       <div className="@container">
         <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
           <Field label={t("settings.apiKeys.exampleLanguage")}>
@@ -1040,7 +1038,6 @@ export function UsageExamples({
             </Select>
           </Field>
           <Field label={t("settings.apiKeys.examplePlatform")}>
-            {/* The Agents tab's shell toggle, stretched to the column. */}
             <fieldset className="flex min-w-0">
               <legend className="sr-only">
                 {t("settings.apiKeys.examplePlatform")}
@@ -1123,7 +1120,6 @@ export function UsageExamples({
         <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.codingAgentsHint")}
         </p>
-        {/* Picker in the first column, its command filling the other two. */}
         <div className="@container">
           <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-3">
             <div className="min-w-0">
