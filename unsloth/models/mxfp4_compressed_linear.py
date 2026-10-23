@@ -125,17 +125,10 @@ def mxfp4_packed_matmul(
     for cuBLAS only as far as memory allows (row chunks, else the tile kernel); the rest decode it once for cuBLAS."""
     rows = x.numel() // x.shape[-1] if x.shape[-1] else 0
     # dX (transpose) stays on decode + cuBLAS: the fused kernel only wins it for a few wide shapes.
-    if (
-        not transpose
-        and _zoo_mxfp4_matmul is not None
-        and rows <= _FUSED_MAX_ROWS
-        and x.is_cuda
-    ):
+    if not transpose and _zoo_mxfp4_matmul is not None and rows <= _FUSED_MAX_ROWS and x.is_cuda:
         if mxfp4_gemm_available(x.device, x.dtype):
             return _zoo_mxfp4_matmul(x, packed, scale, trans = transpose, out = out, bias = bias)
-        if _zoo_mxfp4_kernel_verified is not None and _zoo_mxfp4_kernel_verified(
-            x.device, x.dtype
-        ):
+        if _zoo_mxfp4_kernel_verified is not None and _zoo_mxfp4_kernel_verified(x.device, x.dtype):
             # Below sm_80 decode + cuBLAS beats the tile kernel, but only the tile kernel never builds the
             # 16-bit weight: decode in chunks of output rows when the weight does not fit.
             return _bounded_dense_matmul(x, packed, scale, out, bias)
@@ -172,7 +165,13 @@ def _free_bytes(device):
     return max(0, free) + max(0, reserved - torch.cuda.memory_allocated(device))
 
 
-def _bounded_dense_matmul_eager(x, packed, scale, out = None, bias = None):
+def _bounded_dense_matmul_eager(
+    x,
+    packed,
+    scale,
+    out = None,
+    bias = None,
+):
     """``x @ W^T (+ bias)`` without ever holding more of the 16-bit W than fits: the whole W when it allocates
     (one decode + one cuBLAS call), else row chunks of W written to ``y[..., r0:r1]`` (no cross-chunk sums),
     else the tile kernel."""
@@ -237,10 +236,7 @@ try:
 
     @torch.library.custom_op("unsloth::mxfp4_bounded_dense_matmul", mutates_args = ())
     def _bounded_dense_matmul_op(
-        x: torch.Tensor,
-        packed: torch.Tensor,
-        scale: torch.Tensor,
-        bias: Optional[torch.Tensor],
+        x: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor, bias: Optional[torch.Tensor]
     ) -> torch.Tensor:
         return _bounded_dense_matmul_eager(x, packed, scale, None, bias)
 
