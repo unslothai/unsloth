@@ -50,6 +50,35 @@ def test_data_has_double_rounding_ties():
     assert int((once != twice).sum()) > 50
 
 
+
+def _rounding_inputs():
+    # Every fp32 exponent x mantissas around the fp16 rounding point (exact halves, one above and
+    # below, odd / even kept bits), both signs, plus zeros, infinities and NaNs.
+    low = torch.tensor([0, 1, 0xFFF, 0x1000, 0x1001, 0x1FFF, 0x2000, 0x3000, 0x7FFFFF, 0x7FE000, 0x7FF000], dtype = torch.int64)
+    exps = torch.arange(256, dtype = torch.int64)
+    bits = (exps[:, None] << 23 | low[None, :]).flatten()
+    g = torch.Generator(device = "cpu").manual_seed(0)
+    bits = torch.cat([bits, torch.randint(0, 1 << 31, (1 << 16,), generator = g)])
+    bits = torch.cat([bits, bits | (1 << 31)])
+    return bits.to(torch.int32).view(torch.float32)
+
+
+@needs_cuda
+def test_f32_to_f16_rne_matches_torch_cast():
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _round(x_ptr, y_ptr, n, BLOCK: tl.constexpr):
+        offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = offs < n
+        tl.store(y_ptr + offs, fp8._f32_to_f16_rne(tl.load(x_ptr + offs, mask = mask)), mask = mask)
+
+    x = _rounding_inputs().cuda()
+    y = torch.empty_like(x, dtype = torch.float16)
+    _round[(triton.cdiv(x.numel(), 1024),)](x, y, x.numel(), BLOCK = 1024, enable_fp_fusion = True)
+    _same_bits(y, x.half())
+
 @needs_cuda
 @pytest.mark.parametrize("exact", ["1", "0"])
 @pytest.mark.parametrize("kernel", ["bytes", "fp8e4nv"])

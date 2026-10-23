@@ -145,8 +145,9 @@ def _f32_to_f16_rne(x):
     a = u & 0x7FFFFFFF
     c = tl.minimum(a, 0x477FF000)
     normal = (c + 0xFFF + ((c >> 13) & 1) - 0x38000000) >> 13
-    # Below 2^-14: value = m * 2^(e - 150), result in units of 2^-24.
-    shift = tl.minimum(126 - (a >> 23), 31)
+    # Below 2^-14: value = m * 2^(e - 150), result in units of 2^-24. Clamped so lanes that take
+    # the normal path never shift by a negative count.
+    shift = tl.minimum(tl.maximum(126 - (a >> 23), 1), 31)
     m = (a & 0x7FFFFF) | 0x800000
     q = m >> shift
     rem = m - (q << shift)
