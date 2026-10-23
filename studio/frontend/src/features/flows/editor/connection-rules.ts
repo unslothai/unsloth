@@ -70,6 +70,10 @@ const JSON_LIKE: ReadonlySet<PortType> = new Set<PortType>([
   "list",
   "story",
   "world",
+  "table",
+  "chart",
+  "heatmap",
+  "tensor",
 ]);
 
 /** Whether a value of `source` type may flow into a `target` port; mirrors the compiler's `port_compatible`. */

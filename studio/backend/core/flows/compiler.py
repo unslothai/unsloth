@@ -23,7 +23,19 @@ FOR_EACH = "logic.for_each"
 COLLECT_PORT = "collect"
 FOR_EACH_INNER_PORTS = ("item", "index")
 FLOW_TARGET_PORT = "in"
-JSON_LIKE = ("text", "number", "bool", "json", "list", "story", "world")
+JSON_LIKE = (
+    "text",
+    "number",
+    "bool",
+    "json",
+    "list",
+    "story",
+    "world",
+    "table",
+    "chart",
+    "heatmap",
+    "tensor",
+)
 
 
 class CompileError(Exception):

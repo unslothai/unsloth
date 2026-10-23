@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { Button } from "@/components/ui/button";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { type ReactElement, useState } from "react";
+import { type NotebookEntry, listNotebooks } from "../api";
+import { ArrowDown01Icon, Search01Icon } from "../editor/icon-data";
+import {
+  downloadNotebook,
+  notebookActions,
+  visibleNotebooks,
+} from "./notebooks";
+
+const SHOWN = 30;
+
+/** The Unsloth notebooks: ready flows where one ships, an .ipynb import where Studio can train it, Colab otherwise. */
+export function NotebooksSection({
+  onUseTemplate,
+  onImport,
+}: {
+  onUseTemplate: (exampleId: string) => void;
+  onImport: () => void;
+}): ReactElement {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState<NotebookEntry[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const toggle = () => {
+    setOpen((v) => !v);
+    if (entries === null && !failed) {
+      listNotebooks()
+        .then(setEntries)
+        .catch(() => setFailed(true));
+    }
+  };
+  const shown = visibleNotebooks(entries ?? [], query).slice(0, SHOWN);
+
+  return (
+    <section className="flex flex-col gap-3" data-testid="flows-notebooks">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex items-center gap-1 self-start font-semibold text-sm"
+        aria-expanded={open}
+      >
+        Unsloth notebooks
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          size={14}
+          className={open ? "rotate-180" : ""}
+        />
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2">
+          <p className="text-muted-foreground text-xs">
+            Fine-tuning notebooks from unslothai/notebooks. Use one as a flow,
+            or download the .ipynb and import it: Studio reads its settings and
+            never runs its code.
+          </p>
+          <div className="flex items-center gap-2 rounded-md border px-2">
+            <HugeiconsIcon
+              icon={Search01Icon}
+              size={14}
+              className="text-muted-foreground"
+            />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search notebooks"
+              className="h-8 flex-1 bg-transparent text-sm outline-none"
+            />
+          </div>
+          {failed ? (
+            <p className="text-muted-foreground text-sm">
+              Could not load the notebook list.
+            </p>
+          ) : entries === null ? (
+            <p className="text-muted-foreground text-sm">Loading…</p>
+          ) : (
+            <ul className="divide-y rounded-xl border">
+              {shown.map((entry) => {
+                const actions = notebookActions(entry);
+                return (
+                  <li
+                    key={entry.id}
+                    className="flex flex-wrap items-center gap-2 px-3 py-2"
+                  >
+                    <span className="flex-1 truncate text-sm">
+                      {entry.title}
+                    </span>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground text-xs">
+                      {actions.importable ? entry.category : "Colab only"}
+                    </span>
+                    {actions.template ? (
+                      <Button
+                        size="sm"
+                        onClick={() =>
+                          actions.template && onUseTemplate(actions.template)
+                        }
+                      >
+                        Use as flow
+                      </Button>
+                    ) : (
+                      actions.importable && (
+                        <>
+                          <Button size="sm" variant="outline" asChild={true}>
+                            <a
+                              href={actions.download}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                void downloadNotebook(
+                                  actions.download,
+                                  entry.notebook_file,
+                                );
+                              }}
+                            >
+                              Download .ipynb
+                            </a>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={onImport}
+                          >
+                            Import
+                          </Button>
+                        </>
+                      )
+                    )}
+                    <Button size="sm" variant="ghost" asChild={true}>
+                      <a href={actions.colab} target="_blank" rel="noreferrer">
+                        Open in Colab
+                      </a>
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
