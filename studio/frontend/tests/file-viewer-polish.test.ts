@@ -75,3 +75,25 @@ test("the desktop Open lists apps, opens a local copy, and never opens programs"
     assert.match(main, new RegExp(`browser_open_with::${command},`), command);
   }
 });
+
+test("file bars show no menu or button that only repeats one beside it", () => {
+  const panel = read("features/browser/browser-panel.tsx");
+  const between = (start: string, end: string) =>
+    panel.slice(panel.indexOf(start), panel.indexOf(end, panel.indexOf(start)));
+  // On the web a file no tab can show has only New chat, which the Open split's button already is.
+  assert.match(panel, /const hasMenu = isTauri \|\| tabType !== null;/);
+  assert.match(panel, /\{hasMenu \? \(\s*<DropdownMenu onOpenChange/);
+  // Open and Download always sit beside the floating name menu; without Copy or Wrap it is a plain label.
+  const floating = between("function FloatingFileToolbar(", "const SPLIT_PILL");
+  const nameMenu = between("function FloatingFileToolbar(", "</DropdownMenuContent>");
+  assert.doesNotMatch(nameMenu, /browser\.file\.openIn|saveBrowserDownload/);
+  assert.match(floating, /\{kind \? \(\s*<DropdownMenu>/);
+  assert.match(floating, /title=\{entry\.name\}/);
+  // HTML takes the chrome bar (usesBrowserChrome), so the floating bar has no Run again or Console.
+  assert.doesNotMatch(floating, /kind === "html"|runAgain|toggleConsole/);
+  // The chrome bar shows Run again and Console itself, and Open in with one item is just that item.
+  const chromeMenu = between("function BrowserFileToolbar(", "function FloatingFileToolbar(");
+  const menu = chromeMenu.slice(chromeMenu.indexOf("<PanelMenu"));
+  assert.doesNotMatch(menu, /onSelect=\{runAgain\}|onSelect=\{toggleConsole\}/);
+  assert.match(menu, /\{isTauri \|\| !tabType \? \(\s*<DropdownMenuItem disabled=\{!blob\} onSelect=\{openInNewChat\}>/);
+});
