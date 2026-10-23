@@ -203,6 +203,15 @@ def test_companions_picked_by_the_launch_env_count_too(tmp_path):
     assert _extra_weight_file_bytes(argv, {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "org/draft"}) == 0
 
 
+def test_adapters_on_the_command_line_count_toward_the_load(tmp_path):
+    lora = tmp_path / "lora.gguf"
+    lora.write_bytes(b"x" * 400)
+    vector = tmp_path / "vector.gguf"
+    vector.write_bytes(b"x" * 20)
+    argv = ["llama-server", "-m", "model.gguf", "--lora", str(lora)]
+    assert _extra_weight_file_bytes(argv + ["--control-vector-scaled", f"{vector}:0.5"]) == 420
+
+
 def test_load_progress_sizes_companions_from_the_env_its_process_got(tmp_path, monkeypatch):
     inst = _fake_load(tmp_path, 1000)
     projector = tmp_path / "mmproj-F16.gguf"

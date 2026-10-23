@@ -1168,8 +1168,8 @@ def parse_weight_placement(lines: "list[str]") -> "Optional[dict]":
 
 
 def _extra_weight_file_bytes(argv, env: Optional[Mapping[str, str]] = None) -> int:
-    """GGUF sets of the projector and local drafter a llama-server launch loads. arg.cpp reads the
-    ``LLAMA_ARG_*`` env first and lets argv override it, so ``env`` is the one the child got."""
+    """GGUF sets of the projector, local drafter and adapters a llama-server launch loads. arg.cpp reads
+    the ``LLAMA_ARG_*`` env first and lets argv override it, so ``env`` is the one the child got."""
     tokens = [str(token) for token in argv] if isinstance(argv, (list, tuple)) else []
     env_map = env or {}
     projector: Optional[str] = None
@@ -1185,6 +1185,7 @@ def _extra_weight_file_bytes(argv, env: Optional[Mapping[str, str]] = None) -> i
         projector = (env_map.get("LLAMA_ARG_MMPROJ") or "").strip() or None
     drafter, remote = _extra_args_mtp_draft_source(tokens, env_map)
     paths = [path for path in (projector, None if remote else drafter) if path]
+    paths += _sidecar_adapter_paths(tokens)
     return sum(_gguf_set_bytes(Path(path)) for path in dict.fromkeys(paths))
 
 
