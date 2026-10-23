@@ -307,10 +307,44 @@ except Exception:  # noqa: BLE001 - a broken shim must never break user code
     pass
 
 # Approved host calls keep chat-installed packages importable, including Python started by Terminal.
-# Append only after the normal site setup; no .pth execution or stdlib/installed-package shadowing.
+# Served by a last-resort finder, not sys.path: a folder on sys.path also exposes its *.dist-info to
+# importlib.metadata, so entry-point plugin autoload (pytest11 and the like) would import chat-planted code
+# the approved command never named. The finder runs after every other one, so it only supplies top-level
+# modules the host lacks (no stdlib or installed-package shadowing, no .pth execution); submodules then
+# resolve through the package's own __path__. Metadata is answered only for an exact distribution name
+# (importlib.metadata.version("pkg")), never for the name-less scan that plugin discovery uses.
+class _HostPackagesFinder:
+    _skip = frozenset(("sitecustomize", "usercustomize"))
+
+    def __init__(self, folder):
+        self._folder = folder
+
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
+        if path is not None or "." in name or name in self._skip:
+            return None
+        import importlib.machinery
+
+        return importlib.machinery.PathFinder.find_spec(name, [self._folder])
+
+    def find_distributions(self, context = None):
+        name = getattr(context, "name", None)
+        if not name:
+            return iter(())
+        import importlib.metadata
+
+        return importlib.metadata.MetadataPathFinder.find_distributions(
+            importlib.metadata.DistributionFinder.Context(name = name, path = [self._folder])
+        )
+
+
 _host_packages = os.environ.get("_UNSLOTH_HOST_SESSION_PACKAGES")
-if _host_packages and _host_packages not in sys.path:
-    sys.path.append(_host_packages)
+if _host_packages and not any(isinstance(f, _HostPackagesFinder) for f in sys.meta_path):
+    sys.meta_path.append(_HostPackagesFinder(_host_packages))
 
 
 # Helper modules the approved script imports by name come from the chat folder, after everything

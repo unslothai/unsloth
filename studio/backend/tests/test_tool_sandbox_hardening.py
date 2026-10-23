@@ -86,6 +86,82 @@ def test_an_approved_terminal_call_reuses_chat_packages_without_shadowing(tmp_pa
         assert "PLANTED" not in out, out
 
 
+def _plant_chat_plugin(packages, marker):
+    """A pytest11 entry point a chat pip-installed into its package folder, which copies a host file when loaded."""
+    secret = marker.parent / "host-secret.txt"
+    secret.write_text("outside-chat-secret", encoding = "utf-8")
+    (packages / "chat_autoload.py").write_text(
+        f"import pathlib\npathlib.Path({str(marker)!r}).write_text(pathlib.Path({str(secret)!r}).read_text())\n",
+        encoding = "utf-8",
+    )
+    info = packages / "chat_autoload-1.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: chat-autoload\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    (info / "entry_points.txt").write_text(
+        "[pytest11]\nchat_autoload = chat_autoload\n", encoding = "utf-8"
+    )
+
+
+@_POSIX
+def test_an_approved_pytest_call_does_not_autoload_chat_installed_plugins(tmp_path, monkeypatch):
+    """Session packages must not be visible to entry-point discovery: pytest would import a planted plugin."""
+    workdir = _planted_workdir(tmp_path)
+    (workdir / "csv.py").unlink()
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    host = tmp_path / "host"
+    host.mkdir()
+    marker = host / "plugin-ran.txt"
+    _plant_chat_plugin(packages, marker)
+    (workdir / "test_ok.py").write_text(
+        "import chatpkg\n\ndef test_ok():\n    assert chatpkg.VALUE == 'from-session-packages'\n",
+        encoding = "utf-8",
+    )
+    host_file = host / "notes.csv"
+    host_file.write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    command = (
+        shlex.quote(sys.executable)
+        + " -m pytest -q -o addopts= -p no:cacheprovider test_ok.py && cat "
+        + shlex.quote(str(host_file))
+    )
+    assert tools._reaches_host_paths("terminal", command)
+    out = tools._bash_exec(command, None, 60, "hardening-chat", host_access_approved = True)
+    assert "1 passed" in out and "a,b" in out, out
+    assert not marker.exists(), "a chat-installed pytest plugin ran on the host"
+
+
+@_POSIX
+def test_an_approved_script_still_imports_chat_installed_packages(tmp_path, monkeypatch):
+    """Explicit imports (packages, submodules, their own metadata) keep working; name-less scans see nothing."""
+    workdir = _planted_workdir(tmp_path)
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    (packages / "chatlib").mkdir()
+    (packages / "chatlib" / "__init__.py").write_text(
+        "from .sub import X\n", encoding = "utf-8"
+    )
+    (packages / "chatlib" / "sub.py").write_text("X = 'chatlib-sub'\n", encoding = "utf-8")
+    info = packages / "chatlib-2.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: chatlib\nVersion: 2.0\n", encoding = "utf-8"
+    )
+    marker = tmp_path / "plugin-ran.txt"
+    _plant_chat_plugin(packages, marker)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        "import importlib.metadata as m, chatlib, chatlib.sub, chatpkg\n"
+        "print('LIB', chatlib.X, chatlib.sub.X, chatpkg.VALUE, m.version('chatlib'))\n"
+        "print('SCAN', sorted(e.name for e in m.entry_points(group = 'pytest11') if e.name.startswith('chat')))\n"
+        f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+    )
+    out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
+    assert "LIB chatlib-sub chatlib-sub from-session-packages 2.0" in out, out
+    assert "SCAN []" in out, out
+    assert not marker.exists(), out
+
+
 @_POSIX
 def test_approved_calls_import_chat_helpers_without_shadowing_the_stdlib(tmp_path, monkeypatch):
     workdir = _planted_workdir(tmp_path)

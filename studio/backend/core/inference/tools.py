@@ -10229,7 +10229,8 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         argv = tuple(plan.argv)
         packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
         if os.path.isdir(packages):
-            # The trusted sitecustomize appends these after installed packages for Python and Terminal alike.
+            # The trusted sitecustomize serves these after installed packages for Python and Terminal alike, through a
+            # last-resort import finder rather than sys.path, so plugin discovery never sees them.
             env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
             env["PYTHONNOUSERSITE"] = "1"
             # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
