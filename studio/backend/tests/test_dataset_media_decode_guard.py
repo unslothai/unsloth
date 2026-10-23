@@ -7,6 +7,7 @@ the Hub with the server's own token; the owner decodes as before."""
 from __future__ import annotations
 
 import io
+import os
 
 import pytest
 from fastapi import HTTPException
@@ -331,3 +332,69 @@ def test_managed_member_of_another_accounts_extracted_archive_is_refused(extract
     (extracted_root / ("0" * 64 + ".unsloth-source")).write_text(str(own))
     with pytest.raises(PermissionError):
         _decode({"bytes": None, "path": str(unrecorded)}, {})
+
+
+def test_managed_extraction_record_is_read_once_per_process(extracted_root, monkeypatch):
+    import builtins
+
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    member = {"bytes": None, "path": str(extracted_root / _extract(archive, ALICE) / "member.png")}
+    dataset_media._extracted_sources.clear()
+    reads = []
+    real_open = builtins.open
+
+    def counting_open(file, *args, **kwargs):
+        if str(file).endswith(".unsloth-source"):
+            reads.append(file)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    for _ in range(3):
+        assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
+    assert len(reads) == 1
+
+
+def test_managed_extraction_record_is_published_whole(extracted_root):
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    from datasets.utils.extract import ExtractManager
+
+    top = ExtractManager(cache_dir = None)._get_output_path(str(archive))
+    # A record left empty by an interrupted writer is replaced by the next extraction.
+    (extracted_root / (os.path.basename(top) + ".unsloth-source")).write_text("")
+    member = {"bytes": None, "path": str(extracted_root / _extract(archive, ALICE) / "member.png")}
+    dataset_media._extracted_sources.clear()
+    assert _decode(member, {}).getpixel((0, 0)) == (5, 6, 7)
+    assert not [p for p in os.listdir(extracted_root) if ".unsloth-source." in p]
+
+
+def test_managed_oversized_extraction_record_is_refused_unread(extracted_root, monkeypatch):
+    from utils.security import dataset_media
+
+    archive = run_as(
+        ALICE, lambda: _zip(storage_roots.dataset_uploads_root() / "own.zip", (5, 6, 7))
+    )
+    top = _extract(archive, ALICE)
+    member = {"bytes": None, "path": str(extracted_root / top / "member.png")}
+    sidecar = extracted_root / (top + ".unsloth-source")
+    # A record padded far past any path length is refused without being read whole.
+    sidecar.write_text(str(archive) + "\0" * (16 << 20))
+    dataset_media._extracted_sources.clear()
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        assert dataset_media._extracted_source(member["path"]) == ""
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < (1 << 20)
+    with pytest.raises(PermissionError):
+        _decode(member, {})

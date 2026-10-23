@@ -27,6 +27,7 @@ import importlib.util
 import os
 import re
 import sys
+import tempfile
 
 _DECODERS = {
     "datasets.features.image": "Image",
@@ -38,6 +39,8 @@ _DECODERS = {
 _ARROW = "datasets.packaged_modules.arrow.arrow"
 _EXTRACT = "datasets.utils.extract"
 _SOURCE_SUFFIX = ".unsloth-source"
+# A record is one archive path; anything longer is not one this module wrote and is refused unread.
+_SOURCE_MAX_BYTES = 16384
 # Protocols ``datasets`` chains in front of an outer location ("zip://member::<outer>").
 _ARCHIVE_HOPS = frozenset({"zip", "tar", "gzip", "bz2", "xz", "zstd", "lz4"})
 _MARK = "_unsloth_dataset_media_guard"
@@ -99,13 +102,19 @@ def _extracted_source(path: str):
     source = _extracted_sources.get(top)
     if source is None:
         try:
-            with open(top + _SOURCE_SUFFIX, encoding = "utf-8") as f:
-                source = f.read()
-        except OSError:
+            with open(top + _SOURCE_SUFFIX, "rb") as f:
+                raw = f.read(_SOURCE_MAX_BYTES + 1)
+            if len(raw) > _SOURCE_MAX_BYTES:
+                return ""
+            source = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
             return ""
-    # The directory is named by a hash of the archive's path, so a recorded source can not name another one.
-    expected = ExtractManager(cache_dir = None)._get_output_path(source)
-    return source if os.path.realpath(expected) == top else ""
+        # The directory is named by a hash of the archive's path, so a recorded source can not name another one.
+        expected = ExtractManager(cache_dir = None)._get_output_path(source)
+        if os.path.realpath(expected) != top:
+            return ""
+        _extracted_sources[top] = source
+    return source
 
 
 def _require_readable(path: str, depth: int = 0) -> None:
@@ -137,11 +146,26 @@ def _record_extraction(extract):
         if output_path != input_path:
             source, top = os.path.abspath(str(input_path)), os.path.realpath(str(output_path))
             _extracted_sources[top] = source
+            # Published whole by a rename, so a reader never sees a partial record and an interrupted one is
+            # replaced; every writer for this directory records the same archive.
+            temp = None
             try:
-                with open(top + _SOURCE_SUFFIX, "x", encoding = "utf-8") as f:
+                fd, temp = tempfile.mkstemp(
+                    dir = os.path.dirname(top), prefix = os.path.basename(top) + _SOURCE_SUFFIX + "."
+                )
+                with os.fdopen(fd, "w", encoding = "utf-8") as f:
                     f.write(source)
-            except OSError:  # already recorded, or a read-only cache: this process still knows it
+                os.chmod(temp, 0o644)  # mkstemp's 0600 would hide the record from other users of the cache
+                os.replace(temp, top + _SOURCE_SUFFIX)
+                temp = None
+            except OSError:  # a read-only cache: this process still knows it
                 pass
+            finally:
+                if temp is not None:
+                    try:
+                        os.unlink(temp)
+                    except OSError:
+                        pass
         return output_path
 
     return recorded
