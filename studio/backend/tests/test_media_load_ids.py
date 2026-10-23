@@ -5,14 +5,20 @@
 
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 
 import pytest
 
 from core.inference import media_load_ids
 from hub.services.models import account_access
 from utils.account_context import AccountContext, run_as
+
+
+class _State:
+    """Stands in for an engine's resident state (pipeline and weights): weakly referable, as theirs are."""
 
 
 class _Engine:
@@ -30,7 +36,7 @@ class _Engine:
         return {"loaded": False}
 
     def finish(self) -> None:
-        self._state = object()
+        self._state = _State()
         self.loading = ()
 
     def fail(self) -> None:
@@ -346,7 +352,7 @@ def test_a_load_that_ends_before_the_teardown_costs_no_other_model(named):
         if named == "t2":
             engine.fail()
         else:
-            engine._state = object()
+            engine._state = _State()
         return engine.unload(only_if)
 
     assert media_load_ids.unload_if_current("video", engine, named, unload) == ("superseded", None)
@@ -365,3 +371,41 @@ def test_the_real_engines_tear_nothing_down_when_the_recheck_fails():
         assert media_load_ids._in_flight_unlocked(engine) is False
         assert engine.unload(only_if = lambda: True)["loaded"] is False
         assert engine._load_token == epoch + 1
+
+
+def _collected(ref) -> bool:
+    gc.collect()
+    return ref() is None
+
+
+@pytest.mark.parametrize("how", ["replaced", "unloaded", "evicted", "token_unload"])
+def test_the_registry_keeps_no_torn_down_model_alive(how):
+    engine = _Engine()
+    _load(engine, "t1")
+    engine.finish()
+    old = weakref.ref(engine._state)
+    # A newer load that fails leaves t1's state resident, recorded as the published resident.
+    _load(engine, "t2")
+    engine.fail()
+    assert media_load_ids.current_id("video", engine) == "t1"
+    if how == "replaced":
+        _load(engine, "t3")
+        engine.finish()
+    elif how == "token_unload":
+        assert _unload(engine, "t1")[0] == "unloaded"
+    else:
+        # Studio's own unload route without a token, or the arbiter's evictor.
+        engine.unload()
+    assert _collected(old)
+    assert media_load_ids.current_id("video", engine) == ("t3" if how == "replaced" else None)
+
+
+def test_the_real_engine_states_are_weakly_referable():
+    from dataclasses import fields
+
+    from core.inference.diffusion import _LoadState
+    from core.inference.video import _VideoLoadState
+
+    for cls in (_LoadState, _VideoLoadState):
+        state = cls(**{f.name: None for f in fields(cls) if f.init})
+        assert media_load_ids._weak(state)() is state

@@ -27,6 +27,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -61,7 +62,21 @@ class _Record:
     token: Optional[str]
     engine: Any
     epoch: Any
-    prior: Any
+    # A weak reference to the state resident before this load (see _weak), never the model itself.
+    prior: Callable[[], Any]
+
+
+def _weak(state: Any) -> Callable[[], Any]:
+    """``state`` without keeping it alive: a torn-down model (pipeline, weights) must be freed as soon
+    as its engine drops it, not when this registry is next cleared. Call it to get the state back,
+    or None once it is gone. The engines' states are plain dataclasses, so weakly referable; anything
+    that is not is held as is."""
+    if state is None:
+        return lambda: None
+    try:
+        return weakref.ref(state)
+    except TypeError:
+        return lambda: state
 
 
 _lock = threading.Lock()
@@ -141,7 +156,7 @@ def admitting(modality: str, engine: Any, load_token: Optional[str]) -> Any:
             and _describes(record, engine)
         ):
             # The resident model's load: still named while a newer load fails to replace it.
-            _published[modality] = (record.token, engine, state)
+            _published[modality] = (record.token, engine, _weak(state))
     # Before the worker starts: a cached load can publish its state before begin_load returns.
     return state
 
@@ -152,7 +167,9 @@ def admitted(modality: str, engine: Any, load_token: Optional[str], prior: Any) 
     with _lock:
         _generation += 1
         token = load_token or f"studio-{uuid.uuid4().hex}"
-        _current[modality] = _Record(token, engine, getattr(engine, "_load_token", None), prior)
+        _current[modality] = _Record(
+            token, engine, getattr(engine, "_load_token", None), _weak(prior)
+        )
         # Per account like _cancelled: another account's earlier use of a token never answers
         # superseded for this one, which then records its own cancellation.
         _remember(_seen, modality, token)
@@ -167,7 +184,7 @@ def _describes(record: _Record, engine: Any) -> bool:
     if callable(loading) and loading():
         return True
     state = getattr(engine, "_state", None)
-    return state is not None and state is not record.prior
+    return state is not None and state is not record.prior()
 
 
 def _slot_token(modality: str, engine: Any) -> Optional[str]:
@@ -181,7 +198,7 @@ def _slot_token(modality: str, engine: Any) -> Optional[str]:
     published = _published.get(modality)
     state = getattr(engine, "_state", None)
     if published is not None and published[1] is engine and state is not None:
-        if published[2] is state:
+        if published[2]() is state:
             return published[0]
     return None
 
@@ -236,11 +253,17 @@ def _still_named(record: Optional[_Record], published: Any, engine: Any) -> Call
             if _in_flight_unlocked(engine):
                 return True
             state = getattr(engine, "_state", None)
-            return state is not None and state is not record.prior
+            return state is not None and state is not record.prior()
 
         return guard
-    state = published[2]
-    return lambda: getattr(engine, "_state", None) is state and not _in_flight_unlocked(engine)
+    # The weak reference, so this recheck does not keep alive the model the unload tears down.
+    resident = published[2]
+
+    def guard_resident() -> bool:
+        state = getattr(engine, "_state", None)
+        return state is not None and state is resident() and not _in_flight_unlocked(engine)
+
+    return guard_resident
 
 
 def unload_if_current(
