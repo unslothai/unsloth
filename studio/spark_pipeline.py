@@ -190,6 +190,59 @@ def has_conditional_experts(config) -> bool:
     return False
 
 
+def _unsloth_ddp_defaults():
+    """unsloth/models/_ddp_defaults.py by path: importing the unsloth package would patch transformers."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("unsloth")
+        roots = list(getattr(spec, "submodule_search_locations", None) or [])
+    except (ImportError, ValueError):
+        roots = []
+    for root in roots:
+        path = osp.join(root, "models", "_ddp_defaults.py")
+        if not osp.isfile(path):
+            continue
+        try:
+            module_spec = importlib.util.spec_from_file_location("_spark_ddp_defaults", path)
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+        except Exception:
+            continue
+        if callable(getattr(module, "_config_may_skip", None)):
+            return module
+    return None
+
+
+# _ddp_defaults' skippable module names, minus the always-run head and embeddings.
+_SKIPPABLE_PARAM_MARKERS = ("expert", "vision", "visual", "audio", "image", "projector", "mtp")
+
+
+def ddp_unused_parameters_reason(model, config) -> Optional[str]:
+    """Why a step may leave a trainable parameter without a gradient (DDP then needs
+    find_unused_parameters=True), or None when every trainable parameter runs each step."""
+    if has_conditional_experts(config):
+        return "conditional experts"
+    defaults = _unsloth_ddp_defaults()
+    if defaults is None:
+        # Cannot tell; the flag only costs a graph walk, a missing one fails the reduction.
+        return "unsloth's DDP defaults could not be loaded, so assuming modules may be skipped"
+    if defaults._config_may_skip(config):
+        return (
+            "the config enables modules a step may skip (experts, a vision / audio tower, "
+            "optional cross-attention or layer drop)"
+        )
+    markers = tuple(
+        m
+        for m in getattr(defaults, "_SKIPPABLE_NAME_MARKERS", _SKIPPABLE_PARAM_MARKERS)
+        if m not in ("lm_head", "embed")
+    )
+    for name, param in model.named_parameters():
+        if param.requires_grad and any(m in name.lower() for m in markers):
+            return f"trainable parameter {name} sits in a module a step may skip"
+    return None
+
+
 # Qwen3-Next / Qwen3.5 gated-delta layers also carry Llama MLP names: add, do not infer.
 LORA_TARGETS_HYBRID_ATTENTION = ("in_proj_qkvz", "in_proj_qkv", "in_proj_z", "out_proj")
 # Phi-3 fuses q/k/v and gate/up while keeping the Llama o_proj / down_proj names.
@@ -1912,13 +1965,13 @@ def _main_data_parallel(args) -> int:
     if mode == "ddp":
         from torch.nn.parallel import DistributedDataParallel
 
-        sparse_experts = has_conditional_experts(cfg)
-        if sparse_experts:
-            log("conditional experts: DDP with find_unused_parameters=True")
+        may_skip = ddp_unused_parameters_reason(model, cfg)
+        if may_skip:
+            log(f"{may_skip}: DDP with find_unused_parameters=True")
         model = DistributedDataParallel(
             model,
             device_ids = None if use_cpu else [device.index or 0],
-            find_unused_parameters = sparse_experts,
+            find_unused_parameters = bool(may_skip),
         )
         no_sync = model.no_sync
     elif mode == "fsdp":
