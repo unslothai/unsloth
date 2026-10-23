@@ -202,6 +202,16 @@ def test_pad_feather_repaints_the_old_edge():
     assert mask.getpixel((42, 34)) == 0  # the middle stays
 
 
+def test_pad_feather_leaves_sides_that_did_not_grow():
+    # Only the left and right grew: the top and bottom rows of the original must stay untouched.
+    _, mask_png = image_nodes.pad_canvas(_png((64, 48)), 20, 0, 20, 0, 6)
+    mask = Image.open(io.BytesIO(mask_png))
+    assert mask.size == (104, 48)
+    assert mask.getpixel((52, 0)) == 0 and mask.getpixel((52, 47)) == 0
+    assert mask.getpixel((22, 24)) == 255  # the left seam band is repainted
+    assert mask.getpixel((52, 24)) == 0
+
+
 def test_segment_returns_a_source_sized_mask():
     ctx = FakeCtx(files = {"src": _png((40, 30))}, segment_mask = _png((20, 15), 255, "L"))
     png = asyncio.run(_common.segment(ctx, _media("src"), "the face"))

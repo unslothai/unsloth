@@ -1366,6 +1366,7 @@ def sticker_pack() -> B:
 
 
 KREA = {"repo": "krea/Krea-2-Turbo", "variant": None}
+ZIMAGE = {"repo": "Tongyi-MAI/Z-Image-Turbo", "variant": None}
 FLUX1 = {"repo": "black-forest-labs/FLUX.1-dev", "variant": None}
 
 
@@ -1427,7 +1428,11 @@ def hires_fix() -> B:
         "Render small, upscale 2x and refine the details in the same request (A1111 / Forge hires fix).",
         tags = ["image", "hires", "upscale"],
         seed = 32,
-    ).need("image")
+    )
+    # Hires fix needs an image-to-image path, which FLUX.2-klein does not have in Studio yet.
+    _image_model(
+        b, "zimage", ZIMAGE, "Z-Image Turbo; renders the base image and refines the 2x upscale."
+    )
     b.n(
         "what",
         "input.text",
@@ -1440,7 +1445,7 @@ def hires_fix() -> B:
         "image.generate",
         1,
         1,
-        model = IMAGE,
+        model = ZIMAGE,
         size = "768x768",
         hires_scale = 2.0,
         hires_denoise = 0.35,
@@ -1481,9 +1486,9 @@ def face_fix() -> B:
         label = "Repaint face",
         model = IMAGE,
         prompt = "a detailed natural face, sharp eyes, soft light",
-        strength = 0.5,
-        only_masked = True,
-        inpaint_padding = 32,
+        # Repaint over the whole picture with the face mask: the masked-crop path upscales the crop and pastes it back
+        # oversized on FLUX.2-klein.
+        strength = 0.6,
         seed = 4,
     )
     b.e("draw.image", "fix.init_image")

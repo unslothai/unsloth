@@ -200,12 +200,13 @@ def pad_canvas(
     keep = Image.new("L", (im.width, im.height), 0)
     mask.paste(keep, (left, top))
     if feather:
-        # Overlap the old edge a little so the seam is repainted too.
+        # Overlap the old edge a little so the seam is repainted too, but only on the sides that grew.
+        x0 = left + (feather if left else 0)
+        y0 = top + (feather if top else 0)
+        x1 = left + im.width - (feather if right else 0)
+        y1 = top + im.height - (feather if bottom else 0)
         inner = Image.new("L", (width, height), 0)
-        inner.paste(
-            Image.new("L", (max(1, im.width - 2 * feather), max(1, im.height - 2 * feather)), 255),
-            (left + feather, top + feather),
-        )
+        inner.paste(Image.new("L", (max(1, x1 - x0), max(1, y1 - y0)), 255), (x0, y0))
         mask = Image.eval(inner, lambda v: 255 - v)
     return _png(canvas.convert("RGB")), _png(mask)
 
