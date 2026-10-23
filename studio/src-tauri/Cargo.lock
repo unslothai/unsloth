@@ -5277,6 +5277,7 @@ name = "unsloth-studio"
 version = "2026.4.8"
 dependencies = [
  "arboard",
+ "auto-launch",
  "base64 0.23.1",
  "block2",
  "cairo-rs",
