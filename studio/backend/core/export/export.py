@@ -793,7 +793,6 @@ def _cached_hub_adapter_commit(checkpoint_path: str) -> Optional[str]:
         return None
     try:
         from huggingface_hub import try_to_load_from_cache
-
         path = try_to_load_from_cache(checkpoint_path, "adapter_config.json")
     except Exception:
         return None

@@ -34,7 +34,10 @@ def _read_json(path: str) -> Optional[dict]:
 
 
 def _hub_adapter_snapshot(
-    repo_id: str, token = None, revision = None, local_files_only = False
+    repo_id: str,
+    token = None,
+    revision = None,
+    local_files_only = False,
 ) -> Optional[str]:
     """A Hub adapter's cached files (its manifest and MTP head): the loader re-attached that head.
     `revision` pins the reads to the commit the load resolved; `local_files_only` keeps them in the
@@ -61,7 +64,10 @@ def _hub_adapter_snapshot(
 
 
 def training_manifest(
-    checkpoint_dir: Optional[str], token = None, revision = None, local_files_only = False
+    checkpoint_dir: Optional[str],
+    token = None,
+    revision = None,
+    local_files_only = False,
 ) -> Optional[dict]:
     """The manifest the training run wrote, when its drafter is still complete on disk. `token` is
     the credential the checkpoint was loaded with (a private Hub adapter); `revision` and

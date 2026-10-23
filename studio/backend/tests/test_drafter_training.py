@@ -1296,7 +1296,13 @@ def _hub_full_fine_tune_backend(tmp_path, monkeypatch, local_files_only):
     (snapshot / "config.json").write_text("{}")
     calls = []
 
-    def fake_download(repo_id, filename, token = None, revision = None, local_files_only = False):
+    def fake_download(
+        repo_id,
+        filename,
+        token = None,
+        revision = None,
+        local_files_only = False,
+    ):
         calls.append((filename, revision, local_files_only))
         if not (snapshot / filename).is_file():
             raise FileNotFoundError(filename)
@@ -1419,9 +1425,7 @@ def test_drafter_packaging_without_a_hub_load_passes_no_revision(tmp_path, monke
 
     seen = []
     for name in ("package_merged", "package_lora"):
-        monkeypatch.setattr(
-            drafter_export, name, lambda *a, **k: seen.append(sorted(k)) or None
-        )
+        monkeypatch.setattr(drafter_export, name, lambda *a, **k: seen.append(sorted(k)) or None)
     monkeypatch.setattr(
         drafter_export, "package_gguf", lambda *a, **k: seen.append(sorted(k)) or (None, [])
     )
