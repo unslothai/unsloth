@@ -2880,7 +2880,11 @@ class TestDesktopBackendVersionConstraint:
     """UNSLOTH_DESKTOP_BACKEND_VERSION floors the unsloth upgrade, lowered only for a lagging index (#14031)."""
 
     @staticmethod
-    def _fake_uv(have, zoo = None, floors = None):
+    def _fake_uv(
+        have,
+        zoo = None,
+        floors = None,
+    ):
         """uv pip compile over a fake index: unsloth 2026.10.2..have, unsloth-zoo 2026.10.2..zoo.
 
         Each unsloth requires unsloth-zoo>=its own version unless *floors* says otherwise; the

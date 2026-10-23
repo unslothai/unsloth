@@ -10623,7 +10623,9 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
                 return None
         if text is None:
             return None
-        found = dict(re.findall(r"^(unsloth(?:-zoo)?)==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE))
+        found = dict(
+            re.findall(r"^(unsloth(?:-zoo)?)==([0-9][0-9A-Za-z.+!-]*)", text, re.MULTILINE)
+        )
         return found or None
 
     def newest(requirement: str, name: str = "unsloth") -> "str | None":
@@ -10647,7 +10649,6 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
         return spec, zoo_spec
     try:
         from packaging.version import Version
-
         lowered = Version(available) < Version(desktop_min_ver)
     except Exception:  # noqa: BLE001 - unparseable: treat as lowered, as before
         lowered = True
