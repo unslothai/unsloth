@@ -484,7 +484,9 @@ def test_every_load_route_passes_its_loras_to_engine_selection():
     import ast
     from pathlib import Path
 
-    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
     calls = [
         c
         for c in ast.walk(ast.parse(source))
