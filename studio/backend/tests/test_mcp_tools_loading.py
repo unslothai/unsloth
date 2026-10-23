@@ -1267,6 +1267,45 @@ def test_a_newer_load_that_fails_after_posting_does_not_strand_the_stopped_one(
     assert state["unloads"] == [0, 2]
 
 
+def test_a_newer_load_whose_readiness_read_fails_still_defers_the_late_unload(
+    monkeypatch, fast_polls
+):
+    # A transient route error while waiting for readiness is not a failed load: the backend may
+    # still be loading the replacement, so the stopped load's late unload must not cancel it.
+    state = _late_unload_scenario(monkeypatch, post_s = (0.5, 0.05))
+    fake = loading.route_json
+
+    async def route_json(method, path, **kw):
+        if path.endswith("/load-progress") and state.get("flaky") and state["registered"]:
+            state["flaky"] = False
+            raise ToolError("Unsloth Studio is busy")
+        return await fake(method, path, **kw)
+
+    monkeypatch.setattr(loading, "route_json", route_json)
+
+    async def scenario():
+        caller = make_caller()
+        await _load_ltx(caller)
+        await asyncio.sleep(0.02)
+        await loading.unload_media(caller, "video")
+        state["flaky"] = True
+        with pytest.raises(ToolError, match = "busy"):
+            await loading.load_media(
+                caller,
+                None,
+                kind = "video",
+                model = LTX,
+                variant = None,
+                hf_token = None,
+                deadline = time.monotonic() + 5,
+            )
+        await asyncio.sleep(0.6)
+        await _late_unloads_done()
+
+    asyncio.run(scenario())
+    assert state["unloads"] == [0]
+
+
 def test_a_late_media_unload_retries_a_transient_route_error(monkeypatch, fast_polls):
     state = _late_unload_scenario(monkeypatch, post_s = (0.3,))
     fake = loading.route_json

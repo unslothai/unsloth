@@ -680,11 +680,12 @@ async def load_media(
                 None, asyncio.shield(job.post), _media_poll(caller, routes), job
             )
             status = await _media_ready(caller, kind, model, routes, job, body)
-        except Exception:
-            # Its POST registered a load that then failed: nothing of it is resident to defer to.
+        except Exception as exc:
             if job.post.done():
                 post_answered(job.post)
-                if _posted_ok(job.post):
+                # Only a confirmed failure withdraws it: after a transient route error the backend
+                # may still be loading it, and an older load's late unload must keep deferring.
+                if _posted_ok(job.post) and getattr(exc, "_unsloth_load_failed", False):
                     _MEDIA_REGISTERED.get(kind, set()).discard(job.generation)
             raise
         finally:
@@ -723,6 +724,12 @@ def _media_poll(caller: Caller, routes: dict[str, str]) -> Callable[[], Awaitabl
     return poll
 
 
+def _load_failed(error: Exception) -> Exception:
+    # The backend confirmed this load is not resident (an error phase, or ready but another model).
+    error._unsloth_load_failed = True
+    return error
+
+
 async def _media_ready(
     caller: Caller,
     kind: str,
@@ -736,7 +743,9 @@ async def _media_ready(
         progress = as_dict(await route_json("GET", routes["progress"], caller = caller))
         phase = progress.get("phase")
         if phase == "error":
-            raise tool_error(opt_text(progress.get("error")) or f"The {kind} model failed to load")
+            raise _load_failed(
+                tool_error(opt_text(progress.get("error")) or f"The {kind} model failed to load")
+            )
         if phase == "ready":
             break
         if phase is None:
@@ -745,9 +754,11 @@ async def _media_ready(
                 break
             idle += 1
             if idle >= _IDLE_POLLS:
-                raise ToolError(
-                    f"Unsloth Studio stopped reporting the {kind} load without loading {model}. "
-                    "Another model load or a training run may be using the GPU; check studio_status and try again."
+                raise _load_failed(
+                    ToolError(
+                        f"Unsloth Studio stopped reporting the {kind} load without loading {model}. "
+                        "Another model load or a training run may be using the GPU; check studio_status and try again."
+                    )
                 )
         else:
             idle = 0
@@ -757,7 +768,9 @@ async def _media_ready(
         await asyncio.sleep(POLL_INTERVAL_S)
     status = await route_json("GET", routes["status"], caller = caller)
     if not _resident_matches(status, model, body):
-        raise ToolError(f"Unsloth Studio did not finish loading {model} as the {kind} model")
+        raise _load_failed(
+            ToolError(f"Unsloth Studio did not finish loading {model} as the {kind} model")
+        )
     return status
 
 
