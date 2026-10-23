@@ -136,3 +136,11 @@ test("leaving the editor waits for a successful save", () => {
   assert.match(back, /flushSave\(\)\.then\(\(saved\) => \{\s*if \(saved\) void navigate/);
   assert.ok(!back.includes(".finally("));
 });
+
+test("a second Run click while the first start request is pending is ignored", () => {
+  const src = readSrc("features/flows/editor/run-controller.ts");
+  const body = src.slice(src.indexOf("export async function runFlow"));
+  assert.ok(body.indexOf("starting = true") < body.indexOf("await startRun("));
+  assert.match(body.slice(0, body.indexOf("starting = true")), /if \(\s*starting \|\|/);
+  assert.match(body, /finally \{\s*starting = false;/);
+});
