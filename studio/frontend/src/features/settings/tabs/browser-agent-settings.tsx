@@ -149,7 +149,7 @@ function PermissionsTable() {
         </Button>
       }
     >
-      <div className="mt-2 flex flex-col rounded-lg border border-border/80 px-3 py-1">
+      <div className="mt-2 flex flex-col rounded-xl border border-border/80 px-3 py-1">
         {row(t("browser.agentSettings.default"), permissions.defaults, null)}
         {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
         {draft !== null ? (

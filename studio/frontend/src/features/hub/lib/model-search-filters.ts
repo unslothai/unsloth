@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ggufRepoParams } from "../../../lib/model-size.ts";
+
 /** Who uploaded a model: the unsloth org, any other organization, or a personal account. */
 export type HubUploader = "unsloth" | "organization" | "personal";
 
@@ -115,7 +117,10 @@ export async function* filterModelListing(
     const model = raw as ListingModel;
     if (
       !matchesRange(
-        model.safetensors?.total ?? model.gguf?.total,
+        model.safetensors?.total ??
+          (model.gguf
+            ? ggufRepoParams(model.name, model.gguf.total)
+            : undefined),
         filters.minParams,
         filters.maxParams,
       )
