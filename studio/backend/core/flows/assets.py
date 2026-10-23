@@ -64,10 +64,24 @@ def sniff_mime(data: bytes) -> Optional[str]:
         return "audio/flac"
     if data[4:8] == b"ftyp":
         # M4A / M4B (phone voice memos, iTunes audio) share MP4's box format; the brand says it is audio.
-        return "audio/mp4" if data[8:12] in (b"M4A ", b"M4B ") else "video/mp4"
+        return (
+            "audio/mp4"
+            if data[8:12] in (b"M4A ", b"M4B ") or _mp4_audio_only(data)
+            else "video/mp4"
+        )
     if head[:4] == b"\x1aE\xdf\xa3":
         return "video/webm"
     return None
+
+
+def _mp4_audio_only(data: bytes) -> bool:
+    """True when every track handler in an MP4 is sound: AAC files often carry a generic isom / mp42 brand."""
+    kinds, at = set(), data.find(b"hdlr")
+    while at != -1 and len(kinds) < 8:
+        # hdlr box: type, version + flags (4), pre_defined (4), then the handler type.
+        kinds.add(data[at + 12 : at + 16])
+        at = data.find(b"hdlr", at + 4)
+    return b"soun" in kinds and b"vide" not in kinds
 
 
 def kind_of(mime: str) -> str:

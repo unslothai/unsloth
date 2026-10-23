@@ -352,3 +352,22 @@ def test_an_m4a_upload_is_audio_not_video(client):
         client.post("/api/flows/assets?name=clip.mp4", content = mp4).json()["media"]["kind"]
         == "video"
     )
+
+
+def test_an_aac_file_with_a_generic_mp4_brand_is_audio(client):
+    pytest.importorskip("av")
+    from .test_audio_dataset_decode import _m4a_bytes
+    from .test_flows_media_utils import _clip
+
+    audio = _m4a_bytes()
+    # PyAV's generic mp4 muxer writes an isom brand, not M4A: the track handlers say it is sound only.
+    assert audio[8:12] != b"M4A "
+    assert (
+        client.post("/api/flows/assets?name=a.m4a", content = audio).json()["media"]["kind"]
+        == "audio"
+    )
+    for clip in (_clip(), _clip(tone_s = 0.5)):
+        assert (
+            client.post("/api/flows/assets?name=c.mp4", content = clip).json()["media"]["kind"]
+            == "video"
+        )
