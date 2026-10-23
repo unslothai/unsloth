@@ -4384,7 +4384,7 @@ class FastLlamaModel:
         prefetch_depth = prefetch_depth_arg(kwargs)
         # A pre-wrapped model returns early below, before patch_peft_model; reject before PEFT injects layers.
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
-        # PEFT < 0.21 treats a scalar layer 0 as missing when layers_pattern is set; it accepts [0].
+        # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
         if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
             layers_to_transform = [layers_to_transform]
         # The flag reflects the LAST load, not this model.
@@ -4461,7 +4461,7 @@ class FastLlamaModel:
                     layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
             peft_config = model.peft_config["default"].to_dict()
-            # An adapter made with a scalar keeps it in to_dict(); compare it as the list this call now uses.
+            # A scalar-made adapter keeps the int in to_dict(); compare as a list.
             _stored_layers = peft_config.get("layers_to_transform")
             if isinstance(_stored_layers, int) and not isinstance(_stored_layers, bool):
                 peft_config["layers_to_transform"] = [_stored_layers]

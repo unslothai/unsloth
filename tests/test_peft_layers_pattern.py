@@ -76,7 +76,6 @@ def test_layers_pattern_keeps_the_aux_stack_out(monkeypatch):
 
 
 def test_scalar_layer_zero_with_layers_pattern(monkeypatch):
-    # PEFT < 0.21 rejects a falsy layers_to_transform next to layers_pattern, so 0 must not reach it as an int.
     config = _lora_config(monkeypatch, layers_to_transform = 0, layers_pattern = "layers")
     assert config.layers_to_transform == [0]
     assert config.layers_pattern == "layers"
@@ -108,7 +107,6 @@ def test_scalar_layer_zero_with_layers_pattern_fast_base_model(monkeypatch):
 
 
 def test_existing_scalar_layer_adapter_matches_the_same_request(monkeypatch):
-    # PEFT keeps a scalar layers_to_transform in to_dict(); the request is now a list, and must still match.
     from peft import LoraConfig
 
     monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
