@@ -43,6 +43,8 @@ _MODEL_RE = re.compile(r"#\s*Model defaults for\s+(\S+)", re.IGNORECASE)
 _CATEGORY_RULES = (
     # Studio trains SFT / CPT only, so RL and preference recipes stay Colab-only.
     ("grpo", ("grpo", "gspo", "reinforcement_learning", "nemo_gym", "_ppo")),
+    # Decision fine-tunes need the Train page's decision wiring, which a Flow Fine-tune block does not have yet.
+    ("decision", ("_decision",)),
     ("preference", ("_dpo", "_orpo", "_kto")),
     ("vision", ("vision", "_vl_", "ocr", "pixtral", "deepseek")),
     ("audio", ("audio", "tts", "whisper", "orpheus", "llasa", "csm", "spark_tts", "oute")),

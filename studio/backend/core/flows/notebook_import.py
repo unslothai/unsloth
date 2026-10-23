@@ -57,6 +57,32 @@ _QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
 _MAGIC = re.compile(r"^\s*[!%]")
 
 
+# Hugging Face's packaged builders: the first argument names a file format, not a Hub dataset.
+_PACKAGED_BUILDERS = frozenset(
+    {
+        "json",
+        "csv",
+        "parquet",
+        "text",
+        "arrow",
+        "pandas",
+        "imagefolder",
+        "audiofolder",
+        "videofolder",
+        "webdataset",
+        "xml",
+        "sql",
+    }
+)
+
+
+def _local_files(reader: Any, node: ast.Call) -> bool:
+    path = reader.kw(node, "path", 0)
+    return any(k.arg == "data_files" for k in node.keywords) or (
+        isinstance(path, str) and path.lower() in _PACKAGED_BUILDERS
+    )
+
+
 class NotebookImportError(ValueError):
     pass
 
@@ -140,6 +166,13 @@ class _Reader(ast.NodeVisitor):
             r = self.kw(node, "r")
             if isinstance(r, int):
                 self.tune["lora_r"] = r
+            # Alpha scales the adapter; dropping it would train with Studio's default instead.
+            alpha = self.kw(node, "lora_alpha")
+            if isinstance(alpha, int) and not isinstance(alpha, bool):
+                self.tune["lora_alpha"] = alpha
+        elif fn == "load_dataset" and "dataset" not in self.found and _local_files(self, node):
+            # load_dataset("json", data_files = ...) reads the notebook's own files, which a flow cannot reach.
+            self.unsupported.add("a dataset loaded from local files (data_files)")
         elif fn == "load_dataset" and "dataset" not in self.found:
             repo = self.kw(node, "path", 0)
             # Same rule as the Hub dataset block: `imdb` and `owner/name` are both valid ids.
@@ -203,6 +236,8 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
             skipped += 1
             continue
         reader.visit(tree)
+    if _category(name) == "decision":
+        reader.unsupported.add("decision fine-tuning (use the Train page)")
     found, tune = reader.found, dict(reader.tune)
     report: dict[str, Any] = {
         "imported": [],

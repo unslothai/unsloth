@@ -23,6 +23,7 @@ TASK_FLAGS = {
 }
 # Optional settings sent only when filled in, so a flow that leaves them blank starts the same run as before.
 OPTIONAL_INTS = (
+    "lora_alpha",
     "batch_size",
     "gradient_accumulation_steps",
     "warmup_steps",

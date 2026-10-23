@@ -268,3 +268,40 @@ def test_streaming_and_full_fine_tunes_carry_over():
     assert export["format"] == "merged"
     lora, _ = notebook_import.read_notebook(_plain("dataset = load_dataset('a/b')"), "x.ipynb")
     assert _tune(lora)["training_type"] == "lora"
+
+
+def test_lora_alpha_is_imported_and_blank_keeps_the_default():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+        "model = FastLanguageModel.get_peft_model(model, r = 32, lora_alpha = 64)",
+        "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+    assert _tune(doc)["lora_alpha"] == 64 and _tune(doc)["lora_r"] == 32
+    doc, _ = notebook_import.read_notebook(SFT, "Qwen3_(4B)-Instruct.ipynb")
+    assert "lora_alpha" not in _tune(doc)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "load_dataset('json', data_files = 'train.json', split = 'train')",
+        "load_dataset('csv', data_files = {'train': 'a.csv'})",
+        "load_dataset('someone/repo', data_files = 'x.parquet')",
+    ],
+)
+def test_datasets_from_local_files_are_refused(call):
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')",
+        f"dataset = {call}",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+    assert doc is None
+    assert any("data_files" in line for line in report["unsupported"])
+
+
+def test_decision_notebooks_stay_in_colab():
+    entry = catalog._entry("Qwen3_5_(4B)-Decision.ipynb", {}, {})
+    assert entry["category"] == "decision" and entry["studio_task"] is None
+    doc, report = notebook_import.read_notebook(SFT, "Qwen3_5_(4B)-Decision.ipynb")
+    assert doc is None and any("decision" in line for line in report["unsupported"])

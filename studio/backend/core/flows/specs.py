@@ -778,6 +778,7 @@ NODE_SPECS: list[dict] = [
             P("max_steps", "int", 60, "Max steps", min = 1, max = 100000),
             P("learning_rate", "number", 0.0002, "Learning rate"),
             P("lora_r", "int", 16, "LoRA rank", min = 1, max = 256),
+            P("lora_alpha", "int", None, "LoRA alpha (blank = default)", min = 1, max = 32768),
             P("max_seq_length", "int", 2048, "Max seq length"),
             P(
                 "format_type",
