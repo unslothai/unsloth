@@ -132,6 +132,15 @@ def test_unmasked_forward_takes_no_host_sync(transformers_pair, monkeypatch):
         ours(latents, torch.tensor(10.0), embeds, return_dict = False)
 
 
+@pytest.mark.parametrize(
+    "device, where", [("mps", "cpu"), ("xpu", "cpu"), ("cuda", "cuda"), ("cpu", "cpu")]
+)
+def test_timestep_sinusoid_keeps_float64_off_mps(moss, device, where):
+    """MPS has no float64 (the first denoise step raised there), so off CUDA the sinusoid is built on the CPU."""
+    import torch
+    assert moss._float64_device(torch.device(device)).type == where
+
+
 def test_rope_tables_are_cached_and_rebuilt_on_moves(transformers_pair):
     import torch
 
