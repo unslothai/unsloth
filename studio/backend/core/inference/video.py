@@ -64,6 +64,8 @@ from .diffusion_component_sizes import video_family_has_no_text_encoder
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
+    fp8_storage_wanted,
+    pipe_fp8_stored_layers,
     comfy_resident_mib,
     load_comfy_quant_transformer,
     refuse_comfy_quant,
@@ -209,6 +211,7 @@ from .diffusion_transformer_quant import (
     transformer_is_quantised,
 )
 from .diffusion import (
+    _comfy_keep_fp32_pricing,
     _family_override_resolved,
     _companion_split_expected,
     _layer_split_expected,
@@ -484,18 +487,58 @@ def _video_comfy_backends(
     bf16_plan: Any = None,
     *,
     keep: bool = True,
+    priced_offload: bool = False,
+    widened_mib: Optional[int] = None,
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
-    resident only). ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
+    resident only; else fp8 storage under offload). ``priced_offload``: the plan was sized with the offloaded
+    backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the planned
+    DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
+    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
-        return {"int8_backend": None, "fp8_backend": None}
-    offload = not _video_comfy_resident(plan, bf16_plan)
+        return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
+    offload = priced_offload or not _video_comfy_resident(plan, bf16_plan)
     name = getattr(fam, "name", None)
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
+        "fp8_storage": _video_fp8_storage(fam, target, offload, widened_mib = widened_mib),
     }
+
+
+def _video_offload_reprice(
+    fam: Any, transformer_mib: Optional[int], offload_mib: Optional[int]
+) -> tuple[Optional[int], bool]:
+    """``(transformer_mib, priced_offload)`` once an offloaded plan re-prices the DiT with the offloaded backends.
+    Larger: re-plan at it. Smaller (fp8 stored, the int8 twin where only it runs): re-plan at it too, and the load must
+    then keep those backends even if the new plan fits resident, else it widens past the size it was planned at.
+    H3 keeps its resident torchao path, so only a larger price moves it."""
+    if offload_mib is None or transformer_mib is None or offload_mib == transformer_mib:
+        return transformer_mib, False
+    if offload_mib < transformer_mib and getattr(fam, "name", None) == "minimax-h3":
+        return transformer_mib, False
+    return offload_mib, offload_mib < transformer_mib
+
+
+def _video_fp8_storage(
+    fam: Any,
+    target: Any,
+    offload: bool,
+    *,
+    widened_mib: Optional[int] = None,
+) -> bool:
+    """``fp8_storage_wanted`` for a video DiT, with the host RAM the load would widen into when ``widened_mib`` is
+    known. H3 is excluded: its pin / stream / residency path is built on torchao weights."""
+    if getattr(fam, "name", None) == "minimax-h3":
+        return False
+    available = None
+    if widened_mib is not None and not offload:
+        from .diffusion_small_host import host_ram_mib
+        available = host_ram_mib()[1]
+    return fp8_storage_wanted(
+        target, offload = offload, widened_mib = widened_mib, host_available_mib = available
+    )
 
 
 def _video_comfy_resident_mib(
@@ -513,7 +556,7 @@ def _video_comfy_resident_mib(
     int8 runtime runs here, fp8 layers as fp8 when the resident fp8 path does, the rest at bf16 (a dequantized fp8
     file is twice its size on disk). ``offload`` prices what an offloaded load keeps instead."""
     name = getattr(fam, "name", None)
-    keep_int8 = keep_fp8 = False
+    keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
     filters: dict = {}
     if keep:
@@ -533,15 +576,18 @@ def _video_comfy_resident_mib(
         # Only a resident runtime keeps codes in a resident plan; an offloaded plan is re-priced.
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
+        fp8_stored = _video_fp8_storage(fam, target, offload)
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
+        fp8_stored = fp8_stored,
         keep_key = keep_key,
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),
         **filters,
+        **_comfy_keep_fp32_pricing(fam, target),
     )
 
 
@@ -2494,17 +2540,30 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
 
 
 def _h3_card_memory_bytes(
-    device: Optional[str], ordinal: Optional[int]
+    device: Optional[str],
+    ordinal: Optional[int],
+    *,
+    allow_context: bool = True,
 ) -> tuple[Optional[int], Optional[int]]:
-    """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
-    ordinal 0."""
+    """(free, total) VRAM of the H3 render card, or (None, None). No pin = ordinal 0. nvidia-smi / amd-smi / sysfs
+    first (no CUDA context); torch only when none answers and ``allow_context``, as the residency and pressure reads
+    always did. The pre-spawn budget passes False: it never pays for a context."""
     if device != "cuda":
         return None, None
+    found = _h3_read_card_memory_bytes(ordinal, no_context = True)
+    if found == (None, None) and allow_context:
+        found = _h3_read_card_memory_bytes(ordinal, no_context = False)
+    return found
+
+
+def _h3_read_card_memory_bytes(
+    ordinal: Optional[int], *, no_context: bool
+) -> tuple[Optional[int], Optional[int]]:
     try:
         from utils.hardware import get_visible_gpu_utilization, gpu_query
 
         with gpu_query.fresh_reads():
-            devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
+            devices = get_visible_gpu_utilization(no_context = no_context).get("devices", [])
         want = 0 if ordinal is None else int(ordinal)
         for entry in devices:
             if entry.get("visible_ordinal") != want:
@@ -2525,12 +2584,14 @@ def _h3_card_free_bytes(
     ordinal: Optional[int],
     *,
     single_card_only: bool = False,
+    allow_context: bool = True,
 ) -> Optional[int]:
     """Free VRAM of the H3 render card, or None. ``single_card_only``: None on multi-card boxes, where one card's
-    scalar budget applied to every card would steer sd.cpp's own device pick."""
+    scalar budget applied to every card would steer sd.cpp's own device pick. ``allow_context``: see
+    ``_h3_card_memory_bytes``."""
     if single_card_only and _h3_visible_card_count(device) != 1:
         return None
-    return _h3_card_memory_bytes(device, ordinal)[0]
+    return _h3_card_memory_bytes(device, ordinal, allow_context = allow_context)[0]
 
 
 def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
@@ -3034,9 +3095,12 @@ def _video_seed_stays_resident(
 
 
 def _render_under_no_grad(state: Any) -> bool:
-    """Render under no_grad: torchao weight subclasses fail an offload hook's in-place swap under inference_mode."""
+    """Render under no_grad: torchao weight subclasses fail an offload hook's in-place swap under inference_mode.
+    Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if not getattr(state, "transformer_quant", None):
-        return False
+        return getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and bool(
+            pipe_fp8_stored_layers(getattr(state, "pipe", None))
+        )
     if getattr(state, "denoiser_streamed", False):
         return True
     family = getattr(state, "family", None)
@@ -4970,10 +5034,11 @@ class VideoBackend:
                 return
             logger.error("video.load_failed: %s", exc)
             if self._state is not None:
-                from .gpu_arbiter import VIDEO, restore_owner_account
+                from .gpu_arbiter import VIDEO, restore_media_need, restore_owner_account
                 from hub.services.models.account_access import restore_resident_metadata
 
                 restore_owner_account(VIDEO)
+                restore_media_need(VIDEO)
                 restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
             # NVFP4 caches pin the denoiser, but a failed replacement keeps the old model, whose graph still uses them.
@@ -5600,6 +5665,7 @@ class VideoBackend:
                     native_device,
                     native_ordinal if native_device_name else None,
                     single_card_only = not native_device_name,
+                    allow_context = False,
                 )
                 if native_device != "cpu"
                 else None
@@ -8421,6 +8487,7 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        comfy_priced_offload = False
         if comfy_scan is not None and not _video_comfy_resident(plan, bf16_plan):
             # Offloaded, fp8 layers dequantize on NVIDIA: price the DiT the load will actually build.
             offload_mib = _video_comfy_resident_mib(
@@ -8450,9 +8517,14 @@ class VideoBackend:
                 )
             if offload_mib is not None and transformer_mib is not None:
                 offload_mib = int(offload_mib * dtype_scale)
-                if offload_mib > transformer_mib:
-                    transformer_mib = offload_mib
+                repriced, comfy_priced_offload = _video_offload_reprice(
+                    fam, transformer_mib, offload_mib
+                )
+                if repriced != transformer_mib:
+                    transformer_mib = repriced
                     plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        # The DiT as planned: a resident load that would widen it into under the host reserve stores fp8 instead.
+        comfy_widened_mib = transformer_mib if comfy_scan is not None else None
         settled_te_scale = te_scale
 
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no offload tier left to fall
@@ -8689,7 +8761,14 @@ class VideoBackend:
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
                         **_video_comfy_backends(
-                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                            fam,
+                            base,
+                            target,
+                            plan,
+                            bf16_plan,
+                            keep = comfy_keep,
+                            priced_offload = comfy_priced_offload,
+                            widened_mib = comfy_widened_mib,
                         ),
                         family = fam.name,
                         target = target,
@@ -8805,7 +8884,14 @@ class VideoBackend:
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
                         **_video_comfy_backends(
-                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                            fam,
+                            base,
+                            target,
+                            plan,
+                            bf16_plan,
+                            keep = comfy_keep,
+                            priced_offload = comfy_priced_offload,
+                            widened_mib = comfy_widened_mib,
                         ),
                         family = fam.name,
                         target = target,
@@ -8855,7 +8941,14 @@ class VideoBackend:
                             scan,
                             kwargs,
                             **_video_comfy_backends(
-                                fam, base, target, plan, bf16_plan, keep = comfy_keep
+                                fam,
+                                base,
+                                target,
+                                plan,
+                                bf16_plan,
+                                keep = comfy_keep,
+                                priced_offload = comfy_priced_offload,
+                                widened_mib = comfy_widened_mib,
                             ),
                             family = fam.name,
                             target = target,
@@ -9697,8 +9790,9 @@ class VideoBackend:
                 logger = logger,
             )
             install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
-            # both branches through one offloaded forward; declines when CFG-parallel took the slot
-            install_cfg_batch(pipe, offload_policy = offload_policy, logger = logger)
+            install_cfg_batch(
+                pipe, offload_policy = offload_policy, speed_mode = speed_mode, logger = logger
+            )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
@@ -13519,6 +13613,7 @@ class VideoBackend:
             },
             "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
             "cfg_batch": cfg_batch_status(getattr(state, "pipe", None)),
+            "graph_engagement": _graph_engagement(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 
@@ -13554,6 +13649,17 @@ def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
 
 _backend: Optional[VideoBackend] = None
 _backend_lock = threading.Lock()
+
+
+def _graph_engagement(pipe: Any) -> Optional[dict]:
+    """``diffusion_cuda_graph.engagement`` for the loaded pipe; None when unreadable (never fails a status poll)."""
+    try:
+        from . import diffusion_cuda_graph
+        return diffusion_cuda_graph.engagement(
+            tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def get_video_backend() -> VideoBackend:

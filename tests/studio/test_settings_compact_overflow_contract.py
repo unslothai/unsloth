@@ -56,7 +56,7 @@ def test_remote_access_card_can_shrink():
     source = REMOTE_ACCESS.read_text(encoding = "utf-8")
     assert '<div className="flex min-w-0 items-start gap-3">' in source
     assert '<div className="flex min-w-0 flex-col gap-0.5">' in source
-    assert "block w-full break-all rounded-md" in source
+    assert "block w-full break-all border" in source
     assert "<RemoteUrlPanel url={status?.url ?? null} />" in source
 
 

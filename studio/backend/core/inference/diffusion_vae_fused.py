@@ -17,6 +17,8 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 
+from .rocm_bf16 import is_rocm_torch
+
 VAE_FUSED_ENV = "UNSLOTH_VAE_FUSED"
 _FALSE = ("0", "false", "no", "off")
 _MIN_TRITON = (3, 3)
@@ -454,7 +456,7 @@ def runtime_ok() -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     return _triton_version_ok() and _toolchain_ok() and _kernels() is not None
 

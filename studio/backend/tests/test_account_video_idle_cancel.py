@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An idle cancel must not stop a render another account starts in the gap.
-
-Before the first generation of the process the backend holds no reservation
-(``generate_job_account()`` is None, and it is never cleared afterwards), so the
-cancel route takes its no-reservation branch and calls ``cancel_generate()`` with
-no expectation at all. ``begin_generate`` runs on a worker thread, so another
-account can reserve between the route's read and the executor call, and an
-unexpecting cancel sets whatever cancel event is current -- the foreign render's.
-"""
+"""An idle cancel with no expected account can hit a render another account starts in the gap."""
 
 from __future__ import annotations
 

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import {
   Delete02Icon,
   Edit03Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronLeftIcon, ChevronRightIcon, UploadIcon } from "lucide-react";
+import { UploadIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -316,6 +317,7 @@ export function KnowledgeBaseDialog({
           <div className="flex min-w-0 flex-col gap-3">
             <div className="flex justify-end">
               <Button
+                variant="secondary"
                 size="sm"
                 onClick={startCreate}
                 disabled={ragUnavailable}
@@ -331,15 +333,15 @@ export function KnowledgeBaseDialog({
               </div>
             ) : ragUnavailable ? (
               // An empty list on this host is not an empty store, so say which one it is.
-              <div className="rounded-md border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
                 {ragUnavailableReason ?? "Knowledge bases are unavailable."}
               </div>
             ) : kbs.length === 0 ? (
-              <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground">
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-md border">
+              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-xl border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -361,7 +363,8 @@ export function KnowledgeBaseDialog({
                           {kb.description ? ` · ${kb.description}` : ""}
                         </span>
                       </span>
-                      <ChevronRightIcon
+                      <HugeiconsIcon
+                        icon={ChevronRightStandardIcon}
                         strokeWidth={1.5}
                         className="size-3.5 shrink-0 text-muted-foreground"
                       />
@@ -476,7 +479,7 @@ function KnowledgeBaseDocuments({
     >
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onBack}>
-          <ChevronLeftIcon className="size-4" />
+          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4" />
           All knowledge bases
         </Button>
         <Button size="sm" onClick={() => fileInputRef.current?.click()}>
@@ -503,8 +506,9 @@ function KnowledgeBaseDocuments({
       ) : documents.length === 0 ? (
         <div
           className={cn(
-            "rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
-            dragging && "border-primary/60 bg-primary/5 text-foreground",
+            "rounded-xl border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5 text-foreground",
           )}
         >
           No documents yet. Upload or drop documents, spreadsheets, slides,
@@ -513,8 +517,9 @@ function KnowledgeBaseDocuments({
       ) : (
         <div
           className={cn(
-            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-md pr-0.5 transition-colors",
-            dragging && "bg-primary/5 ring-1 ring-primary/60",
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-xl pr-0.5 transition-colors",
+            dragging &&
+              "bg-wash-3 ring-1 ring-wash-30 dark:bg-wash-5 dark:ring-wash-60",
           )}
         >
           {documents.map((doc) => (
