@@ -30492,6 +30492,10 @@ def _fit_external_context(
         estimate_message = estimate_message_tokens_without_unpriced_media,
         **_compaction_fit_kwargs(policy, ratio),
     )
+    if truncation and _records_boundary(truncation):
+        # From the fit, not the recalled list: inline recall swaps the latest user dict and the
+        # anchor is matched by identity.
+        truncation = {**truncation, **_boundary_metadata(fitted, messages, ratio)}
     if truncation:
         # The catalogue is chosen before this fit, so the turn that first evicts has no
         # search_conversation: recall inline, as the local plain path does, or a question about
@@ -30513,8 +30517,6 @@ def _fit_external_context(
         )
         fitted = recall["conversation"]
         truncation = {**truncation, **recall["counts"]}
-    if truncation and _records_boundary(truncation):
-        truncation = {**truncation, **_boundary_metadata(fitted, messages, ratio)}
     return fitted, truncation, max_tokens
 
 

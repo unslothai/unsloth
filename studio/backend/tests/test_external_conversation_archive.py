@@ -97,6 +97,8 @@ def test_the_evicting_fit_recalls_the_document_into_the_latest_turn(archive_read
     assert truncation["recalled_chunks"] > 0
     assert "055 794 3321" in str(fitted[-1]["content"])
     assert "Was there a phone number on the report?" in str(fitted[-1]["content"])
+    # The rewritten latest turn must not hide where the boundary landed.
+    assert truncation["boundary_anchor"]
 
 
 def test_an_attached_document_from_an_evicted_turn_is_searchable(archive_ready):
