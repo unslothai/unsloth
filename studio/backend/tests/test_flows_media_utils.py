@@ -159,3 +159,25 @@ def test_video_keeps_its_sound_or_takes_a_new_track():
         w.writeframes(b"\x00\x10" * 22050 * 3)
     _, dubbed, _ = _probe(mu.edit_video(_clip(), audio = tone.getvalue()))
     assert dubbed
+
+
+def test_composite_keeps_a_huge_overlay_within_the_size_limit():
+    out = _open(mu.composite_images(_img(2048, 64), _img(4, 4000), scale = 4.0))
+    assert out.size == (2048, 64)
+
+
+def test_a_late_sound_keeps_its_offset():
+    import numpy as np
+
+    # A trim point half a second before the sound starts: the gap stays silent instead of the sound moving up.
+    sliced = mu._slice_audio(_clip(frames = 24, fps = 12, tone_s = 1.0), -0.5, 1.0)
+    with wave.open(io.BytesIO(sliced)) as w:
+        assert w.getnframes() >= int(1.4 * 44100)
+        head = np.frombuffer(w.readframes(int(0.4 * 44100)), dtype = np.int16)
+    assert not head.any()
+
+
+def test_video_frame_reads_an_edited_clip():
+    clip = mu.edit_video(_clip(frames = 12, fps = 12))
+    for which in ("first", "last", "time"):
+        assert _open(mu.video_frame(clip, which, 0.5)).size == (64, 48)

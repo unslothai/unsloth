@@ -84,9 +84,16 @@ async def frame(ctx: NodeContext) -> dict:
     video = ctx.inputs["video"]
     ref = str(video.get("ref", ""))
     kind, _, video_id = ref.partition(":")
-    if kind != "video" or not video_id:
-        raise FlowNodeError("Frames come from videos made in Unsloth Studio")
     which = str(ctx.params.get("frame") or "last")
+    if kind != "video" or not video_id:
+        # An uploaded or edited clip is a flow asset, not a gallery video: decode it here.
+        from core.flows.nodes.media_utils import video_frame
+
+        data, _ = await ctx.media_bytes(video)
+        png = await asyncio.to_thread(
+            video_frame, data, which, float(ctx.params.get("time_s") or 0)
+        )
+        return {"image": await ctx.save_asset(png, "image/png", kind = "image")}
     at = str(float(ctx.params.get("time_s") or 0)) if which == "time" else which
     data = await ctx.call(
         "GET", f"/api/inference/video/gallery/{quote(video_id, safe = '')}/frame", params = {"at": at}

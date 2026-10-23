@@ -37,7 +37,7 @@ function SelectedNodeToolbarImpl({ readOnly }: { readOnly: boolean }) {
       isVisible={true}
       position={Position.Top}
       offset={8}
-      className="nodrag flex items-center gap-1 rounded-lg border border-white/10 bg-zinc-900/95 p-1 shadow-lg shadow-black/40"
+      className="nodrag nopan nowheel flex items-center gap-1 rounded-lg border border-white/10 bg-zinc-900/95 p-1 shadow-lg shadow-black/40"
     >
       <button
         type="button"

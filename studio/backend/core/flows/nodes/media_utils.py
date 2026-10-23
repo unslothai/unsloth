@@ -94,6 +94,9 @@ def composite_images(
     top = _open(overlay)
     width = max(1, round(page.width * scale))
     height = max(1, round(top.height * width / max(1, top.width)))
+    # A big base at scale 4, or a very tall overlay, would allocate gigabytes; keep both sides within MAX_SIDE.
+    fit = min(1.0, MAX_SIDE / max(width, height))
+    width, height = max(1, round(width * fit)), max(1, round(height * fit))
     top = top.resize((width, height), Image.LANCZOS)
     alpha = top.getchannel("A")
     if mask is not None:
@@ -183,44 +186,76 @@ def edit_video(
     source = av.open(io.BytesIO(data))
     vstream = source.streams.video[0]
     rate = Fraction(vstream.average_rate or 24).limit_denominator(1000)
-    frames = []
-    for frame in source.decode(vstream):
-        t = float(frame.time or 0.0)
-        if t < start_s:
-            continue
-        if end_s is not None and t >= end_s:
-            break
-        frames.append(frame.to_ndarray(format = "rgb24"))
-        if len(frames) > MAX_VIDEO_FRAMES:
-            raise FlowNodeError("The clip is too long to edit here")
-    source.close()
-    if not frames:
-        raise FlowNodeError("Nothing is left of the clip after trimming")
-    # Changing speed keeps the frame rate and drops or repeats frames, so every player shows it the same way.
-    picked = [
-        frames[min(len(frames) - 1, int(i * speed))] for i in range(int(len(frames) / speed))
-    ] or frames[:1]
-    height, width = picked[0].shape[:2]
+    own_sound = bool(source.streams.audio)
     out_buf = io.BytesIO()
-    out = av.open(out_buf, mode = "w", format = "mp4")
-    vout = _encoder(out, rate)
-    vout.width, vout.height = width - width % 2, height - height % 2
-    vout.pix_fmt = "yuv420p"
-    duration = len(picked) / float(rate)
-    track = audio
-    if track is None and speed == 1.0:
-        track = _slice_audio(data, start_s, start_s + duration)
-    aout = out.add_stream("aac", rate = 44100) if track else None
-    for array in picked:
-        frame = av.VideoFrame.from_ndarray(array[: vout.height, : vout.width], format = "rgb24")
-        for packet in vout.encode(frame):
+    out = vout = aout = None
+    # Frames stream straight from the decoder to the encoder: holding a decoded 4K clip would need tens of GB.
+    # Speed keeps the frame rate and drops or repeats frames: output frame i shows trimmed frame int(i * speed).
+    kept = emitted = 0
+    try:
+        for frame in source.decode(vstream):
+            t = float(frame.time or 0.0)
+            if t < start_s:
+                continue
+            if end_s is not None and t >= end_s:
+                break
+            if kept >= MAX_VIDEO_FRAMES:
+                raise FlowNodeError("The clip is too long to edit here")
+            array = frame.to_ndarray(format = "rgb24")
+            if out is None:
+                height, width = array.shape[:2]
+                out = av.open(out_buf, mode = "w", format = "mp4")
+                vout = _encoder(out, rate)
+                vout.width, vout.height = width - width % 2, height - height % 2
+                vout.pix_fmt = "yuv420p"
+                if audio is not None or (speed == 1.0 and own_sound):
+                    aout = out.add_stream("aac", rate = 44100)
+            while int(emitted * speed) == kept:
+                picture = av.VideoFrame.from_ndarray(
+                    array[: vout.height, : vout.width], format = "rgb24"
+                )
+                for packet in vout.encode(picture):
+                    out.mux(packet)
+                emitted += 1
+            kept += 1
+        if out is None:
+            raise FlowNodeError("Nothing is left of the clip after trimming")
+        for packet in vout.encode():
             out.mux(packet)
-    for packet in vout.encode():
-        out.mux(packet)
-    if aout is not None:
-        _mux_audio(out, aout, track, duration)
+        duration = emitted / float(rate)
+        if aout is not None:
+            track = audio if audio is not None else _slice_audio(data, start_s, start_s + duration)
+            if track:
+                _mux_audio(out, aout, track, duration)
+    finally:
+        source.close()
     out.close()
     return out_buf.getvalue()
+
+
+def video_frame(
+    data: bytes,
+    which: str = "last",
+    at_s: float = 0.0,
+) -> bytes:
+    """One frame of a clip as PNG: the first, the last, or the one showing at `at_s` seconds."""
+    import av
+    from PIL import Image
+
+    source = av.open(io.BytesIO(data))
+    chosen = None
+    try:
+        for frame in source.decode(source.streams.video[0]):
+            if which == "time" and chosen is not None and float(frame.time or 0.0) > at_s:
+                break
+            chosen = frame.to_ndarray(format = "rgb24")
+            if which == "first":
+                break
+    finally:
+        source.close()
+    if chosen is None:
+        raise FlowNodeError("The video has no frames")
+    return _png(Image.fromarray(chosen))
 
 
 def _slice_audio(data: bytes, start_s: float, end_s: float) -> Optional[bytes]:
@@ -249,6 +284,11 @@ def _slice_audio(data: bytes, start_s: float, end_s: float) -> Optional[bytes]:
         return None
     # Packed stereo: two int16 values per sample.
     pcm = np.concatenate(chunks).astype(np.int16)
+    # Sound that starts after the trim point keeps its offset: pad the gap with silence instead of shifting it.
+    gap = int((first - start_s) * 44100)
+    if gap > 0:
+        pcm = np.concatenate([np.zeros(gap * 2, dtype = np.int16), pcm])
+        first = start_s
     a = max(0, int((start_s - first) * 44100)) * 2
     b = max(a, int((end_s - first) * 44100)) * 2
     buf = io.BytesIO()
