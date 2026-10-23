@@ -310,7 +310,7 @@ def test_prepare_checks_and_truncates_masks_hidden_by_the_format():
 def test_completion_only_loss_resolves_from_the_train_split():
     # TRL resolves an unset completion_only_loss once, from the train split, and applies it to
     # eval too: an input_ids eval split's completion_mask is then applied, so it is checked.
-    src = (_BACKEND_ROOT / "core" / "training" / "trainer.py").read_text()
+    src = (_BACKEND_ROOT / "core" / "training" / "trainer.py").read_text(encoding = "utf-8")
     assert 'resolve_completion_only_loss(\n                    dataset["dataset"]' in src
     from utils.datasets.pretokenized import resolve_completion_only_loss
 
