@@ -393,8 +393,11 @@ export const BUDGET = {
   // catalog the chat chunk imports: +1,298 B raw / +181 B transfer (6,919,946 -> 6,921,244 B raw, 2,084,333 ->
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_085_018,
-  rawBytes: 6_922_543,
+  // macOS Desktop stray key text guard (#14815), eager in main.tsx: +278 B raw / +129 B transfer
+  // (6,922,872 -> 6,923,150 B raw, 2,085,222 -> 2,085,351 B transfer against 2eb94bcf47, one machine and
+  // build, Node 24, chunk count unchanged at 98). Raised by that growth so main's margin stays where it was.
+  transferBytes: 2_085_147,
+  rawBytes: 6_922_821,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
