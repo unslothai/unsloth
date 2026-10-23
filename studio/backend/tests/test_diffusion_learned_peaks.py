@@ -1329,7 +1329,10 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
         encoding = "utf-8"
     )
     at = src.index("pipe._unsloth_phase_seeds = (")
-    assert "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None" in src[at : at + 200]
+    assert (
+        "_calibrated_activation(fam, target, unpriced_references_ok = True) is not None"
+        in src[at : at + 200]
+    )
 
 
 def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):

@@ -2579,7 +2579,12 @@ def _measured_target(target: Any) -> bool:
         return False
 
 
-def _calibrated_activation(fam: Any, target: Any, *, unpriced_references_ok: bool = False) -> Any:
+def _calibrated_activation(
+    fam: Any,
+    target: Any,
+    *,
+    unpriced_references_ok: bool = False,
+) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel.
     ``unpriced_references_ok``: the caller sizes a reference request from the flat estimate itself (the placement
     seeds: ``measured_request_extra_mib`` streams resident groups back for it), so the reference rule is skipped."""
@@ -9821,7 +9826,8 @@ class DiffusionBackend:
                         # the phase-table seed holds only where it was measured; a reference the guard cannot price
                         # (FLUX.2 Klein's source image) sizes from the flat estimate (measured_request_extra_mib)
                         pipe._unsloth_phase_seeds = (
-                            _calibrated_activation(fam, target, unpriced_references_ok = True) is not None
+                            _calibrated_activation(fam, target, unpriced_references_ok = True)
+                            is not None
                         )
                         # the dense default / max tier seeds hold on the measured target only
                         pipe._unsloth_dense_tier_seeds = _measured_target(target)

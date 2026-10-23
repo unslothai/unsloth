@@ -55,7 +55,10 @@ def _plan_16gb():
         vae_tiling = False,
         vae_slicing = True,
         device_memory = memory,
-        estimates = {"safe_device_budget_mib": 13824, "base_overhead_mib": dm.DEFAULT_BASE_OVERHEAD_MIB},
+        estimates = {
+            "safe_device_budget_mib": 13824,
+            "base_overhead_mib": dm.DEFAULT_BASE_OVERHEAD_MIB,
+        },
         stream_text_encoders = True,
         stream_transformer = True,
     )
@@ -80,7 +83,9 @@ def test_calibrated_activation_skips_the_reference_rule_only_when_asked(monkeypa
 def test_the_load_seeds_the_placement_with_the_reference_rule_skipped():
     src = (Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     at = src.index("pipe._unsloth_phase_seeds = (")
-    assert "_calibrated_activation(fam, target, unpriced_references_ok = True)" in src[at : at + 200]
+    assert (
+        "_calibrated_activation(fam, target, unpriced_references_ok = True)" in src[at : at + 200]
+    )
 
 
 def test_first_load_klein_int8_on_16gb_keeps_the_transformer_resident(monkeypatch):
