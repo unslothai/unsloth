@@ -564,8 +564,31 @@ def _start_prewarm() -> None:
         _prewarm_worker.start()
 
 
+def _other_work_busy() -> bool:
+    """Image / video generation or a training run holds the accelerator. Read only from modules already
+    imported (never constructs a service), and an unreadable probe counts as busy."""
+    import sys
+
+    try:
+        for module, attr, probe in (
+            ("core.training.training", "_training_backend", "is_training_active"),
+            ("core.training.diffusion_training_service", "_service", "is_active"),
+        ):
+            service = getattr(sys.modules.get(module), attr, None)
+            if service is not None and getattr(service, probe)():
+                return True
+        residency = sys.modules.get("core.inference.gpu_residency")
+        if residency is not None:
+            for owner in residency.MEDIA_OWNERS:
+                if any(residency._media_busy(owner)):
+                    return True
+    except Exception:  # noqa: BLE001 -- fail closed: skipping a warm-up costs nothing
+        return True
+    return False
+
+
 def _gap_closed() -> bool:
-    return _prewarm_stop.is_set() or _inference_depth > 0
+    return _prewarm_stop.is_set() or _inference_depth > 0 or _other_work_busy()
 
 
 def _prewarm_jobs(jobs: list) -> None:

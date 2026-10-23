@@ -1806,6 +1806,68 @@ def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
     assert threading.current_thread().name != "archive-prewarm"
 
 
+@pytest.mark.parametrize("busy", ["training", "diffusion_training", "media", "unreadable"])
+def test_image_video_or_training_work_keeps_the_gap_closed(conn, monkeypatch, busy):
+    """Non-LLM accelerator work pauses the worker too; an unreadable probe counts as busy."""
+    import sys
+    import types
+
+    class Service:
+        def is_training_active(self):
+            return busy == "training"
+
+        def is_active(self):
+            return busy == "diffusion_training"
+
+    training = types.SimpleNamespace(_training_backend = Service())
+    diffusion = types.SimpleNamespace(_service = Service())
+
+    def media_busy(owner):
+        if busy == "unreadable":
+            raise RuntimeError("probe failed")
+        return (False, busy == "media")
+
+    residency = types.SimpleNamespace(MEDIA_OWNERS = ("diffusion", "video"), _media_busy = media_busy)
+    monkeypatch.setitem(sys.modules, "core.training.training", training)
+    monkeypatch.setitem(sys.modules, "core.training.diffusion_training_service", diffusion)
+    monkeypatch.setitem(sys.modules, "core.inference.gpu_residency", residency)
+
+    thread_id = f"busy-{busy}"
+    turns = _gap_thread(thread_id, 3, tag = busy)
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    assert calls == []
+
+
+def test_the_gap_opens_when_nothing_else_is_running(conn, monkeypatch):
+    import sys
+    import types
+
+    idle = types.SimpleNamespace(is_training_active = lambda: False, is_active = lambda: False)
+    monkeypatch.setitem(
+        sys.modules, "core.training.training", types.SimpleNamespace(_training_backend = idle)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.training.diffusion_training_service",
+        types.SimpleNamespace(_service = idle),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "core.inference.gpu_residency",
+        types.SimpleNamespace(
+            MEDIA_OWNERS = ("diffusion",), _media_busy = lambda owner: (False, False)
+        ),
+    )
+    thread_id = "idle-thread"
+    turns = _gap_thread(thread_id, 3, tag = "idle")
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    _run_gap()
+    assert calls
+
+
 def test_an_edited_turn_misses_the_cache_and_is_embedded_fresh(conn, monkeypatch):
     thread_id = "edit-thread"
     turns = _gap_thread(thread_id, 2, tag = "edit")
