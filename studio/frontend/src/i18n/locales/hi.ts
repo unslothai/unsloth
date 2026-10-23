@@ -1076,6 +1076,11 @@ export const hi = {
     keyboardShortcuts: {
       title: "कीबोर्ड शॉर्टकट",
       intro: "शॉर्टकट बदलने के लिए, कुंजी संयोजन चुनें और फिर नई कुंजियाँ दबाएँ",
+      searchPlaceholder: "शॉर्टकट खोजें…",
+      keystrokePlaceholder: "खोजने के लिए शॉर्टकट दबाएँ",
+      searchByKeystrokes: "कीस्ट्रोक से खोजें",
+      searchByName: "नाम से खोजें",
+      noResults: "इस खोज से कोई शॉर्टकट मेल नहीं खाता।",
       unassigned: "असाइन नहीं",
       recording: "कुंजियाँ दबाएँ…",
       recordingNote: "नई कुंजियाँ दबाएँ। Backspace शॉर्टकट हटाता है, Esc रद्द करता है।",

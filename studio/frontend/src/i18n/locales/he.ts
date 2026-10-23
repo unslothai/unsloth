@@ -1161,6 +1161,11 @@ export const he = {
     keyboardShortcuts: {
       title: "קיצורי מקשים",
       intro: "כדי לשנות קיצור דרך, בחר את צירוף המקשים ואז הקש את המקשים החדשים",
+      searchPlaceholder: "חיפוש קיצורי דרך…",
+      keystrokePlaceholder: "הקש קיצור כדי לחפש",
+      searchByKeystrokes: "חיפוש לפי הקשות",
+      searchByName: "חיפוש לפי שם",
+      noResults: "לא נמצאו קיצורי דרך תואמים.",
       unassigned: "לא הוקצה",
       recording: "הקש על מקשים…",
       recordingNote: "הקש את המקשים החדשים. Backspace מסיר את הקיצור, Esc מבטל.",

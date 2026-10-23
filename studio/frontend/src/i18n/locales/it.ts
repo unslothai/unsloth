@@ -978,6 +978,11 @@ export const it = {
     keyboardShortcuts: {
       title: "Scorciatoie da tastiera",
       intro: "Per cambiare una scorciatoia, seleziona la combinazione di tasti e poi digita i nuovi tasti",
+      searchPlaceholder: "Cerca scorciatoie…",
+      keystrokePlaceholder: "Premi una scorciatoia per cercare",
+      searchByKeystrokes: "Cerca per combinazione",
+      searchByName: "Cerca per nome",
+      noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
       recordingNote: "Premi i nuovi tasti. Backspace rimuove la scorciatoia, Esc annulla.",

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
@@ -13,18 +14,30 @@ import { composerShortcutLabels } from "@/features/chat/utils/composer-preferenc
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { UndoIcon } from "@hugeicons/core-free-icons";
+import {
+  EnergyRectangleIcon,
+  Search01Icon,
+  UndoIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   SHORTCUT_DEFS,
   SHORTCUT_DEF_BY_ID,
   SHORTCUT_GROUPS,
   SHORTCUT_SLOTS,
+  type ShortcutBinding,
   type ShortcutDef,
   type ShortcutId,
   type ShortcutSlot,
   bindingFromEvent,
+  bindingMatchesQuery,
   defaultBindingFor,
   formatBindingLabel,
   formatBindingValue,
@@ -32,6 +45,7 @@ import {
   isBrowserReservedBinding,
   isBrowserUnreachableBinding,
   isMacPlatform,
+  keystrokeMatchesBinding,
   parseBinding,
   unrecordableModifier,
 } from "../lib/keyboard-shortcuts";
@@ -66,6 +80,11 @@ export function KeyboardShortcutsTab() {
     null,
   );
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const [query, setQuery] = useState("");
+  // Search the list by pressing a chord instead of typing its name.
+  const [byKeystroke, setByKeystroke] = useState(false);
+  const [keystroke, setKeystroke] = useState<ShortcutBinding | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const mac = isMacPlatform();
   const conflicts = useMemo(() => findConflicts(overrides), [overrides]);
@@ -146,6 +165,74 @@ export function KeyboardShortcutsTab() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [recording, setBinding, clearBinding, t]);
 
+  // Capture phase, as the recorder is: the chord has to arrive before the shortcut
+  // it names fires, and before Radix's Escape closes the dialog. The recorder owns
+  // the keyboard while it runs, so this stands down for it.
+  useEffect(() => {
+    if (!byKeystroke || recording) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Only while the box has focus: the rest of the tab keeps its own keys.
+      if (document.activeElement !== searchRef.current) return;
+      // Read the key through the binding, not event.code, so the fallback for an
+      // engine that reports no code covers Tab and Escape here too.
+      const binding = bindingFromEvent(event);
+      // Modifier on its own: the chord is still being assembled.
+      if (!binding) return;
+      const bare = !binding.mod && !binding.ctrl && !binding.alt;
+      // Tab still moves focus: a mode that swallowed it would trap the keyboard here.
+      if (binding.code === "Tab" && bare) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // Escape backs out a step at a time, the chord first, then the mode, so the box never eats
+      // the dialog's own dismiss. Decline's bare Escape is found by name instead ("Esc").
+      if (binding.code === "Escape" && bare && !binding.shift) {
+        if (keystroke) setKeystroke(null);
+        else setByKeystroke(false);
+        return;
+      }
+      setKeystroke(binding);
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [byKeystroke, recording, keystroke]);
+
+  const toggleByKeystroke = () => {
+    // The two searches filter the same list, so leaving one arms the other empty.
+    setByKeystroke((on) => !on);
+    setQuery("");
+    setKeystroke(null);
+    searchRef.current?.focus();
+  };
+
+  // Matched on assigned chords, so a switched-off row is still found by its keys.
+  const matches = useMemo(() => {
+    if (byKeystroke) {
+      // Nothing pressed yet: the whole list, not an empty one.
+      if (!keystroke) return null;
+      return new Set(
+        SHORTCUT_DEFS.filter((def) =>
+          SHORTCUT_SLOTS.some((slot) => {
+            const parsed = parseBinding(assignedBinding(overrides, def.id, slot));
+            return parsed ? keystrokeMatchesBinding(keystroke, parsed) : false;
+          }),
+        ).map((def) => def.id),
+      );
+    }
+    const q = query.trim().toLowerCase();
+    if (!q) return null;
+    return new Set(
+      SHORTCUT_DEFS.filter((def) => {
+        const haystack = `${t(def.labelKey)} ${t(def.descriptionKey)}`;
+        if (haystack.toLowerCase().includes(q)) return true;
+        return SHORTCUT_SLOTS.some((slot) => {
+          const parsed = parseBinding(assignedBinding(overrides, def.id, slot));
+          return parsed ? bindingMatchesQuery(parsed, q, mac) : false;
+        });
+      }).map((def) => def.id),
+    );
+  }, [query, t, overrides, mac, byKeystroke, keystroke]);
+
   const startRecording = (def: ShortcutDef, slot: ShortcutSlot) => {
     setRecordingError(null);
     setJustRecorded(null);
@@ -199,7 +286,7 @@ export function KeyboardShortcutsTab() {
           onBlur={stopRecording}
           placeholder={t("settings.keyboardShortcuts.recording")}
           aria-label={`${t("settings.keyboardShortcuts.edit")}: ${label}`}
-          className="h-9 w-[calc(13.5rem*var(--ui-space-scale,1))] rounded-xl border border-control-accent bg-background px-3 text-sm text-foreground caret-transparent outline-none ring-1 ring-control-accent placeholder:text-muted-foreground"
+          className="h-9 w-[calc(13.5rem*var(--ui-space-scale,1))] rounded-xl border border-control-accent bg-background px-3 text-sm text-foreground caret-transparent outline-none ring-[1.5px] ring-control-accent placeholder:text-muted-foreground"
         />
       );
     }
@@ -351,8 +438,20 @@ export function KeyboardShortcutsTab() {
     );
   };
 
+  const visibleGroups = SHORTCUT_GROUPS.map((group) => ({
+    group,
+    defs: group.ids
+      .map((id) => SHORTCUT_DEF_BY_ID[id])
+      .filter(
+        // A web-only row on the desktop build would bind a chord whose handler
+        // returns, so it is left out rather than shown as a key that does nothing.
+        (def) =>
+          (!matches || matches.has(def.id)) && !(isTauri && def.webOnly),
+      ),
+  })).filter(({ defs }) => defs.length > 0);
+
   return (
-    <div className="settings-page">
+    <div className="settings-page px-4">
       <header className="flex flex-col gap-1">
         <h1
           data-settings-label={t("settings.keyboardShortcuts.title")}
@@ -365,12 +464,80 @@ export function KeyboardShortcutsTab() {
         </p>
       </header>
 
-      {SHORTCUT_GROUPS.map((group) => {
-        const defs = group.ids
-          .map((id) => SHORTCUT_DEF_BY_ID[id])
-          // A web-only row on the desktop build would bind a chord whose handler
-          // returns, so it is left out rather than shown as a key that does nothing.
-          .filter((def) => !(isTauri && def.webOnly));
+      <div className="relative">
+        <HugeiconsIcon
+          icon={Search01Icon}
+          strokeWidth={2}
+          className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          ref={searchRef}
+          // Chord mode shows the press, not text: the field is read-only there and
+          // the capture listener above is what fills it.
+          value={
+            byKeystroke
+              ? keystroke
+                ? formatBindingLabel(keystroke, mac)
+                : ""
+              : query
+          }
+          onChange={(e) => setQuery(e.target.value)}
+          readOnly={byKeystroke}
+          placeholder={t(
+            byKeystroke
+              ? "settings.keyboardShortcuts.keystrokePlaceholder"
+              : "settings.keyboardShortcuts.searchPlaceholder",
+          )}
+          className={cn(
+            "h-11 rounded-full pl-11 pr-12",
+            byKeystroke && "font-medium tabular-nums",
+          )}
+          aria-label={t(
+            byKeystroke
+              ? "settings.keyboardShortcuts.keystrokePlaceholder"
+              : "settings.keyboardShortcuts.searchPlaceholder",
+          )}
+        />
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-pressed={byKeystroke}
+              aria-label={t(
+                byKeystroke
+                  ? "settings.keyboardShortcuts.searchByName"
+                  : "settings.keyboardShortcuts.searchByKeystrokes",
+              )}
+              onClick={toggleByKeystroke}
+              className={cn(
+                "absolute right-2 top-1/2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                byKeystroke && "bg-muted text-foreground",
+              )}
+            >
+              <HugeiconsIcon
+                icon={EnergyRectangleIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {t(
+              byKeystroke
+                ? "settings.keyboardShortcuts.searchByName"
+                : "settings.keyboardShortcuts.searchByKeystrokes",
+            )}
+          </TooltipContent>
+        </Tooltip>
+      </div>
+
+      {visibleGroups.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {t("settings.keyboardShortcuts.noResults")}
+        </p>
+      ) : null}
+
+      {visibleGroups.map(({ group, defs }) => {
         return (
           <section
             key={group.id}

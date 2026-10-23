@@ -529,7 +529,7 @@ test("a pane that repaints itself in dark is not reset to the page there", () =>
   );
   assert.match(
     readSrc("features/settings/settings-dialog.tsx"),
-    /bg-background[^"]*dark:bg-\[rgb\(255_255_255/,
+    /bg-accent[^"]*dark:bg-\[rgb\(255_255_255/,
   );
 });
 

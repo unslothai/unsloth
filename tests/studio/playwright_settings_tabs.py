@@ -441,6 +441,88 @@ def assert_persisted_monitor_restores(page) -> None:
     report["steps"].append("persisted-monitor-reload")
 
 
+def run_keystroke_search(page) -> None:
+    """Chord press must beat both the shortcut it names and the dialog's own Escape to the search box."""
+    open_dialog(page, "keyboard-shortcuts")
+    settle_panel(page)
+    rows_js = """() => [...document.querySelectorAll('[data-settings-label]')]
+        .map(r => r.dataset.settingsLabel)"""
+    box = page.locator(f"{PANEL} input")
+    toggle = page.locator(f"{PANEL} button[aria-pressed]")
+    click_forced(toggle, timeout = 15000)
+    until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
+    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
+    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
+    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    mac = page.evaluate(
+        "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
+    )
+    mod = "Meta" if mac else "Control"
+    state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
+
+    page.keyboard.press(f"{mod}+Shift+KeyO")
+    until(
+        page,
+        f"() => {{ const rows = {ROWS}; return rows.includes('New chat')"
+        " && !rows.includes('New standalone chat'); }",
+    )
+    state["chord"] = box.input_value()
+    state["chord_rows"] = page.evaluate(rows_js)
+
+    page.keyboard.press("KeyO")
+    until(page, f"() => {ROWS}.includes('New standalone chat')")
+    state["bare_rows"] = page.evaluate(rows_js)
+
+    # A dialog gone here means the press reached Radix before the box.
+    page.keyboard.press("Escape")
+    # Observation window, not a readiness guess: the bug is the dialog closing, and a closing
+    # dialog stays mounted through its exit animation, so it needs the time to finish leaving.
+    page.wait_for_timeout(SETTLE_MS)
+    open_after_first = page.locator('div[role="dialog"]').count()
+    state["after_first_escape"] = {
+        "dialog": open_after_first,
+        "value": box.input_value() if open_after_first else None,
+        "rows": len(page.evaluate(rows_js)) if open_after_first else 0,
+    }
+    if open_after_first:
+        page.keyboard.press("Escape")
+        until(
+            page, "el => el?.getAttribute('aria-pressed') === 'false'", arg = toggle.element_handle()
+        )
+        open_after_second = page.locator('div[role="dialog"]').count()
+        state["after_second_escape"] = {
+            "dialog": open_after_second,
+            "armed": toggle.get_attribute("aria-pressed") if open_after_second else None,
+        }
+    else:
+        state["after_second_escape"] = {"dialog": 0, "armed": None}
+    report["keystroke_search"] = state
+
+    if state["armed"] != "true":
+        fail(f"keystroke search: the toggle did not arm ({state['armed']})")
+    if not state["chord"]:
+        fail("keystroke search: the pressed chord did not reach the box")
+    if "New chat" not in state["chord_rows"]:
+        fail(f"keystroke search: chord matched {state['chord_rows']}")
+    if "New standalone chat" in state["chord_rows"]:
+        fail(f"keystroke search: chord matched a lesser chord {state['chord_rows']}")
+    if "New standalone chat" not in state["bare_rows"]:
+        fail(
+            f"keystroke search: the bare key did not widen "
+            f"({state['bare_rows']} vs {state['chord_rows']})"
+        )
+    if state["after_first_escape"]["value"]:
+        fail("keystroke search: the first Escape left the chord in the box")
+    if state["after_first_escape"]["dialog"] != 1:
+        fail("keystroke search: the first Escape closed the dialog")
+    if state["after_second_escape"]["armed"] != "false":
+        fail("keystroke search: the second Escape left the mode armed")
+    if state["after_second_escape"]["dialog"] != 1:
+        fail("keystroke search: the second Escape closed the dialog")
+    page.evaluate("() => window.__settingsSmoke.close()")
+    report["steps"].append("keystroke-search")
+
+
 def run_shortcut_recorder(page) -> None:
     """Selecting a chord records the next one ahead of the shortcut it names and of the dialog's
     own Escape; the row's switch and Backspace turn the action off without losing the dialog."""
@@ -671,6 +753,8 @@ def run(page) -> None:
         else:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
+
+    run_keystroke_search(page)
 
     run_shortcut_recorder(page)
 

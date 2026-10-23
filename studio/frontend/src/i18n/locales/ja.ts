@@ -1074,6 +1074,11 @@ export const ja = {
     keyboardShortcuts: {
       title: "キーボードショートカット",
       intro: "ショートカットを変更するには、キーの組み合わせを選択してから新しいキーを入力します",
+      searchPlaceholder: "ショートカットを検索…",
+      keystrokePlaceholder: "ショートカットを押して検索",
+      searchByKeystrokes: "キー入力で検索",
+      searchByName: "名前で検索",
+      noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
       recordingNote: "新しいキーを押してください。Backspace で削除、Esc でキャンセル。",

@@ -1072,6 +1072,11 @@ export const ar = {
     keyboardShortcuts: {
       title: "اختصارات لوحة المفاتيح",
       intro: "لتغيير اختصار، اختر تركيبة المفاتيح ثم اكتب المفاتيح الجديدة",
+      searchPlaceholder: "بحث في الاختصارات…",
+      keystrokePlaceholder: "اضغط اختصارًا للبحث",
+      searchByKeystrokes: "البحث بضغط المفاتيح",
+      searchByName: "البحث بالاسم",
+      noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
       recordingNote: "اضغط المفاتيح الجديدة. Backspace يزيل الاختصار، وEsc يلغي.",

@@ -1077,6 +1077,11 @@ export const fr = {
     keyboardShortcuts: {
       title: "Raccourcis clavier",
       intro: "Pour modifier un raccourci, sélectionnez la combinaison de touches, puis tapez les nouvelles touches",
+      searchPlaceholder: "Rechercher des raccourcis…",
+      keystrokePlaceholder: "Appuyez sur un raccourci pour rechercher",
+      searchByKeystrokes: "Rechercher par frappe",
+      searchByName: "Rechercher par nom",
+      noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
       recordingNote: "Appuyez sur les nouvelles touches. Retour arrière supprime le raccourci, Échap annule.",

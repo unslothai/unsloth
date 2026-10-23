@@ -1188,6 +1188,11 @@ export const sv = {
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
       intro: "Om du vill ändra en genväg markerar du tangentkombinationen och skriver sedan de nya tangenterna",
+      searchPlaceholder: "Sök genvägar …",
+      keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
+      searchByKeystrokes: "Sök efter tangenttryckningar",
+      searchByName: "Sök efter namn",
+      noResults: "Inga genvägar matchar sökningen.",
       unassigned: "Ej tilldelad",
       recording: "Tryck på tangenter …",
       recordingNote: "Tryck på de nya tangenterna. Backsteg tar bort genvägen, Esc avbryter.",

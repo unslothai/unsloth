@@ -1077,6 +1077,11 @@ export const de = {
     keyboardShortcuts: {
       title: "Tastenkürzel",
       intro: "Zum Ändern eines Kürzels die Tastenkombination auswählen und dann die neuen Tasten drücken",
+      searchPlaceholder: "Kürzel suchen…",
+      keystrokePlaceholder: "Kürzel drücken, um zu suchen",
+      searchByKeystrokes: "Nach Tastendruck suchen",
+      searchByName: "Nach Name suchen",
+      noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",
       recordingNote: "Neue Tasten drücken. Rücktaste entfernt das Kürzel, Esc bricht ab.",

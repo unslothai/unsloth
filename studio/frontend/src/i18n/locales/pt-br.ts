@@ -1075,6 +1075,11 @@ export const ptBR = {
     keyboardShortcuts: {
       title: "Atalhos de teclado",
       intro: "Para alterar um atalho, selecione a combinação de teclas e digite as novas teclas",
+      searchPlaceholder: "Pesquisar atalhos…",
+      keystrokePlaceholder: "Pressione um atalho para pesquisar",
+      searchByKeystrokes: "Pesquisar por tecla",
+      searchByName: "Pesquisar por nome",
+      noResults: "Nenhum atalho corresponde a essa pesquisa.",
       unassigned: "Não atribuído",
       recording: "Pressione as teclas…",
       recordingNote: "Pressione as novas teclas. Backspace remove o atalho, Esc cancela.",

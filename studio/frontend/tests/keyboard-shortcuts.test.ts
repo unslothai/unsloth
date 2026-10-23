@@ -15,6 +15,7 @@ import {
   isAcceptableBinding,
   isBrowserReservedBinding,
   isShortcutId,
+  keystrokeMatchesBinding,
   matchesBinding,
   parseBinding,
 } from "../src/features/settings/lib/keyboard-shortcuts.ts";
@@ -1928,7 +1929,99 @@ test("the follow-up chords are registered in both composers", async () => {
   assert.match(CHAT_PAGE, /<Thread hideComposer=\{true\}/);
 });
 
-test("decline ships bare Escape, shown as Esc", () => {
+function chord(value: string) {
+  const parsed = parseBinding(value);
+  assert.ok(parsed, `unparsable test binding ${value}`);
+  return parsed;
+}
+
+test("a keystroke search matches the chord it names", () => {
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Shift+KeyO")),
+    true,
+  );
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Shift+KeyN")),
+    false,
+    "a different key is a different chord",
+  );
+});
+
+test("a keystroke search widens as modifiers come off", () => {
+  for (const bound of ["Mod+Shift+KeyO", "Mod+Alt+KeyO", "Mod+Alt+Shift+KeyO"]) {
+    assert.equal(
+      keystrokeMatchesBinding(chord("KeyO"), chord(bound)),
+      true,
+      bound,
+    );
+  }
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Alt+Shift+KeyO")),
+    true,
+  );
+  assert.equal(
+    keystrokeMatchesBinding(chord("Mod+Shift+KeyO"), chord("Mod+Alt+KeyO")),
+    false,
+  );
+});
+
+test("a keystroke search never matches a chord missing a modifier it holds", () => {
+  for (const pressed of ["Mod+KeyB", "Ctrl+KeyB", "Alt+KeyB", "Shift+KeyB"]) {
+    assert.equal(
+      keystrokeMatchesBinding(chord(pressed), chord("KeyB")),
+      false,
+      pressed,
+    );
+  }
+});
+
+test("the matcher finds every shipped default by its own chord and bare key", async () => {
+  for (const def of SHORTCUT_DEFS) {
+    for (const slot of SHORTCUT_SLOTS) {
+      for (const mac of [true, false]) {
+        const value = defaultBindingFor(def, slot, mac);
+        if (!value) continue;
+        const bound = chord(value);
+        assert.equal(
+          keystrokeMatchesBinding(bound, bound),
+          true,
+          `${def.id}.${slot} does not find itself`,
+        );
+        assert.equal(
+          keystrokeMatchesBinding({ ...bound, mod: false, ctrl: false, shift: false, alt: false }, bound),
+          true,
+          `${def.id}.${slot} is not found by its bare key`,
+        );
+      }
+    }
+  }
+});
+
+test("the shortcuts tab arms the keystroke search ahead of Radix and the registry", async () => {
+  const src = await readFile(
+    new URL(
+      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Capture phase, or the dialog's Escape closes it before the box sees the key.
+  assert.match(
+    src,
+    /window\.addEventListener\("keydown", onKeyDown, \{ capture: true \}\)/,
+  );
+  // bindingFromEvent carries the fallback for engines reporting no event.code.
+  const listener = src.slice(
+    src.indexOf("if (!byKeystroke || recording) return;"),
+  );
+  assert.doesNotMatch(listener, /event\.code\s*===/);
+  assert.match(listener, /const binding = bindingFromEvent\(event\);/);
+  assert.match(listener, /binding\.code === "Escape"/);
+  assert.match(src, /if \(!byKeystroke \|\| recording\) return;/);
+});
+
+/** Bare Escape backs out of the chord box, so it is not taken as a query; the name search finds it. */
+test("the chord box keeps bare Escape, and the name search still finds that row", () => {
   const decline = SHORTCUT_DEFS.find((def) => def.id === "declineToolRequest");
   assert.ok(decline);
   assert.equal(defaultBindingFor(decline, "primary", true), "Escape");
@@ -1936,6 +2029,10 @@ test("decline ships bare Escape, shown as Esc", () => {
   assert.ok(escape);
   assert.equal(formatBindingLabel(escape, true), "Esc");
   assert.ok(formatBindingLabel(escape, true).toLowerCase().includes("esc"));
+  assert.match(
+    KEYBOARD_SHORTCUTS_TAB,
+    /binding\.code === "Escape" && bare && !binding\.shift/,
+  );
   const shiftEscape = parseBinding("Shift+Escape");
   assert.ok(shiftEscape);
   assert.equal(shiftEscape.shift, true);

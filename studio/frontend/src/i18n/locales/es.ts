@@ -1076,6 +1076,11 @@ export const es = {
     keyboardShortcuts: {
       title: "Atajos de teclado",
       intro: "Para cambiar un atajo, selecciona la combinación de teclas y pulsa las nuevas teclas",
+      searchPlaceholder: "Buscar atajos…",
+      keystrokePlaceholder: "Pulsa un atajo para buscar",
+      searchByKeystrokes: "Buscar por pulsación",
+      searchByName: "Buscar por nombre",
+      noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",
       recordingNote: "Pulsa las nuevas teclas. Retroceso quita el atajo, Esc cancela.",

@@ -742,6 +742,24 @@ export function matchesBinding(
   return event.shiftKey === binding.shift && event.altKey === binding.alt;
 }
 
+/**
+ * Whether `bound` answers to everything `pressed` holds: the same key, with no modifier
+ * missing. For searching the list by chord, where the press narrows as modifiers are
+ * added: N finds ⌘N and ⇧⌘N, ⌘N drops the ones without ⌘, and ⇧⌘N finds only itself.
+ * Not matchesBinding, which is exact because a keypress must run one action.
+ */
+export function keystrokeMatchesBinding(
+  pressed: ShortcutBinding,
+  bound: ShortcutBinding,
+): boolean {
+  if (pressed.code !== bound.code) return false;
+  if (pressed.mod && !bound.mod) return false;
+  if (pressed.ctrl && !bound.ctrl) return false;
+  if (pressed.shift && !bound.shift) return false;
+  if (pressed.alt && !bound.alt) return false;
+  return true;
+}
+
 const NUMPAD_NAMES: Record<string, string> = {
   Add: "+",
   Subtract: "-",
@@ -817,6 +835,42 @@ export function formatBindingLabel(
   if (binding.shift) parts.push("Shift");
   parts.push(key);
   return parts.join("+");
+}
+
+function bindingSearchText(binding: ShortcutBinding, mac: boolean): string {
+  const words = [formatBindingLabel(binding, mac)];
+  if (binding.mod) words.push(mac ? "⌘ cmd command" : "ctrl control");
+  if (binding.ctrl) words.push("⌃ ctrl control");
+  if (binding.alt) words.push(mac ? "⌥ opt option alt" : "alt opt option");
+  if (binding.shift) words.push("⇧ shift");
+  return words.join(" ").toLowerCase();
+}
+
+const MODIFIER_GLYPHS = new Set(["⌘", "⌃", "⌥", "⇧"]);
+
+/** Every word must match; a one-letter word is the key, so "k" finds ⌘K, not every chord with a k. */
+export function bindingMatchesQuery(
+  binding: ShortcutBinding,
+  query: string,
+  mac = isMacPlatform(),
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  if (formatBindingLabel(binding, mac).toLowerCase().includes(q)) return true;
+  const text = bindingSearchText(binding, mac);
+  const key = formatCode(binding.code, mac).toLowerCase();
+  const words = q
+    .replace(/[⌘⌃⌥⇧]/g, (glyph) => ` ${glyph} `)
+    .split(/[\s+]+/)
+    .filter(Boolean);
+  return (
+    words.length > 0 &&
+    words.every((word) =>
+      word.length === 1 && !MODIFIER_GLYPHS.has(word)
+        ? word === key
+        : text.includes(word),
+    )
+  );
 }
 
 export function formatBindingValueLabel(

@@ -1070,6 +1070,11 @@ export const zhCN = {
     keyboardShortcuts: {
       title: "键盘快捷键",
       intro: "要更改快捷键，请选择按键组合，然后输入新的按键",
+      searchPlaceholder: "搜索快捷键…",
+      keystrokePlaceholder: "按下快捷键进行搜索",
+      searchByKeystrokes: "按键搜索",
+      searchByName: "按名称搜索",
+      noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",
       recordingNote: "按下新的按键。Backspace 移除快捷键，Esc 取消。",

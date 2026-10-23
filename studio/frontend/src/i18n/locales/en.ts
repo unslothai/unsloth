@@ -1130,6 +1130,11 @@ export const en = {
     keyboardShortcuts: {
       title: "Keyboard shortcuts",
       intro: "To change a shortcut, select the key combination, and then type the new keys",
+      searchPlaceholder: "Search shortcuts…",
+      keystrokePlaceholder: "Press shortcut to search",
+      searchByKeystrokes: "Search by keystrokes",
+      searchByName: "Search by name",
+      noResults: "No shortcuts match that search.",
       unassigned: "none",
       recording: "Press key sequence",
       recordingNote: "Press the new keys. Backspace removes the shortcut, Esc cancels.",
