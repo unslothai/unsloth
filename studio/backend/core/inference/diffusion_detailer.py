@@ -353,7 +353,6 @@ def detail_image(
     inpaint: InpaintFn,
     stop: Optional[Callable[[], bool]] = None,
 ) -> DetailResult:
-    """Inpaint every detection in order on ``image``, each on the previous result."""
     import numpy as np
     from PIL import Image
 

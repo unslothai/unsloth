@@ -124,7 +124,6 @@ export function detailerAvailable(
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
-/** Only options off their default are sent. */
 export function detailerRequestField(
   enabled: boolean,
   available: boolean,
@@ -180,7 +179,6 @@ export function detailerEngagesNegative(
 const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
-/** Untrusted input (a dropped file). */
 export function detailerRecordOf(value: unknown): DetailerRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
@@ -318,7 +316,6 @@ export function detailerSummary(record: DetailerRecord | null | undefined): stri
   return `${targets}: ${count} fixed, denoise ${record.denoise ?? DETAILER_DEFAULTS.denoise}`;
 }
 
-/** Cancels get no toast. */
 export function detailerErrors(images: Array<{ detailer?: unknown }>): string[] {
   const errors = new Set<string>();
   for (const image of images) {

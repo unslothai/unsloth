@@ -264,7 +264,6 @@ export interface DiffusionGenerateRequest {
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
-  // Detailer (face fix) post-pass; absent = off.
   detailer?: DetailerRequest;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;

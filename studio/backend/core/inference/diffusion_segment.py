@@ -1046,7 +1046,6 @@ class _HostWeights:
 
     @staticmethod
     def _leaves(model: Any) -> list:
-        """Every plain tensor behind the module's parameters and buffers (a subclass's inner tensors)."""
         import torch
 
         out: list = []
@@ -1535,7 +1534,6 @@ class MaskSegmenter:
 
     @contextmanager
     def hold(self) -> Iterator[None]:
-        """Keep the model loaded across a batch; an explicit release still applies."""
         with self._state_lock:
             self._holds += 1
         try:
