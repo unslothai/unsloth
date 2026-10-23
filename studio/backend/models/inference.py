@@ -6059,6 +6059,7 @@ class DiffusionInferenceInfoResponse(BaseModel):
     families: List[DiffusionInferenceInfo] = Field(default_factory = list)
 
 
+# ── OpenAI-compatible images API (POST /v1/images/generations) ──
 # OpenAI-compatible images API; GPT-image-only knobs are accepted and ignored. The route parses size and rejects stream.
 
 

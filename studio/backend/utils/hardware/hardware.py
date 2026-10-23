@@ -28,6 +28,7 @@ from typing import Optional, Dict, Any
 logger = get_logger(__name__)
 
 
+# ── GPU index ordering ──────────────────────────────────────────────────────
 # CUDA orders FASTEST_FIRST but nvidia-smi by PCI bus id; pin one index space before torch.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
@@ -3199,6 +3200,7 @@ def _read_apple_gpu_stats_uncached() -> Dict[str, Any]:
     return out
 
 
+# ── CPU frequency on Apple Silicon ──────────────────────────────────────────
 # psutil <= 7.2.2 misreads M4+ kHz tables as Hz; read via ioreg until psutil#2824 ships.
 
 # Apple clocks are 0.6-4.6 GHz, so a raw Hz entry sits above 1e8 and kHz below.
@@ -3527,6 +3529,7 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
         return {}
 
 
+# ── Windows AMD/ROCm per-adapter VRAM (issue #7072) ──────────────────────────
 # Windows ROCm: hipMemGetInfo reports free==total, so read used from per-LUID counters.
 _ROCM_WIN_ADAPTER_MIN_BYTES = 64 * 1024 * 1024  # 64 MiB
 

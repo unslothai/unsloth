@@ -265,6 +265,7 @@ def _cached_step(
     )
 
 
+# ---------------------------------------------------------------------------------------------- CUDA graph step
 # CUDA graph step: graph_plan makes a decode step all-tensor inputs; step 0 stays eager.
 # K/V, RoPE and index inputs are sticky: copied only when a different tensor is passed.
 

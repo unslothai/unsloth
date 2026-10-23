@@ -25,6 +25,7 @@ auth_safe_open = auth_safe.auth_safe_open
 logger = get_logger(__name__)
 
 
+# ── Offline / HF-cache helpers ──────────────────────────────────
 # Offline loads must never touch the network (DNS-dead sessions hang on hub retries).
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 

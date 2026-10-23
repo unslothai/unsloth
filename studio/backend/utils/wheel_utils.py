@@ -118,6 +118,7 @@ def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
     return _PREBUILT_WHEEL_TORCH_MM.get(torch_mm, torch_mm)
 
 
+# ── Wheels we build ourselves ─────────────────────────────────────────────────
 # torch 2.13+ broke the extension ABI again, so we build these wheels ourselves
 # (.github/workflows/prebuilt-cuda-wheels.yml) and resolve to our own release.
 UNSLOTH_PREBUILT_RELEASE_BASE_URL = "https://github.com/unslothai/unsloth/releases/download"
@@ -366,6 +367,7 @@ def direct_wheel_url(
 
 
 # xformers/_C links one exact (torch, CUDA) pair; a mismatch silently drops attention. Key on cpp_lib.json torch, not cuda; rows never interpolated.
+# ── xFormers ──────────────────────────────────────────────────────────────────
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
 

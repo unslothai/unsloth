@@ -3313,6 +3313,7 @@ async def stream_training_progress(
     )
 
 
+# ── Diffusion (SDXL) LoRA training ────────────────────────────────────────────
 # Diffusion (SDXL) LoRA training: separate job path via DiffusionTrainingService.
 def _diffusion_training_active() -> bool:
     """Whether a diffusion (SDXL) LoRA job is currently running. Best-effort so the
@@ -4453,6 +4454,7 @@ async def upload_diffusion_dataset(
         _lock.release()
 
 
+# ── Dataset labeling (per-image caption editing) + one-click example imports ── Thumbnails live in
 # Thumbnails live in a hidden subdir, invisible to listings and the trainer's discovery.
 _THUMBS_DIRNAME = ".thumbs"
 _MAX_CAPTION_CHARS = 2000

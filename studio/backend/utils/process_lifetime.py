@@ -1223,6 +1223,7 @@ def _group_member_pids(pgid: int) -> "Optional[list[int]]":
 
 
 # macOS has no PDEATHSIG or job objects: record children and sweep leftovers at startup.
+# ── Crash-survivable child record ──
 def _breadcrumb_dir():
     from pathlib import Path
 

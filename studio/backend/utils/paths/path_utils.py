@@ -28,6 +28,7 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
 
 # macOS stores xattrs in ._ companions on exFAT/FAT/SMB/NFS; only the magic identifies one,
 # since a user's own ._model.gguf is a real model.
+# ── macOS Finder metadata companions ───────────────────────────
 _MAGIC = b"\x00\x05\x16\x07"
 
 PathLike = TypeVar("PathLike", str, Path)

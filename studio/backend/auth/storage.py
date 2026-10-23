@@ -369,6 +369,7 @@ def get_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
 
 
 # No lock needed: INSERT OR IGNORE is atomic and concurrent populations converge.
+# ── API-key PBKDF2 salt ────────────────────────────────────────────────
 _api_key_pbkdf2_salt_cache: Optional[bytes] = None
 
 

@@ -2316,6 +2316,7 @@ async def get_gguf_variants_answer(
                     detail.partial = True
                 if detail.partial:
                     # Downloads land in the ACTIVE cache, so resume metadata comes from the active copy only.
+                    # -- that is what delete and load resolve -- while the resume affordance
                     resume_cache_dir = (
                         Path(source.cache_path)
                         if source.cache_path == str(active_repo_dir)

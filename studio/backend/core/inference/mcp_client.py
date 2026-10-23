@@ -44,6 +44,7 @@ MCP_TOOL_PREFIX = "mcp__"
 _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
 _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
+# -- and the chat send re-hung for the full timeout -- on every message. Cool off for this long after a failure; much
 # Failed probes are not cached but cool off, so a down server doesn't hang every send.
 FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0

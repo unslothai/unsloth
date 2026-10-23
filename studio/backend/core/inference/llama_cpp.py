@@ -2317,6 +2317,7 @@ _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
 
 
+# ── Sliding-window-pattern resolver ───────────────────────────
 # Period N: layer i is SWA iff (i+1) % N != 0. Absent: phi3 (no key/val length), qwen2 (converter strips the window), mistral v0.1/v0.2 (all-SWA is no period).
 _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
     "gemma2": 2,  # Gemma2Config.sliding_window_pattern
@@ -3565,6 +3566,7 @@ def zero_vram_chat_load(
     if gpu_memory_mode != "manual" or gpu_layers != 0:
         return False
     # Every spec mode but off may launch a GPU drafter: canonicalize first, and an absent mode is auto, not off, or the arbiter is skipped.
+    # -- reading the FINISHED argv, drafter included -- kept the GPUs visible: no
     spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
     if needs_mmproj or spec_mode != "off":
         return False
@@ -8798,6 +8800,7 @@ class LlamaCppBackend:
 
         return None
 
+    # ── llama-server capability probe ─────────────────────────────
     # b10259..b10268 advertise draft-dspark but abort on load; match the base build number, gate only managed prebuilts (source builds carry no marker).
     _BROKEN_DSPARK_BUILDS = range(10259, 10269)
 
@@ -18370,6 +18373,7 @@ class LlamaCppBackend:
             return None
         return str(mtp_draft_path)
 
+    # ── Lifecycle ─────────────────────────────────────────────────
     # GGUF general.architecture values for diffusion / image models, which llama.cpp cannot load.
     # Matched exactly so a chat arch like 'taiwan' is not misrouted.
     _IMAGE_ARCHES = frozenset(
@@ -21284,6 +21288,7 @@ class LlamaCppBackend:
                 )
                 n_parallel = 1  # allow-slot-clamp: the build cannot serve more
 
+            # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # Vulkan-ordinal preflight, above the kill so an invalid pin leaves the live model untouched.
             # Vulkan ordinals are not range-checked at the route, unlike CUDA ids.
             if _vulkan_ordinal_pin and binary:
@@ -28882,6 +28887,7 @@ class LlamaCppBackend:
                 self._requested_cache_types = _planned_cache_pair
                 self._kv_cache_context_total = effective_ctx if effective_ctx > 0 else None
 
+                # -- the length --fit chose, or a --parallel slot split -- so the
                 # Adopt the context the server allocated (--fit or slot split); clear video state first, or a swap to a model without video inherits the old answer.
                 self._has_video_input = False
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
@@ -30513,6 +30519,7 @@ class LlamaCppBackend:
         # Reap the recorded PID only if a true orphan, so a helper backend never kills a live server.
         killed = LlamaCppBackend._reap_recorded_pid()
         try:
+            # -- Build the ownership allowlist --------------------------------
             # exact_binaries = env overrides; install_roots = Unsloth-owned trees.
             install_roots: list[Path] = []
 
@@ -33338,6 +33345,7 @@ class LlamaCppBackend:
         # tool-agnostic, so this gate stays in the loop.
         _kb_search_count = 0
 
+        # ── Re-prompt on plan-without-action ─────────────────
         # Re-prompt once when the model states intent without a tool call; direct answers will not match. Pattern shared with tool_call_parser.INTENT_SIGNAL.
         _reprompt_count = 0
         # Budgeted apart from _reprompt_count so a pre-tool nudge can't spend it.
@@ -33811,6 +33819,7 @@ class LlamaCppBackend:
                     raise
 
             try:
+                # ── Speculative buffer state machine ──────────────────
                 # BUFFERING: hold content, check for tool signals
                 # STREAMING: no tool, yield tokens; DRAINING: tool found, consume silently
                 _S_BUFFERING = 0
@@ -34138,6 +34147,7 @@ class LlamaCppBackend:
                                                 }
                                     continue
 
+                                # ── Reasoning tokens ──
                                 # Reasoning streams live except while DRAINING: it is orthogonal to tool detection, and the route resets prev_text on tool_start so think stays a monotonic prefix.
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
@@ -34517,6 +34527,7 @@ class LlamaCppBackend:
                         enabled_tool_names = _enabled_tool_names,
                     )
                     if not _safety_tc:
+                        # ── Re-prompt on plan-without-action ──
                         # Classify only what the user sees.
                         _visible_raw = content_accum.strip()
                         _visible = (
@@ -34543,6 +34554,7 @@ class LlamaCppBackend:
                         # A plan only thought is not announced; _stripped stays whole, replayed and compared for repeats.
                         _intent_text = _visible_answer if _visible_answer else _stripped
 
+                        # ── Continue an answer the window cut in half ──
                         # Answer cut by the window: continue it via continue_final_message so it
                         # resumes mid-token.
                         _partial_answer = content_accum.strip()
@@ -34624,6 +34636,7 @@ class LlamaCppBackend:
                                     }
                                     continue
 
+                        # ── Continue a turn that ended inside its own thought ──
                         # Ahead of the re-prompt, which only handles SHORT responses.
                         if (
                             _iter_finish_reason == "length"
@@ -34933,6 +34946,7 @@ class LlamaCppBackend:
                             yield _meta
                         return
 
+                # ── Execute tool calls ──
                 # Progress made: reset stall counters and restore thinking.
                 _length_continuations = 0
                 _effective_enable_thinking = enable_thinking
@@ -35714,6 +35728,7 @@ class LlamaCppBackend:
                         # Cleared either way: it describes THIS call's budget, else the notice would pass to the next call.
                         _starved_call[0] = False
 
+                    # ── No-progress guard: the same answer, over and over ──
                     # No-progress guard keyed on the RESULT, so it never fires while results change.
                     if isinstance(result, str):
                         # Arguments are in the key unless the result is the window's own truncation notice.
@@ -35983,6 +35998,7 @@ class LlamaCppBackend:
                         }
                 raise
 
+        # ── Tool iteration cap reached -- synthesize final answer ──
         # Cap reached with no final text: nudge the final streaming pass to answer rather than request tools.
         if max_tool_iterations > 0 and _append_budget_exhausted_nudge:
             if not _attach_internal_feedback_to_tool_result(BUDGET_EXHAUSTED_NUDGE):

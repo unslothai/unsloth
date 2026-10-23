@@ -2050,6 +2050,7 @@ def _gpu_memory_fraction(
     return _rocm_memory_fraction(total_bytes, is_unified, platform, None, denominator_bytes)
 
 
+# ── Fast-path hooks ──
 # Wrap is_causal_conv1d_available so the first call drives the install.
 # UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
 

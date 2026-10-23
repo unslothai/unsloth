@@ -26100,6 +26100,7 @@ def _request_local_image_payloads(payload) -> list[str]:
     return encoded_images
 
 
+# ── External provider proxy ──────────────────────────────────────
 # Only these helpers translate input_document; generic passthroughs would 400 on it.
 _INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
 
@@ -29097,6 +29098,7 @@ async def produce_openai_chat_completions(
 
     file_history.set_turn(payload.thread_id, payload.user_message_id)
 
+    # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional: local providers may run without auth.
     if payload.provider_id or payload.provider_type:
         from auth.authentication import request_admitted_without_credential
@@ -29318,6 +29320,7 @@ async def produce_openai_chat_completions(
     # Lift ``extra_body`` template controls before sampling and generation read them.
     _normalize_chat_reasoning_controls(payload)
 
+    # ── Determine which backend is active ─────────────────────
     # Single-model server: any model name serves the loaded model; payload.model is a label.
     monitor_id = None
 
@@ -29456,6 +29459,7 @@ async def produce_openai_chat_completions(
                 _SCHEMA_VALIDATION_EXECUTOR, _reject_unhonorable_response_format, payload
             )
 
+        # ── Audio TTS path: auto-route to audio generation ────
         # Whisper is ASR, not TTS, so it skips this branch and is handled in the audio input path below.
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
             if _wants_multiple_choices(payload):
@@ -29813,6 +29817,7 @@ async def produce_openai_chat_completions(
         explicit = _client_sampling_fields,
     )
 
+    # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # Client-supplied OpenAI tools go to llama-server verbatim. Must run BEFORE
     # _extract_content_parts, which cannot handle role=tool or tool_calls-only messages.
     effective_max_tokens = _effective_openai_max_tokens(payload)
@@ -29951,6 +29956,7 @@ async def produce_openai_chat_completions(
             raise _reject(exc.status_code, exc.detail)
         _pre_parsed = None
 
+    # ── Parse messages (handles multimodal content parts) ─────
     # Reuse the pre-hook parse when an auto-switch already did it; otherwise parse the messages here.
     if _pre_parsed is not None:
         system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
@@ -30080,6 +30086,7 @@ async def produce_openai_chat_completions(
             )
             return f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
 
+        # ── Tool-calling path (agentic loop) ──────────────────
         # mcp_enabled also opens the loop but must still honor a CLI --disable-tools policy.
         from state.tool_policy import get_tool_policy as _get_tool_policy_g
 
@@ -31785,6 +31792,7 @@ async def produce_openai_chat_completions(
                 if admission_lease is not None:
                     admission_lease.release()
                 _tracker.__exit__(None, None, None)
+    # ── Standard Unsloth path ─────────────────────────────────
     # Re-derived: an auto-switch may have changed models.
     served_images: list[str] = []
     images: list = []
@@ -32096,6 +32104,7 @@ async def produce_openai_chat_completions(
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
+    # ── Safetensors tool-calling path ─────────────────────────
     # Disabled for gpt-oss (Harmony channels, not <tool_call> XML).
     _sf_is_gptoss = False
     try:
@@ -33940,6 +33949,7 @@ async def serve_sandbox_file(
     Accepts auth via an Authorization header or a query token. Unsloth uses an
     authenticated fetch and object URL; query auth remains for older clients.
     """
+    # ── Authentication (header or query param) ──────────────────
     await _authenticate_header_or_query(request, token)
 
     # ── Filename sanitization + path containment ────────────────
@@ -34014,7 +34024,9 @@ async def serve_sandbox_file(
     return StreamingResponse(_read(), media_type = media_type, headers = headers)
 
 
+# =====================================================================
 # Every /v1/models entry, loaded and available alike, carries the owned_by marker.
+# =====================================================================
 _OWNED_BY = "unsloth-studio"
 
 
@@ -41976,6 +41988,7 @@ async def anthropic_messages(
 
     cancel_event = threading.Event()
 
+    # ── Tool routing ──────────────────────────────────────────
     # Tool routing: enable_tools -> server-side built-ins; tools only -> client passthrough; else plain.
     # Server tools reject caller attachments but accept replayed images (check original blocks).
     openai_client_tools = _anthropic_client_tools_for_turn(
@@ -42080,6 +42093,7 @@ async def anthropic_messages(
             # _monitored_anthropic's bookkeeping can throw; a leaked entry 409s later swaps.
             _tracker.__exit__(None, None, None)
 
+    # ── Admission control ─────────────────────────────────────
     # Admission: FIFO queue per base_url shared with /v1/chat/completions; streaming holds the slot
     # while the body runs, non-stream across the awaited generation.
     _anthropic_admission_mode = "anthropic_stream" if payload.stream else "anthropic_nonstream"
@@ -43182,7 +43196,9 @@ async def _anthropic_plain_non_streaming(
     return response
 
 
+# =====================================================================
 # Client-side tool pass-through (Anthropic-native tools field)
+# =====================================================================
 
 
 _JSON_SCHEMA_MAP_KEYWORDS = frozenset(
@@ -44027,7 +44043,9 @@ async def _anthropic_passthrough_non_streaming(
             pass
 
 
+# =====================================================================
 # Client-side tool pass-through (OpenAI-native /v1/chat/completions)
+# =====================================================================
 
 
 def _normalize_local_assistant_message(message: dict) -> Optional[dict]:
@@ -45874,8 +45892,10 @@ async def _openai_passthrough_non_streaming_upstream(
     return JSONResponse(content = data)
 
 
+# ──────────────────────────────────────────────────────────────────────────
 # Diffusion (local text-to-image). Unsloth-only routes (not mounted under /v1); the backend is
 # synchronous, so blocking calls use asyncio.to_thread.
+# ──────────────────────────────────────────────────────────────────────────
 
 
 def _diffusion_training_active() -> bool:
