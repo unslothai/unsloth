@@ -509,7 +509,9 @@ _JSON_TYPES = {"object": dict, "array": list, "string": str, "number": (int, flo
 
 
 def _json_matches(text: str, schema: dict) -> bool:
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    # No \s* before the body: with .*? it backtracks quadratically on an unclosed fence, and
+    # json.loads skips the whitespace anyway.
+    fenced = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
     try:
         value = json.loads(fenced.group(1) if fenced else text, parse_constant = _reject_constant)
     except (ValueError, TypeError, RecursionError):

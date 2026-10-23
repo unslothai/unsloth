@@ -460,3 +460,17 @@ def test_fullmatch_regex_keeps_boundary_whitespace_a_pattern_requires():
         }
     )
     assert score_rule(loose, "  4\n") == 1.0  # stray padding still tolerated
+
+
+def test_json_schema_scoring_stays_fast_on_an_unclosed_fence():
+    import time
+
+    from core.training.rewards import score_rule, validate_rule
+
+    rule = validate_rule(
+        {"type": "json_schema", "schema": {"type": "object"}, "score": {"match": 1.0, "miss": 0.0}}
+    )
+    assert score_rule(rule, '```json\n{"a": 1}\n```') == 1.0
+    start = time.perf_counter()
+    assert score_rule(rule, "```json\n" + " " * 65000) == 0.0
+    assert time.perf_counter() - start < 1.0
