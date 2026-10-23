@@ -29,7 +29,6 @@ export function exportRemoteCodeConsent({
     scanTarget: source,
     // An HF source can need trust_remote_code via its YAML default with no auto_map to review.
     requiresTrustRemoteCode: modelSource === "hf",
-    // A local model the user exported is trusted by default.
     trustByDefault: modelSource !== "hf",
   };
 }
