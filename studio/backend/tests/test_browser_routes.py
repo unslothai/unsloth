@@ -395,6 +395,16 @@ def test_a_template_ends_where_the_parser_ends_it(inside):
     assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
 
 
+def test_a_custom_element_named_like_template_does_not_close_it():
+    page = (
+        '<template><template-card></template-card><base href="https://evil.example/"></template>'
+        '<base href="/docs/">'
+    )
+    assert browser_mod._prepare_page(page, "https://example.com/a/")[1] == (
+        "https://example.com/docs/"
+    )
+
+
 def test_a_failed_fetch_of_an_unparseable_address_still_answers_502():
     from fastapi import HTTPException
 

@@ -124,6 +124,7 @@ _INERT_START_RE = re.compile(
     + _TAG_BODY,
     re.IGNORECASE,
 )
+_TEMPLATE_CLOSE_RE = re.compile(r"</template(?=[\s/>])", re.IGNORECASE)
 # Inside a template: its close, a nested one, what holds text (a comment, a raw-text element), or any
 # other tag, taken whole so "<script>" in a quoted attribute is not read as one.
 _TEMPLATE_SCAN_RE = re.compile(
@@ -1885,7 +1886,8 @@ def _template_close(page: str, start: int) -> "Optional[re.Match[str]]":
             if close < 0:
                 return None
             at = close + 3
-        elif text.lower().startswith("</template"):
+        # Not a prefix test: the ordinary-tag branch also matches </template-card>.
+        elif _TEMPLATE_CLOSE_RE.match(page, match.start()):
             depth -= 1
             if depth == 0:
                 return match
