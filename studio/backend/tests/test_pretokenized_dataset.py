@@ -173,6 +173,19 @@ def test_prepare_ignores_unused_masks_next_to_user_labels():
     assert prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100) is ds
 
 
+def test_prepare_leaves_unused_null_masks_next_to_labels_alone():
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4, 5, 6]],
+            "labels": [[1, 2, 3, 4, 5, 6]],
+            "completion_mask": [None],
+        }
+    )
+    out = prepare_pretokenized_dataset(ds, max_seq_length = 4, vocab_size = 100)
+    assert out[0]["input_ids"] == [1, 2, 3, 4] and out[0]["labels"] == [1, 2, 3, 4]
+    assert out[0]["completion_mask"] is None
+
+
 def test_prepare_checks_streamed_loss_masks():
     ds = Dataset.from_dict(
         {"input_ids": [[1, 2, 3, 4, 5, 6]], "completion_mask": [[0, 1]]}

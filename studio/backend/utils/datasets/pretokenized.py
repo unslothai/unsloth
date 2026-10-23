@@ -104,7 +104,10 @@ def prepare_pretokenized_dataset(
     vocab_size = None,
 ):
     """Unsloth's SFT preparation passes tokenized rows through untouched: an over-long row would reach the model whole and an id past the embedding table is a device-side assert mid-run. Idempotent."""
-    columns = [c for c in _TOKEN_COLUMNS if c in _column_names(dataset)]
+    names = _column_names(dataset)
+    # With user labels the masks are unused: leave them as they are (they may not even be lists).
+    unused = _MASK_COLUMNS if "labels" in names else ()
+    columns = [c for c in _TOKEN_COLUMNS if c in names and c not in unused]
     table = getattr(dataset, "data", None)
     needs_truncation = True
     if table is not None and hasattr(table, "column"):
