@@ -45,7 +45,6 @@ def test_tiers_only_grow_with_speed(family):
 
 
 def test_flux3_base_is_priced_at_least_like_klein():
-    # ComfyUI's Flux3 inherits Flux2's factor formula: one figure for the shared DiT and VAE, so base >= Klein.
     base = dm._MEASURED_IMAGE_ACTIVATION_MIB["flux.3-klein-base"]
     klein = dm._MEASURED_IMAGE_ACTIVATION_MIB["flux.3-klein"]
     for tb, tk in zip(base, klein):

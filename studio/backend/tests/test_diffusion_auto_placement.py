@@ -568,10 +568,8 @@ def test_layer_split_decline_reports_the_encode_activation_it_charged():
     assert "5555 MiB of activations" in reason
 
 
-# Kaggle 2x T4 (outputs: guided Z-Image-Turbo, fp16): the layer split was priced with the flat 6963 MiB (8 GiB per
-# megapixel, turbo discount) and declined by about 1.0 GB, so every 2-card arm streamed one card from host RAM. On
-# NVIDIA with a sub-quadratic attention kernel the split now reads the family's measured row, as the companion split.
-_ZIMAGE_T4 = dict(dit = 11739, te = 7672, vae = 211)  # 11931 MiB of denoiser and VAE weights
+# Kaggle 2x T4 Z-Image-Turbo fp16: the split was priced with the flat estimate and declined by ~1 GB.
+_ZIMAGE_T4 = dict(dit = 11739, te = 7672, vae = 211)
 _ZIMAGE_FLAT = 6963
 
 
@@ -597,7 +595,6 @@ def test_zimage_on_two_t4s_layer_split_fits_with_the_measured_activations(monkey
 
 
 def test_image_activation_estimate_scales_with_resolution():
-    # Load time budgets 1024^2; the generate-time guard re-prices the real request size.
     hint = "z-image Tongyi-MAI/Z-Image-Turbo"
     at_1024 = dm.estimate_image_runtime_mib(width = 1024, height = 1024, family = hint)
     at_768 = dm.estimate_image_runtime_mib(width = 768, height = 768, family = hint)
@@ -610,8 +607,7 @@ def test_image_activation_estimate_scales_with_resolution():
 
 
 def test_a_split_priced_with_the_measured_row_is_a_calibrated_placement(monkeypatch):
-    # The generate guard must treat the split as calibrated: it charges a ControlNet / references on top and drops the
-    # flat default-resolution exemption, since the split never reserved the flat figure.
+    # The generate guard must treat the split as calibrated (it never reserved the flat figure).
     from core.inference.diffusion import plan_is_calibrated
 
     host = Host([Card(0, T4, 300), Card(1, T4, 300)])
