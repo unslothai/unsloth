@@ -21,6 +21,7 @@ TTS = {"repo": "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", "variant": None}
 CLONE = {"repo": "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF", "variant": None}
 MUSIC = {"repo": "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", "variant": None}
 RIVAL = {"repo": "unsloth/gemma-3-4b-it-GGUF", "variant": "Q4_K_M"}
+COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/"
 REQ = {
     "chat": {
         "ref": "writer",
@@ -1395,148 +1396,242 @@ def sticker_pack() -> B:
     return b
 
 
-COLAB_NB = "https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/"
-
-
-def notebook_template(
-    id: str,
-    name: str,
-    notebook: str,
-    description: str,
-    *,
-    dataset: str,
-    tune: dict[str, Any],
-    export: Optional[dict[str, Any]],
-    ask: Optional[str] = None,
-    tags: list[str],
-) -> B:
-    """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
-    b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
-    b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
-    b.n("tune", "train.finetune", 1, 1, **{"training_type": "lora", **tune})
-    b.e("data.dataset", "tune.dataset")
-    b.n("metrics", "output.preview", 2, 0)
-    b.e("tune.metrics", "metrics.value")
-    if ask:
-        b.n("ask", "input.text", 1, 2.2, value = ask)
-        b.n("test", "train.chat_checkpoint", 2, 1, max_tokens = 300)
-        b.e("tune.checkpoint", "test.checkpoint")
-        b.e("ask.text", "test.prompt")
-        b.n("answer", "output.preview", 3, 1)
-        b.e("test.text", "answer.value")
-    if export:
-        b.n("export", "train.export", 3 if ask else 2, 2.2 if ask else 1, **export)
-        b.e("tune.checkpoint", "export.checkpoint")
+def chat_with_documents() -> B:
+    b = B(
+        "chat-with-documents",
+        "Chat With My Documents",
+        "pipeline",
+        "A chat assistant that answers from one of your knowledge bases, fully offline with a local model. Open it "
+        "in the player to chat; pick the knowledge base in the Agent block.",
+        tags = ["chat", "agent", "knowledge base"],
+        seed = 41,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Ask me anything about your documents.")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 6)
+    b.e("in.history", "memory.history")
+    b.n(
+        "agent",
+        "llm.agent",
+        2,
+        1,
+        model = CHAT,
+        system = "Answer from the knowledge base and say which document you used. If it does not have the answer, "
+        "say so.",
+        web_search = False,
+    )
+    b.e("in.message", "agent.prompt")
+    b.e("memory.history", "agent.history")
+    b.n("out", "chat.output", 3, 1)
+    b.e("agent.text", "out.reply")
     b.note(
-        "n1",
-        f"Based on the Unsloth notebook {notebook}: {COLAB_NB}{notebook}. Training needs a GPU and stops chat "
-        "models while it runs.",
+        "tip",
+        "Pick a knowledge base in the Agent block, then press Play to chat.",
         0,
-        -0.2,
+        2.4,
         1.8,
-        0.9,
+        0.6,
     )
     return b
 
 
-def text_sft() -> B:
-    return notebook_template(
-        "notebook-text-sft",
-        "Notebook: Llama 3.1 Alpaca fine-tune",
-        "Llama3.1_(8B)-Alpaca.ipynb",
-        "The Llama 3.1 (8B) Alpaca notebook as a flow: LoRA fine-tune on Alpaca, ask the result a question, export to GGUF.",
-        dataset = "unsloth/alpaca-cleaned",
-        tune = {
-            "base_model": "unsloth/Llama-3.1-8B",
-            "max_steps": 60,
-            "learning_rate": 0.0002,
-            "lora_r": 16,
-            "max_seq_length": 2048,
-            "format_type": "alpaca",
-            "batch_size": 2,
-            "gradient_accumulation_steps": 4,
-            "warmup_steps": 5,
-        },
-        ask = "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8",
-        export = {"format": "gguf", "quant": "q4_k_m"},
-        tags = ["sft"],
+def support_bot() -> B:
+    b = B(
+        "support-bot",
+        "Support Bot",
+        "pipeline",
+        "Sorts each message (question, bug report or other), then answers in the matching style. Open it in the "
+        "player to chat.",
+        tags = ["chat", "classify"],
+        seed = 42,
+    ).need("chat")
+    b.n("in", "chat.input", 0, 1, welcome = "Hi! What can I help you with today?")
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["question", "bug report", "other"])
+    b.e("in.message", "kind.text")
+    b.n("memory", "chat.memory", 1, 1.6, turns = 4)
+    b.e("in.history", "memory.history")
+    b.n(
+        "reply",
+        "llm.generate",
+        2,
+        1,
+        model = CHAT,
+        temperature = 0.5,
+        system = "You are a friendly support agent for a software product. The context gives the message's "
+        "category (question, bug report or other) and the conversation so far. For a bug report, thank them and "
+        "ask for steps to reproduce. Keep it short.",
+        prompt = "New message: {{prompt}}",
     )
+    b.e("kind.label", "reply.context")
+    b.e("memory.text", "reply.context")
+    b.e("in.message", "reply.prompt")
+    b.n("out", "chat.output", 3, 1)
+    b.e("reply.text", "out.reply")
+    return b
 
 
-def vision_sft() -> B:
-    return notebook_template(
-        "notebook-vision-sft",
-        "Notebook: Qwen2.5-VL LaTeX OCR fine-tune",
-        "Qwen2.5_VL_(7B)-Vision.ipynb",
-        "The Qwen2.5-VL (7B) vision notebook as a flow: teach the model to write LaTeX from images of equations, then save the adapter.",
-        dataset = "unsloth/LaTeX_OCR",
-        tune = {
-            "base_model": "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
-            "task": "vision",
-            "max_steps": 30,
-            "learning_rate": 0.0002,
-            "lora_r": 16,
-            "max_seq_length": 2048,
-            "batch_size": 2,
-            "gradient_accumulation_steps": 4,
-            "warmup_steps": 5,
-        },
-        export = {"format": "lora"},
-        tags = ["vision"],
+def research_agent() -> B:
+    b = B(
+        "research-agent",
+        "Research Agent",
+        "pipeline",
+        "Give it a question: a local model searches the web, reads what it finds and writes a short report with "
+        "its sources.",
+        tags = ["agent", "web search"],
+        seed = 43,
+    ).need("chat")
+    b.n("question", "input.text", 0, 1, value = "What changed in the latest stable Python release?")
+    b.n(
+        "agent",
+        "llm.agent",
+        1,
+        1,
+        label = "Researcher",
+        model = CHAT,
+        system = "Research the question with web search. Write a short report in plain sentences, then a Sources "
+        "list with the URL of every page you used. Never invent a source.",
+        web_search = True,
+        max_tool_calls = 6,
+        temperature = 0.3,
     )
-
-
-def tts_sft() -> B:
-    return notebook_template(
-        "notebook-tts-sft",
-        "Notebook: Orpheus TTS voice fine-tune",
-        "Orpheus_(3B)-TTS.ipynb",
-        "The Orpheus (3B) TTS notebook as a flow: fine-tune a voice on a speech dataset, then save the adapter.",
-        dataset = "Etherll/kaira",
-        tune = {
-            "base_model": "unsloth/orpheus-3b-0.1-ft",
-            # The notebook trains a 16-bit LoRA.
-            "load_in_4bit": False,
-            "task": "audio",
-            "max_steps": 60,
-            "learning_rate": 0.0002,
-            "lora_r": 64,
-            "lora_alpha": 64,
-            "max_seq_length": 2048,
-            "batch_size": 1,
-            "gradient_accumulation_steps": 4,
-            "warmup_steps": 5,
-        },
-        export = {"format": "lora"},
-        tags = ["audio", "tts"],
+    b.e("question.text", "agent.prompt")
+    b.n("report", "output.result", 2, 1, name = "report")
+    b.e("agent.text", "report.value")
+    b.note(
+        "tip",
+        "Web search is the only tool the Agent gets here; the model itself runs on your machine.",
+        0,
+        2,
+        1.8,
+        0.6,
     )
+    return b
 
 
-def embedding_sft() -> B:
-    return notebook_template(
-        "notebook-embedding",
-        "Notebook: EmbeddingGemma retrieval fine-tune",
-        "EmbeddingGemma_(300M).ipynb",
-        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
-        "retrieval, then export to GGUF.",
-        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
-        # so this uses a 40 MB set of the same question and passage shape.
-        dataset = "sentence-transformers/natural-questions",
-        tune = {
-            "base_model": "unsloth/embeddinggemma-300m",
-            "task": "embedding",
-            "max_steps": 30,
-            "learning_rate": 0.00002,
-            "lora_r": 32,
-            "lora_alpha": 64,
-            "max_seq_length": 1024,
-            "batch_size": 64,
-            "gradient_accumulation_steps": 2,
-            "dataset_slice_end": 19999,
-        },
-        export = {"format": "gguf", "quant": "q4_k_m"},
-        tags = ["embedding"],
+def invoice_extractor() -> B:
+    b = B(
+        "invoice-extractor",
+        "Invoice Extractor",
+        "pipeline",
+        "Pulls the vendor, date, total and line items out of a pasted invoice or receipt as clean JSON.",
+        tags = ["extract", "json"],
+        seed = 44,
+    ).need("chat")
+    b.n(
+        "invoice",
+        "input.text",
+        0,
+        1,
+        value = "ACME Tools Ltd\nInvoice #2041, 3 March 2026\n2 x Claw hammer @ 18.50\n1 x Tape measure @ 7.25\n"
+        "Shipping 4.00\nTotal due: 48.25 GBP",
     )
+    b.n(
+        "extract",
+        "llm.extract",
+        1,
+        1,
+        model = CHAT,
+        instructions = "Amounts are numbers without currency signs. Dates are YYYY-MM-DD.",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "vendor": {"type": "string"},
+                "invoice_number": {"type": "string"},
+                "date": {"type": "string"},
+                "currency": {"type": "string"},
+                "total": {"type": "number"},
+                "line_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "quantity": {"type": "number"},
+                            "unit_price": {"type": "number"},
+                        },
+                        "required": ["description", "quantity", "unit_price"],
+                    },
+                },
+            },
+            "required": ["vendor", "date", "currency", "total", "line_items"],
+        },
+    )
+    b.e("invoice.text", "extract.text")
+    b.n("total", "json.get", 2, 0.5, path = "total")
+    b.e("extract.json", "total.json")
+    b.n("show_total", "output.preview", 3, 0.5)
+    b.e("total.value", "show_total.value")
+    b.n("data", "output.result", 2, 1.5, name = "invoice")
+    b.e("extract.json", "data.value")
+    b.note(
+        "tip",
+        'For a scan or photo, put an Image block and Describe Image ("Copy every line of this invoice") in front '
+        "of Extract.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
+def email_triage() -> B:
+    b = B(
+        "email-triage",
+        "Email Triage",
+        "pipeline",
+        "Sorts an incoming email (refund, bug report or other) and drafts a reply in the right style for each kind.",
+        tags = ["classify", "switch", "email"],
+        seed = 45,
+    ).need("chat")
+    b.n(
+        "email",
+        "input.text",
+        0,
+        1,
+        value = "Hi, I was charged twice for my subscription this month. Can I get one of them refunded? Thanks, Sam",
+    )
+    b.n("kind", "llm.classify", 1, 0.4, model = CHAT, categories = ["refund", "bug report", "other"])
+    b.e("email.text", "kind.text")
+    b.n("route", "logic.switch", 2, 1, cases = ["refund", "bug report"])
+    b.e("email.text", "route.value")
+    b.e("kind.label", "route.key")
+    replies = (
+        (
+            "refund",
+            "case_1",
+            "Apologise, confirm the refund will be checked within two working days, and ask for "
+            "the order number if it is missing.",
+        ),
+        (
+            "bug",
+            "case_2",
+            "Thank them, ask for the steps to reproduce, their app version and a screenshot.",
+        ),
+        ("other", "default", "Answer helpfully, or say who on the team will follow up."),
+    )
+    for row, (name, port, style) in enumerate(replies):
+        b.n(
+            f"reply_{name}",
+            "llm.generate",
+            3,
+            row * 0.9 + 0.1,
+            label = f"Reply: {name}",
+            model = CHAT,
+            temperature = 0.4,
+            max_tokens = 400,
+            system = f"You draft short, friendly support emails. {style} Sign off as the Support Team.",
+            prompt = "Reply to this email:\n\n{{prompt}}",
+        )
+        b.e(f"route.{port}", f"reply_{name}.prompt")
+    b.n("first", "logic.merge", 4, 1)
+    b.e("reply_refund.text", "first.a")
+    b.e("reply_bug.text", "first.b")
+    b.e("reply_other.text", "first.c")
+    b.n("draft", "output.result", 5, 1, name = "draft")
+    b.e("first.value", "draft.value")
+    b.n("label", "output.result", 2, 0.1, name = "category")
+    b.e("kind.label", "label.value")
+    return b
 
 
 def photo_restyle() -> B:
@@ -1919,6 +2014,147 @@ def long_form_writer() -> B:
     return b
 
 
+def notebook_template(
+    id: str,
+    name: str,
+    notebook: str,
+    description: str,
+    *,
+    dataset: str,
+    tune: dict[str, Any],
+    export: Optional[dict[str, Any]],
+    ask: Optional[str] = None,
+    tags: list[str],
+) -> B:
+    """A Unsloth notebook as a flow: Hub dataset -> Fine-tune -> (chat test) -> (export), using the notebook's own defaults."""
+    b = B(id, name, "pipeline", description, tags = ["notebook", "training", *tags], seed = 3407)
+    b.n("data", "data.hf_dataset", 0, 1, repo = dataset, split = "train", subset = "")
+    b.n("tune", "train.finetune", 1, 1, **{"training_type": "lora", **tune})
+    b.e("data.dataset", "tune.dataset")
+    b.n("metrics", "output.preview", 2, 0)
+    b.e("tune.metrics", "metrics.value")
+    if ask:
+        b.n("ask", "input.text", 1, 2.2, value = ask)
+        b.n("test", "train.chat_checkpoint", 2, 1, max_tokens = 300)
+        b.e("tune.checkpoint", "test.checkpoint")
+        b.e("ask.text", "test.prompt")
+        b.n("answer", "output.preview", 3, 1)
+        b.e("test.text", "answer.value")
+    if export:
+        b.n("export", "train.export", 3 if ask else 2, 2.2 if ask else 1, **export)
+        b.e("tune.checkpoint", "export.checkpoint")
+    b.note(
+        "n1",
+        f"Based on the Unsloth notebook {notebook}: {COLAB_NB}{notebook}. Training needs a GPU and stops chat "
+        "models while it runs.",
+        0,
+        -0.2,
+        1.8,
+        0.9,
+    )
+    return b
+
+
+def text_sft() -> B:
+    return notebook_template(
+        "notebook-text-sft",
+        "Notebook: Llama 3.1 Alpaca fine-tune",
+        "Llama3.1_(8B)-Alpaca.ipynb",
+        "The Llama 3.1 (8B) Alpaca notebook as a flow: LoRA fine-tune on Alpaca, ask the result a question, export to GGUF.",
+        dataset = "unsloth/alpaca-cleaned",
+        tune = {
+            "base_model": "unsloth/Llama-3.1-8B",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "format_type": "alpaca",
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        ask = "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8",
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["sft"],
+    )
+
+
+def vision_sft() -> B:
+    return notebook_template(
+        "notebook-vision-sft",
+        "Notebook: Qwen2.5-VL LaTeX OCR fine-tune",
+        "Qwen2.5_VL_(7B)-Vision.ipynb",
+        "The Qwen2.5-VL (7B) vision notebook as a flow: teach the model to write LaTeX from images of equations, then save the adapter.",
+        dataset = "unsloth/LaTeX_OCR",
+        tune = {
+            "base_model": "unsloth/Qwen2.5-VL-7B-Instruct-bnb-4bit",
+            "task": "vision",
+            "max_steps": 30,
+            "learning_rate": 0.0002,
+            "lora_r": 16,
+            "max_seq_length": 2048,
+            "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["vision"],
+    )
+
+
+def tts_sft() -> B:
+    return notebook_template(
+        "notebook-tts-sft",
+        "Notebook: Orpheus TTS voice fine-tune",
+        "Orpheus_(3B)-TTS.ipynb",
+        "The Orpheus (3B) TTS notebook as a flow: fine-tune a voice on a speech dataset, then save the adapter.",
+        dataset = "Etherll/kaira",
+        tune = {
+            "base_model": "unsloth/orpheus-3b-0.1-ft",
+            # The notebook trains a 16-bit LoRA.
+            "load_in_4bit": False,
+            "task": "audio",
+            "max_steps": 60,
+            "learning_rate": 0.0002,
+            "lora_r": 64,
+            "lora_alpha": 64,
+            "max_seq_length": 2048,
+            "batch_size": 1,
+            "gradient_accumulation_steps": 4,
+            "warmup_steps": 5,
+        },
+        export = {"format": "lora"},
+        tags = ["audio", "tts"],
+    )
+
+
+def embedding_sft() -> B:
+    return notebook_template(
+        "notebook-embedding",
+        "Notebook: EmbeddingGemma retrieval fine-tune",
+        "EmbeddingGemma_(300M).ipynb",
+        "The EmbeddingGemma (300M) notebook as a flow: fine-tune an embedding model for question-to-passage "
+        "retrieval, then export to GGUF.",
+        # The notebook streams 10k rows of a 13 GB medical set; Studio's embedding trainer loads whole datasets,
+        # so this uses a 40 MB set of the same question and passage shape.
+        dataset = "sentence-transformers/natural-questions",
+        tune = {
+            "base_model": "unsloth/embeddinggemma-300m",
+            "task": "embedding",
+            "max_steps": 30,
+            "learning_rate": 0.00002,
+            "lora_r": 32,
+            "lora_alpha": 64,
+            "max_seq_length": 1024,
+            "batch_size": 64,
+            "gradient_accumulation_steps": 2,
+            "dataset_slice_end": 19999,
+        },
+        export = {"format": "gguf", "quant": "q4_k_m"},
+        tags = ["embedding"],
+    )
+
+
 def model_arena() -> B:
     b = B(
         "model-arena",
@@ -2064,10 +2300,11 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
-    text_sft,
-    vision_sft,
-    tts_sft,
-    embedding_sft,
+    chat_with_documents,
+    support_bot,
+    research_agent,
+    invoice_extractor,
+    email_triage,
     photo_restyle,
     animate_photo,
     meeting_notes,
@@ -2075,6 +2312,10 @@ BUILDERS = (
     product_listing,
     song_maker,
     long_form_writer,
+    text_sft,
+    vision_sft,
+    tts_sft,
+    embedding_sft,
     model_arena,
 )
 

@@ -19,6 +19,7 @@ const PLAYER_ENTRYPOINTS = new Set([
   "story.next_scene",
   "story.scene_art",
   "world.npc_reply",
+  "chat.output",
 ]);
 
 /** Only what the story or world is built from: a side branch (Fine-tune, Export, Save to Library) must not run. */
@@ -91,6 +92,8 @@ export interface PlayerApi {
       sessionId?: string;
       rev?: number;
       signal?: AbortSignal;
+      /** Run params for the call, e.g. the chat player's message and history. */
+      params?: Record<string, unknown>;
       /** Stream the answer: called with each piece of text as the entry point writes it. */
       onDelta?: (text: string, port?: string) => void;
     },
@@ -184,6 +187,7 @@ export const playerApi: PlayerApi = {
         body: JSON.stringify({
           entry,
           inputs,
+          ...(opts?.params ? { params: opts.params } : {}),
           session_id: opts?.sessionId,
           rev: opts?.rev,
           ...(opts?.onDelta ? { stream: true } : {}),
