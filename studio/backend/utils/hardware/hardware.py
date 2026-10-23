@@ -452,6 +452,9 @@ _GFX_CANDIDATE_ENV = (
     "HSA_OVERRIDE_GFX_VERSION",
 )
 _gfx_candidates_cache: Optional[tuple[tuple, list[str]]] = None
+# Bumped by forced detection and part of the key, so a probe that started before it publishes under a key
+# no later read matches (no lock held across a rocminfo that can take seconds).
+_gfx_detect_epoch = 0
 
 
 def _gfx_candidates_key() -> Optional[tuple]:
@@ -485,6 +488,7 @@ def _gfx_candidates_key() -> Optional[tuple]:
             )
         ),
         topology,
+        _gfx_detect_epoch,
     )
 
 
@@ -1673,9 +1677,10 @@ def _configure_rocm_miopen(torch) -> None:
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS, _gfx_candidates_cache
+    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS, _gfx_candidates_cache, _gfx_detect_epoch
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
-    _gfx_candidates_cache = None  # a forced detection asks the ROCm CLIs again
+    _gfx_detect_epoch += 1  # a forced detection asks the ROCm CLIs again, and an older probe cannot publish
+    _gfx_candidates_cache = None
     try:
         from . import amd as _amd
         _amd.invalidate_hip_id_map()  # and re-reads the HIP id map

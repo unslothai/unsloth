@@ -227,6 +227,31 @@ def test_partial_output_from_a_failing_probe_is_used_not_kept(rocm_cli, monkeypa
     assert _count(rocm_cli, "rocminfo") == 2
 
 
+def test_a_probe_running_across_a_forced_detection_cannot_republish(rocm_cli, monkeypatch):
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    real_probe = hw._probe_linux_amd_gfx_candidates
+
+    def slow_probe():
+        entered.set()
+        release.wait(10)
+        return ["gfx1030"], True
+
+    monkeypatch.setattr(hw, "_probe_linux_amd_gfx_candidates", slow_probe)
+    reader = threading.Thread(target = hw._linux_amd_gfx_candidates)
+    reader.start()
+    assert entered.wait(10)
+    # What forced detection does to this cache, while the old probe is still running.
+    monkeypatch.setattr(hw, "_gfx_detect_epoch", hw._gfx_detect_epoch + 1)
+    monkeypatch.setattr(hw, "_gfx_candidates_cache", None)
+    release.set()
+    reader.join(10)
+    monkeypatch.setattr(hw, "_probe_linux_amd_gfx_candidates", real_probe)
+    assert hw._linux_amd_gfx_candidates() == ["gfx1100"]
+    assert _count(rocm_cli, "rocminfo") == 1
+
+
 def test_the_cache_switch_turns_it_off(rocm_cli, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "0")
     for _ in range(3):
