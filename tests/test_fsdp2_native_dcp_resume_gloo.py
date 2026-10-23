@@ -566,8 +566,14 @@ def _case_unstepped(native, dist, rank, tmp):
     dist.barrier()
     res = {"saved_has_state": _skip(model) in opt.state}
     # The uninterrupted run's next step is what a resume has to reproduce.
-    arms = {"ref": {"has_state": False, "loss": _step(model, opt, 3, rank).item(),
-                    "after": _full_model(model), "optim": _full_optim(model, opt)}}
+    arms = {
+        "ref": {
+            "has_state": False,
+            "loss": _step(model, opt, 3, rank).item(),
+            "after": _full_model(model),
+            "optim": _full_optim(model, opt),
+        }
+    }
     for arm, src in (("old", "optimizer.pt"), ("new", "optimizer_dcp")):
         m, o = _new(2)
         native.native_load_model_checkpoint(m, ckpt)
