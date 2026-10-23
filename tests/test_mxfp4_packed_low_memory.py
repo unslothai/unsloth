@@ -62,14 +62,24 @@ def _headroom(mib, device):
         torch.cuda.empty_cache()
 
 
-def _weight(N, K, device, seed = 0):
+def _weight(
+    N,
+    K,
+    device,
+    seed = 0,
+):
     g = torch.Generator(device = device).manual_seed(seed)
     packed = torch.randint(0, 256, (N, K // 2), dtype = torch.uint8, device = device, generator = g)
     scale = torch.randint(118, 128, (N, K // 32), dtype = torch.uint8, device = device, generator = g)
     return packed, scale
 
 
-def _single_shot(x, packed, scale, bias = None):
+def _single_shot(
+    x,
+    packed,
+    scale,
+    bias = None,
+):
     # What #1899 runs below sm_80: the whole 16-bit weight, one cuBLAS call.
     weight = mcl.dequantize_mxfp4_packed(packed, scale, x.dtype)
     return torch.nn.functional.linear(x, weight, bias)
@@ -171,7 +181,9 @@ def test_compiled_forward_is_bounded_without_graph_breaks(sm75):
         torch._dynamo.reset()
         counters.clear()
         compiled = torch.compile(module, fullgraph = True)
-        torch.testing.assert_close(compiled(x), want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item())
+        torch.testing.assert_close(
+            compiled(x), want, rtol = 2e-3, atol = 2e-3 * want.abs().max().item()
+        )
         assert sum(counters["graph_break"].values()) == 0
         with _headroom(64, device):
             got = compiled(x)
@@ -186,7 +198,12 @@ def _fake_oom_dequant(monkeypatch, fail_rows):
     real = mcl.dequantize_mxfp4_packed
     pending, seen = list(fail_rows), []
 
-    def fake(packed, scale, dtype = torch.bfloat16, out = None):
+    def fake(
+        packed,
+        scale,
+        dtype = torch.bfloat16,
+        out = None,
+    ):
         seen.append(packed.shape[0])
         if pending and packed.shape[0] == pending[0]:
             pending.pop(0)
