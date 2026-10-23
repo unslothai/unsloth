@@ -473,6 +473,8 @@ def _gfx_candidates_key() -> Optional[tuple]:
         static_gen,
         binaries,
         tuple(os.environ.get(name) for name in _GFX_CANDIDATE_ENV),
+        # Per-device overrides (HSA_OVERRIDE_GFX_VERSION_<n>) change what rocminfo reports too.
+        tuple(sorted((k, v) for k, v in os.environ.items() if k.startswith("HSA_OVERRIDE_GFX_VERSION_"))),
         _linux_amd_pci_topology(),
     )
 
@@ -519,7 +521,10 @@ def _linux_amd_gfx_candidates() -> list[str]:
 
 
 def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
-    """(targets, settled). ``settled`` is False when a CLI that exists timed out, could not start or failed."""
+    """(targets, settled). ``settled`` is False when a CLI that exists timed out, could not start or failed,
+    even if the next one answered."""
+    import shutil
+
     settled = True
     for command, pattern in (
         (["rocminfo"], r"\bgfx[0-9a-f]+\b"),
@@ -536,6 +541,9 @@ def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
                 check = False,
             )
         except FileNotFoundError:
+            # ENOENT also comes from an executable that exists but cannot start (a missing interpreter).
+            if shutil.which(command[0]) is not None:
+                settled = False
             continue
         except (OSError, subprocess.TimeoutExpired) as e:
             logger.debug("%s could not report a gfx target: %s", command[0], e)
@@ -543,7 +551,8 @@ def _probe_linux_amd_gfx_candidates() -> tuple[list[str], bool]:
             continue
         found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
         if found:
-            return sorted(found), True
+            # An answer from the fallback after rocminfo failed is used, not kept: rocminfo is asked again.
+            return sorted(found), settled
         # A CLI that ran and failed (no /dev/kfd access yet, driver still loading) said nothing about the silicon.
         if result.returncode != 0:
             settled = False
@@ -1652,8 +1661,9 @@ def _configure_rocm_miopen(torch) -> None:
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS
+    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS, _gfx_candidates_cache
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
+    _gfx_candidates_cache = None  # a forced detection asks the ROCm CLIs again
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()

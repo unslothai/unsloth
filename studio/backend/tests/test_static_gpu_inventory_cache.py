@@ -135,6 +135,65 @@ def test_a_failing_probe_is_not_kept(rocm_cli, monkeypatch):
     assert _count(rocm_cli, "rocminfo") == 2
 
 
+def test_a_fallback_answer_after_rocminfo_failed_is_not_kept(rocm_cli, monkeypatch):
+    def rocminfo_hangs(argv, *a, **k):
+        rocm_cli.append(list(argv))
+        if argv[0] == "rocminfo":
+            raise subprocess.TimeoutExpired(argv, 10)
+        return _Result("ASIC: gfx1100\n")
+
+    monkeypatch.setattr(subprocess, "run", rocminfo_hangs)
+    assert hw._linux_amd_gfx_candidates() == ["gfx1100"]
+    assert hw._linux_amd_gfx_candidates() == ["gfx1100"]
+    assert _count(rocm_cli, "rocminfo") == 2
+
+
+def test_a_present_but_unstartable_rocminfo_is_not_kept(rocm_cli, monkeypatch):
+    def no_interpreter(argv, *a, **k):
+        rocm_cli.append(list(argv))
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(subprocess, "run", no_interpreter)
+    hw._linux_amd_gfx_candidates()
+    hw._linux_amd_gfx_candidates()
+    assert _count(rocm_cli, "rocminfo") == 2
+
+
+def test_an_absent_rocm_userspace_is_kept(rocm_cli, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name, *a, **k: None)
+
+    def absent(argv, *a, **k):
+        rocm_cli.append(list(argv))
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(subprocess, "run", absent)
+    hw._linux_amd_gfx_candidates()
+    hw._linux_amd_gfx_candidates()
+    assert _count(rocm_cli, "rocminfo") == 1
+
+
+def test_a_numbered_per_device_override_reads_the_gfx_target_again(rocm_cli, monkeypatch):
+    hw._linux_amd_gfx_candidates()
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION_1", "11.0.0")
+    hw._linux_amd_gfx_candidates()
+    assert _count(rocm_cli, "rocminfo") == 2
+
+
+def test_forced_hardware_detection_reads_the_gfx_target_again(rocm_cli, monkeypatch):
+    hw._linux_amd_gfx_candidates()
+    # detect_hardware() rebinds the module's detection globals: restore them after the test.
+    for name in list(vars(hw)):
+        if name.lstrip("_").isupper():
+            monkeypatch.setattr(hw, name, getattr(hw, name))
+    monkeypatch.setattr(hw, "_has_torch", lambda: False)
+    try:
+        hw.detect_hardware()
+    except Exception:
+        pass
+    hw._linux_amd_gfx_candidates()
+    assert _count(rocm_cli, "rocminfo") >= 2
+
+
 def test_the_cache_switch_turns_it_off(rocm_cli, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "0")
     for _ in range(3):
