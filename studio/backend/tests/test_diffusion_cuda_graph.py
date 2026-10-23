@@ -138,6 +138,7 @@ def _build_stub_torch():
     def _graph(
         graph,
         pool = None,
+        stream = None,
         capture_error_mode = "global",
     ):
         records["graphs"].append((graph, pool))

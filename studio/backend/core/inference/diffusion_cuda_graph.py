@@ -560,9 +560,14 @@ def capture_in_progress() -> bool:
 CAPTURE_MODE = "thread_local"
 
 
-def _graph_with_flush(graph: Any, pool: Any = None):
-    """``torch.cuda.graph`` (synchronize, ``empty_cache``, record) in ``CAPTURE_MODE``."""
-    return _torch().cuda.graph(graph, pool = pool, capture_error_mode = CAPTURE_MODE)
+def _graph_with_flush(
+    graph: Any,
+    pool: Any = None,
+    stream: Any = None,
+):
+    """``torch.cuda.graph`` (synchronize, ``empty_cache``, record) in ``CAPTURE_MODE``; ``stream`` None is torch's
+    default capture stream."""
+    return _torch().cuda.graph(graph, pool = pool, stream = stream, capture_error_mode = CAPTURE_MODE)
 
 
 @contextlib.contextmanager
