@@ -915,8 +915,7 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
         b_bucket = _rocm_flash_batch_bucket(batch)
         joint = kv == seq  # self / joint attention: one symbol, so no guard
         kv_bucket = None if joint else _rocm_flash_bucket(kv)
-        # The query length guards only on the edges where the known route changes (or an untimed bucket starts),
-        # so a new prompt length in a neighbouring bucket with the same verdict reuses this graph.
+        # Guard only where the route changes, so neighbouring same-verdict buckets reuse this graph.
         segments = _rocm_flash_traced_segments(
             raw_device, dtype_name, h, d, geometries, kv_bucket, b_bucket
         )
@@ -992,8 +991,7 @@ def _rocm_flash_traced_reason(
 
 # Traced query lengths are routed by segments up to this many tokens; longer ones guard on their own bucket.
 _ROCM_FLASH_SEGMENT_LIMIT = 1 << 22
-# Admission keys with no stored verdict, as of their first stored-only lookup (a timing fills ROCM_FLASH_ADMISSIONS,
-# which is read first; a verdict another process stores later is seen by the per-bucket route, which reads the store).
+# Admission keys with no stored verdict at first stored-only lookup (later verdicts reach the per-bucket route).
 _ROCM_FLASH_STORED_MISSES: set = set()
 _ROCM_FLASH_SLOWER = "slower or inexact at this size"
 
@@ -2074,8 +2072,7 @@ _ROCM_FLASH_HOOKS_ATTR = "_unsloth_rocm_flash_hooks"
 # On the pipe: every DiT the hooks went on, whatever attribute holds it (a MiniMax-H3 view hooks transformer_ref, which
 # _attention_dits does not enumerate). Reset, report and the memory guard iterate this.
 _ROCM_FLASH_DITS_ATTR = "_unsloth_rocm_flash_dits"
-# On a hooked DiT: its live CFG replicas (weak, so a dropped or rebuilt replica is not kept alive), whose per-run state
-# begin_attention_run resets with the source's.
+# On a hooked DiT: its live CFG replicas (weak refs), reset by begin_attention_run with the source.
 _ROCM_FLASH_REPLICAS_ATTR = "_unsloth_rocm_flash_replicas"
 
 
@@ -2144,10 +2141,8 @@ def _hook_rocm_flash_dit(dit: Any) -> None:
     if getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None):
         return
 
-    # Also while Dynamo traces a compiled DiT (it replays these threading.local writes), so a traced call sees the
-    # gate and runs native.
-    # The hook reads the module it runs on (``dit``), never a captured reference: a closure over the DiT, stored in the
-    # DiT's own hook dict, is a cycle that keeps a dropped CFG replica's weights on its card until a cyclic collection.
+    # Dynamo replays these threading.local writes, so traced calls see the gate too.
+    # Use the hook's ``dit`` arg, never a closure: that cycle pins a dropped CFG replica's weights on its card.
     def pre(dit, _args) -> None:
         outer = getattr(_ROCM_FLASH_LOCAL, "stack", None)
         if outer is None:
