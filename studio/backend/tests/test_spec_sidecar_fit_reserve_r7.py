@@ -457,7 +457,8 @@ def test_the_graph_follows_the_targets_output_layer_not_the_drafters(tmp_path, _
 
 
 def test_a_row_split_places_whole_draft_layers_like_a_layer_split(tmp_path, _discrete):
-    """CUDA / ROCm register no split buffer type, so --split-mode row places whole layers."""
+    """--split-mode row assigns blocks to devices like a layer split (llama-model.cpp); only
+    the matrix buffers differ, and CUDA / ROCm refuse the load with no split buffer type."""
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     backend._arch_gate_survivors = lambda binary = None: []
     _three_block_drafter(backend)

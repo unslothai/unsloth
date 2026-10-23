@@ -34790,8 +34790,8 @@ class LlamaCppBackend:
                                     _cum = list(
                                         itertools.accumulate(w / sum(_weights) for w in _weights)
                                     )
-                                    # CUDA / ROCm register no split buffer type, so
-                                    # "row" places whole layers like "layer" does.
+                                    # "row" assigns blocks to devices like "layer" does; CUDA /
+                                    # ROCm register no split buffer type and refuse the load.
                                     _row_split = _extra_args_split_mode(run_cmd, env) == "tensor"
                                     if _layers > 0 and not _row_split:
                                         # llama.cpp's own layer split: block il goes to the
