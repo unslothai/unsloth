@@ -7006,6 +7006,29 @@ def _sidecar_child_ctx(
             ctx = None
     if ctx and ctx > 0:
         return ctx
+    # Without -c, --kv-unified-per-slot N sizes the pool to n_parallel * N unless -c 0 asked
+    # for the full window (tools/server/server.cpp); a later --fit-ctx clears that again
+    # (common/arg.cpp). The env twins apply first, then the flags in order.
+    source_env = os.environ if env is None else env
+    tokens = [str(a) for a in args] if args else []
+    full_window = str(source_env.get("LLAMA_ARG_CTX_SIZE", "")).strip() == "0"
+    if str(source_env.get("LLAMA_ARG_FIT_CTX", "")).strip():
+        full_window = False
+    per_slot = source_env.get("LLAMA_ARG_KV_UNIFIED_PER_SLOT")
+    for i, raw in enumerate(tokens):
+        flag = _flag_name(raw)
+        if flag not in ("-c", "--ctx-size", "-fitc", "--fit-ctx", "--kv-unified-per-slot"):
+            continue
+        _, eq, inline = raw.partition("=")
+        value = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")
+        if flag == "--kv-unified-per-slot":
+            per_slot = value
+        elif flag in ("-fitc", "--fit-ctx"):
+            full_window = False
+        elif str(value).strip() == "0":
+            full_window = True
+    if _is_positive_int(per_slot) and not full_window:
+        return int(str(per_slot).strip()) * max(1, int(n_parallel or 1))
     # Native length unread: an enabled fitter still keeps llama.cpp's 4096-token minimum.
     bound = int(native_ctx or 0) or _LLAMA_FIT_MIN_CTX
     if not kv_unified:

@@ -179,3 +179,22 @@ def test_an_embedding_server_is_probed_through_embeddings(monkeypatch, embedding
     with patch.object(_lc.httpx, "post", return_value = resp, create = True) as post:
         assert backend._metal_compute_failure_confirmed() is True
     assert post.call_args.args[0].endswith(endpoint)
+
+
+@pytest.mark.parametrize(
+    "args, env, want",
+    [
+        # No -c: the pool is n_parallel * per-slot limit (tools/server/server.cpp).
+        (["--kv-unified-per-slot", "2048"], {}, 4 * 2048),
+        (["--kv-unified-per-slot=65536"], {}, 4 * 65536),
+        ([], {"LLAMA_ARG_KV_UNIFIED_PER_SLOT": "2048"}, 4 * 2048),
+        # An explicit -c wins.
+        (["-c", "16384", "--kv-unified-per-slot", "2048"], {}, 16384),
+        # -c 0 asks for the full window; a later --fit-ctx clears that.
+        (["-c", "0", "--kv-unified-per-slot", "2048"], {}, 131072),
+        (["-c", "0", "--fit-ctx", "8192", "--kv-unified-per-slot", "2048"], {}, 4 * 2048),
+        ([], {}, 131072),
+    ],
+)
+def test_the_per_slot_limit_sizes_the_priced_context(args, env, want):
+    assert _lc._sidecar_child_ctx(args, env, 131072, 4, True) == want
