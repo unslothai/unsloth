@@ -368,3 +368,50 @@ def test_a_directory_holding_one_gguf_is_served_by_llama_cpp(cluster, tmp_path) 
     hf_dir.mkdir()
     (hf_dir / "model.safetensors").write_bytes(b"x" * 8)
     assert cluster._serve_commands("single", 1, str(hf_dir))[0].startswith("vllm serve")
+
+
+def _kv_gguf(path: Path) -> Path:
+    """A GGUF whose header declares 4 layers x 2 KV heads x (64 + 64) dims."""
+    import struct
+
+    def kv(key: str, value_type: int, payload: bytes) -> bytes:
+        name = key.encode()
+        return struct.pack("<Q", len(name)) + name + struct.pack("<I", value_type) + payload
+
+    entries = [
+        kv("general.architecture", 8, struct.pack("<Q", 5) + b"llama"),
+        kv("llama.block_count", 4, struct.pack("<I", 4)),
+        kv("llama.attention.head_count_kv", 4, struct.pack("<I", 2)),
+        kv("llama.attention.key_length", 4, struct.pack("<I", 64)),
+        kv("llama.attention.value_length", 4, struct.pack("<I", 64)),
+    ]
+    header = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, len(entries))
+    path.write_bytes(header + b"".join(entries))
+    return path
+
+
+def test_kv_per_user_is_read_through_a_gguf_directory_or_cached_repo(
+    cluster, tmp_path, monkeypatch
+) -> None:
+    expected = 4 * 2 * (64 + 64) * 2.0 * 1024 / 2**30
+    model_dir = tmp_path / "gguf dir"
+    model_dir.mkdir()
+    gguf = _kv_gguf(model_dir / "m-Q4_K_M.gguf")
+    (model_dir / "README.md").write_text("card")
+    assert cluster.serving_kv_gib_per_user(str(gguf), 1024)["gib"] == pytest.approx(expected)
+    assert cluster.serving_kv_gib_per_user(str(model_dir), 1024)["gib"] == pytest.approx(expected)
+    # The same GGUF reached as a cached HF repo id.
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--org--m-GGUF" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    _kv_gguf(snapshot / "m-Q4_K_M.gguf")
+    (cache / "models--org--m-GGUF" / "refs").mkdir()
+    (cache / "models--org--m-GGUF" / "refs" / "main").write_text("abc")
+    monkeypatch.setattr(cluster, "hf_hub_cache", lambda: str(cache))
+    assert cluster.model_size_report("org/m-GGUF").get("group", "").startswith("gguf:")
+    assert cluster.serving_kv_gib_per_user("org/m-GGUF", 1024)["gib"] == pytest.approx(expected)
+    # A safetensors directory still has no KV estimate.
+    hf_dir = tmp_path / "hf"
+    hf_dir.mkdir()
+    (hf_dir / "model.safetensors").write_bytes(b"x" * 8)
+    assert cluster.serving_kv_gib_per_user(str(hf_dir), 1024)["gib"] is None
