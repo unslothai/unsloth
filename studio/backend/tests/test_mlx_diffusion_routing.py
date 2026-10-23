@@ -523,9 +523,11 @@ def test_unload_forwards_the_account_scope_to_the_fallback(rig):
     seen = []
     real = rig.diffusers.unload
 
-    def _scoped_unload(*, expected_account = None):
+    unscoped = object()
+
+    def _scoped_unload(*, expected_account = unscoped):
         seen.append(expected_account)
-        return real(expected_account = expected_account)
+        return real() if expected_account is unscoped else real(expected_account = expected_account)
 
     rig.diffusers.unload = _scoped_unload
     rig.engine.unload(expected_account = "owner")
