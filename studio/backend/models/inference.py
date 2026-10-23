@@ -4612,9 +4612,28 @@ class AnthropicMessagesResponse(BaseModel):
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
 
 
+class MediaUnloadRequest(BaseModel):
+    """Optional body of POST /images/unload and /video/unload."""
+
+    expected_load_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Unload only the load started with this load_token, and only while it is in "
+        "flight or resident. A load that ended or was replaced is left alone (outcome superseded); "
+        "one that has not started yet is refused when it arrives (outcome cancelled). Omit to "
+        "unload whatever is loaded.",
+    )
+
+
 class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
+    load_token: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Opaque id the client picks for this load; POST /images/unload with "
+        "expected_load_id set to it unloads this load only, and cancels it if it has not started yet.",
+    )
     model_path: str = Field(..., description = "Diffusion repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)
@@ -6937,6 +6956,12 @@ class VideoJobDeleteResponse(BaseModel):
 class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
+    load_token: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Opaque id the client picks for this load; POST /video/unload with "
+        "expected_load_id set to it unloads this load only, and cancels it if it has not started yet.",
+    )
     model_path: str = Field(..., description = "Video repo id or local path")
     display_repo_id: Optional[str] = Field(None, description = "Logical Hub id of a local snapshot")
     _blank_display_id = field_validator("display_repo_id")(lambda v: (v or "").strip() or None)

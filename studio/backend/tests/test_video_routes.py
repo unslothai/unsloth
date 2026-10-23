@@ -1781,3 +1781,79 @@ def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_ca
     )
     assert resp.status_code == 400
     assert seen == {"ids": [7], "allow_ranking": False}
+
+
+@pytest.fixture
+def token_client(client, monkeypatch):
+    """The client, with begin_load and unload moving the load epoch as the real backend's do."""
+    from core.inference import media_load_ids
+
+    media_load_ids._reset_for_tests()
+    backend = video_module.get_video_backend()
+    begin, unload = backend.begin_load, backend.unload
+    backend.unloads = 0
+
+    def begin_load(model_path, **kwargs):
+        backend._load_token += 1
+        return begin(model_path, **kwargs)
+
+    def counted_unload(**kwargs):
+        backend.unloads += 1
+        backend._load_token += 1
+        return unload()
+
+    monkeypatch.setattr(backend, "begin_load", begin_load)
+    monkeypatch.setattr(backend, "unload", counted_unload)
+    yield client, backend
+    media_load_ids._reset_for_tests()
+
+
+def _load_with(client, token):
+    body = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"}
+    return client.post(
+        "/api/inference/video/load", json = {**body, **({"load_token": token} if token else {})}
+    )
+
+
+def test_an_unload_naming_the_load_token_unloads_that_load(token_client):
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200
+    assert (resp.json()["outcome"], resp.json()["unloaded"], resp.json()["loaded"]) == (
+        "unloaded",
+        True,
+        False,
+    )
+    assert backend.unloads == 1
+
+
+@pytest.mark.parametrize("newer", [None, "t2"])
+def test_an_unload_naming_a_stale_token_leaves_the_newer_load_alone(token_client, newer):
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    # The same model again, from the UI (no token) or another client.
+    assert _load_with(client, newer).status_code == 200
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200
+    assert resp.json() == {"unloaded": False, "outcome": "superseded"}
+    assert backend.unloads == 0 and backend.loaded
+
+
+def test_an_unload_naming_a_load_not_started_yet_refuses_that_load(token_client):
+    client, backend = token_client
+    resp = client.post("/api/inference/video/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "cancelled"}
+    refused = _load_with(client, "t1")
+    assert refused.status_code == 409
+    assert "cancelled" in refused.json()["detail"]
+    assert backend.unloads == 0 and not backend.loaded
+    assert _load_with(client, None).status_code == 200 and backend.loaded
+
+
+def test_an_unload_without_a_body_unloads_whatever_is_loaded(token_client):
+    client, backend = token_client
+    assert _load_with(client, "t1").status_code == 200
+    resp = client.post("/api/inference/video/unload")
+    assert resp.status_code == 200 and "outcome" not in resp.json()
+    assert backend.unloads == 1 and not backend.loaded

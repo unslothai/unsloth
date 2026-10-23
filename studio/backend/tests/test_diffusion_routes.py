@@ -3314,3 +3314,66 @@ def test_a_retired_flux3_full_copy_reaches_the_backend_as_its_base(client):
     assert ("load", "black-forest-labs/flux-3-image-klein") in seen
     validated = [entry[2:] for entry in seen if entry[0] == "validate"]
     assert validated and set(validated) == {(None, "pipeline")}, seen
+
+
+@pytest.fixture
+def token_client(client, monkeypatch):
+    """The client, with begin_load publishing a state and moving the load epoch as the real engines do."""
+    from core.inference import media_load_ids
+
+    media_load_ids._reset_for_tests()
+    backend = diffusion_module.get_diffusion_backend()
+    begin, unload = backend.begin_load, backend.unload
+    backend._load_token, backend._state, backend.unloads = 0, None, 0
+
+    def begin_load(model_path, **kwargs):
+        backend._load_token += 1
+        backend._state = object()
+        return begin(model_path, **kwargs)
+
+    def counted_unload(**kwargs):
+        backend.unloads += 1
+        backend._load_token += 1
+        backend._state = None
+        return unload()
+
+    monkeypatch.setattr(backend, "begin_load", begin_load)
+    monkeypatch.setattr(backend, "unload", counted_unload)
+    yield client, backend
+    media_load_ids._reset_for_tests()
+
+
+def _load_with_token(client, token):
+    body = {
+        "model_path": "unsloth/Z-Image-Turbo-GGUF",
+        "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+    }
+    return _post_load(client, **body, **({"load_token": token} if token else {}))
+
+
+def test_an_image_unload_naming_the_load_token_unloads_that_load(token_client):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.status_code == 200
+    assert (resp.json()["outcome"], resp.json()["loaded"]) == ("unloaded", False)
+    assert backend.unloads == 1
+
+
+@pytest.mark.parametrize("newer", [None, "t2"])
+def test_an_image_unload_naming_a_stale_token_leaves_the_newer_load_alone(token_client, newer):
+    client, backend = token_client
+    assert _load_with_token(client, "t1").status_code == 200
+    assert _load_with_token(client, newer).status_code == 200
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "superseded"}
+    assert backend.unloads == 0 and backend.loaded
+
+
+def test_an_image_unload_naming_a_load_not_started_yet_refuses_that_load(token_client):
+    client, backend = token_client
+    resp = client.post("/api/inference/images/unload", json = {"expected_load_id": "t1"})
+    assert resp.json() == {"unloaded": False, "outcome": "cancelled"}
+    refused = _load_with_token(client, "t1")
+    assert refused.status_code == 409 and "cancelled" in refused.json()["detail"]
+    assert backend.unloads == 0 and not backend.loaded
