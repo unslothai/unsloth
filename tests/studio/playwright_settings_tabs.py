@@ -566,8 +566,11 @@ def run_shortcut_recorder(page) -> None:
 
     click_forced(chord, timeout = 15000)
     box.wait_for(state = "visible", timeout = 5000)
+    # Hold the box before the key: Backspace closes the recorder in the same render (#14896), so
+    # resolving the locator afterwards waits 30 s for an input that is already gone.
+    recorder = box.element_handle()
     page.keyboard.press("Backspace")
-    until(page, "el => el && !el.isConnected", arg = box.element_handle())
+    until(page, "el => el && !el.isConnected", arg = recorder)
     state["cleared"] = {"shown": chord.inner_text(), "stored": page.evaluate(stored_js)}
 
     click_forced(page.get_by_role("button", name = "Restore defaults"), timeout = 15000)
