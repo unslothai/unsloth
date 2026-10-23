@@ -190,6 +190,41 @@ def test_an_approved_script_imports_chat_portions_of_host_namespace_packages(tmp
 
 
 @_POSIX
+def test_an_approved_script_imports_chat_portions_of_host_pkgutil_namespaces(tmp_path, monkeypatch):
+    """A pkgutil.extend_path namespace (backports, ...) the host provides reaches the chat's portion; a regular one does not."""
+    workdir = _planted_workdir(tmp_path)
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    host = tmp_path / "host"
+    extend = "__path__ = __import__('pkgutil').extend_path(__path__, __name__)\n"
+    for root, owner in ((host, "host"), (packages, "chat")):
+        for pkg, init in (("chatpkgutil", extend), ("chatregular", "")):
+            (root / pkg).mkdir(parents = True)
+            (root / pkg / "__init__.py").write_text(init, encoding = "utf-8")
+            (root / pkg / f"{owner}_mod.py").write_text(f"V = '{owner}'\n", encoding = "utf-8")
+            (root / pkg / "shared.py").write_text(f"V = '{owner}-shared'\n", encoding = "utf-8")
+    marker = tmp_path / "plugin-ran.txt"
+    _plant_chat_plugin(packages, marker)
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    code = (
+        f"import sys; sys.path.insert(0, {str(host)!r})\n"
+        "import importlib.metadata as m, pkgutil\n"
+        "import chatpkgutil.host_mod, chatpkgutil.chat_mod, chatpkgutil.shared, chatregular.host_mod\n"
+        "print('PKG', chatpkgutil.host_mod.V, chatpkgutil.chat_mod.V, chatpkgutil.shared.V,"
+        " sorted(i.name for i in pkgutil.iter_modules(chatpkgutil.__path__)))\n"
+        "try:\n    import chatregular.chat_mod\n    print('REGULAR leaked')\n"
+        "except ModuleNotFoundError:\n    print('REGULAR closed')\n"
+        "print('SCAN', sorted(e.name for e in m.entry_points(group = 'pytest11') if e.name.startswith('chat')))\n"
+        f"open({str(tmp_path / 'host.txt')!r}, 'w').close()\n"
+    )
+    out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
+    # The host's own portion still wins for a name both provide.
+    assert "PKG host chat host-shared ['chat_mod', 'host_mod', 'shared']" in out, out
+    assert "REGULAR closed" in out, out
+    assert "SCAN []" in out, out
+    assert not marker.exists(), out
+
+
+@_POSIX
 def test_approved_calls_import_chat_helpers_without_shadowing_the_stdlib(tmp_path, monkeypatch):
     workdir = _planted_workdir(tmp_path)
     (workdir / "helper.py").write_text("VALUE = 'from-chat-folder'\n", encoding = "utf-8")

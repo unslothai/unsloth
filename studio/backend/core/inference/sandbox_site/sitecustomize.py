@@ -316,6 +316,7 @@ except Exception:  # noqa: BLE001 - a broken shim must never break user code
 # (importlib.metadata.version("pkg")), never for the name-less scan that plugin discovery uses.
 # A PEP 420 namespace package (google, azure, ...) recomputes its __path__ from sys.path alone, so a
 # submodule the host's portion lacks is looked up in the folder's portion of that namespace, again last.
+# A pkgutil- or pkg_resources-style namespace (backports, ...) gets that one portion directory appended.
 class _HostPackagesFinder:
     _skip = frozenset(("sitecustomize", "usercustomize"))
 
@@ -335,18 +336,40 @@ class _HostPackagesFinder:
                 return None
             return importlib.machinery.PathFinder.find_spec(name, [self._folder])
         parent, _, _ = name.rpartition(".")
-        spec = getattr(sys.modules.get(parent), "__spec__", None)
+        module = sys.modules.get(parent)
+        spec = getattr(module, "__spec__", None)
+        if spec is None or spec.submodule_search_locations is None:
+            return None
         # Only namespace packages: a regular package's submodules come from its own __path__ alone.
-        if (
-            spec is None
-            or spec.submodule_search_locations is None
-            or spec.origin not in (None, "namespace")
-        ):
+        pkgutil_style = spec.origin not in (None, "namespace")
+        if pkgutil_style and not self._extends_path(spec.origin):
             return None
         portion = os.path.join(self._folder, *parent.split("."))
         if not os.path.isdir(portion):
             return None
-        return importlib.machinery.PathFinder.find_spec(name, [portion])
+        found = importlib.machinery.PathFinder.find_spec(name, [portion])
+        if found is not None and pkgutil_style:
+            # What extend_path / declare_namespace would have added had the folder been on sys.path:
+            # this one portion directory, so later lookups and pkgutil.iter_modules see it too.
+            search = getattr(module, "__path__", None)
+            if isinstance(search, list) and portion not in search:
+                search.append(portion)
+        return found
+
+    _extends = {}
+
+    @classmethod
+    def _extends_path(cls, origin):
+        # A pkgutil-style (extend_path) or pkg_resources-style (declare_namespace) namespace package
+        # collects its portions by scanning sys.path while its __init__ runs, so it never sees this folder.
+        if origin not in cls._extends:
+            try:
+                with open(origin, "rb") as f:
+                    text = f.read()
+                cls._extends[origin] = b"extend_path" in text or b"declare_namespace" in text
+            except Exception:  # noqa: BLE001 - an unreadable __init__ is treated as a regular package
+                cls._extends[origin] = False
+        return cls._extends[origin]
 
     def find_distributions(self, context = None):
         name = getattr(context, "name", None)
