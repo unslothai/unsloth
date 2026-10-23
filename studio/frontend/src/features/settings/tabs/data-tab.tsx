@@ -1043,7 +1043,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
               <DropdownMenuTrigger asChild={true}>
                 {/* Fixed width so switching actions never resizes the row. */}
                 <Button
-                  variant="outline"
+                  variant="picker"
                   size="sm"
                   disabled={count === 0}
                   className="w-44 justify-between"

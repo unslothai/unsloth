@@ -16,10 +16,12 @@ export const buttonVariants = cva(
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary/80",
         dark: "bg-foreground text-background hover:bg-foreground/85 dark:bg-foreground dark:text-background",
-        // Filled, not bordered: a border is reserved for dropdowns and fields, so a menu
-        // trigger ending in a chevron (a value picker) keeps the select trigger's look.
+        // Filled, not bordered: a border is reserved for fields and value pickers (`picker`).
         outline:
-          "bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:border-border aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:bg-background aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:hover:bg-accent/50 dark:aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:border-transparent dark:aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:aria-[haspopup=menu]:has-[>svg:last-child:not(:first-child)]:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+          "bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",
+        // A menu trigger that shows the current value, dressed as a select trigger.
+        picker:
+          "border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:text-foreground",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
