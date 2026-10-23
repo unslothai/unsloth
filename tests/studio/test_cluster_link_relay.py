@@ -1202,7 +1202,7 @@ def test_the_relay_waits_out_a_native_to_loopback_restart():
     assert relay_mod.OPEN_RPC_REPLY_TIMEOUT_S > agent_mod.RPC_READY_TIMEOUT_S
 
 
-@pytest.mark.skipif(not _LINUX, reason = "owner lookup is Linux-only")
+@pytest.mark.skipif(not _LINUX, reason = "the /proc owner lookup is Linux-only")
 def test_the_relay_serves_only_local_clients_of_this_user(make_link, monkeypatch):
     # Every local account can reach a 127.0.0.1 port, and the relay proxies with this user's cluster
     # credentials: a client owned by another uid gets nothing, and the worker never hears of it.
@@ -1216,7 +1216,7 @@ def test_the_relay_serves_only_local_clients_of_this_user(make_link, monkeypatch
     assert link.target.connections == 1
 
 
-@pytest.mark.skipif(not _LINUX, reason = "owner lookup is Linux-only")
+@pytest.mark.skipif(not _LINUX, reason = "the /proc owner lookup is Linux-only")
 def test_the_owner_lookup_matches_the_exact_tuple_of_real_connections():
     # Two live connections share the client port but not the client address: each is attributed to
     # its own row, and the 127.0.0.2 one is still found (its exact tuple, not the 127.0.0.1 one).
