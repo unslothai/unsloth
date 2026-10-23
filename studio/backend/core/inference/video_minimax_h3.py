@@ -1813,6 +1813,9 @@ class MiniMaxH3NativeRuntime:
     fit_inputs: Any = None
     # Free VRAM now (bytes or ``{device: bytes}``), read per launch for the explicit ``--max-vram`` budget.
     vram_free_probe: Optional[Callable[[], Any]] = None
+    # Bytes the user's VRAM Budget keeps free on the render card (the largest card's when unpinned), 0 at the default,
+    # None unread: what a "--max-vram -1" launch must spare on top of sd.cpp's own free reading.
+    vram_reserve_probe: Optional[Callable[[], Optional[int]]] = None
 
 
 # 0 / false / off: every render on a fresh one-shot sd-cli.

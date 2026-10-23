@@ -591,6 +591,21 @@ def _group_tensors(group: Any) -> list:
     return out
 
 
+def _prefetch_budget_bytes(device: Any) -> int:
+    """Bytes of encoder groups the prefetcher may hold on ``device`` ahead of compute: an eighth of free VRAM less the
+    user's VRAM Budget reserve (raw at the default), clamped to [128, 384] MiB."""
+    try:
+        import torch
+
+        from .diffusion_memory import user_budget_reserve_bytes
+
+        free, total = torch.cuda.mem_get_info(device)
+        free = max(0, int(free) - user_budget_reserve_bytes(device, total))
+        return max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, free // 8))
+    except Exception:  # noqa: BLE001
+        return _PREFETCH_MIN_BYTES
+
+
 class _EncoderPrefetcher:
     """Copies a memory-mapped encoder's offload groups ahead of its forward, in the previous forward's order, on a
     worker thread through a pinned ring (diffusers pins each group on the calling thread). Off-order groups and worker
@@ -765,11 +780,7 @@ class _EncoderPrefetcher:
         )
         if not self.order:
             return  # first forward: synchronous copies, and it records the order
-        try:
-            free, _total = torch.cuda.mem_get_info(self.device)
-            self.budget = max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, int(free) // 8))
-        except Exception:  # noqa: BLE001
-            self.budget = _PREFETCH_MIN_BYTES
+        self.budget = _prefetch_budget_bytes(self.device)
         self._order_after_compute()
         self.worker = threading.Thread(
             target = self._run, args = (list(self.order),), daemon = True, name = "unsloth-encoder-prefetch"

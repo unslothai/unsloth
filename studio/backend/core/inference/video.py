@@ -1842,8 +1842,10 @@ def _h3_budgeted_launch_flags(
 
     out = list(flags)
     # Never replace a UMA pinned-weight reserve (-17.05): it would hand sd.cpp the memory those weights take.
-    if not explicit_vram_budget_enabled() or not max_vram_is_placeholder(max_vram_value(out)):
+    if not max_vram_is_placeholder(max_vram_value(out)):
         return out
+    if not explicit_vram_budget_enabled():
+        return _h3_spare_user_reserve(runtime, out)
     probe = getattr(runtime, "vram_free_probe", None)
     try:
         free = probe() if probe is not None else None
@@ -1869,10 +1871,14 @@ def _h3_budgeted_launch_flags(
     if not budget:
         if cap is not None and not known_small:
             out = with_max_vram_budget(out, cap)
+        else:
+            # "-1" is sd.cpp's RAW free reading: under a lowered VRAM Budget it must spare the reserve too, and a
+            # card already (nearly) inside that reserve is refused, not handed to sd.cpp's raw reading.
+            out = _h3_spare_user_reserve(runtime, out, free = free if known_small else None)
         logger.info(
             "video.h3_native_vram_budget: free VRAM unreadable or too small (%s); %s",
             free,
-            f"--max-vram {max_vram_value(out)}" if cap is not None else "keeping --max-vram -1",
+            f"--max-vram {max_vram_value(out)}",
         )
         return out
     out = with_max_vram_budget(out, budget)
@@ -1881,6 +1887,54 @@ def _h3_budgeted_launch_flags(
         max_vram_value(out),
         free,
         f", capped by retry budget {cap}" if cap is not None else "",
+    )
+    return out
+
+
+def _h3_spare_user_reserve(
+    runtime: Any,
+    flags: "list[str]",
+    *,
+    free: Any = None,
+) -> list[str]:
+    """``flags`` with the ``--max-vram -1`` placeholder turned into ``-(1 + reserve GiB)`` under a lowered VRAM Budget,
+    so sd.cpp's own free-VRAM reading spares the user's reserve on top of its 1 GiB (unchanged at the default, off
+    CUDA, or when the reserve is unread). ``free`` is a known-small budget-adjusted reading: at or below the 1 GiB sd.cpp
+    spares itself, its reading minus the spare leaves no graph budget and it would disable graph splitting (place the
+    whole graph, into the reserve), so that launch is refused."""
+    from .sd_cpp_args import GRAPH_CUT_VRAM_FLAGS, max_vram_is_placeholder, max_vram_value
+
+    from .video_minimax_h3 import H3NativeMemoryRefusal
+
+    if not max_vram_is_placeholder(max_vram_value(flags)):
+        return list(flags)
+    probe = getattr(runtime, "vram_reserve_probe", None)
+    try:
+        reserve = probe() if probe is not None else None
+    except Exception:  # noqa: BLE001 -- an unreadable reserve keeps sd.cpp's own reading
+        reserve = None
+    if not reserve or int(reserve) <= 0:
+        return list(flags)
+    spare_gib = float(-float(GRAPH_CUT_VRAM_FLAGS[1]))
+    readings = free.values() if isinstance(free, dict) else [free]
+    if any(
+        value is not None and int(value) <= int(spare_gib * (1 << 30)) for value in readings
+    ) or isinstance(free, dict):
+        shown = min(int(v) for v in readings if v is not None) / float(1 << 30)
+        raise H3NativeMemoryRefusal(
+            f"MiniMax-H3 has about {max(0.0, shown):.1f} GiB of VRAM left inside the VRAM Budget on the render card, "
+            "too little for the graph-cut render. Free VRAM on that card, raise the VRAM Budget, or lower the "
+            "resolution or duration."
+        )
+    # Rounded UP to 0.01 GiB, so the spare never undercuts the reserve.
+    spare_gib += -(-int(reserve) * 100 // (1 << 30)) / 100.0
+    out = list(flags)
+    index = out.index("--max-vram") + 1
+    out[index] = f"-{spare_gib:.2f}"
+    logger.info(
+        "video.h3_native_vram_budget: --max-vram %s (sd.cpp's free reading less the VRAM Budget reserve %s)",
+        out[index],
+        reserve,
     )
     return out
 
@@ -2515,12 +2569,8 @@ def _h3_planned_denoiser_bytes(
 def _user_reserve_bytes(device: Any, total_bytes: Optional[int]) -> int:
     """What the user's VRAM Budget keeps free on ``device`` (total ``total_bytes``), in bytes: 0 at the default and on
     Metal / CPU, where the setting does not apply (as ``_device_user_budget_reserve_mib``)."""
-    kind = str(getattr(device, "type", device) or "").split(":")[0]
-    if kind in ("cpu", "mps") or not total_bytes:
-        return 0
-    from .diffusion_memory import _user_budget_reserve_mib
-
-    return _user_budget_reserve_mib(int(total_bytes) >> 20) << 20
+    from .diffusion_memory import user_budget_reserve_bytes
+    return user_budget_reserve_bytes(device, total_bytes)
 
 
 def _planned_free_less_user_reserve_mib(memory: Any) -> Optional[int]:
@@ -2611,6 +2661,40 @@ def _h3_card_free_bytes(
     if single_card_only and _h3_visible_card_count(device) != 1:
         return None
     return _h3_card_memory_bytes(device, ordinal)[0]
+
+
+def _h3_card_reserve_bytes(
+    device: Optional[str],
+    ordinal: Optional[int],
+    *,
+    single_card_only: bool = False,
+) -> Optional[int]:
+    """Bytes the user's VRAM Budget keeps free on the H3 render card: 0 at the default (no reading) and off CUDA, None
+    unread. ``single_card_only`` (unpinned): sd.cpp picks the card itself, so on a multi-card box the largest card's
+    reserve, which covers whichever it picks."""
+    if device != "cuda":
+        return 0
+    from .diffusion_memory import user_budget_reserve_share
+
+    if user_budget_reserve_share() <= 0:
+        return 0
+    try:
+        from utils.hardware import get_visible_gpu_utilization, gpu_query
+
+        with gpu_query.fresh_reads():
+            devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
+        want = 0 if ordinal is None else int(ordinal)
+        totals = [
+            int(float(entry["vram_total_gb"]) * 1024**3)
+            for entry in devices
+            if entry.get("vram_total_gb") is not None
+            and ((single_card_only and len(devices) != 1) or entry.get("visible_ordinal") == want)
+        ]
+    except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
+        return None
+    if not totals:
+        return None
+    return max(_user_reserve_bytes("cuda", total) for total in totals)
 
 
 def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
@@ -5677,6 +5761,16 @@ class VideoBackend:
             vram_free_probe = (
                 functools.partial(
                     _h3_card_free_bytes,
+                    native_device,
+                    native_ordinal if native_device_name else None,
+                    single_card_only = not native_device_name,
+                )
+                if native_device != "cpu"
+                else None
+            ),
+            vram_reserve_probe = (
+                functools.partial(
+                    _h3_card_reserve_bytes,
                     native_device,
                     native_ordinal if native_device_name else None,
                     single_card_only = not native_device_name,

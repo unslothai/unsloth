@@ -1275,6 +1275,31 @@ def _user_budget_reserve_mib(base: Optional[int]) -> int:
     return int(base * (1.0 - fraction))
 
 
+def user_budget_reserve_share() -> float:
+    """The share of each card the user's VRAM Budget keeps free: ``1 - fraction`` below the default, else 0.0 (as
+    :func:`_user_budget_reserve_mib`). For a child process that reads its own card's total."""
+    try:
+        from utils.vram_budget_settings import VRAM_FRACTION_DEFAULT, get_vram_budget_fraction
+        fraction = float(get_vram_budget_fraction())
+    except Exception:  # noqa: BLE001 - settings are a convenience; a load must never fail on them
+        return 0.0
+    return 1.0 - fraction if fraction < VRAM_FRACTION_DEFAULT else 0.0
+
+
+def user_budget_reserve_bytes(device: Any, total_bytes: Optional[int]) -> int:
+    """What the user's VRAM Budget keeps free on ``device`` (``total_bytes`` total), in bytes: 0 at the default, on
+    Metal / CPU and for an unread total. Every runtime workspace sized from a live free reading (VAE tiles, tile
+    batches, untiled decodes, prefetch windows, probes) subtracts it, so Studio's own allocations stay inside the
+    budget the planner admitted the load with. Never raises."""
+    kind = str(getattr(device, "type", device) or "").split(":")[0]
+    if kind in ("cpu", "mps") or not total_bytes:
+        return 0
+    try:
+        return _user_budget_reserve_mib(int(total_bytes) >> 20) << 20
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _device_user_budget_reserve_mib(memory: DeviceMemory, base: Optional[int]) -> int:
     """:func:`_user_budget_reserve_mib` for ``memory``, 0 where the LLM path ignores the setting too: Apple Metal sizes
     from its own unified fraction (the slider is hidden on macOS) and a CPU-only host has no GPU for it to act on."""
