@@ -88,6 +88,7 @@ import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import { LineBox } from "@/components/ui/line-box";
 
 const DOCS_URL = UNSLOTH_START_DOCS_URL;
 const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
@@ -371,14 +372,15 @@ function CopyableCode({
 
   return (
     <div className="relative min-w-0">
-      <code
+      <LineBox
+        as="code"
         className={cn(
           "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
       >
         {value}
-      </code>
+      </LineBox>
       <button
         type="button"
         onClick={onCopy}
