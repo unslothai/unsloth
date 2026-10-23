@@ -3432,8 +3432,9 @@ fi
 # No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
 [ -z "$_SETUP_UV_PATH_OLD" ] || [ "$USE_UV" = true ] || ! command -v uv &>/dev/null || USE_UV=true
 # Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the OS store
-# decides instead, where there is one. A download that failed while online lands here too.
-if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}${_SETUP_UV_PATH_OLD}" ] && [ -z "${UV_SYSTEM_CERTS:-}" ] \
+# decides instead, where there is one (UV_NATIVE_TLS too: uv before 0.11 reads only that).
+# A download that failed while online lands here too; UV_SYSTEM_CERTS=0 opts out.
+if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}${_SETUP_UV_PATH_OLD}" ] && [ "${UV_SYSTEM_CERTS:-1}" != 0 ] \
    && command -v mktemp >/dev/null 2>&1; then
     _spu_file=$(mktemp 2>/dev/null) || _spu_file=""
     _spu_ver=""
@@ -3445,7 +3446,7 @@ if [ "$USE_UV" = true ] && [ -n "${_SETUP_UV_TOO_OLD:-}${_SETUP_UV_PATH_OLD}" ] 
         "uv "*)
             if ! _setup_uv_version_at_least "$_spu_ver" "$_SETUP_UV_MIN_VERSION" \
                && { [ "$(uname -s)" = Darwin ] || [ -r /etc/ssl/certs/ca-certificates.crt ] || [ -r /etc/pki/tls/certs/ca-bundle.crt ]; }; then
-                export UV_SYSTEM_CERTS=1 UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
+                export UV_SYSTEM_CERTS="${UV_SYSTEM_CERTS:-1}" UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
             fi ;;
     esac
     unset _spu_file _spu_ver

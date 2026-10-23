@@ -4240,10 +4240,11 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv || [ "$_STUDIO_UV_STAL
         exit 1
     fi
     # Kept a uv below the floor: its bundled roots still trust the compromised emSign CA, so the OS
-    # store decides instead, where there is one. A download that failed while online lands here too.
-    if [ "$_uv_refreshed" = false ] && [ -z "${UV_SYSTEM_CERTS:-}" ] \
+    # store decides instead, where there is one (UV_NATIVE_TLS too: uv before 0.11 reads only that).
+    # A download that failed while online lands here too; UV_SYSTEM_CERTS=0 opts out.
+    if [ "$_uv_refreshed" = false ] && [ "${UV_SYSTEM_CERTS:-1}" != 0 ] \
        && { [ "$(uname -s)" = Darwin ] || [ -r /etc/ssl/certs/ca-certificates.crt ] || [ -r /etc/pki/tls/certs/ca-bundle.crt ]; }; then
-        export UV_SYSTEM_CERTS=1 UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
+        export UV_SYSTEM_CERTS="${UV_SYSTEM_CERTS:-1}" UV_NATIVE_TLS="${UV_NATIVE_TLS:-1}"
     fi
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
