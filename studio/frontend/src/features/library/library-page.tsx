@@ -181,7 +181,7 @@ function LoadingGrid() {
   return (
     <div className="mt-6 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
       {Array.from({ length: 10 }, (_, index) => (
-        <Skeleton key={index} className="aspect-square rounded-[calc(var(--radius-xl)-2px)]" />
+        <Skeleton key={index} className="aspect-square rounded-2xl" />
       ))}
     </div>
   );
@@ -910,7 +910,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     if (empty && folderId) {
       return (
-        <div className="mt-6 flex min-h-[calc(420px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-5 rounded-xl border border-dashed border-border bg-muted/50">
+        <div className="mt-6 flex min-h-[calc(420px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-5 rounded-2xl border border-dashed border-border bg-muted/50">
           <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.5} className="size-8" />
           {uploadButton}
           <p className="text-sm text-muted-foreground">{t("library.empty.dropHere")}</p>
@@ -1057,7 +1057,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
         {dragging && (
           <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center bg-background/70 backdrop-blur-sm">
-            <div className="flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-muted-foreground px-16 py-12">
+            <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-muted-foreground px-16 py-12">
               <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.5} className="size-8" />
               <p className="font-medium text-lg">
                 {currentFolder
@@ -1093,7 +1093,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                       selectAll();
                       selectionBar.current?.focus();
                     }}
-                    className="rounded-sm underline decoration-muted-foreground underline-offset-[3px] outline-none transition-colors hover:decoration-current focus-visible:ring-2 focus-visible:ring-ring"
+                    className="rounded-full underline decoration-muted-foreground underline-offset-[3px] outline-none transition-colors hover:decoration-current focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {t("library.selection.selectAll")}
                   </button>
