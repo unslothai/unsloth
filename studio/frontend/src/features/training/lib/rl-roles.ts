@@ -85,11 +85,15 @@ export function resolveRlMapping(
     if (Object.values(out).includes(role)) {
       continue;
     }
+    // Aliases in priority order, as the backend resolves them: an Alpaca `instruction`
+    // beats an earlier `input` column.
     const column = AUTO_NAMES[role]
-      .map((name) =>
+      .map((alias) =>
         columns.find(
           (c) =>
-            c.toLowerCase() === name && !(c in out) && mapping[c] !== RL_IGNORE,
+            c.toLowerCase() === alias &&
+            !(c in out) &&
+            mapping[c] !== RL_IGNORE,
         ),
       )
       .find((c) => c !== undefined);

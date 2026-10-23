@@ -172,3 +172,13 @@ test("a column set to Ignore is never auto-mapped back to its role", () => {
   });
   assert.equal(syncRlMapping("grpo", columns, mapping).system, RL_IGNORE);
 });
+
+test("auto-mapping prefers the higher-priority alias over column order", () => {
+  const mapping = resolveRlMapping(
+    "dpo",
+    ["input", "instruction", "chosen", "rejected"],
+    {},
+  );
+  assert.equal(mapping.instruction, "prompt");
+  assert.equal(mapping.input, undefined);
+});
