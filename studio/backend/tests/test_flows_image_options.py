@@ -437,3 +437,15 @@ def test_generate_refuses_a_mask_with_reference_images_before_loading():
     with pytest.raises(FlowNodeError, match = "mask or reference"):
         asyncio.run(image_nodes.generate(ctx))
     assert called == []
+
+
+def test_a_mask_without_a_source_fails_before_the_model_loads(monkeypatch):
+    loads = []
+
+    async def ensure(ctx, kind, choice):
+        loads.append(kind)
+
+    monkeypatch.setattr(_common, "ensure_model", ensure)
+    with pytest.raises(FlowNodeError, match = "needs a source image"):
+        asyncio.run(_common.generate_image(FakeCtx(), model = None, prompt = "a fox", mask = _media("m")))
+    assert loads == []

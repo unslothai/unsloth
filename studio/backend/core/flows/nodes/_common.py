@@ -728,11 +728,12 @@ async def generate_image(
     control: Optional[dict] = None,
     options: Optional[dict] = None,
 ) -> list[dict]:
-    await ensure_model(ctx, "image", model)
+    # Wiring errors first, so a cold run never downloads or loads a model just to report them.
     if not (prompt or "").strip():
         raise FlowNodeError("The image prompt is empty")
     if mask is not None and init_image is None:
         raise FlowNodeError("Inpainting needs a source image: connect one to Init image")
+    await ensure_model(ctx, "image", model)
     body: dict[str, Any] = {"prompt": prompt, "width": int(width), "height": int(height)}
     if negative_prompt:
         body["negative_prompt"] = negative_prompt
