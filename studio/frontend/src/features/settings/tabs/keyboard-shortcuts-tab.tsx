@@ -285,7 +285,7 @@ export function KeyboardShortcutsTab() {
           onBlur={stopRecording}
           placeholder={t("settings.keyboardShortcuts.recording")}
           aria-label={`${t("settings.keyboardShortcuts.edit")}: ${label}`}
-          className="h-9 w-[calc(13.5rem*var(--ui-space-scale,1))] rounded-xl border border-control-accent bg-background px-3 text-sm text-foreground caret-transparent outline-none ring-[1.5px] ring-control-accent placeholder:text-muted-foreground"
+          className="h-8 w-[calc(12.5rem*var(--ui-space-scale,1))] rounded-xl border border-control-accent bg-background px-3 text-ui-13p5 text-foreground caret-transparent outline-none ring-[1.5px] ring-control-accent placeholder:text-muted-foreground"
         />
       );
     }
@@ -303,7 +303,7 @@ export function KeyboardShortcutsTab() {
         aria-label={`${t("settings.keyboardShortcuts.edit")}: ${label}, ${text}`}
         className={cn(
           // ChatGPT's hover: a short pill with room either side, never narrower than it is tall.
-          "inline-flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(34px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-[calc(13px*var(--ui-space-scale,1))] text-sm tabular-nums text-muted-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          "inline-flex h-[calc(30px*var(--ui-space-scale,1))] min-w-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full px-[calc(11px*var(--ui-space-scale,1))] text-ui-13p5 tabular-nums text-muted-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           // A built-in key keeps working with the switch off; only assigned chords dim.
           parsed && !enabled && "opacity-50",
         )}
@@ -384,17 +384,19 @@ export function KeyboardShortcutsTab() {
       <div
         key={def.id}
         data-settings-label={label}
-        className="group/row flex flex-col gap-1.5 py-3"
+        className="group/row flex flex-col gap-1 py-2.5"
       >
-        <div className="flex min-h-9 items-center gap-3">
+        <div className="flex min-h-8 items-center gap-2.5">
           <Switch
+            // A touch under the default switch, sized with the row's smaller text.
+            className="origin-left scale-[0.88]"
             checked={enabled}
             onCheckedChange={(on) => setEnabled(def.id, on)}
             aria-label={label}
           />
           <Tooltip>
             <TooltipTrigger asChild={true}>
-              <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+              <span className="min-w-0 flex-1 truncate text-ui-13p5 text-foreground">
                 {label}
               </span>
             </TooltipTrigger>
@@ -412,12 +414,12 @@ export function KeyboardShortcutsTab() {
                     setJustRecorded(null);
                     resetAction(def.id);
                   }}
-                  className="inline-flex size-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
+                  className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[color,background-color,opacity] hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100"
                 >
                   <HugeiconsIcon
                     icon={UndoIcon}
                     strokeWidth={1.75}
-                    className="size-4"
+                    className="size-3.5"
                   />
                 </button>
               </TooltipTrigger>
@@ -459,7 +461,7 @@ export function KeyboardShortcutsTab() {
         >
           {t("settings.keyboardShortcuts.title")}
         </h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-ui-13p5 text-muted-foreground">
           {t("settings.keyboardShortcuts.intro")}
         </p>
       </header>
@@ -468,7 +470,7 @@ export function KeyboardShortcutsTab() {
         <HugeiconsIcon
           icon={Search01Icon}
           strokeWidth={2}
-          className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
         />
         <Input
           ref={searchRef}
@@ -489,7 +491,7 @@ export function KeyboardShortcutsTab() {
               : "settings.keyboardShortcuts.searchPlaceholder",
           )}
           className={cn(
-            "h-11 rounded-full pl-11 pr-12",
+            "h-10 rounded-full pl-10 pr-12 text-ui-13p5",
             byKeystroke && "font-medium tabular-nums",
           )}
           aria-label={t(
@@ -510,14 +512,14 @@ export function KeyboardShortcutsTab() {
               )}
               onClick={toggleByKeystroke}
               className={cn(
-                "absolute right-2 top-1/2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "absolute right-2 top-1/2 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 byKeystroke && "bg-muted text-foreground",
               )}
             >
               <HugeiconsIcon
                 icon={EnergyRectangleIcon}
                 strokeWidth={1.75}
-                className="size-4"
+                className="size-3.5"
               />
             </button>
           </TooltipTrigger>
@@ -544,7 +546,7 @@ export function KeyboardShortcutsTab() {
             data-settings-label={t(group.labelKey)}
             className="flex flex-col"
           >
-            <h2 className="settings-heading mb-1 text-sm font-medium">
+            <h2 className="settings-heading mb-1 text-ui-13 font-medium">
               {t(group.labelKey)}
             </h2>
             <div className="divide-y divide-border/60">
@@ -560,6 +562,7 @@ export function KeyboardShortcutsTab() {
         <Button
           type="button"
           variant="dark"
+          size="sm"
           className="pointer-events-auto shadow-md disabled:bg-muted-foreground disabled:opacity-100"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {
