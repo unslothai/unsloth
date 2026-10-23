@@ -12343,7 +12343,9 @@ class LlamaCppBackend:
             # numeric ids, which the child would resolve against the whole host.
             from utils.hardware import mig
 
-            order = sorted(int(r["index"]) for r in mig_rows)
+            # Snapshot (CUDA enumeration) order, which is the order the picker listed and the
+            # positional split follows; a reordered numeric mask (2,0) is not ascending.
+            order = [int(r["index"]) for r in mig_rows]
             if not order:
                 return None
             env["CUDA_VISIBLE_DEVICES"] = mig.visibility_for(mig_rows, order)

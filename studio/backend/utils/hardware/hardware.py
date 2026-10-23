@@ -7173,6 +7173,19 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
     return stale
 
 
+def current_gpu_index_kind(is_vulkan: bool = False) -> str:
+    """The namespace GPU ids are written in on this host right now: ``vulkan`` (compact ggml
+    ordinals), ``cuda_device`` (R570+ MIG: one CUDA device per GPU instance) or ``physical``."""
+    if is_vulkan:
+        return "vulkan"
+    try:
+        if _get_parent_visible_gpu_spec().get("index_kind") == "cuda_device":
+            return "cuda_device"
+    except Exception:
+        pass
+    return "physical"
+
+
 def _mig_backend_visible_gpu_info(raw_mask) -> Optional[Dict[str, Any]]:
     """The backend-visible inventory on an R570+ MIG host: one row per CUDA device (GPU instance or
     whole card) with its own slice memory, or None when this is not one."""

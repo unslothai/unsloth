@@ -705,13 +705,68 @@ def test_diffusion_gemma_launch_uses_the_pinned_token():
     assert "gpu = self._mig_pinned_gpu_token(gpu)" in inspect.getsource(lc)
 
 
-def test_optional_engines_refuse_mig_instances_instead_of_a_numeric_mask():
-    from core.inference import managed_engine
+def test_optional_engines_pin_the_instance_uuid_and_budget_its_slice(monkeypatch):
+    from core.inference import engine_adapters, engine_install, managed_engine
 
-    request = types.SimpleNamespace(gpu_ids = [0], gguf_variant = None, model_path = "org/model")
+    monkeypatch.setattr(engine_install, "gpu_platform", lambda: "cuda")
+    checked = []
+
+    def support_reason(engine, gpu_id, **kwargs):
+        checked.append(gpu_id)
+        return "stop here"
+
+    monkeypatch.setattr(managed_engine, "support_reason", support_reason)
+    request = types.SimpleNamespace(gpu_ids = [1], gguf_variant = None, model_path = "org/model")
     with host(f"{B_UUID},{A}"):
-        with pytest.raises(ValueError, match = "MIG"):
+        with pytest.raises(ValueError, match = "GPU 1: stop here"):
             managed_engine.validate_load("vllm", request)
+        # CUDA device 1 is instance A on physical card 0: the driver check reads that card.
+        assert checked == [0]
+        assert managed_engine._child_cuda_mask([1]) == A
+        assert managed_engine._child_cuda_mask([1, 0]) == f"{A},{B_UUID}"
+        # The budget is the selected slice's memory, not nvidia-smi --id on a physical card.
+        assert engine_adapters._nvidia_memory_rows([1]) == [(40192.0, 36000.0)]
+
+
+def test_a_reordered_numeric_mask_keeps_its_order_for_a_manual_split():
+    with host("2,0"):
+        assert [g[0] for g in B._get_gpu_memory()] == [0, 2]
+        env = dict(os.environ)
+        assert B._pin_visible_gpu_order_for_split(env) == (2, 0)
+        assert env["CUDA_VISIBLE_DEVICES"] == f"{C},{A}"
+
+
+def test_an_r570_mig_payload_without_its_cuda_enumeration_is_a_failed_refresh():
+    with host() as probe:
+        assert len(B._get_gpu_memory()) == 3
+        probe["cuda_devices"] = None
+        _age_cache(mig._FRESH_SHARE_S + 1)
+        rows = mig.visible_devices(fresh = True)
+        assert [r["uuid"] for r in rows] == [A, B_UUID, C]
+        assert all(r["memory_total_mib"] == "0" for r in rows)
+        assert next(iter(mig._cache.values()))[2] == "failed"
+
+
+def test_saved_picks_carry_the_cuda_device_namespace():
+    from utils.openai_auto_switch_settings import stored_gpu_index_kind
+
+    assert stored_gpu_index_kind({"gpu_index_kind": "cuda_device"}) == "cuda_device"
+    with host():
+        assert hw.current_gpu_index_kind() == "cuda_device"
+        assert hw.current_gpu_index_kind(is_vulkan = True) == "vulkan"
+    with host(driver = "565.57.01"):
+        assert hw.current_gpu_index_kind() == "physical"
+
+
+def test_a_physical_pin_saved_before_is_not_reused_on_a_mig_host(monkeypatch):
+    import asyncio
+
+    from routes import inference
+
+    monkeypatch.setattr(B, "_is_vulkan_backend", staticmethod(lambda *a: False))
+    with host():
+        assert asyncio.run(inference._override_gpu_ids_still_resolve([1], "physical")) is False
+        assert asyncio.run(inference._override_gpu_ids_still_resolve([1], "cuda_device")) is True
 
 
 def test_a_retired_probe_does_not_replace_the_worker_map():

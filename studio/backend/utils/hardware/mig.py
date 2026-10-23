@@ -167,8 +167,13 @@ def _probe():
         if result.returncode != 0:
             return None, False
         payload = json.loads(result.stdout)
-        # Only NVML answers the MIG question; the CUDA fallback means NVML itself failed.
+        # Only NVML answers the MIG question; the CUDA fallback means NVML itself failed. An R570+
+        # MIG host whose strict CUDA enumeration failed (no ``cuda_devices``) has not answered either.
         answered = isinstance(payload, dict) and payload.get("source") == "nvml"
+        if answered and not isinstance(payload.get("cuda_devices"), list):
+            match = re.match(r"(\d+)\.", str(payload.get("driver_version") or ""))
+            if match and int(match[1]) >= 570 and any(r.get("mig") for r in payload.get("devices") or []):
+                answered = False
         return rows_from_payload(payload), answered
     except Exception:
         return None, False
@@ -219,6 +224,19 @@ def mask_for(gpu_ids):
     else, so it reads only the map the parent published and never starts a probe."""
     by_id = _inherited_uuids()
     return None if by_id is None else _pin(by_id, gpu_ids)
+
+
+def rows_for(gpu_ids):
+    """The current MIG rows for these CUDA device ids, in order, or None when this is not an R570+
+    MIG host. Raises ValueError for an id outside the visible set."""
+    rows = visible_devices(fresh=True)
+    if rows is None:
+        return None
+    by_id = {int(r["index"]): r for r in rows}
+    ids = [int(i) for i in gpu_ids]
+    if any(i not in by_id for i in ids):
+        raise ValueError(f"GPU IDs {ids} are outside the visible CUDA device set {list(by_id)}")
+    return [by_id[i] for i in ids]
 
 
 def visibility_for(rows, gpu_ids):

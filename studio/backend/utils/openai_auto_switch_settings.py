@@ -395,7 +395,8 @@ MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = MAX_CHAT_TEMPLATE_BYTES
 MAX_GPU_ID = 1024
 
 # Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals under a Vulkan build and physical device ids elsewhere, so the namespace travels with the ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts, legacy rule included: an absent kind is "physical".
-VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
+# cuda_device: R570+ MIG, where CUDA enumerates one device per GPU instance and ids name those.
+VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan", "cuda_device"})
 LEGACY_GPU_INDEX_KIND = "physical"
 
 
