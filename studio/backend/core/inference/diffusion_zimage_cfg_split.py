@@ -126,15 +126,38 @@ def _live_graph_wrapper(denoiser: Any) -> bool:
     )
 
 
+def _graph_handle_live(handle: Any) -> bool:
+    """A pipe graph handle that can still replay: enabled, and not poisoned unless a per-block fallback remains."""
+    if not getattr(handle, "enabled", True):
+        return False
+    if not getattr(handle, "poisoned", False):
+        return True
+    if getattr(handle, "fallback", None) is not None:
+        return True
+    fallback = getattr(handle, "fallback_handle", None)
+    return fallback is not None and _graph_handle_live(fallback)
+
+
 def _graphs_engaged(pipe: Any, denoiser: Any) -> bool:
     """Whether ``denoiser`` runs compiled code or replays CUDA graphs now, the only case a split saves anything."""
-    if getattr(pipe, "_unsloth_cuda_graphs", None):
-        return True
+    try:
+        from .diffusion_bg_compile import eager_forced
+
+        # A render recording for a pending background compile bypasses compiled calls and graphs alike.
+        if eager_forced():
+            return False
+    except Exception:  # noqa: BLE001 - unknown: read the denoiser
+        pass
     try:
         from .diffusion_cfg_batch import compiled_denoiser
     except Exception:  # noqa: BLE001 - unknown: keep the split
         return True
     try:
+        # A capture that failed for good leaves its poisoned handle in the tuple: it replays nothing.
+        if any(
+            _graph_handle_live(h) for h in tuple(getattr(pipe, "_unsloth_cuda_graphs", None) or ())
+        ):
+            return True
         if _live_graph_wrapper(denoiser):
             return True
         # A compile that failed at its first forward left this load eager (the guard cleared the compiled blocks but
@@ -208,6 +231,42 @@ def _empty_cache() -> None:
         pass
 
 
+def _router_declines_now() -> bool:
+    """A CFG-parallel router runs no pair under a background compile's eager or capture gate."""
+    try:
+        from .diffusion_multigpu import _background_compile_call
+        return bool(_background_compile_call())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _static_skip_state(slots: dict) -> Optional[tuple]:
+    skip = slots.get("_unsloth_static_skip")
+    if skip is None or not hasattr(skip, "ordinal"):
+        return None
+    counters = getattr(skip, "counters", None)
+    stats = getattr(skip, "stats", None)
+    return (
+        skip,
+        skip.ordinal,
+        dict(counters) if isinstance(counters, dict) else None,
+        dict(stats) if isinstance(stats, dict) else None,
+    )
+
+
+def _restore_static_skip(slots: dict, state: Optional[tuple]) -> None:
+    if state is None:
+        return
+    skip, ordinal, counters, stats = state
+    if slots.get("_unsloth_static_skip") is not skip:
+        return
+    skip.ordinal = ordinal
+    if counters is not None:
+        skip.counters = counters
+    if stats is not None:
+        skip.stats = stats
+
+
 def _make_call(orig_call: Any) -> Any:
     def __call__(self, *args, **kwargs):
         slots = getattr(self, "__dict__", {})
@@ -223,16 +282,24 @@ def _make_call(orig_call: Any) -> Any:
                 stats["batched"] += 1
             return orig_call(self, *args, **kwargs)
         router = slots.get("_unsloth_cfg_router")
-        routed = router is not None and slots.get("forward") is router
+        routed = (
+            router is not None
+            and slots.get("forward") is router
+            and getattr(router, "disabled_reason", None) is None
+            and not _router_declines_now()
+        )
         # A CFG-parallel router needs the halves even eager: it cannot pair one batched call.
         if slots.get(_EAGER_ATTR) and not slots.get(_OOM_ATTR) and not routed:
             # Eager: one batched call is faster; two calls at half the activations only when it does not fit.
+            skip_state = _static_skip_state(slots)
             try:
                 return orig_call(self, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001 - reraised unless an OOM
                 if not _is_oom(exc):
                     raise
                 _drop_tracebacks(exc)
+                # The failed call consumed a static-skip ordinal; the halves must land under this step's keys.
+                _restore_static_skip(slots, skip_state)
             # Outside the handler, so the failed call's frames are gone before the split runs.
             self.__dict__[_OOM_ATTR] = True
             _empty_cache()
