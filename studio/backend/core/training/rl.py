@@ -183,8 +183,9 @@ def _as_messages(value: Any, role: str) -> list[dict]:
         from utils.datasets.chat_templates import _sharegpt_tool_turns
         value, _ = _sharegpt_tool_turns(
             [
-                {"role": _SHAREGPT_ROLES.get(str(m["from"]), str(m["from"])), "content": m["value"]}
+                {"role": _SHAREGPT_ROLES.get(speaker, speaker), "content": m["value"]}
                 for m in value
+                for speaker in [str(m["from"]).strip().lower()]
             ]
         )
     if isinstance(value, list) and all(
