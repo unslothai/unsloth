@@ -416,11 +416,13 @@ $env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
 irm https://unsloth.ai/install.ps1 | iex
 ```
 
-To choose PyTorch yourself, pin its index, or skip it for GGUF chat only:
+To choose PyTorch yourself, pin its index:
 ```bash
-export UNSLOTH_TORCH_INDEX_FAMILY=cpu   # or a family like rocm7.2
-curl -fsSL https://unsloth.ai/install.sh | sh
-curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_TORCH_INDEX_FAMILY=cpu sh   # or a family like rocm7.2
+```
+Or skip PyTorch for GGUF chat only:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
 
 #### audio.cpp audio engine:
