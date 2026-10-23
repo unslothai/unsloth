@@ -941,6 +941,36 @@ def test_a_run_finds_a_kept_safetensors_model_and_skips_a_primary_hidden_from_it
     assert scheduler_module._sole_kept_model() is None
 
 
+def test_a_run_settles_its_request_where_the_slot_was_routed(monkeypatch):
+    from core.inference import model_slots
+
+    seen = []
+    monkeypatch.setattr(
+        llama_keepwarm,
+        "end_in_process_request",
+        lambda scope, answered: seen.append((model_slots.routed_slot.get(), answered)),
+    )
+
+    class Routed(FakeProducer):
+        async def __call__(self, *args, **kwargs):
+            model_slots.routed_slot.set("kept-slot")
+            return await super().__call__(*args, **kwargs)
+
+    generate(monkeypatch, Routed(completion("Done.")))
+    assert seen == [("kept-slot", True)]
+
+
+def test_a_named_kept_model_keeps_its_own_refusal(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "_sole_kept_model", lambda: "qwen-kept")
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)
+    producer = FakeProducer(
+        error = HTTPException(status_code = 400, detail = {"error": {"message": "Too long."}})
+    )
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer)
+    assert (failure.value.code, failure.value.message) == (None, "Too long.")
+
+
 def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
     monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)

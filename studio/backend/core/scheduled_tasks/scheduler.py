@@ -212,21 +212,33 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             raise RunFailed("timeout") from None
         if cancel_event.is_set():
             raise RunFailed("cancelled")
-        producer = asyncio.ensure_future(
-            produce_openai_chat_completions(
-                payload,
-                request,
-                task["ownerSubject"],
-                cancel_on_disconnect = False,
-            )
-        )
+
+        async def produce() -> Any:
+            # Settled in this task: slot routing lives in its context, which the caller never sees.
+            reply = None
+            try:
+                reply = await produce_openai_chat_completions(
+                    payload,
+                    request,
+                    task["ownerSubject"],
+                    cancel_on_disconnect = False,
+                )
+                return reply
+            finally:
+                end_in_process_request(
+                    request.scope,
+                    answered = reply is not None and int(getattr(reply, "status_code", 200)) < 400,
+                )
+
+        producer = asyncio.ensure_future(produce())
         done, _ = await asyncio.wait({producer}, timeout = max(0.0, deadline - loop.time()))
         if not done:
             raise RunFailed("timeout")
         try:
             response = producer.result()
         except HTTPException as exc:
-            if not _chat_model_loaded():
+            # A named kept model answered for itself, so its refusal is not "nothing loaded".
+            if "model" not in payload.model_fields_set and not _chat_model_loaded():
                 raise RunFailed("no_model") from None
             raise RunFailed(None, _error_text(exc.detail)) from None
         except GpuBusyForAnotherAccountError as exc:
@@ -237,11 +249,11 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             cancel_event.set()
             producer.cancel()
             await asyncio.wait({producer}, timeout = _CANCEL_GRACE_SECONDS)
-        answered = response is not None and int(getattr(response, "status_code", 200)) < 400
 
         def release(*_: Any) -> None:
             activity.finish()
-            end_in_process_request(request.scope, answered = answered)
+            if producer is None:
+                end_in_process_request(request.scope, answered = False)
 
         if producer is not None and not producer.done():
             # Its worker has not unwound yet: the model stays busy until it does.
