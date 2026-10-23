@@ -39,10 +39,9 @@ export const buttonVariants = cva(
         "icon-xs": "size-6 [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-8",
         "icon-lg": "size-10",
-        // Full-window screen actions (startup, update): taller than `lg`, and squared
-        // off rather than pill-shaped, so they read as page-level rather than in-line.
+        // Full-window screen actions (startup, update): taller than `lg`.
         // Height is left to the padding, so the label sets it.
-        hero: "h-auto rounded-lg px-5 py-2.5",
+        hero: "h-auto rounded-full px-5 py-2.5",
       },
     },
     defaultVariants: {
