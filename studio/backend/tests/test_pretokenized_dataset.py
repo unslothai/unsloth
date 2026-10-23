@@ -280,6 +280,30 @@ def test_prepare_still_checks_assistant_masks_without_completion_only_loss():
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
+def test_prepare_ignores_columns_hidden_by_the_dataset_format():
+    # set_format(columns = ...) hides backing columns from the rows the trainer reads: a stale
+    # hidden mask or labels column is not applied, so it is neither checked nor re-exposed.
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4, 5, 6]],
+            "assistant_masks": [[0, 1]],
+            "labels": [[1, 2]],
+        }
+    )
+    ds.set_format(columns = ["input_ids"], output_all_columns = False)
+    assert not has_custom_labels(ds)
+    out = prepare_pretokenized_dataset(ds, max_seq_length = 4, vocab_size = 100)
+    assert list(out[0]) == ["input_ids"]
+    assert out[0]["input_ids"] == [1, 2, 3, 4]
+
+
+def test_prepare_checks_masks_the_format_still_outputs():
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], "assistant_masks": [[0, 1]]})
+    ds.set_format(columns = ["input_ids"], output_all_columns = True)
+    with pytest.raises(ValueError, match = "'assistant_masks' must have the same length"):
+        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+
+
 def test_only_user_labels_turn_off_response_masking():
     assert has_custom_labels(_pretokenized(with_labels = True))
     assert not has_custom_labels(_pretokenized(with_labels = False))

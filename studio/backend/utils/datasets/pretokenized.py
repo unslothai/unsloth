@@ -22,6 +22,7 @@ def _collator_masks_user_labels() -> bool:
     try:
         import trl
         from packaging.version import Version
+
         return Version(trl.__version__) < Version("1.7.0")
     except Exception:
         return True
@@ -80,8 +81,12 @@ def is_pretokenized_dataset(dataset) -> bool:
 
 
 def _column_names(dataset) -> list[str]:
+    """Columns the trainer's rows expose: a map-style ``set_format(columns = ...)`` hides the rest."""
     names = getattr(dataset, "column_names", None)
     if names:
+        fmt = getattr(dataset, "format", None)
+        if isinstance(fmt, dict) and fmt.get("columns") is not None and not fmt.get("output_all_columns"):
+            return [c for c in names if c in fmt["columns"]]
         return list(names)
     return list(next(iter(dataset)).keys())
 
@@ -90,19 +95,13 @@ def has_custom_labels(dataset) -> bool:
     return "labels" in _column_names(dataset)
 
 
-def _check_arrow_table(
-    table,
-    max_seq_length,
-    vocab_size,
-    masks = (),
-) -> bool:
+def _check_arrow_table(table, max_seq_length, vocab_size, masks = (), labels = True) -> bool:
     import pyarrow.compute as pc
 
     ids = table.column("input_ids")
     lengths = pc.list_value_length(ids)
-    if "labels" in table.column_names:
-        labels = table.column("labels")
-        if not pc.all(pc.equal(lengths, pc.list_value_length(labels))).as_py():
+    if labels and "labels" in table.column_names:
+        if not pc.all(pc.equal(lengths, pc.list_value_length(table.column("labels")))).as_py():
             raise ValueError(
                 "Pre-tokenized dataset: 'labels' must have the same length as 'input_ids' in every row."
             )
@@ -141,7 +140,9 @@ def prepare_pretokenized_dataset(
     needs_truncation = True
     if table is not None and hasattr(table, "column"):
         # Covers the whole backing table, rows a select() hid included: a bad id there is still a bad dataset.
-        needs_truncation = _check_arrow_table(table, max_seq_length, vocab_size, masks)
+        needs_truncation = _check_arrow_table(
+            table, max_seq_length, vocab_size, masks, labels = "labels" in names
+        )
     if not needs_truncation or not max_seq_length:
         return dataset
 
@@ -172,4 +173,11 @@ def prepare_pretokenized_dataset(
     out = dataset.with_format("arrow").map(
         _truncate_arrow, batched = True, desc = "Truncating pre-tokenized rows"
     )
-    return out.with_format(dataset.format["type"])
+    # Restore the whole format: the column selection too, so hidden columns stay hidden.
+    fmt = dataset.format
+    return out.with_format(
+        fmt["type"],
+        columns = fmt["columns"],
+        output_all_columns = fmt["output_all_columns"],
+        **(fmt["format_kwargs"] or {}),
+    )
