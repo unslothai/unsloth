@@ -40,7 +40,9 @@ def _tensors(names):
 
 def _stale_index(d, index_name, names):
     shard = "old-00001-of-00001" + (".bin" if index_name.startswith("pytorch") else ".safetensors")
-    (d / index_name).write_text(json.dumps({"metadata": {}, "weight_map": {n: shard for n in names}}))
+    (d / index_name).write_text(
+        json.dumps({"metadata": {}, "weight_map": {n: shard for n in names}})
+    )
 
 
 @pytest.mark.parametrize(
@@ -79,9 +81,9 @@ def test_safetensors_index_still_beats_a_lone_bin(tmp_path):
 
 def _quantize_cpu(tensor):
     bnb = pytest.importorskip("bitsandbytes")
-    param = bnb.nn.Params4bit(
-        tensor.detach().clone(), requires_grad = False, quant_type = "nf4"
-    ).to("cpu")
+    param = bnb.nn.Params4bit(tensor.detach().clone(), requires_grad = False, quant_type = "nf4").to(
+        "cpu"
+    )
     assert param.quant_state is not None
     return param
 

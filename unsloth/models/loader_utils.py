@@ -4055,7 +4055,11 @@ def _hub_safetensors_header_dtypes(
     return {k: v.get("dtype") for k, v in header.items() if k != "__metadata__"}
 
 
-def _hub_live_commit(repo_id, revision = None, token = None):
+def _hub_live_commit(
+    repo_id,
+    revision = None,
+    token = None,
+):
     """The commit `revision` names on the Hub now, or None when it cannot be resolved (offline,
     network error). A branch or tag can move past what the cache holds; transformers' online
     `hf_hub_download` refreshes it, so cache lookups must use the live commit too."""
@@ -4063,7 +4067,6 @@ def _hub_live_commit(repo_id, revision = None, token = None):
         return revision
     try:
         from huggingface_hub import HfApi
-
         return HfApi(token = token).model_info(repo_id, revision = revision).sha or None
     except Exception:
         return None
@@ -4193,7 +4196,9 @@ def _checkpoint_tensor_dtypes(
             if not local_files_only:
                 remote = f"{subfolder}/{st_single}" if subfolder else st_single
                 try:
-                    return _hub_safetensors_header_dtypes(model_name, remote, hub["revision"], token)
+                    return _hub_safetensors_header_dtypes(
+                        model_name, remote, hub["revision"], token
+                    )
                 except Exception:
                     pass
         if st_index:

@@ -285,7 +285,13 @@ def _save_bare_params4bit_quant_state(model):
             if not names:
                 continue
 
-            def _hook(module, state_dict, prefix, local_metadata, _names = tuple(names)):
+            def _hook(
+                module,
+                state_dict,
+                prefix,
+                local_metadata,
+                _names = tuple(names),
+            ):
                 for name in _names:
                     if prefix + name not in state_dict:
                         continue
@@ -383,7 +389,9 @@ def _with_bare_params4bit_state_dict(model, original, args, kwargs):
     """`args`, `kwargs` of a full save, with a caller-supplied `state_dict` (keyword or positional,
     located by binding `original`'s signature) given its bare `Params4bit` quant state."""
     if "state_dict" in kwargs:
-        kwargs = dict(kwargs, state_dict = _add_bare_params4bit_quant_state(model, kwargs["state_dict"]))
+        kwargs = dict(
+            kwargs, state_dict = _add_bare_params4bit_quant_state(model, kwargs["state_dict"])
+        )
         return args, kwargs
     if not args:
         return args, kwargs

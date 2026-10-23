@@ -528,14 +528,26 @@ def test_online_probe_ignores_a_stale_cached_single_file(monkeypatch, tmp_path):
     with open(index, "w", encoding = "utf-8") as f:
         json.dump({"weight_map": {n: "model-00001-of-00001.safetensors" for n in FUSED_QS}}, f)
 
-    def download(repo_id, filename, *args, revision = None, local_files_only = False, **kwargs):
+    def download(
+        repo_id,
+        filename,
+        *args,
+        revision = None,
+        local_files_only = False,
+        **kwargs,
+    ):
         if filename == "model.safetensors" and local_files_only and revision in (None, "main", old):
             return stale  # the branch's previous commit, still in the cache
         if filename == "model.safetensors.index.json" and revision == new:
             return index
         raise FileNotFoundError(filename)
 
-    def header(repo_id, filename, revision = None, token = None):
+    def header(
+        repo_id,
+        filename,
+        revision = None,
+        token = None,
+    ):
         if filename.endswith("model-00001-of-00001.safetensors") and revision == new:
             return {n: "U8" for n in FUSED_QS}
         raise FileNotFoundError(filename)
