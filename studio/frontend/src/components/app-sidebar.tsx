@@ -6018,7 +6018,7 @@ export function AppSidebar() {
                   >
                     {t("shell.navigation.search")}
                     {searchShortcutLabel && (
-                      <kbd className="rounded bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
+                      <kbd className="rounded-full bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] px-1 py-px text-ui-10 font-medium leading-none dark:bg-[rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]">
                         {searchShortcutLabel}
                       </kbd>
                     )}
@@ -6746,7 +6746,7 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-[20px] border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
+              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-xl border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
@@ -7012,7 +7012,7 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {deleteTargetHasFiles(confirmingDelete) ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
+          <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}

@@ -82,7 +82,7 @@ test("shadowed menus scroll an inner viewport, not their rounded surface", () =>
   assert.equal(contextMenu.match(/data-slot="context-menu-viewport"/g)?.length, 2);
   assert.doesNotMatch(contextMenu, /rounded-xl [^"]*shadow-2xl[^"]*overflow-y-auto/);
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  assert.match(thread, /aui-action-bar-more-content[^"]*flex flex-col overflow-hidden rounded-\[21px\]/);
+  assert.match(thread, /aui-action-bar-more-content[^"]*flex flex-col overflow-hidden rounded-xl/);
   const preview = readSrc("features/recipe-studio/dialogs/preview-dialog.tsx");
   assert.match(preview, /overflow-hidden rounded-2xl border border-destructive\/30 bg-destructive\/5 py-3 shadow-border">\s*<div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">/);
   assert.doesNotMatch(preview, /scroll-rounded rounded-2xl border border-destructive/);
