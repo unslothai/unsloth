@@ -217,9 +217,7 @@ def test_prepare_truncates_masks_next_to_labels_when_the_collator_applies_them(
         )
     )
     assert out[0]["labels"] == [-100, 2, 3, 4] and out[0][mask] == [0, 1, 1, 1]
-    bad = Dataset.from_dict(
-        {"input_ids": [[1, 2, 3]], "labels": [[1, 2, 3]], mask: [[0, 1]]}
-    )
+    bad = Dataset.from_dict({"input_ids": [[1, 2, 3]], "labels": [[1, 2, 3]], mask: [[0, 1]]})
     with pytest.raises(ValueError, match = f"'{mask}' must have the same length"):
         prepare_pretokenized_dataset(
             bad, max_seq_length = 2048, vocab_size = 100, completion_only_loss = True
@@ -232,7 +230,11 @@ def test_prepare_leaves_masks_next_to_labels_alone_when_the_collator_ignores_the
 
     monkeypatch.setattr(pretokenized, "_collator_masks_user_labels", lambda: False, raising = False)
     ds = Dataset.from_dict(
-        {"input_ids": [[1, 2, 3, 4, 5, 6]], "labels": [[1, 2, 3, 4, 5, 6]], "assistant_masks": [[0, 1]]}
+        {
+            "input_ids": [[1, 2, 3, 4, 5, 6]],
+            "labels": [[1, 2, 3, 4, 5, 6]],
+            "assistant_masks": [[0, 1]],
+        }
     )
     out = prepare_pretokenized_dataset(
         ds, max_seq_length = 4, vocab_size = 100, completion_only_loss = True
@@ -253,7 +255,9 @@ def test_prepare_checks_streamed_loss_masks():
 
 @pytest.mark.parametrize("completion_only_loss", [None, False])
 @pytest.mark.parametrize("streamed", [False, True])
-def test_prepare_ignores_completion_masks_the_trainer_will_not_apply(completion_only_loss, streamed):
+def test_prepare_ignores_completion_masks_the_trainer_will_not_apply(
+    completion_only_loss, streamed
+):
     # Studio leaves completion_only_loss unset and TRL resolves it False for input_ids rows, so
     # TRL never reads completion_mask: a stale one must not reject or alter a dataset that trains.
     ds = Dataset.from_dict(

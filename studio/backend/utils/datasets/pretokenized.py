@@ -22,7 +22,6 @@ def _collator_masks_user_labels() -> bool:
     try:
         import trl
         from packaging.version import Version
-
         return Version(trl.__version__) < Version("1.7.0")
     except Exception:
         return True
@@ -91,7 +90,12 @@ def has_custom_labels(dataset) -> bool:
     return "labels" in _column_names(dataset)
 
 
-def _check_arrow_table(table, max_seq_length, vocab_size, masks = ()) -> bool:
+def _check_arrow_table(
+    table,
+    max_seq_length,
+    vocab_size,
+    masks = (),
+) -> bool:
     import pyarrow.compute as pc
 
     ids = table.column("input_ids")
