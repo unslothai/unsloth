@@ -231,6 +231,34 @@ def test_auto_keeps_a_load_mlx_cannot_honour_on_diffusers(monkeypatch, blocker_k
     )
 
 
+@pytest.mark.parametrize("value", [None, "auto", "1"])
+def test_native_lora_pick_on_a_mac_is_never_an_mlx_refusal(monkeypatch, value):
+    # A LoRA load that asks for the native engine stays native: the default MLX routing must not divert it into the
+    # route's MLX LoRA refusal.
+    _apple(monkeypatch)
+    if value is not None:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", value)
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: "/usr/bin/sd-cli")
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "v0"))
+    blocker = r.mlx_load_blocker(loras = [("some/lora", 1.0)])
+    fam = detect_family("z-image")
+    use_mlx, reason = r.mlx_selection(
+        fam, model_kind = "gguf", gguf_filename = _Q4, engine = ENGINE_SD_CPP, load_blocker = blocker
+    )
+    assert use_mlx is False
+    assert "sd_cpp" in reason
+    assert (
+        r.predict_engine(
+            fam,
+            model_kind = "gguf",
+            gguf_filename = _Q4,
+            engine = ENGINE_SD_CPP,
+            mlx_blocker = blocker,
+        )
+        == ENGINE_SD_CPP
+    )
+
+
 def test_delegating_precisions_do_not_block_mlx():
     for quant in (None, "", "auto", "AUTO", "none"):
         assert r.mlx_load_blocker(transformer_quant = quant, text_encoder_quant = quant) is None
