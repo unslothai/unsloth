@@ -331,6 +331,7 @@ async def splice(
 THREADED_SPLICE_ENV = "UNSLOTH_CLUSTER_LINK_THREADED_SPLICE"
 WRITE_MAX = 256 * 1024
 WAIT_S = 1.0
+_WINDOWS = sys.platform == "win32"
 
 
 def threaded_sessions() -> bool:
@@ -500,6 +501,10 @@ def _pump(
             write(pending)
         while not session.aborted and end.first is None:
             if src_lock is None:
+                # Winsock's shutdown() from another thread does not wake a blocked recv: poll so
+                # an abort or the other direction ending is seen within WAIT_S.
+                if _WINDOWS and not _wait_fd(src, False, WAIT_S):
+                    continue
                 n = src.recv_into(view)
             else:
                 with src_lock:
