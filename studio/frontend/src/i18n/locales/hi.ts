@@ -4334,7 +4334,6 @@ export const hi = {
       notifyAll: "हर रन",
       notifyFailures: "सिर्फ़ विफल होने पर",
       notifyNone: "बंद",
-      newChatEachRun: "हर रन नई चैट में शुरू करें",
       archiveSuccessful: "सफल रन संग्रहित करें",
       project: "प्रोजेक्ट",
       projectNone: "कोई नहीं",

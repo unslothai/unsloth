@@ -4312,7 +4312,6 @@ export const ko = {
       notifyAll: "모든 실행",
       notifyFailures: "실패 시에만",
       notifyNone: "끄기",
-      newChatEachRun: "실행할 때마다 새 채팅 시작",
       archiveSuccessful: "성공한 실행 보관",
       project: "프로젝트",
       projectNone: "없음",

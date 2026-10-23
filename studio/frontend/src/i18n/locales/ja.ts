@@ -4273,7 +4273,6 @@ export const ja = {
       notifyAll: "毎回",
       notifyFailures: "失敗時のみ",
       notifyNone: "オフ",
-      newChatEachRun: "実行ごとに新しいチャットを開始",
       archiveSuccessful: "成功した実行をアーカイブ",
       project: "プロジェクト",
       projectNone: "なし",

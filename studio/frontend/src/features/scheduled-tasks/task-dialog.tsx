@@ -244,7 +244,6 @@ export function TaskDialog({
   const [notify, setNotify] = useState<TaskNotify>(task?.notify ?? "all");
   const [model, setModel] = useState<string | null>(task?.model ?? null);
   const [allowLoad, setAllowLoad] = useState(task?.allowModelLoad ?? false);
-  const [newChatEachRun, setNewChatEachRun] = useState(task?.newChatEachRun ?? true);
   const [archiveSuccessful, setArchiveSuccessful] = useState(task?.archiveSuccessful ?? false);
   const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? null);
   const { projects } = useChatProjects();
@@ -264,7 +263,7 @@ export function TaskDialog({
   const [advanced, setAdvanced] = useState(
     () =>
       task !== null &&
-      (task.notify !== "all" || !task.newChatEachRun || task.archiveSuccessful || task.projectId !== null),
+      (task.notify !== "all" || task.archiveSuccessful || task.projectId !== null),
   );
   const [busy, setBusy] = useState(false);
   const timezone = task?.timezone ?? browserTimeZone();
@@ -298,7 +297,6 @@ export function TaskDialog({
         if (model !== task.model) patch.model = model;
         if (effort !== task.reasoningEffort) patch.reasoningEffort = effort;
         if (allowLoad !== task.allowModelLoad) patch.allowModelLoad = allowLoad;
-        if (newChatEachRun !== task.newChatEachRun) patch.newChatEachRun = newChatEachRun;
         if (archiveSuccessful !== task.archiveSuccessful) patch.archiveSuccessful = archiveSuccessful;
         if (projectId !== task.projectId) patch.projectId = projectId;
         if (Object.keys(patch).length > 0) await update(task.id, patch);
@@ -313,7 +311,6 @@ export function TaskDialog({
           model,
           reasoningEffort: effort,
           allowModelLoad: allowLoad,
-          newChatEachRun,
           archiveSuccessful,
           projectId,
         });
@@ -625,48 +622,35 @@ export function TaskDialog({
                   </SelectContent>
                 </Select>
               </Row>
-              <Row id={`${ids}-new-chat`} label={t("scheduledTasks.form.newChatEachRun")}>
+              <Row id={`${ids}-archive`} label={t("scheduledTasks.form.archiveSuccessful")}>
                 <Switch
-                  id={`${ids}-new-chat`}
-                  checked={newChatEachRun}
-                  onCheckedChange={setNewChatEachRun}
+                  id={`${ids}-archive`}
+                  checked={archiveSuccessful}
+                  onCheckedChange={setArchiveSuccessful}
                   disabled={busy}
                   className="mr-2"
                 />
               </Row>
-              {newChatEachRun && (
-                <>
-                  <Row id={`${ids}-archive`} label={t("scheduledTasks.form.archiveSuccessful")}>
-                    <Switch
-                      id={`${ids}-archive`}
-                      checked={archiveSuccessful}
-                      onCheckedChange={setArchiveSuccessful}
-                      disabled={busy}
-                      className="mr-2"
-                    />
-                  </Row>
-                  <Row id={`${ids}-project`} label={t("scheduledTasks.form.project")}>
-                    <Select
-                      value={projectId ?? NO_PROJECT}
-                      onValueChange={(value) => setProjectId(value === NO_PROJECT ? null : value)}
-                      disabled={busy}
-                    >
-                      <SelectTrigger id={`${ids}-project`} className={cn(BARE_SELECT, "max-w-[60%]")}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent align="end" className={cn(LONG_LIST, "max-w-72")}>
-                        {openProjects.map((project) => (
-                          <SelectItem key={project.id} value={project.id}>
-                            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                            {project.name}
-                          </SelectItem>
-                        ))}
-                        <SelectItem value={NO_PROJECT}>{t("scheduledTasks.form.projectNone")}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Row>
-                </>
-              )}
+              <Row id={`${ids}-project`} label={t("scheduledTasks.form.project")}>
+                <Select
+                  value={projectId ?? NO_PROJECT}
+                  onValueChange={(value) => setProjectId(value === NO_PROJECT ? null : value)}
+                  disabled={busy}
+                >
+                  <SelectTrigger id={`${ids}-project`} className={cn(BARE_SELECT, "max-w-[60%]")}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end" className={cn(LONG_LIST, "max-w-72")}>
+                    {openProjects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value={NO_PROJECT}>{t("scheduledTasks.form.projectNone")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Row>
             </div>
           )}
         </div>

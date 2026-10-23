@@ -4385,7 +4385,6 @@ export const en = {
       notifyAll: "Every run",
       notifyFailures: "Only failures",
       notifyNone: "Off",
-      newChatEachRun: "Start each run in new chat",
       archiveSuccessful: "Archive successful runs",
       project: "Project",
       projectNone: "None",

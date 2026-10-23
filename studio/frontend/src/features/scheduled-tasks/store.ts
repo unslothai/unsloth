@@ -25,6 +25,7 @@ function announceChange(): void {
   try {
     localStorage.setItem(SCHEDULED_TASKS_WRITTEN_KEY, `${Date.now()}.${Math.random()}`);
   } catch {
+    // Without storage, another tab shows the change when it next refreshes.
   }
 }
 

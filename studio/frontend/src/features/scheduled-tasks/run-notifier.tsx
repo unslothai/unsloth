@@ -55,6 +55,7 @@ function saveSeen(account: string, seen: SeenRuns): void {
   try {
     localStorage.setItem(SEEN_KEY_PREFIX + account, JSON.stringify(seen));
   } catch {
+    // Without storage the next launch only announces runs from then on.
   }
 }
 
@@ -111,6 +112,7 @@ function notifySystem(runs: FinishedScheduledTaskRun[]): void {
       notification.close();
     };
   } catch {
+    // Some browsers only allow notifications from a service worker.
   }
 }
 

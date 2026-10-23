@@ -56,7 +56,6 @@ export interface ScheduledTask {
   reasoningEffort: TaskReasoningEffort | null;
   allowModelLoad: boolean;
   /** False: every run adds to one ongoing chat; the next two apply only to a chat per run. */
-  newChatEachRun: boolean;
   archiveSuccessful: boolean;
   projectId: string | null;
   status: "active" | "paused" | "completed";
@@ -76,7 +75,6 @@ export interface ScheduledTaskInput {
   model?: string | null;
   reasoningEffort?: TaskReasoningEffort | null;
   allowModelLoad?: boolean;
-  newChatEachRun?: boolean;
   archiveSuccessful?: boolean;
   projectId?: string | null;
 }

@@ -877,10 +877,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             model TEXT,
             reasoning_effort TEXT,
             allow_model_load INTEGER NOT NULL DEFAULT 0,
-            new_chat_each_run INTEGER NOT NULL DEFAULT 1,
             archive_successful INTEGER NOT NULL DEFAULT 0,
-            project_id TEXT,
-            chat_thread_id TEXT
+            project_id TEXT
         )
         """
     )
@@ -899,18 +897,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE scheduled_tasks ADD COLUMN allow_model_load INTEGER NOT NULL DEFAULT 0"
         )
-    if "new_chat_each_run" not in scheduled_task_cols:
-        conn.execute(
-            "ALTER TABLE scheduled_tasks ADD COLUMN new_chat_each_run INTEGER NOT NULL DEFAULT 1"
-        )
     if "archive_successful" not in scheduled_task_cols:
         conn.execute(
             "ALTER TABLE scheduled_tasks ADD COLUMN archive_successful INTEGER NOT NULL DEFAULT 0"
         )
     if "project_id" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
-    if "chat_thread_id" not in scheduled_task_cols:
-        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN chat_thread_id TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
     )
@@ -2984,35 +2976,6 @@ def delete_chat_threads_in(conn: sqlite3.Connection, ids: list[str]) -> tuple[li
     return active_research_run_ids, active_chat_run_ids
 
 
-def delete_scheduled_run_messages_in(conn: sqlite3.Connection, thread_id: str, run_id: str) -> None:
-    """Delete one scheduled run's messages from a kept chat in the caller's transaction, relinking later ones."""
-    ids = {
-        str(row["id"])
-        for row in conn.execute(
-            "SELECT id, metadata_json FROM chat_messages WHERE thread_id = ?", (thread_id,)
-        ).fetchall()
-        if _scheduled_run_id(row["metadata_json"]) == run_id
-    }
-    if not ids:
-        return
-    placeholders = ",".join("?" for _ in ids)
-    children = conn.execute(
-        f"SELECT id FROM chat_messages WHERE thread_id = ? AND parent_id IN ({placeholders})"
-        f" AND id NOT IN ({placeholders})",
-        (thread_id, *ids, *ids),
-    ).fetchall()
-    for child in children:
-        conn.execute(
-            "UPDATE chat_messages SET parent_id = ? WHERE thread_id = ? AND id = ?",
-            (_surviving_parent_id(conn, thread_id, str(child["id"]), ids), thread_id, child["id"]),
-        )
-    conn.execute(
-        f"DELETE FROM chat_messages WHERE thread_id = ? AND id IN ({placeholders})",
-        (thread_id, *ids),
-    )
-    _recompute_chat_thread_updated_at(conn, thread_id)
-
-
 def delete_chat_threads_with_active_runs(ids: list[str]) -> tuple[list[str], list[str]]:
     if not ids:
         return [], []
@@ -3678,29 +3641,6 @@ def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str
         for message_id in row
         if message_id is not None
     }
-
-
-def _scheduled_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
-    """Messages a scheduled run wrote; a kept chat is appended on the server, which an earlier-opened tab never sees."""
-    row = conn.execute(
-        "SELECT scheduled_task_id FROM chat_threads WHERE id = ?", (thread_id,)
-    ).fetchone()
-    if row is None or not row["scheduled_task_id"]:
-        return set()
-    return {
-        str(message["id"])
-        for message in conn.execute(
-            "SELECT id, metadata_json FROM chat_messages WHERE thread_id = ?", (thread_id,)
-        ).fetchall()
-        if _scheduled_run_id(message["metadata_json"]) is not None
-    }
-
-
-def _scheduled_run_id(metadata_json: Optional[str]) -> Optional[str]:
-    metadata = _json_loads(metadata_json, None)
-    source = metadata.get("scheduledTask") if isinstance(metadata, dict) else None
-    run_id = source.get("runId") if isinstance(source, dict) else None
-    return run_id if isinstance(run_id, str) else None
 
 
 def _terminal_generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
@@ -4473,12 +4413,10 @@ def sync_chat_messages(
         explicitly_deleted_terminal_ids = explicitly_deleted_ids & _terminal_generation_message_ids(
             conn, thread_id
         )
-        scheduled_ids = _scheduled_message_ids(conn, thread_id)
         prune_protected_ids = (
             research_ids
             | (generation_ids - explicitly_deleted_terminal_ids)
             | (tombstoned_ids - explicitly_deleted_ids)
-            | (scheduled_ids - explicitly_deleted_ids)
         )
         # The rows this sync will delete, computed before the upsert so a relink forced by that deletion
         # can be told apart from an edit. Research ids are subtracted because the delete exempts them:
@@ -4511,7 +4449,7 @@ def sync_chat_messages(
         # chain, never taken from the client. Candidates come from managed_ids rather than `protected`
         # because the delete exempts research rows whatever allow_research_update says. Ids the batch
         # itself writes are excluded: an authorized reparent must not be overwritten by the repair.
-        reseat_candidates = (managed_ids | scheduled_ids) - {str(m["id"]) for m in messages}
+        reseat_candidates = managed_ids - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()

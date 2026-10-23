@@ -4441,7 +4441,6 @@ export const he = {
       notifyAll: "כל הרצה",
       notifyFailures: "רק בכישלון",
       notifyNone: "כבויות",
-      newChatEachRun: "להתחיל כל הרצה בצ'אט חדש",
       archiveSuccessful: "להעביר לארכיון הרצות שהצליחו",
       project: "פרויקט",
       projectNone: "ללא",

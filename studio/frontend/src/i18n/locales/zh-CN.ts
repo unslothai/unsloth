@@ -4225,7 +4225,6 @@ export const zhCN = {
       notifyAll: "每次运行",
       notifyFailures: "仅失败时",
       notifyNone: "关闭",
-      newChatEachRun: "每次运行都新建对话",
       archiveSuccessful: "归档成功的运行",
       project: "项目",
       projectNone: "无",

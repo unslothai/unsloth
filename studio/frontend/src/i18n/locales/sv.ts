@@ -4576,7 +4576,6 @@ export const sv = {
       notifyAll: "Varje körning",
       notifyFailures: "Bara vid fel",
       notifyNone: "Av",
-      newChatEachRun: "Starta varje körning i en ny chatt",
       archiveSuccessful: "Arkivera lyckade körningar",
       project: "Projekt",
       projectNone: "Inget",

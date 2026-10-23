@@ -12,11 +12,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Callable, Iterator, Optional
 
-from storage.studio_db import (
-    delete_chat_threads_in,
-    delete_scheduled_run_messages_in,
-    get_connection,
-)
+from storage.studio_db import delete_chat_threads_in, get_connection
 
 # Per account. Every run opens a chat, so this also bounds how many chats schedules can make.
 MAX_TASKS = 100
@@ -70,20 +66,6 @@ def chat_id_for_run(run_id: str) -> str:
     return str(uuid.uuid5(_RUN_CHAT_NAMESPACE, run_id))
 
 
-def discard_run_output_in(
-    conn: sqlite3.Connection, run_id: str, kept_chat_id: Optional[str]
-) -> None:
-    """Remove what a failed run wrote, in the caller's transaction: its chat, or its exchange in ``kept_chat_id``."""
-    if kept_chat_id:
-        delete_scheduled_run_messages_in(conn, kept_chat_id, run_id)
-    delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
-
-
-def discard_run_output(run_id: str, kept_chat_id: Optional[str]) -> None:
-    with _connect("BEGIN IMMEDIATE") as conn:
-        discard_run_output_in(conn, run_id, kept_chat_id)
-
-
 def _task_from_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -98,10 +80,8 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "model": row["model"],
         "reasoningEffort": row["reasoning_effort"],
         "allowModelLoad": bool(row["allow_model_load"]),
-        "newChatEachRun": bool(row["new_chat_each_run"]),
         "archiveSuccessful": bool(row["archive_successful"]),
         "projectId": row["project_id"],
-        "chatThreadId": row["chat_thread_id"],
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -181,7 +161,6 @@ _TASK_COLUMNS = (
     "model",
     "reasoning_effort",
     "allow_model_load",
-    "new_chat_each_run",
     "archive_successful",
     "project_id",
     "next_run_at",
@@ -200,7 +179,6 @@ def _task_values(task: dict) -> tuple:
         task.get("model"),
         task.get("reasoningEffort"),
         1 if task.get("allowModelLoad") else 0,
-        0 if task.get("newChatEachRun") is False else 1,
         1 if task.get("archiveSuccessful") else 0,
         task.get("projectId"),
         task["nextRunAt"],
@@ -252,93 +230,15 @@ def update_task(
         return _get_task(conn, task_id)
 
 
-def create_task(task: dict) -> dict:
-    with _connect("BEGIN IMMEDIATE") as conn:
-        (count,) = conn.execute("SELECT COUNT(*) FROM scheduled_tasks").fetchone()
-        if count >= MAX_TASKS:
-            raise TaskLimitReached()
-        conn.execute(
-            f"INSERT INTO scheduled_tasks (id, owner_subject, created_at, {', '.join(_TASK_COLUMNS)},"
-            f" updated_at) VALUES ({', '.join('?' * (len(_TASK_COLUMNS) + 4))})",
-            (
-                task["id"],
-                task["ownerSubject"],
-                task["createdAt"],
-                *_task_values(task),
-                task["updatedAt"],
-            ),
-        )
-        return _get_task(conn, task["id"])
-
-
-# What decides when a task runs; any other change keeps its next run, an overdue one included.
-_TIMING_FIELDS = ("schedule", "timezone", "enabled")
-
-
-def update_task(
-    task_id: str,
-    changes: dict,
-    reschedule: Optional[Callable[[dict], Optional[int]]] = None,
-) -> Optional[dict]:
-    """Apply ``changes``; ``reschedule`` returns the next run time in the same transaction (raising rolls back)."""
-    with _connect("BEGIN IMMEDIATE") as conn:
-        row = conn.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,)).fetchone()
-        if row is None:
-            return None
-        stored = _task_from_row(row)
-        task = {**stored, **changes}
-        if reschedule is not None and any(task[key] != stored[key] for key in _TIMING_FIELDS):
-            task["nextRunAt"] = reschedule(task)
-        conn.execute(
-            """
-            UPDATE scheduled_tasks
-            SET title = ?, prompt = ?, schedule_json = ?, timezone = ?, enabled = ?, notify = ?,
-                named = ?, model = ?, reasoning_effort = ?, allow_model_load = ?,
-                new_chat_each_run = ?, archive_successful = ?, project_id = ?, next_run_at = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                task["title"],
-                task["prompt"],
-                json.dumps(task["schedule"]),
-                task["timezone"],
-                1 if task["enabled"] else 0,
-                task["notify"],
-                1 if task["named"] else 0,
-                task["model"],
-                task["reasoningEffort"],
-                1 if task["allowModelLoad"] else 0,
-                1 if task["newChatEachRun"] else 0,
-                1 if task["archiveSuccessful"] else 0,
-                task["projectId"],
-                task["nextRunAt"],
-                now_ms(),
-                task_id,
-            ),
-        )
-        return _get_task(conn, task_id)
-
-
-def set_chat_thread(task_id: str, thread_id: str) -> None:
-    """Record the chat a task's runs add to from now on. Leaves updated_at: not the user's edit."""
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE scheduled_tasks SET chat_thread_id = ? WHERE id = ?", (thread_id, task_id)
-        )
-
-
 def delete_task(task_id: str) -> bool:
     """Delete a task and its run history; finished runs' chats stay, an in-progress run's chat goes too."""
     with _connect("BEGIN IMMEDIATE") as conn:
         running = conn.execute(
-            "SELECT r.id, t.chat_thread_id FROM scheduled_task_runs r"
-            " JOIN scheduled_tasks t ON t.id = r.task_id"
-            " WHERE r.task_id = ? AND r.status = 'running'",
+            "SELECT id FROM scheduled_task_runs WHERE task_id = ? AND status = 'running'",
             (task_id,),
         ).fetchall()
-        for row in running:
-            discard_run_output_in(conn, row["id"], row["chat_thread_id"])
+        if running:
+            delete_chat_threads_in(conn, [chat_id_for_run(row["id"]) for row in running])
         cursor = conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
         return cursor.rowcount > 0
 
@@ -525,15 +425,14 @@ def finish_run(
     """Settle a run this worker owns and trim history; ``discard_chat`` removes a failed run's chat atomically."""
     with _connect("BEGIN IMMEDIATE") as conn:
         row = conn.execute(
-            "SELECT r.task_id, t.chat_thread_id FROM scheduled_task_runs r"
-            " JOIN scheduled_tasks t ON t.id = r.task_id"
-            " WHERE r.id = ? AND r.worker_id = ? AND r.status = 'running'",
+            "SELECT task_id FROM scheduled_task_runs"
+            " WHERE id = ? AND worker_id = ? AND status = 'running'",
             (run_id, worker_id),
         ).fetchone()
         if row is None:
             return False
         if discard_chat:
-            discard_run_output_in(conn, run_id, row["chat_thread_id"])
+            delete_chat_threads_in(conn, [chat_id_for_run(run_id)])
         # The chat can already be gone; the foreign key would refuse the whole update.
         if (
             thread_id is not None
@@ -566,9 +465,7 @@ def recover_stale_runs(stale_before: int) -> int:
             return 0
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
-            "SELECT r.id, r.task_id, t.chat_thread_id FROM scheduled_task_runs r"
-            " JOIN scheduled_tasks t ON t.id = r.task_id WHERE r.status = 'running'"
-            " AND COALESCE(r.heartbeat_at, r.started_at, r.created_at) < ?",
+            f"SELECT id, task_id FROM scheduled_task_runs WHERE {stale}",
             (stale_before,),
         ).fetchall()
         run_ids = [row["id"] for row in rows]
@@ -579,8 +476,8 @@ def recover_stale_runs(stale_before: int) -> int:
             [(now_ms(), run_id) for run_id in run_ids],
         )
         # Delete its chat in this transaction, so a failed run never keeps one and a late save cannot restore it.
-        for row in rows:
-            discard_run_output_in(conn, row["id"], row["chat_thread_id"])
+        if run_ids:
+            delete_chat_threads_in(conn, [chat_id_for_run(run_id) for run_id in run_ids])
         for task_id in {row["task_id"] for row in rows}:
             _trim_history(conn, task_id)
     return len(run_ids)

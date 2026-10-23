@@ -4323,7 +4323,6 @@ export const ar = {
       notifyAll: "كل تشغيل",
       notifyFailures: "عند الفشل فقط",
       notifyNone: "إيقاف",
-      newChatEachRun: "بدء كل تشغيل في دردشة جديدة",
       archiveSuccessful: "أرشفة عمليات التشغيل الناجحة",
       project: "المشروع",
       projectNone: "بلا",

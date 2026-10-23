@@ -334,16 +334,12 @@ def make_project(project_id = "proj-1"):
 
 def test_a_task_keeps_its_chat_options_and_refuses_a_missing_project(client):
     make_project()
-    task = create(client, newChatEachRun = True, archiveSuccessful = True, projectId = "proj-1").json()
-    assert (task["newChatEachRun"], task["archiveSuccessful"], task["projectId"]) == (
-        True,
-        True,
-        "proj-1",
-    )
+    task = create(client, archiveSuccessful = True, projectId = "proj-1").json()
+    assert (task["archiveSuccessful"], task["projectId"]) == (True, "proj-1")
     assert create(client, projectId = "nowhere").status_code == 400
     cleared = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"projectId": None}).json()
     assert cleared["projectId"] is None
-    assert create(client).json()["newChatEachRun"] is True
+    assert create(client).json()["archiveSuccessful"] is False
 
 
 def test_create_list_and_read(client, monkeypatch):
@@ -750,7 +746,6 @@ def test_a_run_that_fails_after_writing_its_chat_leaves_none_however_soon_studio
     monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Half saved."))
     monkeypatch.setattr(scheduler_module, "save_chat", save_then_fail)
     monkeypatch.setattr(scheduler_module, "_discard_chat", lambda thread_id: None)
-    monkeypatch.setattr(scheduler_module, "_discard_run_output", lambda run_id, kept: None)
     execute(task, run)
 
     assert db.get_task(task["id"])["lastRun"]["status"] == "failed"
@@ -1521,62 +1516,6 @@ def test_a_project_deleted_since_the_task_was_saved_is_skipped():
     assert studio_db.get_chat_thread(thread_id)["projectId"] is None
 
 
-def test_without_a_new_chat_per_run_every_run_continues_one_chat():
-    task, first = claim_manual_run()
-    db.update_task(
-        task["id"], {"newChatEachRun": False, "archiveSuccessful": True, "projectId": "x"}
-    )
-    task = db.get_task(task["id"])
-    one = scheduler_module.save_chat(
-        task, first, Answer("First answer.", "", "gemma-3"), 1_000, 2_000
-    )
-    assert one == db.chat_id_for_run(first["id"])
-    task = db.get_task(task["id"])
-    assert task["chatThreadId"] == one
-    assert studio_db.get_chat_thread(one)["archived"] is False
-
-    assert scheduler_module.chat_history(one) == [
-        {"role": "user", "content": "Write a haiku about mornings."},
-        {"role": "assistant", "content": "First answer."},
-    ]
-    second = {**first, "id": "run-2"}
-    two = scheduler_module.save_chat(
-        task, second, Answer("Second answer.", "", "gemma-3"), 3_000, 4_000
-    )
-    assert two == one
-    messages = studio_db.list_chat_messages(one)
-    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
-    assert messages[2]["parentId"] == messages[1]["id"]
-    assert len(studio_db.list_chat_threads()) == 1
-
-
-def test_a_deleted_ongoing_chat_is_replaced_by_a_new_one():
-    task, first = claim_manual_run()
-    db.update_task(task["id"], {"newChatEachRun": False})
-    one = scheduler_module.save_chat(
-        db.get_task(task["id"]), first, Answer("A.", "", "m"), 1_000, 2_000
-    )
-    studio_db.delete_chat_threads([one])
-    second = {**first, "id": "run-2"}
-    two = scheduler_module.save_chat(
-        db.get_task(task["id"]), second, Answer("B.", "", "m"), 3_000, 4_000
-    )
-    assert two != one and db.get_task(task["id"])["chatThreadId"] == two
-
-
-def test_an_ongoing_chat_reaches_the_model_as_history(monkeypatch):
-    task, first = claim_manual_run()
-    db.update_task(task["id"], {"newChatEachRun": False})
-    scheduler_module.save_chat(
-        db.get_task(task["id"]), first, Answer("Yesterday.", "", "m"), 1_000, 2_000
-    )
-    producer = FakeProducer(completion("Today."))
-    generate(monkeypatch, producer, db.get_task(task["id"]))
-    roles = [message.role for message in producer.payload.messages]
-    assert roles == ["system", "user", "assistant", "user"]
-    assert producer.payload.messages[2].content == "Yesterday."
-
-
 def test_an_empty_reply_is_a_failure(monkeypatch):
     with pytest.raises(RunFailed) as failure:
         generate(monkeypatch, FakeProducer(completion("  ", reasoning = "Thinking only.")))
@@ -1826,113 +1765,6 @@ def test_the_system_prompt_falls_back_to_utc_for_an_unknown_zone():
     assert "Wednesday, October 14, 2026 at 06:00 (Gone/Zone)" in prompt
 
 
-def ongoing_task_with_one_run():
-    task, first = claim_manual_run()
-    db.update_task(task["id"], {"newChatEachRun": False})
-    task = db.get_task(task["id"])
-    chat = scheduler_module.save_chat(task, first, Answer("First.", "", "m"), 1_000, 2_000)
-    assert db.finish_run(first["id"], "worker-under-test", status = "succeeded", thread_id = chat)
-    return db.get_task(task["id"]), chat
-
-
-def test_a_stale_snapshot_prune_keeps_a_scheduled_exchange_it_never_saw():
-    task, chat = ongoing_task_with_one_run()
-    seen = studio_db.list_chat_messages(chat)
-    db.request_run(task["id"])
-    _task, second = claim()
-    scheduler_module.save_chat(task, second, Answer("Second.", "", "m"), 3_000, 4_000)
-
-    studio_db.sync_chat_messages(
-        chat, [seen[0]], prune_missing = True, deleted_message_ids = [seen[1]["id"]]
-    )
-
-    left = studio_db.list_chat_messages(chat)
-    assert [_message_text(m) for m in left] == [
-        "Write a haiku about mornings.",
-        "Write a haiku about mornings.",
-        "Second.",
-    ]
-    assert left[1]["parentId"] == seen[0]["id"]
-
-
-def test_an_explicit_delete_still_removes_a_scheduled_message():
-    task, chat = ongoing_task_with_one_run()
-    user, assistant = studio_db.list_chat_messages(chat)
-    studio_db.sync_chat_messages(
-        chat, [user], prune_missing = True, deleted_message_ids = [assistant["id"]]
-    )
-    assert [m["id"] for m in studio_db.list_chat_messages(chat)] == [user["id"]]
-
-
-@pytest.mark.parametrize("ending", ["failed", "stale", "deleted"])
-def test_an_unsettled_ongoing_run_leaves_no_exchange_behind(ending):
-    task, chat = ongoing_task_with_one_run()
-    db.request_run(task["id"])
-    _task, second = claim()
-    scheduler_module.save_chat(task, second, Answer("Unsettled.", "", "m"), 3_000, 4_000)
-    assert len(studio_db.list_chat_messages(chat)) == 4
-
-    if ending == "failed":
-        assert db.finish_run(second["id"], "worker-under-test", status = "failed", discard_chat = True)
-    elif ending == "stale":
-        assert db.recover_stale_runs(db.now_ms() + _STALE_MS) == 1
-    else:
-        assert db.delete_task(task["id"])
-
-    assert [_message_text(m) for m in studio_db.list_chat_messages(chat)] == [
-        "Write a haiku about mornings.",
-        "First.",
-    ]
-
-
-def test_ongoing_history_follows_the_branch_the_chat_shows():
-    task, chat = ongoing_task_with_one_run()
-    user, first = studio_db.list_chat_messages(chat)
-    studio_db.sync_chat_messages(
-        chat,
-        [
-            {
-                "id": "regen",
-                "threadId": chat,
-                "parentId": user["id"],
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Regenerated."}],
-                "createdAt": 2_500,
-            }
-        ],
-    )
-    history = scheduler_module.chat_history(chat)
-    assert [m["content"] for m in history] == ["Write a haiku about mornings.", "Regenerated."]
-
-
-def _message_text(message):
-    return scheduler_module._message_text(message)
-
-
-_STALE_MS = 10 * 60 * 1000
-
-
-def test_an_ongoing_exchange_whose_run_cannot_be_settled_is_removed(monkeypatch):
-    task, chat = ongoing_task_with_one_run()
-    db.request_run(task["id"])
-    _task, run = claim()
-
-    def locked(*args, **kwargs):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(scheduler_module, "generate_answer", answer_with("Stranded."))
-    monkeypatch.setattr(scheduler_module, "_SETTLE_RETRY_SECONDS", 0)
-    monkeypatch.setattr(db, "finish_run", locked)
-    scheduler = new_scheduler()
-    scheduler.worker_id = "worker-under-test"
-    asyncio.run(scheduler._execute(OWNER, _task, run))
-
-    assert [_message_text(m) for m in studio_db.list_chat_messages(chat)] == [
-        "Write a haiku about mornings.",
-        "First.",
-    ]
-
-
 def test_a_carried_swap_restores_the_model_the_user_picked_since(monkeypatch):
     world = SwapWorld(monkeypatch)
     holder = scheduler_module.SwapHolder()
@@ -2023,3 +1855,39 @@ def test_a_task_model_loaded_alongside_the_primary_answers_without_a_swap(monkey
     assert answer.content == "Dawn light." and producer.payload.model == SwapWorld.TASK_MODEL
     # The primary stays as the user left it: nothing unloaded, nothing reloaded.
     assert world.unloaded == [] and world.reloads == [] and world.loaded == SwapWorld.EARLIER
+
+
+def test_switching_back_unloads_a_non_gguf_task_model_first(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    backend = SimpleNamespace(active_model_name = None)
+    monkeypatch.setattr(inference_routes, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference_routes,
+        "_loaded_satisfies",
+        lambda model: (backend.active_model_name == model)
+        or (world.loaded is not None and world.loaded[2] == model),
+    )
+
+    class LoadsATransformersModel(FakeProducer):
+        async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+            # A Transformers checkpoint replaces the GGUF: no GGUF identity is left.
+            world.loaded = None
+            backend.active_model_name = SwapWorld.TASK_MODEL
+            return await super().__call__(
+                payload, request, current_subject, cancel_on_disconnect = cancel_on_disconnect
+            )
+
+    async def unload(request, subject):
+        world.unloaded.append(request.model_path)
+        backend.active_model_name = None
+        world.loaded = None
+
+    monkeypatch.setattr(inference_routes, "_unload_model_impl", unload)
+    # Unattended: the earlier GGUF is restorable because nothing non-GGUF was loaded before.
+    world.run(
+        monkeypatch,
+        {"id": "run-1", "source": "schedule"},
+        LoadsATransformersModel(completion("Ok.")),
+    )
+    assert world.unloaded == [SwapWorld.TASK_MODEL]
+    assert world.loaded == SwapWorld.EARLIER

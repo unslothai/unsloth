@@ -4399,7 +4399,6 @@ export const it = {
       notifyAll: "Ogni esecuzione",
       notifyFailures: "Solo se non riesce",
       notifyNone: "Disattivate",
-      newChatEachRun: "Avvia ogni esecuzione in una nuova chat",
       archiveSuccessful: "Archivia le esecuzioni riuscite",
       project: "Progetto",
       projectNone: "Nessuno",

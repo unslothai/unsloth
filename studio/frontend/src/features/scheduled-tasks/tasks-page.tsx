@@ -83,6 +83,7 @@ function loadFilter(): TaskStatus[] {
     const saved: unknown = JSON.parse(localStorage.getItem(FILTER_KEY) ?? "null");
     if (Array.isArray(saved)) return STATUSES.filter((status) => saved.includes(status));
   } catch {
+    // Unreadable storage shows every task.
   }
   return STATUSES;
 }
@@ -91,6 +92,7 @@ function saveFilter(shown: TaskStatus[]): void {
   try {
     localStorage.setItem(FILTER_KEY, JSON.stringify(shown));
   } catch {
+    // Without storage the filter resets on the next visit.
   }
 }
 

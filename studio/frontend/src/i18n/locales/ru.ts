@@ -4355,7 +4355,6 @@ export const ru = {
       notifyAll: "Каждый запуск",
       notifyFailures: "Только ошибки",
       notifyNone: "Выключены",
-      newChatEachRun: "Начинать каждый запуск в новом чате",
       archiveSuccessful: "Архивировать успешные запуски",
       project: "Проект",
       projectNone: "Нет",

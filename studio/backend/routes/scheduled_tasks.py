@@ -56,8 +56,6 @@ class ScheduledTaskCreate(BaseModel):
     model: Optional[TaskModel] = None
     reasoningEffort: Optional[ReasoningEffort] = None
     allowModelLoad: bool = False
-    # Off: every run adds to one ongoing chat, which sees the runs before it.
-    newChatEachRun: bool = True
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
 
@@ -75,7 +73,6 @@ class ScheduledTaskUpdate(BaseModel):
     model: Optional[TaskModel] = None
     reasoningEffort: Optional[ReasoningEffort] = None
     allowModelLoad: Optional[bool] = None
-    newChatEachRun: Optional[bool] = None
     archiveSuccessful: Optional[bool] = None
     projectId: Optional[ProjectId] = None
 
@@ -120,7 +117,6 @@ class ScheduledTask(BaseModel):
     model: Optional[str] = None
     reasoningEffort: Optional[ReasoningEffort] = None
     allowModelLoad: bool = False
-    newChatEachRun: bool = True
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
     status: Literal["active", "paused", "completed"]
@@ -210,7 +206,6 @@ def create_scheduled_task(
         "model": payload.model,
         "reasoningEffort": payload.reasoningEffort,
         "allowModelLoad": payload.allowModelLoad,
-        "newChatEachRun": payload.newChatEachRun,
         "archiveSuccessful": payload.archiveSuccessful,
         "projectId": _existing_project(payload.projectId),
         "createdAt": now,

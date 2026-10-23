@@ -51,6 +51,7 @@ function save({ tasks, page }: Stored): void {
   try {
     localStorage.setItem(key, JSON.stringify({ tasks, page }));
   } catch {
+    // Without storage the dots last until the next launch.
   }
 }
 

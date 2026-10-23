@@ -4357,7 +4357,6 @@ export const ptBR = {
       notifyAll: "Cada execução",
       notifyFailures: "Só em caso de falha",
       notifyNone: "Desativadas",
-      newChatEachRun: "Iniciar cada execução em um novo chat",
       archiveSuccessful: "Arquivar execuções bem-sucedidas",
       project: "Projeto",
       projectNone: "Nenhum",
