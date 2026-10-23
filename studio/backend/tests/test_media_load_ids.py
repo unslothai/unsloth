@@ -255,3 +255,15 @@ def test_a_status_snapshot_reads_under_the_admission_lock():
 
     assert media_load_ids.snapshot("video", engine, read) == ({"loaded": True}, "t1")
     assert held == [True]
+
+
+def test_a_token_another_account_used_is_cancelled_for_this_account():
+    # Account a once loaded with t1 (now replaced); account b naming t1 records its own cancellation.
+    engine = _Engine()
+    _as("a", _load, engine, "t1")
+    _as("a", _load, engine, "t2")
+    assert _as("a", _unload, engine, "t1") == ("superseded", None)
+    assert _as("b", _unload, engine, "t1") == ("cancelled", None)
+    with pytest.raises(media_load_ids.LoadCancelledError):
+        _as("b", _load, engine, "t1")
+    assert engine.unloads == 0 and engine._load_token == 2

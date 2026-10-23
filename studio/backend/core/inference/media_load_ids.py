@@ -56,6 +56,7 @@ _current: dict[str, _Record] = {}
 # The load that published the resident state before the last admission, as (token, engine, state):
 # a newer load that failed leaves it resident.
 _published: dict[str, tuple[str, Any, Any]] = {}
+# Keyed by (token, account) of the account whose load was admitted with it.
 _seen: dict[str, "OrderedDict[Any, None]"] = {}
 # Keyed by (token, account): an unload cancels a token for its own account only.
 _cancelled: dict[str, "OrderedDict[Any, None]"] = {}
@@ -117,7 +118,9 @@ def admitted(modality: str, engine: Any, load_token: Optional[str], prior: Any) 
     with _lock:
         token = load_token or f"studio-{uuid.uuid4().hex}"
         _current[modality] = _Record(token, engine, getattr(engine, "_load_token", None), prior)
-        _remember(_seen, modality, token)
+        # Per account like _cancelled: another account's earlier use of a token never answers
+        # superseded for this one, which then records its own cancellation.
+        _remember(_seen, modality, (token, _account()))
 
 
 def _describes(record: _Record, engine: Any) -> bool:
@@ -173,7 +176,7 @@ def unload_if_current(
         with _lock:
             record = _current.get(modality)
             if _slot_token(modality, engine) != load_token:
-                if load_token in _seen.get(modality, ()):
+                if (load_token, _account()) in _seen.get(modality, ()):
                     return "superseded", None
                 # Not admitted yet: refuse it when it comes, which a lost POST response cannot stop.
                 # Only for this account, so no account can cancel another's load in advance.
