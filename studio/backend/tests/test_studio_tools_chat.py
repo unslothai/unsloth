@@ -354,9 +354,11 @@ def test_stop_also_stops_an_image_render_on_the_gpu(
     from core.inference.generation_ticket import bind_generation_cancel
 
     render = threading.Event()
+    bound = threading.Event()
 
     def engine():
         bind_generation_cancel(render)
+        bound.set()
         render.wait(10)
 
     async def generating(request):
@@ -365,11 +367,12 @@ def test_stop_also_stops_an_image_render_on_the_gpu(
 
     studio(monkeypatch, {**RUN_PAYLOADS, RUNS: generating})
     stop = threading.Event()
-    threading.Timer(0.5, stop.set).start()
+    # Stop once the render is running: a fixed delay can fire before a loaded host reaches the route.
+    threading.Thread(target = lambda: bound.wait(10) and stop.set(), daemon = True).start()
     started = time.monotonic()
     result = bridge(OWNER, "list_training_runs", cancel_event = stop)
     assert result == "Error: MCP tool 'list_training_runs' cancelled"
-    assert render.is_set() and time.monotonic() - started < 5
+    assert render.is_set() and time.monotonic() - started < 10
     assert chat_keys() == []
 
 
