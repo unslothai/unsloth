@@ -451,3 +451,44 @@ def test_concurrent_loads_keep_their_own_rules(monkeypatch, tmp_path):
         seen[str(video / "model.safetensors")] == "pread"
     )  # its fp32 encoder, despite the image's keep entry
     assert seen[str(image / "model.safetensors")] is None  # the image's routed encoder stays mapped
+
+
+@requires_backend
+def test_a_thread_outside_any_scope_keeps_unsloths_default(monkeypatch, tmp_path):
+    """While a video scope holds the process-wide wrapper, an eager image-side load in another thread (HiDream's Llama)
+    gets no keep flag, so unsloth's Windows pread patch still applies there."""
+    import functools
+
+    from safetensors.torch import save_file
+
+    path = tmp_path / "text_encoder_4" / "model.safetensors"
+    path.parent.mkdir()
+    save_file({"w": torch.zeros(64, 64, dtype = torch.bfloat16)}, str(path))
+    received = []
+    real = modeling_utils.safe_open
+
+    @functools.wraps(real)
+    def core_patch(*args, **kwargs):
+        received.append(kwargs.pop("_unsloth_keep_mmap", None))
+        return real(*args, **kwargs)
+
+    core_patch._unsloth_windows_pread = True
+    monkeypatch.setattr(modeling_utils, "safe_open", core_patch)
+    monkeypatch.setattr(sys, "platform", "win32")
+    entered, release = threading.Event(), threading.Event()
+
+    def video_load():
+        with sp.pread_safetensors():
+            entered.set()
+            release.wait(5)
+
+    worker = threading.Thread(target = video_load)
+    worker.start()
+    assert entered.wait(5)
+    try:
+        with modeling_utils.safe_open(str(path), framework = "pt", device = "cpu") as handle:
+            handle.get_slice("w")[...]
+    finally:
+        release.set()
+        worker.join(5)
+    assert received == [None]
