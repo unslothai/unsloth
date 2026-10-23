@@ -124,8 +124,12 @@ def test_gqa_probe_runs_under_the_training_restriction(monkeypatch):
     Q = torch.randn(1, 4, 6, 8).as_subclass(_CudaLooking)
     K = torch.randn(1, 2, 6, 8).as_subclass(_CudaLooking)
     before = torch.backends.cuda.cudnn_sdp_enabled()
-    assert ad._sdpa_takes_gqa(Q, K, False, True, K, 0.0, no_cudnn = ad._avoids_cudnn(Q, True)) is False
-    assert ad._sdpa_takes_gqa(Q, K, False, True, K, 0.0, no_cudnn = ad._avoids_cudnn(Q, False)) is before
+    assert (
+        ad._sdpa_takes_gqa(Q, K, False, True, K, 0.0, no_cudnn = ad._avoids_cudnn(Q, True)) is False
+    )
+    assert (
+        ad._sdpa_takes_gqa(Q, K, False, True, K, 0.0, no_cudnn = ad._avoids_cudnn(Q, False)) is before
+    )
     assert [cudnn for _, cudnn in probed] == [False, before]
     assert probed[0][0] == probed[1][0]  # same shapes, only the backend set differs
     assert torch.backends.cuda.cudnn_sdp_enabled() == before
@@ -137,13 +141,24 @@ def test_gqa_probe_runs_under_the_training_restriction(monkeypatch):
 def test_dense_and_segment_paths_probe_without_cudnn_when_training(monkeypatch):
     flags = []
     monkeypatch.setattr(ad, "_NO_CUDNN_TRAINING", frozenset({None}))
-    monkeypatch.setattr(ad, "_sdpa_takes_gqa", lambda *a, no_cudnn = False, **k: flags.append(no_cudnn) or False)
-    monkeypatch.setattr(F, "scaled_dot_product_attention", lambda q, k, v, **kw: torch.zeros_like(q))
+    monkeypatch.setattr(
+        ad, "_sdpa_takes_gqa", lambda *a, no_cudnn = False, **k: flags.append(no_cudnn) or False
+    )
+    monkeypatch.setattr(
+        F, "scaled_dot_product_attention", lambda q, k, v, **kw: torch.zeros_like(q)
+    )
     Q = torch.randn(1, 4, 6, 8).as_subclass(_CudaLooking)
     K = torch.randn(1, 2, 6, 8).as_subclass(_CudaLooking)
     for training in (True, False):
         ad._sdpa_packed_segments(
-            Q, K, K, (2, 4), n_groups = 2, is_causal = True, sliding_window = None,
-            sdpa_kwargs = {}, training = training,
+            Q,
+            K,
+            K,
+            (2, 4),
+            n_groups = 2,
+            is_causal = True,
+            sliding_window = None,
+            sdpa_kwargs = {},
+            training = training,
         )
     assert flags == [True, True, False, False]
