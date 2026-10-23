@@ -11199,6 +11199,11 @@ if ($LocalLlamaCppLinked) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }
 
+    # -- Step F: Build llama-bench (optional, best-effort) for throughput benchmarks --
+    if ($BuildOk) {
+        $null = cmake --build $BuildDir --config Release --target llama-bench -j $NumCpu 2>&1 | Out-String
+    }
+
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
