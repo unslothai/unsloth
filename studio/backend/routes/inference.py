@@ -11692,8 +11692,14 @@ async def _maybe_auto_switch_model(
                 await asyncio.to_thread(account_access.require_model_access, resident)
             except HTTPException as refusal:
                 # A Hub resident the caller's own token can fetch is theirs to use as well.
-                if refusal.status_code != 404 or not await _caller_token_authorizes_download(
-                    str(resident or ""), fastapi_request
+                if refusal.status_code != 404:
+                    raise
+                resident_reference = str(resident or "")
+                cached_repo = await asyncio.to_thread(
+                    account_access.cached_model_repo, resident_reference
+                )
+                if not await _caller_token_authorizes_download(
+                    cached_repo or resident_reference, fastapi_request
                 ):
                     raise
             return
