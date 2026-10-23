@@ -515,7 +515,9 @@ def _restore_quant_state(model, state_dict, options):
     """Loading a full DCP state dict: the saved QuantState entries (`_add_quant_state_entries`) are
     copied into each live QuantState in place, so the packed bytes DCP loads are dequantized with the
     scales they were saved with. A saved QuantState that does not fit the live one (other shape,
-    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. With
+    blocksize, quant type or nesting) raises instead of pairing the bytes with the wrong scales. Saved
+    entries whose packed weight is not in the state dict (a partial one) are not applied, as DCP keeps
+    the live bytes: strict raises, strict=False warns and keeps the live QuantState. With
     `broadcast_from_rank0` only rank 0 holds the entries and sends them to the others."""
     entries = _linear4bit_entries(model)
     if not entries:
@@ -539,6 +541,8 @@ def _restore_quant_state(model, state_dict, options):
             return
     from bitsandbytes.functional import QuantState
 
+    strict = bool(getattr(options, "strict", True)) if options is not None else True
+    orphans = []
     for prefix, module in entries:
         live = module.weight.quant_state
         head = prefix + "weight."
@@ -576,7 +580,25 @@ def _restore_quant_state(model, state_dict, options):
                         "quantization state is kept."
                     )
             continue
+        if not loads_weight:
+            # Metadata without its packed weight: DCP leaves the live bytes, so their scales stay too.
+            if strict:
+                raise ValueError(
+                    f"Unsloth: the state dict has the 4-bit quantization state of `{head[:-1]}` but "
+                    "not its packed weight. Load the weight with it, or pass strict=False to keep "
+                    "the model's own weight and quantization state."
+                )
+            orphans.append(head[:-1])
+            continue
         expected = set(live.as_dict(packed = True))
+        saved_nested = any(k.startswith("nested_") for k in saved)
+        if saved_nested != bool(live.nested):
+            raise ValueError(
+                f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` (nested "
+                f"{saved_nested}) does not match the model's (nested {bool(live.nested)}). Load it "
+                "into a model quantized with the same bitsandbytes settings "
+                "(bnb_4bit_use_double_quant)."
+            )
         if set(saved) != expected:
             raise ValueError(
                 f"Unsloth: the checkpoint's 4-bit quantization state for `{head[:-1]}` has entries "
@@ -610,6 +632,30 @@ def _restore_quant_state(model, state_dict, options):
         with torch.no_grad():
             for _, a, b in pairs:
                 b.copy_(a.to(b.device))
+    if orphans and (not broadcast or dist.get_rank() == 0):
+        import warnings
+
+        warnings.warn(
+            f"Unsloth: skipped the 4-bit quantization state of {', '.join(orphans)}: the state dict "
+            "does not have the packed weight, so the model keeps its own weight and quantization "
+            "state.",
+            stacklevel = 3,
+        )
+
+
+# Every state dict key suffix bitsandbytes writes for a 4-bit QuantState (`QuantState.as_dict(packed =
+# True)`), nested or not, nf4 or fp4: all are dropped, so a strict=False load whose metadata was not
+# applied never hands DCP a key it cannot resolve.
+_QUANT_STATE_KEYS = frozenset(
+    (
+        "absmax",
+        "quant_map",
+        "nested_absmax",
+        "nested_quant_map",
+        "quant_state.bitsandbytes__nf4",
+        "quant_state.bitsandbytes__fp4",
+    )
+)
 
 
 def _without_quant_state_entries(name, args, kwargs):
@@ -621,7 +667,8 @@ def _without_quant_state_entries(name, args, kwargs):
     drop = set()
     for prefix, module in _linear4bit_entries(model):
         drop.update(
-            prefix + "weight." + key for key in module.weight.quant_state.as_dict(packed = True)
+            prefix + "weight." + key
+            for key in _QUANT_STATE_KEYS.union(module.weight.quant_state.as_dict(packed = True))
         )
     if not drop:
         return args, kwargs
