@@ -1976,6 +1976,11 @@ async def start_training(
     to check progress.
     """
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
+    from core.inference import gpu_arbiter
+
+    leased = gpu_arbiter.lease_refusal()
+    if leased is not None:
+        raise leased.as_http_exception()
     if request.drafter is not None and request.drafter.enabled:
         from core.training.training import should_use_mlx_training_backend
         if should_use_mlx_training_backend():

@@ -8,9 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import quote
 
+from core.flows.nodes._common import poll_job
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 RECIPES = "/api/data-recipe"
@@ -90,21 +91,27 @@ async def recipe(ctx: NodeContext) -> dict:
     async def cancel() -> None:
         await ctx.call("POST", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/cancel")
 
-    ctx.on_cancel(cancel)
-    while True:
-        await asyncio.sleep(POLL_S)
-        status = await ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/status")
+    def parse(status: Any) -> tuple[str, Optional[dict], Optional[str]]:
         state = str(status.get("status") or "") if isinstance(status, dict) else ""
         progress = status.get("progress") if isinstance(status, dict) else None
+        shown = None
         if isinstance(progress, dict) and isinstance(progress.get("percent"), (int, float)):
-            ctx.progress(progress["percent"] / 100.0, phase = state)
+            shown = {"fraction": progress["percent"] / 100.0, "phase": state}
         if state in ("completed", "done", "succeeded"):
-            break
+            return "completed", shown, None
         if state in ("error", "failed"):
-            raise FlowNodeError(str(status.get("error") or "The recipe failed"))
+            return "failed", shown, str(status.get("error") or "The recipe failed")
         if state in ("cancelled", "canceled"):
-            ctx.check_cancelled()
-            raise FlowNodeError("The recipe was cancelled")
+            return "cancelled", shown, "The recipe was cancelled"
+        return "running", shown, None
+
+    status = await poll_job(
+        ctx,
+        status = lambda: ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/status"),
+        parse = parse,
+        cancel = cancel,
+        interval = POLL_S,
+    )
     preview: list = []
     try:
         page = await ctx.call(

@@ -9,6 +9,7 @@ import { uploadAsset } from "../api";
 import type { MediaValue, ModelChoice, ParamSpec } from "../types";
 import { DiceIcon, Upload01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
+import { pickOptions } from "./remote-options";
 
 const FIELD =
   "w-full rounded-md border border-white/10 bg-zinc-900 px-2 py-1.5 text-[13px] text-zinc-100 outline-none focus:border-sky-500/60";
@@ -204,7 +205,64 @@ function AssetField({ spec, value, onChange }: FieldProps) {
   );
 }
 
+const remoteOptions = new Map<string, Promise<string[] | null>>();
+
+function useRemoteOptions(spec: ParamSpec): string[] | null {
+  const [options, setOptions] = useState<string[] | null>(null);
+  const source = spec.options_from;
+  const path = spec.options_path;
+  useEffect(() => {
+    if (!source) return;
+    const key = `${source}|${path ?? ""}`;
+    let request = remoteOptions.get(key);
+    if (!request) {
+      request = authFetch(source)
+        .then(async (r) => (r.ok ? pickOptions(await r.json(), path) : null))
+        .catch(() => null);
+      remoteOptions.set(key, request);
+      // A failure is retried the next time the field opens.
+      void request.then((found) => {
+        if (found === null) remoteOptions.delete(key);
+      });
+    }
+    let alive = true;
+    void request.then((found) => {
+      if (alive) setOptions(found);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [source, path]);
+  return options;
+}
+
+/** Free text with suggestions from a Studio route; with no answer it is plain text. */
+function RemoteOptionsField({ spec, value, onChange }: FieldProps) {
+  const options = useRemoteOptions(spec);
+  const listId = useId();
+  return (
+    <>
+      <input
+        value={String(value ?? "")}
+        list={options ? listId : undefined}
+        placeholder={options ? `${options.length} choices` : undefined}
+        onChange={(e) => onChange(e.target.value)}
+        className={FIELD}
+      />
+      {options ? (
+        <datalist id={listId}>
+          {options.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+      ) : null}
+    </>
+  );
+}
+
 function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
+  if (spec.options_from && (spec.kind === "text" || spec.kind === "select"))
+    return <RemoteOptionsField spec={spec} value={value} onChange={onChange} />;
   switch (spec.kind) {
     case "text":
       return (

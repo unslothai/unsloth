@@ -607,6 +607,108 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
         )
 
 
+class GpuLeaseHeldError(GpuBusyForAnotherAccountError):
+    """An operation (a benchmark, an eval) holds the GPU for a measurement; routes answer 409 ``gpu_leased``."""
+
+    def __init__(self, label: str, remaining_s: float):
+        self.label = label
+        self.remaining_s = max(0.0, remaining_s)
+        super().__init__(_owner or CHAT, 0)
+
+    @property
+    def retry_after(self) -> int:
+        return max(1, min(int(self.remaining_s), 300))
+
+    def __str__(self) -> str:
+        minutes = max(1, round(self.remaining_s / 60))
+        return f"{self.label} is using the GPU (at most about {minutes} min left). Try again when it finishes."
+
+    def as_http_exception(self, path: Optional[str] = None):
+        from fastapi import HTTPException
+        from utils.api_errors import error_body_for_path
+
+        message = str(self)
+        detail = (
+            error_body_for_path(path, message, status = 409, code = "gpu_leased", param = "model")
+            if path and path.startswith("/v1/")
+            else {"error": "gpu_leased", "message": message, "retry_after": self.retry_after}
+        )
+        return HTTPException(
+            status_code = 409, detail = detail, headers = {"Retry-After": str(self.retry_after)}
+        )
+
+
+# One operation at a time may hold the GPU against residency changes. The holder is a server-side
+# context value set by the code that took the lease (a Flows run sets it around its own node), so
+# requests that node makes in-process pass, and no client can claim it.
+_lease_lock = threading.Lock()
+_lease: Optional[dict] = None
+_lease_holder: ContextVar[Optional[str]] = ContextVar("gpu_lease_holder", default = None)
+
+
+def _live_lease() -> Optional[dict]:
+    global _lease
+    import time
+
+    if _lease is not None and _lease["expires"] <= time.monotonic():
+        logger.warning("gpu_arbiter: the %s lease expired without a release", _lease["kind"])
+        _lease = None
+    return _lease
+
+
+def lease_refusal() -> Optional[GpuLeaseHeldError]:
+    """The error a residency change must raise now, or None (no lease, or the caller holds it)."""
+    import time
+    with _lease_lock:
+        lease = _live_lease()
+        if lease is None or _lease_holder.get() == lease["holder"]:
+            return None
+        return GpuLeaseHeldError(lease["label"], lease["expires"] - time.monotonic())
+
+
+def raise_if_leased() -> None:
+    refusal = lease_refusal()
+    if refusal is not None:
+        raise refusal
+
+
+def lease_held() -> bool:
+    with _lease_lock:
+        return _live_lease() is not None
+
+
+@contextmanager
+def operation_lease(
+    kind: str,
+    holder: str,
+    ttl: float,
+    label: Optional[str] = None,
+) -> Iterator[None]:
+    """Hold the GPU against other residency changes for ``ttl`` seconds at most; raises GpuLeaseHeldError if
+    another holder has it. Code inside (and tasks or threads it starts with the context copied) is the holder."""
+    global _lease
+    import time
+
+    with _lease_lock:
+        lease = _live_lease()
+        if lease is not None and lease["holder"] != holder:
+            raise GpuLeaseHeldError(lease["label"], lease["expires"] - time.monotonic())
+        _lease = {
+            "kind": kind,
+            "holder": holder,
+            "label": label or kind.capitalize(),
+            "expires": time.monotonic() + max(1.0, ttl),
+        }
+    token = _lease_holder.set(holder)
+    try:
+        yield
+    finally:
+        _lease_holder.reset(token)
+        with _lease_lock:
+            if _lease is not None and _lease["holder"] == holder:
+                _lease = None
+
+
 def other_accounts_active(account_id: str) -> int:
     from state import active_generations
 
@@ -681,6 +783,9 @@ def acquire_for(
     from utils.account_context import current_account_id
 
     acting = account_id or current_account_id()
+    if register is not None or replacing or owner not in _view(current_owner()):
+        # A plain re-assert of a resident model changes nothing, so generation keeps working under a lease.
+        raise_if_leased()
     # The segmenter's VRAM goes to this owner: a mask call arriving before its register returns stays off the card.
     handover = owner != DIFFUSION or register is not None or replacing
     with _lock, _handover_fence() if handover else nullcontext():

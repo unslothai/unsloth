@@ -10,6 +10,9 @@ export interface NodeRuntime {
   phase: string | null;
   preview: string | null;
   outputs: Record<string, unknown> | null;
+  /** Values a long step published before it finished (rows so far); never what other steps read. */
+  partial: Record<string, unknown> | null;
+  partialStep: { step: number; total: number } | null;
   error: string | null;
   cached: boolean;
   text: string;
@@ -47,12 +50,42 @@ export const IDLE_RUNTIME: NodeRuntime = Object.freeze({
   phase: null,
   preview: null,
   outputs: null,
+  partial: null,
+  partialStep: null,
   error: null,
   cached: false,
   text: "",
   startedAt: null,
   finishedAt: null,
 }) as NodeRuntime;
+
+interface PartialData {
+  port?: string;
+  value?: unknown;
+  step?: number;
+  total?: number;
+}
+
+function stepOf(data: PartialData): { step: number; total: number } | null {
+  return typeof data.step === "number" && typeof data.total === "number"
+    ? { step: data.step, total: data.total }
+    : null;
+}
+
+/** A snapshot's stored partials ({port: {value, step, total}}) as runtime fields. */
+function partialFields(
+  stored: Record<string, PartialData> | undefined,
+): Pick<NodeRuntime, "partial" | "partialStep"> {
+  if (!stored || typeof stored !== "object")
+    return { partial: null, partialStep: null };
+  const partial: Record<string, unknown> = {};
+  let partialStep: { step: number; total: number } | null = null;
+  for (const [port, data] of Object.entries(stored)) {
+    partial[port] = data?.value;
+    partialStep = (data && stepOf(data)) ?? partialStep;
+  }
+  return { partial, partialStep };
+}
 
 const TERMINAL_RUN: Record<string, RunStatus> = {
   "run.completed": "completed",
@@ -106,6 +139,7 @@ export function reduceEvents(
           outputs?: Record<string, unknown> | null;
           error?: string | null;
           progress?: Record<string, unknown> | number | null;
+          partial?: Record<string, PartialData>;
         }
       >;
       const rebuilt: Record<string, NodeRuntime> = {};
@@ -115,6 +149,7 @@ export function reduceEvents(
           ...prev,
           status: snap.status ?? prev.status,
           outputs: snap.outputs ?? prev.outputs,
+          ...partialFields(snap.partial),
           error: snap.error ?? null,
           progress: progressFraction(snap.progress),
           cached: snap.status === "cached",
@@ -143,6 +178,8 @@ export function reduceEvents(
         node.error = null;
         node.progress = null;
         node.preview = null;
+        node.partial = null;
+        node.partialStep = null;
         node.startedAt = null;
         node.finishedAt = null;
       }
@@ -172,7 +209,16 @@ export function reduceEvents(
     } else if (event.type === "node.output") {
       const node = entry(id);
       node.outputs = (data.outputs as Record<string, unknown>) ?? null;
+      node.partial = null;
+      node.partialStep = null;
       if (data.cached) node.cached = true;
+    } else if (event.type === "node.partial") {
+      const node = entry(id);
+      const port = String(data.port ?? "");
+      if (port) {
+        node.partial = { ...(node.partial ?? {}), [port]: data.value };
+        node.partialStep = stepOf(data as PartialData) ?? node.partialStep;
+      }
     } else if (event.type === "node.text_delta") {
       const node = entry(id);
       node.text = (node.text + String(data.delta ?? "")).slice(-TEXT_LIMIT);

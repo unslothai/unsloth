@@ -383,6 +383,7 @@ async def load_llm(
     kv_cache_type: Optional[str] = None,
     gpu_layers: Optional[int] = None,
     is_lora: bool = False,
+    extra_body: Optional[dict[str, Any]] = None,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -415,6 +416,9 @@ async def load_llm(
                 gpu_layers = gpu_layers,
             )
         )
+        if extra_body:
+            # Explicit load settings (a Flows benchmark variant) win over the placement defaults.
+            body.update(extra_body)
         payload = await with_progress(
             None,
             route_json("POST", "/api/inference/load", caller = caller, json_body = body),

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import re
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import quote
 
 from core.flows import assets as asset_store
@@ -205,6 +206,16 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
 
 # Studio's status names a GGUF by repo only, so the variant Flows last loaded per slot is kept here.
 _LOADED_VARIANT: dict[str, tuple[str, str]] = {}
+# The load settings of the model Flows last loaded per slot, (repo, settings hash); absent = Studio's defaults.
+_LOADED_OPTIONS: dict[str, tuple[str, str]] = {}
+
+
+def options_hash(options: Optional[dict]) -> Optional[str]:
+    if not options:
+        return None
+    return hashlib.sha256(json.dumps(options, sort_keys = True, default = str).encode()).hexdigest()[
+        :16
+    ]
 
 
 async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
@@ -222,8 +233,44 @@ async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
     return variant.lower() if isinstance(variant, str) else None
 
 
-async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Optional[dict]:
-    """Load ``choice`` into its slot unless it is already resident; None keeps what is loaded."""
+async def ensure_model(
+    ctx: Any,
+    model_kind: str,
+    choice: Optional[dict],
+    options: Optional[dict] = None,
+) -> Optional[dict]:
+    """Load ``choice`` into its slot unless it is already resident; None keeps what is loaded.
+
+    ``options`` are load settings merged into the chat load body (context, KV cache type, offload, speculative
+    decoding); the model counts as resident only when it was loaded with the same settings."""
+    found = await _ensure_model(ctx, model_kind, choice, options)
+    requires = (getattr(ctx, "spec", None) or {}).get("requires")
+    if requires:
+        await _check_backend(ctx, model_kind, requires)
+    return found
+
+
+async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None:
+    from core.flows.engine import MODEL_SLOT
+    from studio_mcp import loading
+
+    if MODEL_SLOT.get(model_kind, model_kind) != "llm":
+        return
+    try:
+        _slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return
+    backend = "gguf" if status.get("is_gguf") else "transformers"
+    if backend not in requires:
+        title = (getattr(ctx, "spec", None) or {}).get("title") or "This step"
+        want = " or ".join("a GGUF" if r == "gguf" else "a transformers" for r in requires)
+        have = "GGUF" if backend == "gguf" else "transformers"
+        raise FlowNodeError(f"{title} needs {want} model, not {have}")
+
+
+async def _ensure_model(
+    ctx: Any, model_kind: str, choice: Optional[dict], options: Optional[dict]
+) -> Optional[dict]:
     from core.flows.engine import LOAD_KIND, MODEL_SLOT
     from studio_mcp import loading
 
@@ -241,12 +288,23 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
         return None
     if slot in ("embedding",):
         return {"repo": repo, "variant": variant}
+    if options and slot != "llm":
+        raise FlowNodeError("Load settings apply to chat models only")
     resident = await resident_name(ctx, model_kind)
     wanted = (repo.lower(), (variant or "").lower())
+    settings = options_hash(options)
+    loaded_with = _LOADED_OPTIONS.get(slot)
+    # Without settings anything Studio loaded counts, as before; only a model Flows loaded with settings differs.
+    same_settings = (
+        loaded_with is None or loaded_with[0] != repo.lower()
+        if settings is None
+        else loaded_with == (repo.lower(), settings)
+    )
     if (
         resident
         and resident.lower() == repo.lower()
         and (not variant or await _resident_variant(ctx, slot, repo) == variant.lower())
+        and same_settings
     ):
         return {"repo": repo, "variant": variant}
     ctx.set_status("loading_model", f"Loading {repo}{':' + variant if variant else ''}")
@@ -258,11 +316,13 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
                 None,
                 model = repo,
                 variant = variant,
-                max_seq_length = FLOW_CHAT_CONTEXT,
+                max_seq_length = int((options or {}).get("max_seq_length") or FLOW_CHAT_CONTEXT),
                 load_in_4bit = True,
                 hf_token = None,
                 kind = LOAD_KIND.get(model_kind, "llm"),
                 deadline = deadline,
+                extra_body = {k: v for k, v in (options or {}).items() if k != "max_seq_length"}
+                or None,
             )
         elif slot in ("image", "video"):
             await loading.load_media(
@@ -284,8 +344,40 @@ async def ensure_model(ctx: Any, model_kind: str, choice: Optional[dict]) -> Opt
     ctx.resident.clear()
     ctx.resident[slot] = repo
     _LOADED_VARIANT[slot] = wanted
+    if settings is None:
+        _LOADED_OPTIONS.pop(slot, None)
+    else:
+        _LOADED_OPTIONS[slot] = (repo.lower(), settings)
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
+
+
+async def poll_job(
+    ctx: Any,
+    *,
+    status: Callable[[], Awaitable[Any]],
+    parse: Callable[[Any], tuple[str, Optional[dict], Optional[str]]],
+    cancel: Optional[Callable[[], Awaitable[None]]] = None,
+    interval: float = 5.0,
+) -> Any:
+    """Follow a started Studio job until it ends and return its last status payload.
+
+    ``parse(payload)`` gives (state, progress, error): state is running, completed, failed or cancelled, progress the
+    ``ctx.progress`` keywords (or None) and error the failure message. It may raise FlowNodeError itself. ``cancel``
+    stops the job when the run is cancelled."""
+    if cancel is not None:
+        ctx.on_cancel(cancel)
+    while True:
+        await asyncio.sleep(interval)
+        payload = await status()
+        state, progress, error = parse(payload)
+        if progress:
+            ctx.progress(**progress)
+        if state == "completed":
+            return payload
+        if state in ("failed", "cancelled"):
+            ctx.check_cancelled()
+            raise FlowNodeError(error or f"The job {state}")
 
 
 async def _images_content(ctx: Any, prompt: str, images: Optional[list[dict]]) -> Any:

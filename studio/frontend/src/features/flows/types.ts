@@ -37,7 +37,15 @@ export interface FlowParam {
 
 export interface ModelRequirement {
   ref: string;
-  kind: "chat" | "vision" | "image" | "video" | "audio" | "tts" | "stt" | "embedding";
+  kind:
+    | "chat"
+    | "vision"
+    | "image"
+    | "video"
+    | "audio"
+    | "tts"
+    | "stt"
+    | "embedding";
   repo: string;
   variant?: string | null;
   optional?: boolean;
@@ -135,6 +143,11 @@ export interface ParamSpec {
   step?: number;
   model_kind?: string;
   accept?: "image" | "audio" | "video";
+  /** A Studio GET route that lists the choices, and the dotted path to them (`tasks[].id`). */
+  options_from?: string;
+  options_path?: string;
+  /** The param also takes a connection (its `param:<id>` input). */
+  bindable?: boolean;
 }
 
 export interface PortSpec {
@@ -144,6 +157,8 @@ export interface PortSpec {
   optional?: boolean;
   multi?: boolean;
   item?: PortType;
+  /** Set on the input a bindable param adds (`param:<id>`): a connected value replaces that field. */
+  param?: string;
 }
 
 export interface NodeSpec {
@@ -164,6 +179,10 @@ export interface NodeSpec {
   entrypoint: boolean;
   flow_in: boolean;
   flow_out: string[];
+  /** The model backend the node needs ("transformers" or "gguf"). */
+  requires?: string[];
+  /** Holds the Studio-wide GPU lease while it runs (measurements). */
+  exclusive_gpu?: boolean;
 }
 
 export interface NodeCategory {
@@ -228,11 +247,33 @@ export type Expr =
   | { list: Expr[] };
 
 export const EXPR_OPS = [
-  "==", "!=", "<", "<=", ">", ">=",
-  "and", "or", "not",
-  "+", "-", "*", "/", "%", "min", "max", "abs", "round",
-  "len", "contains", "concat", "if", "lower", "upper",
-  "rand", "randint", "dice",
+  "==",
+  "!=",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "and",
+  "or",
+  "not",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "min",
+  "max",
+  "abs",
+  "round",
+  "len",
+  "contains",
+  "concat",
+  "if",
+  "lower",
+  "upper",
+  "rand",
+  "randint",
+  "dice",
 ] as const;
 export type ExprOp = (typeof EXPR_OPS)[number];
 
@@ -275,7 +316,10 @@ export interface StoryScene {
   next?: string | null;
   random?: { weight: number; goto: string }[];
   on_enter?: Record<string, Expr>;
-  ending?: { title: string; kind: "good" | "bad" | "neutral" | "secret" } | null;
+  ending?: {
+    title: string;
+    kind: "good" | "bad" | "neutral" | "secret";
+  } | null;
   generate_background?: boolean;
   generate_lines?: boolean;
 }
@@ -291,7 +335,14 @@ export interface StoryManifest {
   entry_points?: Record<string, string>;
 }
 
-export type WorldBiome = "meadow" | "forest" | "desert" | "snow" | "town" | "dungeon" | "beach";
+export type WorldBiome =
+  | "meadow"
+  | "forest"
+  | "desert"
+  | "snow"
+  | "town"
+  | "dungeon"
+  | "beach";
 
 export interface WorldNpc {
   id: string;
@@ -343,7 +394,11 @@ export interface WorldSpec {
   tile_size: number;
   biome: WorldBiome;
   tileset: Record<string, MediaValue>;
-  player: { name: string; sprite?: MediaValue | null; sprite_prompt?: string | null };
+  player: {
+    name: string;
+    sprite?: MediaValue | null;
+    sprite_prompt?: string | null;
+  };
   npcs: WorldNpc[];
   items: WorldItem[];
   quests: WorldQuest[];
@@ -354,7 +409,14 @@ export interface WorldSpec {
   entry_points?: Record<string, string>;
 }
 
-export type RunStatus = "queued" | "running" | "cancelling" | "cancelled" | "completed" | "failed" | "interrupted";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "cancelled"
+  | "completed"
+  | "failed"
+  | "interrupted";
 export type NodeStatus =
   | "idle"
   | "queued"
@@ -380,6 +442,7 @@ export type RunEventType =
   | "node.output"
   | "node.log"
   | "node.text_delta"
+  | "node.partial"
   | "snapshot"
   | "heartbeat";
 
