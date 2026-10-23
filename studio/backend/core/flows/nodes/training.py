@@ -14,6 +14,8 @@ from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, poll_job, strip
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 POLL_S = 5.0
+# How long a start refused as "already active" keeps retrying before it reports the other run.
+BUSY_WAIT_S = 180.0
 TRAINING_TYPES = {"lora": "LoRA/QLoRA", "full": "Full Finetuning"}
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
@@ -57,7 +59,21 @@ async def finetune(ctx: NodeContext) -> dict:
         config["local_datasets"] = [saved["ref"]]
     else:
         raise FlowNodeError("Fine-tune takes a Hub dataset, a Data Recipe or Rows to Dataset")
-    started = await ctx.call("POST", "/api/train/start", json = config)
+    waited = 0.0
+    while True:
+        started = await ctx.call("POST", "/api/train/start", json = config)
+        if not isinstance(started, dict) or started.get("status") != "error":
+            break
+        # A refused start answers 200 with the *running* job's id; polling that would report its checkpoint as ours.
+        # A run that just finished keeps the trainer busy for a few seconds while it shuts down, so wait that out.
+        if "already active" not in str(started.get("error") or "") or waited >= BUSY_WAIT_S:
+            raise FlowNodeError(
+                str(started.get("message") or started.get("error") or "Training did not start")
+            )
+        ctx.progress(phase = "Waiting for the previous training run to finish")
+        await asyncio.sleep(POLL_S)
+        waited += POLL_S
+        ctx.check_cancelled()
     job_id = started.get("job_id") if isinstance(started, dict) else None
     if not job_id:
         raise FlowNodeError("Unsloth Studio did not start training")

@@ -10,7 +10,7 @@ import io
 import wave
 from typing import Any
 
-from core.flows.nodes._common import as_text, audio_run, ensure_model, media_bytes
+from core.flows.nodes._common import _caller, as_text, audio_run, ensure_model, media_bytes
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 
@@ -22,6 +22,7 @@ async def speak(ctx: NodeContext) -> dict:
         voice = str(ctx.params.get("voice") or ""),
         instructions = str(ctx.params.get("instructions") or ""),
         reference = ctx.inputs.get("reference"),
+        reference_text = as_text(ctx.inputs.get("reference_text")),
         seed = ctx.seed,
     )
     return {"audio": clip}
@@ -55,13 +56,27 @@ async def transcribe(ctx: NodeContext) -> dict:
     if ctx.params.get("speakers") and not ctx.params.get("translate"):
         form["response_format"] = "diarized_json"
     files = {"file": ("clip" + _ext(mime), data, mime)}
+
+    async def send(form: dict) -> Any:
+        from studio_mcp.tools.audio import NOT_DOWNLOADED, _download_then_retry
+
+        try:
+            return await ctx.call("POST", path, files = files, data = form)
+        except FlowNodeError as exc:
+            if exc.status != 409 or NOT_DOWNLOADED not in str(exc):
+                raise
+        # A fresh install has no speech-to-text model yet: fetch the default once, as the MCP transcribe tool does.
+        ctx.progress(phase = "Downloading the speech-to-text model")
+        await _download_then_retry(_caller(ctx), None, None)
+        return await ctx.call("POST", path, files = files, data = form)
+
     try:
-        answer = await ctx.call("POST", path, files = files, data = form)
+        answer = await send(form)
     except FlowNodeError as exc:
         # Some local engines only time segments when told the language; plain text still works there.
         if exc.status != 501:
             raise
-        answer = await ctx.call("POST", path, files = files, data = {"response_format": "json"})
+        answer = await send({"response_format": "json"})
     if isinstance(answer, dict):
         return {"text": str(answer.get("text") or ""), "segments": answer.get("segments") or []}
     return {

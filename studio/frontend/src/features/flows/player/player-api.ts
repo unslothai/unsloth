@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { readSseJsonEvents } from "@/lib/sse-json-events";
 import { isStudioMediaUrl } from "../media-url";
 import type {
   FlowDocument,
@@ -46,6 +47,36 @@ export interface InvokeResult {
   rev?: number;
 }
 
+/** What a streamed /invoke sends: text while it is written, then the outputs (or an error). */
+export type InvokeStreamEvent =
+  | { type: "delta"; port?: string; text: string }
+  | ({ type: "result" } & InvokeResult)
+  | { type: "error"; status?: number; detail?: string };
+
+/** Hand each text delta to `onDelta` and return the final outputs; a stream that ends without them is an error. */
+export async function consumeInvokeStream(
+  events: AsyncIterable<InvokeStreamEvent>,
+  onDelta: (text: string, port?: string) => void,
+): Promise<InvokeResult> {
+  for await (const event of events) {
+    if (event.type === "delta") {
+      if (event.text) onDelta(event.text, event.port);
+    } else if (event.type === "result") {
+      return {
+        outputs: event.outputs ?? {},
+        session_id: event.session_id,
+        rev: event.rev,
+      };
+    } else if (event.type === "error") {
+      throw new PlayerApiError(
+        event.detail || "The reply failed",
+        event.status ?? 500,
+      );
+    }
+  }
+  throw new PlayerApiError("The reply stopped before it finished", 502);
+}
+
 /** Everything the players need from the backend; the smoke harness swaps in a mock. */
 export interface PlayerApi {
   flowInfo(
@@ -63,8 +94,12 @@ export interface PlayerApi {
       signal?: AbortSignal;
       /** Run params for the call, e.g. the chat player's message and history. */
       params?: Record<string, unknown>;
+      /** Stream the answer: called with each piece of text as the entry point writes it. */
+      onDelta?: (text: string, port?: string) => void;
     },
   ): Promise<InvokeResult>;
+  /** Load the model an entry point answers with, ahead of the first call; resolves when it is ready. */
+  warm?(flowId: string, entry: string): Promise<boolean>;
   listSessions(flowId: string): Promise<SessionRecord[]>;
   loadSession(flowId: string, slot: string): Promise<SessionRecord | null>;
   saveSession(
@@ -155,12 +190,30 @@ export const playerApi: PlayerApi = {
           ...(opts?.params ? { params: opts.params } : {}),
           session_id: opts?.sessionId,
           rev: opts?.rev,
+          ...(opts?.onDelta ? { stream: true } : {}),
         }),
         signal: opts?.signal,
       },
       { retryNetworkErrors: false },
     );
-    return json<InvokeResult>(res);
+    if (!opts?.onDelta) return json<InvokeResult>(res);
+    if (!res.ok || !res.body) return json<InvokeResult>(res);
+    return consumeInvokeStream(
+      readSseJsonEvents<InvokeStreamEvent>(res.body),
+      opts.onDelta,
+    );
+  },
+  async warm(flowId, entry) {
+    const res = await authFetch(
+      `/api/flows/${enc(flowId)}/invoke`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entry, warm: true }),
+      },
+      { retryNetworkErrors: false },
+    );
+    return (await json<{ warm: boolean }>(res)).warm;
   },
   async listSessions(flowId) {
     const body = await json<{ sessions: SessionRecord[] }>(

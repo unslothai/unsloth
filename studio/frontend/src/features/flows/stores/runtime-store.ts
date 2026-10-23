@@ -215,7 +215,8 @@ export function reduceEvents(
     } else if (event.type === "node.partial") {
       const node = entry(id);
       const port = String(data.port ?? "");
-      if (port) {
+      // Stored events keep only the position; the value comes from live events and the snapshot.
+      if (port && "value" in data) {
         node.partial = { ...(node.partial ?? {}), [port]: data.value };
         node.partialStep = stepOf(data as PartialData) ?? node.partialStep;
       }
@@ -279,6 +280,9 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             progress: null,
             error: null,
             text: "",
+            // Partials belong to the run that sent them; outputs stay until replaced.
+            partial: null,
+            partialStep: null,
           },
         ]),
       ),

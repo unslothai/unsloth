@@ -148,6 +148,97 @@ async def forward(
         raise
 
 
+class _QueueStream(httpx.AsyncByteStream):
+    def __init__(self, queue: asyncio.Queue, task: asyncio.Task, done: asyncio.Event):
+        self._queue, self._task, self._done = queue, task, done
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        while True:
+            chunk = await self._queue.get()
+            if chunk is None:
+                return
+            if isinstance(chunk, BaseException):
+                raise chunk
+            yield chunk
+
+    async def aclose(self) -> None:
+        # Leaving early (Stop, a player that left) ends the route too, so the model stops writing.
+        self._done.set()
+        if not self._task.done():
+            self._task.cancel()
+
+
+class _StreamingASGITransport(httpx.AsyncBaseTransport):
+    """``httpx.ASGITransport`` that hands the body over as the app writes it; httpx's own waits for the whole answer,
+    which turns a streamed reply into one late chunk."""
+
+    def __init__(self, app: Any, client: tuple[str, int]):
+        self.app, self.client = app, client
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": request.method,
+            "headers": [(k.lower(), v) for k, v in request.headers.raw],
+            "scheme": request.url.scheme,
+            "path": request.url.path,
+            "raw_path": request.url.raw_path.split(b"?")[0],
+            "query_string": request.url.query,
+            "server": (request.url.host, request.url.port),
+            "client": self.client,
+            "root_path": "",
+        }
+        body = b"".join([chunk async for chunk in request.stream])
+        queue: asyncio.Queue = asyncio.Queue()
+        started: asyncio.Future = asyncio.get_running_loop().create_future()
+        done = asyncio.Event()
+        sent_body = False
+
+        async def receive() -> dict:
+            nonlocal sent_body
+            if not sent_body:
+                sent_body = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            await done.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                if not started.done():
+                    started.set_result((message["status"], message.get("headers") or []))
+            elif message["type"] == "http.response.body":
+                if message.get("body"):
+                    queue.put_nowait(message["body"])
+                if not message.get("more_body", False):
+                    queue.put_nowait(None)
+
+        async def run() -> None:
+            try:
+                await self.app(scope, receive, send)
+            except BaseException as exc:
+                if not started.done():
+                    started.set_exception(exc)
+                else:
+                    queue.put_nowait(exc)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+            finally:
+                if not started.done():
+                    started.set_exception(RuntimeError("The route sent no response"))
+                queue.put_nowait(None)
+
+        # Its own task, like ``forward``: the route's account binding stays out of the node.
+        task = asyncio.create_task(run())
+        try:
+            status, headers = await started
+        except BaseException:
+            task.cancel()
+            raise
+        return httpx.Response(status, headers = headers, stream = _QueueStream(queue, task, done))
+
+
 async def stream_sse(
     caller: Caller,
     path: str,
@@ -155,8 +246,11 @@ async def stream_sse(
     *,
     headers: Optional[dict[str, str]] = None,
 ) -> AsyncIterator[dict]:
-    """POST and yield each SSE ``data:`` JSON object; raises RouteError on a non-2xx answer."""
-    async with _client(caller, None) as client:
+    """POST and yield each SSE ``data:`` JSON object as it arrives; raises RouteError on a non-2xx answer."""
+    transport = _StreamingASGITransport(caller.studio_app, FORWARD_CLIENT)
+    async with httpx.AsyncClient(
+        transport = transport, base_url = FORWARD_BASE_URL, timeout = None
+    ) as client:
         request = client.build_request(
             "POST", path, headers = _headers(caller, "application/json", headers), json = json_body
         )
