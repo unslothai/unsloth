@@ -398,17 +398,28 @@ export const BUDGET = {
   // 2,085,257 -> 2,085,884 B transfer against 1f5576747, Node 24, 98 chunks), where main was already 315 B raw /
   // 239 B transfer over. Set to the measured build plus about 300 B raw / 100 B transfer (CI builds measure
   // about 100 B over a local one).
+  // Hub metadata caching and hidden-row filtering (#14265): +548 B raw / +146 B transfer (6,925,639 ->
+  // 6,926,187 B raw, 2,086,290 -> 2,086,436 B transfer against 0ee5cfc58, Node 24, 98 chunks), where main
+  // was already over the line above. Set to the merged build plus about 200 B.
+  // macOS Desktop stray key text guard (#14815), eager in main.tsx: +278 B raw / +114 B transfer
+  // (6,925,639 -> 6,925,917 B raw, 2,086,290 -> 2,086,404 B transfer against 14e0178e0, Node 24, chunk count
+  // unchanged at 98). Raised by +278 B raw / +129 B transfer so main's margin stays where it was.
+  // Browser use step names, docs link and card fence strip (#14681): +1,089 B raw / +298 B transfer (6,925,028 ->
+  // 6,926,117 B raw, 2,086,327 -> 2,086,625 B transfer against 394aff8545, Node 26, 99 chunks). Raised by that.
+  // The waiting-for-approval mark, Desktop attention request and tool_approved handling (#14877): measured
+  // 6,929,942 B raw / 2,087,788 B transfer merged with main at b3004af53 (Node 24, 99 chunks). Set to
+  // that plus about 300 B raw / 100 B transfer, as for #14568.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at 77949e668). The GRPO prompt preview reading
+  // budget, which keeps main's margin (re-added on top of main at abe4383f3). The GRPO prompt preview reading
   // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
   // Against d4f1ceb19 the PR adds 28,301 B raw / 8,690 B transfer (6,923,052 -> 6,951,353 B raw, 2,085,246 ->
   // 2,093,936 B transfer, one machine and build, 98 chunks); main itself measured 509 B raw / 228 B transfer over
   // its own budget there, so this is the head measurement plus about 700 B raw / 300 B transfer for CI builds.
-  transferBytes: 2_095_208,
-  rawBytes: 6_954_640,
+  transferBytes: 2_097_108,
+  rawBytes: 6_959_760,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

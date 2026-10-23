@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,9 +41,6 @@ import {
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
-import {
-  ChevronLeftIcon,
-} from "lucide-react";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -208,7 +206,7 @@ export function RecentDictationsView({
           }
           className="settings-back-button inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+          <HugeiconsIcon icon={ChevronLeftStandardIcon} className="size-4 rtl:rotate-180" />
         </button>
         <h1 className="font-heading text-xl font-semibold">
           {t("settings.voice.title")}
@@ -260,7 +258,7 @@ export function RecentDictationsView({
               {t("settings.voice.recents.copy")}
             </Button>
             <Button
-              variant="outline"
+              variant="destructive"
               size="sm"
               onClick={() =>
                 {
@@ -322,7 +320,7 @@ export function RecentDictationsView({
               </SelectContent>
             </Select>
             <Button
-              variant="outline"
+              variant="destructive"
               size="sm"
               onClick={() => setPendingDelete({ kind: "all" })}
               className="shrink-0 text-destructive hover:text-destructive"
@@ -509,7 +507,7 @@ export function RecentDictationsView({
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
               <AlertDialogAction
-                variant="outline"
+                variant="destructive"
                 className="text-destructive hover:text-destructive"
                 onClick={(event) => {
                   // Close only through state so the dismissal can't race a

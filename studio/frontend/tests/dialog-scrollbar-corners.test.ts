@@ -46,7 +46,7 @@ test("dialogs and inline rounded scrollers use it", () => {
   for (const [file, needle] of [
     ["components/ui/dialog.tsx", "overflow-y-auto scroll-rounded rounded-3xl"],
     ["components/ui/alert-dialog.tsx", "overflow-y-auto scroll-rounded rounded-3xl"],
-    ["features/settings/tabs/debugging-tab.tsx", "scroll-rounded rounded-lg"],
+    ["features/settings/tabs/debugging-tab.tsx", "scroll-rounded rounded-md"],
     ["features/api-monitor/api-monitor-page.tsx", "scroll-rounded rounded-lg"],
     ["features/export/components/export-run-panel.tsx", "scroll-rounded rounded-lg"],
     ["features/chat/components/research-activity-panel.tsx", "scroll-rounded rounded-xl"],

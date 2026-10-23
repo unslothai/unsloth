@@ -1560,7 +1560,7 @@ export function ChatsLibrary({
                 <button
                   type="button"
                   onClick={() => unarchiveChats(selectedChats)}
-                  className={cn(BAR_PILL, "bg-foreground text-background transition-opacity hover:opacity-85")}
+                  className={cn(BAR_PILL, "bg-action text-background transition-opacity hover:opacity-85")}
                 >
                   <HugeiconsIcon icon={ArchiveRestoreIcon} strokeWidth={1.75} className="size-4" />
                   {t("settings.data.library.unarchive")}
