@@ -725,7 +725,6 @@ function NavItem({
         {waiting ? (
           <>
             <span className="sr-only"> {waiting}</span>
-            {/* Also on the collapsed rail below. */}
             <ApprovalMark className="ml-auto mr-1.5 size-3.5 group-data-[collapsible=icon]:hidden" />
           </>
         ) : (

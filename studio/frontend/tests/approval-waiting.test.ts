@@ -216,12 +216,10 @@ test("the approval mark is a static amber disc with a glyph, apart from the unre
   const sidebar = readSrc("components/app-sidebar.tsx");
   const component = /function ApprovalMark\([\s\S]*?\n\}\n/.exec(sidebar)?.[0] ?? "";
   assert.ok(component, "ApprovalMark not found");
-  // Drawn only: the row and nav buttons carry the words.
   assert.match(component, /<svg[^>]*aria-hidden="true"/);
   // Amber in both themes, never the accent the unread dot uses.
   assert.match(component, /<circle cx="7" cy="7" r="7" className="fill-amber-700 dark:fill-amber-400" \/>/);
   assert.doesNotMatch(component, /primary/);
-  // The exclamation mark, light on the light-theme disc and dark on the dark one.
   assert.match(component, /<path\s+d="M7 3\.6v4\.1"[\s\S]*?className="stroke-white dark:stroke-neutral-900"/);
   assert.match(component, /<circle cx="7" cy="10\.3" r="1" className="fill-white dark:fill-neutral-900" \/>/);
   // Static: motion is the spinner's cue for work, and the wait can last an hour.
@@ -243,7 +241,6 @@ test("a waiting or unread row says so in its button's name, and a waiting one is
 
 test("the New Chat item shows the mark instead of its spinner while a chat waits", () => {
   const sidebar = readSrc("components/app-sidebar.tsx");
-  // Only chats still running count, as for the rows.
   assert.match(
     sidebar,
     /const anyChatWaiting = useMemo\(\s*\(\) => \[\.\.\.approvalWaitingElsewhere\]\.some\(\(id\) => runningByThreadId\[id\]\),/,
@@ -256,12 +253,10 @@ test("the New Chat item shows the mark instead of its spinner while a chat waits
   const navItem = /function NavItem\([\s\S]*?\n\}\n/.exec(sidebar)?.[0] ?? "";
   assert.ok(navItem, "NavItem not found");
   assert.match(navItem, /data-spinner=\{spinner && !waiting \? "true" : undefined\}/);
-  // On the expanded row: the words in the button's name, the mark in the spinner's place.
   assert.match(
     navItem,
     /\{waiting \? \(\s*<>\s*<span className="sr-only"> \{waiting\}<\/span>[\s\S]*?<ApprovalMark className="ml-auto mr-1\.5 size-3\.5 group-data-\[collapsible=icon\]:hidden" \/>\s*<\/>\s*\) : \(\s*spinner && \(/,
   );
-  // On the collapsed rail, where the spinner's corner badge goes.
   assert.match(
     navItem,
     /\{waiting \? \(\s*<ApprovalMark\s+testId="nav-approval"\s+className="pointer-events-none absolute right-1 top-1 hidden size-2\.5 group-data-\[collapsible=icon\]:block"\s+\/>\s*\) : \(\s*spinner && \(\s*<Spinner className="pointer-events-none absolute right-1 top-1/,
@@ -302,7 +297,6 @@ test("Return to Chat targets a waiting chat whenever the row shows the mark", ()
   const target =
     /const runningTarget = useMemo\(\(\) => \{[\s\S]*?\n  \}, \[[^\]]*\]\);/.exec(sidebar)?.[0] ?? "";
   assert.ok(target, "runningTarget not found");
-  // The same set the mark reads, so the click and the mark name the same chats.
   assert.match(target, /returnToChatThreadId\(runningByThreadId, approvalWaitingElsewhere\)/);
   assert.match(target, /\[runningByThreadId, approvalWaitingElsewhere, allChatItems\]/);
 });

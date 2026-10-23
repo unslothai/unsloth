@@ -3,7 +3,6 @@
 
 // A call approved in another tab or device: the backend sends tool_approved, and every follower drops
 // its Allow / Deny (and the sidebar's waiting dot) then, instead of at tool_end after the tool has run.
-// The reload follower is covered in generation-tool-recovery-approvals.test.ts.
 
 import assert from "node:assert/strict";
 import test from "node:test";

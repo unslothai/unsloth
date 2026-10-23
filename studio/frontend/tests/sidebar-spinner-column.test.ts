@@ -84,7 +84,6 @@ test("the Recents spinner, the approval mark and the unread dot share one centre
 
   const spinnerCentre = centre(spinnerAnchor, spinner);
   assert.equal(spinnerCentre, 23);
-  // The approval mark is drawn inside the spinner's own anchor.
   assert.equal(centre(spinnerAnchor, approvalBox), spinnerCentre);
   assert.equal(centre(unreadAnchor, unreadAnchor), spinnerCentre, "the unread dot left the spinner's column");
 });
