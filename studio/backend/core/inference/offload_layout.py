@@ -123,13 +123,9 @@ class ModelLayout:
     # Rides the layer list at index n_layer_all, so it is GPU-resident for any -ngl >= 1 and can only be moved with an
     # explicit override.
     lm_head_bytes: int = 0
-    # llama-model.cpp pins dev_input to the CPU unconditionally, so this is never charged to VRAM,
-    # only to host RAM.
+    # dev_input is CPU-pinned: host RAM only.
     token_embd_bytes: int = 0
-    # The per_layer_token_embd slice of token_embd_bytes above, NOT a second charge. Separate because
-    # gemma4 (models/gemma4.cpp:llama_model_gemma4::load_arch_tensors) and qwen4exp
-    # (models/qwen4exp.cpp:llama_model_qwen4exp::load_arch_tensors) create it TENSOR_READ_LAZY, so
-    # llama.cpp serves it from the mapping; gemma3n does not, and keeps the full charge.
+    # Slice of token_embd_bytes, not a second charge: gemma4/qwen4exp create it TENSOR_READ_LAZY.
     per_layer_embd_bytes: int = 0
     # Every tensor's bytes, excluded blocks included; the file size less its metadata.
     tensor_bytes: int = 0
@@ -137,8 +133,7 @@ class ModelLayout:
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
     kv_bytes_per_token_f16: int = 0
-    # Mamba conv/SSM or KDA conv/recurrent state: context independent, and follows the layer, which
-    # -ot never moves.
+    # Recurrent state: context independent and follows the layer.
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
@@ -158,21 +153,12 @@ class ModelLayout:
     # offloadable-layer count the same way (common/fit.cpp:139-142). Zero when nothing was dropped.
     excluded_block_bytes: int = 0
     # Sliding-window attention: some layers keep a window-sized cache, some the full context
-    # (llama-kv-cache-iswa.cpp:69-104 builds two caches and filters each by hparams.is_swa(il)), interleaved per layer.
-    # Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A
-    # multi-device split has to know WHERE the big caches land, so the planner abstains.
+    # (llama-kv-cache-iswa.cpp:69-104). Not visible in n_attention_layers; multi-device abstains.
     has_swa: bool = False
-    # Multi-head latent attention: the cache is one compressed K-only latent per token, not a K+V
-    # pair per head, so the per-head product above over-counts it by up to two orders of magnitude.
-    # Keyed on attention.key_length_mla AND attention.value_length_mla, as
-    # llama-hparams.cpp:llama_hparams::is_mla is: a GGUF carrying only attention.kv_lora_rank
-    # (unsloth/DeepSeek-R1-GGUF, unsloth/DeepSeek-V3-0324-GGUF) gets the full per-head K+V cache, so
-    # claiming MLA there would trade an exact number for a floor that is 40% short.
+    # MLA: one compressed K-only latent per token. Keyed on key_length_mla AND value_length_mla
+    # (llama_hparams::is_mla); kv_lora_rank alone (DeepSeek-R1/V3 GGUFs) still gets full K+V.
     has_mla: bool = False
-    # Each target row's KV head count, 0 on a row that holds no attention cache (a hybrid's
-    # recurrent rows), as llama.cpp places them. Empty when every row is the same or the file does
-    # not say. Only the fitter comparison reads it: a multi-device check still abstains without a
-    # caller-supplied vector, since it says nothing about windows or a padded V.
+    # Per-row KV head count (0 = no attention cache); empty when uniform or unknown. Fitter-only.
     kv_heads_by_layer: tuple[int, ...] = ()
     recurrent_rows: tuple[int, ...] = ()
     # False when a needed quantity could not be read. The planner abstains.
@@ -302,9 +288,8 @@ def _kv_heads_total(n_kv_head, n_attention: int) -> int:
         return 0
 
 
-# The default llama.cpp uses when a hybrid's GGUF omits full_attention_interval, read off the
-# `uint32_t full_attn_interval = N;` before each optional get_key: src/models/qwen3next.cpp:24,
-# qwen35.cpp:23, qwen35moe.cpp:26, minimax-01.cpp:13. An unlisted architecture abstains below.
+# llama.cpp's full_attn_interval defaults (qwen3next.cpp:24, qwen35.cpp:23, qwen35moe.cpp:26,
+# minimax-01.cpp:13). Unlisted archs abstain.
 _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
     "qwen3next": 4,
     "qwen35": 4,
@@ -313,16 +298,11 @@ _FULL_ATTENTION_INTERVAL_DEFAULT: dict[str, int] = {
 }
 
 
-# Architectures llama.cpp gives a third, lightning-indexer KV cache over the dense-attention rows
-# (llama-model.cpp:create_memory -> llama_memory_hybrid_idx, gated on indexer_head_size > 0). It is
-# MQA: one head, attention.indexer.key_length wide for K and the model's own attention.value_length
-# for V, since llama-memory-hybrid-idx.cpp overrides n_head_kv_arr and n_embd_head_k_full only.
+# Archs with a lightning-indexer MQA KV cache (llama_memory_hybrid_idx, indexer_head_size > 0).
 INDEXER_CACHE_ARCHS: frozenset[str] = frozenset({"qwen4exp"})
 
-# ggml-org/llama.cpp#28330 (first in b10889) builds the indexer cache as an MLA-shaped one, so it
-# allocates K only (llama-memory-hybrid-idx.cpp sets both n_embd_head_*_mla_impl). #29751 (b11330)
-# then widened a pooled qwen4exp row to "raw key | pooled key", indexer_kpool_row = 2 whenever any
-# attention.compress_ratios entry is non-zero (models/qwen4exp.cpp:load_arch_hparams).
+# #28330 (b10889) allocates it K-only; #29751 (b11330) doubles a pooled qwen4exp row
+# when any attention.compress_ratios entry is non-zero.
 INDEXER_K_ONLY_BUILD = 10889
 INDEXER_POOLED_ROW_BUILD = 11330
 
@@ -348,20 +328,12 @@ def indexer_cache_widths(
     return key_len * (2 if pooled else 1), 0
 
 
-# Architectures whose recurrent rows hold a Kimi-Delta-Attention state rather than a Mamba one, so
-# llama.cpp sizes them from kda.head_dim and the head count (llama-hparams.cpp:n_embd_r, n_embd_s).
-# Named rather than derived from the key: an unlisted KDA family (kimi-linear, bailingmoe3) has no
-# measured figure to check the shape against, so abstaining is the safe answer. glm5next
-# (GLM-5.3-Flash) is left out too: its llama_memory_hybrid_idx indexer cache is priced by neither
-# reader (INDEXER_CACHE_ARCHS and the build thresholds are qwen4exp's), so a complete layout would
-# let the planner pin -ngl -1 --fit off over a cache it never charged.
+# KDA-state archs (llama-hparams.cpp n_embd_r/n_embd_s). Named, not derived: unlisted KDA
+# families are unmeasured, and glm5next's indexer cache is unpriced, so they abstain.
 _KDA_STATE_ARCHS: frozenset[str] = frozenset({"kimi-k3"})
 
 
-# llama.cpp refuses a file whose block_count is above this (LLAMA_MAX_LAYERS, src/llama-hparams.h;
-# GGML_ASSERT(hparams.n_layer_all <= LLAMA_MAX_LAYERS) in llama_model::load_hparams). The readers
-# here allocate per-layer lists straight off the declared count, so a crafted GGUF naming 2**40
-# layers would ask for gigabytes of lists for a file the child cannot load.
+# LLAMA_MAX_LAYERS (src/llama-hparams.h): the child refuses more, and readers allocate per layer.
 LLAMA_MAX_LAYERS = 512
 
 
@@ -402,9 +374,7 @@ def hybrid_layer_split(
         if fai <= 0:
             fai = _FULL_ATTENTION_INTERVAL_DEFAULT.get(arch, 0)
         if fai > 0:
-            # Floor, not ceiling: llama.cpp marks row il attention iff (il + 1) % fai == 0 over
-            # il < n_layer() (models/qwen3next.cpp, qwen35.cpp, qwen35moe.cpp, qwen4exp.cpp), so a
-            # 30-layer model at interval 4 has 7 attention rows, not 8.
+            # Floor: row il is attention iff (il + 1) % fai == 0, so 30 layers at 4 gives 7.
             n_recurrent = max(0, n_layers - n_layers // fai)
             known = True
     n_attention = n_layers - n_recurrent
@@ -564,8 +534,6 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         )
         kv_per_token += int(n_attention) * (k_width + v_width) * 2
 
-    # Charging every layer the full context above is the safe direction for the TOTAL; what it
-    # cannot say is which layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
     # Both MLA head lengths, never kv_lora_rank: llama-hparams.cpp:llama_hparams::is_mla.
     has_mla = bool(_field(reader, f"{arch}.attention.key_length_mla") or 0) and bool(
@@ -581,8 +549,7 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     kda_head_dim = int(_field(reader, f"{arch}.kda.head_dim") or 0)
     if arch not in _KDA_STATE_ARCHS:
         kda_head_dim = 0
-    # LFM2 short convolution: (l_cache - 1) rows of n_embd per recurrent layer, no ssm state
-    # (llama-hparams.cpp:n_embd_r, the n_shortconv_l_cache branch; n_embd_s is zero there).
+    # LFM2 short conv: (l_cache - 1) rows of n_embd, no ssm state (llama-hparams.cpp:n_embd_r).
     shortconv_l_cache = int(_field(reader, f"{arch}.shortconv.l_cache") or 0)
     recurrent = 0
     if n_recurrent and d_inner and d_state and d_conv:
@@ -590,11 +557,8 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
         n_embd_s = d_state * d_inner
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
     elif n_recurrent and kda_head_dim and n_head:
-        # A KDA row carries no ssm.inner_size, so the branch above sizes it at zero and every
-        # per-slot term the planner adds separately from the cache (resident_floor_bytes,
-        # max_context_for's fixed term, the multi-device recurrent guard) silently drops 443
-        # MiB/slot on Kimi-K3. llama-hparams.cpp:n_embd_r/n_embd_s size it from the head count and
-        # kda.head_dim instead; the conv kernel defaults to 4 there as well.
+        # KDA has no ssm.inner_size; size from head count and kda.head_dim (llama-hparams.cpp),
+        # else Kimi-K3 drops 443 MiB/slot.
         d_inner_kda = int(n_head) * kda_head_dim
         n_embd_r = 3 * max(0, (d_conv or 4) - 1) * d_inner_kda
         n_embd_s = kda_head_dim * kda_head_dim * int(n_head)
@@ -602,9 +566,7 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     elif n_recurrent and shortconv_l_cache > 1 and n_embd:
         recurrent = n_recurrent * int(n_embd) * (shortconv_l_cache - 1) * 4
 
-    # The PLE conv history is a row of its own in the recurrent cache, not part of the delta-net
-    # conv state next door (llama-memory-recurrent.cpp allocates cache_ple_r_l separately, sized by
-    # llama-hparams.cpp:ple_conv_state).
+    # PLE conv history is its own recurrent-cache row (llama-hparams.cpp:ple_conv_state).
     ple_layers = _field(reader, f"{arch}.ple.layers")
     if recurrent and isinstance(ple_layers, (list, tuple)) and ple_layers:
         ple_conv_state = (
@@ -662,8 +624,7 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
             if cls is not None:
                 bucket = per_class.setdefault(index, {})
                 bucket[cls] = bucket.get(cls, 0) + nbytes
-                # The rung's quant TYPE, from the largest tensor in the class so a stray F32 bias
-                # cannot outvote the weight matrix that dominates.
+                # Quant type from the largest tensor, so an F32 bias cannot outvote the weight.
                 tb = per_class_type.setdefault(index, {})
                 if nbytes > tb.get(cls, (0, ""))[0]:
                     tname = getattr(tensor, "tensor_type", None)
@@ -682,25 +643,12 @@ def _layout_from_readers(readers, *, build: Optional[int] = None) -> ModelLayout
     if not spill and not resident:
         return ModelLayout()
 
-    # Tied embeddings duplicate the vocabulary matrix, they do not SAVE it. With no output.weight
-    # llama.cpp re-creates the output tensor from token_embd as TENSOR_DUPLICATED
-    # (models/llama.cpp:41-45, models/qwen3.cpp:22-25, models/gemma3.cpp:43-47, and ~60 more) and
-    # routes a duplicated TOKEN_EMBD through the OUTPUT buffer list (llama-model-loader.cpp:1113).
-    # dev_input is CPU-pinned while dev_output follows the layer split (llama-model.cpp:1465, 1474),
-    # so the contexts differ, the same-context reuse check misses (llama-model-loader.cpp:1309), and
-    # ggml_dup_tensor allocates a second full matrix (:1318) that load_all_data fills with a real
-    # host to device copy (:1542, :1583). Counting the one stored tensor as host-only understates
-    # VRAM by a whole vocabulary matrix. Resident, not lm_head: the duplicate keeps the name
-    # token_embd.weight, so LM_HEAD_PATTERN cannot match and that rung would credit nothing moved.
+    # Tied embeddings: llama.cpp duplicates token_embd as the output tensor on dev_output
+    # (llama-model-loader.cpp:1113, 1309, 1318), a second full VRAM matrix named token_embd.weight.
     if not lm_head and token_embd:
-        # ``token_embd`` ONLY, never the per-layer embeddings.
         other_resident += token_embd
 
-    # trailing nextn/MTP blocks are not loaded unless a draft is engaged
-    # Trailing nextn/MTP blocks are NOT part of the target model and are not loaded unless a draft is engaged, so an -ot
-    # naming them moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at exactly token_embd and
-    # the device buffer unchanged. Counting them spillable would credit bytes that can never be freed. Unsloth prices
-    # the drafter separately anyway.
+    # nextn/MTP blocks load only with a draft: measured, spilling them frees nothing.
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)

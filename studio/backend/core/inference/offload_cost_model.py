@@ -90,9 +90,7 @@ _RATE_RATIOS: dict[Access, float] = {
     Access.KV_CACHE: 20.1,
 }
 
-# Prefill streaming bandwidth, GiB/s, bracketed by the two measurements (dense 49.4, MoE 66.9); that
-# spread is why it is a coarse constant, not a curve. Measured on PCIe 5 x16, so it is only the
-# DEFAULT for ``HostProfile.link_gib_s``: a caller that can read the device's link passes its own.
+# Prefill bandwidth GiB/s, between dense 49.4 and MoE 66.9 on PCIe 5 x16; default for link_gib_s.
 PREFILL_STREAM_GIB_S = 55.0
 
 MULTI_GROUP_CONTENTION = 0.06
@@ -122,11 +120,9 @@ class HostProfile:
     """
 
     threads: int = REFERENCE_HOST_THREADS
-    # Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU), where "spilling" moves
-    # nothing because the two pools are one pool.
+    # Unified-memory hosts: spilling moves nothing.
     unified_memory: bool = False
-    # Host-to-device rate the PREFILL transfer runs at; the default keeps the reference host's PCIe 5
-    # x16 rate this module was calibrated on. Generation never crosses the link, so it is unaffected.
+    # Host-to-device prefill rate; generation never crosses the link.
     link_gib_s: float = PREFILL_STREAM_GIB_S
 
     @property

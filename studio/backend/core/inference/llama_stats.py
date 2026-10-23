@@ -61,11 +61,8 @@ class SysmemFallbackWatch:
         """Feed one /metrics tick. True on the tick the warning was emitted, else False."""
         if self._reported:
             return False
-        # An empty bucket is no measurement, so it neither counts nor breaks the run. llama-server
-        # adds a request's generation to the bucket when its slot is released and every /metrics
-        # read empties it, so a lone chat reads 0 for the whole generation and its rate arrives on
-        # the next tick, with running already 0. Gating on running, or resetting here, meant
-        # sequential requests never reached the VRAM probe.
+        # An empty bucket is no measurement: /metrics reads empty it, so a lone chat's rate arrives a
+        # tick later with running already 0; gating on running starved the VRAM probe.
         if not gen_tok_s or float(gen_tok_s) <= 0.0:
             return False
         if float(gen_tok_s) > self._floor:
