@@ -102,20 +102,12 @@ def _dense(monkeypatch, dtype, mask):
 def _gqa_falls_to_math(Q, K, masked):
     # Expand K/V only where GQA leaves math (or nothing) while the expanded call has a faster kernel:
     # before torch 2.14 the memory-efficient kernel rejects GQA, so masked fp32 GQA had only math.
-    mask = (
-        torch.ones(Q.shape[0], 1, Q.shape[2], K.shape[2], dtype = torch.bool, device = Q.device)
-        if masked
-        else None
-    )
+    mask = torch.ones(Q.shape[0], 1, Q.shape[2], K.shape[2], dtype = torch.bool, device = Q.device) if masked else None
     math = int(SDPBackend.MATH)
 
     def choice(k, gqa):
         try:
-            return int(
-                torch._fused_sdp_choice(
-                    Q, k, k, attn_mask = mask, is_causal = not masked, enable_gqa = gqa
-                )
-            )
+            return int(torch._fused_sdp_choice(Q, k, k, attn_mask = mask, is_causal = not masked, enable_gqa = gqa))
         except RuntimeError:  # no enabled backend takes this call
             return None
 

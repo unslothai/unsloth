@@ -35,15 +35,13 @@ def _restore_fp8_integration(monkeypatch):
             if not name.startswith("__"):
                 monkeypatch.setattr(cls, name, value)
     if hasattr(fp8_integration, "replace_with_fp8_linear"):
-        monkeypatch.setattr(
-            fp8_integration, "replace_with_fp8_linear", fp8_integration.replace_with_fp8_linear
-        )
+        monkeypatch.setattr(fp8_integration, "replace_with_fp8_linear", fp8_integration.replace_with_fp8_linear)
 
 
 def _helper():
     # Exact source, without importing unsloth (which needs an accelerator).
     path = ROOT / "unsloth" / "models" / "loader_utils.py"
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text())
     fn = [
         n
         for n in tree.body
@@ -143,7 +141,7 @@ def test_composite_model_keeps_every_scoped_counterpart(tmp_path):
 
 
 def _calls_and_guards(path, cls_name):
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
     found = []
