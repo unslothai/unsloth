@@ -106,47 +106,62 @@ def float8_training_filter(
     return module_filter_fn
 
 
-def _probe_dtype_pairs(recipe):
-    """(mat1, mat2) fp8 dtypes of the GEMMs torchao runs for this recipe / config: forward input x weight,
-    backward grad_output x weight and grad_output x input. torchao picks the platform types (e4m3fnuz /
-    e5m2fnuz on MI300), so they are read from the config, never assumed."""
+def _probe_gemms(recipe):
+    """The fp8 GEMMs torchao runs for this recipe / config, as ((mat1 dtype, rowwise?), (mat2 dtype, rowwise?)):
+    forward input x weight, grad_input grad_output x weight_for_grad_input, grad_weight
+    grad_output_for_grad_weight x input_for_grad_weight. Each operand keeps its own cast config's dtype
+    (torchao picks e4m3fnuz / e5m2fnuz on MI300) and scaling granularity; a GEMM with a disabled cast runs
+    in high precision and is not probed."""
     config = recipe
     if isinstance(recipe, str):
         from torchao.float8 import Float8LinearConfig
         config = Float8LinearConfig.from_recipe_name(recipe)
 
-    def target(cast, default):
+    def operand(name, fallback, default_dtype):
+        cast = getattr(config, name, None)
+        if cast is None:
+            cast = getattr(config, fallback, None) if fallback else None
+        if cast is not None and "DISABLED" in str(getattr(cast, "scaling_type", "")).upper():
+            return None
         dtype = getattr(cast, "target_dtype", None)
-        return dtype if isinstance(dtype, torch.dtype) else default
+        dtype = dtype if isinstance(dtype, torch.dtype) else default_dtype
+        rowwise = "AXIS" in str(getattr(cast, "scaling_granularity", "")).upper()
+        return dtype, rowwise
 
-    def cast(name, default):
-        return target(getattr(config, name, None), default)
+    e4m3, e5m2 = torch.float8_e4m3fn, torch.float8_e5m2
+    x = operand("cast_config_input", None, e4m3)
+    w = operand("cast_config_weight", None, e4m3)
+    g = operand("cast_config_grad_output", None, e5m2)
+    w_gi = operand("cast_config_weight_for_grad_input", "cast_config_weight", e4m3)
+    g_gw = operand("cast_config_grad_output_for_grad_weight", "cast_config_grad_output", e5m2)
+    x_gw = operand("cast_config_input_for_grad_weight", "cast_config_input", e4m3)
+    gemms = []
+    for gemm in ((x, w), (g, w_gi), (g_gw, x_gw)):
+        if None not in gemm and gemm not in gemms:
+            gemms.append(gemm)
+    return gemms
 
-    x = cast("cast_config_input", torch.float8_e4m3fn)
-    w = cast("cast_config_weight", torch.float8_e4m3fn)
-    g = cast("cast_config_grad_output", torch.float8_e5m2)
-    w_gi = cast("cast_config_weight_for_grad_input", w)
-    g_gw = cast("cast_config_grad_output_for_grad_weight", g)
-    x_gw = cast("cast_config_input_for_grad_weight", x)
+
+def _probe_dtype_pairs(recipe):
+    """(mat1, mat2) fp8 dtypes of the GEMMs `_probe_gemms` lists."""
     pairs = []
-    for pair in ((x, w), (g, w_gi), (g_gw, x_gw)):
-        if pair not in pairs:
-            pairs.append(pair)
+    for (dtype_a, _), (dtype_b, _) in _probe_gemms(recipe):
+        if (dtype_a, dtype_b) not in pairs:
+            pairs.append((dtype_a, dtype_b))
     return pairs
 
 
 def _probe_float8_gemm(device, recipe):
-    """Tiny torch._scaled_mm calls with the recipe's scaling and fp8 dtypes, so an unsupported GPU / torch refuses here, not mid-training."""
-    scaling = _recipe_scaling(recipe)
-    if scaling == "tensorwise":
-        sa = torch.ones((), device = device)
-        sb = torch.ones((), device = device)
-    else:
-        sa = torch.ones(16, 1, device = device)
-        sb = torch.ones(1, 16, device = device)
-    for dtype_a, dtype_b in _probe_dtype_pairs(recipe):
-        a = torch.ones(16, 32, device = device).to(dtype_a)
-        b = torch.ones(16, 32, device = device).to(dtype_b).t()
+    """Tiny torch._scaled_mm calls with each GEMM's own fp8 dtypes and scaling, so an unsupported GPU / torch refuses here, not mid-training."""
+    M, K, N = 16, 32, 16
+    for (dtype_a, rowwise_a), (dtype_b, rowwise_b) in _probe_gemms(recipe):
+        a = torch.ones(M, K, device = device).to(dtype_a)
+        b = torch.ones(N, K, device = device).to(dtype_b).t()
+        # torch._scaled_mm takes one granularity for both operands; torchao (float8_ops.preprocess_addmm)
+        # repeats a tensorwise scale along the axis when the other operand is rowwise, so the probe does too.
+        rowwise = rowwise_a or rowwise_b
+        sa = torch.ones(M, 1, device = device) if rowwise else torch.ones((), device = device)
+        sb = torch.ones(1, N, device = device) if rowwise else torch.ones((), device = device)
         torch._scaled_mm(a, b, scale_a = sa, scale_b = sb, out_dtype = torch.bfloat16)
 
 
