@@ -24515,9 +24515,9 @@ class LlamaCppBackend:
         key = str(resolved.parent)
         revision = LlamaCppBackend._binary_stamp(resolved)
         with LlamaCppBackend._system_rocm_probe_lock:
-            # A positive verdict is latched as bundle-only, which the caller checks first.
+            # A caller that waited out the first probe re-reads its verdict from the latch.
             if LlamaCppBackend._system_rocm_probed.get(key) == revision:
-                return False
+                return LlamaCppBackend._prefers_bundle_only_rocm(binary)
             mixed = LlamaCppBackend._list_devices_under(
                 binary,
                 LlamaCppBackend._llama_server_env_for_binary(binary, verify_system_rocm = False),

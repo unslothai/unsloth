@@ -100,6 +100,8 @@ def test_prepend_hiding_the_gpu_falls_back_to_the_bundle(monkeypatch, tmp_path, 
     assert sysrocm not in _ld(env)
     assert _ld(env)[0] == str(binary.parent)
     assert LlamaCppBackend._prefers_bundle_only_rocm(str(binary))
+    # A caller that checked the latch before the first probe finished still gets the bundle.
+    assert LlamaCppBackend._system_rocm_hides_gpu(str(binary), [sysrocm])
     # Latched: later children (STT sidecar, device probes) neither prepend nor re-probe.
     assert _probe_count(calls) == 2
     from core.inference.stt_mtmd_sidecar import _llama_server_child_env
