@@ -265,7 +265,12 @@ class _LocalShardMixin:
                 )
             out[key] = value
 
-    def _export_state(self, p, raw, slot = None):
+    def _export_state(
+        self,
+        p,
+        raw,
+        slot = None,
+    ):
         DTensor = _dtensor_class()
         local = _local(p, DTensor)
         out = {"step": int(raw.get("step", 0))}
