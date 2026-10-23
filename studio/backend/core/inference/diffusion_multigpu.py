@@ -1816,9 +1816,9 @@ def weights_probe(module: Any, index_cache: Optional[dict] = None) -> Optional[b
                 key = (n, flat.device)
                 idx = cache.get(key)
                 if idx is None:
-                    idx = torch.linspace(
-                        0, n - 1, steps = min(n, _PROBE_SAMPLES), device = flat.device
-                    ).long()
+                    # integer spacing: a float32 linspace rounds n - 1 up to n past 2**24 bytes and reads past the end
+                    k = min(n, _PROBE_SAMPLES)
+                    idx = torch.arange(k, device = flat.device) * (n - 1) // max(k - 1, 1)
                     cache[key] = idx
                 by_device.setdefault(flat.device, []).append(flat.index_select(0, idx))
     if not by_device:
