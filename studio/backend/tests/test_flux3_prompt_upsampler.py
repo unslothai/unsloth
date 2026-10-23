@@ -1481,7 +1481,9 @@ def test_a_complete_earlier_pair_beats_a_default_model_with_no_projector(offline
     put(_NEW_REV, pup.UPSAMPLER_MODEL_FILE)
     put(_OLD_REV, pup.UPSAMPLER_MODEL_FILES["Q4_K_M"])  # refs/main back on the complete revision
     assert pup.model_path() == old
-    assert pup.mmproj_path() == old.replace(pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE)
+    assert pup.mmproj_path() == old.replace(
+        pup.UPSAMPLER_MODEL_FILES["Q4_K_M"], pup.UPSAMPLER_MMPROJ_FILE
+    )
     status = pup.status()
     assert status["downloaded"] and status["mmproj_downloaded"]
     # The default is still not complete at one revision, so the control stays offered; both blobs are on disk.
@@ -1521,7 +1523,8 @@ def test_an_earlier_model_alone_reports_the_whole_default_download(offline_upsam
     assert status["filename"] == pup.UPSAMPLER_MODEL_FILES["Q4_K_M"] != status["current_filename"]
     assert status["current_downloaded"] is False
     assert status["current_missing_bytes"] == (
-        pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE] + pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MMPROJ_FILE]
+        pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MODEL_FILE]
+        + pup.UPSAMPLER_FILE_SIZES[pup.UPSAMPLER_MMPROJ_FILE]
     )
 
 

@@ -853,9 +853,15 @@ def status() -> dict:
     # completes so that the earlier one serves; the Download control still fetches the default.
     current_downloaded = overridden or None not in _cached_pair(model_files = (UPSAMPLER_MODEL_FILE,))
     # Bytes still to fetch: a file already cached at any revision is a blob the hub cache reuses.
-    missing = [] if current_downloaded else [
-        name for name in (UPSAMPLER_MODEL_FILE, UPSAMPLER_MMPROJ_FILE) if _cached_at_any_revision(name) is None
-    ]
+    missing = (
+        []
+        if current_downloaded
+        else [
+            name
+            for name in (UPSAMPLER_MODEL_FILE, UPSAMPLER_MMPROJ_FILE)
+            if _cached_at_any_revision(name) is None
+        ]
+    )
     return {
         "supported": find_llama_server_binary() is not None,
         "downloaded": model is not None,
