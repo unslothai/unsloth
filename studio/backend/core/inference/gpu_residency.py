@@ -244,7 +244,13 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     fam = detect_family_for_pick(repo, name, request.family_override)
     if (
         fam is None
-        or predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal, gguf_filename = name)
+        or predict_engine(
+            fam,
+            model_kind = kind,
+            gpu_ordinal = gpu_ordinal,
+            gguf_filename = name,
+            with_loras = bool(getattr(request, "loras", None)),
+        )
         != ENGINE_DIFFUSERS
     ):
         return None

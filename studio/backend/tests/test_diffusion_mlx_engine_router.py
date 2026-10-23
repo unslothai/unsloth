@@ -438,3 +438,68 @@ def test_auto_switch_planner_judges_mlx_with_the_picks_gguf(monkeypatch):
     monkeypatch.setattr(r, "engine_for", lambda name: name)
     pick = MediaModelPick("unsloth/Z-Image-Turbo-GGUF", "unsloth/Z-Image-Turbo-GGUF", _Q4, "gguf")
     assert media_locality.planners_for(DIFFUSION, pick) == [ENGINE_MLX]
+
+
+# ── a LoRA load never lands on MLX, which refuses adapters ───────────────────
+
+
+@pytest.mark.parametrize(
+    "gguf",
+    [
+        "z-image-turbo-Q4_K_M.gguf",
+        "z-image-turbo-Q5_K_M.gguf",
+        "z-image-turbo-Q6_K.gguf",
+        "z-image-turbo-Q5_0.gguf",
+        "z-image-turbo-Q5_1.gguf",
+        _Q4,
+    ],
+)
+def test_a_lora_load_keeps_sd_cpp_under_the_mlx_opt_in(monkeypatch, gguf):
+    # An MPS Mac running native sd.cpp today with a LoRA: the opt-in must not divert it into MLX's refusal.
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **_: "/usr/bin/sd-cli")
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "v0"))
+    fam = detect_family("z-image")
+    # Without adapters the opt-in still picks MLX for every convertible quant.
+    assert _predict(gguf = gguf) == _select(gguf = gguf) == ENGINE_MLX
+    kw = dict(model_kind = "gguf", gguf_filename = gguf, with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_SD_CPP
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_SD_CPP
+    assert "LoRA" in (r.annotate_status({})["mlx_fallback_reason"] or "")
+
+
+def test_a_lora_load_without_a_native_binary_falls_back_to_diffusers_not_mlx(monkeypatch):
+    _apple(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX", "1")
+    fam = detect_family("z-image")
+    kw = dict(model_kind = "gguf", gguf_filename = "z-image-turbo-Q4_K_M.gguf", with_loras = True)
+    assert r.predict_engine(fam, **kw) == ENGINE_DIFFUSERS
+    r.select_and_activate_engine(fam, **kw)
+    assert r.active_engine_name() == ENGINE_DIFFUSERS
+
+
+def test_every_load_route_passes_its_loras_to_engine_selection():
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text()
+    calls = [
+        c
+        for c in ast.walk(ast.parse(source))
+        if isinstance(c, ast.Call)
+        and (
+            getattr(c.func, "id", None) == "predict_engine"
+            or (
+                getattr(c.func, "id", None) == "partial"
+                or getattr(c.func, "attr", None) == "partial"
+            )
+            and c.args
+            and getattr(c.args[0], "id", None) == "select_and_activate_engine"
+        )
+    ]
+    assert len(calls) >= 3
+    for call in calls:
+        assert "with_loras" in {k.arg for k in call.keywords}, ast.unparse(call)[:120]

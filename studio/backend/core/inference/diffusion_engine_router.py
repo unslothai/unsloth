@@ -437,9 +437,12 @@ def mlx_selection(
     gguf_filename: Optional[str],
     backend: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
-    cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field)."""
+    cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field);
+    ``with_loras`` says the load applies LoRA adapters, which the MLX engine cannot, so an auto pick
+    keeps the engine it would have had without the opt-in instead of reaching the MLX LoRA refusal."""
     if not _mlx_requested():
         return False, None
     forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
@@ -449,6 +452,8 @@ def mlx_selection(
         return False, f"the load asked for the {engine} engine"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
+    if with_loras:
+        return False, "the MLX engine does not apply LoRA adapters yet"
     if fam is None or not family_mlx_supported(fam):
         name = getattr(fam, "name", None) or "unknown"
         return False, f"family '{name}' has no MLX implementation"
@@ -712,6 +717,7 @@ def select_and_activate_engine(
     before_fallback: Optional[Callable[[], None]] = None,
     gguf_filename: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 
@@ -729,7 +735,11 @@ def select_and_activate_engine(
     requested = _requested_engine(engine)
     refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
     use_mlx, mlx_refusal = mlx_selection(
-        fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested
+        fam,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+        with_loras = with_loras,
     )
     _note_mlx_refusal(mlx_refusal)
     if use_mlx:
@@ -970,6 +980,7 @@ def predict_engine(
     gpu_ordinal: Optional[int] = None,
     gguf_filename: Optional[str] = None,
     engine: Optional[str] = None,
+    with_loras: bool = False,
 ) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect. ``engine`` is the load's own
     pick, as in ``select_and_activate_engine``; a pick selection would refuse raises the same ValueError here.
@@ -989,7 +1000,13 @@ def predict_engine(
     requested = _requested_engine(engine)
     # The plan must refuse what the load will refuse, rather than plan (and stage) for the other engine.
     refuse_engine_pick(fam, engine = engine, model_kind = model_kind)
-    if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = requested)[0]:
+    if mlx_selection(
+        fam,
+        model_kind = model_kind,
+        gguf_filename = gguf_filename,
+        engine = requested,
+        with_loras = with_loras,
+    )[0]:
         return ENGINE_MLX
     if model_kind and model_kind != "gguf":
         return ENGINE_DIFFUSERS
