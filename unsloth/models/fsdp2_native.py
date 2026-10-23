@@ -1249,7 +1249,7 @@ def _mesh_broadcast_from_first(tensor, mesh, dist):
         dist.broadcast(tensor, src = dist.get_global_rank(group, 0), group = group)
 
 
-_FINGERPRINT_CHUNK = 1 << 24
+_FINGERPRINT_CHUNK = 1 << 20  # 8 MiB per float64 buffer: a few of them before fully_shard, never a full copy
 
 
 def _content_fingerprint(p):
@@ -1257,7 +1257,7 @@ def _content_fingerprint(p):
     by a position-dependent cos(i * golden ratio) (so a permutation such as [1, -1] vs [-1, 1] differs),
     and the count of non-finite elements. Non-finite values are mapped to fixed finite stand-ins first,
     so a NaN cannot hide the other elements while identical NaN patterns still agree. Chunked, so no
-    float64 copy of a large weight is made."""
+    float64 copy of a large weight is made: each chunk holds a few 8 MiB float64 buffers."""
     flat = p.detach().reshape(-1)
     out = torch.zeros(4, dtype = torch.float64, device = flat.device)
     for start in range(0, flat.numel(), _FINGERPRINT_CHUNK):
