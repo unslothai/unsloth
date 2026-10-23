@@ -831,233 +831,6 @@ def pocket_village() -> B:
     return b
 
 
-def smallville_lite() -> B:
-    b = B(
-        "smallville-lite",
-        "Smallville Lite",
-        "world",
-        "A small town whose six villagers live their own day: they remember, plan, walk between places and chat with "
-        "each other, so news spreads without you. After Park et al. 2023, Generative Agents.",
-        tags = ["world", "game", "npc", "memory", "agent"],
-        seed = 214,
-    ).need("chat")
-    places = [
-        {
-            "id": "hobbs_cafe",
-            "name": "Hobbs Cafe",
-            "x": 20,
-            "y": 6,
-            "w": 8,
-            "h": 5,
-            "on_enter_text": "Smells of fresh coffee.",
-        },
-        {
-            "id": "johnson_park",
-            "name": "Johnson Park",
-            "x": 5,
-            "y": 21,
-            "w": 10,
-            "h": 7,
-            "on_enter_text": "Birds and benches.",
-        },
-        {
-            "id": "the_market",
-            "name": "The Market",
-            "x": 33,
-            "y": 21,
-            "w": 10,
-            "h": 6,
-            "on_enter_text": "Stalls and chatter.",
-        },
-        {
-            "id": "lin_house",
-            "name": "Lin family home",
-            "x": 5,
-            "y": 5,
-            "w": 7,
-            "h": 5,
-            "on_enter_text": "A cosy blue house.",
-        },
-        {
-            "id": "moreno_house",
-            "name": "Moreno house",
-            "x": 36,
-            "y": 5,
-            "w": 7,
-            "h": 5,
-            "on_enter_text": "A tidy garden.",
-        },
-    ]
-
-    def npc(
-        name: str,
-        at: str,
-        persona: str,
-        routine: str,
-        relationships: dict,
-        memories: list,
-        dx: int = 0,
-    ) -> dict:
-        p = next(x for x in places if x["id"] == at)
-        return {
-            "name": name,
-            "persona": persona,
-            "greeting": f"Hi, I'm {name.split()[0]}.",
-            "routine": routine,
-            "relationships": relationships,
-            "seed_memories": memories,
-            "x": p["x"] + p["w"] // 2 + dx,
-            "y": p["y"] + p["h"] // 2,
-        }
-
-    world = {
-        "title": "Smallville Lite",
-        "seed": 214,
-        "biome": "town",
-        "width": 48,
-        "height": 34,
-        "intro_text": "It is February 14 in Smallville. Isabella is planning something at Hobbs Cafe tonight. "
-        "Walk around, talk to people, and watch the news spread.",
-        "player": {"name": "Pip"},
-        "npcs": [
-            npc(
-                "Isabella Rodriguez",
-                "hobbs_cafe",
-                "Owner of Hobbs Cafe; warm, outgoing and loves bringing people together.",
-                "Opens the cafe at 8, serves customers all day, closes at 8 in the evening.",
-                {
-                    "Maria Lopez": "a regular at the cafe and a good friend",
-                    "Tom Moreno": "sells her coffee beans",
-                },
-                [
-                    {
-                        "text": "I am hosting a Valentine's Day party at Hobbs Cafe on February 14 from 5pm to 7pm",
-                        "importance": 8,
-                    },
-                    {
-                        "text": "I want to invite as many people as I can to my party",
-                        "importance": 6,
-                    },
-                ],
-            ),
-            npc(
-                "Maria Lopez",
-                "lin_house",
-                "A physics student who streams games in the evening; curious and chatty.",
-                "Studies in the morning, has lunch at Hobbs Cafe, walks in the park in the afternoon.",
-                {
-                    "Klaus Mueller": "a classmate she has a quiet crush on",
-                    "Isabella Rodriguez": "her friend at the cafe",
-                },
-                [{"text": "I have a crush on Klaus Mueller", "importance": 6}],
-            ),
-            npc(
-                "Klaus Mueller",
-                "lin_house",
-                "A sociology student writing a paper on gentrification; thoughtful and a little shy.",
-                "Reads at home in the morning, takes notes in the park, shops at the market before dinner.",
-                {"Maria Lopez": "a friendly classmate"},
-                [{"text": "My research paper on gentrification is due next week", "importance": 5}],
-                dx = -2,
-            ),
-            npc(
-                "Tom Moreno",
-                "the_market",
-                "Runs the grocery stall at the market; grumbles about prices but helps everyone.",
-                "Sets up his stall at 7, sells until 6, then goes home to the Moreno house.",
-                {
-                    "Isabella Rodriguez": "buys his coffee beans",
-                    "Sam Moore": "an old friend he argues politics with",
-                },
-                [
-                    {
-                        "text": "Sam Moore is running for mayor and I am not sure I will vote for him",
-                        "importance": 5,
-                    }
-                ],
-            ),
-            npc(
-                "Sam Moore",
-                "moreno_house",
-                "A retired shop owner running for local mayor; friendly, talks to everyone about his plans.",
-                "Walks around town all day to talk to voters, ending at the park in the evening.",
-                {"Tom Moreno": "an old friend who doubts his campaign"},
-                [
-                    {
-                        "text": "I am running for mayor of Smallville and want to meet every resident",
-                        "importance": 7,
-                    }
-                ],
-            ),
-            npc(
-                "Ayesha Khan",
-                "johnson_park",
-                "A literature student writing a senior thesis on Shakespeare; quiet and observant.",
-                "Writes in the park in the morning, works at Hobbs Cafe in the afternoon.",
-                {"Isabella Rodriguez": "her boss at the cafe"},
-                [{"text": "I work afternoon shifts at Hobbs Cafe", "importance": 4}],
-            ),
-        ],
-        "items": [
-            {
-                "id": "chocolates",
-                "name": "Box of chocolates",
-                "description": "Perfect for a Valentine's party.",
-                "x": 38,
-                "y": 23,
-            },
-        ],
-        "quests": [
-            {
-                "id": "party_treats",
-                "title": "Treats for the party",
-                "description": "Isabella needs something sweet for the Valentine's Day party.",
-                "giver": "isabella_rodriguez",
-                "requires_item": "chocolates",
-                "reward_text": "Isabella beams and saves you the best seat.",
-            }
-        ],
-        "regions": places,
-        "vars": {"party_attendance": 0},
-        "simulation": {
-            "minutes_per_second": 2,
-            "start_minute": 480,
-            "chat_cooldown_min": 120,
-            "calls_per_minute": 4,
-        },
-    }
-    b.n("world", "world.spec", 0, 1, world = world)
-    b.n("play", "world.play", 1, 1)
-    b.e("world.world", "play.world")
-    b.n(
-        "reply",
-        "world.npc_reply",
-        2,
-        0.2,
-        label = "Talk (live)",
-        model = CHAT,
-        max_tokens = 160,
-        rules = "Stay in character. Keep replies under 50 words. Talk about what you remember and plan. If you decide "
-        "to go to Isabella's party, set party_attendance to one more than its current value.",
-    )
-    b.n("plan", "world.npc_plan", 2, 1.2, label = "Daily plans (live)", model = CHAT)
-    b.n("chat", "world.npc_chat", 2, 2.2, label = "Villager chats (live)", model = CHAT)
-    b.note(
-        "about",
-        'Village life after Park et al. 2023, "Generative Agents: Interactive Simulacra of Human Behavior" '
-        "(arXiv:2304.03442). Each villager keeps a memory stream; replies, plans and chats recall what matters by "
-        "recency, importance and relevance, and record new memories in the same call.\n\n"
-        "Play: one game day is 12 real minutes. Villagers plan their day once, walk between places and chat when they "
-        "meet, at most 4 background model calls a minute; time stops while you talk. Everything runs on the local chat "
-        "model (and the local embedding model when one is loaded). Watch whether word of Isabella's party spreads.",
-        0,
-        2.2,
-        1.8,
-        1.4,
-    )
-    return b
-
-
 def comic_strip() -> B:
     b = B(
         "comic-strip",
@@ -1631,73 +1404,265 @@ def sticker_pack() -> B:
     return b
 
 
-def remembering_assistant() -> B:
-    b = B(
-        "remembering-assistant",
-        "Remembering Assistant",
-        "pipeline",
-        "An assistant with a memory stream (after Park et al. 2023, Generative Agents): it recalls what matters "
-        "for your message by recency, importance and meaning, answers with it, and adds the answer to its memory. "
-        "Each run starts from the facts in What it already knows: add a line there to teach it something.",
-        tags = ["memory", "agent", "chat"],
-        seed = 41,
-    ).need("chat")
-    b.n(
-        "past",
-        "input.list",
-        0,
-        0.4,
-        label = "What it already knows",
-        items = [
-            "Maya is training for a half marathon in May.",
-            "Maya hurt her left knee running hills last Tuesday.",
-            "Maya's favourite breakfast is oatmeal with blueberries.",
-            "Maya's sister Ana visits next weekend.",
-            "Maya said she wants to cook more at home this month.",
-        ],
+KREA = {"repo": "krea/Krea-2-Turbo", "variant": None}
+ZIMAGE = {"repo": "Tongyi-MAI/Z-Image-Turbo", "variant": None}
+FLUX1 = {"repo": "black-forest-labs/FLUX.1-dev", "variant": None}
+
+
+def _image_model(b: B, ref: str, choice: dict, note: str) -> None:
+    b.doc["requirements"]["models"].append(
+        {"ref": ref, "kind": "image", "note": note, "optional": False, **choice}
     )
-    b.n("seed", "memory.add", 1, 0.4, label = "Remember", model = CHAT)
-    b.e("past.items", "seed.items")
+
+
+def lora_style() -> B:
+    b = B(
+        "lora-style",
+        "LoRA Style Compare",
+        "pipeline",
+        "Draw one prompt with and without a style LoRA, side by side with labels.",
+        tags = ["image", "lora", "compare"],
+        seed = 31,
+    )
+    _image_model(b, "krea", KREA, "Krea 2 Turbo; its curated style LoRAs download on first use.")
+    b.n("what", "input.text", 0, 1, value = "a lighthouse on a cliff at dawn, gulls overhead")
+    b.n("plain", "image.generate", 1, 0.5, label = "No LoRA", model = KREA, size = "1024x1024", seed = 5)
     b.n(
-        "message",
+        "styled",
+        "image.generate",
+        1,
+        1.6,
+        label = "With LoRA",
+        model = KREA,
+        size = "1024x1024",
+        seed = 5,
+        loras = [{"id": "krea/Krea-2-LoRA-softwatercolor", "weight": 1.0}],
+    )
+    b.e("what.text", "plain.prompt")
+    b.e("what.text", "styled.prompt")
+    b.n("both", "logic.collect", 2, 1.1)
+    b.e("plain.image", "both.items")
+    b.e("styled.image", "both.items")
+    b.n(
+        "sheet",
+        "image.grid",
+        3,
+        1.1,
+        columns = 2,
+        caption_style = "none",
+        cell_size = 512,
+        column_labels = ["No LoRA", "Soft Watercolor LoRA"],
+    )
+    b.e("both.list", "sheet.images")
+    b.n("show", "output.preview", 4, 1.1)
+    b.e("sheet.image", "show.value")
+    return b
+
+
+def hires_fix() -> B:
+    b = B(
+        "hires-fix",
+        "Hires Fix",
+        "pipeline",
+        "Render small, upscale 2x and refine the details in the same request (A1111 / Forge hires fix).",
+        tags = ["image", "hires", "upscale"],
+        seed = 32,
+    )
+    # Hires fix needs an image-to-image path, which FLUX.2-klein does not have in Studio yet.
+    _image_model(
+        b, "zimage", ZIMAGE, "Z-Image Turbo; renders the base image and refines the 2x upscale."
+    )
+    b.n(
+        "what",
         "input.text",
         0,
-        1.4,
-        label = "Your message",
-        value = "Should I run hills again tomorrow?",
+        1,
+        value = "a cozy reading nook with plants and warm lamplight, detailed",
     )
-    b.n("recall", "memory.retrieve", 2, 1, label = "Recall", top_k = 3)
-    b.e("seed.memory", "recall.memory")
-    b.e("message.text", "recall.query")
     b.n(
-        "answer",
-        "llm.generate",
+        "draw",
+        "image.generate",
+        1,
+        1,
+        model = ZIMAGE,
+        size = "768x768",
+        hires_scale = 2.0,
+        hires_denoise = 0.35,
+        seed = 9,
+    )
+    b.e("what.text", "draw.prompt")
+    b.n("show", "output.preview", 2, 1)
+    b.e("draw.image", "show.value")
+    return b
+
+
+def face_fix() -> B:
+    b = B(
+        "face-fix",
+        "Face Fix",
+        "pipeline",
+        "Find the face with a text mask, then repaint only that area at full resolution (a FaceDetailer "
+        "built from two blocks).",
+        tags = ["image", "mask", "inpaint"],
+        seed = 33,
+    ).need("image")
+    b.n(
+        "what",
+        "input.text",
+        0,
+        1,
+        value = "full body photo of a hiker on a mountain trail, small in frame",
+    )
+    b.n("draw", "image.generate", 1, 1, label = "Picture", model = IMAGE, size = "1024x1024", seed = 4)
+    b.e("what.text", "draw.prompt")
+    b.n("face", "image.segment", 2, 0.4, subject = "the face", grow = 12)
+    b.e("draw.image", "face.image")
+    b.n(
+        "fix",
+        "image.generate",
         3,
         1,
-        label = "Answer",
-        model = CHAT,
-        temperature = 0.6,
-        max_tokens = 400,
-        system = "You are Maya's friendly assistant. Use what you remember when it helps; keep it short.",
-        prompt = "What you remember:\n{{context}}\n\nMaya says: {{prompt}}",
+        label = "Repaint face",
+        model = IMAGE,
+        prompt = "a detailed natural face, sharp eyes, soft light",
+        # Repaint over the whole picture with the face mask: the masked-crop path upscales the crop and pastes it back
+        # oversized on FLUX.2-klein.
+        strength = 0.6,
+        seed = 4,
     )
-    b.e("recall.context", "answer.context")
-    b.e("message.text", "answer.prompt")
-    b.n("keep", "memory.add", 4, 1, label = "Remember the answer", model = CHAT)
-    b.e("recall.memory", "keep.memory")
-    b.e("answer.text", "keep.items")
-    b.n("show", "output.preview", 5, 1)
-    b.e("answer.text", "show.value")
-    b.e("recall.records", "show.value")
-    b.n("stream", "output.preview", 5, 2, label = "Updated memory")
-    b.e("keep.memory", "stream.value")
+    b.e("draw.image", "fix.init_image")
+    b.e("face.mask", "fix.mask")
+    b.n("both", "logic.collect", 4, 0.4)
+    b.e("draw.image", "both.items")
+    b.e("fix.image", "both.items")
+    b.n(
+        "sheet",
+        "image.grid",
+        5,
+        1,
+        columns = 2,
+        caption_style = "none",
+        cell_size = 512,
+        column_labels = ["Before", "After"],
+    )
+    b.e("both.list", "sheet.images")
+    b.n("show", "output.preview", 6, 1)
+    b.e("sheet.image", "show.value")
+    return b
+
+
+def outpaint() -> B:
+    b = B(
+        "outpaint",
+        "Outpaint",
+        "pipeline",
+        "Turn a square picture into a wide one: extend the canvas and let the model paint the new sides.",
+        tags = ["image", "mask", "outpaint"],
+        seed = 34,
+    ).need("image")
+    b.n("what", "input.text", 0, 1, value = "a quiet harbour town at sunset, boats on calm water")
+    b.n("draw", "image.generate", 1, 1, label = "Square", model = IMAGE, size = "768x768", seed = 2)
+    b.e("what.text", "draw.prompt")
+    # 768 + 2 x 192 keeps the canvas under 1 MP, which FLUX.2 inpaints without rescaling.
+    b.n("wide", "image.pad", 2, 1, left = 192, right = 192, top = 0, bottom = 0, feather = 24)
+    b.e("draw.image", "wide.image")
+    b.n("fill", "image.generate", 3, 1, label = "Paint the sides", model = IMAGE, strength = 1.0, seed = 2)
+    b.e("what.text", "fill.prompt")
+    b.e("wide.image", "fill.init_image")
+    b.e("wide.mask", "fill.mask")
+    b.n("show", "output.preview", 4, 1)
+    b.e("fill.image", "show.value")
+    return b
+
+
+def controlnet_canny() -> B:
+    b = B(
+        "controlnet-canny",
+        "ControlNet Sketch to Picture",
+        "pipeline",
+        "Keep the outlines of your photo or sketch (canny edges) and draw something new inside them.",
+        tags = ["image", "controlnet"],
+        seed = 35,
+    )
+    _image_model(
+        b, "flux1", FLUX1, "FLUX.1 dev; the FLUX.1 Union Pro ControlNet downloads on first use."
+    )
+    b.n("photo", "input.image", 0, 0.5, label = "Your photo or sketch")
+    b.n("what", "input.text", 0, 1.6, value = "a watercolor painting of the same scene in autumn")
+    b.n(
+        "draw",
+        "image.generate",
+        1,
+        1,
+        model = FLUX1,
+        size = "1024x1024",
+        controlnet = "flux-union-pro",
+        control_type = "canny",
+        control_strength = 0.7,
+        control_end = 0.8,
+        seed = 8,
+    )
+    b.e("photo.image", "draw.control_image")
+    b.e("what.text", "draw.prompt")
+    b.n("show", "output.preview", 2, 1)
+    b.e("draw.image", "show.value")
+    b.note(
+        "tip", "Upload a photo or a line drawing in the first block, then Run.", 0, 2.6, 1.6, 0.6
+    )
+    return b
+
+
+def xy_plot() -> B:
+    b = B(
+        "xy-plot",
+        "XY Plot: Style x Seed",
+        "pipeline",
+        "Draw every style with every seed and lay the results out as a labelled grid, to pick a look "
+        "before a final render.",
+        tags = ["image", "xy plot", "compare", "for each"],
+        seed = 36,
+    ).need("image")
+    styles = ["watercolor", "pixel art", "film photo"]
+    seeds = [1, 2, 3]
+    b.n("grid", "logic.product", 0, 1, label = "Combinations", axes = {"style": styles, "seed": seeds})
+    b.n("each", "logic.for_each", 1, 1, group = "xy_loop", max_items = 9)
+    b.e("grid.items", "each.items")
+    b.n(
+        "prompt",
+        "text.template",
+        2,
+        0.6,
+        group = "xy_loop",
+        template = "a red fox in a snowy forest, {{style}} style",
+    )
+    b.n("seed", "json.get", 2, 1.6, group = "xy_loop", path = "seed")
+    b.e("each.item", "prompt.values")
+    b.e("each.item", "seed.json")
+    b.n("paint", "image.generate", 3, 1, group = "xy_loop", model = IMAGE, size = "512x512")
+    b.e("prompt.text", "paint.prompt")
+    b.e("seed.value", "paint.seed")
+    b.e("paint.image", "each.collect")
+    b.group("xy_loop", "For each combination", (1, 0.2, 3, 2.2), "#06b6d4")
+    b.n(
+        "sheet",
+        "image.grid",
+        4.4,
+        1,
+        columns = len(seeds),
+        caption_style = "none",
+        cell_size = 384,
+        row_labels = styles,
+        column_labels = [f"seed {s}" for s in seeds],
+    )
+    b.e("each.results", "sheet.images")
+    b.n("show", "output.preview", 5.4, 1)
+    b.e("sheet.image", "show.value")
     b.note(
         "tip",
-        "Recall scores every memory by how recent, how important and how related it is to the message. "
-        "Everything runs on the local chat and embedding models.",
-        2,
-        2.0,
-        1.8,
+        "Edit the lists in Combinations to sweep other styles or seeds; keep the grid labels in step.",
+        0,
+        2.2,
+        1.6,
         0.6,
     )
     return b
@@ -2358,6 +2323,305 @@ def model_arena() -> B:
     return b
 
 
+def smallville_lite() -> B:
+    b = B(
+        "smallville-lite",
+        "Smallville Lite",
+        "world",
+        "A small town whose six villagers live their own day: they remember, plan, walk between places and chat with "
+        "each other, so news spreads without you. After Park et al. 2023, Generative Agents.",
+        tags = ["world", "game", "npc", "memory", "agent"],
+        seed = 214,
+    ).need("chat")
+    places = [
+        {
+            "id": "hobbs_cafe",
+            "name": "Hobbs Cafe",
+            "x": 20,
+            "y": 6,
+            "w": 8,
+            "h": 5,
+            "on_enter_text": "Smells of fresh coffee.",
+        },
+        {
+            "id": "johnson_park",
+            "name": "Johnson Park",
+            "x": 5,
+            "y": 21,
+            "w": 10,
+            "h": 7,
+            "on_enter_text": "Birds and benches.",
+        },
+        {
+            "id": "the_market",
+            "name": "The Market",
+            "x": 33,
+            "y": 21,
+            "w": 10,
+            "h": 6,
+            "on_enter_text": "Stalls and chatter.",
+        },
+        {
+            "id": "lin_house",
+            "name": "Lin family home",
+            "x": 5,
+            "y": 5,
+            "w": 7,
+            "h": 5,
+            "on_enter_text": "A cosy blue house.",
+        },
+        {
+            "id": "moreno_house",
+            "name": "Moreno house",
+            "x": 36,
+            "y": 5,
+            "w": 7,
+            "h": 5,
+            "on_enter_text": "A tidy garden.",
+        },
+    ]
+
+    def npc(
+        name: str,
+        at: str,
+        persona: str,
+        routine: str,
+        relationships: dict,
+        memories: list,
+        dx: int = 0,
+    ) -> dict:
+        p = next(x for x in places if x["id"] == at)
+        return {
+            "name": name,
+            "persona": persona,
+            "greeting": f"Hi, I'm {name.split()[0]}.",
+            "routine": routine,
+            "relationships": relationships,
+            "seed_memories": memories,
+            "x": p["x"] + p["w"] // 2 + dx,
+            "y": p["y"] + p["h"] // 2,
+        }
+
+    world = {
+        "title": "Smallville Lite",
+        "seed": 214,
+        "biome": "town",
+        "width": 48,
+        "height": 34,
+        "intro_text": "It is February 14 in Smallville. Isabella is planning something at Hobbs Cafe tonight. "
+        "Walk around, talk to people, and watch the news spread.",
+        "player": {"name": "Pip"},
+        "npcs": [
+            npc(
+                "Isabella Rodriguez",
+                "hobbs_cafe",
+                "Owner of Hobbs Cafe; warm, outgoing and loves bringing people together.",
+                "Opens the cafe at 8, serves customers all day, closes at 8 in the evening.",
+                {
+                    "Maria Lopez": "a regular at the cafe and a good friend",
+                    "Tom Moreno": "sells her coffee beans",
+                },
+                [
+                    {
+                        "text": "I am hosting a Valentine's Day party at Hobbs Cafe on February 14 from 5pm to 7pm",
+                        "importance": 8,
+                    },
+                    {
+                        "text": "I want to invite as many people as I can to my party",
+                        "importance": 6,
+                    },
+                ],
+            ),
+            npc(
+                "Maria Lopez",
+                "lin_house",
+                "A physics student who streams games in the evening; curious and chatty.",
+                "Studies in the morning, has lunch at Hobbs Cafe, walks in the park in the afternoon.",
+                {
+                    "Klaus Mueller": "a classmate she has a quiet crush on",
+                    "Isabella Rodriguez": "her friend at the cafe",
+                },
+                [{"text": "I have a crush on Klaus Mueller", "importance": 6}],
+            ),
+            npc(
+                "Klaus Mueller",
+                "lin_house",
+                "A sociology student writing a paper on gentrification; thoughtful and a little shy.",
+                "Reads at home in the morning, takes notes in the park, shops at the market before dinner.",
+                {"Maria Lopez": "a friendly classmate"},
+                [{"text": "My research paper on gentrification is due next week", "importance": 5}],
+                dx = -2,
+            ),
+            npc(
+                "Tom Moreno",
+                "the_market",
+                "Runs the grocery stall at the market; grumbles about prices but helps everyone.",
+                "Sets up his stall at 7, sells until 6, then goes home to the Moreno house.",
+                {
+                    "Isabella Rodriguez": "buys his coffee beans",
+                    "Sam Moore": "an old friend he argues politics with",
+                },
+                [
+                    {
+                        "text": "Sam Moore is running for mayor and I am not sure I will vote for him",
+                        "importance": 5,
+                    }
+                ],
+            ),
+            npc(
+                "Sam Moore",
+                "moreno_house",
+                "A retired shop owner running for local mayor; friendly, talks to everyone about his plans.",
+                "Walks around town all day to talk to voters, ending at the park in the evening.",
+                {"Tom Moreno": "an old friend who doubts his campaign"},
+                [
+                    {
+                        "text": "I am running for mayor of Smallville and want to meet every resident",
+                        "importance": 7,
+                    }
+                ],
+            ),
+            npc(
+                "Ayesha Khan",
+                "johnson_park",
+                "A literature student writing a senior thesis on Shakespeare; quiet and observant.",
+                "Writes in the park in the morning, works at Hobbs Cafe in the afternoon.",
+                {"Isabella Rodriguez": "her boss at the cafe"},
+                [{"text": "I work afternoon shifts at Hobbs Cafe", "importance": 4}],
+            ),
+        ],
+        "items": [
+            {
+                "id": "chocolates",
+                "name": "Box of chocolates",
+                "description": "Perfect for a Valentine's party.",
+                "x": 38,
+                "y": 23,
+            },
+        ],
+        "quests": [
+            {
+                "id": "party_treats",
+                "title": "Treats for the party",
+                "description": "Isabella needs something sweet for the Valentine's Day party.",
+                "giver": "isabella_rodriguez",
+                "requires_item": "chocolates",
+                "reward_text": "Isabella beams and saves you the best seat.",
+            }
+        ],
+        "regions": places,
+        "vars": {"party_attendance": 0},
+        "simulation": {
+            "minutes_per_second": 2,
+            "start_minute": 480,
+            "chat_cooldown_min": 120,
+            "calls_per_minute": 4,
+        },
+    }
+    b.n("world", "world.spec", 0, 1, world = world)
+    b.n("play", "world.play", 1, 1)
+    b.e("world.world", "play.world")
+    b.n(
+        "reply",
+        "world.npc_reply",
+        2,
+        0.2,
+        label = "Talk (live)",
+        model = CHAT,
+        max_tokens = 160,
+        rules = "Stay in character. Keep replies under 50 words. Talk about what you remember and plan. If you decide "
+        "to go to Isabella's party, set party_attendance to one more than its current value.",
+    )
+    b.n("plan", "world.npc_plan", 2, 1.2, label = "Daily plans (live)", model = CHAT)
+    b.n("chat", "world.npc_chat", 2, 2.2, label = "Villager chats (live)", model = CHAT)
+    b.note(
+        "about",
+        'Village life after Park et al. 2023, "Generative Agents: Interactive Simulacra of Human Behavior" '
+        "(arXiv:2304.03442). Each villager keeps a memory stream; replies, plans and chats recall what matters by "
+        "recency, importance and relevance, and record new memories in the same call.\n\n"
+        "Play: one game day is 12 real minutes. Villagers plan their day once, walk between places and chat when they "
+        "meet, at most 4 background model calls a minute; time stops while you talk. Everything runs on the local chat "
+        "model (and the local embedding model when one is loaded). Watch whether word of Isabella's party spreads.",
+        0,
+        2.2,
+        1.8,
+        1.4,
+    )
+    return b
+
+
+def remembering_assistant() -> B:
+    b = B(
+        "remembering-assistant",
+        "Remembering Assistant",
+        "pipeline",
+        "An assistant with a memory stream (after Park et al. 2023, Generative Agents): it recalls what matters "
+        "for your message by recency, importance and meaning, answers with it, and adds the answer to its memory. "
+        "Each run starts from the facts in What it already knows: add a line there to teach it something.",
+        tags = ["memory", "agent", "chat"],
+        seed = 41,
+    ).need("chat")
+    b.n(
+        "past",
+        "input.list",
+        0,
+        0.4,
+        label = "What it already knows",
+        items = [
+            "Maya is training for a half marathon in May.",
+            "Maya hurt her left knee running hills last Tuesday.",
+            "Maya's favourite breakfast is oatmeal with blueberries.",
+            "Maya's sister Ana visits next weekend.",
+            "Maya said she wants to cook more at home this month.",
+        ],
+    )
+    b.n("seed", "memory.add", 1, 0.4, label = "Remember", model = CHAT)
+    b.e("past.items", "seed.items")
+    b.n(
+        "message",
+        "input.text",
+        0,
+        1.4,
+        label = "Your message",
+        value = "Should I run hills again tomorrow?",
+    )
+    b.n("recall", "memory.retrieve", 2, 1, label = "Recall", top_k = 3)
+    b.e("seed.memory", "recall.memory")
+    b.e("message.text", "recall.query")
+    b.n(
+        "answer",
+        "llm.generate",
+        3,
+        1,
+        label = "Answer",
+        model = CHAT,
+        temperature = 0.6,
+        max_tokens = 400,
+        system = "You are Maya's friendly assistant. Use what you remember when it helps; keep it short.",
+        prompt = "What you remember:\n{{context}}\n\nMaya says: {{prompt}}",
+    )
+    b.e("recall.context", "answer.context")
+    b.e("message.text", "answer.prompt")
+    b.n("keep", "memory.add", 4, 1, label = "Remember the answer", model = CHAT)
+    b.e("recall.memory", "keep.memory")
+    b.e("answer.text", "keep.items")
+    b.n("show", "output.preview", 5, 1)
+    b.e("answer.text", "show.value")
+    b.e("recall.records", "show.value")
+    b.n("stream", "output.preview", 5, 2, label = "Updated memory")
+    b.e("keep.memory", "stream.value")
+    b.note(
+        "tip",
+        "Recall scores every memory by how recent, how important and how related it is to the message. "
+        "Everything runs on the local chat and embedding models.",
+        2,
+        2.0,
+        1.8,
+        0.6,
+    )
+    return b
+
+
 def summarise_pdf() -> B:
     b = B(
         "summarise-pdf",
@@ -2803,14 +3067,18 @@ BUILDERS = (
     sloth_moon,
     infinite_dungeon,
     pocket_village,
-    smallville_lite,
     comic_strip,
     podcast,
     storyboard,
     dataset_forge,
     prompt_tournament,
     sticker_pack,
-    remembering_assistant,
+    lora_style,
+    hires_fix,
+    face_fix,
+    outpaint,
+    controlnet_canny,
+    xy_plot,
     photo_restyle,
     animate_photo,
     meeting_notes,
@@ -2823,6 +3091,8 @@ BUILDERS = (
     tts_sft,
     embedding_sft,
     model_arena,
+    smallville_lite,
+    remembering_assistant,
     summarise_pdf,
     ask_documents,
     contact_cleanup,
