@@ -819,6 +819,7 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
         last_used_at = row.get("last_used_at"),
         expires_at = row.get("expires_at"),
         is_active = bool(row["is_active"]),
+        purpose = row.get("purpose"),
     )
 
 
@@ -865,6 +866,9 @@ async def create_api_key(
             expires_at = expires_at,
             expect_gen = generation,
             account_id = _key_account_scope(),
+            purpose = storage.UNSLOTH_START_API_KEY_PURPOSE
+            if payload.name == storage.UNSLOTH_START_API_KEY_NAME
+            else None,
         )
     except storage.CredentialRotated:
         raise HTTPException(

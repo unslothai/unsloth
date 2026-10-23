@@ -12,8 +12,8 @@ import { cn } from "@/lib/utils";
 // the preset API accepts them because the generation contract does too.
 export const NEGATIVE_PROMPT_MAX_LENGTH = 20_000;
 
-// Prompt boxes: smaller radius, scrollbar inset from the corners.
-export const PROMPT_BOX_CLASS = "image-prompt-box rounded-lg";
+// Prompt boxes: scrollbar inset from the corners.
+export const PROMPT_BOX_CLASS = "image-prompt-box rounded-xl";
 
 export function NegativePromptField({
   value,

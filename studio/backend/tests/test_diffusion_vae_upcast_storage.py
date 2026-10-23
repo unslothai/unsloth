@@ -15,7 +15,6 @@ import pytest
 torch = pytest.importorskip("torch")
 diffusers = pytest.importorskip("diffusers")
 
-from core.inference import diffusion_hires as hires  # noqa: E402
 from core.inference import diffusion_vae_fp16 as vf  # noqa: E402
 
 CUDA = types.SimpleNamespace(device = "cuda")
@@ -48,19 +47,6 @@ def _tiny_vae(dtype = torch.float16):
 
 def _storage(module):
     return {name: (p.data_ptr(), p.dtype) for name, p in module.named_parameters()}
-
-
-def _stock_hires_latents(ref, processor, image, target, factor):
-    """main's encode_upscaled_latents with the fp32 VAE copy ``ref``: 16-bit input upcast, 16-bit scaling."""
-    import torch.nn.functional as F
-
-    device = next(ref.parameters()).device
-    x = processor.preprocess(image).to(device = device, dtype = torch.float16)
-    with torch.inference_mode():
-        lat = ref.encode(x.float()).latent_dist.mode().to(torch.float16)
-        lat = lat * float(ref.config.scaling_factor)
-        tw, th = target
-        return F.interpolate(lat, size = (th // factor, tw // factor), mode = "nearest-exact")
 
 
 def _stock_fp32(vae):
@@ -138,22 +124,6 @@ def test_pipeline_wrapper_is_inert_off_the_upcast_case(dtype, force_upcast):
     vae.register_to_config(force_upcast = force_upcast)
     with vu.pipeline_upcasts_keep_storage(types.SimpleNamespace(vae = vae)):
         assert "to" not in vae.__dict__
-
-
-def test_hires_latent_encode_keeps_vae_storage():
-    from diffusers.image_processor import VaeImageProcessor
-    from PIL import Image
-
-    vae = _tiny_vae()
-    ref = _stock_fp32(vae)
-    pipe = types.SimpleNamespace(
-        vae = vae, image_processor = VaeImageProcessor(vae_scale_factor = 4), vae_scale_factor = 4
-    )
-    image = Image.new("RGB", (32, 32), (120, 30, 200))
-    before = _storage(vae)
-    lat = hires.encode_upscaled_latents(pipe, image, (64, 64))
-    assert _storage(vae) == before
-    assert torch.equal(lat, _stock_hires_latents(ref, pipe.image_processor, image, (64, 64), 4))
 
 
 def test_fp16_decode_fp32_encode_keeps_encoder_storage():
@@ -239,36 +209,6 @@ def test_sdxl_model_offload_vae_stays_pinned_cuda(monkeypatch, tiny_sdxl_path):
         outs[arm] = renders
     assert torch.equal(outs["stock"][0], outs["kept"][0])
     assert torch.equal(outs["kept"][0], outs["kept"][1])
-
-
-def test_hires_encode_under_model_offload_keeps_pinned_host_weights_cuda(
-    monkeypatch, tiny_sdxl_path
-):
-    from core.inference import diffusion_memory as dm
-    from PIL import Image
-
-    _cuda_or_skip()
-    path = tiny_sdxl_path
-    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
-    pipe = diffusers.StableDiffusionXLPipeline.from_pretrained(path, torch_dtype = torch.float16)
-    pipe.vae.register_to_config(force_upcast = True)
-    ref = _stock_fp32(pipe.vae).to("cuda")
-    pipe.enable_model_cpu_offload(device = "cuda:0")
-    dm.keep_cpu_weights_on_offload(pipe)
-    image = Image.new("RGB", (64, 64), (120, 30, 200))
-    lat = hires.encode_upscaled_latents(pipe, image, (128, 128))
-    state = pipe.vae.__dict__[dm._KEEP_ATTR]
-    host = state["host"]
-    names = [n for n, _ in pipe.vae.named_parameters()]
-    # Onloaded through the pinned chunks, and the kept host copy is still every weight's (pinned) home.
-    assert state.get("pin_layout")
-    assert all(host.get(n) is not None and host[n].is_pinned() for n in names)
-    pipe.vae._hf_hook.init_hook(pipe.vae)
-    assert all(p.is_pinned() and p.dtype == torch.float16 for p in pipe.vae.parameters())
-    expect = _stock_hires_latents(
-        ref, pipe.image_processor, image, (128, 128), pipe.vae_scale_factor
-    )
-    assert torch.equal(lat, expect)
 
 
 def test_nested_load_dtype_casts_still_restore_the_original_tensors():

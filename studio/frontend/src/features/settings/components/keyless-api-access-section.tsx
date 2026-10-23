@@ -186,7 +186,7 @@ export function KeylessApiAccessSection({
   return (
     <section
       data-settings-label="Keyless API access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">

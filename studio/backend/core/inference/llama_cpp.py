@@ -3435,6 +3435,10 @@ def _drafter_path_kind(path: str) -> Optional[str]:
 
 
 _IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+# Mirrors hub.utils.gguf._IMATRIX_WEIGHTED_RE.
+_IMATRIX_WEIGHTED_RE = re.compile(
+    r"[._\-](?:I?Q[0-9]+_|P?TQ[0-9]+_|(?:MX|NV)FP[0-9])[^/]*[_\-]imatrix$", re.IGNORECASE
+)
 
 
 def _is_companion_gguf_path(path: str) -> bool:
@@ -3455,7 +3459,8 @@ def _is_companion_gguf_path(path: str) -> bool:
         return True
     # Mirrors hub.utils.gguf.is_imatrix_filename: an imatrix is a valid GGUF container
     # holding calibration statistics, so only the name rules it out.
-    if _IMATRIX_TOKEN_RE.search(Path(p).stem):
+    stem = Path(p).stem
+    if _IMATRIX_TOKEN_RE.search(stem) and not _IMATRIX_WEIGHTED_RE.search(stem):
         return True
     if _DSPARK_BEFORE_QUANT_RE.search(Path(p).name):
         return True

@@ -180,7 +180,7 @@ export function LlmGeneralTab({
         onChange={(value) => onUpdate({ name: value })}
       />
       {needsSetupHelp ? (
-        <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+        <div className="rounded-lg border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <p className="text-sm font-semibold text-foreground">
             Set up the model once, then come back here
           </p>
@@ -204,7 +204,7 @@ export function LlmGeneralTab({
           </div>
         </div>
       ) : needsModelChoice ? (
-        <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
+        <div className="rounded-lg border border-border/60 bg-muted/10 px-4 py-3 text-xs text-muted-foreground">
           <p className="text-sm font-semibold text-foreground">
             Start by choosing a model preset
           </p>

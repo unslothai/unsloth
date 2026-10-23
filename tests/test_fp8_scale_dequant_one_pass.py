@@ -133,13 +133,47 @@ def test_strided_transposed_view_keeps_the_torch_path(F, monkeypatch):
     assert not calls
 
 
-def test_compiled_dequant_keeps_the_fused_expression(F, monkeypatch):
-    calls = _count_launches(F, monkeypatch)
-    q, s = _weight(64, 128)
+def _compiled_graph_ops(fn, *args):
+    ops = []
+
+    def backend(gm, example_inputs):
+        ops.extend(str(node.target) for node in gm.graph.nodes if node.op == "call_function")
+        return gm.forward
+
     torch._dynamo.reset()
-    fn = torch.compile(lambda x, y: F.weight_dequant(x, y, torch.float16), fullgraph = True)
-    _assert_same_bits(fn(q, s), _reference(q, s, torch.float16))
-    assert not calls
+    out = torch.compile(fn, backend = backend, fullgraph = True)(*args)
+    return out, ops
+
+
+def test_compiled_dequant_keeps_the_fused_expression(F):
+    # sm89+: Inductor fuses the torch expression, so the graph holds no opaque dequant op.
+    if F._fp8_e4m3fn_unsupported_in_trace(torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn)):
+        pytest.skip("covered by the pre-sm89 test")
+    q, s = _weight(64, 128)
+    out, ops = _compiled_graph_ops(lambda x, y: F.weight_dequant(x, y, torch.float16), q, s)
+    _assert_same_bits(out, _reference(q, s, torch.float16))
+    assert not any("fp8_scale_dequant" in op for op in ops)
+    torch._dynamo.reset()
+    inductor = torch.compile(lambda x, y: F.weight_dequant(x, y, torch.float16), fullgraph = True)
+    _assert_same_bits(inductor(q, s), _reference(q, s, torch.float16))
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("layout", ["row", "row_t", "tensor"])
+def test_compiled_dequant_below_sm89_is_one_opaque_op(F, monkeypatch, dtype, layout):
+    # Inductor cannot emit fp8e4nv below sm89, so the fused expression fails to compile there.
+    monkeypatch.setattr(F, "_FP8_DEVICE_LACKS_KERNEL", (True,) * torch.cuda.device_count())
+    q, s = _weight(96, 160)
+    if layout == "row":
+        x, xs, ref = q, s, _reference(q, s, dtype)
+    elif layout == "row_t":
+        x, xs, ref = q.t(), s, _reference(q, s, dtype).t()
+    else:
+        x, xs, ref = q, s[5:6], _reference(q, s[5:6].view(1, 1), dtype)
+    out, ops = _compiled_graph_ops(lambda a, b: F.weight_dequant(a, b, dtype), x, xs)
+    assert any("fp8_scale_dequant" in op for op in ops), ops
+    assert out.stride() == ref.stride()
+    _assert_same_bits(out, ref)
 
 
 def test_small_weights_keep_the_torch_path(fp8, monkeypatch):
@@ -150,3 +184,18 @@ def test_small_weights_keep_the_torch_path(fp8, monkeypatch):
     q, s = _weight(2049, 2048)
     _assert_same_bits(fp8.weight_dequant(q, s, torch.bfloat16), _reference(q, s, torch.bfloat16))
     assert len(calls) == 1
+
+
+def test_compiled_dequant_reads_no_device_capability(F, monkeypatch):
+    # The compiled gate reads capabilities cached at import, never the device.
+    def no_query(*args, **kwargs):
+        raise AssertionError("device capability queried while tracing")
+
+    monkeypatch.setattr(F, "_fp8_device_lacks_kernel", no_query)
+    monkeypatch.setattr(
+        F, "_FP8_DEVICE_LACKS_KERNEL", (True,) * torch.cuda.device_count(), raising = False
+    )
+    q, s = _weight(64, 128)
+    out, ops = _compiled_graph_ops(lambda x, y: F.weight_dequant(x, y, torch.float16), q, s)
+    assert any("fp8_scale_dequant" in op for op in ops), ops
+    _assert_same_bits(out, _reference(q, s, torch.float16))
