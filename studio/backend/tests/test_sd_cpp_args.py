@@ -1130,7 +1130,12 @@ def test_quant_cublas_env_follows_the_measured_architectures(ccs, expected):
 @pytest.mark.parametrize("user_value", ["0", "512"])
 def test_quant_cublas_env_never_overrides_the_user(user_value):
     environ = {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": user_value}
-    assert _sd_cpp_args_module.quant_cublas_env([(10, 0)], environ = environ, weight_types = frozenset({"Q8_0"})) == {}
+    assert (
+        _sd_cpp_args_module.quant_cublas_env(
+            [(10, 0)], environ = environ, weight_types = frozenset({"Q8_0"})
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize(
@@ -1169,8 +1174,14 @@ def test_gguf_quantized_weight_types_reads_the_tensor_table(tmp_path):
         return str(path)
 
     x = np.ones((4, 256), dtype = np.float32)
-    q8 = write("q8.gguf", [("a", x, gguf.GGMLQuantizationType.Q8_0), ("n", np.ones(4, dtype = np.float32), None)])
-    mixed = write("mixed.gguf", [("a", x, gguf.GGMLQuantizationType.Q8_0), ("b", x, gguf.GGMLQuantizationType.Q4_0)])
+    q8 = write(
+        "q8.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("n", np.ones(4, dtype = np.float32), None)],
+    )
+    mixed = write(
+        "mixed.gguf",
+        [("a", x, gguf.GGMLQuantizationType.Q8_0), ("b", x, gguf.GGMLQuantizationType.Q4_0)],
+    )
     types_of = _sd_cpp_args_module.gguf_quantized_weight_types
     assert types_of(q8) == frozenset({"Q8_0"})
     assert types_of(mixed) == frozenset({"Q8_0", "Q4_0"})

@@ -164,7 +164,6 @@ def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]
         return None
     try:
         from gguf import GGUFReader
-
         reader = GGUFReader(str(path), "r")
         return frozenset(t.tensor_type.name for t in reader.tensors) - _UNQUANTIZED_GGUF_TYPES
     except Exception:  # noqa: BLE001 -- unknown keeps the build's default (MMQ)
