@@ -270,6 +270,7 @@ import { MaskFromTextPanel } from "./mask-from-text-panel";
 import { DetailerField, useDetailerSegmenter } from "./detailer-field";
 import {
   detailerAvailable,
+  detailerNotApplied,
   detailerEngagesNegative,
   detailerErrors,
   detailerModelCapable,
@@ -3003,13 +3004,15 @@ export function ImagesPage({
     const notApplied = [
       ...(literal ? [literal] : []),
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
+      // Restored into the hidden control, which Generate omits: say so, as an import does.
+      ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status, detailerReady]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3137,7 +3140,7 @@ export function ImagesPage({
         ...unknownRecipeKeys(recipe),
       ];
       // Restored into the hidden control when this model cannot inpaint or SAM 3 is missing: say so.
-      if (settings.detailer && !detailerReady) notApplied.unshift("Detailer (face fix)");
+      notApplied.unshift(...detailerNotApplied(Boolean(settings.detailer), detailerReady));
       if (tiMatch) {
         const { installed, missing } = tiMatch;
         const resolved = new Map<string, string | null>([

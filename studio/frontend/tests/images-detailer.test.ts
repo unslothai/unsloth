@@ -12,6 +12,7 @@ import {
   detailerErrors,
   detailerFromInfotext,
   detailerModelCapable,
+  detailerNotApplied,
   detailerRecordOf,
   detailerRequestField,
   detailerSummary,
@@ -202,9 +203,28 @@ test("an AUTOMATIC1111 ADetailer infotext maps its YOLO model to a target", () =
     feather: 4,
     denoise: 0.4,
   });
+  // Only the first tab restores: a later tab and the options Studio has no control for are named, not dropped.
+  assert.deepEqual(parsed.parameters_not_applied, [
+    "ADetailer inpaint padding: 32",
+    "ADetailer model 2nd: hand_yolov8n.pt",
+  ]);
+  assert.deepEqual(
+    parseA1111Parameters("a\nSteps: 20, Seed: 1, ADetailer model: None, ADetailer prompt: eyes")?.parameters_not_applied,
+    ["ADetailer prompt: eyes"],
+  );
   assert.equal(detailerFromInfotext({ "adetailer model": "hand_yolov8s.pt" })?.targets, "hand");
   assert.equal(detailerFromInfotext({ "adetailer model": "None" }), null);
   assert.equal(detailerFromInfotext({}), null);
+});
+
+test("a restored or imported pass this load cannot run is named as not applied", () => {
+  assert.deepEqual(detailerNotApplied(true, false), ["Detailer (face fix)"]);
+  assert.deepEqual(detailerNotApplied(true, true), []);
+  assert.deepEqual(detailerNotApplied(false, false), []);
+  const page = readFileSync(new URL("../src/features/images/images-page.tsx", import.meta.url), "utf8");
+  // The gallery restore names it beside the SD controls, as an import does.
+  assert.match(page, /\.\.\.\(via === "restore" \? detailerNotApplied\(detail\.enabled, detailerReady\) : \[\]\)/);
+  assert.match(page, /notApplied\.unshift\(\.\.\.detailerNotApplied\(Boolean\(settings\.detailer\), detailerReady\)\)/);
 });
 
 test("errors are surfaced, a cancel is not", () => {

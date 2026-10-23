@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-import { detailerFromInfotext, detailerRecordOf, type DetailerRecord } from "./detailer.ts";
+import {
+  detailerFromInfotext,
+  detailerInfotextNotApplied,
+  detailerRecordOf,
+  type DetailerRecord,
+} from "./detailer.ts";
 import { parseHiresInfotext } from "./hires-choice.ts";
 import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
 import type { SdControlsCapability } from "./sd-controls.ts";
@@ -758,6 +763,7 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   const hires: Record<string, string> = {};
   // ADetailer's own keys (adetailer/args.py), read as one Detailer pass.
   const adetailer: Record<string, string> = {};
+  const adetailerLabels: Record<string, string> = {};
   let legacySchedule: string | undefined;
   for (const [label, value] of hasSettings ? fields : []) {
     const key = label.toLowerCase();
@@ -822,7 +828,10 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       else if (value && value.toLowerCase() !== "original")
         notApplied.push(`${label}: ${value}`);
     } else if (key.startsWith("hires")) hires[label] = value;
-    else if (key.startsWith("adetailer ")) adetailer[key] = value;
+    else if (key.startsWith("adetailer ")) {
+      adetailer[key] = value;
+      adetailerLabels[key] = label;
+    }
     else if (key === "sampler") {
       out.sampler = labelId(SAMPLER_LABELS, value);
       // Before AUTOMATIC1111 1.9 the schedule rode on the sampler name: `DPM++ 2M Karras`.
@@ -855,6 +864,8 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   if (hiresKeys.length > 0) out.hires = hires;
   const detailer = detailerFromInfotext(adetailer);
   if (detailer) out.detailer = detailer;
+  for (const key of detailerInfotextNotApplied(adetailer))
+    notApplied.push(`${adetailerLabels[key]}: ${adetailer[key]}`);
   // txt2img hires fix also writes a denoising strength; without it the strength means img2img,
   // or inpaint when A1111 wrote its mask-only fields.
   if (out.strength !== undefined) {

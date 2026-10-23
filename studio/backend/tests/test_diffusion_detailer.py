@@ -410,6 +410,59 @@ def test_detection_holds_the_engine_generation_slot(monkeypatch):
     assert held == [("segment", True), ("park", True)] and not lock.locked()
 
 
+def test_detection_registers_as_the_generation_slot_holder(monkeypatch):
+    # Holding the raw lock is not enough: a request queued on it has entered media_generation, so without a slot
+    # holder generation_is_foreign() sees two accounts and the owner's cancel is refused.
+    import threading
+
+    from core.inference import diffusion_engine_router as router
+    from core.inference import diffusion_segment
+    from hub.services.models import account_access
+    from utils.account_context import AccountContext, bind_account, reset_account
+
+    lock = threading.Lock()
+    monkeypatch.setattr(
+        router, "get_active_diffusion_engine", lambda: types.SimpleNamespace(_generate_lock = lock)
+    )
+    monkeypatch.setattr(account_access, "account_scope", lambda: "acct-a")
+    seen = []
+
+    class _Seg:
+        def segment(self, *a, **k):
+            seen.append(
+                (
+                    list(account_access._generation_holders.get("diffusion", [])),
+                    account_access.generation_is_foreign("diffusion"),
+                )
+            )
+            return types.SimpleNamespace(
+                instances = [], instance_logits = [], device = "cpu", precision = "fp32"
+            )
+
+    monkeypatch.setattr(diffusion_segment, "get_segmenter", lambda: _Seg())
+    monkeypatch.setattr(diffusion_segment, "release_segmenter", lambda *a, **k: None)
+    monkeypatch.setattr(
+        diffusion_segment, "active_variant", lambda: types.SimpleNamespace(id = "sam3.1")
+    )
+    token = bind_account(AccountContext("acct-a", "a"))
+    try:
+        with account_access.media_generation("diffusion"):
+            # Account B is queued on the engine lock: counted, not holding.
+            other = bind_account(AccountContext("acct-b", "b"))
+            try:
+                with account_access.media_generation("diffusion"):
+                    reset_account(other)
+                    other = None
+                    det.detect([_scene()], det.DetailerSettings())
+            finally:
+                if other is not None:
+                    reset_account(other)
+    finally:
+        reset_account(token)
+    assert seen == [(["acct-a"], False)]
+    assert "diffusion" not in account_access._generation_holders
+
+
 def test_detection_waiting_for_the_slot_honours_stop(monkeypatch):
     import threading
 

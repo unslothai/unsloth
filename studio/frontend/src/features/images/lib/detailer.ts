@@ -296,6 +296,44 @@ export function detailerFromInfotext(fields: Record<string, string>): DetailerRe
   return out;
 }
 
+// The first-tab keys detailerFromInfotext restores, plus what needs no control: the version stamp, and inpaint only
+// masked, which the pass always does.
+const INFOTEXT_RESTORED = new Set(
+  [
+    "model",
+    "model classes",
+    "prompt",
+    "negative prompt",
+    "confidence",
+    "dilate erode",
+    "mask blur",
+    "denoising strength",
+    "use separate steps",
+    "steps",
+    "use separate cfg scale",
+    "cfg scale",
+    "version",
+  ].map((key) => `adetailer ${key}`),
+);
+
+/** The `ADetailer ...` keys an import drops: a later tab (" 2nd", " 3rd", ...) and options Studio has no control
+ *  for. With no first-tab pass ("None" or absent) nothing of it restores but that off model itself. */
+export function detailerInfotextNotApplied(fields: Record<string, string>): string[] {
+  const restored = detailerFromInfotext(fields) !== null;
+  return Object.keys(fields).filter((key) => {
+    if (key === "adetailer version" || !fields[key]) return false;
+    if (key === "adetailer model") return !restored && fields[key] !== "None";
+    if (key === "adetailer inpaint only masked") return !(restored && /^true$/i.test(fields[key] ?? ""));
+    return !(restored && INFOTEXT_RESTORED.has(key));
+  });
+}
+
+/** What a restore or import names as not applied when it brings back a pass this load cannot run (no inpaint path,
+ *  SAM 3 missing, or its status not in yet): the switch is restored behind the hidden control and Generate omits it. */
+export function detailerNotApplied(recorded: boolean, ready: boolean): string[] {
+  return recorded && !ready ? ["Detailer (face fix)"] : [];
+}
+
 /** The Recipe line for an image's pass: "face x2, denoise 0.5", or why it did not run. */
 export function detailerSummary(record: DetailerRecord | null | undefined): string | null {
   if (!record) return null;

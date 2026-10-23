@@ -607,7 +607,14 @@ def detect(
         segmenter = diffusion_segment.get_segmenter()
         # One load for the whole batch: no tight-card unload between images, parked once below.
         hold = getattr(segmenter, "hold", None)
-        with hold() if hold is not None else contextlib.nullcontext():
+        with contextlib.ExitStack() as held:
+            if slot is not None:
+                # Registered as the slot holder, as a render is: a request queued on the lock is not the running
+                # one, so this account's cancel is not refused as foreign.
+                from hub.services.models.account_access import media_generation_slot
+                held.enter_context(media_generation_slot("diffusion"))
+            if hold is not None:
+                held.enter_context(hold())
             for image in images:
                 if stop is not None and stop():
                     raise DetailerCancelled("cancelled")
