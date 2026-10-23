@@ -110,6 +110,7 @@ import {
   reapRequest,
   reapSummaryLabel,
 } from "./lib/reap";
+import { exportRemoteCodeConsent } from "./lib/remote-code-consent";
 import { saveDirectoryField } from "./lib/save-directory";
 import { exportUnsupportedText } from "./lib/unsupported-text";
 import {
@@ -997,25 +998,18 @@ export function ExportPage() {
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
     // Consent gate for custom (auto_map) code, before handing off to runExport.
-    // A local model the user exported is trusted by default, but a fine-tuned
-    // checkpoint inherits its base's remote code (e.g. IFM/K2-Horizon-3.7B) and
-    // must still be gated so the export loader can set trust_remote_code.
-    let trustRemoteCode = modelSource !== "hf";
+    const consent = exportRemoteCodeConsent({
+      sourceMode,
+      modelSource,
+      source,
+      checkpointPath,
+    });
+    let trustRemoteCode = consent.trustByDefault;
     let approvedRemoteCodeFingerprint: string | null = null;
-    const consentModelName =
-      sourceMode === "checkpoint"
-        ? (selectedModelData?.base_model || source)
-        : source;
-    const consentRequiresTrustRemoteCode =
-      sourceMode === "checkpoint" ? true : modelSource === "hf";
     const remoteCodeOk = await confirmRemoteCodeIfNeeded({
-      modelName: consentModelName,
+      modelName: consent.scanTarget,
       hfToken: actionHfToken || null,
-      // An HF source can need trust_remote_code via its YAML default with no
-      // auto_map to review; signal it so a YAML-only model does not export
-      // with it false. For checkpoints the base is scanned instead of the
-      // local folder.
-      requiresTrustRemoteCode: consentRequiresTrustRemoteCode,
+      requiresTrustRemoteCode: consent.requiresTrustRemoteCode,
       onApprove: (fingerprint) => {
         trustRemoteCode = true;
         approvedRemoteCodeFingerprint = fingerprint;
