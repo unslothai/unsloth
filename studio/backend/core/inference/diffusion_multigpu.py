@@ -1902,7 +1902,6 @@ def _holds_opaque_tensors(obj: Any, depth: int = 0) -> bool:
             isinstance(value, (list, tuple, dict)) and next(_iter_tensors(value), None) is not None
         ):
             return True
-        # a container of value holders (Qwen-Image-2.1: ``layer_caches``, a list of per-layer K/V objects)
         if (
             depth < 4
             and not isinstance(value, _PLAIN_TYPES)
@@ -2421,7 +2420,6 @@ class CfgParallelRouter:
         }
         # source prefix-KV cache id -> (source cache, the tensors it held when copied, the replica's copy)
         self.kv_mirrors: dict[int, tuple[Any, list, Any]] = {}
-        # source prefix-KV cache id -> (source cache, its tensors) whose copy did not fit on the replica card this render
         self.kv_declined: dict[int, tuple[Any, list]] = {}
         self._opaque_logged = False
         # Set when replica work was refused by a long recording: until that capture ends, later replica attempts go
@@ -2482,7 +2480,7 @@ class CfgParallelRouter:
     def end_render(self) -> None:
         self._drop_pending()
         self.prefetched.clear()
-        self.kv_mirrors.clear()  # caches are per render: free the replica's copies
+        self.kv_mirrors.clear()
         self.kv_declined.clear()
         self.carry = []
         self.next_carry = []
@@ -2583,7 +2581,6 @@ class CfgParallelRouter:
                 if self.branch == 1 and not prefill:
                     self._record_template(args, kwargs, latent)
             elif prefill:
-                # prefill fills the pipeline's own cache: keep on the primary, the replica copies it once
                 self._drop_pending()
                 self.template = None
             elif self.cfg_seen and self._refused_this_capture():
@@ -2601,7 +2598,6 @@ class CfgParallelRouter:
                         self.stats["steps_parallel"] += 1
                     return out
                 except _KVMirrorDeclined:
-                    # the prefix cache does not fit on the replica card: this branch runs on the primary, replica kept
                     self._drop_pending()
                 except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
                     self._note_refusal(exc)
@@ -2729,7 +2725,7 @@ class CfgParallelRouter:
             return
         p_args, p_kwargs = predicted
         if _is_prefill(p_kwargs):
-            return  # a prefill never runs on the replica
+            return
         if (
             sig not in self.warm_primary
             or _call_signature(p_args, p_kwargs) not in self.warm_replica
@@ -2954,8 +2950,7 @@ class CfgParallelRouter:
             and all(a is b for a, b in zip(declined[1], held))
         ):
             raise _KVMirrorDeclined("prefix cache does not fit on the replica card")
-        # Admission left the replica card only 1 GiB beyond the weights; a condition-image cache can exceed that.
-        # Same margin as the admission: decline before copying rather than OOM mid-copy and lose the replica.
+        # Admission's 1 GiB margin: decline before copying rather than OOM mid-copy and lose the replica.
         need = sum(t.numel() * t.element_size() for t in held)
         free = self._secondary_free_mib()
         if free is not None and need + (1024 << 20) > free * (1 << 20):

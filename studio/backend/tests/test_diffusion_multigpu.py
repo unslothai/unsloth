@@ -1554,7 +1554,6 @@ def test_prefix_kv_cache_branch_runs_on_the_replica_against_its_own_copy():
         _PrefixKVDit.seen.clear()
         out, (cond_cache, neg_cache) = _kv_render(dit, latents.clone())
         assert torch.equal(out, references[render])
-        # the prefill fills the pipeline's own cache object, on the primary
         assert all(th is main for th, mode, _c in _PrefixKVDit.seen if mode == "extract")
         assert neg_cache.layer_caches[0].k is not None
         # the replica reads its own copy, never the pipeline's (mutable) object
@@ -1565,7 +1564,6 @@ def test_prefix_kv_cache_branch_runs_on_the_replica_against_its_own_copy():
         router.end_render()
     assert router.describe()["disabled_reason"] is None and router.describe()["armed"]
     assert router.stats["steps_parallel"] >= 6
-    # one copy per render (per prompt), not per step
     assert router.stats["kv_cache_copies"] == 2
     assert router.stats["kv_prefill_primary_calls"] == 2
     assert router.kv_mirrors == {}  # dropped at end_render
@@ -1621,7 +1619,6 @@ def test_opaque_detection_sees_tensors_in_a_list_of_value_holders():
     # a prefill stays on the primary even when its cache could not be copied, or is returned (FLUX.2)
     assert mg._is_prefill({"kv_cache": object(), "kv_cache_mode": "extract"})
     assert mg._is_prefill({"kv_cache_mode": "extract"}) and not mg._is_prefill(kwargs)
-    # a prompt of another length is another signature (it may compile)
     longer = _KVCache(2)
     longer.layer_caches[1].k = torch.ones(3)
     assert mg._call_signature((), kwargs) != mg._call_signature((), {**kwargs, "kv_cache": longer})
