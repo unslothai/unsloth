@@ -132,9 +132,9 @@ def test_ignores_a_file_named_like_a_runtime_dir(tmp_path):
         None,  # source build / unreadable or corrupt marker
         [],  # valid JSON, wrong shape
         "cuda13",
-        {},  # marker without a runtime line
+        {},
         {"runtime_line": None},
-        {"runtime_line": 13},  # not a string
+        {"runtime_line": 13},
         {"runtime_line": "cpu"},
         {"runtime_line": "vulkan"},
     ],

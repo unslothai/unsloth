@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The /video/generate shape gate: the API must enforce the rules the interface offers.
-
-The Desktop resolution select is populated from the loaded family's
-``resolution_presets`` and its duration select from that family's k*frame_step+1
-lattice, but the API accepted anything inside the coarse request bounds and then
-SNAPPED it silently. 256x256 is divisible by both 16 and 32, so it survived the
-snap untouched and denoised at a size no checkpoint was ever trained for. These
-tests pin the family-aware rejection (422) and, just as importantly, the
-fallbacks: nothing loaded, or a family declaring no presets, keeps snapping.
-
-The pure-function half needs no torch/GPU; the route half swaps in a fake
-backend that INHERITS the real begin_generate / job machinery, so the gate is
-exercised where it actually lives (the route, before the worker starts).
-"""
+"""The /video/generate gate rejects off-family shapes with 422 instead of silently snapping them."""
 
 from __future__ import annotations
 
@@ -45,13 +32,9 @@ from core.inference.video_minimax_h3 import h3_conditioning_mode
 from models.inference import VideoReferenceVideo
 from routes.video import router as video_router
 
-# LTX-2 is the reference family for the single-family cases: 4 presets and frame_step 8.
 LTX2 = detect_video_family("Lightricks/LTX-2")
 # Wan is the contrast family: 768x512 is an LTX-2 preset and below Wan TI2V's trained area.
 WAN_TI2V_5B = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
-
-
-# ── the validator itself ──────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("fam", _FAMILIES, ids = lambda f: f.name)
@@ -73,7 +56,6 @@ def test_256x256_is_rejected_and_the_message_names_the_real_presets(fam):
     message = str(excinfo.value)
     assert "256x256" in message
     assert fam.name in message
-    # The message must quote sizes that actually exist, not a generic "unsupported".
     for width, height in fam.resolution_presets:
         assert f"{width}x{height}" in message
 
@@ -84,13 +66,11 @@ def test_the_default_frame_count_is_on_its_own_lattice(fam):
 
 
 def test_off_lattice_frame_count_is_rejected_with_the_straddling_counts():
-    # 100 sits between 97 (12*8+1) and 105 on LTX-2's step-8 lattice.
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(LTX2, num_frames = 100)
     message = str(excinfo.value)
     assert "97" in message and "105" in message
     assert str(LTX2.default_num_frames) in message
-    # On-lattice neighbours of the same request are fine.
     validate_video_request_shape(LTX2, num_frames = 97)
     validate_video_request_shape(LTX2, num_frames = 105)
 
@@ -105,9 +85,7 @@ def test_the_refusal_never_suggests_a_count_past_the_request_ceiling():
     assert "1017" in message
     assert "1025" not in message
     assert "the nearest supported count is" in message
-    # The ceiling itself is on no family's lattice, but the point below it is loadable.
     validate_video_request_shape(LTX2, num_frames = 1017)
-    # Away from the ceiling both points are still named.
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(LTX2, num_frames = 100)
     assert "the nearest supported counts are" in str(excinfo.value)
@@ -136,11 +114,9 @@ def test_the_lattice_reads_frame_offset_not_a_hardcoded_one():
     so the offset has to come from the family the way snap_num_frames reads it."""
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert (h3.frame_step, h3.frame_offset) == (17, 5)
-    # The three durations the interface offers (5s / 10s / 14.4s at 24 fps, snapped up).
     for count in (124, 243, 345):
         assert (count - h3.frame_offset) % h3.frame_step == 0
         validate_video_request_shape(h3, num_frames = count)
-    # A count on the WRONG offset (17k + 1) is what the old rule would have accepted.
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(h3, num_frames = 137)
     message = str(excinfo.value)
@@ -157,32 +133,22 @@ def test_a_suggested_count_never_falls_outside_the_family_range():
     message = str(excinfo.value)
     assert "90" not in message
     assert "124" in message
-    # Above the family ceiling of 345 there is nothing to suggest, so name the range.
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(h3, num_frames = 400)
     assert "supported counts run from 124 to 345" in str(excinfo.value)
 
 
 def test_the_frame_gate_enforces_the_range_it_names():
-    """A lattice point outside the family's trained window is refused, not snapped.
-
-    The gate already computed the floor and the ceiling to WORD its lattice error, then accepted
-    counts outside them: 5, 90 and 107 are all real 17k + 5 points below H3's floor of 124 and were
-    snapped up to 124, and 362 and 872 were snapped down to 345. On the native path that turns
-    num_frames=5 into a 25x compute surprise, silently.
-    """
+    """Frame counts outside the family's trained window must be refused, not snapped to its edges."""
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert (h3.min_num_frames, h3.max_num_frames) == (124, 345)
     for count in (5, 90, 107, 362, 872):
-        # Each is genuinely on the lattice, so only the range check can catch it.
         assert (count - h3.frame_offset) % h3.frame_step == 0
         with pytest.raises(ValueError) as excinfo:
             validate_video_request_shape(h3, num_frames = count)
         assert "counts run from 124 to 345" in str(excinfo.value)
-    # The three counts the interface offers stay valid.
     for count in (124, 243, 345):
         validate_video_request_shape(h3, num_frames = count)
-    # Families that declare no window are untouched: LTX-2 keeps its whole lattice.
     for count in (1, 9, 121, 1017):
         validate_video_request_shape(LTX2, num_frames = count)
 
@@ -264,7 +230,6 @@ def test_a_family_with_no_presets_is_left_to_the_snap():
     against, so the old silent snap stays in charge rather than a blanket 422."""
     fam = replace(LTX2, resolution_presets = ())
     validate_video_request_shape(fam, width = 256, height = 256)
-    # The frame lattice is intrinsic to the VAE, so it is still enforced.
     with pytest.raises(ValueError):
         validate_video_request_shape(fam, num_frames = 100)
 
@@ -294,17 +259,8 @@ def test_reference_video_trim_schema_requires_one_bounded_interval():
             VideoReferenceVideo(video = "data:video/mp4;base64,AA==", **values)
 
 
-# ── the route ─────────────────────────────────────────────────────────────────
-
-
 class _ShapeFakeBackend(video_module.VideoBackend):
-    """Real load state + real begin_generate/job machinery over a stub generate().
-
-    ``_state`` is a genuine ``_VideoLoadState`` so ``loaded_family()`` is exercised
-    against the object the loader really commits, and generate() mirrors the real
-    one's shape resolution (snap + family defaults) so a test can see whether a
-    request was snapped or rejected.
-    """
+    """Real _VideoLoadState and job machinery over a stub generate() that mirrors shape resolution."""
 
     def load_as(self, fam) -> None:
         self._state = video_module._VideoLoadState(
@@ -347,11 +303,7 @@ class _ShapeFakeBackend(video_module.VideoBackend):
             "has_audio": fam.has_audio,
             "steps": int(kwargs.get("steps") or fam.default_steps),
             "guidance": fam.default_guidance,
-            # The real generate() records how the clip was conditioned and the job's persist step
-            # reads it unconditionally, so the stub has to speak the same contract or every route
-            # case here dies in persist with a KeyError instead of exercising the gate. Derived
-            # from the shared helper rather than a literal, so a new conditioning mode cannot
-            # leave this stub quietly returning a spelling the gallery no longer accepts.
+            # Derived from the shared helper so the stub matches gallery-accepted conditioning modes.
             "conditioning": h3_conditioning_mode(),
             "flow_shift": kwargs.get("flow_shift"),
             "audio_flow_shift": kwargs.get("audio_flow_shift"),
@@ -367,7 +319,6 @@ def backend(monkeypatch):
 
 @pytest.fixture
 def client(backend, monkeypatch, tmp_path):
-    # A real tmp gallery so the completed path runs the actual persist code.
     monkeypatch.setattr(gallery_module, "gallery_dir", lambda: tmp_path)
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
@@ -401,9 +352,7 @@ def test_generate_rejects_256x256_with_422_naming_the_presets(client, backend):
     detail = resp.json()["detail"]
     assert "256x256" in detail
     assert "768x512" in detail and "1216x704" in detail
-    # Rejected AT THE BOUNDARY: no job was started, so the backend is still idle.
     progress = client.get("/api/inference/video/generate-progress").json()
-    # Named, not subscripted: a bare KeyError names neither the gate nor the leaked global.
     assert "active" in progress, (
         f"generate-progress answered {progress}, which is not the declared shape -- the "
         "account gate hid the poll (see routes.video._generation_hidden)"
@@ -459,7 +408,6 @@ def test_generate_for_a_family_without_presets_still_snaps(client, backend):
     resp = client.post("/api/inference/video/generate", json = _payload(width = 250, height = 250))
     assert resp.status_code == 200, resp.text
     record = _wait_terminal(client)["video"]
-    # 250 floored to LTX-2's /32 multiple, as snap_video_size has always done.
     assert (record["width"], record["height"]) == (224, 224)
 
 
@@ -471,7 +419,6 @@ def test_a_family_without_presets_still_enforces_its_frame_lattice(client, backe
     resp = client.post("/api/inference/video/generate", json = _payload(num_frames = 100))
     assert resp.status_code == 422, resp.text
     assert "97" in resp.json()["detail"] and "105" in resp.json()["detail"]
-    # And an on-lattice count against the same preset-less family still runs.
     assert (
         client.post("/api/inference/video/generate", json = _payload(num_frames = 97)).status_code
         == 200
@@ -496,23 +443,14 @@ def test_the_coarse_pydantic_bounds_still_reject_out_of_range_sizes(client, back
         assert client.post("/api/inference/video/generate", json = body).status_code == 422
 
 
-# ── the check has to be atomic with the state it judges ───────────────────────
-
-
 def test_the_shape_is_judged_under_the_lock_that_reserves_the_state(backend, monkeypatch):
-    """A load commits its new ``_state`` under the same lock ``begin_generate`` takes. Reading
-    the family separately, before that lock, leaves a window where a size is accepted for the
-    family being replaced and then denoised by the new one -- or a size the new family supports
-    is rejected. Proven directly: while the validator runs, the lock is unavailable to anyone
-    else, so no load can be committing.
-    """
+    """Judge the shape under the state lock, or a concurrent load can swap the family mid-check."""
     backend.load_as(LTX2)
     held: list[bool] = []
     real = video_families_module.validate_video_request_shape
 
     def _spy(*args, **kwargs):
-        # Another thread, because a Lock says nothing about which thread owns it and this call
-        # runs on the one that took it.
+        # Probe from another thread: a Lock does not say which thread owns it.
         probe: list[bool] = []
         watcher = threading.Thread(target = lambda: probe.append(backend._lock.acquire(False)))
         watcher.start()
@@ -535,16 +473,12 @@ def test_a_family_swap_cannot_slip_between_the_check_and_the_job(backend):
     backend.load_as(LTX2)
     backend.begin_generate(prompt = "a cat", width = 768, height = 512)  # accepted for LTX-2
     backend.cancel_generate()
-    # The worker clears the slot asynchronously and this test is about the check, not the job.
     backend._generate_job_active = False
 
     backend.load_as(WAN_TI2V_5B)
     with pytest.raises(ValueError):
         backend.begin_generate(prompt = "a cat", width = 768, height = 512)
     assert not backend._generate_job_active, "a refused shape must not reserve the job slot"
-
-
-# ── the half-specified canvas, with and without a keyframe ────────────────────
 
 
 def _tiny_png_b64() -> str:
@@ -561,12 +495,7 @@ def _tiny_png_b64() -> str:
 
 @pytest.mark.parametrize("axes", [{"width": 768}, {"height": 512}])
 def test_a_half_specified_canvas_stays_valid_without_a_keyframe(axes):
-    """The regression this pins: the paired-axes rule was written for the keyframe canvas but
-    ran as an unconditional request validator, so every existing LTX / Wan / Hunyuan /
-    prompt-only H3 client that sends one axis started getting a 422. The backend deliberately
-    resolves the missing axis from the family's default preset (validate_video_request_shape
-    documents it, and _resolve_keyframes implements it), so these calls must still be accepted.
-    """
+    """Paired-axes check must not run on requests without a keyframe, or one-axis clients get 422s."""
     from models.inference import VideoGenerateRequest
 
     req = VideoGenerateRequest(prompt = "a cat", **axes)
@@ -596,15 +525,9 @@ def test_both_axes_and_neither_stay_valid_with_a_keyframe():
     assert VideoGenerateRequest(prompt = "a cat", first_frame = frame).width is None
 
 
-# ── on-lattice but out of the family's range ─────────────────────────────────
-
-
 @pytest.mark.parametrize("count", [107, 362])
 def test_an_on_lattice_count_outside_the_family_range_is_refused(count):
-    """The hole this closes: the gate judged the LATTICE only, while snap_num_frames also CLAMPS
-    to min/max_num_frames. MiniMax-H3 is 17k + 5 over 124..345, so 107 and 362 both sit exactly
-    on the lattice, passed validation, and were then rendered as 124 and 345 -- the API
-    accepting one recipe and drawing another, which is the whole reason this check exists."""
+    """The frame gate must check the range too: snap_num_frames clamps on-lattice counts as well."""
     from core.inference.video_families import (
         VideoShapeError,
         detect_video_family,

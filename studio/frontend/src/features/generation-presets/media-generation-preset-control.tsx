@@ -9,7 +9,14 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { Bookmark, Check, ChevronDown, ImageUp, Trash2 } from "lucide-react";
+import {
+  Bookmark,
+  Check,
+  ChevronDown,
+  ClipboardPaste,
+  ImageUp,
+  Trash2,
+} from "lucide-react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
 
@@ -23,6 +30,7 @@ interface MediaGenerationPresetControlProps {
   onSave: (name: string) => Promise<string | null>;
   onDelete: () => Promise<boolean>;
   onImportFromImage?: () => void;
+  onPasteParameters?: () => void;
 }
 
 export function MediaGenerationPresetControl({
@@ -35,6 +43,7 @@ export function MediaGenerationPresetControl({
   onSave,
   onDelete,
   onImportFromImage,
+  onPasteParameters,
 }: MediaGenerationPresetControlProps) {
   const [open, setOpen] = useState(false);
   const [draftName, setDraftName] = useState<string | null>(null);
@@ -228,6 +237,20 @@ export function MediaGenerationPresetControl({
             >
               <ImageUp className="size-3.5" />
               Load settings from an image
+            </button>
+          ) : null}
+          {onPasteParameters ? (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                changeOpen(false);
+                onPasteParameters();
+              }}
+              className="mt-1 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <ClipboardPaste className="size-3.5" />
+              Paste generation parameters
             </button>
           ) : null}
           {activeIsCustom ? (

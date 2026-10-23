@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An unhandled request exception must be logged once, not twice.
-
-LoggingMiddleware emits request_failed with the full traceback in its structured
-"exception" field, then re-raises; uvicorn logs the very same exception again on
-stderr as "Exception in ASGI application", and the desktop shell copies every
-stderr line into tauri.log separately (~90 lines per failure). The filter drops
-uvicorn's copy only for exceptions the middleware already reported, so a failure
-raised above the middleware, or a run with --verbose, keeps both.
-"""
+"""Drop uvicorn's duplicate traceback only for exceptions LoggingMiddleware already reported."""
 
 import asyncio
 import logging
@@ -93,8 +85,7 @@ def test_uvicorn_duplicate_traceback_is_dropped(logs):
 
 
 def test_exception_never_seen_by_the_middleware_still_logs():
-    # Raised above LoggingMiddleware (CORS, remote-access, the protocol layer): it
-    # carries no marker, so uvicorn's traceback is the only record of it and must stay.
+    # Raised above LoggingMiddleware: no marker, so uvicorn's traceback must stay.
     try:
         raise RuntimeError("cors blew up")
     except RuntimeError as exc:

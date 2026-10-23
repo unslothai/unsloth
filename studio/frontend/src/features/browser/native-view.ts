@@ -20,7 +20,7 @@ import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
 import { outsideThread } from "./outside-thread";
-import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
@@ -45,7 +45,9 @@ type NativeEvent =
   | { kind: "url"; tabId: string; url: string }
   | { kind: "history"; tabId: string; canGoBack: boolean; canGoForward: boolean; icon: string | null }
   | { kind: "newTab"; tabId: string; url: string }
+  | { kind: "refused"; tabId: string; url: string }
   | { kind: "external"; tabId: string; url: string }
+  | { kind: "failed"; tabId: string; error: string }
   | {
       kind: "download";
       tabId: string;
@@ -96,6 +98,13 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+function nativeErrorText(message: string): string {
+  if (/public web/i.test(message)) return t("browser.native.blocked");
+  if (/local addresses/i.test(message)) return t("browser.native.blockedLocal");
+  if (/Unsloth's own/i.test(message)) return t("browser.native.studioAddress");
+  return message;
+}
+
 // The view's history closes with it: keep the page it reached as a tab entry, for Back.
 function keepReachedPage(tabId: string): void {
   const store = useBrowserStore.getState();
@@ -104,6 +113,13 @@ function keepReachedPage(tabId: string): void {
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
   store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
+}
+
+// A view pruned while its tab is still on the granted origin keeps the grant, to reopen.
+function onLocalOrigin(tabId: string): boolean {
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab && currentEntry(tab);
+  return entry?.kind === "web" && localOriginGranted(tabId, entry.url);
 }
 
 function closeView(tabId: string): void {
@@ -119,8 +135,10 @@ function closeView(tabId: string): void {
   recency = recency.filter((id) => id !== tabId);
   if (parkedView === tabId) parkedView = null;
   background = background.filter((id) => id !== tabId);
-  void call("browser_view_close", { tabId }).catch(() => undefined);
+  void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
 }
+
+setLocalViewCloser(closeView);
 
 let listening = false;
 
@@ -206,6 +224,13 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (!tab) return;
+  if (event.kind === "failed") {
+    // It never reached a page: what `pages` holds is the view it replaced.
+    pages.delete(tab.id);
+    closeView(tab.id);
+    store.updateTab(tab.id, { loading: false, nativeError: event.error });
+    return;
+  }
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
@@ -256,21 +281,15 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        // A page at work in a chat off screen opens its popups there, not over this chat's tabs.
-        if (tab.chat !== store.chat) store.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
-        else store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        openPopup(tab, event.url);
       } else {
-        prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
-          label: t("browser.native.open"),
-          onClick: () => {
-            const now = useBrowserStore.getState();
-            if (tab.chat !== now.chat) now.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
-            else now.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
-          },
-        });
+        promptPopup(tab, event.url);
       }
       break;
     }
+    case "refused":
+      promptPopup(tab, event.url);
+      break;
     case "external":
       prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
         label: t("browser.native.open"),
@@ -278,6 +297,20 @@ function onNativeEvent(event: NativeEvent): void {
       });
       break;
   }
+}
+
+// A page at work in a chat off screen opens its popups there, not over this chat's tabs.
+function openPopup(tab: BrowserTab, url: string): void {
+  const store = useBrowserStore.getState();
+  if (tab.chat !== store.chat) store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true });
+  else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
+}
+
+function promptPopup(tab: BrowserTab, url: string): void {
+  prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url }), {
+    label: t("browser.native.open"),
+    onClick: () => openPopup(tab, url),
+  });
 }
 
 /** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
@@ -790,6 +823,7 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   try {
     if (views.has(tabId)) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
     } else {
       const bounds = viewBounds.get(tabId) ??
         shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
@@ -961,7 +995,7 @@ async function applyView(desired: Desired): Promise<void> {
   const started = generation;
   const stale = () => {
     if (started === generation) return false;
-    void call("browser_view_close", { tabId }).catch(() => undefined);
+    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
     return true;
   };
   try {
@@ -980,6 +1014,7 @@ async function applyView(desired: Desired): Promise<void> {
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
       if (stale()) return;
     }
     views.set(tabId, entry);
@@ -992,7 +1027,7 @@ async function applyView(desired: Desired): Promise<void> {
     if (stale()) return;
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
-      nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
+      nativeError: nativeErrorText(error(cause)),
     });
   }
   recency = [...recency.filter((id) => id !== tabId), tabId];
