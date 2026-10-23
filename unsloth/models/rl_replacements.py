@@ -5233,8 +5233,7 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
     input_ids = input_ids.to(device)
     shifted = labels[:, 1:]
     label_mask = shifted != -100
-    # Rejected rows never score the NLL. Built with cat, not a boolean slice assignment, which CPU Inductor
-    # fails to vectorise (VecMask<long int, 2> vs VecMask<float, 1>).
+    # cat, not boolean slice assignment: CPU Inductor fails to vectorise that (VecMask<long int, 2> vs VecMask<float, 1>).
     rejected_off = torch.zeros_like(label_mask[len_chosen:])
     if kind == "orpo":
         # ORPO's NLL scores every attended token of prompt + chosen, from input_ids.
@@ -5242,15 +5241,13 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
         attention_mask = concatenated_batch["concatenated_attention_mask"].to(device)
         nll_mask = torch.cat((attention_mask[:len_chosen, 1:] == 1, rejected_off), dim = 0)
         average_log_prob = True
-        # One head pass serves both terms unless a row is scored against two different tokens. Checking needs
-        # a host sync, so a compiled graph always takes the second pass, which is correct either way.
+        # Checking for a second NLL pass needs a host sync, so compiled graphs always take it (correct either way).
         is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
         if is_compiling is not None and is_compiling():
             split_nll = True
         else:
             split_nll = bool((label_mask & nll_mask & (shifted != nll_targets)).any())
     else:
-        # CPO scores the NLL against its own labels, so one pass always serves both terms.
         nll_targets = shifted
         if self.cpo_alpha != 0:
             nll_mask = torch.cat((label_mask[:len_chosen], rejected_off), dim = 0)
