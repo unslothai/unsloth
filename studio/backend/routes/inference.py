@@ -32641,7 +32641,12 @@ def _remember_connection_extra(subject: Optional[str], kind: str, tool_id: Any, 
 
 def _connection_extra(subject: Optional[str], kind: str, tool_id: Any) -> Optional[dict]:
     with _CONNECTION_TOOL_EXTRAS_LOCK:
-        return _CONNECTION_TOOL_EXTRAS.get(subject or "", {}).get((kind, tool_id))
+        extras = _CONNECTION_TOOL_EXTRAS.get(subject or "")
+        extra = extras.get((kind, tool_id)) if extras is not None else None
+        if extra is not None:
+            # A replay keeps the account recent, so a new account does not evict its history.
+            _CONNECTION_TOOL_EXTRAS.move_to_end(subject or "")
+        return extra
 
 
 class _ConnectionExtrasRecorder:
