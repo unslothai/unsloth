@@ -5025,7 +5025,12 @@ class DiffusionDetailerSpec(BaseModel):
     confidence: float = Field(
         0.5, ge = 0.0, le = 1.0, description = "SAM 3 score a detection must exceed"
     )
-    denoise: float = Field(0.5, gt = 0.0, le = 1.0, description = "Inpaint strength of the pass")
+    denoise: float = Field(
+        0.5,
+        ge = 0.01,
+        le = 1.0,
+        description = "Inpaint strength of the pass (the UI request builder's floor)",
+    )
     crop_factor: float = Field(
         3.0, ge = 1.0, le = 10.0, description = "Crop around each detection, times its box"
     )

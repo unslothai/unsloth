@@ -36,6 +36,8 @@ that denoises, and the next pass moves it back instead of reading its weights ag
 
 from __future__ import annotations
 
+import math
+
 import base64
 import contextlib
 import io
@@ -363,11 +365,20 @@ def schedulable_steps(steps: int, denoise: float) -> int:
     pipelines keep ``int(steps * strength)`` and refuse zero (3 steps at 0.25 would fail every face)."""
     n = max(1, int(steps))
     denoise = float(denoise)
-    if denoise <= 0.0 or denoise >= 1.0:
+    if not (0.0 < denoise < 1.0):  # also NaN
         return n
-    while int(n * denoise) < 1:
-        n += 1
-    return n
+    # Closed form: int(n * denoise) >= 1 first holds near ceil(1 / denoise). Float rounding can put the true
+    # answer one off either side, so nudge with a fixed bound instead of counting up from ``steps`` (1e-7 would
+    # otherwise loop ten million times before any cancel check).
+    m = max(n, math.ceil(1.0 / denoise))
+    for _ in range(4):
+        if m > n and int((m - 1) * denoise) >= 1:
+            m -= 1
+        elif int(m * denoise) < 1:
+            m += 1
+        else:
+            break
+    return m
 
 
 # ── the pass ────────────────────────────────────────────────────────────────────────────────────────────────────────

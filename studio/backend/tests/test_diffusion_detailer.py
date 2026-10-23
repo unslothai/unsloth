@@ -1297,6 +1297,70 @@ def test_a_low_denoise_still_schedules_one_inpaint_timestep(monkeypatch):
     assert det.schedulable_steps(3, 1.0) == 3
 
 
+def _schedulable_steps_reference(steps, denoise):
+    """The original count-up search, kept as the oracle for the closed form."""
+    n = max(1, int(steps))
+    if denoise <= 0.0 or denoise >= 1.0:
+        return n
+    while int(n * denoise) < 1:
+        n += 1
+    return n
+
+
+def test_schedulable_steps_closed_form_matches_the_search_over_a_sweep():
+    denoises = [i / 1000 for i in range(10, 1001)] + [
+        0.01,
+        0.05,
+        1 / 3,
+        2 / 3,
+        0.1 + 0.2,
+        0.999999,
+        1.0,
+    ]
+    for steps in (0, 1, 2, 3, 4, 7, 20, 50, 99, 100, 101, 150):
+        for d in denoises:
+            assert det.schedulable_steps(steps, d) == _schedulable_steps_reference(steps, d), (
+                steps,
+                d,
+            )
+
+
+def test_schedulable_steps_is_bounded_for_a_tiny_denoise():
+    # The count-up search would loop 10M times here; the closed form must not depend on 1 / denoise.
+    import sys
+
+    lines = [0]
+
+    def tracer(frame, event, arg):
+        if frame.f_code is det.schedulable_steps.__code__:
+            if event == "line":
+                lines[0] += 1
+                if lines[0] > 200:
+                    raise AssertionError("schedulable_steps is not bounded")
+            return tracer
+        return None
+
+    sys.settrace(tracer)
+    try:
+        result = det.schedulable_steps(1, 1e-7)
+    finally:
+        sys.settrace(None)
+    assert result == 10_000_000
+    assert det.schedulable_steps(1, 1e-300) >= 1
+    assert det.schedulable_steps(5, float("nan")) == 5
+
+
+@pytest.mark.parametrize("denoise", [1e-7, 0.001, 0.0099, 0.0, -0.5])
+def test_request_rejects_a_denoise_below_the_ui_floor(denoise):
+    import pydantic
+
+    from models.inference import DiffusionDetailerSpec
+
+    with pytest.raises(pydantic.ValidationError):
+        DiffusionDetailerSpec(denoise = denoise)
+    assert DiffusionDetailerSpec(denoise = 0.01).denoise == 0.01
+
+
 @pytest.mark.parametrize(
     "template, expected_seen, expected_saved",
     [
