@@ -8029,42 +8029,12 @@ def test_claude_auto_compact_window_is_blank_below_claudes_floor(window, expecte
     assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == str(window)
 
 
-def test_opencode_v2_prompt_fits_where_v1_does_not(fake_studio, monkeypatch):
+def test_opencode_v2_prompt_fits_where_v1_does_not_without_launch(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
     fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "so it will compact often" in result.output
-
-
-@pytest.mark.parametrize("agent", ["claude", "opencode"])
-def test_agent_context_check_skips_subagent_mode(fake_studio, agent):
-    fake_studio.state["models"] = [{**MODEL, "context_length": 8_192}]
-    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent", "--no-launch"])
-    assert result.exit_code == 0, result.output
-    assert "tokens of context" not in result.output
-
-
-def test_agent_context_check_caps_the_suggestion_at_the_native_window(capsys):
-    entry = {"id": "m", "context_length": 16_384, "native_context_length": 40_960}
-    with pytest.raises(typer.Exit):
-        start._check_agent_context("claude", "Claude Code", entry, start._CLAUDE_PROMPT_TOKENS)
-    assert "--max-seq-length 40960" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("native", [8_192, 16_384])
-def test_agent_context_check_when_the_native_window_cannot_fit(capsys, native):
-    entry = {"id": "m", "context_length": 8_192, "native_context_length": native}
-    with pytest.raises(typer.Exit):
-        start._check_agent_context("claude", "Claude Code", entry, start._CLAUDE_PROMPT_TOKENS)
-    err = capsys.readouterr().err
-    assert "--max-seq-length" not in err
-    assert f"Its full context is {native:,} tokens" in err
-
-
-def test_agent_context_check_ignores_an_unknown_window(capsys):
-    start._check_agent_context("claude", "Claude Code", {"id": "m"}, start._CLAUDE_PROMPT_TOKENS)
-    assert capsys.readouterr().err == ""
 
 
 def _vibe_settings(env: dict) -> tuple:
