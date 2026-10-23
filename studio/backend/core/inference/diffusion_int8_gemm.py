@@ -740,6 +740,14 @@ def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
     return y.reshape(*gate.shape[:-1], y.shape[-1])
 
 
+def _plain_silu(act: Any) -> bool:
+    """``act`` is still an exact, unhooked ``nn.SiLU`` (the one activation the fused prologue computes): one swapped
+    after install for GELU, a custom module or a ``SiLU`` subclass has to run itself. ``type() is`` folds to a guard
+    under dynamo, no graph break."""
+    from torch import nn
+    return type(act) is nn.SiLU and not _hooked(act)
+
+
 def _swiglu_ff_forward(self: Any, hidden_states: Any) -> Any:
     """``QwenImage21SwiGLUFeedForward.forward`` on the shared and SwiGLU-fused quants."""
     pair = shared_rotq_linears(hidden_states, (self.gate_layer, self.proj))
@@ -747,7 +755,7 @@ def _swiglu_ff_forward(self: Any, hidden_states: Any) -> Any:
         gate, value = self.gate_layer(hidden_states), self.proj(hidden_states)
     else:
         gate, value = pair
-    y = None if _hooked(self.activation_fn) else _swiglu_down(self.out, gate, value)
+    y = _swiglu_down(self.out, gate, value) if _plain_silu(self.activation_fn) else None
     if y is None:
         return self.out(self.activation_fn(gate) * value)
     return y

@@ -1337,6 +1337,39 @@ def test_hooked_activation_declines_the_swiglu_fusion(monkeypatch):
     assert g8._swiglu_ff_forward(ff, x) is not fused
 
 
+def test_replaced_activation_declines_the_swiglu_fusion(monkeypatch):
+    """The fused prologue hard-codes SiLU: an ``activation_fn`` swapped after install for GELU, a custom module or a
+    ``SiLU`` subclass (no hooks, no instance ``forward``) has to run itself, and restoring a plain SiLU fuses again."""
+
+    class _SiLUSub(torch.nn.SiLU):
+        def forward(self, t):
+            return torch.nn.functional.silu(t) * 2
+
+    class _Custom(torch.nn.Module):
+        def forward(self, t):
+            return t * 3
+
+    ff = torch.nn.Module()
+    ff.gate_layer, ff.proj, ff.out = (
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+        torch.nn.Linear(8, 8),
+    )
+    ff.activation_fn = torch.nn.SiLU()
+    fused = object()
+    monkeypatch.setattr(g8, "shared_rotq_linears", lambda x, linears: None)
+    monkeypatch.setattr(g8, "_swiglu_down", lambda down, gate, value: fused)
+    x = torch.randn(3, 8)
+    assert g8._swiglu_ff_forward(ff, x) is fused
+    for act in (torch.nn.GELU(), torch.nn.GELU(approximate = "tanh"), _SiLUSub(), _Custom()):
+        ff.activation_fn = act
+        y = g8._swiglu_ff_forward(ff, x)
+        assert y is not fused
+        assert torch.equal(y, ff.out(act(ff.gate_layer(x)) * ff.proj(x)))
+    ff.activation_fn = torch.nn.SiLU()
+    assert g8._swiglu_ff_forward(ff, x) is fused
+
+
 def test_codes_close_rejects_non_finite_scales():
     """NaN compares false against every tolerance: a NaN / inf scale on one row (e.g. the probe's all-zero row) must
     still fail, on either side."""
