@@ -2586,6 +2586,9 @@ def _unsloth_vllm_peft_unsupported(model):
     Only active adapters count; an inactive one does not shape the policy being synced."""
     problems = []
     active = _unsloth_vllm_active_adapters(model)
+    if type(model).__name__ == "PeftMixedModel":
+        # Adapter parameters carry per-type prefixes (lora_, hada_, lokr_, ...) the sync cannot filter.
+        problems.append("a mixed PEFT model (get_peft_model(..., mixed = True))")
     for name, config in (getattr(model, "peft_config", None) or {}).items():
         # Replicas share one base tensor but train separate adapters, and vLLM loads the checkpoint's
         # layer count: there is no per-replica weight to send (PEFT also refuses to merge these).
@@ -2614,6 +2617,12 @@ def _unsloth_vllm_peft_unsupported(model):
         # names do not exist in vLLM and are pushed all the same.
         if type(module).__name__ in ("TrainableTokensWrapper", "TrainableTokensLayer"):
             problems.append(f"trainable tokens at {module_name}")
+            break
+    for module_name, module in model.named_modules():
+        # PEFT's MultiheadAttention merge replaces in_proj_weight / out_proj.weight instead of
+        # editing them, so a copy merge cannot leave the live module untouched.
+        if type(module).__name__ == "MultiheadAttention" and hasattr(module, "lora_A"):
+            problems.append(f"LoRA on MultiheadAttention at {module_name}")
             break
     for module in _unsloth_vllm_lora_layers(model):
         for adapter, variant in (getattr(module, "lora_variant", None) or {}).items():
@@ -2863,7 +2872,10 @@ def _unsloth_vllm_sync_peft_merged(trainer):
             unserved.append(f"{wrapper}.original_module.")
     unserved = tuple(unserved)
     prefix = getattr(model, "prefix", "lora_")
-    mode = getattr(trainer, "vllm_mode", "server")
+    # TRL 0.18 has no vllm_mode: its in-process engine is the colocated one.
+    mode = getattr(trainer, "vllm_mode", None) or (
+        "server" if getattr(trainer, "vllm_client", None) is not None else "colocate"
+    )
     is_main = getattr(trainer.accelerator, "is_main_process", True)
     llm_model = None
     if mode == "colocate":

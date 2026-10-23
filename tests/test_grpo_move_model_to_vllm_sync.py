@@ -770,3 +770,45 @@ def test_legacy_trl_without_name_fixer_still_syncs():
     del trainer._fix_param_name_to_vllm
     assert _patched_method()(trainer) is None
     assert sorted(dict(rec.tensors)) == ["0.weight", "1.bias", "1.weight"]
+
+
+def test_lora_on_multihead_attention_raises(monkeypatch):
+    # PEFT's MultiheadAttention merge swaps in new parameters instead of editing the base ones.
+    peft = pytest.importorskip("peft")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+
+    class _Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = torch.nn.MultiheadAttention(8, 2)
+            self.proj = torch.nn.Linear(8, 8)
+
+    model = peft.get_peft_model(
+        _Block(), peft.LoraConfig(r = 2, target_modules = ["attn"], init_lora_weights = False)
+    )
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "MultiheadAttention"):
+        _patched_method()(trainer)
+    assert rec.loaded == []
+
+
+def test_mixed_peft_model_raises(monkeypatch):
+    peft = pytest.importorskip("peft")
+    monkeypatch.delenv(_STALE_ENV, raising = False)
+    model = peft.get_peft_model(
+        _base_mlp(), peft.LoraConfig(r = 2, target_modules = ["0"]), mixed = True
+    )
+    model.add_adapter("loha", peft.LoHaConfig(r = 2, target_modules = ["0"]))
+    model.set_adapter(["default", "loha"])
+    trainer, rec = _peft_trainer(model)
+    with pytest.raises(RuntimeError, match = "mixed PEFT model"):
+        _patched_method()(trainer)
+    assert rec.loaded == []
+
+
+def test_trainer_without_vllm_mode_uses_its_colocated_engine():
+    trainer, rec, model = _lora_trainer("colocate", torch.bfloat16)
+    del trainer.vllm_mode
+    trainer.vllm_client = None
+    assert _patched_method()(trainer) is None
+    assert sorted(dict(rec.tensors)) == ["0.weight", "1.bias", "1.weight"]
