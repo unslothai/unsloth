@@ -16,6 +16,8 @@ export async function addFileNodes(
 ): Promise<string[]> {
   const added: string[] = [];
   let skipped = 0;
+  // An upload can finish after the user opened another flow; its block belongs to the flow it was dropped on.
+  const flowId = useDocStore.getState().flowId;
   for (const [i, file] of files.entries()) {
     const target = inputForFile(file.name, file.type);
     if (!target) {
@@ -42,10 +44,12 @@ export async function addFileNodes(
       continue;
     }
     node.label = file.name.slice(0, 80);
+    if (useDocStore.getState().flowId !== flowId) break;
     useDocStore.getState().addNode(node);
     added.push(node.id);
   }
   if (skipped) toast(`Skipped ${skipped} file(s) Flows cannot use here`);
-  if (added.length) useUiStore.getState().setSelection(added, []);
+  if (added.length && useDocStore.getState().flowId === flowId)
+    useUiStore.getState().setSelection(added, []);
   return added;
 }

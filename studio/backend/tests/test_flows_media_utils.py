@@ -181,3 +181,19 @@ def test_video_frame_reads_an_edited_clip():
     clip = mu.edit_video(_clip(frames = 12, fps = 12))
     for which in ("first", "last", "time"):
         assert _open(mu.video_frame(clip, which, 0.5)).size == (64, 48)
+
+
+def test_a_late_trim_seeks_and_keeps_the_right_frames():
+    clip = _clip(frames = 96, fps = 12)
+    frames, _, _ = _probe(mu.edit_video(clip, start_s = 6.0, end_s = 7.0))
+    assert frames == 12
+
+
+def test_a_trimmed_sound_holds_only_its_own_span(monkeypatch):
+    clip = _clip(frames = 48, fps = 12, tone_s = 4.0)
+    sliced = mu._slice_audio(clip, 2.0, 3.0)
+    with wave.open(io.BytesIO(sliced)) as w:
+        assert abs(w.getnframes() - 44100) < 2048
+    monkeypatch.setattr(mu, "MAX_AUDIO_S", 0.5)
+    with pytest.raises(FlowNodeError):
+        mu._slice_audio(clip, 1.0, 3.0)

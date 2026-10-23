@@ -17,6 +17,8 @@ from core.flows.registry import FlowNodeError, NodeContext, handler
 MAX_SIDE = 8192
 # Longest clip a Video Edit step decodes: every frame passes through memory once.
 MAX_VIDEO_FRAMES = 20_000
+# Decoded PCM a trimmed clip's own sound may hold (44.1 kHz stereo int16 is ~10 MB a minute).
+MAX_AUDIO_S = 60 * 60
 
 
 def _num(value: Any, default: float, lo: float, hi: float) -> float:
@@ -191,9 +193,15 @@ def edit_video(
     out = vout = aout = None
     # Frames stream straight from the decoder to the encoder: holding a decoded 4K clip would need tens of GB.
     # Speed keeps the frame rate and drops or repeats frames: output frame i shows trimmed frame int(i * speed).
-    kept = emitted = 0
+    kept = emitted = decoded = 0
     try:
+        if start_s > 0 and vstream.time_base:
+            # Jump to the keyframe before the trim point instead of decoding everything before it.
+            source.seek(int(start_s / vstream.time_base), stream = vstream, backward = True)
         for frame in source.decode(vstream):
+            decoded += 1
+            if decoded > 2 * MAX_VIDEO_FRAMES:
+                raise FlowNodeError("The clip is too long to edit here")
             t = float(frame.time or 0.0)
             if t < start_s:
                 continue
@@ -269,16 +277,29 @@ def _slice_audio(data: bytes, start_s: float, end_s: float) -> Optional[bytes]:
     if not source.streams.audio:
         source.close()
         return None
+    astream = source.streams.audio[0]
+    if start_s > 0 and astream.time_base:
+        source.seek(int(start_s / astream.time_base), stream = astream, backward = True)
     resampler = av.AudioResampler(format = "s16", layout = "stereo", rate = 44100)
     chunks = []
     first: Optional[float] = None
-    for frame in source.decode(source.streams.audio[0]):
+    budget = int(MAX_AUDIO_S * 44100) * 2
+    held = 0
+    for frame in source.decode(astream):
         t = float(frame.time or 0.0)
-        if first is None:
-            first = t
         if t >= end_s:
             break
-        chunks.extend(out.to_ndarray().reshape(-1) for out in resampler.resample(frame))
+        if t + frame.samples / max(1, frame.sample_rate) <= start_s:
+            continue
+        if first is None:
+            first = t
+        for out in resampler.resample(frame):
+            chunk = out.to_ndarray().reshape(-1)
+            held += chunk.size
+            if held > budget:
+                source.close()
+                raise FlowNodeError("The clip's sound is too long to edit here")
+            chunks.append(chunk)
     source.close()
     if not chunks or first is None:
         return None
