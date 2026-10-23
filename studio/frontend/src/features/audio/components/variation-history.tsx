@@ -82,7 +82,7 @@ export function VariationChips({
             className={cn(
               "flex size-[calc(24px*var(--ui-space-scale,1))] items-center justify-center rounded-full font-mono text-ui-11p5 tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               current
-                ? "bg-foreground text-background"
+                ? "bg-action text-background"
                 : "bg-muted text-muted-foreground hover:text-foreground",
             )}
           >

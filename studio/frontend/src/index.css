@@ -395,6 +395,11 @@
 	--control-accent: var(--primary);
 	--control-accent-foreground: var(--primary-foreground);
 
+	/* Black button fill: a step softer than the ink in the stock palettes. Other
+	   palettes, dark mode and a custom foreground (set inline) use the ink. */
+	--action-base: #1a1c1f;
+	--action: var(--action-base);
+
 	/* Status color for meaning-carrying marks (verified badges, token
 	   indicators). Pinned to the brand green in every palette and mode so
 	   the signal never changes with the theme. */
@@ -585,6 +590,7 @@
 	--chat-icon-fg-base: #c4c4c4;
 	--chat-icon-fg-hover: var(--foreground);
 	--chat-icon-bg-hover-base: #3a3a3a;
+	--action-base: var(--foreground);
 }
 
 /* ---------------------------------------------------------------------------
@@ -756,6 +762,7 @@
 :root:where([data-palette="blueberry"], [data-palette="butterfly-pea"], [data-palette="cherry"], [data-palette="cinnamon"], [data-palette="cotton-candy"], [data-palette="dragon-fruit"], [data-palette="earl-grey"], [data-palette="espresso"], [data-palette="honey"], [data-palette="licorice"], [data-palette="macaron"], [data-palette="matcha"], [data-palette="mint"], [data-palette="neon-cyberpunk"], [data-palette="oat-milk"], [data-palette="peach"], [data-palette="pina-paraiso"], [data-palette="plum"], [data-palette="tangerine"], [data-palette="taro"], [data-palette="wasabi"], [data-palette="yuzu"])[data-palette] {
 	--background: var(--th-bg);
 	--foreground-base: var(--th-fg);
+	--action-base: var(--foreground);
 	--card-base: var(--th-surface);
 	--card-foreground-base: var(--th-fg);
 	--popover-base: var(--th-surface);
@@ -2118,6 +2125,7 @@ html[data-chat-font] .aui-root {
 	--color-primary-foreground: var(--primary-foreground);
 	--color-primary: var(--primary);
 	--color-control-accent: var(--control-accent);
+	--color-action: var(--action);
 	--color-control-accent-foreground: var(--control-accent-foreground);
 	--color-popover-foreground: var(--popover-foreground);
 	--color-popover: var(--popover);
