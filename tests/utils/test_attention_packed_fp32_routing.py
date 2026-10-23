@@ -53,7 +53,13 @@ def native_packed_host(monkeypatch):
     monkeypatch.setattr(ad, "_ring_attention_active", lambda: False)
     calls = {"xformers": 0, "sdpa": 0}
 
-    def fake_xformers(Q, K, V, attn_bias = None, **kwargs):
+    def fake_xformers(
+        Q,
+        K,
+        V,
+        attn_bias = None,
+        **kwargs,
+    ):
         calls["xformers"] += 1
         return torch.zeros_like(Q)
 
@@ -81,7 +87,9 @@ def _packed_qkv(dtype, lengths):
 
 
 def test_packed_fp32_takes_one_xformers_call(native_packed_host):
-    lengths = list(range(2, 18))  # 16 distinct lengths: 16 SDPA launches per call on the segment path
+    lengths = list(
+        range(2, 18)
+    )  # 16 distinct lengths: 16 SDPA launches per call on the segment path
     assert ad.select_attention_backend(use_varlen = True) == ad.SDPA
     Q, K, V = _packed_qkv(torch.float32, lengths)
     _attend(Q, K, V, _seq_info(lengths), ad.select_attention_backend(use_varlen = True))
@@ -132,9 +140,7 @@ def test_packed_fp32_large_head_dim_stays_on_sdpa_on_sm100(native_packed_host, m
     monkeypatch.setattr(ad, "_xformers_rejects_fp32", lambda device: True)
     lengths = [3, 5]
     T = sum(lengths)
-    Q, K, V = [
-        torch.randn(1, h, T, 512).as_subclass(_CudaLooking) for h in (H, KV, KV)
-    ]
+    Q, K, V = [torch.randn(1, h, T, 512).as_subclass(_CudaLooking) for h in (H, KV, KV)]
     config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = KV, n_groups = H // KV)
     context = ad.AttentionContext(1, T, T, H, 512, True, _seq_info(lengths), None, None)
     assert not ad._packed_fp32_prefers_xformers(config, context, Q, K, V)
@@ -149,7 +155,13 @@ def test_xformers_fp32_downcast_follows_q_device(monkeypatch):
     monkeypatch.setattr(ad, "_XFORMERS_FP32_UNSUPPORTED_BY_INDEX", (True, False), raising = False)
     seen = {}
 
-    def fake_xformers(Q, K, V, attn_bias = None, **kwargs):
+    def fake_xformers(
+        Q,
+        K,
+        V,
+        attn_bias = None,
+        **kwargs,
+    ):
         seen["dtype"] = Q.dtype
         return torch.zeros_like(Q)
 
