@@ -239,3 +239,15 @@ test("an untouched seed with no stored value keeps randomizing, and stale flow l
   assert.match(page, /if \(started !== generation\.current\) return;\s*setRunId\(run_id\);/);
   assert.match(page, /loaded === generation\.current &&\s*setValues/);
 });
+
+test("an untouched Flow Input still sends its declared default", () => {
+  const d = doc([]);
+  (d as { params?: unknown[] }).params = [
+    { id: "topic", type: "text", default: "cats" },
+  ];
+  const fields = appFields(d as never);
+  const untouched = Object.fromEntries(fields.map((f) => [f.key, f.initial]));
+  assert.deepEqual(applyAppValues(d as never, fields, untouched).params, {
+    topic: "cats",
+  });
+});
