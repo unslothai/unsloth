@@ -111,7 +111,10 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
         () => runScheduledTaskNow(id),
         (run) =>
           set((state) => ({
-            tasks: state.tasks.map((task) => (task.id === id ? { ...task, lastRun: run } : task)),
+            // A refresh may already hold this run finished: the queued answer must not undo that.
+            tasks: state.tasks.map((task) =>
+              task.id === id && task.lastRun?.id !== run.id ? { ...task, lastRun: run } : task,
+            ),
           })),
       );
     },

@@ -214,11 +214,17 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             cancel_event.set()
             producer.cancel()
             await asyncio.wait({producer}, timeout = _CANCEL_GRACE_SECONDS)
-        activity.finish()
-        end_in_process_request(
-            request.scope,
-            answered = response is not None and int(getattr(response, "status_code", 200)) < 400,
-        )
+        answered = response is not None and int(getattr(response, "status_code", 200)) < 400
+
+        def release(*_: Any) -> None:
+            activity.finish()
+            end_in_process_request(request.scope, answered = answered)
+
+        if producer is not None and not producer.done():
+            # Its worker has not unwound yet: the model stays busy until it does.
+            producer.add_done_callback(release)
+        else:
+            release()
     if cancel_event.is_set():
         raise RunFailed("cancelled")
     body = getattr(response, "body", None)

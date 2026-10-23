@@ -466,6 +466,39 @@ test("a task change reaches the account's other tabs, and a deletion has Recents
   }
 });
 
+test("a Run now answer arriving after its run finished keeps the finished run", async () => {
+  const globals = globalThis as Record<string, unknown>;
+  const saved = { window: globals.window, localStorage: globals.localStorage };
+  globals.window = new EventTarget();
+  globals.localStorage = { setItem: () => undefined };
+  try {
+    let answer: (run: unknown) => void = () => undefined;
+    const store = loadWithStubs<typeof ScheduledTasksStore>(
+      new URL("../src/features/scheduled-tasks/store.ts", import.meta.url),
+      {
+        zustand,
+        "@/features/auth": { AUTH_SESSION_CLEARED_EVENT: "signed-out", getAuthSessionEpoch: () => 1 },
+        "@/features/chat": { notifyChatHistoryUpdated: () => undefined },
+        "./api": { runScheduledTaskNow: () => new Promise((resolve) => (answer = resolve)) },
+        "./results": {
+          SCHEDULED_TASKS_CHANGED_EVENT: "changed",
+          SCHEDULED_TASK_RUNS_FINISHED_EVENT: "finished",
+        },
+      },
+    );
+    const tasks = store.useScheduledTasksStore;
+    tasks.setState({ tasks: [{ id: "t1", lastRun: null } as never] });
+    const pending = tasks.getState().runNow("t1");
+    tasks.setState({ tasks: [{ id: "t1", lastRun: { id: "r1", status: "succeeded" } } as never] });
+    answer({ id: "r1", status: "queued" });
+    await pending;
+    assert.equal(tasks.getState().tasks[0].lastRun?.status, "succeeded");
+  } finally {
+    globals.window = saved.window;
+    globals.localStorage = saved.localStorage;
+  }
+});
+
 test("a refused request carries the server's reason", async () => {
   const c = client(() => Response.json({ detail: "Pick a time in the future." }, { status: 400 }));
   await assert.rejects(c.api.updateScheduledTask("t1", { enabled: true }), {

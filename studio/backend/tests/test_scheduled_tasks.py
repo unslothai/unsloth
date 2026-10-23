@@ -987,6 +987,32 @@ def test_a_run_that_never_answers_is_stopped(monkeypatch):
     assert cancel_event.is_set() and producer.cancelled
 
 
+def test_a_timed_out_run_counts_as_inference_until_its_worker_unwinds(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "_RUN_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(scheduler_module, "_CANCEL_GRACE_SECONDS", 0.01)
+    unwound = asyncio.Event()
+
+    async def slow_to_stop(*_, **__):
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            await unwound.wait()
+
+    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", slow_to_stop)
+    app = SimpleNamespace(state = SimpleNamespace())
+
+    async def scenario():
+        with pytest.raises(RunFailed):
+            await generate_answer(app, make_task(), {"id": "run-1"}, threading.Event())
+        busy_while_unwinding = llama_keepwarm.inference_in_flight()
+        unwound.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        return busy_while_unwinding, llama_keepwarm.inference_in_flight()
+
+    assert asyncio.run(scenario()) == (True, False)
+
+
 class AdmittedProducer(FakeProducer):
     """Admits the request the way the auto-switch hook does for local chat."""
 
