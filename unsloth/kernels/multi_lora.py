@@ -690,6 +690,11 @@ def set_multi_lora_batch(
     layers = _layers(model)
     if not layers:
         raise ValueError("The model has no multi-LoRA layers.")
+    counts = {layer.num_adapters for _, layer in layers}
+    if len(counts) > 1:
+        raise ValueError(
+            f"Every multi-LoRA layer must have the same number of adapters, got {sorted(counts)}."
+        )
     # One routing table per device: a model split over GPUs keeps each layer's indices local.
     by_device: dict[torch.device, MultiLoraBatch] = {}
     for _, layer in layers:

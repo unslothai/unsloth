@@ -383,6 +383,14 @@ def test_gradient_accumulation_weights_microbatches_by_tokens():
     assert any(not torch.allclose(a, b) for a, b in zip(grads([[0, 1], [2, 3]], None), whole))
 
 
+def test_layers_with_different_adapter_counts_are_refused():
+    model = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.Linear(8, 8))
+    ml.inject_multi_lora(model, ["0"], 2, r = 4)
+    ml.inject_multi_lora(model, ["1"], 4, r = 4)
+    with pytest.raises(ValueError, match = "same number of adapters"):
+        ml.set_multi_lora_batch(model, torch.tensor([3, 0, 1]))
+
+
 def test_a_step_where_no_adapter_trained_clips_to_zero_norms():
     model = _tiny_model(2)
     ml.set_multi_lora_batch(model, torch.tensor([-1, -1]))
