@@ -4,7 +4,11 @@
 """Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
 
 Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
-for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm90, sm100), resident only.
+for bit. The fused QKV Linear: only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (e.g. sm86,
+sm90, sm100), resident only; there the rotation and the act quant run as one ``rotq_h16`` kernel on a card that passed
+``diffusion_convrot_quant.unlisted_device_ok``, else as the rotation GEMM + act quant. Where it swaps them, the
+patched helper routes Q / K / V through ``diffusion_int8_gemm.shared_rotq_linears`` (Inductor does not merge the
+opaque kernel); resident or streamed.
 Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
 """
 
@@ -101,6 +105,7 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
     import torch
 
     from .diffusion_int8_fused import ensure_intmm_module, int8_linear
+    from .diffusion_int8_gemm import shared_rotq_linears
 
     ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
 
@@ -108,12 +113,16 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
         attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
     ):
         fused = _qkv_intact(attn) if torch.compiler.is_compiling() else None
-        if fused is None:
-            return stock(
-                attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
-            )
+        if fused is not None:
+            query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
+        else:
+            qkv = shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))
+            if qkv is None:
+                return stock(
+                    attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
+                )
+            query, key, value = qkv
         # stock body below the projections, op for op (fingerprinted at install)
-        query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
 
         # main's split (by head_dim); equal to 0.41.0's ``(attn.heads, -1)`` when every head is local
         head_dim = attn.inner_dim // attn.heads
@@ -184,6 +193,74 @@ def _patch_prepare(logger: Any = None) -> bool:
     return True
 
 
+def _rotated_attention(root: Any) -> list:
+    """(attention, [to_q, to_k, to_v]) whose Q / K / V share one ConvRot group on one device."""
+    todo = []
+    for _name, module in root.named_modules():
+        if type(module).__name__ != "QwenImage21Attention":
+            continue
+        parts = [getattr(module, n, None) for n in ("to_q", "to_k", "to_v")]
+        if any(p is None for p in parts) or not _rotated_group(parts):
+            continue
+        if len({p.weight.device for p in parts}) != 1:
+            continue
+        todo.append((module, parts))
+    return todo
+
+
+def install_shared_qkv(transformer: Any, logger: Any = None) -> int:
+    """Patch the QKV helper for the int8 GEMM path (checked per call, so install order does not matter); returns the
+    rotated attention count."""
+    n = len(_rotated_attention(transformer))
+    if not n or not _patch_prepare(logger):
+        return 0
+    if logger is not None:
+        logger.info(
+            "diffusion.q21_convrot_fused: Q / K / V share one ConvRot rotation + act quant on the int8 GEMM path "
+            "(%d attention module(s))",
+            n,
+        )
+    return n
+
+
+def _swap_card_present(transformer: Any) -> bool:
+    """A card the transformer sits on (each card of a layer split; every visible card while its weights are off the
+    GPU) where the int8 GEMM swap covers rotated Linears, so the shared-QKV helper can engage. Not the current card:
+    on a mixed host it need not hold the transformer."""
+    import torch
+
+    from .diffusion_int8_fused import resident_cuda_cards
+
+    cards = resident_cuda_cards(transformer) or range(torch.cuda.device_count())
+    return any(_swap_covers(index) for index in cards)
+
+
+def _swap_covers(index: int) -> bool:
+    """True where ``diffusion_int8_gemm`` swaps rotated Linears onto ``rotq_i8`` on ``cuda:<index>``: NVIDIA CUDA only
+    (ROCm reports a CUDA-like capability but the swap declines it), the swap on, and the rotation kernel gated in and
+    not failed its per-device probe (``shared_rotq_linears`` declines every record without it, so the fused GEMM
+    alone does not count). Any failure counts as not covered, so the shared-QKV helper is never installed on a
+    guess."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
+            return False
+        from .diffusion_int8_gemm import _gates, int8_gemm_mode
+
+        if int8_gemm_mode() == "off":
+            return False
+        _, rotq = _gates(torch.cuda.get_device_capability(index))
+        if not rotq:
+            return False
+        from .diffusion_convrot_quant import _ROTQ_DEVICE
+
+        # probed already (resident swap ran first): its verdict; else the arch gate, re-checked per call
+        return _ROTQ_DEVICE.get(index, True) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def install(
     transformer: Any,
     logger: Any = None,
@@ -194,14 +271,42 @@ def install(
     if q21_convrot_fused_disabled():
         uninstall(transformer)
         return result
-    if offload_active or type(transformer).__name__ != "QwenImage21Transformer2DModel":
+    if type(transformer).__name__ != "QwenImage21Transformer2DModel":
+        return result
+    try:
+        import torch
+        if torch.cuda.is_available() and _swap_card_present(transformer):
+            result["fused_qkv"] = install_shared_qkv(transformer, logger)
+    except Exception:  # noqa: BLE001 - the stock helper stays
+        pass
+    shared = result["fused_qkv"]
+    if offload_active:
         return result
     from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
     if resident_cuda_cards(transformer):
-        return install_modules(transformer, logger)
+        out = install_modules(transformer, logger)
+        out["fused_qkv"] = max(out["fused_qkv"], shared)
+        return out
     run_on_first_call(transformer, "q21_convrot_fused", lambda t: install_modules(t, logger))
-    return {"fused_qkv": None, "out": None}
+    return {"fused_qkv": shared or None, "out": None}
+
+
+def _rotq_note(cards: Any, armed: list) -> str:
+    """Log suffix: whether the fused rotq_h16 rotation + quant serves these cards, with its latency check."""
+    try:
+        from .diffusion_convrot_quant import _UNLISTED_TIMING
+        timing = {i: _UNLISTED_TIMING.get(i) for i in cards if _UNLISTED_TIMING.get(i)}
+    except Exception:  # noqa: BLE001
+        timing = {}
+    shown = "; ".join(
+        f"cuda:{i} {t['h16']:.0f} vs {t['stock']:.0f} us stock"
+        for i, t in timing.items()
+        if "h16" in t and "stock" in t
+    )
+    if armed:
+        return ", rotation fused into the act quant (rotq_h16" + (f": {shown})" if shown else ")")
+    return f", fused rotation kept off ({shown})" if shown else ""
 
 
 def install_modules(root: Any, logger: Any = None) -> dict:
@@ -217,18 +322,13 @@ def install_modules(root: Any, logger: Any = None) -> dict:
         return result
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
-    todo = []
-    for _name, module in root.named_modules():
-        if type(module).__name__ != "QwenImage21Attention":
-            continue
-        parts = [getattr(module, n, None) for n in ("to_q", "to_k", "to_v")]
-        if any(p is None for p in parts) or not _rotated_group(parts):
-            continue
-        if len({p.weight.device for p in parts}) != 1:
-            continue
-        todo.append((module, parts))
+    todo = _rotated_attention(root)
     if not todo or not _patch_prepare(logger):
         return result
+    from .diffusion_int8_fused import arm_rotated
+
+    armed = [index for index in cards if arm_rotated(index)]
+    note = _rotq_note(cards, armed)
     with _LOCK:
         for module, parts in todo:
             if _QKV_ATTR not in module.__dict__ and all(_plain(p) for p in parts):
@@ -247,9 +347,10 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     if logger is not None:
         logger.info(
             "diffusion.q21_convrot_fused: one ConvRot rotation + act quant for QKV on %d attention module(s), "
-            "probed act quant on %d output projection(s)",
+            "probed act quant on %d output projection(s)%s",
             result["fused_qkv"],
             result["out"],
+            note,
         )
     return result
 

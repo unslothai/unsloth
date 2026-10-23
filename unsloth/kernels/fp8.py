@@ -125,8 +125,48 @@ except:
     )
 
 
+# ROCm Triton fuses fp32 multiply + fp16 cast into v_fma_mixlo_f16, which drops -0.0 and rounds
+# differently from the torch loop, so the dequant kernels round to fp16 with integer ops there.
+_FP8_EXACT_F16_ROUND = torch.version.hip is not None
+
+
+def _fp8_exact_f16_round(dtype):
+    flag = os.environ.get("UNSLOTH_FP8_EXACT_F16_ROUND", "")
+    on = _FP8_EXACT_F16_ROUND if flag == "" else flag == "1"
+    return on and dtype == torch.float16
+
+
 @triton.jit
-def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
+def _f32_to_f16_rne(x):
+    # IEEE fp32 -> fp16, round to nearest even, subnormals kept, sign of zero kept, NaN quietened.
+    u = x.to(tl.int32, bitcast = True)
+    sign = (u >> 16) & 0x8000
+    a = u & 0x7FFFFFFF
+    c = tl.minimum(a, 0x477FF000)
+    normal = (c + 0xFFF + ((c >> 13) & 1) - 0x38000000) >> 13
+    # Below 2^-14, in units of 2^-24; clamped so normal lanes never shift by a negative count.
+    shift = tl.minimum(tl.maximum(126 - (a >> 23), 1), 31)
+    m = (a & 0x7FFFFF) | 0x800000
+    q = m >> shift
+    rem = m - (q << shift)
+    half = 1 << (shift - 1)
+    q = q + ((rem > half) | ((rem == half) & ((q & 1) == 1))).to(tl.int32)
+    h = tl.where(a < 0x38800000, q, normal)
+    h = tl.where(a >= 0x477FF000, 0x7C00, h)
+    h = tl.where(a > 0x7F800000, 0x7E00 | ((a >> 13) & 0x3FF), h)
+    return (h | sign).to(tl.uint16).to(tl.float16, bitcast = True)
+
+
+@triton.jit
+def weight_dequant_kernel(
+    x_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    BLOCK_SIZE: tl.constexpr,
+    EXACT_F16: tl.constexpr = False,
+):
     pid_m = tl.program_id(axis = 0)
     pid_n = tl.program_id(axis = 1)
     n = tl.cdiv(N, BLOCK_SIZE)
@@ -138,6 +178,8 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     x = tl.load(x_ptr + offs, mask = mask).to(tl.float32)
     s = tl.load(s_ptr + pid_m * n + pid_n)
     y = x * s
+    if EXACT_F16:
+        y = _f32_to_f16_rne(y)
     tl.store(y_ptr + offs, y, mask = mask)
 
 
@@ -165,7 +207,16 @@ def weight_dequant_block(
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
     with _fp8_triton_device_context(x):
-        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size, enable_fp_fusion = True)
+        weight_dequant_kernel[grid](
+            x,
+            s,
+            y,
+            M,
+            N,
+            BLOCK_SIZE = block_size,
+            EXACT_F16 = _fp8_exact_f16_round(dtype),
+            enable_fp_fusion = True,
+        )
     return y
 
 
@@ -1328,6 +1379,7 @@ def _e4m3fn_bytes_dequant_kernel(
     BLOCK_R: tl.constexpr,
     BLOCK_C: tl.constexpr,
     LONG_INDEXING: tl.constexpr,
+    EXACT_F16: tl.constexpr = False,
 ):
     pid_r = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -1346,6 +1398,8 @@ def _e4m3fn_bytes_dequant_kernel(
     ).to(tl.float32)
     # One fp32 multiply then one round to the output dtype, as the torch fallback does.
     y = _e4m3fn_byte_to_float(b.to(tl.int32)) * s
+    if EXACT_F16:
+        y = _f32_to_f16_rne(y)
     tl.store(y_ptr + r[:, None] * N + c[None, :], y.to(y_ptr.dtype.element_ty), mask = mask)
 
 
@@ -1426,6 +1480,7 @@ def _e4m3fn_bytes_dequant(
             BLOCK_R = BLOCK_R,
             BLOCK_C = BLOCK_C,
             LONG_INDEXING = long_indexing(x, weight_scale, out),
+            EXACT_F16 = _fp8_exact_f16_round(dtype),
             enable_fp_fusion = True,
             num_warps = num_warps,
         )

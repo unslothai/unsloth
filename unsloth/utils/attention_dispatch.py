@@ -99,6 +99,26 @@ def scaled_dot_product_attention(*args, **kwargs):
     return F.scaled_dot_product_attention(*args, **kwargs)
 
 
+def _rerouted_sdpa(*args, **kwargs):
+    """SDPA standing in for xformers inside a compiled block, on the kernels xformers would run.
+    Without the pin, torch 2.13+ on SM100 takes cuDNN attention, which builds a new plan for every
+    new sequence length (~150 ms per length): padded batches of varying length stalled every step."""
+    with _sdpa_kernel(_XFORMERS_LIKE_BACKENDS):
+        return F.scaled_dot_product_attention(*args, **kwargs)
+
+
+# Module level: reading SDPBackend's attributes while traced breaks the graph.
+try:
+    from torch.nn.attention import SDPBackend as _SDPBackend, sdpa_kernel as _sdpa_kernel
+    _XFORMERS_LIKE_BACKENDS = [
+        _SDPBackend.FLASH_ATTENTION,
+        _SDPBackend.EFFICIENT_ATTENTION,
+        _SDPBackend.MATH,
+    ]
+except Exception:
+    _rerouted_sdpa = scaled_dot_product_attention
+
+
 def _per_device_backends(capabilities):
     """(flash runs, xformers runs, xformers rejects fp32, bf16 kernels) per CUDA device index, or None
     when every device has device 0's capability class, so homogeneous hosts never consult the table.
@@ -1281,7 +1301,9 @@ def _run_attention(
 
         if use_sdpa_gqa:
             kwargs.setdefault("enable_gqa", True)
-            out = scaled_dot_product_attention(Q, K, V, **kwargs)
+            out = (_rerouted_sdpa if xformers_rerouted else scaled_dot_product_attention)(
+                Q, K, V, **kwargs
+            )
             out = out.transpose(1, 2)
             return out if cp_out_dtype is None else out.to(cp_out_dtype)
 
@@ -1297,7 +1319,7 @@ def _run_attention(
             K_mod = K_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V_mod = V_mod.reshape(bsz, n_heads, kv_seq_len, head_dim)
 
-        out = scaled_dot_product_attention(
+        out = (_rerouted_sdpa if xformers_rerouted else scaled_dot_product_attention)(
             Q.contiguous(),
             K_mod.contiguous(),
             V_mod.contiguous(),

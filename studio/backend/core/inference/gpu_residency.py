@@ -220,7 +220,7 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
         resolve_model_kind,
     )
     from core.inference.diffusion_auto_policy import resident_bytes_from_declared
-    from core.inference.diffusion_engine_router import predict_engine
+    from core.inference.diffusion_engine_router import has_active_loras, predict_engine
     from core.inference.diffusion_families import (
         detect_family_for_pick,
         local_pipeline_components_are_complete,
@@ -244,7 +244,13 @@ def _image_need(request: Any, gpu_ordinal: Optional[int]) -> Optional[tuple[int,
     fam = detect_family_for_pick(repo, name, request.family_override)
     if (
         fam is None
-        or predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal, gguf_filename = name)
+        or predict_engine(
+            fam,
+            model_kind = kind,
+            gpu_ordinal = gpu_ordinal,
+            gguf_filename = name,
+            with_loras = has_active_loras(getattr(request, "loras", None)),
+        )
         != ENGINE_DIFFUSERS
     ):
         return None

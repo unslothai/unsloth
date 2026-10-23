@@ -3645,6 +3645,11 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+# Windows, transformers 5.0 - 5.16: read shards with pread, not a copy-on-write mmap charged to commit (os error 1455).
+from ._windows_safetensors import patch_windows_safetensors_pread
+
+patch_windows_safetensors_pread()
+
 # Faster safetensors loads on UMA GPUs; the lazy gate keeps this import fork-safe (no CUDA init). No-op off-UMA, opt out with UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
 from ._uma_safetensors import patch_unified_memory_safetensors_load
 
@@ -5708,6 +5713,7 @@ def patch_gradient_accumulation_fix(Trainer):
             _replan_auto_offload_safely(self)
             _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)
+            _tensor_subclass_weights_for_ddp(self)
             _enable_ddp_batched_grad_copy(self)
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
 
@@ -5719,6 +5725,22 @@ def patch_gradient_accumulation_fix(Trainer):
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
+
+    _original_call_model_init = getattr(Trainer, "call_model_init", None)
+    if _original_call_model_init is not None and not getattr(
+        _original_call_model_init, "_unsloth_marks_ddp_ignores", False
+    ):
+
+        @functools.wraps(_original_call_model_init)
+        def _unsloth_call_model_init(self, *args, **kwargs):
+            # model_init rebuilds the model when training starts: the new instance needs the same
+            # DDP exclusions as the one __init__ marked.
+            model = _original_call_model_init(self, *args, **kwargs)
+            _tensor_subclass_weights_for_ddp(self, model)
+            return model
+
+        _unsloth_call_model_init._unsloth_marks_ddp_ignores = True
+        Trainer.call_model_init = _unsloth_call_model_init
 
     # Idempotent: already installed at import unless Trainer was reloaded since.
     _patch_trainer_train_gc_scope(Trainer)
@@ -9996,6 +10018,43 @@ def _block_swap_for_trainer_backend(trainer):
             f"or launch without {backend}."
         )
     return []
+
+
+def _tensor_subclass_weights_for_ddp(trainer, model = None):
+    """DDP (torchrun without FSDP / DeepSpeed): keep frozen tensor subclass weights (load_in_fp8's torchao
+    Float8Tensor) out of DDP's start-up broadcast, which flattens each parameter and fails on them; every
+    rank loads them identically. Trainable ones are refused on every rank alike. Returns the names added."""
+    from .loader_utils import is_distributed, _frozen_tensor_subclass_names_for_ddp
+
+    if model is None:
+        model = getattr(trainer, "model", None)
+    if model is None or not is_distributed():
+        return []
+    if (
+        any(
+            getattr(m, "_unsloth_fsdp2_native", False) is True
+            for m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None))
+            if m is not None
+        )
+        or getattr(trainer, "is_fsdp_enabled", False)
+        or getattr(trainer, "is_deepspeed_enabled", False)
+    ):
+        return []
+    names = _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = True)
+    ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
+    seen = set(ignored)
+    added = [name for name in names if name not in seen]
+    if not added:
+        return []
+    from torch.nn.parallel import DistributedDataParallel
+
+    DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored + added)
+    if int(os.environ.get("RANK", "0") or 0) == 0:
+        print(
+            f"Unsloth: DDP leaves {len(added)} frozen {type(model.get_parameter(added[0])).__name__} weights "
+            "out of its start-up broadcast (every rank loads them identically)."
+        )
+    return added
 
 
 def _trainer_offload_replan_skip(trainer):
