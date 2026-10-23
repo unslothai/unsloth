@@ -444,6 +444,7 @@ jobs:
       - name: Install Colab-shaped venv
         # Step-level backstop above the sum of phase timeouts plus their --kill-after graces
         # (~29m25). A job timeout would report `cancelled` and hide real failures.
+        #                             ------
         timeout-minutes: 30
         run: |
           set -uo pipefail

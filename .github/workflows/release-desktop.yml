@@ -513,6 +513,7 @@ jobs:
           ref: ${{ needs.prepare-version.outputs.desktop_release_tag }}
           persist-credentials: false
 
+      # ── Linux dependencies ──
       - name: Install Linux dependencies
         if: startsWith(matrix.artifact, 'linux-')
         # Bounded and retried: a hung apt step is reported as `cancelled` with no reason.
@@ -525,6 +526,7 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
 
+      # ── Node.js ──
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
@@ -646,6 +648,7 @@ jobs:
         # Lifecycle scripts are required for `vite build`; the lockfile audit runs first.
         run: npm ci --no-fund --no-audit
 
+      # ── Rust ──
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
         with:
@@ -727,6 +730,7 @@ jobs:
           # every PR. Cargo fingerprints can capture rerun-if-env-changed values.
           save-if: false
 
+      # ── macOS: fail before the build if notarization cannot run ──
       - name: Check Apple notarization credentials
         if: matrix.platform == 'macos-latest'
         shell: bash
@@ -744,6 +748,7 @@ jobs:
             fi
           done
 
+      # ── macOS: import signing certificate ──
       - name: Import Apple certificate
         if: matrix.platform == 'macos-latest'
         env:
@@ -762,6 +767,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
           rm -f certificate.p12
 
+      # ── Windows: install Azure Trusted Signing CLI ──
       # Pinned prebuilt with a SHA-256 check: this binary runs next to the signing secrets.
       # Bump the URL and digest together.
       - name: Install trusted-signing-cli
@@ -791,6 +797,7 @@ jobs:
           # $GITHUB_PATH prepends, so the verified copy wins over a stale one in ~/.cargo/bin.
           $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      # ── Windows: verify signing CLI is accessible ──
       # Fails closed, so a broken binary does not surface later as an obscure signing error.
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
@@ -828,6 +835,7 @@ jobs:
             exit 1
           }
 
+      # ── Linux: preseed every executable/script consumed by Tauri's AppImage bundler ──
       - name: Pin complete AppImage toolchain
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
@@ -835,6 +843,7 @@ jobs:
           studio/src-tauri/linux/prepare-complete-appimage-tools.sh \
             "$RUNNER_TEMP/tauri-tools-cache/tauri"
 
+      # ── Linux: build and sign the native package and complete AppImage together ──
       - name: Build Linux bundles
         id: build_linux
         if: matrix.platform == 'ubuntu-22.04'
@@ -877,6 +886,7 @@ jobs:
           )"
           studio/src-tauri/linux/verify-complete-appimage.sh "$appimage"
 
+      # ── macOS: build + sign + notarize ──
       - name: Build macOS app
         id: build_macos
         if: matrix.platform == 'macos-latest'
@@ -894,6 +904,7 @@ jobs:
           tauriScript: npx --prefix . tauri
           args: -v ${{ matrix.args }}
 
+      # ── macOS: notarize + staple the disk image itself ──
       # tauri notarizes the .app but only codesigns the .dmg (tauri-apps/tauri#7533), so
       # notarize and staple the disk image here.
       - name: Notarize final macOS disk image
@@ -994,6 +1005,7 @@ jobs:
             --verbose=4 \
             "$dmg_path"
 
+      # ── Windows: build + sign ──
       # install.ps1 is a bundle resource the bundler never signs, but the app runs it first.
       - name: Sign the bundled install script
         if: matrix.platform == 'windows-latest'
@@ -1036,6 +1048,7 @@ jobs:
           tauriScript: npx --prefix . tauri
           args: -v ${{ matrix.args }}
 
+      # ── Windows: scan the signed bundles with Defender before publishing ──
       # Runner disables Defender, so restore and verify it; "!ml" is a cloud verdict, so MAPS
       # must be on; MpCmdRun exit codes are ambiguous, so read the output.
       - name: Scan Windows bundles with Defender
@@ -1335,6 +1348,7 @@ jobs:
           compression-level: 0
           retention-days: 90
 
+      # ── Windows: every executable in the bundle must be signed ──
       # NSIS runs plugin DLLs from $PLUGINSDIR; signing the installer misses them.
       - name: Verify every executable in the Windows bundles is signed
         if: matrix.platform == 'windows-latest'
@@ -1347,6 +1361,7 @@ jobs:
           if (-not $paths) { Write-Host '::error::no Windows installer to verify'; exit 1 }
           .github/scripts/assert-bundle-signed.ps1 -Path $paths
 
+      # ── Windows: assemble a Microsoft false-positive submission packet ──
       # WDSI has no API; pre-fill the lookups so submission is quick.
       - name: Prepare Microsoft submission packet
         if: (success() || failure()) && matrix.platform == 'windows-latest' && steps.build_windows.outcome == 'success'
@@ -1984,6 +1999,7 @@ jobs:
           PY
 
 
+  # ── Advisory multi-engine scan of the bundles just uploaded ──
   # Advisory VirusTotal scan; Defender stays the fail-closed gate. Own job because the free
   # tier's 4 requests/minute would delay publish-release.
   virustotal-scan:

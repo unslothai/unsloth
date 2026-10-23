@@ -3,9 +3,12 @@
 # Unsloth Studio on a real CUDA GPU (free Kaggle T4): GPU GGUF inference + tool calling,
 # LoRA training to an adapter, GGUF export that reloads, then playwright_chat_ui.py (stops the server, so last).
 #
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # BUDGET. Read this before changing any trigger. Two Kaggle accounts with weekly quotas, shared with
 # kaggle-t4-notebook-ci.yml; this leg's share of the 50h CI allowance is 35h. See gate.py scaled_reserve.
 # One launch is ~0.75 GPU-h (uncached install.sh --local dominates).
+#     -------------------------------------------------------------------
 #     eligible invocations       ~760 / week   (paths filter, measured)
 #     x sampling rate            0.05          (--percent 5)
 #     = launches                 ~38 / week
@@ -16,9 +19,15 @@
 #
 # Studio vs notebook leg: ~38 vs 13-35 launches, ~28 vs 3.3-8.7 GPU-h a week, 5% vs 15% sampling.
 #
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # Red only when the payload ran on a GPU and its assertions failed; every other outcome skips.
 # Not a required check. Only the gate job sees both tokens; later steps get the chosen one by SECRET
 # NAME, never a token output; no token reaches the Kaggle kernel. The payload scrubs its own bootstrap password from uploaded logs.
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
 
 name: Kaggle T4 Unsloth GPU CI
 

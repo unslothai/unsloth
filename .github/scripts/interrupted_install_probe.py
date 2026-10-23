@@ -75,6 +75,7 @@ def main(argv: list[str]) -> int:
         facts[k] = v
         print(f"[probe] {k:28} = {v}")
 
+    # ── the two probes Tauri preflight actually runs ─────────────────────────
     # Matches the desktop preflight's 10s per call; longer would call a slow torn venv healthy.
     PREFLIGHT_TIMEOUT = 10
 
@@ -117,6 +118,7 @@ def main(argv: list[str]) -> int:
     caps_ready = caps_rc == 0 and install_ok is True
     say("desktop_would_call_install_ok", caps_ready)
 
+    # ── the deeper probes the fix PRs add ────────────────────────────────────
     # Recorded only: preflight runs just `-h` and desktop-capabilities, so these are not repair evidence.
     for label, args in (
         ("verify_install", ["studio", "verify-install"]),
@@ -133,6 +135,7 @@ def main(argv: list[str]) -> int:
     home = Path(os.environ.get("UNSLOTH_STUDIO_HOME") or (Path.home() / ".unsloth" / "studio"))
     say("install_in_progress_marker", (home / ".desktop-install-in-progress").exists())
 
+    # ── ground truth: does the backend actually boot? ────────────────────────
     # Own the whole process tree so children cannot hold the port for the next leg.
     popen_kw: dict = {}
     if os.name == "posix":
@@ -221,6 +224,7 @@ def main(argv: list[str]) -> int:
     if missing:
         say("backend_error", missing)
 
+    # ── verdict ──────────────────────────────────────────────────────────────
     # Healthy also requires desktop-capabilities ready and `-h` ok, as the desktop's preflight does.
     if backend_ok and caps_ready and facts.get("cli_h_ok"):
         verdict = "HEALTHY"

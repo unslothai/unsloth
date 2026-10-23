@@ -6,6 +6,7 @@ set -euo pipefail
 # Gemma 4 MLX one-command setup. The uv installer payload is pinned by SHA-256;
 # rotate with: curl -sSLf https://astral.sh/uv/install.sh | shasum -a 256
 
+# ── Output style (inspired by unsloth/install.sh) ─────────────
 RULE=""
 _rule_i=0
 while [ "$_rule_i" -lt 52 ]; do
@@ -31,6 +32,7 @@ step()    { printf "  ${C_DIM}%-18.18s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"
 substep() { printf "  ${C_DIM}%-18s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 fail()    { step "error" "$1" "$C_ERR"; exit 1; }
 
+# ── Parse flags ───────────────────────────────────────────────
 VENV_DIR=""
 _next_is_venv=false
 
@@ -49,11 +51,13 @@ if [ -z "$VENV_DIR" ]; then
     VENV_DIR="$HOME/.unsloth/unsloth_gemma4_mlx"
 fi
 
+# ── Banner ────────────────────────────────────────────────────
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "💎 Gemma 4 MLX Installer"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# ── Platform check ────────────────────────────────────────────
 if [ "$(uname)" != "Darwin" ]; then
     fail "MLX requires macOS with Apple Silicon. Detected: $(uname)"
 fi
@@ -65,6 +69,7 @@ fi
 
 step "platform" "macOS ($_ARCH)"
 
+# ── Detect Python ─────────────────────────────────────────────
 PYTHON=""
 for _candidate in python3.12 python3.11 python3.13 python3; do
     if command -v "$_candidate" >/dev/null 2>&1; then
@@ -80,6 +85,7 @@ fi
 _PY_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
 step "python" "$PYTHON ($_PY_VERSION)"
 
+# ── Create virtual environment ────────────────────────────────
 if [ -x "$VENV_DIR/bin/python" ]; then
     step "venv" "using existing environment"
     substep "$VENV_DIR"
@@ -90,6 +96,7 @@ else
     "$PYTHON" -m venv "$VENV_DIR"
 fi
 
+# ── Install uv ───────────────────────────────────────────────
 _UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -114,6 +121,7 @@ fi
 
 _VENV_PY="$VENV_DIR/bin/python"
 
+# ── Install dependencies ──────────────────────────────────────
 step "install" "installing mlx-vlm..."
 uv pip install --python "$_VENV_PY" -q mlx-vlm
 substep "done"
@@ -131,12 +139,14 @@ else
     fi
 fi
 
+# ── Verify installation ──────────────────────────────────────
 if "$_VENV_PY" -c "import mlx_vlm"; then
     substep "mlx-vlm verified"
 else
     fail "Installation verification failed."
 fi
 
+# ── Done ──────────────────────────────────────────────────────
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Gemma 4 MLX installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"

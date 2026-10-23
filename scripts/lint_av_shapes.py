@@ -77,6 +77,7 @@ def _any(*words: str) -> str:
     return "(?:" + "|".join(words) + ")"
 
 
+# ---- trigger vocabulary, built from fragments -------------------------------------------------
 _DLLIMPORT = _J(("Dll", "Import"))
 _MEM_APIS = [
     _J(p)
@@ -939,6 +940,7 @@ def main() -> int:
     return problems
 
 
+# ---- self-test: every rule fires on its shape and stays quiet on the rewrite --------------------
 def _fixtures() -> list[tuple[str, str, str, bool]]:
     """(rule, file name, text, should fire). Built here, in memory, never written to disk."""
     q = '"'

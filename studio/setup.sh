@@ -38,6 +38,7 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 
 # ── Parse flags ──
 # --local: overlay unsloth editable and unsloth-zoo from git main (mirrors install.sh --local).
+# ── Parse flags ──
 if [ "$#" -gt 0 ]; then
     for _arg in "$@"; do
         case "$_arg" in
@@ -49,13 +50,16 @@ if [ "$#" -gt 0 ]; then
     done
 fi
 
+# ── Maintainer-editable defaults ──────────────────────────────────────────
 # Maintainer-editable defaults; user env vars override.
 # Prefer _DEFAULT_LLAMA_TAG=latest: master bypasses the prebuilt resolver and forces a source build.
+# ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
 _DEFAULT_LLAMA_TAG="latest"
 _DEFAULT_LLAMA_FORCE_COMPILE_REF="master"
 
+# ── Colors (same palette as startup_banner / install_python_stack) ──
 if [ -n "${NO_COLOR:-}" ]; then
     C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
 elif [ -t 1 ] || [ -n "${FORCE_COLOR:-}" ]; then
@@ -69,6 +73,7 @@ else
     C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
 fi
 
+# ── Output helpers ──
 # Usage: step <label> <message> [color]; substep <message> [color]
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
@@ -90,6 +95,7 @@ setup_fail() {
     exit "$exit_code"
 }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
 # `test -r` passes in containers where open() fails with ENXIO; probe with a real open.
 # Mirrors install.sh's _can_read_tty (setup.sh runs as its own process).
 _can_read_tty() {
@@ -684,6 +690,7 @@ _mirror_spare_export() {
 }
 # ── END mirror fallback ──
 
+# ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
 # studio/frontend/.npmrc pins the registry (supply-chain lock); UNSLOTH_NPM_REGISTRY opts into
 # --registry for npm/bun installs. Empty array expands to nothing under set -u.
 _NPM_REGISTRY_ARGS=()
@@ -765,6 +772,7 @@ run_maybe_quiet() {
     fi
 }
 
+# ── Helper: run command quietly, show output only on failure ──
 _run_quiet() {
     local on_fail=$1
     local label=$2
@@ -1440,6 +1448,7 @@ print_installed_llama_prebuilt_release() {
     fi
 }
 
+# ── Banner ──
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Setup"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
@@ -1451,6 +1460,7 @@ fi
 if [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ]; then
     substep "local mode: overlaying $REPO_ROOT (editable) + unsloth-zoo from git main"
 fi
+# ── Clean up stale caches ──
 rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
@@ -1499,6 +1509,7 @@ _clear_webview_caches() {
 }
 # Not called here: a typo'd STUDIO_HOME override must be validated before clearing.
 
+# ── Detect Colab ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
 if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
@@ -2045,6 +2056,7 @@ if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
     verbose_substep "frontend dist is newer than source inputs"
 else
 
+# ── Node (isolated; never touches the system Node/npm) ──
 # Vite 8 needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
 # decide_node_source -> system | bundled | skip (unit-tested in tests/sh/test_node_decision.sh).
 decide_node_source() {
@@ -2187,6 +2199,7 @@ elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
     verbose_substep "frontend dist is newer than source inputs"
 else
 
+# ── Install bun (optional, faster package installs) ──
 # Install bun only into the isolated Node prefix; never globally on a system Node.
 if command -v bun &>/dev/null; then
     substep "bun already installed ($(bun --version))"
@@ -2204,6 +2217,7 @@ else
     verbose_substep "skipping global bun install on system Node (npm will be used)"
 fi
 
+# ── Build frontend ──
 substep "building frontend..."
 _build_frontend() {
 _frontend_build_begin
@@ -2427,6 +2441,7 @@ _setup_http_get_timed() {
     fi
 }
 
+# ── uv from a pinned release ──
 # Pinned uv release with SHA-256 instead of piping a remote script into a shell. Mirrors install.sh.
 # See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # Bumping the version means bumping every hash, and every _setup_uv_pinned_wheel entry.
@@ -3009,6 +3024,7 @@ if [ "$_COLAB_NO_VENV" = true ]; then
     substep "continuing to llama.cpp install for GGUF inference support"
 fi
 
+# ── Check if Python deps need updating ──
 # Fast update path: skip Python deps when the installed version matches PyPI.
 _setup_install_is_verified() {
     # Single definition of a complete install, shared by the incomplete-install guard and offline rule.
@@ -4713,6 +4729,7 @@ if [ -n "$STAGE_ROOT" ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
     setup_fail 1 "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 fi
 
+# ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
 # WSL: sudo needs a password unavailable during GGUF export, so install build deps here.
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>/dev/null; then
     _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
@@ -5299,6 +5316,7 @@ if [ ! -L "$LLAMA_CPP_DIR" ] && {
     _remove_agent_instruction_files "$LLAMA_CPP_DIR"
 fi
 
+# ── whisper.cpp (local speech-to-text dictation engine) ──
 # whisper.cpp: optional, fail-open; installs beside llama.cpp as _managed_whisper_cpp_dir() expects.
 WHISPER_CPP_DIR="$UNSLOTH_HOME/whisper.cpp"
 if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; then
@@ -5384,6 +5402,7 @@ PY
     fi
 fi
 
+# ── audio.cpp (speech, music and dictation engine) ──
 # audio.cpp vendors its own ggml, so it does not pair with llama. Fail-open.
 AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"
 if [ -n "${AUDIOCPP_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_AUDIO_CPP_PATH:-}" ]; then

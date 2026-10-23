@@ -56,8 +56,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# ─────────────────────────────────────────────────────────────────────
 # Calibrated against the real frontend closure. Native binaries get a larger cap and skip
 # pattern scanning; text keeps a tight cap (typescript.js at 9.1 MB is the ceiling).
+# ─────────────────────────────────────────────────────────────────────
 HARD_MAX_TARBALL_BYTES = 256 * 1024 * 1024  # 256 MiB compressed
 HARD_MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024  # 16 MiB per text file
 HARD_MAX_BINARY_FILE_BYTES = 256 * 1024 * 1024  # 256 MiB per .node etc
@@ -149,7 +151,9 @@ def _looks_binary(name: str, header: bytes) -> bool:
 
 ALLOWED_DOWNLOAD_HOST = "registry.npmjs.org"
 
+# ─────────────────────────────────────────────────────────────────────
 # Severities and Finding shape mirror scripts/scan_packages.py.
+# ─────────────────────────────────────────────────────────────────────
 
 CRITICAL = "CRITICAL"
 HIGH = "HIGH"
@@ -193,6 +197,8 @@ class PackageEntry:
         return f"{self.name}@{self.version}"
 
 
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 # Keep IOC patterns short and factual: speculative patterns dull the signal.
 KNOWN_IOC_STRINGS: dict[str, tuple[str, str]] = {
     # Shai-Hulud TanStack wave (2026-05-11, GHSA-g7cv-rxg3-hmpx).
@@ -522,6 +528,7 @@ _OBFUSC_BLOB = re.compile(
     [A-Za-z0-9+/=_-]{2048,}                    # >=2 KiB of b64-ish
     """,
 )
+# ─────────────────────────────────────────────────────────────────────
 
 
 def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
@@ -611,6 +618,8 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     return entries, findings
 
 
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 def _decode_integrity(integrity: str) -> tuple[str, bytes] | None:
     """Parse SRI integrity 'sha512-<base64>' -> (algo, digest_bytes)."""
     if "-" not in integrity:
@@ -688,6 +697,8 @@ def download_tarball(
     return dest, None
 
 
+# ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 def _is_within(root: Path, candidate: Path) -> bool:
     try:
         return candidate.resolve().is_relative_to(root.resolve())
@@ -1051,8 +1062,10 @@ def _ioc_evidence(text: str, needle: str) -> str:
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
 
 
+# ─────────────────────────────────────────────────────────────────────
 # Blank JS comments (top false-positive source) but not strings, where droppers hide payloads.
 # JS sibling of scan_packages.py::_strip_noncode.
+# ─────────────────────────────────────────────────────────────────────
 
 _JS_FAMILY_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
 
@@ -1551,6 +1564,7 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
     return findings
 
 
+# ─────────────────────────────────────────────────────────────────────
 def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | None]:
     """Download, extract and scan a single package, cleaning up its dir. Returns (findings, error); `error` is non-None only on hard failures (download, integrity mismatch, malformed tarball), and on a clean run with findings the caller decides the exit code from severity."""
     # Opaque dir: lockfile names are untrusted path components and the dir is rmtree'd.
@@ -1572,7 +1586,9 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
             pass
 
 
+# ─────────────────────────────────────────────────────────────────────
 # Matched on (package, relative path, pattern), not evidence text, so version bumps do not reopen.
+# ─────────────────────────────────────────────────────────────────────
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 

@@ -31,6 +31,7 @@ DEFAULT_PROMPTS = [
     "A lone lighthouse on a rocky cliff at sunset, dramatic clouds, crashing waves, highly detailed",
     "A bustling night market street in the rain, neon signs reflected in puddles, cinematic",
 ]
+# ── image metrics (pure numpy) ───────────────────────────────────────────────
 
 
 def _to_gray(img: Any) -> Any:
@@ -95,6 +96,7 @@ def ssim(
     return float(ssim_map.mean())
 
 
+# ── optional CLIP (perceptual) ───────────────────────────────────────────────
 class _Clip:
     """Lazy CLIP scorer: prompt-image alignment + image-image cosine similarity."""
 
@@ -126,6 +128,9 @@ class _Clip:
 
     def image_similarity(self, img: Any, ref_img: Any) -> float:
         return float((self._image_embed(img) * self._image_embed(ref_img)).sum().item())
+
+
+# ── GPU measurement helpers (mirrors diffusion_bench) ─────────────────────────
 
 
 def _cuda(call: str) -> Optional[int]:
@@ -181,6 +186,9 @@ def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
     except Exception:
         return None
     return None
+
+
+# ── one quant: load, render the grid, measure ────────────────────────────────
 
 
 def _render_grid(
@@ -268,6 +276,9 @@ def _compare(
         "mean_clip_text": _mean(clip_txt) if clip is not None else None,
         "mean_clip_sim": _mean(clip_sim) if clip is not None else None,
     }
+
+
+# ── sweep ─────────────────────────────────────────────────────────────────────
 
 
 def _sweep(args: argparse.Namespace) -> int:
@@ -392,6 +403,7 @@ def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
     )
 
 
+# ── self-test (CPU, no GPU/model) ─────────────────────────────────────────────
 def _selftest() -> int:
     import numpy as np
     from PIL import Image
@@ -423,6 +435,9 @@ def _selftest() -> int:
         ok = ok and passed
     print("SELFTEST OK" if ok else "SELFTEST FAILED", flush = True)
     return 0 if ok else 1
+
+
+# ── cli ───────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:

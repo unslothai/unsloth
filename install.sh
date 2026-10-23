@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
+# ── Why the installer lives in a function ──
 # Body is wrapped in a function so a piped sh reads the whole file before running; an early
 # exit otherwise breaks curl's pipe. Do not add `exec < /dev/null` (closes the piped source).
 _unsloth_main() {
 
+# ── Output style (aligned with studio/setup.sh) ──
 RULE=""
 _rule_i=0
 while [ "$_rule_i" -lt 52 ]; do
@@ -494,6 +496,7 @@ case "$PACKAGE_NAME" in
         exit 1 ;;
 esac
 
+# ── Tauri structured output ──
 tauri_log() {
     if [ "$TAURI_MODE" = true ]; then
         echo "[TAURI:$1] $2"
@@ -1317,6 +1320,7 @@ trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
 trap '_on_install_signal 143' TERM
 
+# ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
     if command -v curl >/dev/null 2>&1; then
         curl -LsSf "$1" -o "$2"
@@ -1328,6 +1332,7 @@ download() {
     fi
 }
 
+# ── Helper: check if a single package is available on the system ──
 _is_pkg_installed() {
     case "$1" in
         build-essential) command -v gcc >/dev/null 2>&1 ;;
@@ -1341,6 +1346,7 @@ _is_pkg_installed() {
     esac
 }
 
+# ── Helper: human-readable apt distro label for the sudo package prompt (#6207) ──
 # Distro label for the elevation prompt (#6207), read from /etc/os-release.
 _apt_distro_description() {
     # Plain ( ... ) subshell, not $(): bash 3.2 misparses case `;;` inside command substitution.
@@ -1368,6 +1374,7 @@ _apt_distro_description() {
     )
 }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
 # `test -r` passes in containers where open() fails with ENXIO, so probe with a real open.
 # Subshell required: in dash a failed redirection on `:` exits the script.
 _can_read_tty() {
@@ -1413,6 +1420,7 @@ _install_systemd_user_service() {
     fi
 }
 
+# ── Helper: install packages via apt, escalating to sudo only if needed ──
 _smart_apt_install() {
     _PKGS="$*"
 
@@ -1502,6 +1510,7 @@ _smart_apt_install() {
     fi
 }
 
+# ── Helper: the studio_install_id contract ──
 # Install id is 64 lowercase hex (backend _STUDIO_INSTALL_ID_RE). It is baked into a single-quoted
 # launcher assignment, so anything else is rejected. LC_ALL=C keeps character classes stable.
 _css_install_id_is_valid() (
@@ -1596,6 +1605,7 @@ create_studio_shortcuts() {
     _css_is_env_mode=false
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _css_is_env_mode=true
 
+    # ── Write launcher script ──
     cat > "$_css_launcher" << 'LAUNCHER_EOF'
 #!/usr/bin/env bash
 # Unsloth Studio Launcher
@@ -2039,6 +2049,7 @@ LAUNCHER_EOF
         fi
     } > "$_css_data_dir/studio.conf"
 
+    # ── Icon: try bundled, then download ──
     _css_script_dir=""
     if [ -n "${0:-}" ] && [ -f "$0" ]; then
         _css_script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd) || true
@@ -2096,6 +2107,7 @@ LAUNCHER_EOF
         _css_tauri_png="$_css_script_dir/studio/src-tauri/icons/icon.png"
     fi
 
+    # ── Platform-specific shortcuts ──
     # Env-mode is workspace-scoped: skip launchers that may point at a deleted workspace.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
         substep "wrote launcher at $_css_launcher (persistent shortcuts skipped in env-override mode)"
@@ -2105,6 +2117,7 @@ LAUNCHER_EOF
     _css_created=0
 
     if [ "$_css_os" = "linux" ]; then
+        # ── Linux: .desktop file ──
         _css_app_dir="$HOME/.local/share/applications"
         mkdir -p "$_css_app_dir"
 
@@ -2148,6 +2161,7 @@ DESKTOP_EOF
         _css_created=1
 
     elif [ "$_css_os" = "macos" ]; then
+        # ── macOS: .app bundle ──
         _css_app="$HOME/Applications/Unsloth Studio.app"
         _css_contents="$_css_app/Contents"
         _css_macos_dir="$_css_contents/MacOS"
@@ -2253,6 +2267,7 @@ STUB_EOF
         _css_created=1
 
     elif [ "$_css_os" = "wsl" ]; then
+        # ── WSL: create Windows Desktop and Start Menu shortcuts ──
         _css_distro="${WSL_DISTRO_NAME:-}"
 
         _css_wsl_args=""
@@ -2501,6 +2516,7 @@ printf "  ${C_TITLE}%s${C_RST}\n" "🦥 Unsloth Studio Installer"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# ── Detect platform ──
 tauri_log "STEP" "Detecting platform"
 OS="linux"
 if [ "$(uname)" = "Darwin" ]; then
@@ -2558,6 +2574,7 @@ if [ "$MAC_INTEL" = true ]; then
     echo ""
 fi
 
+# ── Unified SKIP_TORCH: --no-torch flag OR Intel Mac auto-detection ──
 SKIP_TORCH=false
 if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
@@ -2616,6 +2633,7 @@ _wsl_amd_gpu_name() {
     _WSL_AMD_GPU_NAME_CACHE="-"; return 1
 }
 
+# ── Bounded command runner ──
 _run_bounded() {
     _rb_secs=10
     if [ "${1:-}" = "--secs" ]; then _rb_secs=$2; shift 2; fi
@@ -2766,6 +2784,7 @@ print(f"{v.value // 1000}.{v.value % 1000 // 10}")
     fi
 }
 
+# ── NVIDIA usable-GPU helper ──
 _has_usable_nvidia_gpu() {
     _nv_smi_wedged=""
     if _cvd_hides_nvidia; then
@@ -2991,6 +3010,7 @@ _maybe_reroute_strixhalo_to_2404() {
 }
 _maybe_reroute_strixhalo_to_2404 || true
 
+# ── Check system dependencies ──
 tauri_log "STEP" "Checking system dependencies"
 
 # Without the Xcode CLT /usr/bin/git is a stub, so `command -v git` is not enough.
@@ -4256,6 +4276,7 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
 _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 
+# ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 # Trust adjacent scripts only for an explicit --local run from the file itself; a piped install's
 # _REPO_ROOT is the caller's cwd, where a planted file would run.
@@ -4268,6 +4289,7 @@ esac
 _ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 _ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_REF}"
 
+# ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
 _find_no_torch_runtime() {
     if [ "$_REPO_IS_CHECKOUT" = "1" ] && [ -f "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt" ]; then
         echo "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt"
@@ -4280,6 +4302,7 @@ _find_no_torch_runtime() {
     fi
 }
 
+# ── AMD ROCm GPU detection helper ──
 _ensure_rocm_probe_env() {
     export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
     if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
@@ -6010,6 +6033,7 @@ get_radeon_wheel_url() {
     echo "https://repo.radeon.com/rocm/manylinux/rocm-rel-${_full_ver}/"
 }
 
+# ── Radeon repo wheel selection helpers ──────────────────────────────────────
 _RADEON_LISTING=""
 _RADEON_PYTAG=""
 _RADEON_BASE_URL=""
@@ -7387,6 +7411,7 @@ elif [ "$_amd_node_diag_route" = true ] && _run_may_open_a_gpu_node && \
     substep "  device mapping needs fixing; under Docker that is $_amd_map_devices."
 fi
 
+# ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
 
@@ -8061,6 +8086,7 @@ if [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; then
         --no-deps -e "$UNSLOTH_CI_SOURCE_OVERLAY"
 fi
 
+# ── Run studio setup ──
 tauri_log "STEP" "Running Unsloth setup"
 SETUP_SH=""
 if [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -f "$_REPO_ROOT/studio/setup.sh" ]; then
@@ -8149,6 +8175,7 @@ if [ "$_SETUP_EXIT" -eq 0 ]; then
     tauri_clear_install_error "studio setup completed"
 fi
 
+# ── Make 'unsloth' available via $_LOCAL_BIN (resolved earlier) ──
 mkdir -p "$_LOCAL_BIN"
 _shim_path="$_LOCAL_BIN/unsloth"
 if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then

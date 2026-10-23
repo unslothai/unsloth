@@ -241,6 +241,8 @@ def fetch(
     return snapshot_from_payload(label, sha256, payload)
 
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 @dataclass
 class Delta:
     void: list[str] = field(default_factory = list)
@@ -406,6 +408,8 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Recorded shapes, not live answers, so the comparison logic is testable offline.
 _BASELINE_FIXTURE = {
     "data": {
@@ -507,6 +511,9 @@ def self_test() -> list[str]:
         )
 
     return failures
+
+
+# ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:

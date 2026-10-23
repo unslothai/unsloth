@@ -1538,6 +1538,7 @@ function Install-UnslothStudio {
         throw $Message
     }
 
+    # ── Usable temporary storage ──
     # Usable temporary storage. Windows never checks TMP/TEMP exist or are writable
     # (#9140), and downloads stage there. If it cannot hold a file, point BOTH at a
     # directory we own; children and GetTempPath() read the process environment.
@@ -9201,7 +9202,7 @@ main()
         return $Family
     }
 
-    # ── Choose the PyTorch index URL from the driver CUDA version (mirrors setup.ps1) ──
+    # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
         # An explicit pin skips ALL GPU probing, as in install.sh / install_python_stack.py.
@@ -9270,7 +9271,7 @@ main()
         return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe $caps)"
     }
 
-    # ── Torch flavor helpers (repair a stale CPU / wrong-CUDA wheel) ──
+    # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
     # Untagged wheel = cpu, matching setup.ps1's stale-venv parse.
     function ConvertTo-TorchFlavorTag {
         param([string]$TorchVersion)
@@ -9336,7 +9337,7 @@ main()
         return $torchVer
     }
 
-    # ── xFormers must match the torch BUILD, not just the version ──
+    # ── xFormers must match the torch BUILD, not just the torch version ──
     # _C.pyd links one exact (torch, CUDA) pair; a mismatch only logs a warning and silently drops
     # memory-efficient attention. PyPI ships only cu128, so resolve from the torch index. Rows were
     # verified live on download.pytorch.org; keep in step with _XFORMERS_WHEEL_VERSIONS in
@@ -9599,6 +9600,7 @@ main()
         substep "PyTorch XPU (SYCL) wheels will be installed from $(Remove-IndexUrlCredentials $TorchIndexUrl)"
     }
 
+    # ── GPU arch → newest compatible Windows ROCm wheel release ──
     # ── AMD Windows ROCm: arch-aware pip index (repo.amd.com) ──
     # Wheels bundle their own runtime, so the HIP SDK version does not matter; newest release for the
     # arch wins. UNSLOTH_ROCM_WINDOWS_MIRROR overrides for air-gapped installs.
@@ -9704,6 +9706,7 @@ main()
     $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
     Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
 
+    # ── Print CPU-only hint when no GPU detected ──
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-StudioLine ""
         if ($ROCmGfxArch) {
@@ -9742,6 +9745,7 @@ main()
     }
 
     # ── Install PyTorch first, then unsloth separately ──
+    # ── Helper: find no-torch-runtime.txt ──
     # `uv pip install unsloth --torch-backend=cpu` resolves to the pre-CLI unsloth==2024.8. Use
     # --upgrade-package so upgrading unsloth cannot re-resolve torch from PyPI and drop +cuXXX.
     # uv splits -r/-c/--overrides on whitespace (#6503, #10722, #11012), so the requirements path
@@ -10063,7 +10067,7 @@ main()
             }
         # Keyed off the index leaf: a FAMILY=xpu pin on a mixed NVIDIA box never ran the Intel scan.
         } elseif ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
-            # ── Intel Arc / XPU PyTorch install (wheels carry their own oneAPI runtime) ──
+            # ── Intel Arc / XPU PyTorch install ──
             Write-TauriLog "STEP" "Installing PyTorch (Intel XPU)"
             substep "installing PyTorch from $(Remove-IndexUrlCredentials $TorchIndexUrl)..."
             # Bound the trio: the xpu index serves torch past our ceiling. Floor 2.6 (unsloth raises below it
@@ -10302,7 +10306,7 @@ main()
         }
     }
 
-    # ── Intel XPU: bitsandbytes must carry XPU kernels or 4-bit QLoRA is off ──
+    # ── Intel XPU: bitsandbytes must carry XPU kernels ──
     # Floor 0.50.0 (AMD's: <=0.49.2 NaNs at 4-bit decode, and an Arc can sit beside a Radeon); runs
     # after the unsloth install so a migrated venv cannot keep an older wheel. --no-deps, and not the
     # intel-gpu-torch extra (pins a single +xpu URL). Keyed off the index leaf; best-effort.
@@ -10423,7 +10427,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
-    # ── Pin xFormers to the wheel built for the torch actually installed ──
+    # ── Pin xFormers to the wheel built for the torch that is actually installed ──
     # After the flavor repair, keyed off the installed torch, not $TorchIndexUrl (a migrated venv can
     # hold +cu128 under a /cpu leaf). Optional: failures warn, no match installs nothing.
     # UNSLOTH_SKIP_XFORMERS=1 opts out.
@@ -10492,7 +10496,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
-    # ── CI only: editable overlay of a source checkout (UNSLOTH_CI_SOURCE_OVERLAY) ──
+    # ── CI only: overlay a source checkout over the package just installed ──
     # Clean-machine legs install unsloth from PyPI; the overlay makes setup.ps1 and friends come from
     # this ref. Not --local: it git-clones unsloth-zoo, and these legs remove git.
     if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
@@ -10783,7 +10787,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     Clear-TauriInstallError "studio setup completed"
 
-    # ── Shim dir holds only unsloth.exe; venv Scripts\python.exe on PATH would hijack the system. ──
+    # ── Shim dir holds only unsloth.exe; the venv Scripts python.exe would hijack the system. ──
     # Remove the legacy Scripts PATH entry older installers wrote.
     $LegacyScriptsDir = Join-Path $VenvDir "Scripts"
     try {
@@ -10884,6 +10888,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
     }
 
+    # ── Tauri mode: done, skip shortcuts and auto-launch ──
     if ($TauriMode) {
         Write-TauriLog "DONE" ""
         return

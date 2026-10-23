@@ -994,6 +994,7 @@ _unsloth_uninstall_main() {
                         done
                     done
                 fi
+                # ── ROCm-on-WSL config (install_rocm_wsl_strixhalo.sh) ──
                 # System ROCm is kept unless UNSLOTH_UNINSTALL_ROCM=1.
                 echo "Removing ROCm-on-WSL config..."
                 _sudo=""

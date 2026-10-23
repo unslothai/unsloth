@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+# =====================
 # Boots a real `unsloth run --disable-tools` server and drives each coding agent through the exact
 # recipe `unsloth start <agent> --no-launch` prints (unsloth_cli/commands/start.py), catching recipe drift.
 # Failure classes: (a) server/API preflight, (b) agent install, (c) guide drift.
@@ -108,8 +109,10 @@ env:
   AGENT_INVOKE_TIMEOUT: '1200'
 
 jobs:
+  # ═════════════════════════════════════════════════════════════════════
   # Job 1: connection. Per agent: serve, preflight the dialect, install, run the start.py recipe,
   # assert a non-empty reply. One runner per cell, one model per port.
+  # ═════════════════════════════════════════════════════════════════════
   connection:
     name: connection (${{ matrix.agent }}, ${{ matrix.opencode_channel }})
     runs-on: ubuntu-latest
@@ -194,6 +197,7 @@ jobs:
           # Withheld on PRs (see env note); public GGUFs still download.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
+      # ── boot the server under test (factored helper) ──────────────────
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
           # Wipe instead of reset-password: the reset prints the new passphrase into the job log.
@@ -245,12 +249,14 @@ jobs:
           esac
           echo "preflight OK for $AGENT"
 
+      # ── (b) install the agent CLI (hardened npm/curl, retried) ─────────
       - name: Install agent CLI (class-b isolation)
         env:
           AGENT: ${{ matrix.agent }}
           OPENCODE_CHANNEL: ${{ matrix.opencode_channel }}
         run: bash .github/scripts/agent-guides-install.sh "$AGENT"
 
+      # ── (c) drive the agent via start.py and assert a reply ──────────
       # Apply the env from `unsloth start <agent> --no-launch`, then run the printed command with a hard timeout.
       - name: Drive ${{ matrix.agent }} via unsloth start (class-c isolation)
         env:
@@ -290,7 +296,9 @@ jobs:
             redacted-configs/
           retention-days: 7
 
+  # ═════════════════════════════════════════════════════════════════════
   # Job 2: file-edit. Deterministic 2-turn hello.py test on Qwen3.5-4B; slow, so weekly + dispatch only.
+  # ═════════════════════════════════════════════════════════════════════
   file-edit:
     name: file-edit (${{ matrix.agent }})
     # Not run on main pushes: `connection` already seeds the identical cache key.
@@ -469,8 +477,10 @@ jobs:
             redacted-configs/
           retention-days: 7
 
+  # ═════════════════════════════════════════════════════════════════════
   # Job: resume. Drives the real launch path: plain launch puts codex/pi homes in a temp dir wiped on
   # exit, --persist keeps them; opencode/claude persist either way. Dispatch-only.
+  # ═════════════════════════════════════════════════════════════════════
   resume:
     name: resume (${{ matrix.agent }})
     if: github.event_name == 'workflow_dispatch'
@@ -629,8 +639,10 @@ jobs:
             redacted-configs/
           retention-days: 7
 
+  # ═════════════════════════════════════════════════════════════════════
   # Job 3: prompt-cache. (a) turn-2 cached_tokens > 0; (b) Claude Code with
   # CLAUDE_CODE_ATTRIBUTION_HEADER=0 hits the KV cache on turn 2, without it misses.
+  # ═════════════════════════════════════════════════════════════════════
   prompt-cache:
     name: prompt-cache (gemma-3-270m)
     runs-on: ubuntu-latest

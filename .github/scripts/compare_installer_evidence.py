@@ -38,6 +38,8 @@ import sys
 from pathlib import Path
 
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 _NORMALISERS: tuple[tuple[re.Pattern[str], str, str, bool], ...] = (
     (re.compile(r"\b\d+\.\d+s\b"), "<duration>", "elapsed times, printed by every step", False),
     (re.compile(r"\b\d{1,3}(?:\.\d+)?\s?%"), "<percent>", "download progress", False),
@@ -244,6 +246,10 @@ def normalise_transcript(text: str) -> list[str]:
         last_frame = _raw_frame(raw)
         frame_since_kept = False
     return lines
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 class Verdict:
@@ -695,6 +701,8 @@ def compare_directories(
     return verdict
 
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Positive control: the differ must call one pair different and one pair equal before it is trusted.
 _CONTROL_TRANSCRIPT = "\n".join(
     [
@@ -831,6 +839,9 @@ def self_test() -> list[str]:
         failures.append(f"two successful installs were not accepted: {v.void} {v.differences}")
 
     return failures
+
+
+# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:

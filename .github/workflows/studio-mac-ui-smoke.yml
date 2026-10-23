@@ -438,8 +438,10 @@ jobs:
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
+      # ---------------------------------------------------------------
       # Own cold-port boot with no health wait: a settled backend is the wrong start state.
       # The script pins /api/health at hardware_detecting=true itself, so no timing is assumed.
+      # ---------------------------------------------------------------
       - name: Reset auth + boot Unsloth for the tab-capability smoke (port 18893)
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
@@ -473,7 +475,9 @@ jobs:
           kill "${STUDIO_TABS_PID}" 2>/dev/null || true
           sleep 2
 
+      # ---------------------------------------------------------------
       # API + auth phase on its own port (18894).
+      # ---------------------------------------------------------------
       - name: Install pyjwt for the JWT-expiry forge test
         run: pip install 'pyjwt>=2.6'
 
@@ -512,9 +516,11 @@ jobs:
           kill "${STUDIO_API_PID}" 2>/dev/null || true
           sleep 2
 
+      # ---------------------------------------------------------------
       # GGUF inference phases, folded in to save a macOS slot. They write GGUF_* and STUDIO_PORT
       # to $GITHUB_ENV (which outranks job env), so they must run AFTER the UI/API phases and
       # BEFORE the update phase. Phase 1 reuses this job's primed hf-cache.
+      # ---------------------------------------------------------------
       - name: Phase 1 environment
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         run: |
@@ -616,8 +622,10 @@ jobs:
             logs/install.log
           retention-days: 7
 
+      # ==============================================================
       # Phase 2: tool calling. Every step carries `!cancelled()` plus the assert-llama gate so a
       # phase-1 failure does not skip later phases, but a broken preamble does.
+      # ==============================================================
       - name: Phase 2 environment
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         run: |
@@ -1038,7 +1046,9 @@ jobs:
             logs/install.log
           retention-days: 1
 
+      # ==============================================================
       # Phase 3: JSON schema + image input; same `if:` shape as phase 2.
+      # ==============================================================
       - name: Phase 3 environment
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         run: |
@@ -1405,9 +1415,11 @@ jobs:
           retention-days: 1
 
 
+      # ---------------------------------------------------------------
       # Update + uninstall phase. Runs LAST: it uninstalls and asserts a clean machine.
       # `!cancelled()` overrides the implicit success() so earlier failures do not skip it;
       # `${{ }}` is required because a bare leading `!` is a YAML tag.
+      # ---------------------------------------------------------------
       - name: First update should be a no-op (prebuilt already validated)
         id: update_first
         if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.assert_llama.outcome == 'success' }}

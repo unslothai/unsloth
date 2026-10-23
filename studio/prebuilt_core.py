@@ -118,6 +118,7 @@ class BusyInstallConflict(RuntimeError):
     pass
 
 
+# ── Defaults a component module may override via its own globals ──
 USER_AGENT = "unsloth-studio-prebuilt"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
 HF_AUTH_HOSTS = {"huggingface.co", "www.huggingface.co"}
@@ -160,6 +161,7 @@ def _cuda_runtime_lines_for_major(major: int) -> list[str]:
     return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
 
 
+# ── The ops seam ──
 _MISSING = object()
 
 # Core functions taking ops first; installer wrappers and test monkeypatches win over defaults.
@@ -312,6 +314,7 @@ def component_ops(descriptor: ComponentDescriptor) -> ModuleOps:
     return ModuleOps(component_namespace(descriptor))
 
 
+# ── Lock/busy classification ──
 def _os_error_messages(exc: BaseException) -> list[str]:
     messages: list[str] = []
     if isinstance(exc, OSError):
@@ -359,6 +362,7 @@ def is_busy_lock_error(exc: BaseException) -> bool:
     return False
 
 
+# ── HTTP: auth, redirects, retries ──
 def parsed_hostname(url: str | None) -> str | None:
     if not url:
         return None
@@ -616,6 +620,7 @@ def validate_schema_version(
         raise error(f"{label} schema_version={normalized} is unsupported")
 
 
+# ── Download progress ──
 def format_byte_count(num_bytes: float) -> str:
     units = ["B", "KiB", "MiB", "GiB", "TiB"]
     value = float(num_bytes)
@@ -739,6 +744,7 @@ def download_label_from_url(url: str) -> str:
     return name or url
 
 
+# ── Downloads ──
 def download_bytes(
     ops: ModuleOps,
     url: str,
@@ -920,6 +926,7 @@ def download_file_verified_strict(
             raise PrebuiltFallback(f"{label} checksum mismatch after retry")
 
 
+# ── GitHub release primitives ──
 def release_asset_map(release: dict[str, Any]) -> dict[str, str]:
     assets = release.get("assets")
     if not isinstance(assets, list):
@@ -1177,6 +1184,7 @@ def web_release_payload(
     }
 
 
+# ── Archive extraction (traversal/symlink guarded) ──
 def extract_archive(archive_path: Path, destination: Path) -> None:
     def safe_extract_path(base: Path, member_name: str) -> Path:
         normalized = member_name.replace("\\", "/")
@@ -1356,6 +1364,7 @@ def restore_tar_exec_bits(archive_path: Path, destination: Path) -> None:
                 os.chmod(target, target.stat().st_mode | 0o111)
 
 
+# ── Install lock ──
 @contextmanager
 def install_lock(lock_path: Path, *, timeout: float | None = None) -> Iterator[None]:
     seconds = INSTALL_LOCK_TIMEOUT_SECONDS if timeout is None else timeout
@@ -1430,6 +1439,7 @@ def install_lock_path(install_dir: Path) -> Path:
     return install_dir.parent / f".{install_dir.name}.install.lock"
 
 
+# ── macOS version parsing ──
 def parse_macos_version(value: str | None) -> tuple[int, int] | None:
     """Parse a macOS product version into (major, minor).
 
@@ -1443,6 +1453,7 @@ def parse_macos_version(value: str | None) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2) or 0)
 
 
+# ── GPU and CUDA runtime-line selection primitives ──
 def normalize_compute_cap(value: Any) -> str | None:
     raw = str(value).strip()
     if not raw:
@@ -1813,12 +1824,15 @@ def blackwell_min_toolkit_for_host(host: Any) -> tuple[int, int]:
     return req
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 def host_platform_tokens(host: Any) -> tuple[str, str]:
     """Default (os, arch) asset tokens; components with their own HostInfo field
     names override this hook."""
     return host.os_token, host.arch_token
 
 
+# ── Manifest parsing ──
 def parse_manifest(ops: ModuleOps, payload: Any, *, label: str) -> dict[str, Any]:
     """Validate a component prebuilt manifest and return it normalized.
 
@@ -1947,6 +1961,7 @@ def artifact_coverage(artifact: dict[str, Any]) -> dict[str, Any]:
     return coverage
 
 
+# ── Backend resolution ──
 def auto_detect_backend(ops: ModuleOps, host: Any) -> str:
     """Host-preferred backend: Apple Silicon -> metal, usable NVIDIA -> cuda,
     AMD gfx -> rocm, otherwise cpu."""
@@ -1973,6 +1988,7 @@ def resolve_backend(ops: ModuleOps, host: Any, requested: str | None, *, cpu_fal
     )
 
 
+# ── Release checksum index (trust anchor: the release's own sha256 asset) ──
 def valid_sha256(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -2071,6 +2087,7 @@ def expected_sha256_for(
     return digest
 
 
+# ── Release resolution ──
 @dataclass
 class ReleaseBundle:
     repo: str
@@ -2249,6 +2266,7 @@ def fetch_release_for_install(
     return bundle, checksums
 
 
+# ── Marker and fingerprint ──
 def compute_install_fingerprint(
     *,
     published_repo: str,
@@ -2614,6 +2632,7 @@ def existing_install_matches(
     return True
 
 
+# ── Install tree assembly and staged activation ──
 def locate_server_in_tree(ops: ModuleOps, root: Path, host: Any) -> Path:
     name = ops.server_binary_name(host)
     matches = sorted(root.rglob(name))

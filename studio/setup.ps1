@@ -126,6 +126,8 @@ function Show-DownloadProgress {
     }
 }
 
+# --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
 # Maintainer-editable defaults; user env vars always override them.
 # Prefer "latest" over "master": master bypasses the prebuilt resolver and forces a source build.
 # UNSLOTH_LLAMA_CPP_BACKEND: auto|cpu|cuda|vulkan|hip|rocm; concrete values persist across updates.
@@ -390,6 +392,8 @@ $FrontendBuildMark = Join-Path $FrontendDir ".unsloth-build.local"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
+# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
 function Refresh-Environment {
     foreach ($level in @('Machine', 'User')) {
         $vars = [System.Environment]::GetEnvironmentVariables($level)
@@ -440,6 +444,7 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
+# ── Helper: is a conda environment ACTIVE in this session? ──
 function Test-ActiveCondaEnvironment {
     foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
         if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
@@ -2994,6 +2999,8 @@ function Ensure-VCRedist {
     }
 }
 
+# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
 $Rule = [string]::new([char]0x2500, 52)
 
 
@@ -3552,9 +3559,13 @@ if (-not $StageRoot) {
     }
 }
 
+# ==========================================================================
 # PHASE 1: System-level prerequisites (winget installs, env vars)
+# ==========================================================================
 
+# ============================================
 # A wedged driver can block nvidia-smi; WaitForExit bounds it.
+# ============================================
 function Invoke-NvidiaSmiBounded {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
@@ -4081,6 +4092,7 @@ function Invoke-AmdSmiNoElevate {
     }
 }
 
+# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
 $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
@@ -4380,6 +4392,7 @@ if (-not $HasNvidiaSmi) {
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
     )
     $script:ROCmUnsupportedGfxArch = $null
+    # ── Arch resolution: env-var override → name inference ──────────────────
     # Runs even without a confirmed runtime: the Adrenalin driver alone runs the per-gfx llama.cpp
     # prebuilt, which only needs the arch. PyTorch ROCm wheels stay gated on $HasROCm.
     if (-not $script:ROCmGfxArch) {
@@ -4666,6 +4679,8 @@ if ($HasNvidiaSmi) {
     Write-StudioLine ""
 }
 
+# ============================================
+# ============================================
 $LongPathsEnabled = $false
 try {
     $regVal = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -ErrorAction SilentlyContinue
@@ -4708,6 +4723,8 @@ if ($LongPathsEnabled) {
     }
 }
 
+# ============================================
+# ============================================
 # Git is required only for --local / source installs; the consumer path uses neither pip VCS nor npm git.
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
@@ -4770,10 +4787,14 @@ if (-not $HasGit) {
     step "git" "$(git --version)"
 }
 
+# ============================================
 # Visual C++ Redistributable: runtime for the prebuilt llama.cpp + PyTorch.
+# ============================================
 Ensure-VCRedist
 
+# ============================================
 # CMake detection only; a source build gets it from Ensure-BuildToolsForLlamaSourceBuild.
+# ============================================
 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 if ($HasCmake) {
     step "cmake" "$(cmake --version | Select-Object -First 1)"
@@ -4781,6 +4802,8 @@ if ($HasCmake) {
     step "cmake" "not detected (only needed if a llama.cpp source build is required)" "Yellow"
 }
 
+# ============================================
+# ============================================
 $CmakeGenerator = $null
 $VsInstallPath = $null
 $vsResult = Find-VsBuildTools
@@ -4794,6 +4817,8 @@ if ($vsResult) {
     step "vs" "not detected (only needed if a llama.cpp source build is required)" "Yellow"
 }
 
+# ============================================
+# ============================================
 # Lazy: the prebuilt path needs no local toolkit. -RequireOrExit hard-fails when none is found.
 function Resolve-CudaToolkit {
     param([switch]$RequireOrExit)
@@ -4906,6 +4931,7 @@ if (-not $NvccPath -and $IncompatibleToolkit) {
     Exit-SetupFailure "The installed CUDA toolkit is incompatible with the current driver"
 }
 
+# -- No toolkit at all: install via winget (only when a source build needs it) --
 if (-not $NvccPath -and $RequireOrExit) {
     Write-StudioLine "CUDA toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
@@ -4974,6 +5000,7 @@ if (-not $NvccPath) {
     Exit-SetupFailure "A compatible CUDA Toolkit could not be found or installed"
 }
 
+# -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
 $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
 # MSBuild's CUDA .targets need the trailing backslash.
@@ -5060,6 +5087,8 @@ if ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
     step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
 }
 
+# ============================================
+# ============================================
 function Get-NodeDecision {
     param(
         [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
@@ -5304,7 +5333,9 @@ if ($env:UNSLOTH_NPM_REGISTRY) {
     $NpmRegistryArgs = @('--registry', $env:UNSLOTH_NPM_REGISTRY)
 }
 
+# ==========================================================================
 # PHASE 2: Frontend build (skip if pip-installed -- already bundled)
+# ==========================================================================
 $DistDir = Join-Path $FrontendDir "dist"
 $PackagedFrontend = Test-PackagedFrontend `
     -LocalInstall "$($env:STUDIO_LOCAL_INSTALL)" `
@@ -5589,7 +5620,9 @@ Remove-AgentInstructionFiles -Roots @(
     (Join-Path $OxcValidatorDir "node_modules")
 )
 
+# ==========================================================================
 # PHASE 3: Python environment + dependencies
+# ==========================================================================
 Write-StudioLine ""
 substep "setting up Python environment..."
 
@@ -7322,6 +7355,7 @@ function Fast-Download {
     }
 }
 
+# ── Check if Python deps need updating ──
 # One definition of a verified install for the incomplete-install guard and the offline rule.
 function Test-StudioInstallVerified {
     try {
@@ -8050,6 +8084,7 @@ if ($ROCmIndexUrl) {
     }
 }
 
+# ── Intel XPU (SYCL) ─────────────────────────────────────────────────────────
 # Intel XPU has its own index leaf and must not fall into the CUDA branch.
 $XpuCpuFallback = $false
 if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallIndexUrl }
@@ -9322,6 +9357,8 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     }
 }
 
+# ==========================================================================
+# ==========================================================================
 # PHASE 3.4b: audio.cpp prebuilt. Self-contained bundles; failure is never fatal.
 $AudioCppDir = Join-Path $UnslothHome "audio.cpp"
 $AudioCppInstaller = Join-Path $PSScriptRoot "install_audio_cpp_prebuilt.py"
@@ -9441,7 +9478,9 @@ if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
     substep "OpenSSL dev install skipped -- prebuilt llama.cpp already validated" "Yellow"
 }
 
+# ==========================================================================
 # PHASE 4: Build llama.cpp from source
+# ==========================================================================
 $OriginalLlamaCppDir = $LlamaCppDir
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -9659,6 +9698,7 @@ if ($LocalLlamaCppLinked) {
         if ([string]::IsNullOrWhiteSpace($ResolvedSourceRef)) { $ResolvedSourceRef = $RequestedLlamaTag }
     }
 
+    # -- Step A: Clone or pull llama.cpp --
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
     # --depth 1 makes llama.cpp stamp build 1 (#12798); set only once the tag is checked out.
     $TagBuildNumber = if ($ResolvedSourceRef -match '^b(\d+)$') { $Matches[1] } else { $null }
@@ -9842,6 +9882,7 @@ if ($LocalLlamaCppLinked) {
             $BuildDir = Join-Path $LlamaCppDir "build"
         }
     }
+    # -- Step B: cmake configure --
 
     if ($BuildOk) {
         Write-StudioLine ""
@@ -9933,6 +9974,7 @@ if ($LocalLlamaCppLinked) {
         }
     }
 
+    # -- Step C: Build llama-server --
     $NumCpu = Get-LlamaBuildJobs
 
     if ($BuildOk) {
@@ -9950,6 +9992,7 @@ if ($LocalLlamaCppLinked) {
         }
     }
 
+    # -- Step D: Build llama-quantize (optional, best-effort) --
     if ($BuildOk) {
         Write-StudioLine ""
         Write-StudioLine "--- cmake build (llama-quantize) ---" -ForegroundColor Cyan
@@ -9961,6 +10004,7 @@ if ($LocalLlamaCppLinked) {
         }
     }
 
+    # -- Step E: Build the DiffusionGemma visual server (optional, best-effort) --
     if ($BuildOk) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }

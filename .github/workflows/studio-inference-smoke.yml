@@ -264,6 +264,8 @@ jobs:
             logs/install.log
           retention-days: 7
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────
       - name: Phase 2 environment (tool calling)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -835,6 +837,8 @@ jobs:
             logs/server-logs/
           retention-days: 7
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────
       - name: Phase 3 environment (JSON, images)
         if: ${{ !cancelled() && steps.sdks.outcome == 'success' }}
         run: |

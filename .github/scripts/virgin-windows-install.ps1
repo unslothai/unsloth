@@ -15,6 +15,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Nu
 
 function Section($t) { Write-Host ""; Write-Host "=== $t ===" }
 
+# ── Environment the installer needs to be non-interactive ─────────────────────
 Section 'install environment'
 # Without this install.ps1 blocks forever on its autostart Read-Host under `docker exec`.
 $env:UNSLOTH_SKIP_AUTOSTART = '1'
@@ -36,6 +37,7 @@ foreach ($v in 'UNSLOTH_STUDIO_HOME', 'UNSLOTH_SKIP_AUTOSTART', 'UNSLOTH_VERBOSE
 
 # SecurityProtocol is deliberately not set: install.ps1 does not set it either.
 
+# ── Run the installer exactly as the desktop launches it ──────────────────────
 Section 'install'
 if (-not (Test-Path -LiteralPath $Installer)) {
     Write-Host "::error::installer not found at $Installer"
@@ -52,6 +54,7 @@ $sw.Stop()
 Write-Host ""
 Write-Host "installer exit code: $rc  (after $([int]$sw.Elapsed.TotalSeconds)s)"
 
+# ── Assertions ────────────────────────────────────────────────────────────────
 $failures = @()
 $venv = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio'
 $venvPy = Join-Path $venv 'Scripts\python.exe'
@@ -130,6 +133,7 @@ if (-not (Test-Path -LiteralPath $nobuild)) {
     if ($LASTEXITCODE -ne 0) { $failures += "a non-allowlisted source build appears in the install log" }
 }
 
+# ── Verdict ───────────────────────────────────────────────────────────────────
 Section 'verdict'
 if ($failures.Count -gt 0) {
     Write-Host "---- last 60 lines of the install log ----"

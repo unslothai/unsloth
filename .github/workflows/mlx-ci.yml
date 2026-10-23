@@ -301,8 +301,10 @@ jobs:
             echo
           done
 
+      # ---------------------------------------------------------------
       # Mac capability verdict on real Apple Silicon, with MLX genuinely present or genuinely unimportable.
       # One boot per step: the self-heal runs once per process.
+      # ---------------------------------------------------------------
       - name: Provision an Unsloth venv for the capability-verdict boots
         run: |
           set -euo pipefail

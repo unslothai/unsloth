@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+# ── What `overlay` decides ────────────────────────────────────────────────────
 # Proves Unsloth installs on a machine with no developer toolchain. Hosted runners simulate
 # absence (see .github/scripts/clean-machine-env.sh); Linux containers are genuinely clean.
 # overlay: true legs editable-install this ref over the PyPI wheel via UNSLOTH_CI_SOURCE_OVERLAY
@@ -151,6 +152,7 @@ jobs:
           python3 .github/scripts/select_install_matrix.py \
             --file "$MATRIX_FILE" --event "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
+  # ── macOS: the reported failure ────────────────────────────────────────────
   macos:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: mac ${{ matrix.os }} / ${{ matrix.mode }} / ${{ matrix.delivery }}${{ matrix.flags && format(' {0}', matrix.flags) || '' }}
@@ -412,6 +414,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # ── Linux: genuinely clean, via containers ────────────────────────────────
   linux:
     name: linux ${{ matrix.label }}
     needs: select
@@ -761,6 +764,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # ── WSL ───────────────────────────────────────────────────────────────────
   # WSL: the only job running install.sh's real WSL branch and catching interop truncating
   # the piped script. Off pull_request for cost.
   wsl:
@@ -1001,6 +1005,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # ── Windows ───────────────────────────────────────────────────────────────
   windows:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: win ${{ matrix.os }} / winget=${{ matrix.winget }}
@@ -1305,6 +1310,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # ── Windows, genuinely virgin: the same install inside a Windows container ────
   # Genuinely virgin Windows: a servercore container has no VC++ runtime and no Store.
   # container: is Linux-only, so drive docker from run steps. windows-2022 because process
   # isolation needs matching host and image builds and only it pre-caches ltsc2022.

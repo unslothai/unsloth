@@ -210,6 +210,7 @@ record_state() {
 if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then
     # Unlink a leftover $STATE.tmp from a different uid, or appends fail and a foreign file
     # is published as our state.
+    # -- which needs write on $DEST, not on the file -- then publishes the FOREIGN
     rm -f "$STATE.tmp" 2>/dev/null || true
     populate_failed=0
     # Set when the merge loop loses a record; those are the only records for upstream-only

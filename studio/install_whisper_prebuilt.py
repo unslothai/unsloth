@@ -189,6 +189,7 @@ INSTALL_STAGING_ROOT_NAME = ".staging"
 _RUN_STAGED_PREBUILT_VALIDATION = False
 
 
+# ── Host detection (probes shared with install_llama_prebuilt) ──
 @dataclass(frozen = True)
 class HostInfo:
     system: str
@@ -278,6 +279,7 @@ def host_platform_tokens(host: HostInfo) -> tuple[str, str]:
     return host.whisper_os, host.whisper_arch
 
 
+# ── Backend selection ──
 def auto_detect_backend(host: HostInfo) -> str:
     return core.auto_detect_backend(_OPS, host)
 
@@ -286,6 +288,7 @@ def resolve_backend(host: HostInfo, requested: str | None, *, cpu_fallback: bool
     return core.resolve_backend(_OPS, host, requested, cpu_fallback = cpu_fallback)
 
 
+# ── Asset naming (pure, unit tested) ──
 def whisper_asset_name(release_tag: str, host: HostInfo, accel: str) -> str:
     """e.g. whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz.
 
@@ -297,6 +300,7 @@ def whisper_asset_name(release_tag: str, host: HostInfo, accel: str) -> str:
     return f"whisper-{tag}-{host.whisper_os}-{host.whisper_arch}-{accel}{host.archive_ext}"
 
 
+# ── Manifest (release-side artifact catalogue; generic parser in the core) ──
 def validate_schema_version(payload: dict[str, Any], *, label: str) -> None:
     core.validate_schema_version(
         payload, label = label, schema_version = SCHEMA_VERSION, error = PrebuiltFallback
@@ -327,6 +331,7 @@ def artifacts_for_host(
     return _artifacts_for_host(manifest, host, backend)
 
 
+# ── Slim selection (paired with the installed llama.cpp ggml runtime) ──
 def _llama_ggml_commit(tag: str) -> str | None:
     """The "-mix-" suffix of a fork tag "b<upstream_build>-mix-<suffix>".
 
@@ -696,6 +701,7 @@ def select_artifact_with_fallback(
     return select_artifact_with_cpu_fallback(manifest, host, backend)
 
 
+# ── Release checksum index (trust anchor: the release's own sha256 asset) ──
 def parse_release_checksums(repo: str, release_tag: str, payload: Any) -> dict[str, str]:
     return core.parse_release_checksums(_OPS, repo, release_tag, payload)
 
@@ -713,6 +719,7 @@ def expected_sha256_for(
     return core.expected_sha256_for(_OPS, checksums, asset_name, manifest_sha256 = manifest_sha256)
 
 
+# ── Verified download (retries once on checksum mismatch) ──
 def download_file_verified(
     url: str, destination: Path, *, expected_sha256: str, label: str
 ) -> None:
@@ -721,6 +728,7 @@ def download_file_verified(
     )
 
 
+# ── GitHub release resolution ──
 def github_release(repo: str, tag: str) -> dict[str, Any]:
     return core.github_release(_OPS, repo, tag, error = PrebuiltFallback)
 
@@ -733,6 +741,7 @@ def asset_download_url(bundle: ReleaseBundle, asset_name: str) -> str:
     return core.asset_download_url(_OPS, bundle, asset_name)
 
 
+# ── Download-host fast path (resolve + fetch the JSON assets with no GitHub API) ──
 def _download_host_latest_release_tag(repo: str) -> str | None:
     return core.download_host_latest_release_tag(_OPS, repo)
 
@@ -763,6 +772,7 @@ def _resolve_release_via_download_host(
     return core.resolve_release_via_download_host(_OPS, repo, published_release_tag)
 
 
+# ── Archive extraction (core's guarded extractor + tar exec-bit restore) ──
 def extract_archive(archive_path: Path, destination: Path) -> None:
     """Shared guarded extraction, then restore tar exec bits (the extractor writes
     plain files; whisper-server must stay executable)."""
@@ -770,6 +780,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     core.restore_tar_exec_bits(archive_path, destination)
 
 
+# ── Install layout ──
 def server_binary_name(host: HostInfo) -> str:
     return "whisper-server.exe" if host.is_windows else "whisper-server"
 
@@ -858,6 +869,7 @@ def validate_staged_server(staged_root: Path, host: HostInfo) -> None:
     _validate_staged_server(staged_root, host)
 
 
+# ── Slim install wiring (llama ggml runtime into the whisper bin dir) ──
 def _elf_needed(path: Path) -> set[str] | None:
     """Read ELF DT_NEEDED names when a standard inspection tool is available."""
     commands = (("readelf", "-d"), ("objdump", "-p"))
@@ -1024,6 +1036,7 @@ def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -
     )
 
 
+# ── Metadata / marker ──
 def metadata_path(install_dir: Path) -> Path:
     return install_dir / METADATA_FILENAME
 
@@ -1487,6 +1500,7 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
     return _runtime_files_match(install_dir, marker)
 
 
+# ── Orchestration ──
 def resolve_newest_release_tag(repo: str) -> str:
     return core.resolve_newest_release_tag(_OPS, repo)
 

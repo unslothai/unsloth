@@ -408,6 +408,9 @@ class _Builder(ast.NodeVisitor):
         self._visit_body(tree.body, self.module)
 
 
+# ---------------------------------------------------------------- resolution
+
+
 def _any_star(scope: Scope) -> bool:
     c = scope
     while c is not None:
@@ -469,6 +472,9 @@ def _legb_chain(scope: Scope) -> list[Scope]:
                 chain.append(p)
         p = p.parent
     return chain
+
+
+# ---------------------------------------------------------------- analysis
 
 
 def _analyze(src: str):
@@ -652,6 +658,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     return findings
 
 
+# ---------------------------------------------------------------- self-test
 _SELF_TESTS = {
     "dangling_alias": (
         "import os\ndef f():\n    import glob as _b\n    return _b.glob('*')\n",

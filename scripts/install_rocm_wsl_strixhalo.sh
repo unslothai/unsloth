@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 # Enable ROCm-on-WSL for AMD GPUs on Ubuntu 24.04 WSL2: installs ROCm userspace and builds
 # librocdxg (the /dev/dxg bridge, loaded with HSA_ENABLE_DXG_DETECTION=1). Invoked by install.sh.
 # Needs Adrenalin 26.2.2+ on Windows. librocdxg may cap VRAM at the WSL VM RAM (ROCm/ROCm#6022).
+# ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 # install.sh refuses a helper that does not declare the contract it requires; bump both on change.
 # 2 = verify the clone against LIBROCDXG_SHA, and fail a checkout that has no SHA to check.
 UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2
 
+# ── Tunables (override via env) ──────────────────────────────────────────────
 ROCM_VER="${UNSLOTH_WSL_ROCM_VER:-7.2.1}"            # ROCm release to install
 # Empty = auto-detect from rocminfo; only verification and the smoke test need the arch.
 GFX="${UNSLOTH_WSL_GFX:-}"
@@ -37,6 +41,7 @@ if [ "$(id -u)" -ne 0 ]; then
     SUDO="sudo"
 fi
 
+# ── Windows 11 SDK (headers for the librocdxg build) ─────────────────────────
 # librocdxg's build needs the Windows SDK 'shared' headers from the Windows host.
 _WIN_SDK_INC_BASE="/mnt/c/Program Files (x86)/Windows Kits/10/Include"
 
@@ -79,6 +84,7 @@ _install_windows_sdk_via_winget() {
     return 0
 }
 
+# ── PREFLIGHT ────────────────────────────────────────────────────────────────
 say "Preflight checks"
 
 # shellcheck disable=SC1091
@@ -93,12 +99,14 @@ fi
 note "Ubuntu 24.04 + /dev/dxg present."
 # A working ROCDXG setup does not need hsa/rocm libs in /usr/lib/wsl/lib; rocminfo is the check.
 
+# ── Step 1: build/runtime prerequisites ──────────────────────────────────────
 say "Installing build prerequisites"
 export DEBIAN_FRONTEND=noninteractive
 $SUDO apt-get update -y
 # Ubuntu only recommends make, so minimal images lack it.
 $SUDO apt-get install -y cmake make gcc g++ git wget gpg ca-certificates python3-venv python3-pip
 
+# ── Step 2: ROCm ${ROCM_VER} userspace (no DKMS -- WSL uses the Windows driver) ─
 say "Installing ROCm ${ROCM_VER} userspace"
 if ! command -v rocminfo >/dev/null 2>&1 && [ ! -x /opt/rocm/bin/rocminfo ]; then
     $SUDO mkdir -p /etc/apt/keyrings
@@ -134,6 +142,7 @@ if [ -L /opt/rocm ] || [ -d /opt/rocm ]; then ROCM_DIR="/opt/rocm"; else ROCM_DI
 { [ -n "$ROCM_DIR" ] && [ -d "$ROCM_DIR" ]; } || die "ROCm not found under /opt after install."
 note "ROCm at ${ROCM_DIR}"
 
+# ── Step 3: build librocdxg (DXG <-> HSA bridge; not yet an apt package) ──────
 say "Building librocdxg (${LIBROCDXG_REF})"
 if [ -e "${ROCM_DIR}/lib/librocdxg.so" ]; then
     note "librocdxg already installed -- skipping build."
@@ -184,6 +193,7 @@ fi
 echo "${ROCM_DIR}/lib" | $SUDO tee /etc/ld.so.conf.d/rocm.conf >/dev/null
 $SUDO ldconfig
 
+# ── Step 4: persist environment (system-wide so Unsloth's worker inherits it) ──
 say "Persisting ROCm-on-WSL environment"
 _envfile="/etc/profile.d/unsloth-rocm-wsl.sh"
 $SUDO tee "$_envfile" >/dev/null <<EOF
@@ -206,6 +216,7 @@ export HSA_ENABLE_DXG_DETECTION=1
 export PATH="${ROCM_DIR}/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCM_DIR}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+# ── Step 5: verify the runtime enumerates the GPU ────────────────────────────
 say "Verifying rocminfo enumerates the GPU over DXG"
 # Capture first: `grep -q` SIGPIPEs rocminfo, which pipefail reports as a failure.
 _rocminfo_out="$(rocminfo 2>/dev/null || true)"
@@ -224,6 +235,7 @@ GFX="${GFX:-$_detected_gfx}"
 printf '%s\n' "$_rocminfo_out" | grep -E 'Marketing Name|Device Type|Compute Unit' | grep -iE "Radeon|GPU|Compute" | head -3 || true
 note "ROCm-on-WSL runtime is live for ${GFX}."
 
+# ── Step 6 (optional): torch smoke test from AMD's per-arch wheel index ───────
 if [ "$SMOKE_TEST" = "1" ]; then
     say "Smoke-testing PyTorch on ${GFX} (throwaway venv)"
     case "$GFX" in

@@ -21,11 +21,20 @@
 #     busy week   231 x 0.15 x 0.25 =   8.7 GPU-h  (35 launches)
 # The rate is for THIS payload set; wiring another leg (e.g. grpo) needs this recomputed.
 #
+# ---------------------------------------------------------------------
 # FAILURE SEMANTICS: red when a payload ran on a T4 and failed, or when the account's
 # WEEKLY accelerator quota is exhausted (the gate says so before any kernel is pushed). An UNREADABLE
 # quota and every other infrastructure outcome skips; the in-job recheck uses --soft-fail.
+# ---------------------------------------------------------------------
 #
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
 # Red only for a failed payload on a T4 or an exhausted weekly quota; every other outcome skips.
+#   -- clone, pip, a Playwright browser download -- so it runs on a lane of its
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
 
 name: Kaggle T4 Notebook CI
 
@@ -212,6 +221,7 @@ jobs:
     # discards, polling, evidence budget, release()). Killing the runner skips release(), and Kaggle's
     # push-time timeout does not stop a wedged kernel. The launcher also guards via --deadline-epoch;
     # the harness suite recomputes this relation.
+    #   ----------------------------------------------------------------
     timeout-minutes: 260
     # Not keyed on the ref: the Kaggle account is global. One kernel here plus one Studio kernel is
     # exactly Kaggle's 2-session cap per account, so each workflow must keep pushing ONE kernel.

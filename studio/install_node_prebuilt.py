@@ -116,6 +116,7 @@ def log(message: str) -> None:
     print(f"[node-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
+# ── Host detection ──
 @dataclass(frozen = True)
 class HostInfo:
     system: str
@@ -160,6 +161,7 @@ def detect_host() -> HostInfo:
     )
 
 
+# ── URL / asset construction (pure, unit tested) ──
 def node_asset_stem(version: str, host: HostInfo) -> str:
     """e.g. node-v24.4.1-linux-x64 (no extension)."""
     return f"node-v{version}-{host.node_os}-{host.node_arch}"
@@ -242,6 +244,7 @@ def select_node_version(index: list[dict], *, channel: str, min_major: int) -> s
     return best_version
 
 
+# ── HTTP (retry/backoff) ──
 def _auth_headers() -> dict[str, str]:
     return {"User-Agent": "unsloth-studio-node-prebuilt"}
 
@@ -364,6 +367,7 @@ def download_file_verified(
             raise PrebuiltFallback(f"{label} checksum mismatch after retry")
 
 
+# ── Pinned digest manifest (trust anchor) ──
 def pins_path() -> Path:
     return Path(__file__).resolve().parent / PINS_FILENAME
 
@@ -437,6 +441,7 @@ def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unver
     return expected
 
 
+# ── Safe archive extraction (zip + tar.gz, traversal/symlink guarded) ──
 def _safe_extract_path(base: Path, member_name: str) -> Path:
     member_path = Path(member_name.replace("\\", "/"))
     if member_path.is_absolute():
@@ -521,6 +526,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         raise PrebuiltFallback(f"unsupported archive format: {archive_path.name}")
 
 
+# ── Install lock (concurrent setup runs share one UNSLOTH_HOME) ──
 def install_lock_path(install_dir: Path) -> Path:
     return install_dir.parent / f".{install_dir.name}.install.lock"
 
@@ -610,6 +616,7 @@ def install_lock(lock_path: Path, *, timeout: float | None = None) -> Iterator[N
         ) from exc
 
 
+# ── Install layout / metadata / health ──
 def node_binary_path(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "node.exe" if host.is_windows else install_dir / "bin" / "node"
 
@@ -1082,6 +1089,7 @@ def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
     _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"], timeout = 300)
 
 
+# ── Orchestration ──
 def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: bool) -> int:
     host = detect_host()
     pins = load_pins()

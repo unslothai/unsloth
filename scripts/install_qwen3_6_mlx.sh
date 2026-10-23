@@ -4,6 +4,7 @@
 set -euo pipefail
 
 # Uv installer pinned by SHA-256; rotate the digest only after verifying the new payload.
+# ── Output style (inspired by unsloth/install.sh) ─────────────
 RULE=""
 _rule_i=0
 while [ "$_rule_i" -lt 52 ]; do
@@ -29,6 +30,7 @@ step()    { printf "  ${C_DIM}%-18.18s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"
 substep() { printf "  ${C_DIM}%-18s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 fail()    { step "error" "$1" "$C_ERR"; exit 1; }
 
+# ── Parse flags ───────────────────────────────────────────────
 VENV_DIR=""
 _next_is_venv=false
 
@@ -47,11 +49,13 @@ if [ -z "$VENV_DIR" ]; then
     VENV_DIR="$HOME/.unsloth/unsloth_qwen3_6_mlx"
 fi
 
+# ── Banner ────────────────────────────────────────────────────
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Qwen3.6 MLX Installer"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# ── Platform check ────────────────────────────────────────────
 if [ "$(uname)" != "Darwin" ]; then
     fail "MLX requires macOS with Apple Silicon. Detected: $(uname)"
 fi
@@ -63,6 +67,7 @@ fi
 
 step "platform" "macOS ($_ARCH)"
 
+# ── Detect Python ─────────────────────────────────────────────
 PYTHON=""
 for _candidate in python3.12 python3.11 python3.13 python3; do
     if command -v "$_candidate" >/dev/null 2>&1; then
@@ -78,6 +83,7 @@ fi
 _PY_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
 step "python" "$PYTHON ($_PY_VERSION)"
 
+# ── Create virtual environment ────────────────────────────────
 if [ -x "$VENV_DIR/bin/python" ]; then
     step "venv" "using existing environment"
     substep "$VENV_DIR"
@@ -88,7 +94,9 @@ else
     "$PYTHON" -m venv "$VENV_DIR"
 fi
 
+# ── Install uv ───────────────────────────────────────────────
 # Fetch to a temp file, verify the digest, and only then execute.
+# ── Install uv ───────────────────────────────────────────────
 _UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -113,6 +121,7 @@ fi
 
 _VENV_PY="$VENV_DIR/bin/python"
 
+# ── Install dependencies ──────────────────────────────────────
 step "install" "installing current mlx-vlm..."
 # Reinstall even if satisfied: older copies of this installer modified mlx-vlm in place.
 uv pip install --python "$_VENV_PY" -q \
@@ -145,6 +154,7 @@ step "install" "installing torch + torchvision (needed for Qwen3 VL processor)..
 uv pip install --python "$_VENV_PY" -q torch torchvision
 substep "done"
 
+# ── Verify installation ──────────────────────────────────────
 if "$_VENV_PY" -c "import mlx_vlm; import torch; import torchvision; import transformers"; then
     substep "mlx-vlm + torch + transformers verified"
 else
@@ -172,6 +182,7 @@ else
     fail "Installed mlx-vlm does not provide a coherent Qwen3.5/3.6 runtime. Please retry with a current mlx-vlm release."
 fi
 
+# ── Done ──────────────────────────────────────────────────────
 echo ""
 printf "  ${C_TITLE}%s${C_RST}\n" "Qwen3.6 MLX installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"

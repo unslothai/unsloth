@@ -457,6 +457,8 @@ jobs:
             logs/llama-server/*.log
           retention-days: 7
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────
       - name: Phase 2 environment (tool calling)
         # Without this gate the step would ride success() while gated steps ran with the
         # previous phase's model, port and HF_HOME.
@@ -899,6 +901,8 @@ jobs:
             logs/llama-server/*.log
           retention-days: 7
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────
       - name: Phase 3 environment (JSON + vision)
         # Without this gate the step would ride success() while gated steps ran with the
         # previous phase's model, port and HF_HOME.
@@ -1255,6 +1259,7 @@ jobs:
             logs/llama-server/*.log
           retention-days: 7
 
+  # ── folded from studio-windows-no-vs-smoke.yml: install + run with no Visual Studio ──
   # Folded in from studio-windows-no-vs-smoke.yml: install and run with no Visual Studio.
   no-vs-cpu:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
@@ -1548,6 +1553,9 @@ jobs:
             logs/llama-server/*.log
           retention-days: 7
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────
+  # ── One box per Windows IMAGE, instead of one box per check ──────────────
   # One job per Windows image (the image is what is tested), to save scarce Windows slots.
   # The VC++ round-trip uninstalls the runtime, so it runs LAST in each box.
   small-checks:
@@ -1817,6 +1825,7 @@ jobs:
         run: |
           Remove-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'no-build-tools') -Recurse -Force -ErrorAction SilentlyContinue
 
+  # ── folded from studio-setup-ps1-vs2026.yml: setup.ps1 unit tests + real-VS detection + vcredist ──
   # setup.ps1 unit tests, real-VS detection and vcredist round-trip.
 
       - name: Detect present, fire on a clean box, and round-trip the install

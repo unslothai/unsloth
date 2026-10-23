@@ -56,7 +56,9 @@ for _grp in video render; do
     [[ -n "$_gid" ]] && AMD_DEVICE_FLAGS+=(--group-add "$_gid")
 done
 
+# ============================================================================
 # Block 1: pre-flight
+# ============================================================================
 banner "Block 1: host pre-flight"
 
 command -v docker >/dev/null 2>&1 || fail "docker not found on PATH"
@@ -102,7 +104,9 @@ fi
 
 ok "pre-flight done"
 
+# ============================================================================
 # Block 2: build
+# ============================================================================
 if [[ $SKIP_BUILD -eq 1 ]]; then
     warn "skipping build (--skip-build); expecting $TAG to exist"
 else
@@ -138,7 +142,9 @@ else
     ok "built $TAG"
 fi
 
+# ============================================================================
 # Block 3a: smoke test
+# ============================================================================
 banner "Block 3a: smoke test (5-step LoRA on Llama-3.2-1B)"
 SMOKE_LOG="$LOG_DIR/smoke.log"
 echo "  log: $SMOKE_LOG"
@@ -154,7 +160,9 @@ if ! grep -q "all checks passed" "$SMOKE_LOG"; then
 fi
 ok "smoke test passed"
 
+# ============================================================================
 # Block 3b: gpt-oss-20B fine-tuning notebook
+# ============================================================================
 if [[ $SKIP_NOTEBOOK -eq 1 ]]; then
     warn "skipping gpt-oss-20B notebook (--skip-notebook)"
 else
@@ -243,6 +251,8 @@ INNER
     ok "gpt-oss-20B notebook completed"
 fi
 
+# ============================================================================
+# ============================================================================
 banner "summary"
 echo "  image:    $TAG"
 echo "  log dir:  $LOG_DIR"

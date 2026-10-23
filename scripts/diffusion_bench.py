@@ -30,6 +30,7 @@ from typing import Any, Optional
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
+# ── small helpers ──────────────────────────────────────────────────────────
 
 
 def _now_iso() -> str:
@@ -154,6 +155,9 @@ def _psnr(ref_png: Path, cand_png: Path) -> float:
     return 20.0 * math.log10(255.0) - 10.0 * math.log10(mse)
 
 
+# ── load + generate ────────────────────────────────────────────────────────
+
+
 def _wait_for_load(backend: Any, timeout_s: int = 2400) -> None:
     deadline = time.time() + timeout_s
     last = None
@@ -228,11 +232,13 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 
         rss_after_load = _process_rss_bytes()
 
+        # ── warmup (discarded) ──
         for _ in range(max(0, args.warmup)):
             _generate_once(backend, args)
 
         rss_after_warmup = _process_rss_bytes()
 
+        # ── measured generations (fixed seed -> deterministic) ──
         _cuda_reset_peak()
         latencies: list[float] = []
         rss_after_generations: list[Optional[int]] = []
@@ -317,6 +323,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# ── modes ──────────────────────────────────────────────────────────────────
 def _write_baseline(args: argparse.Namespace) -> int:
     baseline_path = Path(args.write_baseline).resolve()
     ref_png = baseline_path.parent / "reference.png"
@@ -467,6 +474,9 @@ def _compare(args: argparse.Namespace) -> int:
         return 1
     print("\n  PASS: no regression beyond thresholds.", flush = True)
     return 0
+
+
+# ── cli ────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:

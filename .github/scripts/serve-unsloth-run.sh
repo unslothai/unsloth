@@ -12,6 +12,7 @@
 
 set -uo pipefail
 
+# ── arg parse ────────────────────────────────────────────────────────────
 MODEL=""
 GGUF_VARIANT=""
 GGUF_FILE=""
@@ -61,6 +62,7 @@ server_fail() {
   exit 1
 }
 
+# ── port collision guard ─────────────────────────────────────────────────
 # Fail fast if the port is taken, or we would test the wrong server.
 if command -v ss >/dev/null 2>&1; then
   if ss -tln 2>/dev/null | grep -q ":${PORT}\b"; then
@@ -68,6 +70,7 @@ if command -v ss >/dev/null 2>&1; then
   fi
 fi
 
+# ── build the command ────────────────────────────────────────────────────
 # --disable-tools is required so the agent's own tools relay instead of the server's.
 CMD=(unsloth run -H 127.0.0.1 -p "$PORT" --disable-tools --no-cloudflare)
 if [ -n "$GGUF_FILE" ]; then
@@ -86,6 +89,7 @@ setsid "${CMD[@]}" > "$SERVER_LOG" 2>&1 < /dev/null &
 SERVER_PID=$!
 emit UNSLOTH_SERVER_PID "$SERVER_PID"
 
+# ── wait for /api/health == healthy ──────────────────────────────────────
 HEALTHY=0
 for _ in $(seq 1 "$HEALTH_TIMEOUT"); do
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -102,6 +106,7 @@ done
 [ "$HEALTHY" = "1" ] || server_fail "did not report /api/health healthy within ${HEALTH_TIMEOUT}s"
 echo "[serve] /api/health healthy"
 
+# ── parse the API key from the banner ────────────────────────────────────
 # The key prints only after the model loads, which /api/health does not wait for.
 API_KEY=""
 for _ in $(seq 1 "$BANNER_TIMEOUT"); do
@@ -124,6 +129,7 @@ fi
 echo "::add-mask::${API_KEY}"
 emit UNSLOTH_API_KEY "$API_KEY"
 
+# ── resolve /v1/models id ────────────────────────────────────────────────
 if ! curl -fs "${BASE_URL}/v1/models" \
     -H "Authorization: Bearer ${API_KEY}" -o "$LOG_DIR/models-${PORT}.json" 2>/dev/null; then
   server_fail "/v1/models did not respond (or rejected the banner key)"

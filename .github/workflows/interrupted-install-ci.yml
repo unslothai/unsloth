@@ -113,6 +113,7 @@ jobs:
           python3 .github/scripts/select_install_matrix.py \
             --file "$MATRIX_FILE" --event "$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
+  # ── macOS + Linux: kill at each phase ─────────────────────────────────────
   interrupt:
     name: ${{ matrix.os }} kill@${{ matrix.label }}
     needs: select
@@ -255,6 +256,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # ── Windows: no process groups, so the kill path differs ──────────────────
   interrupt-windows:
     name: windows kill@${{ matrix.label }}
     # No UNSLOTH_STUDIO_HOME: the app scrubs it and install.ps1 rejects a custom root under --tauri,

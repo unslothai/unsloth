@@ -201,6 +201,7 @@ jobs:
             exit 1
           fi
 
+  # ---------------------------------------------------------------------------
   sweep:
     name: Free capacity
     if: ${{ github.event_name != 'schedule' }}

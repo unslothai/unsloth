@@ -54,6 +54,7 @@ mask_aside() {
   fi
 }
 
+# ── PATH scrub ────────────────────────────────────────────────────────────────
 # Keep only OS-default system dirs.
 scrub_path() {
   local keep out=""
@@ -69,6 +70,7 @@ scrub_path() {
   echo "$out"
 }
 
+# ── mask ──────────────────────────────────────────────────────────────────────
 if [ "$MODE" = "mask" ]; then
   NEWPATH="$(scrub_path)"
   if [ "$OS" = "Darwin" ]; then
@@ -176,6 +178,7 @@ if [ "$MODE" = "mask" ]; then
   fi
 fi
 
+# ── trace ─────────────────────────────────────────────────────────────────────
 if [ "$MODE" = "trace" ]; then
   for tool in $TOOLS; do
     real="$(command -v "$tool" 2>/dev/null || true)"

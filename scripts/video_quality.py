@@ -35,6 +35,7 @@ DEFAULT_PROMPT = (
 
 # Finite PSNR (dB) cap for an identical clip, matching scripts/diffusion_quality.py.
 _PERFECT_MATCH_PSNR = 100.0
+# ── frame metrics (pure numpy; frames are uint8 HxWx3 arrays) ────────────────
 
 
 def _gray(frame: Any) -> Any:
@@ -187,6 +188,7 @@ def verdict(metrics: dict[str, Any], audio: dict[str, Any]) -> str:
     return "PASS"
 
 
+# ── mp4 decode (PyAV, same dependency the backend encodes with) ─────────────
 def decode_mp4(mp4_bytes: bytes, workdir: Path, name: str) -> tuple[list[Any], Optional[Any]]:
     """Frames (uint8 arrays) + mono audio samples (float array or None) from bytes."""
     import av
@@ -205,6 +207,9 @@ def decode_mp4(mp4_bytes: bytes, workdir: Path, name: str) -> tuple[list[Any], O
             audio = np.concatenate([c.reshape(c.shape[0], -1).mean(axis = 0) for c in chunks])
     container.close()
     return frames, audio
+
+
+# ── configuration plumbing ───────────────────────────────────────────────────
 
 
 def parse_spec(spec: str) -> dict[str, str]:
@@ -352,6 +357,7 @@ def run_gate(args: Any) -> int:
     return 0 if all(r["verdict"] != "FAIL" for r in rows) else 1
 
 
+# ── selftest (CPU-only, synthetic clips, no torch/model) ────────────────────
 def selftest() -> int:
     import numpy as np
 

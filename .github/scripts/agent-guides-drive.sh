@@ -157,6 +157,7 @@ raw_env() {  # $1 = var name -> value (one shlex-quote layer stripped)
   v="${v#\'}"; v="${v%\'}"; printf '%s' "$v"
 }
 
+# ── 5-agent start.py path: parse env + command from --no-launch ─────────
 # Sets CONNECT_ENV and CONNECT_CMD; also runs start.py's config writers as a side effect.
 parse_connect() {
   local raw="$LOGS_DIR/connect-${AGENT}.txt"
@@ -368,6 +369,7 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
 }
 
 case "$MODE" in
+  # ── connection: trivial prompt, assert a non-empty, error-free reply ────
   connection)
     PROMPT='Reply with exactly the single word: pong'
     OUT="$LOGS_DIR/${AGENT}-connection.txt"
@@ -404,6 +406,7 @@ case "$MODE" in
     echo "[$AGENT] connection OK"
     ;;
 
+  # ── file-edit: deterministic 2-turn hello.py test (gemma-4-E4B-it) ──────
   file-edit)
     WORK="$WORKDIR_BASE/${AGENT}"
     rm -rf "$WORK"; mkdir -p "$WORK"
@@ -497,6 +500,7 @@ case "$MODE" in
     echo "[$AGENT] file-edit OK"
     ;;
 
+  # ── attribution-ab: Claude Code KV-cache HIT vs MISS ────────────────────
   attribution-ab)
     [ "$AGENT" = "claude" ] || guide_fail "attribution-ab only applies to claude"
     # The log name uses llama.cpp's random internal port, so slice the newest log by byte offset.
@@ -532,6 +536,7 @@ case "$MODE" in
     echo "[claude] attribution A/B OK (suppressed HIT, header=1 MISS)"
     ;;
 
+  # ── resume: does a launched agent's session survive exit and resume? ────
   # resume: drives the real launch path and checks whether a session persists, with and without --persist.
   resume)
     CODEWORD="PLATYPUS7"

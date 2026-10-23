@@ -8,6 +8,7 @@ $failures = @()
 
 function Section($t) { Write-Host ""; Write-Host "=== $t ===" }
 
+# ── The interpreter itself ────────────────────────────────────────────────────
 # install.ps1 must run under Windows PowerShell 5.1; nanoserver lacks it, hence servercore.
 Section 'interpreter'
 Write-Host "PSVersion  : $($PSVersionTable.PSVersion)"
@@ -40,6 +41,7 @@ if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
     Write-Host "::warning::USERPROFILE is unset in this container; install.ps1's default install root would abort"
 }
 
+# ── The assertion the whole lane exists for ───────────────────────────────────
 Section 'virginity: developer toolchain must be ABSENT'
 # uv is listed because install.ps1 would reuse a preinstalled one and skip its bootstrap.
 $mustBeAbsent = @('python', 'python3', 'py', 'git', 'cmake', 'cl', 'winget', 'uv')
@@ -91,6 +93,7 @@ foreach ($scope in 'Machine', 'User') {
     Write-Host "$scope PATH: $([System.Environment]::GetEnvironmentVariable('Path', $scope))"
 }
 
+# ── The VC++ runtime question the hosted leg cannot answer ────────────────────
 Section 'VC++ runtime (honest measurement)'
 # Hosted images always ship the VC++ runtime, so only this container can prove absence: assert it.
 foreach ($dll in 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') {
@@ -105,6 +108,7 @@ foreach ($k in 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
     Write-Host ("  {0} -> {1}" -f $k, $(if ($r) { "Installed=$($r.Installed) $($r.Major).$($r.Minor)" } else { 'absent' }))
 }
 
+# ── Can the installer's transport work at all here? ───────────────────────────
 Section 'outbound HTTPS and TLS'
 # install.ps1 inherits the default SecurityProtocol, so test the default before forcing Tls12.
 Write-Host "default SecurityProtocol: $([Net.ServicePointManager]::SecurityProtocol)"
@@ -139,6 +143,7 @@ if ($defaultOk.Values -contains $false) {
     }
 }
 
+# ── Verdict ───────────────────────────────────────────────────────────────────
 Section 'verdict'
 if ($failures.Count -gt 0) {
     foreach ($f in $failures) { Write-Host "::error::$f" }

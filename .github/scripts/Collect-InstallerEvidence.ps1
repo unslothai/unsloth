@@ -44,6 +44,8 @@ $ErrorActionPreference = 'Continue'
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 if (-not $ShortcutRoot -or $ShortcutRoot.Count -eq 0) {
     $ShortcutRoot = @(
         [Environment]::GetFolderPath('Desktop'),
@@ -136,6 +138,8 @@ foreach ($s in $shortcuts) {
     Write-Host ("  {0}: {1} {2}" -f $s.name, $s.targetPath, $s.arguments)
 }
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Content is compared only for installer-generated templates, listed per possible layout.
 # Windows-only contracts: listing a file the Windows installer never writes voids every run.
 $contentFiles = [ordered]@{
@@ -208,6 +212,8 @@ if (Test-Path -LiteralPath $StudioHome) {
     $artifactError = "the install root $StudioHome does not exist, so the installer did not finish"
 }
 
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Built before the comparison below, which reads it; stored in artifacts.json for the second run.
 $shortcutWrites = [ordered]@{}
 foreach ($s in $shortcuts) {

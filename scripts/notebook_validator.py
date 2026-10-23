@@ -254,6 +254,7 @@ COLAB_STRICT_ORACLE_KEYS: dict[str, frozenset[str]] = {
     "os-info-gpu.txt": frozenset({"python"}),
 }
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
+# ----- Compat tables. PRs add rows as new releases land. ----- #
 
 # Lockstep rows only: torchcodec 0.12+ is ABI-stable against torch >=2.11 and is handled by
 # the short-circuit in rule_inst_004_torchcodec_torch rather than by a row here.
@@ -283,6 +284,7 @@ GIT_PLUS_ALLOWLIST = (
     "github.com/unslothai/unsloth-zoo",
     "github.com/unslothai/unsloth",
 )
+# ----- Findings ----- #
 
 
 @dataclasses.dataclass
@@ -297,6 +299,9 @@ class Finding:
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+# ----- Notebook walking ----- #
 
 
 def iter_notebooks(
@@ -375,6 +380,8 @@ def target_environment(notebook_name: str) -> str:
         return "dgx_spark"
     return "colab"
 
+
+# ----- Pip-freeze parsing ----- #
 
 PINNED_RE = re.compile(r"^\s*([A-Za-z0-9._-]+)\s*==\s*([^\s;#]+)")
 
@@ -486,6 +493,9 @@ def cmp_versions(a: str, b: str) -> int:
     if ka > kb:
         return 1
     return 0
+
+
+# ----- Install-cell parsing ----- #
 
 
 @dataclasses.dataclass
@@ -2082,6 +2092,7 @@ def explicit_pin(spec: SpecParts) -> str | None:
     return None
 
 
+# ----- PyPI metadata cache ----- #
 def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
     PYPI_CACHE_DIR.mkdir(parents = True, exist_ok = True)
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{name.lower()}__{version}")
@@ -2147,6 +2158,7 @@ def constraint_satisfied(version: str, ops: list[tuple[str, str]]) -> bool:
     return True
 
 
+# ----- Resolved set ----- #
 def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     """Merge install-cell constraints with Colab pip-freeze (cell wins). Resolution order per package: (1) exact `==V` pin, (2) upper-bound `<=V` (pip picks the highest allowed = V), (3) Colab fallback. Lower-bound `>=V` is intentionally NOT reflected (it does not lower an already-higher Colab version); R-INST-003 models that via `_install_cell_lower_bound`."""
     out = dict(colab)
@@ -2188,6 +2200,7 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     return out
 
 
+# ----- Rules ----- #
 # Case-insensitive: pip normalises `Git+https://`.
 _GIT_SOURCE_RE = re.compile(r"""git\+[^\s'"]+""", re.IGNORECASE)
 
@@ -2887,6 +2900,7 @@ def rule_inst_006_double_bang(install_cell: str, file: str, cell_idx: int) -> li
     return findings
 
 
+# ----- AST-level rules over user-facing cells ----- #
 class _APIScanner(ast.NodeVisitor):
     """Scan user-facing code cells for known deprecated patterns. R-API-001 (`for_training`/`for_inference`) is intentionally absent: those helpers are still live as of 2026-05 (PR #221 removed them cosmetically, not as a deprecation). R-API-004 catches actual removals dynamically."""
 
@@ -2933,6 +2947,7 @@ def scan_user_cells(nb: dict[str, Any], file: str) -> list[Finding]:
     return findings
 
 
+# ----- DONT_UPDATE_EXCEPTIONS coverage ----- #
 POLICY_CLAUSES_DEFAULT = [
     # (id, regex, applies_to_predicate_on_install_cell_text)
     (
@@ -2999,6 +3014,7 @@ def _extract_dont_update_exceptions(update_script: pathlib.Path) -> list[str]:
     return out
 
 
+# ----- Drift ----- #
 def cmd_drift(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     update_script = nbdir / "update_all_notebooks.py"
@@ -3070,6 +3086,7 @@ def cmd_drift(args: argparse.Namespace) -> int:
     return rc
 
 
+# ----- Convert ----- #
 def cmd_convert(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     out = pathlib.Path(args.out).resolve()
@@ -3104,6 +3121,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+# ----- Lint (combined) ----- #
 def cmd_lint(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     colab_path = pathlib.Path(args.colab_pin).resolve() if args.colab_pin else COLAB_FALLBACK_FILE
@@ -3154,10 +3172,14 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 0 if not any(f.severity == "error" for f in findings) else 1
 
 
+# ----- Exceptions coverage ----- #
 def cmd_exceptions(args: argparse.Namespace) -> int:
     findings = rule_l12_exceptions_coverage(pathlib.Path(args.notebooks_dir).resolve())
     _emit(findings)
     return 0 if not findings else 1
+
+
+# ----- API surface scan ----- #
 
 
 def cmd_api(args: argparse.Namespace) -> int:
@@ -3205,6 +3227,7 @@ def cmd_api(args: argparse.Namespace) -> int:
     return 0 if not findings else 1
 
 
+# ----- Orchestrator ----- #
 def cmd_all(args: argparse.Namespace) -> int:
     rcs: list[int] = []
     rcs.append(cmd_drift(argparse.Namespace(notebooks_dir = args.notebooks_dir)))
@@ -3515,6 +3538,9 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             "refresh-colab --all --snapshot-dir scripts/data` at your convenience."
         )
     return 0
+
+
+# ----- Helpers ----- #
 
 
 def _emit(findings: list[Finding]) -> None:

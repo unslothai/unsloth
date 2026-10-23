@@ -49,6 +49,7 @@ concurrency:
 permissions:
   contents: read
 
+# ──────────────────────────────────────────────────────────────────────
 # Network retry knobs only; no integrity check is relaxed.
 env:
   PIP_RETRIES: "10"
@@ -62,8 +63,10 @@ env:
   NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "60000"
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────
   # pip-audit + npm audit + cargo audit on one runner; each step is continue-on-error so
   # one finding does not suppress the others.
+  # ─────────────────────────────────────────────────────────────────────
   advisory-audit:
     name: advisory audit (pip + npm + cargo)
     runs-on: ubuntu-latest
@@ -131,6 +134,8 @@ jobs:
           retry 5 python -m pip install --upgrade pip 'pip-audit>=2.7'
           retry 5 cargo install --locked --version '^0.22' cargo-audit
 
+      # ─────────────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────────────
       - name: Build filtered Python requirements set
         # Build audit-reqs/ from pyproject (core + huggingfacenotorch extras) and the backend
         # requirements with `git+` lines stripped (pip-audit -r would clone them).
@@ -240,8 +245,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
       # Structural lockfile scan (non-registry URLs, missing integrity, IOC strings); catches
       # attacks before an advisory exists.
+      # ─────────────────────────────────────────────────────────────
       - name: Lockfile supply-chain audit (pre-install scan)
         run: |
           python3 scripts/lockfile_supply_chain_audit.py
@@ -253,6 +260,8 @@ jobs:
             echo "No structural anomalies or known IOC strings."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────────────
       - name: npm audit (Unsloth frontend)
         # No --omit=dev: a malicious dev dependency can still steal CI secrets.
         continue-on-error: true
@@ -286,6 +295,8 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           done
 
+      # ─────────────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────────────
       - name: cargo audit (Unsloth Tauri)
         continue-on-error: true
         working-directory: studio/src-tauri
@@ -300,6 +311,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────────────
       - name: Download + verify OSV-Scanner
         # Separate step so binary integrity is a hard gate; a download failure only skips the scan.
         # Bump OSV_SHA256 together with OSV_VERSION.
@@ -355,7 +368,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
       # Semgrep catches first-party logic bugs that pattern scanning cannot.
+      # ─────────────────────────────────────────────────────────────
       - name: Semgrep (supply-chain + python rule packs)
         continue-on-error: true
         run: |
@@ -380,7 +395,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
       # Flag every requirement not pinned with `==`, `===` or `@` (warning only).
+      # ─────────────────────────────────────────────────────────────
       - name: Lockfile pin verifier (Python requirements)
         continue-on-error: true
         run: |
@@ -426,10 +443,14 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
       # Trivy is deliberately not used: its action tags were hijacked in the litellm 1.82.7
       # compromise. OSV-Scanner and TruffleHog cover its CVE and secret detection.
+      # ─────────────────────────────────────────────────────────────
 
+      # ─────────────────────────────────────────────────────────────
       # TruffleHog: verified secrets only; full repo on push to main, base..head on PRs.
+      # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
         uses: trufflesecurity/trufflehog@e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9  # v3.99.2
@@ -440,6 +461,8 @@ jobs:
           # The action already passes --no-update; repeating it is an error.
           extra_args: --only-verified
 
+      # ─────────────────────────────────────────────────────────────
+      # ─────────────────────────────────────────────────────────────
       - name: Generate CycloneDX SBOM
         continue-on-error: true
         run: |
@@ -468,9 +491,11 @@ jobs:
             ls sbom/ | sed 's/^/- sbom\//'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
       # Mutable tags were the tj-actions attack vector. Catch every
       # non-SHA-pinned `uses:` across the workflows tree. Warn-only
       # initially so the existing baseline does not block PRs.
+      # ─────────────────────────────────────────────────────────────
       - name: GitHub Actions pinning verifier
         continue-on-error: true
         run: |
@@ -518,7 +543,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ─────────────────────────────────────────────────────────────
       # Report requirements lacking hash pins (--require-hashes); conversion is a roadmap item.
+      # ─────────────────────────────────────────────────────────────
       - name: Hash-pin verifier (Python requirements)
         continue-on-error: true
         run: |
@@ -579,6 +606,8 @@ jobs:
             sbom/
           retention-days: 30
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────
   pip-scan-packages:
     # Download (never install) the transitive closure and pattern-scan archives for malicious
     # payloads pip-audit cannot see. Sharded by load; triton-kernels.txt is git+-only.
@@ -762,6 +791,8 @@ jobs:
             audit-reqs/
           retention-days: 30
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────
   npm-scan-packages:
     # npm counterpart: fetch each lockfile tarball directly (never `npm install`), verify
     # integrity, extract with guards and pattern-scan. Stdlib-only; every tarball is hostile.
@@ -827,8 +858,10 @@ jobs:
           path: logs-scan-npm.txt
           retention-days: 30
 
+  # ─────────────────────────────────────────────────────────────────────
   # `npm audit signatures` (advisory) plus check_new_install_scripts.py, which blocks newly
   # added dependencies that ship install hooks.
+  # ─────────────────────────────────────────────────────────────────────
   npm-provenance-and-install-scripts:
     name: npm provenance + new install-script diff
     runs-on: ubuntu-latest

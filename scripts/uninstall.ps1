@@ -871,6 +871,7 @@ Environment:
 
     $uvCaches = _UvLeftoverCaches $ownedRoots
 
+    # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
     if ($defaultDataDir) {
         _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $ownedRoots
@@ -959,6 +960,7 @@ Environment:
     # The reparse expansion yields generic subdirectories, so it is gated too.
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $ownedRoots))
 
+    # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
     foreach ($r in $customRoots) {
         if (_IsUnsafeRoot $r) {
@@ -1118,6 +1120,7 @@ Environment:
         _RemovePath (Join-Path $base "ai.unsloth.studio")
     }
 
+    # ── Remove desktop and Start Menu shortcuts ──
     _Step "Removing desktop and Start Menu shortcuts..."
     try {
         $desktop = [Environment]::GetFolderPath("Desktop")
@@ -1143,6 +1146,7 @@ Environment:
         _RemoveDataDirKeepingWslIcon $defaultDataDir -Preserve $preservedTemp
     }
 
+    # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."
     try {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)

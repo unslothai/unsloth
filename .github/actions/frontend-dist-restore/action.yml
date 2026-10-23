@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+# ---------------------------------------------------------------------------
 # Restore half of the built-frontend cache; pair with frontend-dist-save after the install.
 # The key must hash exactly the inputs setup.sh/setup.ps1 check; drift serves a stale dist silently.
 

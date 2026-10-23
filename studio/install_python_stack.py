@@ -165,6 +165,7 @@ def _windows_arm64_has_torchaudio() -> bool:
     return (os.environ.get("UNSLOTH_WOA_HAS_TORCHAUDIO") or "").strip() == "1"
 
 
+# ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (7, 2): "rocm7.2",  # torch 2.11.0
     (7, 1): "rocm7.1",  # torch 2.11.0
@@ -6104,6 +6105,7 @@ def _ensure_rocm_torch() -> "bool | None":
             )
         return
 
+    # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
     # PyTorch ROCm wheels are not published for aarch64.
     if platform.machine().lower() not in {"x86_64", "amd64"}:
         return
@@ -6795,6 +6797,7 @@ def _torch_step_label(suffix: str) -> str:
     return f"torch {suffix} ({backend})"
 
 
+# -- Verbosity control ----------------------------------------------------------
 VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 
 # Progress bar state; update _TOTAL when adding/removing steps in install_python_stack().
@@ -6802,6 +6805,7 @@ _STEP: int = 0
 _TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
 _PROGRESS_LINE_ACTIVE: bool = False
 
+# -- Paths --------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 REQ_ROOT = SCRIPT_DIR / "backend" / "requirements"
 SINGLE_ENV = REQ_ROOT / "single-env"
@@ -6816,6 +6820,7 @@ _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
 if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
     os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
 
+# -- Unicode-safe printing ---------------------------------------------
 # Legacy code-page consoles (CP1252): _safe_print() degrades glyphs to ASCII.
 
 _UNICODE_TO_ASCII: dict[str, str] = {
@@ -6850,6 +6855,7 @@ def _safe_print(*args: object, **kwargs: object) -> None:
         )
 
 
+# ── Color support ──────────────────────────────────────────────────────
 # Same as startup_banner: NO_COLOR disables, FORCE_COLOR or TTY enables.
 
 
@@ -10158,6 +10164,9 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
     dest = Path(location) / relative_path
     _step(_LABEL, f"patching {dest.name} in {package_name}...", _dim)
     download_file(url, dest)
+
+
+# -- Main install sequence ---------------------------------------------
 
 
 # Apple's Command Line Tools shim, which pops a GUI install dialog when run without a toolchain.
