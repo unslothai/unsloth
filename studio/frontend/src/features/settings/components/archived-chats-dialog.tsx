@@ -223,7 +223,7 @@ export function ArchivedChatsView() {
             : t("settings.data.library.unarchiveAll")}
         </Button>
         <Button
-          variant="ghost"
+          variant="destructive"
           size="sm"
           className="text-destructive hover:bg-destructive/10 hover:text-destructive"
           disabled={busy || filtered.length === 0}

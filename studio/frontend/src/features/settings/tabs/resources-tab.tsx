@@ -357,7 +357,6 @@ export function ResourcesTab() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
-
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
     const ramTotal = systemInfo.memory?.total_gb ?? 0;
@@ -748,7 +747,6 @@ export function ResourcesTab() {
           description={t(
             "settings.resources.liveMonitor.detailedViewDescription",
           )}
-          className="border-t border-border/60"
         >
           <Switch
             aria-label={t("settings.resources.liveMonitor.detailedView")}

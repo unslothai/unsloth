@@ -543,7 +543,7 @@ export function BrowserTab() {
             native ? "browser.native.clearDataSettingDescription" : "browser.clearDataSettingDescription",
           )}
         >
-          <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}>
+          <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
             {t("browser.menu.clearData")}
           </Button>
         </SettingsRow>
