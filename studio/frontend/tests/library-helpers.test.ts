@@ -316,6 +316,13 @@ test("the Images tab shows by default, and for settings saved before that", () =
   assert.equal((migrateLibrarySettings({ mediaTabs: "auto" }, 1).tabs as typeof saved).videos, "auto");
 });
 
+test("the info stamp is off by default, and for settings saved before that", () => {
+  assert.equal(DEFAULT_LIBRARY_SETTINGS.imageInfoStamp, false);
+  assert.equal(migrateLibrarySettings({ imageInfoStamp: true }, 4).imageInfoStamp, false);
+  assert.equal(migrateLibrarySettings({ mediaTabs: "auto" }, 1).imageInfoStamp, false);
+  assert.equal(migrateLibrarySettings({ imageInfoStamp: true }, 5).imageInfoStamp, true);
+});
+
 test("a card's date shows on hover, on keyboard focus and always on touch", () => {
   const date = /"([^"]*)",\s*\)}\s*>\s*\{formatCardTime/.exec(readSrc("features/library/components/library-cards.tsx"))?.[1].split(" ");
   for (const reveal of [

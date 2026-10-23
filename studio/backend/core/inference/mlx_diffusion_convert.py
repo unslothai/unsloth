@@ -5,7 +5,11 @@
 
 Q4_0 / Q4_1 / Q8_0 map exactly onto MLX affine group-32 (dequant = q * scale + bias):
   Q4_0: scale d, bias -8d;  Q4_1: scale d, bias m;  Q8_0: q = qs + 128, scale d, bias -128d.
-K-quants are refused (not converted yet): their per-sub-block scale products do not round-trip exactly through MLX's 16-bit group scales, and Q6_K uses 16-element groups.
+Q5_0 / Q5_1 likewise onto 5-bit (Q5_0: bias -16d; Q5_1: bias m), the fifth bit coming from the block's qh word.
+Q4_K / Q5_K keep their codes too: each 32-wide sub-block is affine with scale d * sc and bias -dmin * m, so they land
+on MLX 4 / 5-bit group-32; only the scale product is rounded to the 16-bit scale dtype, as the d of Q4_0 already is.
+Q6_K uses 16-wide groups, which MLX does not have: its exact dequantized values are re-quantized to 8-bit group-32,
+whose step is at most a quarter of Q6_K's own. Q2_K / Q3_K (16-wide, 2-3 bits) are refused.
 """
 
 from __future__ import annotations
@@ -26,11 +30,51 @@ GROUP_SIZE = 32
 OUTPUT_FILENAME = "0.safetensors"
 MARKER_FILENAME = "unsloth_mlx_convert.json"
 
-CONVERTIBLE_TYPES = frozenset({"Q4_0", "Q4_1", "Q8_0", "BF16", "F16", "F32"})
-CONVERTIBLE_QUANT_TOKENS = frozenset({"Q4_0", "Q4_1", "Q8_0", "BF16", "F16", "F32"})
+CONVERTIBLE_TYPES = frozenset(
+    {"Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q8_0", "Q4_K", "Q5_K", "Q6_K", "BF16", "F16", "F32"}
+)
+# File-name tokens whose mixes hold only the types above (a Q4_K_M also carries Q5_K / Q6_K, a Q5_K_M Q6_K).
+CONVERTIBLE_QUANT_TOKENS = frozenset(
+    {
+        "Q4_0",
+        "Q4_1",
+        "Q5_0",
+        "Q5_1",
+        "Q8_0",
+        "Q4_K_S",
+        "Q4_K_M",
+        "Q5_K_S",
+        "Q5_K_M",
+        "Q6_K",
+        "BF16",
+        "F16",
+        "F32",
+    }
+)
+_SUPPORTED_NAMES = "Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q4_K/Q5_K/Q6_K/BF16"
 
-_BLOCK_BYTES = {"Q4_0": 18, "Q4_1": 20, "Q8_0": 34}
-_BLOCK_BITS = {"Q4_0": 4, "Q4_1": 4, "Q8_0": 8}
+_BLOCK_BYTES = {
+    "Q4_0": 18,
+    "Q4_1": 20,
+    "Q5_0": 22,
+    "Q5_1": 24,
+    "Q8_0": 34,
+    "Q4_K": 144,
+    "Q5_K": 176,
+    "Q6_K": 210,
+}
+# Bits of the MLX layer each block type becomes.
+_BLOCK_BITS = {
+    "Q4_0": 4,
+    "Q4_1": 4,
+    "Q5_0": 5,
+    "Q5_1": 5,
+    "Q8_0": 8,
+    "Q4_K": 4,
+    "Q5_K": 5,
+    "Q6_K": 8,
+}
+_QK_K = 256
 _DENSE_TYPES = frozenset({"BF16", "F16", "F32"})
 _PAD_TOKENS = ("cap_pad_token", "x_pad_token")
 _QKV_PARTS = ("to_q", "to_k", "to_v")
@@ -62,41 +106,63 @@ def quant_convertible(gguf_filename: Optional[str]) -> tuple[bool, Optional[str]
     if not gguf_filename:
         return (
             False,
-            "GGUF quant unknown (no GGUF filename); the MLX engine needs Q4_0/Q4_1/Q8_0/BF16",
+            f"GGUF quant unknown (no GGUF filename); the MLX engine needs {_SUPPORTED_NAMES}",
         )
     token = _quant_token(str(gguf_filename))
     if not token:
         return False, (
             f"GGUF quant unknown for {Path(str(gguf_filename)).name!r}; the MLX engine needs "
-            "Q4_0/Q4_1/Q8_0/BF16"
+            f"{_SUPPORTED_NAMES}"
         )
     upper = str(token).upper()
+    if upper.startswith("UD-"):
+        upper = upper[3:]
     if upper in CONVERTIBLE_QUANT_TOKENS:
         return True, None
-    return False, (f"GGUF quant {token} is not convertible to MLX yet (only Q4_0/Q4_1/Q8_0/BF16)")
+    return False, (f"GGUF quant {token} is not convertible to MLX yet (only {_SUPPORTED_NAMES})")
 
 
 # ── Block math ──────────────────────────────────────────────────────────────────────────────────
 
 
+_ROW_CHUNK = 256
+
+
 def _pack(q: np.ndarray, bits: int) -> np.ndarray:
-    """(R, C) integers in [0, 2**bits) -> (R, C * bits / 32) uint32, element i at bits*(i % per_word)."""
-    per_word = 32 // bits
+    """(R, C) integers in [0, 2**bits) -> (R, C * bits / 32) uint32: MLX's layout, a little-endian bit stream per row
+    (for 4 and 8 bits, element i at bits * (i % per_word) of word i // per_word)."""
     rows, cols = q.shape
-    if cols % per_word:
+    if (cols * bits) % 32:
         raise ValueError(f"{cols} columns do not pack into {bits}-bit words")
-    q = q.reshape(rows, cols // per_word, per_word).astype(np.uint32)
-    shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
-    return np.bitwise_or.reduce(q << shifts, axis = -1).astype(np.uint32)
+    if 32 % bits == 0:
+        per_word = 32 // bits
+        q = q.reshape(rows, cols // per_word, per_word).astype(np.uint32)
+        shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
+        return np.bitwise_or.reduce(q << shifts, axis = -1).astype(np.uint32)
+    out = np.empty((rows, cols * bits // 32), dtype = np.uint32)
+    shifts = np.arange(bits, dtype = np.uint8)
+    for start in range(0, rows, _ROW_CHUNK):
+        chunk = np.asarray(q[start : start + _ROW_CHUNK]).astype(np.uint8)
+        stream = ((chunk[..., None] >> shifts) & 1).reshape(chunk.shape[0], -1)
+        packed = np.packbits(stream, axis = -1, bitorder = "little")
+        out[start : start + _ROW_CHUNK] = np.ascontiguousarray(packed).view("<u4")
+    return out
 
 
 def _unpack(packed: np.ndarray, bits: int) -> np.ndarray:
-    per_word = 32 // bits
     rows, words = packed.shape
-    shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
-    mask = np.uint32((1 << bits) - 1)
-    q = (packed.astype(np.uint32)[..., None] >> shifts) & mask
-    return q.reshape(rows, words * per_word)
+    if 32 % bits == 0:
+        per_word = 32 // bits
+        shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
+        mask = np.uint32((1 << bits) - 1)
+        q = (packed.astype(np.uint32)[..., None] >> shifts) & mask
+        return q.reshape(rows, words * per_word)
+    stream = np.unpackbits(
+        np.ascontiguousarray(packed.astype("<u4")).view(np.uint8), axis = -1, bitorder = "little"
+    )
+    cols = words * 32 // bits
+    weights = (1 << np.arange(bits, dtype = np.uint32)).astype(np.uint32)
+    return (stream.reshape(rows, cols, bits).astype(np.uint32) * weights).sum(axis = -1)
 
 
 def _f16_field(blocks: np.ndarray, start: int) -> np.ndarray:
@@ -106,10 +172,12 @@ def _f16_field(blocks: np.ndarray, start: int) -> np.ndarray:
 def affine_from_ggml(
     kind: str, raw: np.ndarray, rows: int, cols: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-    """Q4_0 / Q4_1 / Q8_0 block bytes -> (packed uint32, scales f32, biases f32, bits), MLX affine g32."""
+    """GGUF block bytes -> (packed uint32, scales f32, biases f32, bits), MLX affine g32 (see the module docstring)."""
     kind = str(kind).upper()
     if kind not in _BLOCK_BYTES:
         raise UnsupportedGGUFError(f"{kind} blocks have no exact MLX affine mapping")
+    if kind in _KQUANT_TYPES:
+        return _affine_from_kquant(kind, raw, rows, cols)
     if cols % GROUP_SIZE:
         raise ValueError(f"{cols} columns are not a whole number of {GROUP_SIZE}-wide blocks")
     nb = cols // GROUP_SIZE
@@ -129,9 +197,66 @@ def affine_from_ggml(
         qs = blocks[..., 4:]
         q = np.concatenate([qs & 0xF, qs >> 4], axis = -1).reshape(rows, cols)
         return _pack(q, 4), d, m, 4
+    if kind in ("Q5_0", "Q5_1"):
+        d = _f16_field(blocks, 0)
+        start = 2 if kind == "Q5_0" else 4
+        qh = blocks[..., start : start + 4].copy().view("<u4")
+        qs = blocks[..., start + 4 :]
+        hi = ((qh >> np.arange(32, dtype = np.uint32)) & 1).astype(np.uint8)
+        q = np.concatenate([qs & 0xF, qs >> 4], axis = -1) | (hi << 4)
+        bias = -16.0 * d if kind == "Q5_0" else _f16_field(blocks, 2)
+        return _pack(q.reshape(rows, cols), 5), d, bias, 5
     d = _f16_field(blocks, 0)
     qs = blocks[..., 2:].copy().view(np.int8).astype(np.int16) + 128
     return _pack(qs.astype(np.uint8).reshape(rows, cols), 8), d, -128.0 * d, 8
+
+
+_KQUANT_TYPES = frozenset({"Q4_K", "Q5_K", "Q6_K"})
+
+
+def _kquant_blocks(kind: str, raw: np.ndarray, rows: int, cols: int) -> np.ndarray:
+    if cols % _QK_K:
+        raise ValueError(
+            f"{kind}: {cols} columns are not a whole number of {_QK_K}-wide super-blocks"
+        )
+    raw = np.ascontiguousarray(np.asarray(raw)).view(np.uint8).reshape(-1)
+    expected = rows * (cols // _QK_K) * _BLOCK_BYTES[kind]
+    if raw.size != expected:
+        raise ValueError(f"{kind}: {raw.size} bytes for {rows}x{cols}, expected {expected}")
+    return raw.reshape(-1, _BLOCK_BYTES[kind])
+
+
+def _affine_from_kquant(
+    kind: str, raw: np.ndarray, rows: int, cols: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Same block layout as gguf-py's dequantizers (``gguf.quants``), which the tests hold this to."""
+    blocks = _kquant_blocks(kind, raw, rows, cols)
+    n = blocks.shape[0]
+    if kind == "Q6_K":
+        from gguf.quants import Q6_K
+
+        values = Q6_K.dequantize_blocks(blocks).reshape(rows, cols)
+        packed, scales, biases = quantize_dense_affine(values, 8)
+        return packed, scales, biases, 8
+    from gguf.quants import Q4_K
+
+    d = blocks[:, 0:2].copy().view(np.float16).astype(np.float32)
+    dmin = blocks[:, 2:4].copy().view(np.float16).astype(np.float32)
+    sc, m = Q4_K.get_scale_min(blocks[:, 4:16])
+    scale = (d * sc.astype(np.float32)).reshape(rows, cols // GROUP_SIZE)
+    bias = -(dmin * m.astype(np.float32)).reshape(rows, cols // GROUP_SIZE)
+    if kind == "Q4_K":
+        qs = blocks[:, 16:]
+        q = (
+            qs.reshape(n, -1, 1, 32) >> np.array([0, 4], dtype = np.uint8).reshape(1, 1, 2, 1)
+        ) & 0x0F
+        return _pack(q.reshape(rows, cols), 4), scale, bias, 4
+    qh = blocks[:, 16:48]
+    qs = blocks[:, 48:]
+    ql = (qs.reshape(n, -1, 1, 32) >> np.array([0, 4], dtype = np.uint8).reshape(1, 1, 2, 1)) & 0x0F
+    hi = (qh.reshape(n, -1, 1, 32) >> np.arange(8, dtype = np.uint8).reshape(1, 1, 8, 1)) & 0x01
+    q = ql.reshape(n, -1, 32) | (hi.reshape(n, -1, 32) << 4)
+    return _pack(q.reshape(rows, cols), 5), scale, bias, 5
 
 
 def _f32_to_bf16_bits(a: np.ndarray) -> np.ndarray:
@@ -269,7 +394,7 @@ def _scale_store(a: np.ndarray, scale_dtype: str) -> np.ndarray:
 def _plan(reader: Any, *, dense_bits: int, scale_dtype: str) -> tuple[list[_Job], dict]:
     sdt = "F16" if scale_dtype == "f16" else "BF16"
     jobs: list[_Job] = []
-    bits_count = {4: 0, 8: 0}
+    bits_count = {4: 0, 5: 0, 8: 0}
     for tensor in reader.tensors:
         kind = _type_name(tensor)
         name = zimage_rename(str(tensor.name))
@@ -379,7 +504,7 @@ def _check_types(reader: Any) -> dict[str, int]:
         listed = ", ".join(f"{v} x {k}" for k, v in sorted(bad.items()))
         raise UnsupportedGGUFError(
             f"GGUF holds tensor types MLX conversion does not support yet: {listed} "
-            "(supported: Q4_0, Q4_1, Q8_0, BF16, F16, F32)"
+            "(supported: Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, Q6_K, BF16, F16, F32)"
         )
     return counts
 
@@ -401,6 +526,21 @@ def _header_bytes(entries: list[tuple[str, str, list[int]]], metadata: dict[str,
     blob = json.dumps(header, separators = (",", ":")).encode("utf-8")
     blob += b" " * ((-len(blob)) % 8)
     return blob
+
+
+def planned_output_bytes(
+    gguf_path: os.PathLike | str, dense_bits_options: tuple[int, ...] = (0, 8, 4)
+) -> dict[int, int]:
+    """Exact size of the converted transformer per ``dense_bits``, from the GGUF header alone (no tensor data read)."""
+    from gguf import GGUFReader
+
+    reader = GGUFReader(str(gguf_path))
+    _check_types(reader)
+    sizes: dict[int, int] = {}
+    for bits in dense_bits_options:
+        jobs, _ = _plan(reader, dense_bits = bits, scale_dtype = "bf16")
+        sizes[bits] = sum(_nbytes(dtype, shape) for job in jobs for _n, dtype, shape in job.outputs)
+    return sizes
 
 
 def convert_gguf_to_mflux(
@@ -428,8 +568,9 @@ def convert_gguf_to_mflux(
     names = [e[0] for e in entries]
     if len(set(names)) != len(names):
         raise UnsupportedGGUFError("tensor names collide after the mflux rename")
-    if bits_count[4] or bits_count[8]:
-        level = "8" if bits_count[8] > bits_count[4] else "4"
+    if any(bits_count.values()):
+        # mflux reads each layer's bits from its shapes; the level only marks the file as pre-quantized.
+        level = str(max(bits_count, key = lambda b: (bits_count[b], b)))
     else:
         level = "None"
     metadata = {

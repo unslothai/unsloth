@@ -1,0 +1,88 @@
+{
+  "recipe": {
+    "model_providers": [],
+    "mcp_providers": [],
+    "model_configs": [],
+    "seed_config": {
+      "source": {
+        "seed_type": "unstructured",
+        "path": "",
+        "chunk_size": 6000,
+        "chunk_overlap": 600
+      },
+      "sampling_strategy": "ordered",
+      "selection_strategy": null
+    },
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "expression",
+        "name": "text",
+        "drop": false,
+        "expr": "{{ chunk_text }}",
+        "dtype": "str"
+      }
+    ],
+    "processors": [
+      {
+        "processor_type": "drop_columns",
+        "name": "drop_seed_columns",
+        "column_names": [
+          "chunk_text"
+        ]
+      }
+    ]
+  },
+  "run": {
+    "rows": 10,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": 0,
+        "y": 0,
+        "width": 420,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "### Books & Documents to Training Text\nTurn your own ebooks and documents into a plain `text` dataset for continued pretraining or style tuning. No model is needed: every row is a chunk of your files.\n\n**1. Upload files in the seed block.** EPUB, MOBI, FB2, PDF, Word (.docx, .doc), Excel (.xlsx, .xls), PowerPoint (.pptx, .ppt), OpenDocument, RTF, HTML, email (.eml, .msg), TXT and Markdown are extracted by the Studio server you upload to. Images, styles and navigation pages are dropped; paragraphs and chapter order are kept. DRM-protected books cannot be read.\n\n**2. Pick a chunk size.** Chunk size and overlap count characters (about 4 per token). 6000 characters is roughly 1500 tokens; raise it toward your training context length. Chunks break at paragraph and sentence boundaries where possible.\n\n**3. Set rows and Run.** Ordered sampling walks the books from start to end. After you load the files, the seed Preview tab shows how many chunks they make in total; set rows to that number to export each chunk once (more rows start again from the first chunk).\n\nOutput columns: `text` (the chunk) and `source_file` (the original file name). Train on `text` with the dataset text field, or add an LLM column (see the PDF Document QA recipe) to turn each chunk into question and answer pairs.",
+        "note_color": "#E0F2FE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "seed",
+        "x": 500,
+        "y": 120,
+        "width": 400
+      },
+      {
+        "id": "text",
+        "x": 980,
+        "y": 120,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "seed",
+        "to": "text",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      }
+    ],
+    "layout_direction": "LR",
+    "seed_source_type": "unstructured",
+    "seed_columns": [],
+    "seed_drop_columns": [],
+    "seed_preview_rows": [],
+    "local_file_name": "",
+    "unstructured_file_name": "",
+    "unstructured_chunk_size": "6000",
+    "unstructured_chunk_overlap": "600"
+  }
+}

@@ -72,7 +72,12 @@ def _get_cache_file_path(cache_key: str) -> str:
     return os.path.join(cache_dir, f"{cache_key}.json")
 
 
-def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
+def _device_kwargs(device) -> Dict[str, Any]:
+    # device=None keeps the current-device calls (and their callers' signatures) exactly as before.
+    return {} if device is None else {"device": device}
+
+
+def load_cached_config(cache_key: str, device = None) -> Optional[Dict[str, Any]]:
     """Load cached kernel configuration from disk."""
     cache_file = _get_cache_file_path(cache_key)
     if not os.path.exists(cache_file):
@@ -83,7 +88,7 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
             cached_data = json.load(f)
 
         # Invalidate if device capability changed. JSON stores the tuple as a list, so compare as tuples.
-        current_device_capability = tuple(torch.cuda.get_device_capability())
+        current_device_capability = tuple(torch.cuda.get_device_capability(device))
         cached_device_capability = cached_data.get("device_capability")
         if not isinstance(cached_device_capability, (list, tuple)) or (
             tuple(cached_device_capability) != current_device_capability
@@ -115,13 +120,14 @@ def save_cached_config(
     config_bwd_dx: Any,
     config_bwd_dw: Any,
     metadata: Dict[str, Any] = None,
+    device = None,
 ) -> None:
     """Save kernel configuration to disk cache."""
     cache_file = _get_cache_file_path(cache_key)
 
     cache_data = {
         "timestamp": time.time(),
-        "device_capability": torch.cuda.get_device_capability(),
+        "device_capability": torch.cuda.get_device_capability(device),
         "schema_version": _CACHE_SCHEMA_VERSION,
         "triton_version": getattr(triton, "__version__", None),
         "config_fwd": config_fwd.__dict__ if hasattr(config_fwd, "__dict__") else str(config_fwd),
@@ -154,7 +160,7 @@ def get_or_autotune_moe_kernels(
     force_autotune: bool = False,
     seq_len: int = 8192,
     weight_dtype: Optional[torch.dtype] = None,
-    device: Optional[Any] = None,
+    device = None,
 ) -> Tuple[Any, Any, Any]:
     """
     Get cached kernel configurations or run auto-tuning.
@@ -168,43 +174,133 @@ def get_or_autotune_moe_kernels(
         weight_dtype: Data type of the expert weights, if different from dtype
         force_autotune: Force re-running autotuning even if cache exists
         seq_len: Sequence length to use for tuning benchmarks
-        device: Card the experts run on. The cache key, the tuning run and the shared-memory fit
-            follow it, so a device_map layer on another GPU model never takes the current card's
-            tiles. None keeps the current device.
+        device: The operands' CUDA device (default: current). On a mixed-GPU host the configs
+            must fit the card the kernels launch on, so capability, shared memory, the cache key
+            (which also carries the GPU model) and tuning all follow it. A non-CUDA device keeps
+            the current device.
 
     Returns:
         Tuple of (config_fwd, config_bwd_dx, config_bwd_dw)
     """
-    device = _operand_cuda_index(device)
-    if device is not None and device != torch.cuda.current_device():
-        with torch.cuda.device(device):
-            return _get_or_autotune_moe_kernels(
-                num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len,
-                weight_dtype,
-            )  # fmt: skip
-    return _get_or_autotune_moe_kernels(
+    device = _operand_cuda_device(device)
+    device_capability = torch.cuda.get_device_capability(device)
+    dev_kw = _device_kwargs(device)
+    device_model = _device_model(
+        torch.cuda.current_device() if device is None else _cuda_index(device)
+    )
+    key_args = (
         num_experts,
         hidden_dim,
         intermediate_dim,
         top_k,
         dtype,
-        force_autotune,
+        device_capability,
         seq_len,
         weight_dtype,
     )
+    cache_key = _get_cache_key(*key_args, device_model = device_model)
 
+    # Env override to disable autotuning
+    if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
+        logger.info(
+            f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
+        )
+        return _get_heuristic_configs(
+            n_dim = 2 * intermediate_dim,
+            k_dim = hidden_dim,
+            dtype = dtype,
+            weight_dtype = weight_dtype,
+            **dev_kw,
+        )
+    if not force_autotune and cache_key in _kernel_config_cache:
+        logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
+        return _kernel_config_cache[cache_key]
 
-def _operand_cuda_index(device) -> Optional[int]:
-    """CUDA index of ``device`` (a torch.device, str or int), or None when it is not a CUDA card."""
-    if device is None:
-        return None
+    if not force_autotune:
+        cached_data = load_cached_config(cache_key, **dev_kw)
+        if cached_data is None and device_model is not None and _all_cards_match(device_model):
+            # Entries written before the key carried the GPU model; on a single-model host they are this card's.
+            cached_data = load_cached_config(_get_cache_key(*key_args), **dev_kw)
+        if cached_data is not None:
+            try:
+                from .grouped_gemm.kernels.tuning import (
+                    KernelConfigForward,
+                    KernelConfigBackward_dX,
+                    KernelConfigBackward_dW,
+                )
+
+                config_fwd = KernelConfigForward(**cached_data["config_fwd"])
+                config_bwd_dx = KernelConfigBackward_dX(**cached_data["config_bwd_dx"])
+                config_bwd_dw = KernelConfigBackward_dW(**cached_data["config_bwd_dw"])
+
+                # A disk entry may predate a kernel change: refit to dims and SMEM.
+                configs = _fit_configs_to_dims(
+                    (config_fwd, config_bwd_dx, config_bwd_dw), 2 * intermediate_dim, hidden_dim
+                )
+                configs = _fit_configs_to_smem(configs, dtype, weight_dtype, **dev_kw)
+                _kernel_config_cache[cache_key] = configs
+                return configs
+            except Exception as e:
+                logger.warning(f"Failed to reconstruct cached configs: {e}")
+
+    if cache_key in _autotune_completed and not force_autotune:
+        logger.info(f"Autotuning already completed for: {cache_key}")
+        return _kernel_config_cache[cache_key]
+
+    logger.info(f"Running MoE kernel auto-tuning for: {cache_key}")
+    logger.info(
+        f"Configuration: {num_experts} experts, {hidden_dim} hidden, {intermediate_dim} intermediate, top_k={top_k}"
+    )
+
     try:
-        device = torch.device("cuda", device) if isinstance(device, int) else torch.device(device)
+        configs = _run_moe_autotuning(
+            num_experts, hidden_dim, intermediate_dim, top_k, dtype, seq_len, weight_dtype, **dev_kw
+        )
+
+        _kernel_config_cache[cache_key] = configs
+        _autotune_completed[cache_key] = True
+
+        config_fwd, config_bwd_dx, config_bwd_dw = configs
+        save_cached_config(
+            cache_key,
+            config_fwd,
+            config_bwd_dx,
+            config_bwd_dw,
+            {
+                "num_experts": num_experts,
+                "hidden_dim": hidden_dim,
+                "intermediate_dim": intermediate_dim,
+            },
+            **dev_kw,
+        )
+
+        logger.info(f"MoE kernel auto-tuning completed: {cache_key}")
+        return configs
+
+    except Exception as e:
+        logger.error(f"MoE kernel auto-tuning failed: {e}")
+        if "AttributeError" in str(e) and "_experimental_make_tensor_descriptor" in str(e):
+            logger.warning(
+                "Unsloth: Your Triton version might be incompatible with TMA features. Falling back to default configs."
+            )
+        logger.info("Falling back to default kernel configurations")
+        return _get_default_configs(
+            n_dim = 2 * intermediate_dim,
+            k_dim = hidden_dim,
+            dtype = dtype,
+            weight_dtype = weight_dtype,
+            **dev_kw,
+        )
+
+
+def _operand_cuda_device(device):
+    """``device`` when it names a CUDA card (torch.device, str or int), else None (current device)."""
+    if device is None or isinstance(device, int):
+        return device
+    try:
+        return device if torch.device(device).type == "cuda" else None
     except (TypeError, RuntimeError):
         return None
-    if device.type != "cuda" or device.index is None:
-        return None
-    return device.index
 
 
 _DEVICE_MODELS: Dict[int, Optional[Tuple[Any, ...]]] = {}
@@ -237,107 +333,6 @@ def _all_cards_match(model) -> bool:
     return all(_device_model(i) == model for i in range(count))
 
 
-def _get_or_autotune_moe_kernels(
-    num_experts, hidden_dim, intermediate_dim, top_k, dtype, force_autotune, seq_len, weight_dtype
-):
-    device_capability = torch.cuda.get_device_capability()
-    device_model = _device_model(torch.cuda.current_device())
-    key_args = (
-        num_experts,
-        hidden_dim,
-        intermediate_dim,
-        top_k,
-        dtype,
-        device_capability,
-        seq_len,
-        weight_dtype,
-    )
-    cache_key = _get_cache_key(*key_args, device_model = device_model)
-
-    # Env override to disable autotuning
-    if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
-        logger.info(
-            f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
-        )
-        return _get_heuristic_configs(
-            n_dim = 2 * intermediate_dim, k_dim = hidden_dim, dtype = dtype, weight_dtype = weight_dtype
-        )
-    if not force_autotune and cache_key in _kernel_config_cache:
-        logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
-        return _kernel_config_cache[cache_key]
-
-    if not force_autotune:
-        cached_data = load_cached_config(cache_key)
-        if cached_data is None and device_model is not None and _all_cards_match(device_model):
-            # Entries written before the key carried the GPU model; on a single-model host they are this card's.
-            cached_data = load_cached_config(_get_cache_key(*key_args))
-        if cached_data is not None:
-            try:
-                from .grouped_gemm.kernels.tuning import (
-                    KernelConfigForward,
-                    KernelConfigBackward_dX,
-                    KernelConfigBackward_dW,
-                )
-
-                config_fwd = KernelConfigForward(**cached_data["config_fwd"])
-                config_bwd_dx = KernelConfigBackward_dX(**cached_data["config_bwd_dx"])
-                config_bwd_dw = KernelConfigBackward_dW(**cached_data["config_bwd_dw"])
-
-                # A disk entry may predate a kernel change: refit to dims and SMEM.
-                configs = _fit_configs_to_dims(
-                    (config_fwd, config_bwd_dx, config_bwd_dw), 2 * intermediate_dim, hidden_dim
-                )
-                configs = _fit_configs_to_smem(configs, dtype, weight_dtype)
-                _kernel_config_cache[cache_key] = configs
-                return configs
-            except Exception as e:
-                logger.warning(f"Failed to reconstruct cached configs: {e}")
-
-    if cache_key in _autotune_completed and not force_autotune:
-        logger.info(f"Autotuning already completed for: {cache_key}")
-        return _kernel_config_cache[cache_key]
-
-    logger.info(f"Running MoE kernel auto-tuning for: {cache_key}")
-    logger.info(
-        f"Configuration: {num_experts} experts, {hidden_dim} hidden, {intermediate_dim} intermediate, top_k={top_k}"
-    )
-
-    try:
-        configs = _run_moe_autotuning(
-            num_experts, hidden_dim, intermediate_dim, top_k, dtype, seq_len, weight_dtype
-        )
-
-        _kernel_config_cache[cache_key] = configs
-        _autotune_completed[cache_key] = True
-
-        config_fwd, config_bwd_dx, config_bwd_dw = configs
-        save_cached_config(
-            cache_key,
-            config_fwd,
-            config_bwd_dx,
-            config_bwd_dw,
-            {
-                "num_experts": num_experts,
-                "hidden_dim": hidden_dim,
-                "intermediate_dim": intermediate_dim,
-            },
-        )
-
-        logger.info(f"MoE kernel auto-tuning completed: {cache_key}")
-        return configs
-
-    except Exception as e:
-        logger.error(f"MoE kernel auto-tuning failed: {e}")
-        if "AttributeError" in str(e) and "_experimental_make_tensor_descriptor" in str(e):
-            logger.warning(
-                "Unsloth: Your Triton version might be incompatible with TMA features. Falling back to default configs."
-            )
-        logger.info("Falling back to default kernel configurations")
-        return _get_default_configs(
-            n_dim = 2 * intermediate_dim, k_dim = hidden_dim, dtype = dtype, weight_dtype = weight_dtype
-        )
-
-
 def _run_moe_autotuning(
     num_experts: int,
     hidden_dim: int,
@@ -346,10 +341,29 @@ def _run_moe_autotuning(
     dtype: torch.dtype,
     seq_len: int,
     weight_dtype: Optional[torch.dtype] = None,
+    device = None,
 ) -> Tuple[Any, Any, Any]:
-    """Run the actual auto-tuning for MoE kernels."""
+    """Run the actual auto-tuning for MoE kernels on `device` (default: current)."""
+    if device is None:
+        return _run_moe_autotuning_on(
+            "cuda", num_experts, hidden_dim, intermediate_dim, top_k, dtype, weight_dtype
+        )
+    # Tune on the operands' card: the tensors and the benchmarks both belong there.
+    with torch.cuda.device(device):
+        return _run_moe_autotuning_on(
+            device, num_experts, hidden_dim, intermediate_dim, top_k, dtype, weight_dtype
+        )
 
-    device = "cuda"
+
+def _run_moe_autotuning_on(
+    device,
+    num_experts: int,
+    hidden_dim: int,
+    intermediate_dim: int,
+    top_k: int,
+    dtype: torch.dtype,
+    weight_dtype: Optional[torch.dtype] = None,
+) -> Tuple[Any, Any, Any]:
     # Fixed token count avoids OOMs and a seq_len dependency, so the passed seq_len is ignored.
     num_tokens = 4096
     total_tokens = num_tokens * top_k
@@ -517,10 +531,10 @@ def _fit_configs_to_dims(
     return configs
 
 
-def _device_smem_per_block() -> Optional[int]:
-    # Read per current device: get_or_autotune_moe_kernels makes the experts' card current.
+def _device_smem_per_block(device = None) -> Optional[int]:
+    # Read per launching card: the operands' device, else the current device.
     try:
-        index = torch.cuda.current_device()
+        index = torch.cuda.current_device() if device is None else _cuda_index(device)
     except Exception:
         return None
     try:
@@ -532,6 +546,13 @@ def _device_smem_per_block() -> Optional[int]:
             )
         except Exception:
             return None
+
+
+def _cuda_index(device) -> int:
+    if isinstance(device, int):
+        return device
+    device = torch.device(device)
+    return torch.cuda.current_device() if device.index is None else device.index
 
 
 def _itemsize(dtype: Optional[torch.dtype], default: int = 2) -> int:
@@ -622,14 +643,15 @@ def _fit_configs_to_smem(
     configs: Tuple[Any, Any, Any],
     dtype: Optional[torch.dtype] = None,
     weight_dtype: Optional[torch.dtype] = None,
+    device = None,
 ) -> Tuple[Any, Any, Any]:
     try:
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
             return configs
-        capability = tuple(torch.cuda.get_device_capability())
+        capability = tuple(torch.cuda.get_device_capability(device))
     except Exception:
         return configs
-    smem = _device_smem_per_block()
+    smem = _device_smem_per_block(**_device_kwargs(device))
     if smem is None:
         return configs
     act_bytes = _itemsize(dtype)
@@ -644,6 +666,7 @@ def _get_heuristic_configs(
     k_dim: Optional[int] = None,
     dtype: Optional[torch.dtype] = None,
     weight_dtype: Optional[torch.dtype] = None,
+    device = None,
 ) -> Tuple[Any, Any, Any]:
     """
     Get 'Safe Heuristic' kernel configurations.
@@ -696,7 +719,7 @@ def _get_heuristic_configs(
     )
 
     configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
-    return _fit_configs_to_smem(configs, dtype, weight_dtype)
+    return _fit_configs_to_smem(configs, dtype, weight_dtype, **_device_kwargs(device))
 
 
 def _get_default_configs(
@@ -704,6 +727,7 @@ def _get_default_configs(
     k_dim: Optional[int] = None,
     dtype: Optional[torch.dtype] = None,
     weight_dtype: Optional[torch.dtype] = None,
+    device = None,
 ) -> Tuple[Any, Any, Any]:
     """Get default kernel configurations as fallback."""
     from .grouped_gemm.kernels.tuning import (
@@ -748,7 +772,7 @@ def _get_default_configs(
     )
 
     configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
-    return _fit_configs_to_smem(configs, dtype, weight_dtype)
+    return _fit_configs_to_smem(configs, dtype, weight_dtype, **_device_kwargs(device))
 
 
 def clear_cache() -> None:

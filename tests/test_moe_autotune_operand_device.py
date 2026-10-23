@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""On a device_map split across GPU models, the MoE autotune lookup read the current device:
-a layer on another card took tiles keyed, tuned and SMEM-fitted for the current card (and #14578
-persists them across processes). With ``device=`` the key, the tuning run and the SMEM fit follow
-the experts' card; ``device=None`` and the current card keep today's path."""
+"""MoE kernel configs follow the operands' GPU, not the current one (H100 + L4 in one process).
 
-import contextlib
+The launcher enters X.device, so configs picked from the current card's capability, shared memory
+or disk cache entry could exceed the operand card's limit. The cache key also carries the GPU model
+(name, capability, SM count), so two models sharing a capability (L40S + RTX 4090) tune separately,
+while a pre-model-key disk entry still loads on a single-model host. CPU only: device properties
+are mocked."""
+
 import importlib
 import json
 import sys
@@ -22,10 +24,13 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
 MOE_DIR = ROOT / "unsloth" / "kernels" / "moe"
-CAPS = {0: (9, 0), 1: (8, 0)}
-SMEM = {0: 232448, 1: 101376}
-NAMES = {0: "NVIDIA H100", 1: "NVIDIA A100"}
-SMS = {0: 132, 1: 108}
+
+# index -> (capability, shared_memory_per_block_optin[, name, SM count])
+H100, L4 = ((9, 0), 232448, "NVIDIA H100", 132), ((8, 9), 101376, "NVIDIA L4", 58)
+F32, BF16, F16 = torch.float32, torch.bfloat16, torch.float16
+DTYPES = [(BF16, None), (F16, None), (F32, BF16), (F32, F16)]
+SHAPES = [(2048, 768), (2048, 1408), (1024, 352), (768, 2048)]
+KINDS = ("fwd", "dX", "dW")
 
 
 @pytest.fixture
@@ -42,132 +47,272 @@ def ac(monkeypatch, tmp_path):
         if name.startswith("unsloth.kernels.moe."):
             monkeypatch.delitem(sys.modules, name)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.delenv("UNSLOTH_MOE_DISABLE_AUTOTUNE", raising = False)
-    current = {"index": 0}
-
-    @contextlib.contextmanager
-    def device(index):
-        previous, current["index"] = current["index"], index
-        try:
-            yield
-        finally:
-            current["index"] = previous
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: current["index"])
-    monkeypatch.setattr(torch.cuda, "device", device)
-    monkeypatch.setattr(
-        torch.cuda,
-        "get_device_capability",
-        lambda index = None: CAPS[current["index"] if index is None else index],
-    )
-    property_reads = []
-
-    def properties(index):
-        property_reads.append(index)
-        major, minor = CAPS[index]
-        return types.SimpleNamespace(
-            name = NAMES[index], major = major, minor = minor, multi_processor_count = SMS[index]
-        )
-
-    monkeypatch.setattr(torch.cuda, "get_device_properties", properties)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: len(CAPS))
     module = importlib.import_module("unsloth.kernels.moe.autotune_cache")
-    monkeypatch.setattr(module, "_device_smem_per_block", lambda: SMEM[current["index"]])
-    seen = []
-
-    def fake_tuning(*args, **kwargs):
-        seen.append((current["index"], torch.cuda.get_device_capability()))
-        return module._get_default_configs(n_dim = 2 * 768, k_dim = 2048, dtype = torch.bfloat16)
-
-    monkeypatch.setattr(module, "_run_moe_autotuning", fake_tuning)
-    monkeypatch.setattr(module, "save_cached_config", lambda *a, **k: None)
     module.clear_cache()
-    module.property_reads = property_reads
-    yield module, seen
-    module.clear_cache()
+    yield module
     for name in list(sys.modules):
         if name.startswith("unsloth.kernels.moe."):
             sys.modules.pop(name, None)
 
 
-DIMS = dict(num_experts = 128, hidden_dim = 2048, intermediate_dim = 768, top_k = 8, dtype = torch.bfloat16)
+def _gpus(
+    monkeypatch,
+    cards,
+    current = 0,
+):
+    def index(device = None):
+        if device is None:
+            return current
+        if isinstance(device, int):
+            return device
+        device = torch.device(device)
+        return current if device.index is None else device.index
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: len(cards))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda d = None: cards[index(d)][0])
+    reads = []
+
+    def properties(d = None):
+        card = cards[index(d)]
+        reads.append(index(d))
+        return types.SimpleNamespace(
+            shared_memory_per_block_optin = card[1],
+            name = card[2] if len(card) > 2 else f"GPU sm{card[0][0]}{card[0][1]}",
+            major = card[0][0],
+            minor = card[0][1],
+            multi_processor_count = card[3] if len(card) > 3 else 80,
+        )
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", properties)
+    return reads
 
 
-def test_a_layer_on_another_card_tunes_and_keys_for_that_card(ac):
-    module, seen = ac
-    module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
-    assert seen == [(1, (8, 0))]
-    # The current card's model is a different key, so it tunes for itself.
-    module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
-    assert seen == [(1, (8, 0)), (0, (9, 0))]
-    assert torch.cuda.current_device() == 0
+def _key(ac, card, index):
+    # The key get_or_autotune_moe_kernels writes for 8 x 2048 x 768 top-2 bf16 on card ``index``.
+    return ac._get_cache_key(
+        8, 2048, 768, 2, BF16, card[0], 8192, None, device_model = ac._device_model(index)
+    )
 
 
-def test_no_device_or_the_current_card_keeps_the_current_path(ac):
-    module, seen = ac
-    first = module.get_or_autotune_moe_kernels(**DIMS)
-    second = module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
-    assert seen == [(0, (9, 0))] and first is second
+def _smem(ac, configs, act, weight, card):
+    a, w = act.itemsize, (weight or act).itemsize
+    return [ac._estimate_smem(k, c, a, w, card[0]) for k, c in zip(KINDS, configs)]
 
 
-def test_cpu_or_unindexed_devices_keep_the_current_path(ac):
-    module, seen = ac
-    module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cpu"))
-    module.get_or_autotune_moe_kernels(**DIMS, device = "cuda")
-    assert seen == [(0, (9, 0))]
+def _dicts(configs):
+    return [c.__dict__.copy() for c in configs]
 
 
-def _same_capability(monkeypatch, names, sms):
-    monkeypatch.setitem(CAPS, 0, (8, 9))
-    monkeypatch.setitem(CAPS, 1, (8, 9))
-    monkeypatch.setitem(SMEM, 1, SMEM[0])
-    monkeypatch.setitem(NAMES, 0, names[0])
-    monkeypatch.setitem(NAMES, 1, names[1])
-    monkeypatch.setitem(SMS, 0, sms[0])
-    monkeypatch.setitem(SMS, 1, sms[1])
+@pytest.mark.parametrize("which", ["heuristic", "default"])
+@pytest.mark.parametrize("act,weight", DTYPES)
+@pytest.mark.parametrize("hidden,inter", SHAPES)
+def test_fallback_configs_fit_the_operand_card(ac, monkeypatch, which, act, weight, hidden, inter):
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    fn = ac._get_heuristic_configs if which == "heuristic" else ac._get_default_configs
+    for n, k in ((2 * inter, hidden), (hidden, inter)):
+        configs = fn(
+            n_dim = n, k_dim = k, dtype = act, weight_dtype = weight, device = torch.device("cuda", 1)
+        )
+        assert max(_smem(ac, configs, act, weight, L4)) <= L4[1]
+
+
+def test_heuristic_env_path_uses_the_operand_card(ac, monkeypatch):
+    # Current H100, operand L4: the H100 fit left the bf16 heuristic dX at 122,880 B (> 101,376 B).
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    monkeypatch.setenv("UNSLOTH_MOE_DISABLE_AUTOTUNE", "1")
+    dims = dict(num_experts = 8, hidden_dim = 2048, intermediate_dim = 768, top_k = 2)
+    for act, weight in ((BF16, None), (F32, BF16)):
+        configs = ac.get_or_autotune_moe_kernels(
+            dtype = act, weight_dtype = weight, device = torch.device("cuda", 1), **dims
+        )
+        assert max(_smem(ac, configs, act, weight, L4)) <= L4[1]
+
+
+def _big_configs():
+    from unsloth.kernels.moe.grouped_gemm.kernels.tuning import (
+        KernelConfigBackward_dW,
+        KernelConfigBackward_dX,
+        KernelConfigForward,
+    )
+    return (
+        KernelConfigForward(
+            BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 128, BLOCK_SIZE_K = 128, num_warps = 8, num_stages = 3
+        ),
+        KernelConfigBackward_dX(
+            BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 64, BLOCK_SIZE_K = 256, num_warps = 8, num_stages = 4
+        ),
+        KernelConfigBackward_dW(
+            BLOCK_SIZE_M = 128, BLOCK_SIZE_N = 256, BLOCK_SIZE_K = 256, num_warps = 8, num_stages = 4
+        ),
+    )
+
+
+def test_cache_lookup_and_tuning_follow_the_operand_card(ac, monkeypatch):
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    dims = dict(num_experts = 8, hidden_dim = 2048, intermediate_dim = 768, top_k = 2)
+    h100_key = ac._get_cache_key(8, 2048, 768, 2, BF16, H100[0], 8192, None)
+    ac.save_cached_config(h100_key, *_big_configs())
+
+    tuned_on = []
+
+    def tune(
+        *args,
+        device = None,
+        **kwargs,
+    ):
+        tuned_on.append(device)
+        return ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048, dtype = BF16, device = device)
+
+    monkeypatch.setattr(ac, "_run_moe_autotuning", tune)
+    operand = torch.device("cuda", 1)
+    configs = ac.get_or_autotune_moe_kernels(dtype = BF16, device = operand, **dims)
+    # The H100 entry is not reused for the L4 operand; tuning runs on (and is saved for) the L4.
+    assert tuned_on == [operand]
+    assert max(_smem(ac, configs, BF16, None, L4)) <= L4[1]
+    l4_key = _key(ac, L4, 1)
+    saved = json.loads(Path(ac._get_cache_file_path(l4_key)).read_text())
+    assert tuple(saved["device_capability"]) == L4[0]
+    # Both entries survive: the capability check reads the operand card, not the current one.
+    assert ac.load_cached_config(l4_key, device = operand) is not None
+    assert ac.load_cached_config(h100_key, device = torch.device("cuda", 0)) is not None
+
+
+def test_disk_hit_refits_to_the_operand_card(ac, monkeypatch):
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    operand = torch.device("cuda", 1)
+    l4_key = _key(ac, L4, 1)
+    ac.save_cached_config(l4_key, *_big_configs(), device = operand)
+    monkeypatch.setattr(ac, "_run_moe_autotuning", lambda *a, **k: pytest.fail("cache miss"))
+    configs = ac.get_or_autotune_moe_kernels(
+        num_experts = 8, hidden_dim = 2048, intermediate_dim = 768, top_k = 2, dtype = BF16, device = operand
+    )
+    assert max(_smem(ac, configs, BF16, None, L4)) <= L4[1]
+
+
+def test_smem_limit_reads_the_operand_index(ac, monkeypatch):
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    assert ac._device_smem_per_block() == H100[1]
+    assert ac._device_smem_per_block(torch.device("cuda", 1)) == L4[1]
+    assert ac._device_smem_per_block(1) == L4[1]
+    assert ac._device_smem_per_block(torch.device("cuda")) == H100[1]
+
+
+@pytest.mark.parametrize("card", [((7, 5), 65536), L4, ((8, 0), 166912), H100, ((12, 0), 101376)])
+def test_single_gpu_configs_unchanged(ac, monkeypatch, card):
+    # One card: passing its device must pick exactly what the device-less call picked.
+    _gpus(monkeypatch, [card], current = 0)
+    for fn in (ac._get_heuristic_configs, ac._get_default_configs):
+        for act, weight in DTYPES:
+            for hidden, inter in SHAPES:
+                kw = dict(n_dim = 2 * inter, k_dim = hidden, dtype = act, weight_dtype = weight)
+                base = _dicts(fn(**kw))
+                assert _dicts(fn(device = torch.device("cuda", 0), **kw)) == base
+                assert _dicts(fn(device = torch.device("cuda"), **kw)) == base
+                assert _dicts(fn(device = 0, **kw)) == base
+
+
+DIMS = dict(num_experts = 8, hidden_dim = 2048, intermediate_dim = 768, top_k = 2, dtype = BF16)
+
+
+def _record_tuning(ac, monkeypatch):
+    seen = []
+
+    def tune(
+        *args,
+        device = None,
+        **kwargs,
+    ):
+        seen.append(None if device is None else ac._cuda_index(device))
+        return ac._get_heuristic_configs(n_dim = 1536, k_dim = 2048, dtype = BF16, device = device)
+
+    monkeypatch.setattr(ac, "_run_moe_autotuning", tune)
+    monkeypatch.setattr(ac, "save_cached_config", lambda *a, **k: None)
+    return seen
+
+
+def test_each_card_tunes_and_keys_for_itself(ac, monkeypatch):
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    seen = _record_tuning(ac, monkeypatch)
+    ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
+    ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
+    assert seen == [1, 0]
+
+
+def test_no_device_or_the_current_card_shares_the_current_entry(ac, monkeypatch):
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    seen = _record_tuning(ac, monkeypatch)
+    first = ac.get_or_autotune_moe_kernels(**DIMS)
+    second = ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
+    assert seen == [None] and first is second
+
+
+def test_cpu_or_unindexed_devices_keep_the_current_path(ac, monkeypatch):
+    _gpus(monkeypatch, [H100, L4], current = 0)
+    seen = _record_tuning(ac, monkeypatch)
+    first = ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cpu"))
+    assert ac.get_or_autotune_moe_kernels(**DIMS, device = "cuda") is first
+    assert seen == [None]
+
+
+L40S = ((8, 9), 101376, "NVIDIA L40S", 142)
+RTX_4090 = ((8, 9), 101376, "NVIDIA GeForce RTX 4090", 128)
 
 
 def test_two_models_with_one_capability_tune_separately(ac, monkeypatch):
-    module, seen = ac
-    _same_capability(monkeypatch, ("NVIDIA L40S", "NVIDIA GeForce RTX 4090"), (142, 128))
-    module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
-    module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
-    assert seen == [(0, (8, 9)), (1, (8, 9))]
+    _gpus(monkeypatch, [L40S, RTX_4090], current = 0)
+    seen = _record_tuning(ac, monkeypatch)
+    ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
+    ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
+    assert seen == [0, 1]
 
 
 def test_identical_cards_share_one_entry_without_repeated_property_reads(ac, monkeypatch):
-    module, seen = ac
-    _same_capability(monkeypatch, ("NVIDIA L40S", "NVIDIA L40S"), (142, 142))
-    first = module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
-    second = module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
-    assert seen == [(0, (8, 9))] and first is second
-    reads = list(module.property_reads)
+    reads = _gpus(monkeypatch, [L40S, L40S], current = 0)
+    seen = _record_tuning(ac, monkeypatch)
+    first = ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 0))
+    second = ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
+    assert seen == [0] and first is second
+    before = list(reads)
     for index in (0, 1, 0, 1):
-        module.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", index))
-    assert module.property_reads == reads and seen == [(0, (8, 9))]
+        ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", index))
+    assert reads == before and seen == [0]
 
 
-def test_a_disk_entry_from_before_the_model_key_still_loads_on_a_single_model_host(ac, monkeypatch):
-    module, seen = ac
-    _same_capability(monkeypatch, ("NVIDIA L40S", "NVIDIA L40S"), (142, 142))
-    fwd, dx, dw = module._get_default_configs(n_dim = 2 * 768, k_dim = 2048, dtype = torch.bfloat16)
-    legacy = module._get_cache_key(
-        DIMS["num_experts"], DIMS["hidden_dim"], DIMS["intermediate_dim"], DIMS["top_k"], DIMS["dtype"], (8, 9)
-    )
-    with open(module._get_cache_file_path(legacy), "w", encoding = "utf-8") as f:
-        json.dump(
+def _write_legacy_entry(ac, card):
+    fwd, dx, dw = ac._get_default_configs(n_dim = 1536, k_dim = 2048, dtype = BF16)
+    legacy = ac._get_cache_key(8, 2048, 768, 2, BF16, card[0], 8192, None)
+    Path(ac._get_cache_file_path(legacy)).write_text(
+        json.dumps(
             {
                 "timestamp": time.time(),
-                "device_capability": [8, 9],
-                "schema_version": module._CACHE_SCHEMA_VERSION,
-                "triton_version": getattr(module.triton, "__version__", None),
+                "device_capability": list(card[0]),
+                "schema_version": ac._CACHE_SCHEMA_VERSION,
+                "triton_version": getattr(ac.triton, "__version__", None),
                 "config_fwd": fwd.__dict__,
                 "config_bwd_dx": dx.__dict__,
                 "config_bwd_dw": dw.__dict__,
-            },
-            f,
-        )
-    module.get_or_autotune_moe_kernels(**DIMS)
+            }
+        ),
+        encoding = "utf-8",
+    )
+
+
+def test_a_disk_entry_from_before_the_model_key_still_loads_on_a_single_model_host(ac, monkeypatch):
+    _gpus(monkeypatch, [L40S, L40S], current = 0)
+    seen = _record_tuning(ac, monkeypatch)
+    _write_legacy_entry(ac, L40S)
+    ac.get_or_autotune_moe_kernels(**DIMS)
+    ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
     assert seen == []
+
+
+def test_a_pre_model_key_entry_is_not_trusted_on_a_mixed_model_host(ac, monkeypatch):
+    # Same capability, different models: the old key cannot say which card wrote it.
+    _gpus(monkeypatch, [L40S, RTX_4090], current = 0)
+    seen = _record_tuning(ac, monkeypatch)
+    _write_legacy_entry(ac, L40S)
+    ac.get_or_autotune_moe_kernels(**DIMS, device = torch.device("cuda", 1))
+    assert seen == [1]
