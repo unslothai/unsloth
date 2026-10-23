@@ -124,48 +124,39 @@ def install_frame_pad_fix(
     return patched
 
 
-# Fraction of the device's recommended working set above which a decode starts synchronising.
-DECODE_SYNC_FRACTION = 0.85
-
-
-def install_decoder_sync(
+def install_vae_sync(
     pipe: Any,
     target: DiffusionDeviceTarget,
     *,
     logger: Any = None,
 ) -> bool:
-    """Syncs a Metal video VAE decode when memory runs low; buffers are held until their work completes."""
+    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
+
+    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
+    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
+    """
     if target.device != "mps":
         return False
-    decoder = getattr(getattr(pipe, "vae", None), "decoder", None)
-    if not callable(getattr(decoder, "register_forward_hook", None)):
+    vae = getattr(pipe, "vae", None)
+    modules = [
+        module
+        for module in (getattr(vae, "decoder", None), getattr(vae, "encoder", None))
+        if callable(getattr(module, "register_forward_hook", None))
+    ]
+    if not modules:
         return False
     import torch
 
-    budget: Optional[float] = None
-    try:
-        budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
-    except Exception as exc:  # noqa: BLE001 -- torch < 2.5 has no such reading
-        if logger is not None:
-            logger.info(
-                "video.decoder_sync: no memory reading (%s); synchronising every decode", exc
-            )
-
     def _sync(_module, _args, _output) -> None:
-        if budget is not None:
-            try:
-                if torch.mps.driver_allocated_memory() < budget:
-                    return
-            except Exception:  # noqa: BLE001 -- an unreadable gauge syncs, the safe side
-                pass
         try:
             torch.mps.synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
-    decoder.register_forward_hook(_sync)
-    if logger is not None and budget is not None:
-        logger.info("video.decoder_sync: decode synchronises above %.1f GiB", budget / 1024**3)
+    for module in modules:
+        module.register_forward_hook(_sync)
+    if logger is not None:
+        logger.info("diffusion.vae_sync: VAE synchronises after every decoder / encoder call")
     return True
 
 

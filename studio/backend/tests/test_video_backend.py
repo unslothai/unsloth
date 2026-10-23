@@ -1789,16 +1789,15 @@ def _fits_in_memory_snapshot(device):
 
 
 @pytest.mark.parametrize("device,hooked", [("mps", 1), ("cuda", 0)])
-def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
-    fake_runtime, monkeypatch, device, hooked
-):
+def test_load_installs_the_vae_sync_on_mps(fake_runtime, monkeypatch, device, hooked):
     # Tiling alone does not bound a Wan decode on MPS; the load must arm the sync.
     torch = sys.modules["torch"]
+    syncs = []
     monkeypatch.setattr(
         torch,
         device,
         types.SimpleNamespace(
-            synchronize = lambda: None,
+            synchronize = lambda: syncs.append(1),
             recommended_max_memory = lambda: 64 * 1024**3,
             driver_allocated_memory = lambda: 0,
         ),
@@ -1824,7 +1823,11 @@ def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
     )
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
-    assert len(backend._state.pipe.vae.decoder.hooks) == hooked
+    hooks = backend._state.pipe.vae.decoder.hooks
+    assert len(hooks) == hooked
+    for hook in hooks:
+        hook(None, (), None)
+    assert len(syncs) == hooked
 
 
 def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):
