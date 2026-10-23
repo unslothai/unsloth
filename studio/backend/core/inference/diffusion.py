@@ -218,9 +218,13 @@ from .diffusion_memory import (
     with_label_part,
     applied_plan,
     release_resident_groups,
+    release_for_decode,
     resident_group_mib,
     hook_resident_denoiser,
     measured_request_extra_mib,
+    DECODE_LEND_ATTR,
+    decode_lend_from_plan,
+    with_workflow,
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _torchao_stream_pinnable,
@@ -2525,6 +2529,9 @@ def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
         return False
     try:
         pipe._unsloth_measured_reserve = None
+        setattr(
+            pipe, DECODE_LEND_ATTR, None
+        )  # the lent encoder residency was priced on the same one-card plan
     except Exception:  # noqa: BLE001
         return False
     return True
@@ -2919,13 +2926,22 @@ def _record_peak_probe(
     height: Optional[int],
     batch_size: int,
     target: Any = None,
+    workflow: Optional[str] = None,
 ) -> None:
-    """Persist a completed render's peak above its starting allocation under the load's peak identity."""
+    """Persist a completed render's peak above its starting allocation under the load's peak identity, keyed for
+    ``workflow`` (``with_workflow``: text-to-image keeps the load's key), with its pre-decode / decode phases."""
     if probe is None or not width or not height:
         return
     identity = getattr(getattr(state, "pipe", None), "_unsloth_peak_identity", None)
     try:
-        from .diffusion_measured_peaks import device_name, record
+        from .diffusion_measured_peaks import (
+            PHASE_DECODE,
+            PHASE_DECODE_UNPADDED,
+            PHASE_PRE_DECODE,
+            PHASE_UNPADDED,
+            device_name,
+            record,
+        )
 
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
@@ -2952,7 +2968,22 @@ def _record_peak_probe(
         index = getattr(probe.device, "index", None)
         graphs = cuda_graph.live_graph_count(index)
         generation = cuda_graph.capture_generation(index)
-        peak += int(getattr(probe, "window_pad", 0) or 0)
+        pad = int(getattr(probe, "window_pad", 0) or 0)
+        peak += pad
+        split = getattr(probe, "phase_peaks", None) or {}
+        phases = {}
+        if PHASE_PRE_DECODE in split and PHASE_DECODE in split:
+            pre, dec = int(split[PHASE_PRE_DECODE]), int(split[PHASE_DECODE])
+            phases = {
+                # the scale every whole-render value is on: a streamed placement's prefetch window included
+                PHASE_PRE_DECODE: pre + pad,
+                PHASE_DECODE: dec + pad,
+                # only the VAE runs during the decode: no encoder or denoiser group streams, so no window to pad
+                PHASE_DECODE_UNPADDED: dec,
+                # this placement's own scale, what a load keeping every weight resident holds
+                PHASE_UNPADDED: max(pre, dec),
+            }
+        quant = with_workflow(quant, workflow)
         held: list = []
         raised = record(
             family = family,
@@ -2965,6 +2996,7 @@ def _record_peak_probe(
             device_name = device_name(probe.device),
             quadratic = _quadratic_attention(target, engaged, state.pipe),
             held = held,
+            phases = phases,
         )
         if held:
             # the store holds this sample, so it covers the graphs the render recorded; unpersisted, they stay dirty
@@ -9960,6 +9992,8 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_static_seed", True),
                                 plan.estimates.get("measured_learned_cfg_off", False),
                             )
+                            # encoder residency the plan lent to the VAE decode (release_for_decode)
+                            setattr(pipe, DECODE_LEND_ATTR, decode_lend_from_plan(plan))
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
 
@@ -13189,6 +13223,7 @@ class DiffusionBackend:
                         condition_pixels = guard_condition_pixels,
                         cfg = guard_cfg,
                         unpriced_references = guard_unpriced_refs,
+                        workflow = workflow,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
@@ -13426,6 +13461,7 @@ class DiffusionBackend:
                 except Exception:  # noqa: BLE001 - an unknown guidance mode records nothing
                     state.pipe._unsloth_peak_cfg = None
                 peak_probe = _start_peak_probe(state)
+                decode_restores: list = []
                 try:
                     previewer = _start_previewer()
                     pending = list(chunks)
@@ -13503,6 +13539,19 @@ class DiffusionBackend:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            if peak_probe is not None:
+                                peak_probe.mark_decode()
+                            # encoder residency lent to the decode streams again only if free memory is short now
+                            restore = release_for_decode(
+                                state.pipe,
+                                width = guard_width,
+                                height = guard_height,
+                                batch_size = len(chunk),
+                                device = getattr(guard_target, "torch_device", None),
+                                logger = logger,
+                            )
+                            if restore is not None:
+                                decode_restores.append(restore)
                             marked = False
                             for _ in range(_BOUNDARY_MARK_ATTEMPTS):
                                 with _hold_off_cuda_graph_capture() as clear:
@@ -13569,6 +13618,15 @@ class DiffusionBackend:
                             )
                             continue
                         finally:
+                            # what the decode streamed again goes back before the next prompt's encode
+                            while decode_restores:
+                                try:
+                                    decode_restores.pop()()
+                                except Exception as restore_exc:  # noqa: BLE001 - the groups keep streaming
+                                    logger.warning(
+                                        "diffusion.memory: re-pinning groups after the decode failed (%s)",
+                                        restore_exc,
+                                    )
                             # A guarded block that fell back to eager (compile failed at its first forward) no longer
                             # runs compiled: report it on every exit, cancel and error included, so status, LoRA gating
                             # and the compile-cache shape registry stop treating it as compiled.
@@ -13617,6 +13675,7 @@ class DiffusionBackend:
                     height = guard_height,
                     batch_size = max(chunk_shapes or [1]),
                     target = guard_target,
+                    workflow = workflow,
                 )
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))

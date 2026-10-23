@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import functools
+import math
 import os
 import sys
 import threading
@@ -2967,8 +2968,10 @@ def measured_image_runtime_mib(
     phase_seeds: bool = False,
     static_seed: bool = True,
     dense_tier_seeds: bool = False,
+    phase: Optional[str] = None,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
+    ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
 
     Seeds: the peak tables above, then the per-phase calibration (``_MEASURED_IMAGE_ACTIVATION_MIB``, the same
@@ -3006,7 +3009,13 @@ def measured_image_runtime_mib(
     if quant is not None:
         from .diffusion_measured_peaks import lookup as learned_peak
         learned = learned_peak(
-            family = family, quant = quant, speed_mode = speed_mode, width = w, height = h, batch_size = batch
+            family = family,
+            quant = quant,
+            speed_mode = speed_mode,
+            width = w,
+            height = h,
+            batch_size = batch,
+            phase = phase,
         )
     if seed is None and learned is None:
         return None
@@ -3079,6 +3088,47 @@ def with_label_part(label: str, name: str, value: str) -> str:
     return "|".join(
         f"{name}:{value}" if part.startswith(f"{name}:") else part for part in str(label).split("|")
     )
+
+
+# Image workflows other than text-to-image record under their own key (``wf:<workflow>``): an edit's reference encode and
+# longer denoiser sequence must not make the next text-to-image load more conservative. Loads place from the
+# text-to-image key; ``measured_request_extra_mib`` reads a workflow's own key for its requests.
+WORKFLOW_PART = "wf"
+TXT2IMG_WORKFLOW = "txt2img"
+
+
+def with_workflow(label: str, workflow: Optional[str]) -> str:
+    """``label`` keyed for ``workflow``: unchanged for text-to-image (and an unknown workflow), else ``|wf:<name>``."""
+    name = str(workflow or "").strip().lower()
+    if not name or name == TXT2IMG_WORKFLOW:
+        return str(label)
+    return f"{label}|{WORKFLOW_PART}:{name}"
+
+
+def learned_phase_split(
+    family: Optional[str], quant: Optional[str], speed_mode: Optional[str]
+) -> Optional[dict]:
+    """The phases learned for this key at the default size (``diffusion_measured_peaks.PHASES`` -> MiB, plus
+    ``pixels`` / ``quadratic`` of the bucket), when they account for the whole-render peak: every phase sits in its
+    bucket and the larger padded phase reaches the whole-render value. None otherwise (no phases, a store from before
+    them, a peak a render without phases recorded)."""
+    from .diffusion_measured_peaks import PHASE_DECODE, PHASE_PRE_DECODE, PHASES, lookup_bucket
+
+    if quant is None:
+        return None
+    total = lookup_bucket(family = family, quant = quant, speed_mode = speed_mode)
+    if total is None:
+        return None
+    found = {}
+    for phase in PHASES:
+        value = lookup_bucket(family = family, quant = quant, speed_mode = speed_mode, phase = phase)
+        if value is None or value[1] != total[1]:
+            return None
+        found[phase] = int(value[0])
+    if max(found[PHASE_PRE_DECODE], found[PHASE_DECODE]) < int(total[0]):
+        return None
+    found.update(pixels = int(total[1]), quadratic = bool(total[2]))
+    return found
 
 
 _VAE_SAVERS = (
@@ -3544,6 +3594,37 @@ def refine_plan_from_loaded_weights(
         # The flat plan's hooks stay installed and whole groups are kept resident within the room, so an oversized
         # request can stream them again (release_resident_groups) and run exactly as the flat plan would.
         stream_te = bool(getattr(plan, "stream_text_encoders", False))
+        # Phase-aware encoder residency (diffusion_measured_peaks phases). The whole-render peak sits on the streamed
+        # scale: it carries the prefetch window a streaming placement would hold, which a placement keeping every
+        # weight resident never allocates, and which no phase holds during the VAE decode (only the VAE runs). So:
+        # a resident transformer with every encoder resident is checked against the unpadded peak; failing that, the
+        # encoders are sized against the padded phases that run them (prompt encode + steps). What either keeps
+        # resident beyond the whole-render plan is lent to the decode: release_for_decode streams it again only if
+        # free memory is short of the decode's own peak when the decode starts.
+        pre_headroom = resident_headroom = None
+        split = None
+        if stream_te and policy == OFFLOAD_GROUP:
+            split = learned_phase_split(family, read_quant, speed_mode)
+        if split is not None:
+            from .diffusion_measured_peaks import PHASE_PRE_DECODE, PHASE_UNPADDED
+
+            def _phase_headroom(phase: str) -> Optional[int]:
+                value = measured_image_runtime_mib(
+                    family,
+                    speed_mode,
+                    dense_transformer_mib = dense_mib,
+                    compute_bytes = compute_bytes or 2,
+                    quant = read_quant,
+                    phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
+                    dense_tier_seeds = bool(getattr(pipe, "_unsloth_dense_tier_seeds", False)),
+                    static_seed = static_seed,
+                    phase = phase,
+                )
+                return value if value is not None and value < headroom else None
+
+            pre_headroom = _phase_headroom(PHASE_PRE_DECODE)
+            if not bool(getattr(plan, "stream_transformer", True)):
+                resident_headroom = _phase_headroom(PHASE_UNPADDED)
         room = budget - floor
         if policy == OFFLOAD_GROUP and not stream_te:
             room -= encoders  # resident companions
@@ -3576,6 +3657,30 @@ def refine_plan_from_loaded_weights(
         te_room = (
             min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
         )
+        lend = 0
+        phase_headroom = None
+        if split is not None and not whole_dit and not wide_dit:
+            phase_te_room = te_room
+            if (
+                resident_headroom is not None
+                and room + (headroom - resident_headroom) - dit_room >= encoders
+            ):
+                phase_headroom, phase_te_room = resident_headroom, encoders
+            elif pre_headroom is not None:
+                phase_headroom = pre_headroom
+                phase_te_room = min(max(0, room + (headroom - pre_headroom) - dit_room), encoders)
+            lend = max(0, phase_te_room - te_room)
+            if lend > 0:
+                from .diffusion_measured_peaks import PHASE_DECODE_UNPADDED
+                te_room = phase_te_room
+                estimates.update(
+                    measured_phase_headroom_mib = phase_headroom,
+                    measured_phase_all_resident = phase_headroom == resident_headroom,
+                    measured_decode_peak_mib = split[PHASE_DECODE_UNPADDED],
+                    measured_decode_peak_pixels = split["pixels"],
+                    measured_decode_peak_quadratic = split["quadratic"],
+                    decode_lend_text_encoder_mib = lend,
+                )
         if dit_room <= 0 and te_room <= 0:
             return plan
         if whole_dit or wide_dit:
@@ -3598,7 +3703,18 @@ def refine_plan_from_loaded_weights(
                     else f"{int(dit_room)} MiB of the {dit} MiB transformer"
                 )
                 + f" and {int(te_room)} MiB of the {encoders} MiB "
-                f"encoders stay resident (measured peak {headroom} MiB); the rest streams"
+                f"encoders stay resident (measured peak {headroom} MiB"
+                + (
+                    (
+                        f"; {phase_headroom} MiB without the streaming window, every weight resident"
+                        if phase_headroom == resident_headroom
+                        else f"; {phase_headroom} MiB before the VAE decode"
+                    )
+                    + f", the decode may stream {lend} MiB of them again"
+                    if lend > 0
+                    else ""
+                )
+                + "); the rest streams"
                 + (
                     f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
                     f" {encode_room} MiB of it while the encoders run)"
@@ -3938,6 +4054,94 @@ def release_resident_groups(
         return restore if released else None
 
 
+DECODE_LEND_ATTR = "_unsloth_decode_lend"
+# Kept free beside the decode's learned peak x margin when deciding whether lent encoder groups must stream again.
+_DECODE_SLACK_MIB = 256
+
+
+def decode_lend_from_plan(plan: Any) -> Optional[tuple[int, int, int, bool]]:
+    """``(lent MiB, decode peak MiB, bucket pixels, quadratic)`` when ``plan`` lent encoder residency to the decode."""
+    estimates = getattr(plan, "estimates", None) or {}
+    lend = estimates.get("decode_lend_text_encoder_mib")
+    if not lend or not getattr(plan, "resident_text_encoder_mib", None):
+        return None
+    return (
+        int(lend),
+        int(estimates.get("measured_decode_peak_mib") or 0),
+        int(
+            estimates.get("measured_decode_peak_pixels")
+            or DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+        ),
+        bool(estimates.get("measured_decode_peak_quadratic")),
+    )
+
+
+def decode_need_mib(
+    lend: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+) -> int:
+    """MiB the decode of a ``width x height x batch`` request needs above the allocation at its start (margin
+    included), scaled from the learned decode peak the way the store scales (``diffusion_measured_peaks``)."""
+    from .diffusion_measured_peaks import resolution_bucket
+
+    _, decode_mib, covered, quadratic = lend
+    w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+    h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    batch = max(1, int(batch_size or 1))
+    covered = max(1, int(covered))
+    scale = 1.0
+    if quadratic:
+        if w * h > covered:
+            scale = (resolution_bucket(w, h, 1) / float(covered)) ** 2
+        scale *= batch
+    elif w * h * batch > covered:
+        scale = resolution_bucket(w, h, batch) / float(covered)
+    return int(math.ceil(float(decode_mib) * scale * _MEASURED_PEAK_MARGIN))
+
+
+def release_for_decode(
+    pipe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    device: Any = None,
+    logger: Any = None,
+) -> Optional[Callable[[], None]]:
+    """At the VAE decode of a load whose plan lent encoder residency to it: when free memory (driver free plus the
+    allocator's cached blocks) is short of the decode's learned peak x margin, stream that many MiB of resident groups
+    again (text encoders first) and return the restore that pins them back after the decode; else None. ComfyUI does
+    the same at its decode (``load_models_gpu(memory_required=...)`` frees only the shortfall). The decode itself is
+    untouched (untiled stays untiled), so the output is bit-identical."""
+    lend = getattr(pipe, DECODE_LEND_ATTR, None)
+    if not lend:
+        return None
+    try:
+        import torch
+
+        dev = torch.device(device if device is not None else "cuda")
+        if dev.type != "cuda":
+            return None
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        need = decode_need_mib(lend, width = width, height = height, batch_size = batch_size)
+        free = int(torch.cuda.mem_get_info(dev)[0])
+        cached = max(
+            0, int(torch.cuda.memory_reserved(dev)) - int(torch.cuda.memory_allocated(dev))
+        )
+        short = need + _DECODE_SLACK_MIB - ((free + cached) >> 20)
+    except Exception as exc:  # noqa: BLE001 - unreadable: the decode's OOM retry still frees the card
+        if logger is not None:
+            logger.debug("diffusion.memory: decode residency check skipped (%s)", exc)
+        return None
+    if short <= 0:
+        return None
+    return release_resident_groups(pipe, short, logger, reason = "the VAE decode", device = dev)
+
+
 def resident_group_mib(pipe: Any) -> int:
     """MiB an oversized request could release: every resident offload group of the pipeline's components."""
     total = 0
@@ -4241,8 +4445,10 @@ def measured_request_extra_mib(
     condition_pixels: int = 0,
     cfg: Optional[bool] = None,
     unpriced_references: bool = False,
+    workflow: Optional[str] = None,
 ) -> int:
-    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``cfg``:
+    """MiB a request needs beyond what the measured placement reserved (0 when it fits or none was made). ``workflow``:
+    a workflow other than text-to-image also reads the peak recorded under its own key (``with_workflow``). ``cfg``:
     whether the request runs classifier-free guidance (None: unknown, treated as running it). ``unpriced_references``:
     the request carries reference images whose latents join the denoiser's sequence but are not in
     ``condition_pixels`` (FLUX.2 Klein's primary reference): a placement made from a dense default / max tier seed,
@@ -4326,6 +4532,12 @@ def measured_request_extra_mib(
                 need = max(need, stored)
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
+    if isinstance(identity, tuple) and len(identity) == 3:
+        keyed = with_workflow(identity[1], workflow)
+        if keyed != identity[1]:
+            own = measured_image_runtime_mib(family, speed_mode, quant = keyed, **sized)
+            if own is not None:
+                need = own if need is None else max(need, own)
     if need is None:
         return 0
     cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
