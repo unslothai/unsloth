@@ -521,7 +521,6 @@ class TestContextBufferDSV41:
         split = b._compute_buffer_ctx_bytes(262144, 512, "f16", layer_split = True)
         assert split - one == (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2 * 262144
 
-
     def test_flash_attention_off_charges_dense_scores(self):
         # The dense branch holds float32 KQ scores for every head; the flash rate does not.
         b = _backend(embd = 5120, arch = "deepseek41")
