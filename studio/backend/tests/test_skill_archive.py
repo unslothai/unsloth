@@ -339,6 +339,21 @@ def test_export_refuses_a_file_name_import_would_refuse(isolated_skills):
         skills.export_skill("packed", home = home)
 
 
+def test_export_refuses_names_that_differ_only_in_case(isolated_skills):
+    home, _ = isolated_skills
+    skill_dir = _write_skill(home, "agents", "packed")
+    (skill_dir / "Guide.md").write_text("a", encoding = "utf-8")
+    try:
+        (skill_dir / "guide.md").write_text("b", encoding = "utf-8")
+    except FileExistsError:
+        pass
+    if len(list(skill_dir.glob("[Gg]uide.md"))) < 2:
+        pytest.skip(reason = "case-insensitive filesystem")
+
+    with pytest.raises(skills.SkillError, match = "more than once"):
+        skills.export_skill("packed", home = home)
+
+
 @pytest.mark.parametrize("kind", ["file", "folder"])
 def test_export_refuses_a_linked_resource(isolated_skills, kind):
     home, _ = isolated_skills

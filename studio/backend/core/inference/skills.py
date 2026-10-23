@@ -980,9 +980,17 @@ def export_skill(name: str, *, home: Optional[Path] = None) -> tuple[str, bytes]
                 raise SkillError(f"Skill archive exceeds the {MAX_SKILL_ARCHIVE_FILES}-file limit.")
         output = io.BytesIO()
         total = 0
+        seen: set[str] = set()
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in paths:
                 relative = _normalize_resource_path(path.relative_to(skill_dir).as_posix())
+                # Import refuses case-insensitive duplicates, so export must too.
+                key = relative.as_posix().casefold()
+                if key in seen:
+                    raise SkillError(
+                        f"Skill archive contains '{relative.as_posix()}' more than once."
+                    )
+                seen.add(key)
                 content = _read_limited(
                     path, MAX_SKILL_FILE_BYTES, contained_in = skill_dir, identity = identity
                 )
