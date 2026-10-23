@@ -249,6 +249,42 @@ def test_secure_rpc_env_only_for_link_relays():
     assert cs.secure_rpc_env(["llama-server", "--rpc", nodes[0].endpoint]) == {}
 
 
+def test_a_status_refresh_never_hides_a_live_endpoint_from_a_concurrent_launch(monkeypatch):
+    # A status poll re-runs _link_nodes while a load thread builds llama-server's env: every change
+    # to the endpoint registry must look atomic, or the launch drops GGML_RPC_NO_RDMA / the TLS vars.
+    import threading
+
+    nodes = cs._link_nodes(verify = False)
+    seen = []
+
+    def launch_env():
+        seen.extend(cs.secure_rpc_env(["llama-server", "--rpc", n.endpoint]) for n in nodes)
+
+    class Probing(dict):
+        def _probe(self):
+            launch = threading.Thread(target = launch_env)
+            launch.start()
+            launch.join(0.2)  # runs now unless the refresh holds the registry lock
+            probes.append(launch)
+
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            self._probe()
+
+        def pop(self, *args):
+            out = super().pop(*args)
+            self._probe()
+            return out
+
+    probes = []
+    monkeypatch.setattr(cs, "_LINK_ENDPOINTS", Probing(cs._LINK_ENDPOINTS))
+    cs._link_nodes(verify = False)
+    for launch in probes:
+        launch.join(10.0)
+        assert not launch.is_alive()
+    assert seen and all(env == {"GGML_RPC_NO_RDMA": "1"} for env in seen)
+
+
 def test_the_device_probe_through_a_relay_carries_the_secure_env(monkeypatch):
     nodes = cs.load_nodes()
     seen = {}

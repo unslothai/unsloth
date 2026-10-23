@@ -1229,15 +1229,19 @@ def _drop_stale_relays(current: set, wait: bool = True) -> None:
     """Close the relay (and any live session through it) of every worker no longer paired. With
     ``wait=False`` (status reads, on the event loop) a native session is cut from a background
     thread: native_close waits on the worker, up to its timeout."""
-    stale = [(e, n) for e, n in _LINK_ENDPOINTS.items() if n not in current]
+    with _LINKS_LOCK:
+        stale = [(e, n) for e, n in _LINK_ENDPOINTS.items() if n not in current]
     if not stale:
         return
     relays = _relays()
-    if relays is None:  # the master identity is gone; _relays() already closed every link
-        _LINK_ENDPOINTS.clear()
-        return
+    with _LINKS_LOCK:
+        if relays is None:  # the master identity is gone; _relays() already closed every link
+            _LINK_ENDPOINTS.clear()
+            return
+        for endpoint, _node_id in stale:
+            _LINK_ENDPOINTS.pop(endpoint, None)
+    # Cutting sessions talks to the workers: never under the lock.
     for endpoint, node_id in stale:
-        _LINK_ENDPOINTS.pop(endpoint, None)
         if _NATIVE.pop(node_id, None) is not None:
             if wait:
                 _revoke_native(relays, node_id)
@@ -1335,10 +1339,14 @@ def _link_nodes(verify: bool = True) -> List[Node]:
                 relay = endpoint,
                 name = getattr(peer, "name", None),
             )
-        # One endpoint per worker: the relay one and the tls:// one replace each other.
-        for old in [e for e, n in _LINK_ENDPOINTS.items() if n == peer.node_id]:
-            _LINK_ENDPOINTS.pop(old, None)
-        _LINK_ENDPOINTS[node.endpoint] = peer.node_id
+        # One endpoint per worker: the relay one and the tls:// one replace each other. Under the
+        # lock, new one first: a launch on another thread reading secure_rpc_env never sees a gap.
+        with _LINKS_LOCK:
+            _LINK_ENDPOINTS[node.endpoint] = peer.node_id
+            for old in [
+                e for e, n in _LINK_ENDPOINTS.items() if n == peer.node_id and e != node.endpoint
+            ]:
+                _LINK_ENDPOINTS.pop(old, None)
         nodes.append(node)
     if not nodes:
         raise ClusterConfigError(
@@ -1364,7 +1372,9 @@ def secure_rpc_env(argv: Sequence[str]) -> Dict[str, str]:
     """GGML_RPC_NO_RDMA for a llama-server that dials a link relay: GGML_RDMA_GID would otherwise let
     RDMA be negotiated through the loopback relay and move tensors outside TLS. For a tls:// endpoint,
     also the master's cluster certificate, key and root, in the environment and never on argv."""
-    used = [e for e in _rpc_endpoints(argv) if e in _LINK_ENDPOINTS]
+    endpoints = _rpc_endpoints(argv)
+    with _LINKS_LOCK:
+        used = [e for e in endpoints if e in _LINK_ENDPOINTS]
     if not used:
         return {}
     from studio.cluster_link import SECURE_RPC_ENV
@@ -1414,7 +1424,8 @@ def _stop_links() -> None:
         except Exception:
             pass
     _UNVERIFIED.clear()
-    _LINK_ENDPOINTS.clear()
+    with _LINKS_LOCK:
+        _LINK_ENDPOINTS.clear()
     _NATIVE.clear()
     LINK_DROPPED.clear()
 
