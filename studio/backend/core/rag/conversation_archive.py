@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 _ARCHIVE_EMBED_BATCH = 64
 # Per call; the rest is archived by later requests, which re-evict the same turns.
 _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
-# Background pre-embedding runs only while llama.cpp is idle (tool calls, between turns); small batches so
+# Background pre-embedding runs only while no inference runs (tool calls, between turns); small batches so
 # a new generation waits at most one of them.
 _PREWARM_BATCH = 16
 _PREWARM_MAX_CHUNKS = 2048
@@ -485,8 +485,6 @@ def _embed_pending_chunks(
     return prefix, identity or embeddings.embedding_identity(model_name), cancelled, error
 
 
-# Gap-only pre-embedding: llama.cpp streams hold `inference_running`; the worker embeds only while no stream
-# is open, so it never competes with prefill or decode.
 _gap = threading.Lock()
 _inference_depth = 0
 _noted_branches: dict = {}

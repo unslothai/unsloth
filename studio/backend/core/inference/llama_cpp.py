@@ -39339,7 +39339,6 @@ class LlamaCppBackend:
         from core.rag.conversation_archive import inference_running
 
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-        # Background archive embedding pauses for the whole stream: it must never compete with inference.
         with (
             inference_running(),
             httpx.Client(
