@@ -1081,7 +1081,6 @@ export const ja = {
       noResults: "該当するショートカットはありません。",
       unassigned: "未割り当て",
       recording: "キーを押してください…",
-      recordingNote: "新しいキーを押してください。Backspace で削除、Esc でキャンセル。",
       needsModifier: "⌘、Ctrl、Alt のいずれかを加えてください。単独のキーでは入力を奪ってしまいます。",
       conflict: "別のショートカットでも使われています",
       conflictShadowed: "この組み合わせは別のショートカットのもので、そちらが実行されます",

@@ -1079,7 +1079,6 @@ export const ar = {
       noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
       unassigned: "غير معيّن",
       recording: "اضغط المفاتيح…",
-      recordingNote: "اضغط المفاتيح الجديدة. Backspace يزيل الاختصار، وEsc يلغي.",
       needsModifier: "أضف ⌘ أو Ctrl أو Alt. المفتاح المجرد سيبتلع الكتابة.",
       conflict: "مستخدم أيضاً في اختصار آخر",
       conflictShadowed: "اختصار آخر يملك هذه التركيبة ويعمل بدلاً منه",

@@ -1084,7 +1084,6 @@ export const de = {
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",
-      recordingNote: "Neue Tasten drücken. Rücktaste entfernt das Kürzel, Esc bricht ab.",
       needsModifier: "⌘, Strg oder Alt hinzufügen. Eine einzelne Taste würde die Eingabe verschlucken.",
       conflict: "Wird auch von einem anderen Kürzel verwendet",
       conflictShadowed: "Ein anderes Kürzel belegt diese Kombination und läuft stattdessen",

@@ -1079,7 +1079,6 @@ export const ko = {
       noResults: "검색과 일치하는 단축키가 없습니다.",
       unassigned: "지정 안 됨",
       recording: "키를 누르세요…",
-      recordingNote: "새 키를 누르세요. Backspace는 단축키를 제거하고 Esc는 취소합니다.",
       needsModifier: "⌘, Ctrl 또는 Alt를 추가하세요. 단독 키는 입력을 가로챕니다.",
       conflict: "다른 단축키도 이 조합을 사용합니다",
       conflictShadowed: "다른 단축키가 이 조합을 차지하고 있어 그쪽이 실행됩니다",

@@ -1168,7 +1168,6 @@ export const he = {
       noResults: "לא נמצאו קיצורי דרך תואמים.",
       unassigned: "לא הוקצה",
       recording: "הקש על מקשים…",
-      recordingNote: "הקש את המקשים החדשים. Backspace מסיר את הקיצור, Esc מבטל.",
       needsModifier: "הוסף ⌘, Ctrl או Alt. מקש בודד יחסום הקלדה רגילה.",
       conflict: "בשימוש גם בקיצור דרך אחר",
       conflictShadowed: "קיצור דרך אחר משתמש בצירוף זה ויופעל במקומו",

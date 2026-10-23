@@ -1137,7 +1137,6 @@ export const en = {
       noResults: "No shortcuts match that search.",
       unassigned: "none",
       recording: "Press key sequence",
-      recordingNote: "Press the new keys. Backspace removes the shortcut, Esc cancels.",
       needsModifier: "Add ⌘, Ctrl or Alt. A bare key would swallow typing.",
       conflict: "Also used by another shortcut",
       conflictShadowed: "Another shortcut has this chord and runs instead",

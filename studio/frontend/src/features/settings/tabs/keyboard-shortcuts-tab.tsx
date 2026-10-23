@@ -285,7 +285,7 @@ export function KeyboardShortcutsTab() {
           onBlur={stopRecording}
           placeholder={t("settings.keyboardShortcuts.recording")}
           aria-label={`${t("settings.keyboardShortcuts.edit")}: ${label}`}
-          className="h-8 w-[calc(12.5rem*var(--ui-space-scale,1))] rounded-xl border border-control-accent bg-background px-3 text-ui-13p5 text-foreground caret-transparent outline-none ring-[1.5px] ring-control-accent placeholder:text-muted-foreground"
+          className="h-8 w-[calc(12.5rem*var(--ui-space-scale,1))] rounded-xl border border-control-accent bg-background px-3 text-ui-13p5 text-foreground caret-transparent outline-none ring-1 ring-control-accent placeholder:text-muted-foreground"
         />
       );
     }
@@ -363,10 +363,11 @@ export function KeyboardShortcutsTab() {
       assignedBinding(overrides, def.id, "alternate") !== null ||
       (recording?.id === def.id && recording.slot === "alternate");
 
+    // While recording only a refused press has anything to say; the box's placeholder is the prompt.
     const note: ReactNode = isRecording ? (
-      <span className={cn(recordingError && "text-destructive")}>
-        {recordingError ?? t("settings.keyboardShortcuts.recordingNote")}
-      </span>
+      recordingError ? (
+        <span className="text-destructive">{recordingError}</span>
+      ) : null
     ) : conflicted ? (
       <span className="text-amber-600 dark:text-amber-500">
         {shadowed

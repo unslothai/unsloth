@@ -1082,7 +1082,6 @@ export const ptBR = {
       noResults: "Nenhum atalho corresponde a essa pesquisa.",
       unassigned: "Não atribuído",
       recording: "Pressione as teclas…",
-      recordingNote: "Pressione as novas teclas. Backspace remove o atalho, Esc cancela.",
       needsModifier: "Adicione ⌘, Ctrl ou Alt. Uma tecla sozinha engoliria a digitação.",
       conflict: "Também usado por outro atalho",
       conflictShadowed: "Outro atalho tem essa combinação e é executado no lugar dele",

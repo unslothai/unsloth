@@ -1084,7 +1084,6 @@ export const fr = {
       noResults: "Aucun raccourci ne correspond à cette recherche.",
       unassigned: "Non attribué",
       recording: "Appuyez sur les touches…",
-      recordingNote: "Appuyez sur les nouvelles touches. Retour arrière supprime le raccourci, Échap annule.",
       needsModifier: "Ajoutez ⌘, Ctrl ou Alt. Une touche seule avalerait la saisie.",
       conflict: "Également utilisé par un autre raccourci",
       conflictShadowed: "Un autre raccourci utilise cette combinaison et s'exécute à sa place",

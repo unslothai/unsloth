@@ -1083,7 +1083,6 @@ export const es = {
       noResults: "Ningún atajo coincide con esa búsqueda.",
       unassigned: "Sin asignar",
       recording: "Pulsa las teclas…",
-      recordingNote: "Pulsa las nuevas teclas. Retroceso quita el atajo, Esc cancela.",
       needsModifier: "Añade ⌘, Ctrl o Alt. Una tecla suelta se tragaría lo que escribes.",
       conflict: "También lo usa otro atajo",
       conflictShadowed: "Otro atajo tiene esta combinación y se ejecuta en lugar de este",

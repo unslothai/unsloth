@@ -1077,7 +1077,6 @@ export const zhCN = {
       noResults: "没有匹配的快捷键。",
       unassigned: "未分配",
       recording: "请按下按键…",
-      recordingNote: "按下新的按键。Backspace 移除快捷键，Esc 取消。",
       needsModifier: "请加上 ⌘、Ctrl 或 Alt。单独一个按键会吞掉正常输入。",
       conflict: "另一个快捷键也在使用该组合",
       conflictShadowed: "该组合已被另一个快捷键占用，执行的是那一个",

@@ -985,7 +985,6 @@ export const it = {
       noResults: "Nessuna scorciatoia corrisponde alla ricerca.",
       unassigned: "Non assegnata",
       recording: "Premi i tasti…",
-      recordingNote: "Premi i nuovi tasti. Backspace rimuove la scorciatoia, Esc annulla.",
       needsModifier: "Aggiungi ⌘, Ctrl o Alt. Un tasto singolo intercetterebbe la digitazione.",
       conflict: "Usata anche da un'altra scorciatoia",
       conflictShadowed: "Un'altra scorciatoia usa questa combinazione e viene eseguita al suo posto",
