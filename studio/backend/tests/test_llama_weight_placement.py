@@ -294,8 +294,8 @@ def test_windows_load_progress_follows_bytes_read_alone(tmp_path, monkeypatch):
     assert inst.load_progress()["fraction"] == 0.25
 
 
-def test_linux_rss_term_leaves_out_pinned_upload_buffers():
-    """With --load-mode none, CUDA's pinned host buffer is resident before a byte of the weights is
+def test_linux_rss_term_leaves_out_the_pinned_weight_buffer():
+    """With --load-mode none, CUDA pins the host buffer for the weights kept in RAM before a byte is
     read (3090: VmRSS 6.39 GB, 5.99 GB of it RssShmem, 0.16 GB read), which put the bar at 23% and held
     it there until the reads passed it. Only the file-backed share is what a mapped load pages in."""
     status = "VmRSS:\t6390000 kB\nRssAnon:\t250000 kB\nRssFile:\t150000 kB\nRssShmem:\t5990000 kB\n"

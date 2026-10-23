@@ -9468,8 +9468,9 @@ class LlamaCppBackend:
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
         """File-backed resident bytes of ``pid`` (``RssFile``) from /proc/<pid>/status (Linux): what a
-        memory-mapped load pages in. CUDA's pinned upload buffers (``RssShmem``) and other allocations
-        (``RssAnon``) are resident before a byte of the weights is read, so they are left out.
+        memory-mapped load pages in. Allocations (``RssAnon``, ``RssShmem``) are left out: under
+        ``--load-mode none`` CUDA pins the host buffer for the weights kept in RAM (``CUDA_Host``)
+        before a byte of them is read, and ``rchar`` already counts what is read into it.
         ``VmRSS`` on a kernel without that split (before 4.5). 0 when the status has neither
         (zombie / kernel thread); None where /proc is unavailable (macOS/Windows) or the value is unreadable."""
         vm_rss = None
