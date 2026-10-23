@@ -379,6 +379,11 @@ OWNER_PATHS = [
         "/remote-access/start": ("POST",),
         "/remote-access/stop": ("POST",),
         "/remote-access/auto-start": ("PUT",),
+        "/remote-access/config": ("PUT",),
+        "/remote-access/named/setup": ("POST",),
+        "/remote-access/named/setup/confirm-dns": ("POST",),
+        "/remote-access/named/setup/cancel": ("POST",),
+        "/remote-access/named": ("DELETE",),
         "/lan-access": ("GET",),
         "/lan-access/start": ("POST",),
         "/lan-access/stop": ("POST",),
@@ -398,6 +403,32 @@ OWNER_PATHS = [
 def test_every_owner_setting_rejects_managed_accounts(client, method, path):
     response = client.request(method, "/settings" + path, json = {})
     assert response.status_code == 403, response.text
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("PUT", "/remote-access/config", {"mode": "named"}),
+        ("POST", "/remote-access/named/setup", {"hostname": "studio.example.com"}),
+        (
+            "POST",
+            "/remote-access/named/setup/confirm-dns",
+            {"operation_id": "operation", "hostname": "studio.example.com", "tunnel_id": "tunnel"},
+        ),
+        ("POST", "/remote-access/named/setup/cancel", {"operation_id": "operation"}),
+        ("DELETE", "/remote-access/named", {"configuration_id": "configuration"}),
+    ],
+)
+def test_named_tunnel_settings_require_an_owner_ui_session(client, method, path, body):
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    response = client.request(
+        method,
+        "/settings" + path,
+        json = body,
+        headers = {"x-test-account": OWNER.username},
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "Remote access requires a UI session."
 
 
 @pytest.mark.parametrize(

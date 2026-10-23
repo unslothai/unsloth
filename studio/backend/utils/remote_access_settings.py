@@ -18,7 +18,7 @@ DEFAULT_REMOTE_ACCESS_AUTO_START = False
 # Longest a Stop waits for a live start worker to claim settings ownership.
 _STOP_OWNERSHIP_WAIT = 5.0
 
-_worker_lock = threading.Lock()
+_worker_lock = threading.RLock()
 _start_worker: threading.Thread | None = None
 _stop_worker: threading.Thread | None = None
 _start_worker_admission: tuple[int, int] | None = None
@@ -171,6 +171,7 @@ def _worker_is_current(
 
 def remote_access_status(app_state) -> dict:
     from cloudflare_tunnel import get_studio_tunnel_control_token, get_studio_tunnel_status
+    from utils import cloudflare_named_tunnel as named
 
     status = get_studio_tunnel_status()
     current = get_studio_tunnel_control_token()
@@ -214,6 +215,32 @@ def remote_access_status(app_state) -> dict:
     controllable = block_reason is None
     can_start = controllable and not stopping and not stop_pending and state in {"off", "error"}
     can_stop = owner == "settings" and (stop_pending or state in {"starting", "online"})
+    configuration_error = None
+    try:
+        mode = named.get_mode()
+    except named.NamedTunnelError as exc:
+        mode, configuration_error = "named", str(exc)
+    try:
+        named_state = named.named_status()
+    except named.NamedTunnelError as exc:
+        named_state = {"configuration": None, "setup": None}
+        if mode == "named":
+            configuration_error = str(exc)
+    setup_active = bool(named_state["setup"] and named_state["setup"]["active"])
+    if mode == "named" and not configuration_error:
+        configuration = named_state["configuration"]
+        if not configuration or not configuration["ready"]:
+            configuration_error = "named_setup_required"
+    can_start = can_start and not setup_active and configuration_error is None
+    can_configure = (
+        ready
+        and block_reason in {None, "admin_password_change_required"}
+        and state in {"off", "error"}
+        and not stop_pending
+        and not starting
+        and not stopping
+        and not setup_active
+    )
     error = status["error"]
     if error not in {
         None,
@@ -237,15 +264,25 @@ def remote_access_status(app_state) -> dict:
         "can_stop": can_stop,
         "block_reason": block_reason,
         "password_pending": password_pending,
+        "mode": mode,
+        "named": named_state,
+        "can_configure": can_configure,
+        "configuration_error": configuration_error,
+        "local_origin": _local_origin(app_state),
         # Plain GET/EventSource support, not Unsloth's own streams, which use POST.
         # Measured on three quick tunnels: a streamed GET delivers nothing until it
         # closes, and no response header changes that.
-        "streaming_supported": status["url"] is None,
+        "streaming_supported": status["url"] is None or (owner == "settings" and mode == "named"),
     }
 
 
 def start_remote_access(app_state) -> dict:
     """Schedule a settings-owned start. Repeated requests are idempotent."""
+    with _worker_lock:
+        return _start_remote_access(app_state)
+
+
+def _start_remote_access(app_state) -> dict:
     global _start_worker, _start_worker_admission
     from cloudflare_tunnel import (
         capture_studio_tunnel_start_admission,
@@ -262,7 +299,9 @@ def start_remote_access(app_state) -> dict:
     if status["managed_by"] == "settings" and status["state"] in {"starting", "online"}:
         return status
     if not status["can_start"]:
-        raise RuntimeError(status["block_reason"] or "operation_in_progress")
+        raise RuntimeError(
+            status["block_reason"] or status.get("configuration_error") or "operation_in_progress"
+        )
 
     port = getattr(app_state, "remote_access_port", None)
     if not isinstance(port, int) or port <= 0:
@@ -277,6 +316,14 @@ def start_remote_access(app_state) -> dict:
         port, origin_host = loopback_http_port(app_state), "127.0.0.1"
     if get_studio_tunnel_control_token() != admission:
         raise RuntimeError("server_lifecycle_changed")
+    named_kwargs = {}
+    if status.get("mode") == "named":
+        from utils.cloudflare_named_tunnel import load_bundle
+
+        bundle = load_bundle()
+        if bundle is None:
+            raise RuntimeError("named_setup_required")
+        named_kwargs["named_tunnel"] = bundle
 
     def _start() -> None:
         from cloudflare_tunnel import start_studio_tunnel
@@ -285,6 +332,7 @@ def start_remote_access(app_state) -> dict:
             managed_by = "settings",
             admission = admission,
             origin_host = origin_host,
+            **named_kwargs,
         )
         if url:
             logger.info("Secure link access via Cloudflare: %s", url)
@@ -296,6 +344,76 @@ def start_remote_access(app_state) -> dict:
             _start_worker_admission = admission
             _start_worker.start()
     return remote_access_status(app_state)
+
+
+def _local_origin(app_state) -> str | None:
+    from cloudflare_tunnel import _origin_url
+    from utils.studio_tls import loopback_http_port
+
+    port = getattr(app_state, "remote_access_port", None)
+    host = getattr(app_state, "server_request_host", None)
+    if loopback_http_port(app_state) is not None:
+        port, host = loopback_http_port(app_state), "127.0.0.1"
+    return (
+        _origin_url(host, port)
+        if isinstance(port, int) and port > 0 and isinstance(host, str) and host
+        else None
+    )
+
+
+def _require_configuration_edit(app_state, *, allow_setup: bool = False) -> None:
+    status = remote_access_status(app_state)
+    if status["state"] not in {"off", "error"} or status["can_stop"]:
+        raise RuntimeError("stop_tunnel_first")
+    if status["block_reason"] not in {None, "admin_password_change_required"}:
+        raise RuntimeError(status["block_reason"])
+    if not status["can_configure"] and not (
+        allow_setup and status["named"]["setup"] and status["named"]["setup"]["active"]
+    ):
+        raise RuntimeError("operation_in_progress")
+
+
+def configure_remote_access_tunnel(
+    app_state,
+    *,
+    mode: str,
+    hostname: str | None = None,
+    token: str | None = None,
+) -> dict:
+    from utils import cloudflare_named_tunnel as named
+    with _worker_lock:
+        _require_configuration_edit(app_state)
+        if hostname is not None:
+            if mode != "named":
+                raise ValueError("invalid_tunnel_mode")
+            named.save_token(hostname, token)
+        elif token is not None:
+            raise ValueError("invalid_hostname")
+        named.set_mode(mode)
+        return remote_access_status(app_state)
+
+
+def setup_named_remote_access(
+    app_state,
+    hostname: str,
+    *,
+    reauthenticate: bool = False,
+) -> dict:
+    from utils import cloudflare_named_tunnel as named
+    with _worker_lock:
+        _require_configuration_edit(app_state, allow_setup = True)
+        if named.get_mode() != "named":
+            raise RuntimeError("select_named_mode")
+        named.start_setup(hostname, reauthenticate = reauthenticate)
+        return remote_access_status(app_state)
+
+
+def remove_named_remote_access(app_state, configuration_id: str) -> dict:
+    from utils import cloudflare_named_tunnel as named
+    with _worker_lock:
+        _require_configuration_edit(app_state)
+        named.remove_named(configuration_id)
+        return remote_access_status(app_state)
 
 
 def stop_remote_access(app_state) -> dict:
