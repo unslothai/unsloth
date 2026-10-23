@@ -37,8 +37,6 @@ _UNSET_TOKENS = frozenset({"", "auto", "default"})
 
 @dataclass(frozen = True)
 class MlxCapabilities:
-    """What the MLX engine runs for a family. Everything outside it is served by diffusers."""
-
     workflows: tuple[str, ...] = ("txt2img",)
     loras: bool = False
     controlnet: bool = False
@@ -70,7 +68,6 @@ def load_blocker(
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
-    """The first LOAD option the MLX engine cannot honour, else None. Such a load stays on diffusers."""
     from core.inference.diffusion_engine_router import has_active_loras
 
     if has_active_loras(loras):
@@ -116,7 +113,7 @@ def _controls_requested(controls: Any) -> bool:
     requested = getattr(controls, "requested", None)
     try:
         return bool(requested()) if callable(requested) else False
-    except Exception:  # noqa: BLE001 -- unreadable controls are treated as asked for
+    except Exception:  # noqa: BLE001
         return True
 
 
@@ -127,7 +124,6 @@ def request_blocker(
     mlx_params: Optional[frozenset[str]] = None,
     mlx_guidance: Optional[bool] = None,
 ) -> Optional[str]:
-    """What in a generate request MLX cannot serve, else None. Options outside ``mlx_params`` are diffusers-only."""
     caps = mlx_capabilities(family)
     get = kwargs.get
     if mlx_guidance is False and _positive(get("guidance")):
@@ -191,7 +187,6 @@ def decide_route(
     fallback_available: bool,
     coexist: bool,
 ) -> Route:
-    """Pure routing decision for one request. ``coexist``: both engines fit the working set together."""
     if blocker is None:
         if mlx_resident:
             return Route(ENGINE_MLX, "text-to-image runs on MLX")
@@ -214,7 +209,6 @@ def decide_route(
 
 
 def engines_coexist(mlx_bytes: int, diffusers_bytes: int, budget_bytes: int) -> bool:
-    """Whether the MLX model (its plan includes the activation headroom) and a diffusers copy fit together; unknown sizes never fit."""
     raw = os.environ.get(COEXIST_ENV, "auto").strip().lower()
     if raw in _ENABLE_TOKENS:
         return True
@@ -226,7 +220,6 @@ def engines_coexist(mlx_bytes: int, diffusers_bytes: int, budget_bytes: int) -> 
 
 
 def diffusers_resident_bytes(gguf_path: Optional[str], components_dir: Optional[str]) -> int:
-    """diffusers keeps the GGUF as stored plus a bf16 text encoder and VAE; 0 when unreadable."""
     if not gguf_path or not components_dir:
         return 0
     try:
@@ -237,7 +230,7 @@ def diffusers_resident_bytes(gguf_path: Optional[str], components_dir: Optional[
             + 2 * _safetensors_numel(root / "text_encoder")
             + 2 * _safetensors_numel(root / "vae")
         )
-    except Exception as exc:  # noqa: BLE001 -- unknown size: treated as not fitting
+    except Exception as exc:  # noqa: BLE001
         logger.info("mlx_routing.diffusers_size_unknown: %s", exc)
         return 0
 
@@ -279,7 +272,6 @@ _SCHEDULER_CONFIG = "scheduler/scheduler_config.json"
 
 
 def _cached_base_file(base: str, filename: str) -> Optional[Path]:
-    """``filename`` from the base repo the diffusers fallback would build from, only if already on disk."""
     local = Path(base).expanduser()
     if local.is_dir():
         candidate = local / filename
@@ -304,7 +296,6 @@ def _cached_base_file(base: str, filename: str) -> Optional[Path]:
 
 
 def fallback_shift_control(family: Any, status: dict[str, Any]) -> Optional[dict]:
-    """The ``shift_control`` diffusers reports once it loads this pick, built from the cached base scheduler config."""
     import json
 
     from core.inference.diffusion_content import content_variant_hint
@@ -373,8 +364,6 @@ def _identity_of(engine: Any) -> Any:
 
 
 class _RoutedGenerate:
-    """``generate`` with both engines' keywords, so the route's signature checks pass diffusers-only options through."""
-
     def __init__(self, owner: "RoutedMlxEngine") -> None:
         self.__self__ = owner
 
@@ -384,7 +373,7 @@ class _RoutedGenerate:
         params: dict[str, inspect.Parameter] = {}
         try:
             params.update(_parameters(owner._diffusers().generate))
-        except Exception:  # noqa: BLE001 -- no diffusers: MLX's keywords only
+        except Exception:  # noqa: BLE001
             pass
         for name, param in _parameters(owner._mlx().generate).items():
             params.setdefault(name, param)
@@ -396,8 +385,6 @@ class _RoutedGenerate:
 
 
 class RoutedMlxEngine:
-    """The image engine behind ``ENGINE_MLX`` in auto mode. Same duck-typed surface as the other engines."""
-
     runs_off_torch_device = False
     parses_prompt_attention = False
 
@@ -504,7 +491,6 @@ class RoutedMlxEngine:
         return fits
 
     def _drain_fallback(self, *, replacing: bool = False) -> bool:
-        """Cancel an in-flight fallback load and wait until it has torn itself down; returns ``_diffusers_ours``."""
         with self._lock:
             self._epoch += 1
             if replacing:
@@ -519,7 +505,6 @@ class RoutedMlxEngine:
             return self._diffusers_ours
 
     def begin_load(self, repo_id: str, **kwargs: Any) -> dict[str, Any]:
-        """A new load replaces everything: the old model's diffusers copy goes first, then MLX loads."""
         # Fenced until this load's options are saved, so no request routes on the old model's options.
         ours = self._drain_fallback(replacing = True)
         try:
@@ -549,7 +534,6 @@ class RoutedMlxEngine:
         return kwargs
 
     def _load_fallback(self, *, unload_mlx: bool, epoch: int) -> Any:
-        """Load the diffusers copy of this model and wait for it, unloading MLX first when both do not fit."""
         from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
         from core.inference.diffusion_memory import (
             UNIFIED_OVERSIZE_REFUSAL_CODE,
@@ -624,7 +608,7 @@ class RoutedMlxEngine:
                 try:
                     restore_kwargs = dict(self._load_kwargs or {})
                     mlx.begin_load(restore_kwargs.pop("repo_id"), **restore_kwargs)
-                except Exception as exc:  # noqa: BLE001 -- the request's own error is the one to report
+                except Exception as exc:  # noqa: BLE001
                     logger.warning("mlx_routing.restore_failed: %s", exc)
             raise
         finally:
@@ -638,12 +622,11 @@ class RoutedMlxEngine:
     def _mlx_guidance(self) -> Optional[bool]:
         try:
             value = self._mlx().status().get("supports_guidance")
-        except Exception:  # noqa: BLE001 -- unknown: not checked
+        except Exception:  # noqa: BLE001
             return None
         return None if value is None else bool(value)
 
     def _identity_snapshot(self) -> dict[str, Any]:
-        """Each resident engine's identity, read once: the request validates and forwards these same values."""
         out: dict[str, Any] = {}
         if self._mlx_resident():
             out[ENGINE_MLX] = _identity_of(self._mlx())
@@ -832,22 +815,20 @@ class RoutedMlxEngine:
         return self._mlx().preflight_base_access(*args, **kwargs)
 
     def _fallback_capabilities(self, family: Any) -> dict[str, Any]:
-        """What the diffusers copy would add, so the Images page offers those workflows while MLX is resident."""
         if not self._fallback_available(family):
             return {}
         try:
             return dict(self._capabilities_fn(family))
-        except Exception as exc:  # noqa: BLE001 -- the MLX status stands on its own
+        except Exception as exc:  # noqa: BLE001
             logger.info("mlx_routing.capabilities_unavailable: %s", exc)
             return {}
 
     def _fallback_shift_control(self, family: Any, status: dict[str, Any]) -> Optional[dict]:
-        """A request with a shift routes to diffusers, so the Images page offers the Shift control diffusers serves."""
         if not self._fallback_available(family):
             return None
         try:
             return fallback_shift_control(family, status)
-        except Exception as exc:  # noqa: BLE001 -- an unreadable config just keeps the control hidden
+        except Exception as exc:  # noqa: BLE001
             logger.info("mlx_routing.shift_control_unavailable: %s", exc)
             return None
 

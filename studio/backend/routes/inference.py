@@ -51536,7 +51536,6 @@ def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
 
 
 def _mlx_load_blocker(request: DiffusionLoadRequest) -> Optional[str]:
-    """The load option, if any, that keeps this pick off the MLX engine under UNSLOTH_DIFFUSION_MLX=auto."""
     from core.inference.diffusion_engine_router import mlx_load_blocker
     return mlx_load_blocker(
         loras = request.loras,

@@ -27,8 +27,6 @@ _FAM = SimpleNamespace(name = "z-image")
 
 
 class _Engine:
-    """The duck-typed engine surface the routed engine drives."""
-
     def __init__(self, name: str, log: list, *, base: str) -> None:
         self.name = name
         self.log = log
@@ -805,7 +803,6 @@ def test_no_fallback_registers_while_a_replacement_is_being_set_up(rig):
 
 
 def test_a_route_decided_during_replacement_setup_never_registers_after_it(rig):
-    # Routed inside the fence (old model ready), registered after it lifts: still stale, never served.
     entered, release = _pause_mlx_begin_load(rig)
     routed, go = threading.Event(), threading.Event()
     real_fallback = rig.engine._load_fallback
@@ -863,7 +860,6 @@ def _guidance_distilled_mlx(rig, monkeypatch, *, supports_guidance):
 
 def test_explicit_guidance_the_mlx_variant_drops_runs_on_diffusers(rig, monkeypatch):
     _guidance_distilled_mlx(rig, monkeypatch, supports_guidance = False)
-    # The Turbo default (guidance 0) stays on MLX, a negative prompt it would ignore on diffusers too.
     assert _txt2img(rig.engine, guidance = 0.0, negative_prompt = "blurry")["engine"] == "mlx"
     assert _txt2img(rig.engine)["engine"] == "mlx"
     assert ("diffusers", "load") not in rig.log
@@ -977,7 +973,6 @@ _Z_BASE_SCHEDULER = {**_Z_TURBO_SCHEDULER, "shift": 6.0}
 
 
 def _cache_base(monkeypatch, tmp_path, repo: str, files: dict) -> None:
-    """``files`` as the only cached snapshot of ``repo`` in a fresh hub cache (nothing else on disk)."""
     import json
 
     from huggingface_hub import constants
@@ -998,7 +993,6 @@ def _cache_base(monkeypatch, tmp_path, repo: str, files: dict) -> None:
 
 
 def _expected_shift_control(config: dict) -> Optional[dict]:
-    """What diffusers' status reports: shift_control on the loaded scheduler after the load-time ComfyUI shift."""
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flow_shift import apply_comfy_flow_shift, shift_control

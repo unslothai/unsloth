@@ -526,7 +526,6 @@ def mlx_load_blocker(
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
-    """The first load option the MLX engine cannot honour, else None. Values that delegate the choice pass."""
     from core.inference.mlx_diffusion_routing import load_blocker
     return load_blocker(
         loras = loras,
@@ -545,7 +544,6 @@ def _refuse_lora_fallback(
     gguf_filename: Optional[str],
     engine: Optional[str],
 ) -> None:
-    """ValueError, before anything is unloaded, when a FORCED MLX engine would serve this pick but for its LoRAs."""
     if not with_loras or mlx_mode() != MLX_FORCE:
         return
     if not mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename, engine = engine)[0]:
