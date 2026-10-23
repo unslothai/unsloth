@@ -209,42 +209,23 @@ test("capabilities light the filter dot only where they apply", () => {
 test("Cosmos3's Nano and Edge are video gen; its Reasoner, Policy, Sim / Transfer and FP8 repos are not", () => {
   // The Hub cards name no pipeline task (library cosmos) and tag diffusers, which alone reads as an image model.
   const tags = ["diffusers", "safetensors", "cosmos3", "cosmos3_edge"];
-  for (const id of [
-    "nvidia/Cosmos3-Nano",
-    "nvidia/Cosmos3-Edge",
-    "someone/cosmos3_edge",
-  ]) {
+  for (const id of ["nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge", "someone/cosmos3_edge"]) {
     assert.equal(isVideoFamilyName(id), true, id);
-    assert.deepEqual(
-      generationKinds(tags, undefined, id),
-      { image: false, video: true },
-      id,
-    );
-    assert.deepEqual(
-      detectCapabilities(tags, undefined, id).find(
-        (c) => c.key === "diffusion",
-      ),
-      { key: "diffusion", label: "Video gen" },
-      id,
-    );
+    assert.deepEqual(generationKinds(tags, undefined, id), { image: false, video: true }, id);
+    const diffusion = detectCapabilities(tags, undefined, id).find((c) => c.key === "diffusion");
+    assert.deepEqual(diffusion, { key: "diffusion", label: "Video gen" }, id);
   }
   for (const id of [
     "nvidia/Cosmos3-Nano-Reasoner",
-    "nvidia/Cosmos3-Edge-Reasoner",
     "unsloth/Cosmos3-Nano-Reasoner-GGUF",
     "nvidia/Cosmos3-Edge-Policy-DROID",
     "nvidia/Cosmos3-Nano-Sim-Transfer",
     "nvidia/Cosmos3-Nano-FP8",
     "nvidia/Cosmos3-Super",
     "nvidia/Cosmos3-Edgeless",
-    // The family in the owner is not the model's name.
     "cosmos3-edge-lab/some-model",
   ]) {
     assert.equal(isVideoFamilyName(id), false, id);
-    assert.equal(
-      generationKinds(["diffusers"], undefined, id).video,
-      false,
-      id,
-    );
+    assert.equal(generationKinds(["diffusers"], undefined, id).video, false, id);
   }
 });

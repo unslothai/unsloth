@@ -1114,9 +1114,7 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
 
 
 def test_video_download_plan_validates_with_the_encoder_precision(client, monkeypatch):
-    # validate_load_request refuses an explicit text_encoder_quant for a family with no separate text encoder
-    # (Cosmos3; test_video_cosmos3.py), so the plan must hand it the precision, or the UI stages and downloads the
-    # checkpoint that /video/load then refuses.
+    # Validation refuses an explicit encoder precision for Cosmos3 (no text encoder): the plan must pass it along.
     backend = video_module.get_video_backend()
     seen: dict = {}
 

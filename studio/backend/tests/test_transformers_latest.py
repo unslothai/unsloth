@@ -1080,9 +1080,8 @@ def test_upgrade_check_requires_every_missing_type(monkeypatch):
 
 
 def test_upgrade_check_ignores_inert_nested_types(monkeypatch):
-    """Cosmos3-Edge's projector_config carries a model_type no transformers registers and no
-    config class ever builds (it stays a plain dict), so it must not veto the offer the way an
-    unknown backbone does (nvidia/Cosmos3-Edge config.json shape)."""
+    """Cosmos3-Edge's projector_config model_type is never registered nor built (a plain dict), so
+    it must not veto the offer the way an unknown backbone does."""
     _shared_setup_2(monkeypatch)
     cfg = {
         "model_type": "cosmos3_edge",

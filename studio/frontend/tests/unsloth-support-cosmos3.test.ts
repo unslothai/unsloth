@@ -6,47 +6,26 @@ import test from "node:test";
 
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
 
-// nvidia/Cosmos3-Edge and -Nano name no pipeline task on the Hub (library "cosmos") and tag diffusers, so the library
-// check alone called the Video page's own model unsupported.
+// nvidia/Cosmos3-* cards name no pipeline task (library "cosmos") and tag diffusers.
 const HUB_CARD = {
   pipelineTag: null,
   libraryName: "cosmos",
-  tags: [
-    "diffusers",
-    "safetensors",
-    "cosmos3",
-    "cosmos3_omni",
-    "license:other",
-  ],
+  tags: ["diffusers", "safetensors", "cosmos3", "cosmos3_omni", "license:other"],
 };
+const UNSUPPORTED = { status: "unsupported", reason: "Library: diffusers." };
 
-test("Cosmos3 Edge runs on the Video page, not in chat", () => {
-  for (const modelId of ["nvidia/Cosmos3-Edge", "NVIDIA/cosmos3-edge"]) {
-    assert.deepEqual(
-      classifyUnslothSupport({ modelId, ...HUB_CARD }),
-      {
-        status: "unsupported",
-        reason: "Library: diffusers.",
-        supportedIn: "video",
-      },
-      modelId,
-    );
-  }
-});
-
-test("other repos with the same card stay unsupported: Nano, siblings and copies the backend does not trust", () => {
-  for (const modelId of [
-    // A default install refuses it: its checkpoint enables the Cosmos guardrail, whose package Studio does not install.
-    "nvidia/Cosmos3-Nano",
-    "nvidia/Cosmos3-Nano-FP8",
-    "nvidia/Cosmos3-Edge-Policy-DROID",
-    "nvidia/Cosmos3-Nano-Reasoner",
-    "someone/Cosmos3-Edge",
-  ]) {
-    assert.deepEqual(
-      classifyUnslothSupport({ modelId, ...HUB_CARD }),
-      { status: "unsupported", reason: "Library: diffusers." },
-      modelId,
-    );
+test("only nvidia's Cosmos3 Edge is routed to the Video page; Nano, siblings and copies stay unsupported", () => {
+  const cases: Array<[string, object]> = [
+    ["nvidia/Cosmos3-Edge", { ...UNSUPPORTED, supportedIn: "video" }],
+    ["NVIDIA/cosmos3-edge", { ...UNSUPPORTED, supportedIn: "video" }],
+    // Nano's checkpoint enables the Cosmos guardrail, whose package Studio does not install.
+    ["nvidia/Cosmos3-Nano", UNSUPPORTED],
+    ["nvidia/Cosmos3-Nano-FP8", UNSUPPORTED],
+    ["nvidia/Cosmos3-Edge-Policy-DROID", UNSUPPORTED],
+    ["nvidia/Cosmos3-Nano-Reasoner", UNSUPPORTED],
+    ["someone/Cosmos3-Edge", UNSUPPORTED],
+  ];
+  for (const [modelId, expected] of cases) {
+    assert.deepEqual(classifyUnslothSupport({ modelId, ...HUB_CARD }), expected, modelId);
   }
 });

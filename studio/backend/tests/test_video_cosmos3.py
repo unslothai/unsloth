@@ -1,41 +1,35 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cosmos3-Nano and Cosmos3-Edge on diffusers' ``Cosmos3OmniPipeline``: the ``core.inference.video_cosmos3`` glue (the
-repo layout the download planner checks, NVIDIA's Cosmos guardrail precheck and its opt-out, the ``from_pretrained``
-kwargs, the output adapter, the untiled encode of the conditioning clip), the model cards' schedules on the real
-scheduler, and VideoBackend's Cosmos3 paths: the load, the render, the download plan, local folders and the validation
-refusals. The family rows themselves are pinned in test_video_cosmos3_families.py.
-
-Hermetic: no network, no weights, no GPU. VideoBackend runs for real over test_video_backend's fake torch/diffusers
-runtime with ``diffusers.Cosmos3OmniPipeline`` replaced by ``_FakeCosmos3Pipeline``, whose ``__call__`` takes exactly
-the keywords of the real one. Hub listings and configs come from ``fixtures/cosmos3_checkpoints.json``: public Hub
-metadata (file listings with sizes, model_index.json, the root, transformer, scheduler and VAE configs) at pinned
-revisions: nvidia/Cosmos3-Nano@e59a53c2 and nvidia/Cosmos3-Edge@344d602b for the two families, whose model cards the
-"README.md:<line>" citations refer to, plus the Policy-DROID and Super builds. Diffusers lines are at d42ebf9, the
-Studio pin. Checks against the real UniPCMultistepScheduler and Cosmos3OmniPipeline need diffusers and skip without it,
-as on Backend CI."""
+"""Cosmos3-Nano / Cosmos3-Edge: families, video_cosmos3 glue, catalog, and VideoBackend's load and render over
+test_video_backend's fake runtime. Hub metadata: fixtures/cosmos3_checkpoints.json at pinned revisions; card values
+from README.md of nvidia/Cosmos3-Nano@e59a53c2 and nvidia/Cosmos3-Edge@344d602b."""
 
 from __future__ import annotations
 
 import ast
 import contextlib
 import dataclasses
-import functools
 import importlib.machinery
 import importlib.util
 import inspect
 import json
-import re
+import math
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from core.inference import diffusion_batched
 from core.inference import video as video_mod
 from core.inference import video_cosmos3 as vc3
+from core.inference import video_families as vf
+from core.inference.diffusion_component_sizes import (
+    TABLE_ROUNDING_GB,
+    video_family_has_no_text_encoder,
+    video_required_roles,
+)
 from core.inference.diffusion_families import (
     _installed_at_least,
     local_pipeline_components_are_complete,
@@ -43,14 +37,13 @@ from core.inference.diffusion_families import (
 )
 from core.inference.diffusion_flow_shift import apply_scheduler_overrides
 from core.inference.video import VideoBackend
-from core.inference.video_families import VIDEO_CANCELLED_MSG, detect_video_family
-from utils import hf_cache_settings
+from hub.services.models import catalog_classification as cc
+from models.models import LocalModelInfo
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-# The fake runtime and the autouse pins every VideoBackend test runs under.
 from test_video_backend import (  # noqa: E402,F401
     _FakeWanDiT,
     _FakeWanVae,
@@ -61,15 +54,19 @@ from test_video_backend import (  # noqa: E402,F401
     fake_runtime,
 )
 
-NANO = "nvidia/Cosmos3-Nano"
-EDGE = "nvidia/Cosmos3-Edge"
+NANO, EDGE = "nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge"
+SUPER, EDGE_POLICY = "nvidia/Cosmos3-Super", "nvidia/Cosmos3-Edge-Policy-DROID"
 _FAMILY = {NANO: "cosmos3-nano", EDGE: "cosmos3-edge"}
-# Not a base repo; its name token makes it a cosmos3-nano pick.
-_UNKNOWN_REPO = "someone/cosmos3-nano-repack"
-# Spelled out rather than read from video_cosmos3: the refusal prints it for the user to type.
+# The cards' scheduler rebuilds: Nano README.md:887, Edge README.md:759-761.
+_CARD_SCHEDULER = {
+    NANO: {"flow_shift": 10.0},
+    EDGE: {"flow_shift": 12.0, "use_karras_sigmas": False},
+}
+# Spelled out: the refusal tells the user to type it.
 _OPT_OUT_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
-# Public Hub metadata at the pinned revisions, keyed "<repo>@<sha>": the file listing with sizes, model_index.json,
-# the root config's model_type, and the transformer / scheduler / VAE configs.
+_REASONER = "Cosmos3 Reasoner checkpoint"
+_CONDITIONED = "Policy, Sim, Transfer or FP8 build"
+_PIPELINE_ONLY = "loads only as its full Diffusers pipeline"
 _CHECKPOINTS = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "cosmos3_checkpoints.json").read_text(
         encoding = "utf-8"
@@ -77,125 +74,67 @@ _CHECKPOINTS = json.loads(
 )
 
 
-def _pinned(repo: str) -> tuple[str, dict]:
-    """(revision, fixture entry) for ``repo``; the fixture pins exactly one revision per repo."""
+def _pinned(repo):
     (key,) = [k for k in _CHECKPOINTS if k.partition("@")[0] == repo]
     return key.partition("@")[2], _CHECKPOINTS[key]
 
 
-def _diffusers_with_cosmos3():
-    """The installed diffusers, for the checks against the real Cosmos3 classes. Skips where they cannot exist: Backend
-    CI has no diffusers, and Python 3.9 installs pin diffusers 0.36.0 (requirements/diffusers-pin.txt), which predates
-    Cosmos3OmniPipeline. The version is read on its release, as Studio's listing gate reads it, so a diffusers new
-    enough to have the classes fails these checks if it lost them instead of skipping."""
-    diffusers = pytest.importorskip(
-        "diffusers"
-    )  # Backend CI has no diffusers; this path runs on it
-    minimum, _ = pipeline_class_requirement("Cosmos3OmniPipeline")
-    if minimum and not _installed_at_least(diffusers.__version__, minimum):
-        pytest.skip(
-            f"diffusers {diffusers.__version__} predates Cosmos3OmniPipeline (>= {minimum})"
-        )
-    return diffusers
-
-
-def _checkpoint(repo: str) -> dict:
+def _ckpt(repo):
     return _pinned(repo)[1]
 
 
-# The two base repos at the revisions the families were written against.
-_NANO = _checkpoint(NANO)
-_EDGE = _checkpoint(EDGE)
-
-# Other families' Diffusers layouts, names only: a Wan2.2 Diffusers repo, and trimmed copies of the listings the
-# suite plans downloads with (tests/test_video_ltx25.py _PACK, tests/test_video_backend.py _H3_SIBLINGS). Each has
-# text_encoder/ and tokenizer/; the LTX-2.5 pack and MiniMax-H3 also ship the root modular_model_index.json that
-# Cosmos3 repos carry.
-_WAN_LISTING = (
-    "model_index.json",
-    "scheduler/scheduler_config.json",
-    "text_encoder/config.json",
-    "text_encoder/model-00001-of-00002.safetensors",
-    "tokenizer/tokenizer_config.json",
-    "transformer/config.json",
-    "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
-    "vae/config.json",
-    "vae/diffusion_pytorch_model.safetensors",
-)
-_LTX25_LISTING = (
-    "model_index.json",
-    "modular_model_index.json",
-    "connectors/config.json",
-    "processor/tokenizer.json",
-    "text_encoder/config.json",
-    "text_encoder/model-00001-of-00005.safetensors",
-    "tokenizer/tokenizer.json",
-    "transformer/config.json",
-    "vae/config.json",
-    "vocoder/config.json",
-)
-_H3_LISTING = (
-    "model_index.json",
-    "modular_model_index.json",
-    "audio_vae/diffusion_pytorch_model.safetensors",
-    "processor/preprocessor_config.json",
-    "scheduler/scheduler_config.json",
-    "text_encoder/model-00001-of-00001.safetensors",
-    "tokenizer/chat_template.jinja",
-    "transformer/config.json",
-    "transformer_ref/config.json",
-    "vae/diffusion_pytorch_model.safetensors",
-)
+def _fam(name):
+    return vf.detect_video_family("", override = name)
 
 
-def _opt_out(monkeypatch, value):
-    """Set the guardrail opt-out, or clear it (None) so a developer shell that exports it does not leak in."""
-    if value is None:
-        monkeypatch.delenv(vc3.SAFETY_CHECKER_ENV, raising = False)
-    else:
-        monkeypatch.setenv(vc3.SAFETY_CHECKER_ENV, value)
+def _snapshot_path(repo, root = "/home/me/.cache/huggingface/hub"):
+    return f"{root}/models--{repo.replace('/', '--')}/snapshots/{_pinned(repo)[0]}"
 
 
-def _guardrail_package(
-    monkeypatch,
-    present,
-    error = None,
-):
-    """Answer ``find_spec("cosmos_guardrail")``: present, absent, or raising ``error``. Every other name resolves as
-    usual. Returns the names asked about."""
-    real_find_spec = importlib.util.find_spec
-    asked = []
-
-    def find_spec(name, package = None):
-        if name != vc3.GUARDRAIL_PACKAGE:
-            return real_find_spec(name, package)
-        asked.append(name)
-        if error is not None:
-            raise error
-        return importlib.machinery.ModuleSpec(name, None) if present else None
-
-    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
-    return asked
+def _write_json(path, payload):
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(json.dumps(payload), encoding = "utf-8")
 
 
-def _set_guardrail(monkeypatch, state: str) -> None:
-    """For the VideoBackend tests, the state an install leaves: ``state`` is "opted out"
-    (UNSLOTH_COSMOS3_SAFETY_CHECKER=0, no package), "installed" (cosmos_guardrail importable, no opt-out) or "absent"
-    (neither). The package is set through sys.modules, which importlib.util.find_spec reads first. Studio's own
-    environment ships without it."""
-    _opt_out(monkeypatch, "0" if state == "opted out" else None)
-    if state == "installed":
-        module = types.ModuleType("cosmos_guardrail")
-        module.__spec__ = importlib.machinery.ModuleSpec("cosmos_guardrail", None)
-        monkeypatch.setitem(sys.modules, "cosmos_guardrail", module)
-    else:
-        # A None entry makes importlib.util.find_spec answer None: not importable, whatever this host has installed.
-        monkeypatch.setitem(sys.modules, "cosmos_guardrail", None)
+def _write_configs(folder, repo):
+    entry = _ckpt(repo)
+    _write_json(folder / "model_index.json", entry["model_index"])
+    _write_json(folder / "config.json", entry["config"])
+    _write_json(folder / "transformer" / "config.json", entry["transformer_config"])
+    return folder
+
+
+def _planned_files(repo):
+    info = SimpleNamespace(
+        siblings = [SimpleNamespace(rfilename = n, size = s) for n, s in _ckpt(repo)["listing"]]
+    )
+    return dict(VideoBackend._base_download_files(info, "pipeline"))
+
+
+def _write_planned_tree(root, repo):
+    """The files a pipeline load stages, as stubs: the fixture's configs, shard indexes naming their shards, one byte
+    per weight."""
+    names = sorted(_planned_files(repo))
+    _write_configs(root, repo)
+    _write_json(root / "scheduler" / "scheduler_config.json", _ckpt(repo)["scheduler_config"])
+    for name in names:
+        path, folder = root / name, name.rpartition("/")[0]
+        if path.exists():
+            continue
+        if name.endswith(".index.json"):
+            shards = [
+                n.rpartition("/")[2] for n in names if n.startswith(folder + "/") and "-of-" in n
+            ]
+            _write_json(path, {"weight_map": {f"w{i}": s for i, s in enumerate(shards)}})
+        elif name.endswith(".json"):
+            _write_json(path, {})
+        else:
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_bytes(b"\0")
+    return root
 
 
 def _hub_cache(monkeypatch, answer):
-    """Stand in for ``huggingface_hub.try_to_load_from_cache``: return ``answer``, or raise it when it is an
-    exception. Returns the (repo_id, filename) lookups."""
     lookups = []
 
     def try_to_load_from_cache(repo_id, filename, *args, **kwargs):
@@ -208,44 +147,444 @@ def _hub_cache(monkeypatch, answer):
     return lookups
 
 
-def _write_index(folder, index):
-    folder.mkdir(parents = True, exist_ok = True)
-    (folder / "model_index.json").write_text(json.dumps(index), encoding = "utf-8")
-    return folder
+def _set_guardrail(monkeypatch, state):
+    """ "opted out" (env 0, no package), "installed" (package, no env) or "absent" (neither)."""
+    if state == "opted out":
+        monkeypatch.setenv(_OPT_OUT_ENV, "0")
+    else:
+        monkeypatch.delenv(_OPT_OUT_ENV, raising = False)
+    module = None
+    if state == "installed":
+        module = types.ModuleType("cosmos_guardrail")
+        module.__spec__ = importlib.machinery.ModuleSpec("cosmos_guardrail", None)
+    # find_spec reads sys.modules first; a None entry is not importable.
+    monkeypatch.setitem(sys.modules, "cosmos_guardrail", module)
 
 
 class _Log:
-    """Records ``logger.<level>(fmt, *args)``; the backend logger is structlog, which caplog does not see."""
-
     def __init__(self):
         self.lines = []
 
     def info(self, fmt, *args, **kwargs):
-        self.lines.append(("info", fmt % args if args else fmt))
+        self.lines.append(("info", fmt % args))
 
     def warning(self, fmt, *args, **kwargs):
-        self.lines.append(("warning", fmt % args if args else fmt))
+        self.lines.append(("warning", fmt % args))
+
+
+# ── detection and refusals ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "identifier, expected",
+    [
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "wan2.2-ti2v-5b"),
+        ("MiniMaxAI/MiniMax-H3", "minimax-h3"),
+        (NANO, "cosmos3-nano"),
+        ("NVIDIA/COSMOS3-EDGE", "cosmos3-edge"),
+        (_snapshot_path(NANO), "cosmos3-nano"),
+        (_snapshot_path(EDGE, "C:\\Users\\me\\hub").replace("/", "\\"), "cosmos3-edge"),
+        # A marker outside the model's own name, or not a whole word of it, decides nothing.
+        ("reasoner-lab/Cosmos3-Edge", "cosmos3-edge"),
+        ("/srv/cosmos3-edge-fp8/exports/Cosmos3-Edge", "cosmos3-edge"),
+        ("/data/Cosmos3-Nano-simple", "cosmos3-nano"),
+        (SUPER, None),
+        ("nvidia/Cosmos-Reason1-7B", None),
+        ("/data/models/Cosmos3", None),
+        ("nvidia/Cosmos3-Nano-Reasoner", None),
+        (EDGE_POLICY, None),
+        ("/models/cosmos3_edge_fp8/", None),
+    ],
+)
+def test_detection(identifier, expected):
+    fam = vf.detect_video_family(identifier)
+    assert (fam.name if fam else None) == expected
+    if fam is not None:
+        assert vf.video_checkpoint_refusal(fam, identifier) is None
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        (" COSMOS3.EDGE ", "cosmos3-edge"),
+        ("cosmos", None),
+        ("cosmos3", None),
+        ("cosmos3_omni", None),
+    ],
+)
+def test_family_override(override, expected):
+    # A bare token would claim Super, the Reasoners and Cosmos-Predict2's "cosmos" GGUF arch alike.
+    fam = vf.detect_video_family("x", override = override)
+    assert (fam.name if fam else None) == expected
+
+
+@pytest.mark.parametrize(
+    "repo, kwargs, reason",
+    [
+        ("/models/Cosmos3-Nano-Reasoner/", {}, _REASONER),
+        ("nvidia/Cosmos3-Nano-Policy-DROID", {}, _CONDITIONED),
+        ("/data/COSMOS3.NANO.FP8", {"model_kind": "pipeline"}, _CONDITIONED),
+        # An override cannot make refused weights runnable, in their own lineage or another.
+        ("nvidia/Cosmos3-Nano-Reasoner", {"family_override": "cosmos3-nano"}, _REASONER),
+        (EDGE_POLICY, {"family_override": "wan2.2-ti2v-5b"}, _CONDITIONED),
+        # The display id and the picked file are judged too.
+        (EDGE, {"display_repo_id": "nvidia/Cosmos3-Edge-Reasoner"}, _REASONER),
+        (
+            "someone/files",
+            {"gguf_filename": "cosmos3-nano-reasoner-Q4_K_M.gguf", "model_kind": "gguf"},
+            _REASONER,
+        ),
+        # Cosmos3OmniTransformer has no from_single_file (test_the_fakes_match_the_installed_pipeline).
+        (NANO, {"gguf_filename": "cosmos3-edge-Q8_0.gguf"}, _PIPELINE_ONLY),
+        (
+            NANO,
+            {"gguf_filename": "cosmos3_nano.safetensors", "model_kind": "single_file"},
+            _PIPELINE_ONLY,
+        ),
+    ],
+)
+def test_non_generator_builds_are_refused_by_name(repo, kwargs, reason):
+    with pytest.raises(ValueError) as refused:
+        VideoBackend().validate_load_request(repo, **kwargs)
+    # Not a dead end: the refusal names the two checkpoints that do load.
+    assert all(part in str(refused.value) for part in (reason, NANO, EDGE)), refused.value
+
+
+# ── a local folder answers by its configs ───────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "repo, expected",
+    [(NANO, "cosmos3-nano"), (EDGE, "cosmos3-edge"), (SUPER, None), (EDGE_POLICY, None)],
+)
+def test_a_renamed_local_folder_is_named_by_its_shipped_configs(tmp_path, repo, expected):
+    from core.inference.video import _detect_load_family
+    from core.training.diffusion_train_common import resolve_trainable_family
+
+    folder = _write_configs(tmp_path / "my-render-model", repo)
+    assert vf.detect_video_family(str(folder)) is None
+    assert vf.local_cosmos3_pipeline_family(str(folder)) == expected
+    fam = _detect_load_family(str(folder), None, None)
+    assert (fam.name if fam else None) == expected
+    if expected:
+        # Generation only: training refuses it by the same configs, naming a video family that trains.
+        with pytest.raises(ValueError, match = f"{expected}.*ltx-2"):
+            resolve_trainable_family(str(folder))
+
+
+@pytest.mark.parametrize("hidden", [4096, 2048, 5120])
+@pytest.mark.parametrize("model_type", ["cosmos3_omni", "cosmos3_edge", "qwen3_vl", None])
+def test_local_folder_matrix(tmp_path, model_type, hidden):
+    entry = _ckpt(NANO)
+    _write_json(tmp_path / "model_index.json", entry["model_index"])
+    if model_type is not None:
+        _write_json(tmp_path / "config.json", {"model_type": model_type})
+    transformer = {**entry["transformer_config"], "hidden_size": hidden}
+    _write_json(tmp_path / "transformer" / "config.json", transformer)
+    # Without a root config.json (a save_pretrained export) the transformer's class and size decide.
+    served = {
+        (t, h): f for t, h, f in (("cosmos3_omni", 4096, "nano"), ("cosmos3_edge", 2048, "edge"))
+    }
+    served.update({(None, 4096): "nano", (None, 2048): "edge"})
+    name = served.get((model_type, hidden))
+    assert vf.local_cosmos3_pipeline_family(str(tmp_path)) == (name and f"cosmos3-{name}")
+
+
+@pytest.mark.parametrize(
+    "broken, text",
+    [("model_index.json", None), ("model_index.json", '{"_class_name": "WanPipeline"}')]
+    + [("model_index.json", "[]"), ("transformer/config.json", "4096")],
+)
+def test_an_unreadable_or_foreign_folder_is_not_claimed(tmp_path, broken, text):
+    folder = _write_configs(tmp_path / "renamed", EDGE)
+    if text is None:
+        (folder / broken).unlink()
+    else:
+        (folder / broken).write_text(text, encoding = "utf-8")
+    for path in (str(folder), None, "", str(folder / "config.json"), EDGE):
+        assert vf.local_cosmos3_pipeline_family(path) is None, path
+
+
+@pytest.mark.parametrize(
+    "parent, repo, family",
+    [("Cosmos3-Nano-exports", EDGE, "cosmos3-edge"), ("cosmos3-edge-runs", NANO, "cosmos3-nano")],
+)
+def test_a_local_folders_configs_outrank_a_path_naming_the_other_size(
+    tmp_path, parent, repo, family
+):
+    from core.inference.video import _resolve_load_family_with_source
+
+    folder = _write_configs(tmp_path / parent / "checkpoint", repo)
+    assert vf.detect_video_family(str(folder)).name != family
+    assert _resolve_load_family_with_source(str(folder), None, None)[0].name == family
+
+
+# ── load_request_refusal and the missing text encoder ────────────────────────
+
+
+@pytest.mark.parametrize("scheme", ["fp8", "int8"])
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_an_explicit_text_encoder_quant_is_refused_at_validation(
+    fake_runtime, monkeypatch, repo, scheme
+):
+    _set_guardrail(monkeypatch, "opted out")
+    # A GPU that runs the scheme, so only the Cosmos3 refusal can refuse.
+    monkeypatch.setattr(video_mod, "te_quant_supported", lambda *args, **kwargs: True)
+    monkeypatch.setattr(video_mod, "torchao_quantize_importable", lambda: True)
+    with pytest.raises(ValueError) as refused:
+        VideoBackend().validate_load_request(repo, model_kind = "pipeline", text_encoder_quant = scheme)
+    assert "no separate text" in str(refused.value)
+    assert "dense bf16 encoder" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "table, expected",
+    [((30.4, 0.0, 1.4), True), ((30.4, 0, 1.4), True), ((30.4, 0.05, 1.4), False)]
+    + [((30.4, float("nan"), 1.4), False), ((30.4,), False), (None, False)],
+)
+def test_no_text_encoder_is_a_zero_text_term(table, expected):
+    assert video_family_has_no_text_encoder(SimpleNamespace(bf16_components_gb = table)) is expected
+    if table == (30.4, 0.0, 1.4):
+        # A Cosmos3 snapshot has no text_encoder/; requiring one sends every cached load to the Hub.
+        no_encoder = {f.name for f in vf._FAMILIES if video_family_has_no_text_encoder(f)}
+        assert no_encoder == set(vf.COSMOS3_FAMILIES)
+        assert video_required_roles(_fam("cosmos3-edge")) == ("transformer", "vae")
+        assert "text_encoder" in video_required_roles(_fam("wan2.2-ti2v-5b"))
+
+
+# ── guardrail ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value, opted_out",
+    [(v, True) for v in ("0", "FALSE", "no", " Off\n")]
+    + [(v, False) for v in (None, "", "1", "true", "disabled")],
+)
+def test_the_opt_out_takes_only_explicit_off_values(monkeypatch, value, opted_out):
+    if value is None:
+        monkeypatch.delenv(_OPT_OUT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_OPT_OUT_ENV, value)
+    assert vc3.safety_checker_opted_out() is opted_out
+
+
+@pytest.mark.parametrize(
+    "answer, installed",
+    [(True, True), (False, False), (ImportError("finder"), False), (ValueError("no spec"), False)],
+)
+def test_guardrail_presence_is_find_spec_on_cosmos_guardrail(monkeypatch, answer, installed):
+    real = importlib.util.find_spec
+
+    def find_spec(name, package = None):
+        if name != "cosmos_guardrail":
+            return real(name, package)
+        if isinstance(answer, Exception):
+            raise answer
+        return importlib.machinery.ModuleSpec(name, None) if answer else None
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    assert vc3.guardrail_installed() is installed
+
+
+_NANO_INDEX = json.dumps(_ckpt(NANO)["model_index"])
+_EDGE_INDEX = json.dumps(_ckpt(EDGE)["model_index"])
+_EDGE_ON = json.dumps({**_ckpt(EDGE)["model_index"], "enable_safety_checker": True})
+
+
+@pytest.mark.parametrize(
+    "source, repo, content, enabled",
+    [
+        # Nano's index leaves the key out: the pipeline default (on) applies.
+        ("index", NANO, _NANO_INDEX, True),
+        ("index", EDGE, _EDGE_INDEX, False),
+        ("index", EDGE, _EDGE_ON, True),
+        # A string is truthy to the pipeline's __init__ too.
+        ("index", EDGE, _EDGE_INDEX.replace("false", '"false"'), True),
+        # A folder named like Edge: only its own index turns the checker off.
+        ("folder", None, _NANO_INDEX, True),
+        ("folder", None, _EDGE_INDEX, False),
+        ("folder", None, None, True),
+        ("folder", None, "{not json", True),
+        # The Hub cache's copy decides over the base repos' shipped values, which a miss falls back to.
+        ("cache", EDGE, _EDGE_ON, True),
+        ("cache", NANO, None, True),
+        ("cache", EDGE.upper(), None, False),
+        ("cache", EDGE, ValueError("bad repo id"), False),
+    ],
+)
+def test_the_checkpoints_index_decides_the_safety_checker(
+    monkeypatch, tmp_path, source, repo, content, enabled
+):
+    monkeypatch.chdir(tmp_path)
+    answer = content if isinstance(content, Exception) else None
+    if source == "cache" and isinstance(content, str):
+        answer = str(tmp_path / "blob.json")
+        Path(answer).write_text(content, encoding = "utf-8")
+    lookups = _hub_cache(monkeypatch, answer)
+    if source == "index":
+        assert vc3.checkpoint_enables_safety_checker(repo, json.loads(content)) is enabled
+    elif source == "folder":
+        folder = tmp_path / "Cosmos3-Edge"
+        folder.mkdir()
+        if content is not None:
+            (folder / "model_index.json").write_text(content, encoding = "utf-8")
+        assert vc3.checkpoint_enables_safety_checker(str(folder)) is enabled
+    else:
+        assert vc3.checkpoint_enables_safety_checker(repo) is enabled
+    assert lookups == ([(repo, "model_index.json")] if source == "cache" else [])
+
+
+@pytest.mark.parametrize("guardrail", ["opted out", "installed", "absent"])
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
+    _hub_cache(monkeypatch, None)
+    _set_guardrail(monkeypatch, guardrail)
+    log = _Log()
+    monkeypatch.setattr(vc3, "logger", log)
+    refusal = vc3.guardrail_refusal(repo)
+    # Refused only where from_pretrained would raise ImportError: checker on, no package, no opt-out.
+    if repo == NANO and guardrail == "absent":
+        for part in (f"'{NANO}'", "pip install cosmos-guardrail", f"{_OPT_OUT_ENV}=0"):
+            assert part in refusal, part
+        assert vc3.guardrail_refusal(NANO, index = _ckpt(EDGE)["model_index"]) is None
+    else:
+        assert refusal is None
+    # Video only (no sound tokenizer); the checkpoint keeps its guardrail unless opted out.
+    opted_out = guardrail == "opted out"
+    expected = {"sound_tokenizer": None, **({"enable_safety_checker": False} if opted_out else {})}
+    assert vc3.pipeline_kwargs(repo) == expected
+    # Skipping a checker the checkpoint enables is logged; Edge ships it off.
+    warned = [line for level, line in log.lines if level == "warning"]
+    assert len(warned) == (repo == NANO and opted_out)
+    assert all(_OPT_OUT_ENV in line and repo in line for line in warned)
+
+
+# ── listing and download plan ────────────────────────────────────────────────
+
+
+def _listing(repo, *extra):
+    return tuple(n for n, _s in _ckpt(repo)["listing"]) + extra
+
+
+@pytest.mark.parametrize(
+    "listing, expected",
+    [
+        (_listing(NANO), True),
+        (_listing(EDGE), True),
+        # Wan, LTX-2.5's pack and MiniMax-H3 (the last two also ship modular_model_index.json).
+        (("model_index.json", "text_encoder/c.json", "tokenizer/t.json"), False),
+        (("modular_model_index.json", "text_encoder/c.json", "connectors/c.json"), False),
+        (("modular_model_index.json", "text_encoder/m.bin", "transformer_ref/c.json"), False),
+        ((), False),
+        (_listing(EDGE, "text_encoder/model.safetensors"), False),
+        (("model_index.json", "text_tokenizer.json"), False),
+    ],
+)
+def test_is_cosmos3_listing(listing, expected):
+    # A one-shot iterator in sorted order, as the planner passes it: text_encoder/ sorts first.
+    assert vc3.is_cosmos3_listing(iter(sorted(listing))) is expected
+
+
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_the_download_plan_stages_every_component_the_pipeline_reads(tmp_path, repo):
+    # The root modular_model_index.json once made the planner read it as H3's layout and drop text_tokenizer/.
+    planned = _planned_files(repo)
+    assert "model_index.json" in planned
+    for folder in ("scheduler/", "text_tokenizer/", "transformer/", "vae/"):
+        wanted = {name for name in _listing(repo) if name.startswith(folder)}
+        assert wanted and wanted <= set(planned), folder
+    # Nano's sound_tokenizer is a diffusers model (config + weights), not a text tokenizer.
+    root = _write_planned_tree(tmp_path / "snapshot", repo)
+    assert local_pipeline_components_are_complete(root, "model_index.json")
+
+
+# ── scheduler overrides ──────────────────────────────────────────────────────
+
+
+class _FakeScheduler:
+    def __init__(self, config):
+        self.config = dict(config)
+
+    @classmethod
+    def from_config(cls, config, **kwargs):
+        return cls({**dict(config), **kwargs})
+
+
+class _RejectingScheduler(_FakeScheduler):
+    @classmethod
+    def from_config(cls, config, **kwargs):
+        raise NotImplementedError("bh3 is not implemented")
+
+
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_scheduler_overrides(repo):
+    shipped = _ckpt(repo)["scheduler_config"]
+    overrides = _fam(_FAMILY[repo]).scheduler_overrides
+    pipe, log = SimpleNamespace(scheduler = _FakeScheduler(shipped)), _Log()
+    assert apply_scheduler_overrides(pipe, overrides, log) is True
+    assert pipe.scheduler.config == {**shipped, **_CARD_SCHEDULER[repo]}
+    rebuilt = pipe.scheduler
+    # Applied once: the rebuilt config already holds them.
+    assert apply_scheduler_overrides(pipe, overrides, log) is False and pipe.scheduler is rebuilt
+    assert [level for level, _ in log.lines] == ["info"]
+    for pipe, given in (
+        (SimpleNamespace(scheduler = _FakeScheduler(shipped)), ()),
+        (SimpleNamespace(scheduler = _FakeScheduler(shipped)), None),
+        (SimpleNamespace(), overrides),
+        (SimpleNamespace(scheduler = object()), overrides),
+    ):
+        before = getattr(pipe, "scheduler", None)
+        assert apply_scheduler_overrides(pipe, given) is False
+        assert getattr(pipe, "scheduler", None) is before
+    # A scheduler rejecting them keeps the shipped schedule and says why.
+    pipe, log = SimpleNamespace(scheduler = _RejectingScheduler(shipped)), _Log()
+    assert apply_scheduler_overrides(pipe, overrides, log) is False
+    assert type(pipe.scheduler) is _RejectingScheduler
+    ((level, line),) = log.lines
+    assert level == "warning" and "flow_shift" in line and "not implemented" in line
+
+
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_the_overrides_sample_the_cards_schedule_on_the_real_unipc(repo):
+    pytest.importorskip("diffusers", reason = "Backend CI installs no diffusers")
+    import numpy as np
+    import torch
+    from diffusers import UniPCMultistepScheduler as UniPC
+
+    shipped, steps = _ckpt(repo)["scheduler_config"], _fam(_FAMILY[repo]).default_steps
+    pipe = SimpleNamespace(scheduler = UniPC.from_config(shipped))
+    assert apply_scheduler_overrides(pipe, _fam(_FAMILY[repo]).scheduler_overrides) is True
+    card = UniPC.from_config(shipped, **_CARD_SCHEDULER[repo])
+    assert dict(pipe.scheduler.config) == dict(card.config)
+    # Under use_native_flow_schedule (Edge's index) the pipeline passes its own linspace sigmas.
+    native = _ckpt(repo)["model_index"].get("use_native_flow_schedule", False)
+    t = np.linspace(1.0 - 1.0 / 1000, 0.0, steps + 1)[:-1]
+
+    def sigmas(scheduler):
+        scheduler.set_timesteps(steps, device = "cpu", **({"sigmas": t} if native else {}))
+        return scheduler.sigmas.clone()
+
+    ours, before = sigmas(pipe.scheduler), sigmas(UniPC.from_config(shipped))
+    if repo == EDGE:
+        expected = torch.from_numpy(12.0 * t / (1.0 + 11.0 * t))
+        assert torch.allclose(ours[:-1].double(), expected, atol = 1e-6)
+        assert not torch.equal(ours, before)
+    else:
+        # Nano's shipped Karras sigmas pre-empt the only branch reading flow_shift: the shift is inert.
+        assert torch.equal(ours, before)
+
+
+# ── untiled encode ───────────────────────────────────────────────────────────
 
 
 class _FakeCosmos3Vae(_FakeWanVae):
-    """``AutoencoderKLWan`` as the Cosmos3 load and render touch it: diffusers' ``use_tiling`` flag, which
-    ``enable_tiling`` sets, and an ``encode`` and ``decode`` that log whether tiling was on at each call (``calls``).
-    ``Cosmos3OmniPipeline._encode_video`` calls ``vae.encode`` once per render, on the conditioning clip
-    (pipeline_cosmos3_omni.py:507-515, :866-884). ``encode_raises`` holds errors for the next encodes to raise."""
-
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
-        self.use_tiling = False
-        self.calls: list = []
-        self.encode_raises: list = []
+        self.use_tiling, self.calls, self.encode_raises = False, [], []
 
-    def enable_tiling(self) -> None:
+    def enable_tiling(self):
         super().enable_tiling()
         self.use_tiling = True
-
-    def disable_tiling(self) -> None:
-        self.tiled = False
-        self.use_tiling = False
 
     def encode(self, *args, **kwargs):
         self.calls.append("encode tiled" if self.use_tiling else "encode untiled")
@@ -258,689 +597,111 @@ class _FakeCosmos3Vae(_FakeWanVae):
         return super().decode(*args, **kwargs)
 
 
-# torch.OutOfMemoryError (torch.cuda.OutOfMemoryError) by its name, without importing torch: is_oom_error matches the
-# class name as well as the message.
-_TorchOutOfMemoryError = type("OutOfMemoryError", (RuntimeError,), {})
+# torch.OutOfMemoryError by class name, without importing torch; a RuntimeError by its message.
+_OOM_CLASS = type("OutOfMemoryError", (RuntimeError,), {})("x")
+_OOM = RuntimeError("CUDA out of memory.")
+_RETRIED = ["encode untiled", "empty_cache", "encode tiled"]
 
 
-def _record_cuda_cache_flushes(monkeypatch, calls: list) -> None:
-    """``import torch`` inside the out-of-memory retry gets a stand-in whose ``cuda.empty_cache`` appends
-    "empty_cache" to ``calls``, so the order of flush and retry shows on any host and no real torch is touched."""
+@pytest.mark.parametrize(
+    "tiled, raises, calls, fails",
+    [
+        (True, [], ["encode untiled"], False),
+        (False, [], ["encode untiled"], False),
+        (True, [_OOM_CLASS], _RETRIED, False),
+        (True, [_OOM], _RETRIED, False),
+        # Once: a tiled retry that runs out too fails as it would without the wrapper.
+        (True, [_OOM, _OOM], _RETRIED, True),
+        (True, [ValueError("expected a 5-D clip")], ["encode untiled"], True),
+        # Tiling off: the stock encode, whose OOM reaches the caller with no tiled retry.
+        (False, [_OOM_CLASS], ["encode untiled"], True),
+    ],
+)
+def test_untiled_encode(monkeypatch, tiled, raises, calls, fails):
+    vae = _FakeCosmos3Vae()
+    if tiled:
+        vae.enable_tiling()
     torch = types.ModuleType("torch")
-    torch.cuda = types.SimpleNamespace(empty_cache = lambda: calls.append("empty_cache"))
+    torch.cuda = SimpleNamespace(empty_cache = lambda: vae.calls.append("empty_cache"))
     monkeypatch.setitem(sys.modules, "torch", torch)
-
-
-# ── module glue / guardrail ──────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("key", sorted(_CHECKPOINTS))
-def test_every_cosmos3_fixture_listing_has_the_cosmos3_layout(key):
-    # Each Cosmos3 Diffusers repo ships a root modular_model_index.json and a text_tokenizer/ (the transformer is its
-    # own text model). Without this check the download planner read them as MiniMax-H3's modular layout and dropped
-    # text_tokenizer/, which Cosmos3OmniPipeline.__init__ requires. The planner passes a one-shot generator.
-    listing = _CHECKPOINTS[key]["listing"]
-    assert any(name == "modular_model_index.json" for name, _size in listing)
-    assert vc3.is_cosmos3_listing(name for name, _size in listing) is True
-
-
-@pytest.mark.parametrize(
-    "listing",
-    [_WAN_LISTING, _LTX25_LISTING, _H3_LISTING],
-    ids = ["wan2.2", "ltx-2.5-pack", "minimax-h3"],
-)
-def test_wan_ltx25_and_h3_listings_are_not_read_as_cosmos3(listing):
-    # Each has text_encoder/ and tokenizer/, never text_tokenizer/. For H3, which also ships modular_model_index.json,
-    # this keeps the planner's H3 filter engaged.
-    assert vc3.is_cosmos3_listing(iter(listing)) is False
-
-
-@pytest.mark.parametrize(
-    "listing, expected",
-    [
-        ((), False),
-        (("model_index.json", "text_tokenizer/tokenizer.json"), True),
-        # A Cosmos3 listing that gained a text encoder (a repack with an external one) is not this layout.
-        (
-            tuple(name for name, _size in _EDGE["listing"]) + ("text_encoder/model.safetensors",),
-            False,
-        ),
-        # Folders only: a root file named like the folder is not the folder.
-        (("model_index.json", "text_tokenizer.json", "tokenizer/tokenizer.json"), False),
-    ],
-    ids = ["empty", "tokenizer-only", "edge-plus-text-encoder", "root-file-only"],
-)
-def test_the_cosmos3_layout_needs_a_text_tokenizer_folder_and_no_text_encoder(listing, expected):
-    # A one-shot iterator, as the planner passes it, in sorted order: text_encoder/ comes before text_tokenizer/,
-    # so a check that walked the iterator twice would no longer see the encoder.
-    assert vc3.is_cosmos3_listing(iter(sorted(listing))) is expected
-
-
-@pytest.mark.parametrize(
-    "value, opted_out",
-    [
-        ("0", True),
-        ("false", True),
-        ("FALSE", True),
-        ("no", True),
-        ("off", True),
-        (" Off\n", True),
-        (None, False),
-        ("", False),
-        ("1", False),
-        ("true", False),
-        ("yes", False),
-        ("on", False),
-        ("disabled", False),
-    ],
-)
-def test_the_cosmos3_safety_checker_opt_out_takes_only_explicit_off_values(
-    monkeypatch, value, opted_out
-):
-    # Turning a safety filter off has to be explicit: any other value, or none, keeps the checkpoint's choice.
-    assert vc3.SAFETY_CHECKER_ENV == "UNSLOTH_COSMOS3_SAFETY_CHECKER"
-    _opt_out(monkeypatch, value)
-    assert vc3.safety_checker_opted_out() is opted_out
-
-
-@pytest.mark.parametrize("present", [True, False])
-def test_cosmos3_guardrail_presence_is_find_spec_on_cosmos_guardrail(monkeypatch, present):
-    # cosmos_guardrail is the module diffusers imports CosmosSafetyChecker from (pipeline_cosmos3_omni.py:50-51 at
-    # d42ebf9); find_spec answers without importing it.
-    asked = _guardrail_package(monkeypatch, present)
-    assert vc3.GUARDRAIL_PACKAGE == "cosmos_guardrail"
-    assert vc3.guardrail_installed() is present
-    assert asked == ["cosmos_guardrail"]
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        ImportError("No module named 'cosmos_guardrail'"),
-        ValueError("cosmos_guardrail.__spec__ is None"),
-    ],
-    ids = ["ImportError", "ValueError"],
-)
-def test_a_find_spec_error_reads_as_cosmos3_guardrail_missing(monkeypatch, error):
-    # find_spec raises ValueError for a module left in sys.modules without a spec (a half-done import) and
-    # ImportError when a finder fails: a broken install counts as no install.
-    _guardrail_package(monkeypatch, True, error = error)
-    assert vc3.guardrail_installed() is False
-
-
-def test_the_cosmos3_guardrail_package_is_the_one_the_real_pipeline_imports():
-    _diffusers_with_cosmos3()
-    from diffusers.pipelines.cosmos import pipeline_cosmos3_omni
-
-    # Studio checks for this package before the download; diffusers imports the checker from it and raises
-    # ImportError in __init__ without it (pipeline_cosmos3_omni.py:50-58 at d42ebf9), after the download.
-    tree = ast.parse(inspect.getsource(pipeline_cosmos3_omni))
-    imported = {
-        (node.module, alias.name)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    assert (vc3.GUARDRAIL_PACKAGE, "CosmosSafetyChecker") in imported
-
-
-@pytest.mark.parametrize(
-    "repo, index, enabled",
-    [
-        # Nano's model_index.json leaves the key out, so Cosmos3OmniPipeline.__init__'s default (True) applies.
-        (NANO, _NANO["model_index"], True),
-        # Edge's ships "enable_safety_checker": false.
-        (EDGE, _EDGE["model_index"], False),
-        # The index in hand decides, whatever the base-repo table says.
-        (EDGE, {**_EDGE["model_index"], "enable_safety_checker": True}, True),
-        (NANO, {**_NANO["model_index"], "enable_safety_checker": False}, False),
-        (_UNKNOWN_REPO, {}, True),
-        # Only a JSON false turns it off. A string is truthy to the pipeline's __init__ too, which then builds the
-        # checker (pipeline_cosmos3_omni.py:437-439 at d42ebf9).
-        (EDGE, {**_EDGE["model_index"], "enable_safety_checker": "false"}, True),
-    ],
-    ids = ["nano", "edge", "edge-index-on", "nano-index-off", "empty-index", "string-false"],
-)
-def test_an_index_dict_decides_the_cosmos3_safety_checker(monkeypatch, repo, index, enabled):
-    lookups = _hub_cache(monkeypatch, None)
-    assert vc3.checkpoint_enables_safety_checker(repo, index) is enabled
-    assert lookups == []  # an index in hand is never looked up
-
-
-@pytest.mark.parametrize(
-    "folder, index, enabled",
-    [
-        ("Cosmos3-Nano", _NANO["model_index"], True),
-        ("Cosmos3-Edge", _EDGE["model_index"], False),
-        # The folder's own index decides, not its name.
-        ("Cosmos3-Edge", _NANO["model_index"], True),
-        ("Cosmos3-Nano", _EDGE["model_index"], False),
-    ],
-    ids = ["nano", "edge", "nano-index-in-edge-folder", "edge-index-in-nano-folder"],
-)
-def test_a_local_folder_index_decides_the_cosmos3_safety_checker_not_its_name(
-    monkeypatch, tmp_path, folder, index, enabled
-):
-    lookups = _hub_cache(monkeypatch, None)
-    path = _write_index(tmp_path / folder, index)
-    assert vc3.checkpoint_enables_safety_checker(str(path)) is enabled
-    assert lookups == []  # a local folder never asks the Hub cache
-
-
-@pytest.mark.parametrize(
-    "content",
-    [None, "{not json", "[]", '"enable_safety_checker"', b"\xff\xfe\x00"],
-    ids = ["missing", "malformed", "a-list", "a-string", "not-utf8"],
-)
-def test_an_unreadable_local_index_keeps_the_cosmos3_safety_checker_on(
-    monkeypatch, tmp_path, content
-):
-    # Named like Edge, whose shipped index turns the checker off: a folder's name never turns it off.
-    folder = tmp_path / "Cosmos3-Edge"
-    folder.mkdir()
-    if isinstance(content, bytes):
-        (folder / "model_index.json").write_bytes(content)
-    elif content is not None:
-        (folder / "model_index.json").write_text(content, encoding = "utf-8")
-    lookups = _hub_cache(monkeypatch, None)
-    assert vc3._cached_model_index(str(folder)) is None
-    assert vc3.checkpoint_enables_safety_checker(str(folder)) is True
-    assert lookups == []
-
-
-@pytest.mark.parametrize(
-    "repo, cached, enabled",
-    [
-        (NANO, _NANO["model_index"], True),
-        (EDGE, _EDGE["model_index"], False),
-        # A later revision that flips the setting is honoured from the cache, over the base-repo table.
-        (EDGE, {**_EDGE["model_index"], "enable_safety_checker": True}, True),
-        (NANO, {**_NANO["model_index"], "enable_safety_checker": False}, False),
-    ],
-    ids = ["nano", "edge", "edge-flipped-on", "nano-flipped-off"],
-)
-def test_the_hf_cache_index_decides_the_cosmos3_safety_checker_over_the_table(
-    monkeypatch, tmp_path, repo, cached, enabled
-):
-    monkeypatch.chdir(tmp_path)  # a Hub id is also a relative path; no folder of that name here
-    blob = _write_index(tmp_path / "blob", cached) / "model_index.json"
-    lookups = _hub_cache(monkeypatch, str(blob))
-    assert vc3.checkpoint_enables_safety_checker(repo) is enabled
-    assert lookups == [(repo, "model_index.json")]
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [None, object(), ValueError("Repo id must use alphanumeric chars or '-', '_', '.'")],
-    ids = ["not-cached", "known-missing-sentinel", "lookup-raises"],
-)
-def test_a_cosmos3_hf_cache_miss_falls_back_to_the_base_repo_table(monkeypatch, tmp_path, answer):
-    # Load validation is network-free, so before the first download only the shipped values are known.
-    monkeypatch.chdir(tmp_path)
-    _hub_cache(monkeypatch, answer)
-    expected = {
-        NANO: True,
-        EDGE: False,
-        EDGE.upper(): False,  # Hub ids match case-insensitively
-        _UNKNOWN_REPO: True,  # the pipeline default
-    }
-    assert {repo: vc3.checkpoint_enables_safety_checker(repo) for repo in expected} == expected
-
-
-def test_a_hub_cache_snapshot_decides_the_cosmos3_safety_checker(monkeypatch, tmp_path):
-    # The real lookup over a real cache layout (refs/main -> snapshots/<sha>/model_index.json), with both hub-cache
-    # roots pointed at it as the suite's conftest pins them. The cached Edge index is flipped on, so a pass means the
-    # snapshot was read, not the base-repo table.
-    import huggingface_hub.constants as hub_constants
-
-    revision, _entry = _pinned(EDGE)
-    hub = tmp_path / "hub"
-    repo_dir = hub / "models--nvidia--Cosmos3-Edge"
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text(revision, encoding = "utf-8")
-    _write_index(
-        repo_dir / "snapshots" / revision, {**_EDGE["model_index"], "enable_safety_checker": True}
-    )
-    monkeypatch.setitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HUB_CACHE", str(hub))
-    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
-    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(hub))
-    monkeypatch.chdir(tmp_path)
-    assert vc3.checkpoint_enables_safety_checker(EDGE) is True
-
-
-@pytest.mark.parametrize("opted_out", [False, True])
-@pytest.mark.parametrize("installed", [False, True])
-@pytest.mark.parametrize("repo, checker_on", [(NANO, True), (EDGE, False)])
-def test_cosmos3_guardrail_refusal_needs_checker_on_package_missing_and_no_opt_out(
-    monkeypatch, repo, checker_on, installed, opted_out
-):
-    # Refuse before eviction and a 35 GB download in the case where from_pretrained would raise ImportError: the
-    # checkpoint enables the checker (Nano's index leaves the pipeline default on, Edge's ships it off), the package
-    # is missing, and the user has not opted out.
-    _hub_cache(monkeypatch, None)
-    _guardrail_package(monkeypatch, installed)
-    _opt_out(monkeypatch, "0" if opted_out else None)
-    refusal = vc3.guardrail_refusal(repo)
-    assert (refusal is not None) is (checker_on and not installed and not opted_out)
-
-
-def test_the_cosmos3_guardrail_refusal_names_the_package_the_install_and_the_opt_out(monkeypatch):
-    _hub_cache(monkeypatch, None)
-    _guardrail_package(monkeypatch, False)
-    _opt_out(monkeypatch, None)
-    message = vc3.guardrail_refusal(NANO)
-    # Actionable either way: install the package (PyPI cosmos-guardrail), or opt out by name.
-    for part in (
-        f"'{NANO}'",
-        "enable_safety_checker",
-        "cosmos_guardrail",
-        "pip install cosmos-guardrail",
-        f"{vc3.SAFETY_CHECKER_ENV}=0",
-    ):
-        assert part in message, part
-    # An index in hand decides without a lookup: Edge's ships the checker off.
-    assert vc3.guardrail_refusal(NANO, index = _EDGE["model_index"]) is None
-
-
-@pytest.mark.parametrize("installed", [False, True])
-@pytest.mark.parametrize("repo", [NANO, EDGE])
-def test_cosmos3_pipeline_kwargs_drop_sound_and_keep_the_checkpoint_guardrail(
-    monkeypatch, repo, installed
-):
-    # Studio renders video only, so Nano's 1.99 GB sound tokenizer never loads (None skips an optional component).
-    # Without the opt-out there is no enable_safety_checker kwarg: the checkpoint's model_index.json decides.
-    _hub_cache(monkeypatch, None)
-    _guardrail_package(monkeypatch, installed)
-    _opt_out(monkeypatch, None)
     log = _Log()
-    monkeypatch.setattr(vc3, "logger", log)
-    assert vc3.pipeline_kwargs(repo) == {"sound_tokenizer": None}
-    assert log.lines == []
-
-
-@pytest.mark.parametrize("installed", [False, True])
-@pytest.mark.parametrize("repo, warns", [(NANO, True), (EDGE, False)])
-def test_the_cosmos3_opt_out_turns_the_checker_off_and_warns_when_the_checkpoint_enables_it(
-    monkeypatch, repo, warns, installed
-):
-    # The opt-out is the user's explicit choice, so it holds whether or not cosmos_guardrail is installed.
-    _hub_cache(monkeypatch, None)
-    _guardrail_package(monkeypatch, installed)
-    _opt_out(monkeypatch, "0")
-    log = _Log()
-    monkeypatch.setattr(vc3, "logger", log)
-    assert vc3.pipeline_kwargs(repo) == {"sound_tokenizer": None, "enable_safety_checker": False}
-    # The log records that a checker the checkpoint asks for was skipped; Edge ships it off, so nothing is skipped.
-    warnings = [line for level, line in log.lines if level == "warning"]
-    assert len(warnings) == (1 if warns else 0)
-    assert all(vc3.SAFETY_CHECKER_ENV in line and repo in line for line in warnings)
-
-
-def test_cosmos3_untiled_encode_turns_tiling_off_for_the_encode_and_restores_it():
-    # Cosmos3's image-to-video conditions every denoising step on the VAE-encoded first-frame clip, so a tiled encode's
-    # small shift grows across the clip: Nano i2v at 1280x720x189 against plain diffusers on the same stack measured
-    # 24.7 dB mean PSNR with the tiled encode and 34.5 dB untiled. The decode keeps the load's tiling.
-    vae = _FakeCosmos3Vae()
-    vae.enable_tiling()
-    log = _Log()
-    assert vc3.install_untiled_encode(types.SimpleNamespace(vae = vae), logger = log) is True
-    assert getattr(vae.encode, "_unsloth_untiled_encode", False) is True
+    assert vc3.install_untiled_encode(SimpleNamespace(vae = vae), logger = log) is True
+    vae.encode_raises = list(raises)
     clip = object()
-    assert vae.encode(clip, return_dict = False) == ("latents", (clip,), {"return_dict": False})
-    assert vae.calls == ["encode untiled"]
-    assert vae.use_tiling is True
-    assert [level for level, _line in log.lines] == ["info"]
-
-
-def test_cosmos3_untiled_encode_is_a_plain_call_when_tiling_is_off(monkeypatch):
-    # With tiling off the stock encode already runs untiled: the wrapper changes nothing, and an out-of-memory there
-    # reaches the caller as it would without it (no tiled retry the load never chose).
-    vae = _FakeCosmos3Vae()
-    _record_cuda_cache_flushes(monkeypatch, vae.calls)
-    log = _Log()
-    assert vc3.install_untiled_encode(types.SimpleNamespace(vae = vae), logger = log) is True
-    clip = object()
-    assert vae.encode(clip) == ("latents", (clip,), {})
-    vae.encode_raises = [_TorchOutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")]
-    with pytest.raises(_TorchOutOfMemoryError):
-        vae.encode(clip)
-    assert vae.calls == ["encode untiled", "encode untiled"]
-    assert vae.use_tiling is False
-    assert [level for level, _line in log.lines] == ["info"]  # the install line only
-
-
-@pytest.mark.parametrize(
-    "error_type, message",
-    [
-        # torch's class, matched by name whatever the message says.
-        (_TorchOutOfMemoryError, "Tried to allocate 2.00 GiB"),
-        # A plain RuntimeError, matched by its message.
-        (RuntimeError, "CUDA out of memory. Tried to allocate 2.00 GiB"),
-    ],
-    ids = ["oom-class", "oom-message"],
-)
-def test_cosmos3_untiled_encode_retries_tiled_once_on_out_of_memory(
-    monkeypatch, error_type, message
-):
-    # The untiled encode of a long clip can need more memory than the tiled one the load planned for: fall back to
-    # tiled rather than fail the render, once the failed attempt's tensors are gone and the allocator cache is emptied.
-    assert diffusion_batched.is_oom_error(error_type(message))
-    vae = _FakeCosmos3Vae()
-    vae.enable_tiling()
-    _record_cuda_cache_flushes(monkeypatch, vae.calls)
-    log = _Log()
-    assert vc3.install_untiled_encode(types.SimpleNamespace(vae = vae), logger = log) is True
-    clip = object()
-    vae.encode_raises = [error_type(message)]
-    assert vae.encode(clip) == ("latents", (clip,), {})
-    assert vae.calls == ["encode untiled", "empty_cache", "encode tiled"]
-    assert vae.use_tiling is True
-    warnings = [line for level, line in log.lines if level == "warning"]
-    assert len(warnings) == 1 and "out of memory" in warnings[0] and "tiled" in warnings[0]
-    # Once: when the tiled retry runs out of memory too, the encode fails as it would without the wrapper.
-    vae.calls.clear()
-    vae.encode_raises = [error_type(message), error_type(message)]
-    with pytest.raises(error_type):
-        vae.encode(clip)
-    assert vae.calls == ["encode untiled", "empty_cache", "encode tiled"]
-    assert vae.use_tiling is True
-
-
-def test_cosmos3_untiled_encode_reraises_other_errors_with_tiling_restored(monkeypatch):
-    # Only memory earns the tiled retry; any other failure is the encode's own and must surface unchanged, with the
-    # flag back on for the decode and the next render.
-    vae = _FakeCosmos3Vae()
-    vae.enable_tiling()
-    _record_cuda_cache_flushes(monkeypatch, vae.calls)
-    log = _Log()
-    assert vc3.install_untiled_encode(types.SimpleNamespace(vae = vae), logger = log) is True
-    error = ValueError("expected a 5-D [B, C, T, H, W] clip")
-    assert not diffusion_batched.is_oom_error(error)
-    vae.encode_raises = [error]
-    with pytest.raises(ValueError) as raised:
-        vae.encode(object())
-    assert raised.value is error
-    assert vae.calls == ["encode untiled"]
-    assert vae.use_tiling is True
-    assert [level for level, _line in log.lines] == ["info"]
-
-
-def test_cosmos3_untiled_encode_installs_once():
-    # The load installs it on every Cosmos3 load with tiling; a second install keeps the first wrapper rather than
-    # nesting another around it.
-    vae = _FakeCosmos3Vae()
-    vae.enable_tiling()
-    pipe = types.SimpleNamespace(vae = vae)
-    log = _Log()
-    assert vc3.install_untiled_encode(pipe, logger = log) is True
-    wrapped = vae.encode
-    assert vc3.install_untiled_encode(pipe, logger = log) is True
-    assert vae.encode is wrapped
-    vae.encode(object())
-    assert vae.calls == ["encode untiled"]
-    assert [level for level, _line in log.lines] == ["info"]
-
-
-@pytest.mark.parametrize(
-    "pipe",
-    [
-        types.SimpleNamespace(),
-        types.SimpleNamespace(vae = None),
-        types.SimpleNamespace(vae = types.SimpleNamespace(use_tiling = True)),
-        types.SimpleNamespace(vae = types.SimpleNamespace(use_tiling = True, encode = None)),
-        types.SimpleNamespace(vae = types.SimpleNamespace(use_tiling = True, encode = "encode")),
-    ],
-    ids = ["no-vae", "vae-none", "no-encode", "encode-none", "encode-not-callable"],
-)
-def test_cosmos3_untiled_encode_needs_a_vae_with_a_callable_encode(pipe):
-    # Nothing to wrap: the load goes on with the pipeline as built.
-    vae = getattr(pipe, "vae", None)
-    before = dict(vars(vae)) if vae is not None else None
-    log = _Log()
-    assert vc3.install_untiled_encode(pipe, logger = log) is False
-    assert log.lines == []
-    assert (dict(vars(vae)) if vae is not None else None) == before
-
-
-# ── scheduler and output ─────────────────────────────────────────────────────
-
-
-def _held_overrides(scheduler, overrides):
-    """The rebuilt scheduler's value for each override key; a KeyError means its config dropped the key."""
-    return {key: scheduler.config[key] for key, _value in overrides}
-
-
-def _pipeline_schedule(scheduler, steps, native):
-    """The (sigmas, timesteps) Cosmos3OmniPipeline sets for ``steps`` (pipeline_cosmos3_omni.py:1693-1701 at diffusers
-    d42ebf9): under ``use_native_flow_schedule`` it hands the scheduler its own linspace sigmas."""
-    import numpy as np
-
-    if native:
-        sigmas = np.linspace(1.0 - 1.0 / scheduler.config.num_train_timesteps, 0.0, steps + 1)[:-1]
-        scheduler.set_timesteps(steps, device = "cpu", sigmas = sigmas)
+    if fails:
+        with pytest.raises(type(raises[-1])) as raised:
+            vae.encode(clip)
+        assert raised.value is raises[-1]
     else:
-        scheduler.set_timesteps(steps, device = "cpu")
-    return scheduler.sigmas.clone(), scheduler.timesteps.clone()
+        assert vae.encode(clip, return_dict = False) == ("latents", (clip,), {"return_dict": False})
+    assert vae.calls == calls
+    # The decode keeps the load's tiling.
+    assert vae.use_tiling is tiled
+    assert [level for level, _ in log.lines] == ["info"] + ["warning"] * (calls == _RETRIED)
 
 
-def test_cosmos3_edge_overrides_sample_the_card_schedule_not_the_shipped_one():
-    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
-    import numpy as np
-    import torch
-    from diffusers import UniPCMultistepScheduler
-
-    fam = detect_video_family(EDGE)
-    shipped = UniPCMultistepScheduler.from_config(_EDGE["scheduler_config"])
-    pipe = types.SimpleNamespace(scheduler = shipped)
-    assert apply_scheduler_overrides(pipe, fam.scheduler_overrides) is True
-    # Edge README.md:759-761, the card's diffusers image-to-video example.
-    card = UniPCMultistepScheduler.from_config(
-        shipped.config, flow_shift = 12.0, use_karras_sigmas = False
-    )
-    assert dict(pipe.scheduler.config) == dict(card.config)
-    # A key UniPC does not define would be dropped from both configs above without a word.
-    assert _held_overrides(pipe.scheduler, fam.scheduler_overrides) == dict(fam.scheduler_overrides)
-    # Edge's model_index.json sets use_native_flow_schedule, so the pipeline passes its own sigmas; with Karras off
-    # the shift is applied to them.
-    native = _EDGE["model_index"]["use_native_flow_schedule"]
-    ours = _pipeline_schedule(pipe.scheduler, fam.default_steps, native)
-    cards = _pipeline_schedule(card, fam.default_steps, native)
-    before = _pipeline_schedule(
-        UniPCMultistepScheduler.from_config(_EDGE["scheduler_config"]), fam.default_steps, native
-    )
-    assert torch.equal(ours[0], cards[0]) and torch.equal(ours[1], cards[1])
-    # The card's schedule, independently of UniPC: the native linspace at shift 12, s*t / (1 + (s - 1)*t), then 0.
-    t = np.linspace(1.0 - 1.0 / shipped.config.num_train_timesteps, 0.0, fam.default_steps + 1)[:-1]
-    assert torch.allclose(
-        ours[0][:-1].double(), torch.from_numpy(12.0 * t / (1.0 + 11.0 * t)), atol = 1e-6
-    )
-    assert float(ours[0][-1]) == 0.0
-    # Last nonzero sigma: 0.128 on the shipped Karras schedule, 0.387 on the card's.
-    assert not torch.equal(ours[0], before[0])
+def test_untiled_encode_installs_once_and_needs_a_callable_encode():
+    vae = _FakeCosmos3Vae()
+    pipe = SimpleNamespace(vae = vae)
+    assert vc3.install_untiled_encode(pipe) is True
+    wrapped = vae.encode
+    assert vc3.install_untiled_encode(pipe) is True and vae.encode is wrapped
+    bad = SimpleNamespace(use_tiling = True, encode = "encode")
+    for pipe in (SimpleNamespace(), SimpleNamespace(vae = None), SimpleNamespace(vae = bad)):
+        assert vc3.install_untiled_encode(pipe) is False
 
 
-def test_cosmos3_nano_override_matches_the_card_and_keeps_the_shipped_karras_schedule():
-    pytest.importorskip("diffusers")  # Backend CI has no diffusers; this path runs on it
-    import torch
-    from diffusers import UniPCMultistepScheduler
+# ── the fake pipeline, pinned to the installed one ───────────────────────────
 
-    fam = detect_video_family(NANO)
-    shipped = UniPCMultistepScheduler.from_config(_NANO["scheduler_config"])
-    pipe = types.SimpleNamespace(scheduler = shipped)
-    assert apply_scheduler_overrides(pipe, fam.scheduler_overrides) is True
-    # Nano README.md:887, the card's diffusers text-to-video example: flow_shift only.
-    card = UniPCMultistepScheduler.from_config(shipped.config, flow_shift = 10.0)
-    assert dict(pipe.scheduler.config) == dict(card.config)
-    assert _held_overrides(pipe.scheduler, fam.scheduler_overrides) == dict(fam.scheduler_overrides)
-    native = bool(_NANO["model_index"].get("use_native_flow_schedule", False))  # absent: off
-    ours = _pipeline_schedule(pipe.scheduler, fam.default_steps, native)
-    cards = _pipeline_schedule(card, fam.default_steps, native)
-    before = _pipeline_schedule(
-        UniPCMultistepScheduler.from_config(_NANO["scheduler_config"]), fam.default_steps, native
-    )
-    assert torch.equal(ours[0], cards[0]) and torch.equal(ours[1], cards[1])
-    # The shipped use_karras_sigmas pre-empts the only branch that reads flow_shift (scheduling_unipc_multistep.py:375
-    # vs 428-434 at d42ebf9), so the card's shift is inert and Nano samples the shipped Karras schedule. Pinned so a
-    # change on either side (the row turning Karras off as the diffusers docs do, or UniPC reading the shift under
-    # Karras) is noticed and decided.
-    assert torch.equal(ours[0], before[0]) and torch.equal(ours[1], before[1])
-
-
-def test_cosmos3_output_frames_are_the_unbatched_video_as_returned():
-    # Cosmos3OmniPipelineOutput.video is one clip, already unbatched (postprocess_video(...)[0],
-    # pipeline_cosmos3_omni.py:1915 at d42ebf9), and both cards export result.video as is (Nano README.md:900, Edge
-    # README.md:781). The generic path's output.frames[0] would raise on it; video[0] would be a single frame.
-    clip = [object(), object(), object()]
-    output = types.SimpleNamespace(video = clip, frames = [["not the clip"]])
-    assert vc3.output_frames(output) is clip
-
-
-def test_the_real_cosmos3_pipeline_output_carries_the_video_studio_reads():
-    _diffusers_with_cosmos3()
-    from diffusers.pipelines.cosmos.pipeline_cosmos3_omni import Cosmos3OmniPipelineOutput
-
-    assert "video" in {field.name for field in dataclasses.fields(Cosmos3OmniPipelineOutput)}
-    clip = [object()]
-    assert vc3.output_frames(Cosmos3OmniPipelineOutput(video = clip)) is clip
-
-
-# ── the fake Cosmos3OmniPipeline ─────────────────────────────────────────────
-
-
-class _FakeCosmos3Scheduler:
-    """UniPCMultistepScheduler as far as Studio touches it: ``config``, and ``from_config``, which
-    ``apply_scheduler_overrides`` rebuilds through (UniPC has no ``set_shift``)."""
-
-    def __init__(self, config: dict) -> None:
-        self.config = dict(config)
-
-    @classmethod
-    def from_config(cls, config, **kwargs):
-        return cls({**dict(config), **kwargs})
-
-
-class _FakeCosmos3Output:
-    """``Cosmos3OmniPipelineOutput(video, sound = None, action = None)``: one clip, already unbatched, and no
-    ``frames`` (diffusers pipeline_cosmos3_omni.py:282-298), so code that reads ``output.frames[0]`` fails here."""
-
-    __slots__ = ("video", "sound", "action")
-
-    def __init__(
-        self,
-        video,
-        sound = None,
-        action = None,
-    ) -> None:
-        self.video = video
-        self.sound = sound
-        self.action = action
-
-
-def _records_passed_keywords(call):
-    """Keep ``call``'s spelled-out signature for ``inspect.signature`` (Studio gates fps, frame_rate and
-    guidance_scale_2 on it) and record exactly the keywords a render passed: Nano's card values (35 steps, CFG 6,
-    24 fps) equal the pipeline's own defaults, so a defaulted parameter would read the same as a passed one."""
-
-    @functools.wraps(call)
-    def wrapper(self, *args, **kwargs):
-        self.passed = dict(kwargs)
-        return call(self, *args, **kwargs)
-
-    return wrapper
-
-
-def _shipped_scheduler_config(source) -> dict:
-    """The scheduler_config.json ``source`` ships; both repos carry UniPC with Karras sigmas and flow_shift 1.0."""
-    for repo in (NANO, EDGE):
-        if str(source).strip().lower() == repo.lower():
-            return dict(_checkpoint(repo)["scheduler_config"])
-    return dict(_checkpoint(NANO)["scheduler_config"])
+# Cosmos3OmniPipeline.__call__'s parameters (diffusers 0.41); unknown keywords raise TypeError as there.
+_CALL_PARAMS = (
+    "prompt negative_prompt image video condition_frame_indexes_vision condition_video_keep num_frames"
+    " height width fps num_inference_steps guidance_scale enable_sound generator latents sound_latents"
+    " action_latents action output_type return_dict use_system_prompt callback_on_step_end"
+    " callback_on_step_end_tensor_inputs add_resolution_template add_duration_template"
+    " enable_safety_check mixed_precision_format mixed_precision_first_steps mixed_precision_last_steps"
+    " mixed_precision_reasoner_policy"
+).split()
 
 
 class _FakeCosmos3Pipeline:
-    """``diffusers.Cosmos3OmniPipeline`` as VideoBackend drives it.
-
-    ``from_pretrained`` records its kwargs and returns an instance of this class, as the real classmethod returns a
-    ``Cosmos3OmniPipeline``; the family names that class as its own image-to-video class, so a first frame needs no
-    pipeline swap. ``__call__`` takes the keywords of the real ``__call__`` (diffusers 0.41.0.dev0 at d42ebf9, the
-    Studio pin) and nothing else, so a keyword the real pipeline lacks (``frame_rate``, ``guidance_scale_2``,
-    ``last_image``, ``sigmas``) raises TypeError here as it would there. The call follows the real one
-    (pipeline_cosmos3_omni.py:884, :1509, :1719-1892): the conditioning clip is VAE-encoded before the loop,
-    ``_interrupt`` is reset per call, the loop runs inside ``self.progress_bar`` and skips its remaining steps once
-    ``_interrupt`` is set, ``callback_on_step_end(self, i, t, {"latents": ...})`` runs at the end of each step and the
-    loop pops ``latents`` from the dict it returns, and the decode runs after the loop, interrupted or not."""
-
     loads: list = []
 
-    def __init__(self, scheduler_config: dict) -> None:
-        self.transformer = _FakeWanDiT()
-        self.vae = _FakeCosmos3Vae()
-        self.scheduler = _FakeCosmos3Scheduler(scheduler_config)
-        self.passed = None
-        self.outputs: list = []
-        self.steps_computed = 0
-        # Test hook: fired inside each computed step, before Studio's callback runs at its end.
-        self.on_step = None
-        self._interrupt = False
+    def __init__(self, scheduler_config):
+        self.transformer, self.vae = _FakeWanDiT(), _FakeCosmos3Vae()
+        self.scheduler = _FakeScheduler(scheduler_config)
+        self.passed, self.outputs, self.steps_computed = None, [], 0
+        self.on_step, self._interrupt = None, False
 
     @property
-    def components(self) -> dict:
+    def components(self):
         return {"transformer": self.transformer, "vae": self.vae, "scheduler": self.scheduler}
 
     @classmethod
-    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
-        cls.loads.append({"source": pretrained_model_name_or_path, **kwargs})
-        return cls(_shipped_scheduler_config(pretrained_model_name_or_path))
+    def from_pretrained(cls, source, **kwargs):
+        cls.loads.append({"source": source, **kwargs})
+        return cls(_ckpt(EDGE if str(source).lower() == EDGE.lower() else NANO)["scheduler_config"])
 
     def to(self, device):
         return self
 
     @contextlib.contextmanager
     def progress_bar(self, total = None):
-        # DiffusionPipeline.progress_bar: Studio's denoise-phase hook wraps it.
-        yield types.SimpleNamespace(update = lambda n = 1: None)
+        yield SimpleNamespace(update = lambda n = 1: None)
 
-    def maybe_free_model_hooks(self) -> None:
+    def maybe_free_model_hooks(self):
         pass
 
-    @_records_passed_keywords
-    def __call__(
-        self,
-        prompt,
-        negative_prompt = None,
-        image = None,
-        video = None,
-        condition_frame_indexes_vision = (0, 1),
-        condition_video_keep = "first",
-        num_frames = None,
-        height = None,
-        width = None,
-        fps = 24.0,
-        num_inference_steps = 35,
-        guidance_scale = 6.0,
-        enable_sound = False,
-        generator = None,
-        latents = None,
-        sound_latents = None,
-        action_latents = None,
-        action = None,
-        output_type = "pil",
-        return_dict = True,
-        use_system_prompt = None,
-        callback_on_step_end = None,
-        callback_on_step_end_tensor_inputs = ("latents",),
-        add_resolution_template = True,
-        add_duration_template = True,
-        enable_safety_check = True,
-        mixed_precision_format = None,
-        mixed_precision_first_steps = None,
-        mixed_precision_last_steps = None,
-        mixed_precision_reasoner_policy = None,
-    ):
-        self._interrupt = False
-        steps = int(num_inference_steps)
-        # The conditioning clip: the first frame repeated to the clip length, or zeros on text-to-video.
-        self.vae.encode(("clip", image))
+    def __call__(self, **kwargs):
+        if set(kwargs) - set(_CALL_PARAMS):
+            raise TypeError(f"unexpected keywords {sorted(set(kwargs) - set(_CALL_PARAMS))}")
+        self.passed, self._interrupt = dict(kwargs), False
+        steps, callback = (
+            int(kwargs.get("num_inference_steps", 35)),
+            kwargs.get("callback_on_step_end"),
+        )
+        # The conditioning clip encodes before the loop; the decode runs after it, interrupted or not.
+        self.vae.encode(("clip", kwargs.get("image")))
         latents = object()
         with self.progress_bar(total = steps) as bar:
             for i in range(steps):
@@ -949,826 +710,424 @@ class _FakeCosmos3Pipeline:
                 self.steps_computed += 1
                 if self.on_step is not None:
                     self.on_step(i)
-                if callback_on_step_end is not None:
-                    outputs = callback_on_step_end(
-                        self, i, 1000.0 * (1 - i / steps), {"latents": latents}
+                if callback is not None:
+                    latents = callback(self, i, 1000.0, {"latents": latents}).pop(
+                        "latents", latents
                     )
-                    latents = outputs.pop("latents", latents)
                 bar.update()
         self.vae.decode(latents)
-        # The Wan2.2 VAE decodes 1 + 4 * ((T - 1) // 4) frames, whatever T was asked for.
-        count = 1 + 4 * ((int(num_frames or 189) - 1) // 4)
-        output = _FakeCosmos3Output(video = [object() for _ in range(count)])
-        self.maybe_free_model_hooks()
-        self.outputs.append(output)
-        return output
+        # Cosmos3OmniPipelineOutput: one clip, already unbatched, no .frames; 4k+1 frames from the Wan2.2 VAE.
+        count = 1 + 4 * ((int(kwargs.get("num_frames") or 189) - 1) // 4)
+        self.outputs.append(SimpleNamespace(video = [object() for _ in range(count)]))
+        return self.outputs[-1]
+
+    __call__.__signature__ = inspect.Signature(
+        [
+            inspect.Parameter(n, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            for n in ("self", *_CALL_PARAMS)
+        ]
+    )
+
+
+def test_the_fakes_match_the_installed_pipeline():
+    diffusers = pytest.importorskip("diffusers", reason = "Backend CI installs no diffusers")
+    minimum, _ = pipeline_class_requirement("Cosmos3OmniPipeline")
+    if not _installed_at_least(diffusers.__version__, minimum):
+        pytest.skip(f"diffusers {diffusers.__version__} predates Cosmos3OmniPipeline ({minimum})")
+    from diffusers.pipelines.cosmos import pipeline_cosmos3_omni as module
+
+    real = diffusers.Cosmos3OmniPipeline
+    call = inspect.signature(real.__call__).parameters
+    assert list(call)[1:] == _CALL_PARAMS
+    # Studio never passes enable_sound and loads no sound tokenizer, which only sound needs.
+    assert call["enable_sound"].default is False
+    # from_pretrained drops an unknown __init__ kwarg with only a warning.
+    assert {"sound_tokenizer", "enable_safety_checker"} <= set(
+        inspect.signature(real.__init__).parameters
+    )
+    assert "sound_tokenizer" in real._optional_components
+    assert "video" in {f.name for f in dataclasses.fields(module.Cosmos3OmniPipelineOutput)}
+    assert not hasattr(diffusers.Cosmos3OmniTransformer, "from_single_file")
+    tree = ast.parse(inspect.getsource(module))
+    imports = {
+        (n.module, a.name) for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names
+    }
+    assert ("cosmos_guardrail", "CosmosSafetyChecker") in imports
+
+
+# ── VideoBackend ─────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
 def cosmos3_runtime(fake_runtime, monkeypatch):
-    """``fake_runtime`` with ``diffusers.Cosmos3OmniPipeline`` as ``_FakeCosmos3Pipeline``, the guardrail opted out
-    (tests about it set their own state), and the MP4 encoder recording what it is handed."""
-    monkeypatch.setattr(
-        sys.modules["diffusers"], "Cosmos3OmniPipeline", _FakeCosmos3Pipeline, raising = False
-    )
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "Cosmos3OmniPipeline", _FakeCosmos3Pipeline, raising = False)
     _FakeCosmos3Pipeline.loads = []
     _set_guardrail(monkeypatch, "opted out")
-    encoded: list = []
+    encoded = []
 
     def _encode(frames, fps, audio, pipe):
-        encoded.append({"frames": frames, "fps": fps, "audio": audio, "pipe": pipe})
+        encoded.append({"frames": frames, "fps": fps, "audio": audio})
         return b"MP4"
 
     monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(_encode))
     yield encoded
 
 
-def _loaded(repo: str) -> tuple[VideoBackend, dict]:
+def _loaded(repo):
     backend = VideoBackend()
-    status = backend.load_pipeline(repo, model_kind = "pipeline")
-    return backend, status
-
-
-# ── load path ────────────────────────────────────────────────────────────────
-
-
-def test_the_real_cosmos3_pipeline_init_takes_the_kwargs_studio_loads_with(monkeypatch):
-    _diffusers_with_cosmos3()
-    from diffusers import Cosmos3OmniPipeline
-
-    _hub_cache(monkeypatch, None)
-    _opt_out(monkeypatch, "0")
-    monkeypatch.setattr(vc3, "logger", _Log())
-    passed = vc3.pipeline_kwargs(NANO)
-    assert set(passed) == {"sound_tokenizer", "enable_safety_checker"}
-    # from_pretrained drops a kwarg __init__ does not take with only a warning (pipeline_utils.py:981 at d42ebf9):
-    # a rename would silently load the sound tokenizer again and build the guardrail despite the opt-out.
-    assert set(passed) <= set(inspect.signature(Cosmos3OmniPipeline.__init__).parameters)
-    assert "sound_tokenizer" in Cosmos3OmniPipeline._optional_components  # so None is a valid value
+    return backend, backend.load_pipeline(repo, model_kind = "pipeline")
 
 
 @pytest.mark.parametrize(
-    "repo,guardrail,safety",
+    "repo, guardrail, safety",
     [
-        # The explicit opt-out is the one case where Studio overrides the checkpoint's choice.
+        # Only the explicit opt-out overrides the checkpoint's guardrail choice.
         (NANO, "opted out", {"enable_safety_checker": False}),
         (EDGE, "opted out", {"enable_safety_checker": False}),
-        # Otherwise the checkpoint decides: Nano builds the guardrail from the installed package, and Edge's index
-        # turns it off.
         (NANO, "installed", {}),
         (EDGE, "absent", {}),
     ],
 )
-def test_cosmos3_load_skips_the_sound_tokenizer_and_overrides_the_guardrail_only_on_opt_out(
-    cosmos3_runtime, monkeypatch, repo, guardrail, safety
-):
-    # Studio renders video only: sound_tokenizer=None skips building Nano's 2 GB audio decoder (Edge has none).
+def test_load(cosmos3_runtime, monkeypatch, repo, guardrail, safety):
     _set_guardrail(monkeypatch, guardrail)
-    _loaded(repo)
-    (load,) = _FakeCosmos3Pipeline.loads
-    assert load["source"] == repo
-    assert "sound_tokenizer" in load and load["sound_tokenizer"] is None
-    assert {k: v for k, v in load.items() if k == "enable_safety_checker"} == safety
-
-
-@pytest.mark.parametrize(
-    "repo,overrides",
-    [
-        # Nano's card rebuilds UniPC with flow_shift=10.0 only (Nano README.md:887).
-        (NANO, {"flow_shift": 10.0}),
-        # Edge's card also turns Karras sigmas off, which is what makes the shift act (Edge README.md:759-761).
-        (EDGE, {"flow_shift": 12.0, "use_karras_sigmas": False}),
-    ],
-)
-def test_cosmos3_load_rebuilds_the_scheduler_with_the_model_card_overrides(
-    cosmos3_runtime, repo, overrides
-):
-    shipped = _checkpoint(repo)["scheduler_config"]
-    # Both repos ship flow_shift 1.0 with Karras sigmas, which neither card samples with as shipped.
-    assert (shipped["flow_shift"], shipped["use_karras_sigmas"]) == (1.0, True)
-    backend, _status = _loaded(repo)
-    scheduler = backend._state.pipe.scheduler
-    assert type(scheduler) is _FakeCosmos3Scheduler
-    assert scheduler.config == {**shipped, **overrides}
-
-
-@pytest.mark.parametrize(
-    "repo,steps,frames,canvas",
-    [
-        # Nano card: 1280x720, 189 frames, 35 steps, CFG 6, 24 fps (Nano README.md:889-898, :900).
-        (NANO, 35, 189, [1280, 720]),
-        # Edge card (image-to-video): 832x480, 121 frames, 20 steps, CFG 6, 24 fps (Edge README.md:763-776).
-        (EDGE, 20, 121, [832, 480]),
-    ],
-)
-def test_cosmos3_status_reports_the_card_defaults_and_a_first_frame_only(
-    cosmos3_runtime, repo, steps, frames, canvas
-):
-    _backend, status = _loaded(repo)
-    assert status["loaded"] is True and status["family"] == _FAMILY[repo]
-    assert status["model_kind"] == "pipeline"
-    # Video only: the sound tokenizer is not loaded, so no clip carries audio.
-    assert status["has_audio"] is False
-    # A first frame through the pipeline's own image=; no last frame, no references.
-    assert status["supports_first_frame"] is True
-    assert status["supports_last_frame"] is False
-    assert status["supports_keyframes"] is False and status["supports_references"] is False
-    defaults = status["defaults"]
-    assert (defaults["steps"], defaults["guidance"]) == (steps, 6.0)
-    assert (defaults["num_frames"], defaults["fps"]) == (frames, 24)
-    assert (defaults["frame_step"], defaults["frame_offset"]) == (4, 1)
-    assert defaults["resolution_presets"][0] == canvas
-    assert defaults["canvas_from_presets"] is True
-
-
-@pytest.mark.parametrize(
-    "repo,wrapped",
-    [(NANO, True), (EDGE, True), ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", False)],
-    ids = ["nano", "edge", "wan2.2-ti2v-5b"],
-)
-def test_cosmos3_load_with_vae_tiling_wraps_the_encode_and_a_wan_load_does_not(
-    cosmos3_runtime, monkeypatch, repo, wrapped
-):
-    # The untiled encode is Cosmos3's (measured on its image-to-video; video.py installs it for the Cosmos3 rows only),
-    # so a Wan load keeps the stock encode. Wan2.2-TI2V-5B has the same VAE (AutoencoderKLWan, z_dim 48: both Cosmos3
-    # repos ship its vae_config); its fake gets an encode here, so a hook that wrapped every family would show.
-    monkeypatch.setattr(
-        _FakeWanVae, "encode", lambda self, *args, **kwargs: ("latents", args), raising = False
-    )
     backend, status = _loaded(repo)
-    assert status["vae_tiling"] is True
-    encode = backend._state.pipe.vae.encode
-    assert callable(encode)
-    assert getattr(encode, "_unsloth_untiled_encode", False) is wrapped
-
-
-# ── generate path ────────────────────────────────────────────────────────────
-
-# What VideoBackend.generate hands Cosmos3OmniPipeline.__call__. The unconditional ones (prompt, size, frames,
-# steps, generator, the rows' cfg_kwarg guidance_scale, and image= with a first frame) would raise TypeError if
-# renamed; the signature-gated ones (negative_prompt, fps, callback_on_step_end, and the rows' call_kwargs) would
-# silently stop reaching the model. add_*_template are what the Edge card's call turns off (Edge README.md:774-775).
-_STUDIO_CALL_KWARGS = (
-    "prompt",
-    "negative_prompt",
-    "image",
-    "num_frames",
-    "height",
-    "width",
-    "fps",
-    "num_inference_steps",
-    "guidance_scale",
-    "generator",
-    "callback_on_step_end",
-    "add_resolution_template",
-    "add_duration_template",
-)
-
-
-@pytest.mark.parametrize("name", _STUDIO_CALL_KWARGS)
-def test_the_real_cosmos3_pipeline_call_takes_every_kwarg_studio_relies_on(name):
-    _diffusers_with_cosmos3()
-    from diffusers import Cosmos3OmniPipeline
-    assert name in inspect.signature(Cosmos3OmniPipeline.__call__).parameters
-
-
-def test_the_real_cosmos3_pipeline_call_renders_no_sound_unless_asked():
-    _diffusers_with_cosmos3()
-    from diffusers import Cosmos3OmniPipeline
-
-    # Studio loads without the sound tokenizer (pipeline_kwargs) and never passes enable_sound, so it relies on this
-    # default: with sound on and no sound tokenizer the call raises ValueError (pipeline_cosmos3_omni.py:1028-1030 at
-    # d42ebf9).
-    assert (
-        inspect.signature(Cosmos3OmniPipeline.__call__).parameters["enable_sound"].default is False
+    (load,) = _FakeCosmos3Pipeline.loads
+    assert load["source"] == repo and "sound_tokenizer" in load and load["sound_tokenizer"] is None
+    assert {k: v for k, v in load.items() if k == "enable_safety_checker"} == safety
+    pipe = backend._state.pipe
+    assert pipe.scheduler.config == {**_ckpt(repo)["scheduler_config"], **_CARD_SCHEDULER[repo]}
+    # Card defaults: Nano 1280x720, 189 frames, 35 steps; Edge 832x480, 121 frames, 20 steps; CFG 6, 24 fps.
+    steps, frames, canvas = {NANO: (35, 189, [1280, 720]), EDGE: (20, 121, [832, 480])}[repo]
+    got = status["defaults"]
+    assert (got["steps"], got["guidance"], got["num_frames"], got["fps"]) == (
+        steps,
+        6.0,
+        frames,
+        24,
     )
+    assert got["resolution_presets"][0] == canvas
+    assert status["family"] == _FAMILY[repo] and status["has_audio"] is False
+    assert status["supports_first_frame"] is True and status["supports_last_frame"] is False
+    assert status["vae_tiling"] is True
+    assert getattr(pipe.vae.encode, "_unsloth_untiled_encode", False) is True
+    reason = status["resolved"]["text_encoder_quant"]["reason"]
+    assert reason == "not applicable (no separate text encoder)"
 
 
-def test_the_fake_cosmos3_pipeline_takes_exactly_the_real_call_keywords():
-    _diffusers_with_cosmos3()
-    from diffusers import Cosmos3OmniPipeline
-
-    # The render tests below lean on the fake refusing what the real __call__ refuses (frame_rate, guidance_scale_2,
-    # last_image) and taking what it takes, so a diffusers change to the signature has to fail here first.
-    real = inspect.signature(Cosmos3OmniPipeline.__call__).parameters
-    fake = inspect.signature(_FakeCosmos3Pipeline.__call__).parameters
-    assert [(name, p.kind) for name, p in fake.items()] == [
-        (name, p.kind) for name, p in real.items()
-    ]
+def test_a_wan_load_keeps_the_stock_encode(cosmos3_runtime, monkeypatch):
+    # Same VAE as Cosmos3; the untiled encode is Cosmos3's only.
+    monkeypatch.setattr(_FakeWanVae, "encode", lambda self, *a, **k: a, raising = False)
+    backend, status = _loaded("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert status["vae_tiling"] is True
+    assert not getattr(backend._state.pipe.vae.encode, "_unsloth_untiled_encode", False)
 
 
-# Text-to-video on Nano, and image-to-video on both. Edge's card documents image-to-video only (Edge README.md:712),
-# so no test here depends on Studio offering Edge for text-to-video.
-_RENDERS = [
-    pytest.param(NANO, None, id = "nano-t2v"),
-    pytest.param(NANO, (1920, 1080), id = "nano-i2v"),
-    pytest.param(EDGE, (1920, 1080), id = "edge-i2v"),
-]
+def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):
+    _set_guardrail(monkeypatch, "absent")
+    started = []
+    monkeypatch.setattr(VideoBackend, "_run_load", lambda self, **kwargs: started.append(kwargs))
+    backend = VideoBackend()
+    with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=0"):
+        backend.begin_load(NANO, model_kind = "pipeline")
+    assert started == [] and backend.loading_repo_ids() == ()
+    with pytest.raises(ValueError, match = "cosmos_guardrail"):
+        backend.load_pipeline(NANO, model_kind = "pipeline")
+    assert _FakeCosmos3Pipeline.loads == []
+    # Trust first: an untrusted Cosmos3-named repo is refused as untrusted, not sent to install a package.
+    with pytest.raises(ValueError, match = "limited to"):
+        backend.validate_load_request("someone/cosmos3-nano-repack", model_kind = "pipeline")
 
 
-def _first_frame(size) -> dict:
-    """generate() keywords for a first frame of ``size`` (width, height), or none for a text-only render."""
+@pytest.mark.parametrize("folder", ["named", "renamed", "export", "snapshot"])
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_a_local_pipeline_folder_validates(
+    cosmos3_runtime, monkeypatch, tmp_path_factory, repo, folder
+):
+    # Under a parent with no family token (pytest names tmp_path after the test).
+    names = {"named": repo.partition("/")[2], "snapshot": _snapshot_path(repo, "hub")}
+    root = _write_planned_tree(tmp_path_factory.mktemp("m") / names.get(folder, "my-model"), repo)
+    if folder == "export":
+        (root / "config.json").unlink()
+    # Edge's own index turns the checker off, so it needs no guardrail package.
+    _set_guardrail(monkeypatch, "absent" if repo == EDGE else "opted out")
+    assert VideoBackend().validate_load_request(str(root)).name == _FAMILY[repo]
+
+
+def _first_frame(size):
     return {"first_frame": _data_url(*size)} if size else {}
 
 
-@pytest.mark.parametrize("repo,first_frame", _RENDERS)
-def test_cosmos3_generate_passes_fps_as_a_float_and_only_keywords_the_pipeline_takes(
-    cosmos3_runtime, repo, first_frame
-):
-    """Both cards set the frame rate per request (Nano README.md:112, Edge README.md:101-102: 12-30 fps); the
-    pipeline's fps fills the duration template and modulates the temporal RoPE, so the requested rate has to reach it
-    rather than only the export. Its __call__ has no frame_rate (LTX-2's spelling) and no guidance_scale_2."""
+@pytest.mark.parametrize(
+    "repo, first_frame", [(NANO, None), (NANO, (1920, 1080)), (EDGE, (1920, 1080))]
+)
+def test_generate_passes_only_keywords_the_pipeline_takes(cosmos3_runtime, repo, first_frame):
     backend, _status = _loaded(repo)
-    result = backend.generate(
-        prompt = "a robot arm stacks blocks",
-        negative_prompt = "blurry",
-        steps = 2,
-        fps = 16,
-        guidance_2 = 3.5,
-        **_first_frame(first_frame),
-    )
+    request = {"negative_prompt": "blurry", "steps": 2, "fps": 16, "guidance_2": 3.5}
+    result = backend.generate(prompt = "a robot arm", **request, **_first_frame(first_frame))
     passed = backend._state.pipe.passed
-    # The prompt-template flags are left out here: each row's are pinned on their own below.
-    assert set(passed) - {"add_resolution_template", "add_duration_template"} == {
-        "prompt",
-        "negative_prompt",
-        "num_inference_steps",
-        "guidance_scale",
-        "width",
-        "height",
-        "num_frames",
-        "fps",
-        "generator",
-        "callback_on_step_end",
-    } | ({"image"} if first_frame else set())
+    expected = {"prompt", "negative_prompt", "num_inference_steps", "guidance_scale", "width"}
+    expected |= {"height", "num_frames", "fps", "generator", "callback_on_step_end"}
+    expected |= {"image"} if first_frame else set()
+    # Edge's card turns the prompt templates off (README.md:774-775); Nano's example passes neither.
+    off = {"add_resolution_template": False, "add_duration_template": False} if repo == EDGE else {}
+    assert set(passed) == expected | set(off) and {k: passed[k] for k in off} == off
+    # fps fills the duration template and the temporal RoPE, so the requested rate reaches the pipeline.
     assert passed["fps"] == 16.0 and type(passed["fps"]) is float
     assert passed["negative_prompt"] == "blurry"
     assert result["fps"] == 16 and cosmos3_runtime[-1]["fps"] == 16
 
 
 @pytest.mark.parametrize(
-    "repo,first_frame,steps,frames,size,conditioning",
+    "repo, first_frame, steps, frames, size",
     [
-        pytest.param(NANO, None, 35, 189, (1280, 720), "t2va", id = "nano-t2v"),
-        # A 16:9 first frame lands on the default canvas, the nearest-aspect preset.
-        pytest.param(NANO, (1920, 1080), 35, 189, (1280, 720), "i2va", id = "nano-i2v"),
-        pytest.param(EDGE, (1920, 1080), 20, 121, (832, 480), "i2va", id = "edge-i2v"),
+        (NANO, None, 35, 189, (1280, 720)),
+        (NANO, (1920, 1080), 35, 189, (1280, 720)),
+        (EDGE, (1080, 1920), 20, 121, (480, 832)),
     ],
 )
-def test_cosmos3_generate_fills_the_family_defaults_the_request_leaves_out(
-    cosmos3_runtime, repo, first_frame, steps, frames, size, conditioning
+def test_generate_fills_the_card_defaults_and_exports_output_video(
+    cosmos3_runtime, monkeypatch, repo, first_frame, steps, frames, size
 ):
-    backend, _status = _loaded(repo)
-    seen: list = []
-    pipe = backend._state.pipe
-    pipe.on_step = lambda i: seen.append(backend.generate_progress())
-    result = backend.generate(prompt = "a robot arm stacks blocks", **_first_frame(first_frame))
-    passed = pipe.passed
-    assert (passed["num_inference_steps"], passed["guidance_scale"]) == (steps, 6.0)
-    assert (passed["width"], passed["height"], passed["num_frames"]) == (*size, frames)
-    assert passed["fps"] == 24.0
-    assert (result["steps"], result["guidance"], result["num_frames"]) == (steps, 6.0, frames)
-    assert (result["width"], result["height"], result["fps"]) == (*size, 24)
-    assert result["conditioning"] == conditioning and result["has_audio"] is False
-    # The bar counts the family's steps, in the denoise phase from the moment the loop opens progress_bar.
-    assert [(gen["phase"], gen["total_steps"]) for gen in seen] == [("denoise", steps)] * steps
-
-
-@pytest.mark.parametrize(
-    "repo,first_frame,requested,frames",
-    [
-        # 4k+1 lattice (the Wan2.2 VAE compresses time by 4), floored.
-        (NANO, None, 120, 117),
-        # Nano's window ends at 397, the last lattice count inside the card's 5-400 (Nano README.md:113).
-        (NANO, None, 400, 397),
-        # Edge's window is 53-149, the lattice counts inside the card's 50-150 (Edge README.md:102).
-        (EDGE, (1920, 1080), 30, 53),
-        (EDGE, (1920, 1080), 100, 97),
-        (EDGE, (1920, 1080), 200, 149),
-    ],
-)
-def test_cosmos3_generate_snaps_frames_and_size_onto_the_family_lattice(
-    cosmos3_runtime, repo, first_frame, requested, frames
-):
-    backend, _status = _loaded(repo)
-    # An explicit size wins over the first frame's canvas, so it snaps the same way with or without one.
-    result = backend.generate(
-        prompt = "p",
-        steps = 1,
-        num_frames = requested,
-        width = 1000,
-        height = 700,
-        **_first_frame(first_frame),
-    )
-    passed = backend._state.pipe.passed
-    assert passed["num_frames"] == frames and result["num_frames"] == frames
-    # Sizes floor to multiples of 16, the VAE's spatial factor (vae/config.json scale_factor_spatial).
-    assert _checkpoint(repo)["vae_config"]["scale_factor_spatial"] == 16
-    assert (passed["width"], passed["height"]) == (992, 688)
-
-
-@pytest.mark.parametrize("repo,first_frame", _RENDERS)
-def test_cosmos3_generate_exports_the_clip_from_output_video(cosmos3_runtime, repo, first_frame):
-    """Cosmos3OmniPipelineOutput carries ``video`` (already unbatched), ``sound`` and ``action``, never ``frames``; the
-    fake has no ``frames`` attribute, so the generic ``output.frames[0]`` would raise here."""
-    backend, _status = _loaded(repo)
-    result = backend.generate(prompt = "p", steps = 2, num_frames = 61, **_first_frame(first_frame))
-    output = backend._state.pipe.outputs[-1]
-    assert not hasattr(output, "frames")
-    (export,) = cosmos3_runtime
-    assert export["frames"] is output.video
-    assert export["audio"] is None and export["pipe"] is None
-    assert result["num_frames"] == len(output.video) == 61
-    assert result["mp4_bytes"] == b"MP4"
-
-
-@pytest.mark.parametrize(
-    "repo,image,canvas",
-    [
-        (NANO, (1920, 1080), (1280, 720)),
-        (NANO, (1080, 1920), (720, 1280)),
-        (EDGE, (1920, 1080), (832, 480)),
-        (EDGE, (1080, 1920), (480, 832)),
-    ],
-)
-def test_cosmos3_first_frame_reaches_image_unfitted_on_a_preset_canvas(
-    cosmos3_runtime, monkeypatch, repo, image, canvas
-):
-    """The pipeline resizes the image to cover the canvas and centre-crops it itself (pipeline_cosmos3_omni.py:85-99),
-    so Studio hands over the decoded image as given; pre-fitting would resample it twice. The canvas is the
-    nearest-aspect preset."""
     from core.inference import diffusion as diffusion_mod
 
-    decoded: list = []
-    real_decode = diffusion_mod.decode_b64_image
-
-    def _decode(*args, **kwargs):
-        decoded.append(real_decode(*args, **kwargs))
-        return decoded[-1]
-
-    monkeypatch.setattr(diffusion_mod, "decode_b64_image", _decode)
-    backend, _status = _loaded(repo)
-    pipe = backend._state.pipe
-    result = backend.generate(prompt = "p", steps = 2, first_frame = _data_url(*image))
-    passed = pipe.passed
-    (first,) = decoded
-    assert passed["image"] is first and first.size == image
-    assert (passed["width"], passed["height"]) == canvas
-    assert (result["width"], result["height"]) == canvas
-    assert result["conditioning"] == "i2va"
-
-
-def test_cosmos3_nano_text_only_render_after_a_first_frame_render_passes_no_image(cosmos3_runtime):
-    # One pipeline object serves both modes (no image-to-video swap), so nothing of an image render may carry over.
-    backend, _status = _loaded(NANO)
-    pipe = backend._state.pipe
-    backend.generate(prompt = "p", steps = 2, first_frame = _data_url(1920, 1080))
-    assert "image" in pipe.passed
-    result = backend.generate(prompt = "p", steps = 2)
-    assert "image" not in pipe.passed and result["conditioning"] == "t2va"
-
-
-@pytest.mark.parametrize("repo,first_frame", _RENDERS)
-def test_cosmos3_render_encodes_the_conditioning_clip_untiled_and_restores_tiling_for_the_decode(
-    cosmos3_runtime, repo, first_frame
-):
-    # Before the denoise the pipeline VAE-encodes its conditioning clip (the first frame repeated to the clip length,
-    # zeros on text-to-video; pipeline_cosmos3_omni.py:866-884) and every step attends to it, so the load's untiled
-    # encode runs; the decode keeps the load's tiling (on this CPU fake, tiled; on a resident CUDA load the shared
-    # install_untiled_decode decides).
-    backend, status = _loaded(repo)
-    vae = backend._state.pipe.vae
-    assert status["vae_tiling"] is True and vae.calls == []
-    backend.generate(prompt = "p", steps = 2, **_first_frame(first_frame))
-    assert vae.calls == ["encode untiled", "decode tiled"]
-    assert vae.use_tiling is True
-
-
-def test_cosmos3_edge_generate_turns_the_prompt_templates_off_like_its_card(cosmos3_runtime):
-    """Edge's diffusers example passes add_resolution_template=False and add_duration_template=False (Edge
-    README.md:774-775), as its vLLM-Omni example sets use_resolution_template / use_duration_template False
-    (README.md:503-504). Left at the pipeline default (True), the prompt and negative prompt gain resolution and
-    duration sentences the card does not use."""
-    backend, _status = _loaded(EDGE)
-    backend.generate(prompt = "p", steps = 2, first_frame = _data_url(1920, 1080))
-    passed = backend._state.pipe.passed
-    assert (passed.get("add_resolution_template"), passed.get("add_duration_template")) == (
-        False,
-        False,
+    decoded, decode = [], diffusion_mod.decode_b64_image
+    monkeypatch.setattr(
+        diffusion_mod,
+        "decode_b64_image",
+        lambda *a, **k: decoded.append(decode(*a, **k)) or decoded[-1],
     )
-
-
-@pytest.mark.parametrize("first_frame", [None, (1920, 1080)], ids = ["t2v", "i2v"])
-def test_cosmos3_nano_generate_leaves_the_prompt_templates_to_the_pipeline_like_its_card(
-    cosmos3_runtime, first_frame
-):
-    # Nano's diffusers example passes neither flag (Nano README.md:889-898), so the pipeline's defaults (True) add the
-    # resolution and duration sentences; Studio runs that pipeline and follows that example. (Its vLLM-Omni and SGLang
-    # examples turn both off, README.md:368-369 and :952.)
-    backend, _status = _loaded(NANO)
-    backend.generate(prompt = "p", steps = 2, **_first_frame(first_frame))
-    passed = backend._state.pipe.passed
-    assert "add_resolution_template" not in passed and "add_duration_template" not in passed
+    backend, _status = _loaded(repo)
+    pipe, seen = backend._state.pipe, []
+    pipe.on_step = lambda i: seen.append(backend.generate_progress())
+    result = backend.generate(prompt = "a robot arm", **_first_frame(first_frame))
+    passed = pipe.passed
+    assert (passed["num_inference_steps"], passed["guidance_scale"], passed["fps"]) == (
+        steps,
+        6.0,
+        24.0,
+    )
+    assert (passed["width"], passed["height"], passed["num_frames"]) == (*size, frames)
+    assert (result["width"], result["height"], result["num_frames"]) == (*size, frames)
+    assert result["conditioning"] == ("i2va" if first_frame else "t2va")
+    if first_frame:
+        # The pipeline covers the canvas and centre-crops itself: it gets the decoded image unfitted.
+        (image,) = decoded
+        assert passed["image"] is image and image.size == first_frame
+    assert [(g["phase"], g["total_steps"]) for g in seen] == [("denoise", steps)] * steps
+    # The clip is output.video as returned; the generic output.frames[0] would raise.
+    (export,) = cosmos3_runtime
+    assert export["frames"] is pipe.outputs[-1].video and export["audio"] is None
+    # The conditioning clip encodes untiled; the decode keeps the load's tiling.
+    assert pipe.vae.calls == ["encode untiled", "decode tiled"]
+    # One pipeline serves both modes: nothing of an image render carries over.
+    backend.generate(prompt = "p", steps = 1)
+    assert "image" not in pipe.passed
 
 
 @pytest.mark.parametrize(
-    "repo,first_frame",
-    [
-        pytest.param(EDGE, (1920, 1080), id = "edge-i2v"),
-        # A text-only render too: call_kwargs go with every request, unlike i2v_call_kwargs, which only a first frame
-        # brings. Nano's row has none of its own, so it carries Edge's here.
-        pytest.param(NANO, None, id = "nano-t2v"),
-    ],
+    "repo, requested, frames", [(NANO, 400, 397), (EDGE, 30, 53), (EDGE, 200, 149)]
 )
-def test_cosmos3_call_kwargs_skip_a_key_the_pipeline_call_does_not_take(
-    cosmos3_runtime, repo, first_frame
+def test_generate_snaps_frames_and_size_onto_the_family_lattice(
+    cosmos3_runtime, repo, requested, frames
 ):
-    # A row's call_kwargs reach __call__ only through its signature. vLLM-Omni spells Edge's flags
-    # use_resolution_template / use_duration_template (Edge README.md:503-504); diffusers' __call__ has neither, and the
-    # fake, like the real one, raises TypeError on a keyword it does not take.
     backend, _status = _loaded(repo)
-    fam = backend._state.family
-    vllm_spelling = (("use_resolution_template", False), ("use_duration_template", False))
-    backend._state = dataclasses.replace(
-        backend._state,
-        family = dataclasses.replace(
-            fam, call_kwargs = tuple(detect_video_family(EDGE).call_kwargs) + vllm_spelling
-        ),
-    )
-    backend.generate(prompt = "p", steps = 2, **_first_frame(first_frame))
+    backend.generate(prompt = "p", steps = 1, num_frames = requested, width = 1000, height = 700)
     passed = backend._state.pipe.passed
-    assert ("image" in passed) is (first_frame is not None)
-    assert not {"use_resolution_template", "use_duration_template"} & set(passed)
-    assert (passed["add_resolution_template"], passed["add_duration_template"]) == (False, False)
+    # 4k+1 inside the cards' 5-400 / 50-150 frames; sizes floor to the VAE's spatial factor.
+    assert _ckpt(repo)["vae_config"]["scale_factor_spatial"] == 16
+    assert (passed["num_frames"], passed["width"], passed["height"]) == (frames, 992, 688)
 
 
-@pytest.mark.parametrize("repo", [NANO, EDGE])
-def test_cosmos3_generate_refuses_a_last_frame_before_the_render(cosmos3_runtime, repo):
-    # Cosmos3OmniPipeline.__call__ takes one conditioning image (image=) and no last_image, so a first-and-last-frame
-    # request is refused before the pipeline is called rather than failing inside it: by begin_generate, the route's
-    # entry, before it reserves the job, and by a direct render.
-    backend, _status = _loaded(repo)
-    with pytest.raises(ValueError, match = "no last frame"):
-        backend.begin_generate(
-            prompt = "p",
-            steps = 2,
-            first_frame = _data_url(1920, 1080),
-            last_frame = _data_url(1920, 1080),
-        )
-    with pytest.raises(ValueError, match = "no last frame"):
-        backend.generate(
-            prompt = "p",
-            steps = 2,
-            first_frame = _data_url(1920, 1080),
-            last_frame = _data_url(1920, 1080),
-        )
-    assert backend._state.pipe.passed is None
-    # The refusal must not leave the busy flag set, or every later render is turned away as busy.
-    assert backend.generate_progress()["active"] is False
-
-
-def test_cosmos3_cancel_interrupts_the_denoise_through_the_step_callback(cosmos3_runtime):
-    # The cancel lands during the first step; Studio's callback sets _interrupt at that step's end, the pipeline skips
-    # the remaining steps, and generate() discards the clip instead of exporting it.
+def test_call_kwargs_skip_a_key_the_pipeline_does_not_take(cosmos3_runtime):
     backend, _status = _loaded(NANO)
+    # vLLM-Omni's spelling of Edge's flags, which diffusers' __call__ (and the fake) does not take.
+    extra = (("use_resolution_template", False), ("add_duration_template", False))
+    family = dataclasses.replace(backend._state.family, call_kwargs = extra)
+    backend._state = dataclasses.replace(backend._state, family = family)
+    backend.generate(prompt = "p", steps = 2)
+    passed = backend._state.pipe.passed
+    assert "use_resolution_template" not in passed and passed["add_duration_template"] is False
+
+
+def test_a_last_frame_is_refused_and_a_cancel_interrupts_the_denoise(cosmos3_runtime):
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
+    backend, _status = _loaded(EDGE)
     pipe = backend._state.pipe
+    frames = {"first_frame": _data_url(64, 64), "last_frame": _data_url(64, 64)}
+    for call in (backend.begin_generate, backend.generate):
+        with pytest.raises(ValueError, match = "no last frame"):
+            call(prompt = "p", steps = 2, **frames)
+    assert pipe.passed is None and backend.generate_progress()["active"] is False
     pipe.on_step = lambda i: backend.cancel_generate() if i == 0 else None
     with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
         backend.generate(prompt = "p", steps = 4)
-    assert pipe.steps_computed == 1
-    assert cosmos3_runtime == []
+    assert pipe.steps_computed == 1 and cosmos3_runtime == []
     assert backend.generate_progress()["active"] is False
-    # The next render starts clean: the pipeline resets _interrupt itself.
+    # The pipeline resets _interrupt itself: the next render runs every step.
     pipe.on_step = None
     backend.generate(prompt = "p", steps = 3)
     assert pipe.steps_computed == 4
 
 
-# ── download plan and local folders ──────────────────────────────────────────
+# ── family rows against the model cards ──────────────────────────────────────
+
+# Nano card :887-898, :113 (5-400 frames); Edge card :759-776, :102 (50-150). Windows: the 4k+1 counts inside.
+_CARD = {"cosmos3-nano": (NANO, (5, 397)), "cosmos3-edge": (EDGE, (53, 149))}
 
 
-def _hub_listing(repo: str) -> types.SimpleNamespace:
-    """``model_info`` as ``_base_download_files`` reads it: siblings with ``rfilename`` and ``size``."""
-    return types.SimpleNamespace(
-        siblings = [
-            types.SimpleNamespace(rfilename = name, size = size)
-            for name, size in _checkpoint(repo)["listing"]
-        ]
+@pytest.mark.parametrize("name", sorted(_CARD))
+def test_rows_follow_the_card_and_the_shipped_checkpoint(name):
+    repo, window = _CARD[name]
+    fam, vae, listing = _fam(name), _ckpt(repo)["vae_config"], _ckpt(repo)["listing"]
+    assert (fam.pipeline_class, fam.i2v_pipeline_class) == ("Cosmos3OmniPipeline",) * 2
+    assert fam.base_repo == repo and (fam.min_num_frames, fam.max_num_frames) == window
+    assert (fam.frame_step, fam.resolution_multiple) == (
+        vae["scale_factor_temporal"],
+        vae["scale_factor_spatial"],
     )
-
-
-def _planned_files(repo: str) -> dict:
-    """{path: bytes} the pipeline load would pre-download from ``repo``."""
-    return dict(VideoBackend._base_download_files(_hub_listing(repo), "pipeline"))
-
-
-def _write_stub_tree(root: Path, repo: str, names) -> Path:
-    """``names`` (paths from ``repo``'s listing) under ``root`` as stand-ins: the fixture's own model_index.json, root
-    config.json, transformer and scheduler configs; a shard index naming its folder's shards; ``{}`` for any other
-    JSON; one byte for everything else. The completeness checks read presence, JSON and shard indexes, never weights."""
-    entry = _checkpoint(repo)
-    real = {
-        "model_index.json": entry["model_index"],
-        "config.json": entry["config"],
-        "transformer/config.json": entry["transformer_config"],
-        "scheduler/scheduler_config.json": entry["scheduler_config"],
-    }
-    names = sorted(names)
-    for name in names:
-        path = root / name
-        path.parent.mkdir(parents = True, exist_ok = True)
-        folder = name.rpartition("/")[0]
-        if name in real:
-            payload = real[name]
-        elif name.endswith(".index.json"):
-            shards = [
-                n.rpartition("/")[2]
-                for n in names
-                if n.rpartition("/")[0] == folder and "-of-" in n and n.endswith(".safetensors")
-            ]
-            payload = {"weight_map": {f"w{i}": shard for i, shard in enumerate(shards)}}
-        elif name.endswith(".json"):
-            payload = {}
-        else:
-            path.write_bytes(b"\0")
-            continue
-        path.write_text(json.dumps(payload), encoding = "utf-8")
-    return root
-
-
-@pytest.mark.parametrize("repo", [NANO, EDGE])
-def test_cosmos3_download_plan_stages_every_component_the_pipeline_reads(repo):
-    """Both repos ship a modular_model_index.json beside model_index.json, which the planner used to read as
-    MiniMax-H3's layout, staging scheduler/, transformer/ and vae/ and dropping text_tokenizer/ (the pipeline's only
-    text component). Every file of those folders in the listing is planned, shards and shard index included."""
-    listing = [name for name, _size in _checkpoint(repo)["listing"]]
-    assert "modular_model_index.json" in listing
-    planned = _planned_files(repo)
-    assert "model_index.json" in planned
-    for folder in ("scheduler/", "text_tokenizer/", "transformer/", "vae/"):
-        wanted = {name for name in listing if name.startswith(folder)}
-        assert wanted and wanted <= set(planned), folder
-
-
-@pytest.mark.parametrize("repo,gigabytes", [(NANO, 3.14), (EDGE, 0.98)])
-def test_cosmos3_download_plan_also_stages_sound_tokenizer_and_vision_encoder_weights(
-    repo, gigabytes
-):
-    """What the plan does with the two folders the video load never opens. The load passes sound_tokenizer=None, and
-    Cosmos3OmniPipeline takes no vision_encoder argument (Nano's index lists one, Edge's lists none), yet every file of
-    both folders is planned: 3.14 GB for Nano (sound tokenizer 1.99, vision encoder 1.15) and 0.98 GB for Edge (its
-    vision encoder). Pinned so a trim is a deliberate change, made together with the cache-completeness check below,
-    which counts every model_index component."""
-    folders = ("sound_tokenizer/", "vision_encoder/")
-    listing = {
-        name: size for name, size in _checkpoint(repo)["listing"] if name.startswith(folders)
-    }
-    staged = {name: size for name, size in _planned_files(repo).items() if name.startswith(folders)}
-    assert staged == listing
-    assert round(sum(staged.values()) / 1e9, 2) == gigabytes
-
-
-@pytest.mark.parametrize("repo,components", [(NANO, 6), (EDGE, 4)])
-def test_a_cosmos3_snapshot_of_exactly_the_planned_files_scores_complete(
-    monkeypatch, tmp_path, repo, components
-):
-    """The cache check scores a cached snapshot where Studio picks between a repo and its unsloth/ mirror (video.py
-    ``_video_fetch_repo``, ``_video_index_repo``, ``_video_offline_base_choice``). Cosmos3 has no mirror yet
-    (test_video_unsloth_mirrors.py ``NO_UNSLOTH_REPO``), so nothing reads the score for it today; pinned so that a
-    mirror added later does not read a finished download as partial. Nano's index has six non-null components
-    (scheduler, sound_tokenizer, text_tokenizer, transformer, vae, vision_encoder); Edge's has four (its
-    sound_tokenizer and safety_checker are null)."""
-    revision, _entry = _pinned(repo)
-    folder = tmp_path / ("models--" + repo.replace("/", "--"))
-    (folder / "refs").mkdir(parents = True)
-    (folder / "refs" / "main").write_text(revision, encoding = "utf-8")
-    snapshot = folder / "snapshots" / revision
-    planned = _planned_files(repo)
-    _write_stub_tree(snapshot, repo, planned)
-    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(tmp_path))
-    assert video_mod._video_cached_completeness_detail(repo) == (components, True)
-
-
-def _local_folders(repo: str) -> list:
-    """A folder named after the repo, a renamed one, and the repo's HF-cache snapshot at the pinned revision, each with
-    whether its path alone names the family (the renamed folder can resolve only through its configs)."""
-    revision, _entry = _pinned(repo)
-    name = repo.partition("/")[2]
-    cached = f"models--{repo.replace('/', '--')}/snapshots/{revision}"
-    return [
-        pytest.param(name, True, id = "named"),
-        pytest.param("renamed-video-model", False, id = "renamed"),
-        pytest.param(cached, True, id = "hf-cache-snapshot"),
-    ]
-
-
-def _local_folder(tmp_path_factory, folder: str) -> Path:
-    """``folder`` under a parent with no family token. pytest names ``tmp_path`` after the test, and these tests' names
-    hold "cosmos3_edge" / "cosmos3_nano", which name detection reads off any path segment: under ``tmp_path`` the
-    renamed folder resolved by its parent's name and never reached its configs."""
-    return tmp_path_factory.mktemp("models") / folder
-
-
-@pytest.mark.parametrize("folder,named", _local_folders(EDGE))
-def test_a_local_cosmos3_edge_folder_validates_by_name_or_by_its_configs(
-    cosmos3_runtime, monkeypatch, tmp_path_factory, folder, named
-):
-    # The files a pipeline load stages; a renamed folder resolves through its model_index.json class, root model_type
-    # (cosmos3_edge) and transformer hidden_size (2048). No guardrail package either: the folder's own model_index.json
-    # turns the checker off, and only the base repo id is in Studio's table of shipped values.
-    _set_guardrail(monkeypatch, "absent")
-    root = _write_stub_tree(_local_folder(tmp_path_factory, folder), EDGE, _planned_files(EDGE))
-    assert (detect_video_family(str(root)) is not None) is named
-    assert local_pipeline_components_are_complete(root, "model_index.json")
-    assert VideoBackend().validate_load_request(str(root)).name == "cosmos3-edge"
-
-
-@pytest.mark.parametrize("folder,named", _local_folders(NANO))
-def test_a_local_cosmos3_nano_folder_validates_by_name_or_by_its_configs(
-    cosmos3_runtime, tmp_path_factory, folder, named
-):
-    """A local copy of the official repo (``hf download nvidia/Cosmos3-Nano --local-dir ...``), renamed or not, or its
-    cache snapshot. validate_load_request judges a local pipeline path with local_pipeline_components_are_complete,
-    which reads Nano's sound_tokenizer/ as the model it is
-    (test_the_local_completeness_check_reads_the_cosmos3_audio_tokenizer_as_a_model)."""
-    root = _write_stub_tree(_local_folder(tmp_path_factory, folder), NANO, _planned_files(NANO))
-    assert (detect_video_family(str(root)) is not None) is named
-    assert VideoBackend().validate_load_request(str(root)).name == "cosmos3-nano"
-
-
-def test_the_local_completeness_check_reads_the_cosmos3_audio_tokenizer_as_a_model(tmp_path):
-    """Nano's model_index.json lists ``sound_tokenizer: [diffusers, Cosmos3AVAEAudioTokenizer]``, an audio VAE with a
-    config.json and weights. The check's "tokenizer" rule (diffusion_families.py ``_LOCAL_PIPELINE_METADATA_CONFIGS``)
-    applies to transformers-library tokenizers only, so it no longer asks that folder for a tokenizer_config.json. The
-    same check sets the artifact kind of local and cached folders in the model catalog
-    (hub/services/models/common.py ``_diffusers_pipeline_artifact_kind``)."""
-    root = _write_stub_tree(tmp_path / "Cosmos3-Nano", NANO, _planned_files(NANO))
-    # Every other component of the folder passes as it is.
-    assert local_pipeline_components_are_complete(
-        root, "model_index.json", excluded_components = ("sound_tokenizer",)
-    )
-    assert local_pipeline_components_are_complete(
-        root, "model_index.json"
-    ), "sound_tokenizer/ (Cosmos3AVAEAudioTokenizer) judged as a text tokenizer"
-
-
-# ── validation refusals ──────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("guardrail", ["opted out", "installed"])
-@pytest.mark.parametrize("repo", [NANO, EDGE])
-def test_cosmos3_base_repos_validate_as_pipelines_once_the_guardrail_is_settled(
-    cosmos3_runtime, monkeypatch, repo, guardrail
-):
-    _set_guardrail(monkeypatch, guardrail)
-    fam = VideoBackend().validate_load_request(repo, model_kind = "pipeline")
-    assert fam.name == _FAMILY[repo]
-    assert fam.pipeline_class == "Cosmos3OmniPipeline"
-
-
-def test_cosmos3_nano_without_the_guardrail_is_refused_before_the_load_starts(
-    cosmos3_runtime, monkeypatch
-):
-    """Nano's model_index.json leaves enable_safety_checker unset, so Cosmos3OmniPipeline's __init__ default (True)
-    builds NVIDIA's guardrail, and without cosmos_guardrail that raises ImportError (pipeline_cosmos3_omni.py:50-58,
-    :437-441). Studio's environment does not ship the package, so the refusal has to come at validation, before ~35 GB
-    are pulled and the resident model is evicted, and it has to name both ways out."""
-    _set_guardrail(monkeypatch, "absent")
-    started: list = []
-    monkeypatch.setattr(VideoBackend, "_run_load", lambda self, **kwargs: started.append(kwargs))
-    backend = VideoBackend()
-    with pytest.raises(ValueError) as refused:
-        backend.begin_load(NANO, model_kind = "pipeline")
-    message = str(refused.value)
-    # pip takes the package by either spelling.
-    assert "cosmos_guardrail" in message and re.search(r"pip install cosmos[-_]guardrail", message)
-    assert f"{_OPT_OUT_ENV}=0" in message
-    assert started == [] and backend.loading_repo_ids() == ()
-    # A direct load_pipeline call validates before anything else too, so nothing reaches from_pretrained.
-    with pytest.raises(ValueError, match = "cosmos_guardrail"):
-        backend.load_pipeline(NANO, model_kind = "pipeline")
-    assert _FakeCosmos3Pipeline.loads == []
-
-
-def test_cosmos3_edge_validates_without_the_guardrail_since_its_index_turns_it_off(
-    cosmos3_runtime, monkeypatch
-):
-    # Edge's model_index.json ships "enable_safety_checker": false, so its pipeline never builds the guardrail and
-    # there is nothing to refuse. With nothing cached, Studio reads that value from its table of what each base repo
-    # ships (video_cosmos3._BASE_SAFETY_CHECKER).
-    assert _checkpoint(EDGE)["model_index"]["enable_safety_checker"] is False
-    assert "enable_safety_checker" not in _checkpoint(NANO)["model_index"]
-    _set_guardrail(monkeypatch, "absent")
-    assert VideoBackend().validate_load_request(EDGE, model_kind = "pipeline").name == "cosmos3-edge"
-
-
-@pytest.mark.parametrize("guardrail", ["opted out", "installed"])
-def test_an_untrusted_cosmos3_repack_is_refused_as_untrusted(
-    cosmos3_runtime, monkeypatch, guardrail
-):
-    # Full pipelines load only from unsloth/*, the families' base repos and local paths; the name token makes this
-    # repo a cosmos3-nano pick, not a trusted one.
-    _set_guardrail(monkeypatch, guardrail)
-    with pytest.raises(ValueError, match = "limited to"):
-        VideoBackend().validate_load_request(_UNKNOWN_REPO, model_kind = "pipeline")
+    assert fam.trainable is False and fam.i2v_fits_first_frame is False
+    # bf16 on disk: each term within the table's rounding of the Hub folder sum.
+    for term, folder in ((0, "transformer/"), (2, "vae/")):
+        folder_gb = sum(s for n, s in listing if n.startswith(folder)) / 1e9
+        assert abs(fam.bf16_components_gb[term] - folder_gb) <= TABLE_ROUNDING_GB, folder
+    vf.validate_video_request_shape(fam, *fam.resolution_presets[0], fam.default_num_frames)
 
 
 @pytest.mark.parametrize(
-    "repo,filename,kind",
+    "name, shape, fragment",
     [
-        ("someone/Cosmos3-Nano-GGUF", "cosmos3-nano-Q4_K_M.gguf", None),
-        ("someone/Cosmos3-Edge-GGUF", "cosmos3-edge-Q8_0.gguf", None),
-        (NANO, "cosmos3_nano_bf16.safetensors", "single_file"),
+        ("cosmos3-nano", {"num_frames": 188}, "185 and 189"),
+        # num_frames=1 switches the pipeline to text-to-image.
+        ("cosmos3-nano", {"num_frames": 1}, "5 to 397"),
+        ("cosmos3-edge", {"width": 840, "height": 480}, "multiples of 16"),
+        # Edge's card offers 256p and 480p only.
+        ("cosmos3-edge", {"width": 1280, "height": 720}, "409,600 pixels"),
     ],
-    ids = ["nano-gguf", "edge-gguf", "nano-single-file"],
 )
-def test_cosmos3_gguf_and_single_file_picks_are_refused_at_validation(
-    cosmos3_runtime, repo, filename, kind
-):
-    """A gguf / single_file load builds the denoiser with ``transformer_class.from_single_file`` (video.py's
-    ``_load_expert``), which Cosmos3OmniTransformer does not have
-    (test_diffusers_cosmos3_transformer_has_no_single_file_loader). Accepted here, the pick fails with AttributeError
-    deep in the load, after the resident model was evicted and the checkpoint and the base companions were pulled."""
-    with pytest.raises(ValueError, match = "loads only as its full Diffusers pipeline"):
-        VideoBackend().validate_load_request(repo, gguf_filename = filename, model_kind = kind)
+def test_shapes_off_the_lattice_window_or_grid_are_refused(name, shape, fragment):
+    with pytest.raises(vf.VideoShapeError, match = fragment):
+        vf.validate_video_request_shape(_fam(name), **shape)
 
 
-def test_diffusers_cosmos3_transformer_has_no_single_file_loader():
-    diffusers = _diffusers_with_cosmos3()
+@pytest.mark.parametrize("fam", vf._FAMILIES, ids = lambda f: f.name)
+def test_every_window_end_and_duration_preset_is_a_valid_count(fam):
+    # Added with Cosmos3, whose card ranges (5-400, 50-150) end off the 4k+1 lattice.
+    from routes.video import _frames_for_seconds
 
-    # Why a Cosmos3 gguf / single_file pick cannot load: the load builds the denoiser through
-    # transformer_class.from_single_file, and Cosmos3OmniTransformer is no FromOriginalModelMixin.
-    assert not hasattr(diffusers.Cosmos3OmniTransformer, "from_single_file")
-
-
-@pytest.mark.parametrize("scheme", ["fp8", "int8"])
-@pytest.mark.parametrize("repo", [NANO, EDGE])
-def test_an_explicit_text_encoder_quant_on_cosmos3_is_refused_before_the_load(
-    cosmos3_runtime, monkeypatch, repo, scheme
-):
-    """Cosmos3 has no separate text encoder (the omni transformer reads the prompt tokens itself), so an explicit
-    encoder scheme can never engage. The load route validates and runs the precision preflight before it takes the GPU
-    (routes/video.py), which is where an impossible explicit precision is refused: after it, the resident model is
-    evicted and the checkpoint (~35 GB for Nano) is pulled and built. Both rows have no encoder, so both are refused.
-    The refusal must not tell the user to keep a dense bf16 encoder that does not exist."""
-    # A GPU that runs the scheme: on the fake CPU host the generic encoder checks refuse for a reason of their own and
-    # would hide whether Cosmos3 is refused at all. The opt-in that lets a declined explicit precision fall back is off.
-    monkeypatch.setattr(video_mod, "te_quant_supported", lambda *args, **kwargs: True)
-    monkeypatch.setattr(video_mod, "torchao_quantize_importable", lambda: True)
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", raising = False)
-    backend = VideoBackend()
-    checks_passed = False
-    with pytest.raises((ValueError, RuntimeError)) as refused:
-        # The route's two checks before it takes the GPU, in its order, then the load its worker runs.
-        fam = backend.validate_load_request(repo, model_kind = "pipeline", text_encoder_quant = scheme)
-        video_mod.assert_video_precision_available(
-            fam, model_kind = "pipeline", text_encoder_quant = scheme
-        )
-        checks_passed = True
-        backend.load_pipeline(repo, model_kind = "pipeline", text_encoder_quant = scheme)
-    assert _FakeCosmos3Pipeline.loads == []
-    # Refused by those checks, not by the load once the route has evicted the resident model.
-    assert checks_passed is False
-    message = str(refused.value)
-    assert re.search(r"text[ _-]encoder", message), message
-    assert "dense bf16 encoder" not in message, message
+    step, offset = max(1, fam.frame_step), max(1, fam.frame_offset)
+    floor = max(offset, fam.min_num_frames)
+    for end in (floor,) if fam.max_num_frames is None else (floor, fam.max_num_frames):
+        assert (end - offset) % step == 0, end
+        vf.validate_video_request_shape(fam, num_frames = end)
+    defaults = {"fps": fam.default_fps, "frame_step": step, "frame_offset": fam.frame_offset}
+    for seconds in fam.duration_presets:
+        # The page rounds half up, the route to even: both must land in the window.
+        page = max(1, math.floor((seconds * fam.default_fps - offset) / step + 0.5)) * step + offset
+        for frames in {_frames_for_seconds(seconds, defaults), page}:
+            vf.validate_video_request_shape(fam, num_frames = frames)
 
 
 @pytest.mark.parametrize(
-    "parent, repo, family",
+    "ids, expected",
     [
-        ("Cosmos3-Nano-exports", EDGE, "cosmos3-edge"),
-        ("cosmos3-edge-runs", NANO, "cosmos3-nano"),
+        ((None, None, None, _snapshot_path(NANO)), (35, 6.0)),
+        ((None, EDGE), (20, 6.0)),
+        # A parent folder spelling another model's key does not give Cosmos3 that model's recipe...
+        (("/data/fusionx/Cosmos3-Edge",), (20, 6.0)),
+        (("/data/hunyuanvideo/Cosmos3-Nano",), (35, 6.0)),
+        # ...and another model under a Cosmos3-named folder keeps its own.
+        (("/models/Cosmos3-Nano/wan2.1-t2v-14b-Q4_K_M.gguf",), (20, 6.0)),
+        (("/data/cosmos3-edge/LTX-2",), (40, 4.0)),
     ],
 )
-def test_a_local_folders_cosmos3_configs_outrank_a_path_naming_the_other_size(
-    tmp_path, parent, repo, family
+def test_generation_defaults(ids, expected):
+    assert vf.default_video_generation_params(*ids) == expected
+
+
+@pytest.mark.parametrize("installed, available", [("0.39.0", False), ("0.40.0", True)])
+def test_rows_hide_on_a_diffusers_without_edges_native_flow_schedule(
+    monkeypatch, installed, available
 ):
-    """Content beats the name, as #13376 decided for header-checked files: a folder whose own configs are one Cosmos3
-    size loads as that size even under a path that names the other (its card settings and memory plan follow)."""
-    import json as _json
+    from core.inference import diffusion_families as df
 
-    from core.inference.video import _resolve_load_family_with_source
+    # Edge's index sets use_native_flow_schedule, a pipeline config diffusers 0.40.0 added.
+    assert _ckpt(EDGE)["model_index"]["use_native_flow_schedule"] is True
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(df, "_installed_diffusers_version", lambda: installed)
+    assert {df.family_pipeline_available(_fam(n)) for n in vf.COSMOS3_FAMILIES} == {available}
 
-    hidden, model_type = (2048, "cosmos3_edge") if repo == EDGE else (4096, "cosmos3_omni")
-    folder = tmp_path / parent / "checkpoint"
-    (folder / "transformer").mkdir(parents = True)
-    (folder / "model_index.json").write_text(
-        _json.dumps({"_class_name": "Cosmos3OmniPipeline"}), encoding = "utf-8"
+
+# ── catalog ──────────────────────────────────────────────────────────────────
+
+_PIPELINE = ("model_index.json", "transformer/diffusion_pytorch_model.safetensors")
+# Reasoner / Policy / FP8 / quant layout: root config and shards, no model_index.json.
+_SHARDS = ("config.json", "model.safetensors.index.json", "model-00001-of-00002.safetensors")
+
+
+@pytest.mark.parametrize(
+    "repo_id, files, video",
+    [
+        (EDGE, _PIPELINE, True),
+        ("unsloth/Cosmos3-Edge", _PIPELINE, True),
+        # A full pipeline lists only from a repo the loader trusts, of a family that exists.
+        ("someone/Cosmos3-Edge", _PIPELINE, False),
+        (SUPER, _PIPELINE, False),
+        # Pipeline only: no Cosmos3-named repo without a model_index.json is the generator.
+        (EDGE, _SHARDS, False),
+        ("unsloth/Cosmos3-Nano-unsloth-bnb-4bit", _SHARDS, False),
+        ("nvidia/Cosmos3-Edge-Reasoner", _SHARDS, False),
+    ],
+)
+def test_the_cached_listing_offers_only_trusted_generator_pipelines_as_video(repo_id, files, video):
+    entries = [SimpleNamespace(file_name = n, size_on_disk = 1, blob_path = None) for n in files]
+    repo = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = Path("/hf-cache/x"),
+        revisions = [SimpleNamespace(files = entries)],
     )
-    (folder / "config.json").write_text(_json.dumps({"model_type": model_type}), encoding = "utf-8")
-    (folder / "transformer" / "config.json").write_text(
-        _json.dumps({"_class_name": "Cosmos3OmniTransformer", "hidden_size": hidden}),
-        encoding = "utf-8",
+    assert cc._cached_repo_task(repo) == (cc._VIDEO_GEN_TASK if video else None)
+    # A Cosmos3 name is no diffusers evidence; the pipeline index is.
+    assert cc._repo_is_diffusers(repo) is (files == _PIPELINE)
+
+
+def test_the_local_listing_offers_only_generator_pipelines_as_video(tmp_path):
+    def row(path, model_id = None):
+        kwargs = {"display_name": path.name, "path": str(path), "model_id": model_id}
+        return LocalModelInfo(id = str(path), source = "models_dir", **kwargs)
+
+    def shards(path):
+        for name in _SHARDS:
+            _write_json(path / name, {})
+        return path
+
+    video = cc._VIDEO_GEN_TASK
+    assert cc._local_model_task(row(_write_planned_tree(tmp_path / "Cosmos3-Edge", EDGE))) == video
+    renamed = _write_configs(tmp_path / "my-render-model", NANO)
+    assert cc._local_model_task(row(renamed)) == video
+    reasoner = shards(tmp_path / "Cosmos3-Nano-Reasoner")
+    assert cc._local_model_task(row(reasoner, "nvidia/Cosmos3-Nano-Reasoner")) is None
+    assert cc._local_is_diffusers(row(reasoner)) is False
+    assert cc._local_model_task(row(shards(tmp_path / "Cosmos3-Nano-finetune"))) is None
+    # A name the loader refuses lists nothing, even over a generator's pipeline.
+    fp8 = _write_planned_tree(tmp_path / "Cosmos3-Edge-FP8", EDGE)
+    assert cc._local_model_task(row(fp8)) is None
+
+
+def test_no_cosmos3_gguf_or_loose_file_is_offered_as_video(tmp_path):
+    from hub.utils import comfy_models
+
+    # Cosmos3-Nano-Q4_K_M.gguf is its reasoner; a placeholder diffusion arch reads as unrunnable.
+    assert (
+        cc._unhydrated_gguf_task(("unsloth/Cosmos3-Nano-GGUF", "Cosmos3-Nano-Q4_K_M.gguf")) is None
     )
-    assert detect_video_family(str(folder)).name != family  # the path alone names the other size
-    fam, _by_content = _resolve_load_family_with_source(str(folder), None, None)
-    assert fam.name == family
-
-
-@pytest.mark.parametrize("repo", [NANO, EDGE])
-def test_cosmos3_load_status_reports_no_separate_text_encoder(cosmos3_runtime, repo):
-    """The resolved record of an unset encoder precision must not name a dense bf16 encoder Cosmos3 does not have."""
-    _backend, status = _loaded(repo)
-    resolved = status["resolved"]["text_encoder_quant"]
-    assert resolved["reason"] == "not applicable (no separate text encoder)", resolved
+    unsupported = cc._UNSUPPORTED_DIFFUSION_TASK
+    assert cc._name_hint_media_task(("Cosmos3-Edge-Q8_0.gguf",), unsupported) == unsupported
+    for name, offered in (
+        ("cosmos3_edge_bf16.safetensors", False),
+        ("wan2.1_t2v_1.3B.safetensors", True),
+    ):
+        (tmp_path / name).write_bytes(b"weights")
+        assert comfy_models._offer_loose_checkpoint(tmp_path / name) is offered, name
