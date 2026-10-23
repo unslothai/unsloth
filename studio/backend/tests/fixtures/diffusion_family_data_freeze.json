@@ -284,11 +284,15 @@
     [
      12,
      0
+    ],
+    [
+     10,
+     0
     ]
    ]
   },
   "flux.1-kontext": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -302,6 +306,10 @@
     [
      12,
      0
+    ],
+    [
+     10,
+     0
     ]
    ]
   },
@@ -311,7 +319,7 @@
    "filter_reduction_configs_archs": []
   },
   "flux.2-klein": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -408,7 +416,7 @@
    "filter_reduction_configs_archs": []
   },
   "qwen-image-edit": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -430,7 +438,7 @@
    ]
   },
   "qwen-image-layered": {
-   "cudnn_benchmark": true,
+   "cudnn_benchmark": false,
    "filter_reduction_configs": false,
    "filter_reduction_configs_archs": [
     [
@@ -3475,7 +3483,7 @@
      10,
      0
     ],
-    "gated": false,
+    "gated": true,
     "schemes": [
      "nvfp4",
      "int8",
@@ -3506,6 +3514,12 @@
    "flux.3-klein-base": [
     "nvfp4"
    ],
+   "hunyuanvideo-1.5": [
+    "nvfp4"
+   ],
+   "hunyuanvideo-1.5-720p": [
+    "nvfp4"
+   ],
    "qwen-image": [
     "mxfp8",
     "nvfp4"
@@ -3516,6 +3530,9 @@
    ],
    "qwen-image-layered": [
     "mxfp8",
+    "nvfp4"
+   ],
+   "wan2.2-ti2v-5b": [
     "nvfp4"
    ]
   },

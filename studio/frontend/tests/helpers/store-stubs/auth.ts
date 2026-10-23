@@ -9,17 +9,12 @@ export type AuthFetchHandler = (
 
 let handler: AuthFetchHandler | null = null;
 
-/** Answer authFetch from `next` instead of failing. Pass null to restore the
- * default, so one test opting in cannot loosen the rest. */
+/** Answer authFetch from `next`; null restores the failing default. */
 export function setAuthFetchHandler(next: AuthFetchHandler | null): void {
   handler = next;
 }
 
-/** Fail any unexpected network access. */
-export function authFetch(
-  input: string,
-  init?: RequestInit,
-): Promise<Response> {
+export function authFetch(input: string, init?: RequestInit): Promise<Response> {
   if (!handler) throw new Error("authFetch: no network in tests");
   return Promise.resolve(handler(input, init));
 }
@@ -32,13 +27,6 @@ export function useIsAccountOwner(): boolean {
   return true;
 }
 
-let authSessionEpoch = 0;
-export function getAuthSessionEpoch(): number {
-  return authSessionEpoch;
-}
-export function bumpAuthSessionEpoch(): void {
-  authSessionEpoch += 1;
-}
 export function isAccountOwner(): boolean {
   return true;
 }

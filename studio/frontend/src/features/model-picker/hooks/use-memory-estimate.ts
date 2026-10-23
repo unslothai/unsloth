@@ -38,6 +38,8 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
     request.cacheTypeKv ?? null,
     request.maxSeqLength ?? null,
     request.mlxKvQuant ?? null,
+    request.mlxPleOffload ?? null,
+    request.mlxExpertOffload ?? null,
     request.nParallel ?? null,
     request.nBatch ?? null,
     request.nUbatch ?? null,

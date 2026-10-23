@@ -20,7 +20,6 @@ from hub.utils.dataset_format import (  # noqa: E402
     _standardize_sharegpt_row,
 )
 
-# Left previews as right, matching what standardize_data_formats writes for the trainer.
 _SPELLINGS = [
     ("human", "user"),
     ("Human", "user"),
@@ -87,8 +86,7 @@ def test_the_map_keys_are_all_already_normalised():
 
 def test_the_alias_set_is_the_one_the_trainer_accepts():
     """Cross-repo pin: an alias the zoo grows has to reach the preview too."""
-    # Not importorskip: unsloth_zoo raises NotImplementedError, not ImportError, on a host
-    # with no recognised accelerator, which is every GitHub macOS and Windows runner.
+    # Not importorskip: unsloth_zoo raises NotImplementedError on hosts with no accelerator.
     try:
         import unsloth_zoo.dataset_utils as dataset_utils
     except Exception as error:
@@ -250,12 +248,9 @@ def test_the_training_path_defaults_a_blank_role_like_the_preview(role):
 @pytest.mark.parametrize(
     "message, expected",
     [
-        # Blank inferred role, usable fallback in the same message: training's `is None`
-        # check skipped it and labelled an assistant turn as user.
         ({"role": "", "from": "gpt", "content": "answer"}, "assistant"),
         ({"role": "   ", "from": "Human", "content": "q"}, "user"),
         ({"role": None, "from": "gpt", "content": "answer"}, "assistant"),
-        # NEGATIVE CONTROLS: no fallback stays "user"; a present role wins over one.
         ({"role": "", "content": "answer"}, "user"),
         ({"role": "gpt", "from": "human", "content": "answer"}, "assistant"),
     ],

@@ -77,7 +77,6 @@ def test_a_managed_scan_keys_on_the_owners_cache_home(tmp_path):
     custom = tmp_path / "external" / "huggingface"
     custom.parent.mkdir(parents = True, exist_ok = True)
     run_as(OWNER, hf_cache_settings.set_hf_cache_home, str(custom))
-    # The key separates in-flight scans per cache volume, so it must name the home actually scanned.
     assert run_as(ALICE, hf_cache_settings.get_hf_cache_paths).cache_home == custom
     assert run_as(ALICE, hf_cache_settings.configured_cache_key) == run_as(
         OWNER, hf_cache_settings.configured_cache_key
