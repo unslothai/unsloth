@@ -840,6 +840,10 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
                 sw = _swiglu_probe(index)
         except Exception:  # noqa: BLE001 - the dense kernel stays, no SwiGLU prologue
             h16 = sw = False
+    elif _UNLISTED_DEVICE.get((index, unlisted_mode())):
+        h16 = (
+            _UNLISTED_PROBE.get(index) or False
+        )  # no dense tile: keep the verdict unlisted_device_ok armed
     _H16_DEVICE[index] = h16
     _SWIGLU_DEVICE[index] = sw
     if cfg is not None:

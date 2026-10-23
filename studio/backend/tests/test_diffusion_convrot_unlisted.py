@@ -220,6 +220,30 @@ def test_arm_rotated_follows_the_gate(monkeypatch):
     assert not f8.arm_rotated(3) and f8._RQ_DEVICES == frozenset()
 
 
+@pytest.mark.parametrize(
+    "timing, armed_after",
+    [({"h16": 10.0, "stock": 20.0}, "ieee"), ({"h16": 30.0, "stock": 20.0}, False)],
+)
+def test_dense_route_init_keeps_the_unlisted_verdict(monkeypatch, timing, armed_after):
+    # Z-Image order: install_int8_fused arms rotq_h16, then install_int8_gemm's _swap_on runs rotquant_device_config,
+    # which finds no dense tile on an unlisted arch and must not drop the verdict (no later arm_rotated restores it).
+    _fake_device(monkeypatch, (8, 6))
+    monkeypatch.setattr(cq, "_ROTQ_DEVICE", {})
+    monkeypatch.setattr(cq, "_ROTQ_DEVICE_K", {})
+    monkeypatch.setattr(cq, "_SWIGLU_DEVICE", {})
+    monkeypatch.setattr(cq, "_h16_probe", lambda index: "ieee")
+    monkeypatch.setattr(cq, "_unlisted_latency", lambda index, tf32x3, stock = None: timing)
+    monkeypatch.setattr(cq, "_rotq_probe", lambda index, cfg: pytest.fail("no dense tile to probe"))
+    monkeypatch.setattr(f8, "_RQ_DEVICES", frozenset())
+    monkeypatch.setattr(f8, "_RQ_HANDLE", None)
+    monkeypatch.setattr(f8, "_act_quant_device_ok", lambda index: False)
+    assert f8.arm_rotated(0) is bool(armed_after)
+    assert cq.rotquant_device_config(0) is None
+    assert cq._H16_DEVICE.get(0, False) == armed_after
+    assert (f8._RQ_DEVICES == frozenset({0})) is bool(armed_after)
+    assert not cq._SWIGLU_DEVICE.get(0)
+
+
 # CUDA
 
 
