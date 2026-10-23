@@ -79,8 +79,12 @@ def test_earlier_answer_with_thinking_stays_on_the_final_channel(thinking):
     )
 
 
-def test_earlier_turn_with_only_thinking_keeps_its_analysis():
+@pytest.mark.parametrize(
+    "earlier",
+    [{"thinking": "Let me think."}, {"content": None, "thinking": "Let me think."}],
+)
+def test_earlier_turn_with_only_thinking_keeps_its_analysis(earlier):
     # Matches unsloth/gpt-oss-20b: a previous turn with reasoning but no answer stays on analysis.
-    earlier = {"role": "assistant", "thinking": "Let me think."}
+    earlier = {"role": "assistant", **earlier}
     text = _render([USER, earlier, {"role": "user", "content": "Bye"}], add_generation_prompt = True)
     assert "<|start|>assistant<|channel|>analysis<|message|>Let me think.<|end|>" in text
