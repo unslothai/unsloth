@@ -148,6 +148,17 @@ def _chat_model_loaded() -> bool:
     return _loaded_slot_ident() is not None
 
 
+def _sole_kept_model() -> Optional[str]:
+    """With the primary slot empty, the one model kept alongside: named, a run routes to it without a load."""
+    from core.inference import model_slots
+
+    if _chat_model_loaded():
+        return None
+    kept = [slot for slot in model_slots.visible() if getattr(slot.llama, "is_loaded", False)]
+    name = getattr(kept[0].llama, "model_identifier", None) if len(kept) == 1 else None
+    return str(name) if name else None
+
+
 async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threading.Event) -> Answer:
     """Ask the loaded chat model to do the task. Text only: tools never run unattended."""
     from fastapi import HTTPException
@@ -171,6 +182,7 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             # means every built-in, python and terminal included.
             "tool_choice": "none",
             "enabled_tools": [],
+            **({"model": kept} if (kept := _sole_kept_model()) else {}),
         }
     )
     loop = asyncio.get_running_loop()

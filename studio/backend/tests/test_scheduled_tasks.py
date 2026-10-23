@@ -899,6 +899,25 @@ def test_a_run_asks_the_loaded_model_for_text_only(monkeypatch):
     assert request.state.keyless_api_admitted is False
 
 
+@pytest.mark.parametrize("primary", [None, "gemma-3"])
+def test_a_run_names_the_one_model_kept_alongside_only_when_the_primary_is_empty(
+    monkeypatch, primary
+):
+    from core.inference import model_slots
+
+    kept = SimpleNamespace(llama = SimpleNamespace(is_loaded = True, model_identifier = "qwen-kept"))
+    monkeypatch.setattr(model_slots, "visible", lambda: [kept])
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: primary)
+    producer = FakeProducer(completion("Dawn light."))
+
+    generate(monkeypatch, producer)
+
+    if primary is None:
+        assert producer.payload.model == "qwen-kept"
+    else:
+        assert "model" not in producer.payload.model_fields_set
+
+
 def test_a_run_with_no_model_loaded_says_so(monkeypatch):
     producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
     monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)

@@ -266,10 +266,18 @@ export function summarizeRepeats(schedule: TaskSchedule, locale: string): Repeat
   }
 }
 
-export function formatRunDay(epochMs: number, now: number, locale: string): string {
+/** The day in `timeZone` (default: this browser's), so it agrees with a time shown in that zone. */
+export function formatRunDay(
+  epochMs: number,
+  now: number,
+  locale: string,
+  timeZone?: string,
+): string {
   const dayStart = (at: number) => {
-    const date = new Date(at);
-    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    const parts = dateFormat("en-US", { timeZone, year: "numeric", month: "numeric", day: "numeric" })
+      .formatToParts(at);
+    const part = (type: string) => Number(parts.find((entry) => entry.type === type)?.value);
+    return Date.UTC(part("year"), part("month") - 1, part("day"));
   };
   // Rounded: a DST change makes one day 23 or 25 hours long.
   const days = Math.round((dayStart(epochMs) - dayStart(now)) / 86_400_000);
@@ -277,7 +285,7 @@ export function formatRunDay(epochMs: number, now: number, locale: string): stri
     const word = relativeFormat(locale).format(days, "day");
     return word.charAt(0).toLocaleUpperCase(locale) + word.slice(1);
   }
-  return dateFormat(locale, { weekday: "short", month: "short", day: "numeric" }).format(epochMs);
+  return dateFormat(locale, { weekday: "short", month: "short", day: "numeric", timeZone }).format(epochMs);
 }
 
 export function relativeTimeParts(

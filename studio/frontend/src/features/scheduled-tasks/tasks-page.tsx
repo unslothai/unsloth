@@ -186,7 +186,7 @@ function TaskRow({
   const finishedAt = run?.finishedAt ?? null;
   const repeats = repeatsText(task.schedule, locale, t);
   const clock = clockText(task.schedule, locale);
-  const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale);
+  const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale, task.timezone);
 
   return (
     <div className="group/task-row flex items-center gap-4 rounded-xl px-5 py-4 transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]">

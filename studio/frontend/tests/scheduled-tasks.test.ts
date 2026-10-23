@@ -212,6 +212,14 @@ test("a poll that announced nothing writes the shared record only once its curso
   assert.equal(shouldSaveSeen(null, { since: 100_000, ids: [] }, 0), true);
 });
 
+test("a next run's day is counted in the task's zone, like its time", () => {
+  // 00:15 on Oct 24 in New York is 21:15 on Oct 23 in Los Angeles.
+  const at = Date.UTC(2026, 9, 24, 4, 15);
+  const now = Date.UTC(2026, 9, 23, 20, 0);
+  assert.equal(formatRunDay(at, now, "en-US", "America/New_York"), "Tomorrow");
+  assert.equal(formatRunDay(at, now, "en-US", "America/Los_Angeles"), "Today");
+});
+
 test("formatters are kept per locale", () => {
   const at = new Date(2026, 9, 29, 9, 0).getTime();
   const now = new Date(2026, 9, 20, 9, 0).getTime();
