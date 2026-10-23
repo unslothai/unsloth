@@ -398,7 +398,6 @@ def test_wrapper_weights_ride_the_chunk_and_are_rebuilt_over_its_slices(fake_pin
                 and x.data_ptr() != dict(dm._wrapper_inner(host[name]))[attr].data_ptr()
             )
         assert p.shape == host[name].shape and p.dtype == host[name].dtype
-    # the wrappers' slices come out of the few chunk allocations, not one allocation per inner tensor
     storages = {
         x.untyped_storage().data_ptr()
         for n in expect

@@ -401,8 +401,7 @@ def _pin_host_weights(
     members: list = [[] for _ in bufs]
     wrapped: dict = {}
     for name, p, attr, view, index, start in placed:
-        # A torchao wrapper weight lists one entry per inner tensor, under the weight's name; the chunk upload
-        # rebuilds the wrapper over its device slices once every inner tensor is up.
+        # A torchao wrapper weight gets one entry per inner tensor, under the weight's name.
         members[index].append((name, start, view))
         if name.startswith("\0"):
             name = name[1:]
@@ -506,7 +505,6 @@ def _upload_pinned_chunks(
     buffers = dict(_named_buffers(module))
     copied = 0
     moved: list = []
-    # wrapper weight name -> {inner attr: host view}, for the weights still at their pinned inner tensors
     wrapped: dict = {}
     for name, p in params.items():
         kept = host.get(name)
@@ -520,7 +518,7 @@ def _upload_pinned_chunks(
         ):
             continue
         wrapped[name] = dict(inner)
-    # (name, inner attr) of each wrapper's inner tensor found in the layout, and its device slice once uploaded
+    # (name, inner attr) -> device slice once uploaded
     inner_dev: dict = {}
 
     def _inner_attr(name: str, view: Any) -> Optional[str]:
@@ -566,8 +564,7 @@ def _upload_pinned_chunks(
                     live.append((name, start, view))
             if not live:
                 continue
-            # Pack the movable weights: replaced weights and tensors left to the stock module.to would otherwise
-            # leave holes that are allocated and uploaded for nothing.
+            # Pack live weights so skipped ones leave no allocated holes.
             used, slots = 0, []
             for name, start, view in sorted(live, key = lambda e: e[1]):
                 used = -(-used // _PIN_ALIGN) * _PIN_ALIGN
