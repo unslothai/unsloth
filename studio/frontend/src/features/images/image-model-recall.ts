@@ -316,6 +316,27 @@ export function componentFieldsOwnerAfterLoad(
   });
 }
 
+/** The Advanced fields after a load recovered on reopen (its pending descriptor): a field still showing what it was
+ *  filled with (`owner`) is not the user's edit, so it takes the recovered file; an edited one stays. */
+export function recoveredComponentFields(
+  shown: ImageComponentFiles,
+  owner: ImageComponentFiles,
+  loaded: ImageComponentFiles,
+  kind: RememberedImageModel["kind"],
+): { shown: ImageComponentFiles; replaceEncoders: boolean; replaceVae: boolean } {
+  if (kind !== "gguf" && kind !== "single_file") return { shown, replaceEncoders: false, replaceVae: false };
+  const replaceEncoders = sameEncoders(shown, owner);
+  const replaceVae = sameVae(shown, owner);
+  return {
+    shown: cleanComponentFiles({
+      textEncoderFiles: (replaceEncoders ? loaded : shown).textEncoderFiles,
+      vaeFile: (replaceVae ? loaded : shown).vaeFile,
+    }),
+    replaceEncoders,
+    replaceVae,
+  };
+}
+
 /** Store the paths a load succeeded with; a load with none forgets the model's entry. */
 export function rememberImageComponents(model: ImageModelKey, files: ImageComponentFiles): void {
   const key = componentsKey(model);

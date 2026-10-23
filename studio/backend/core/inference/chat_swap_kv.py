@@ -66,6 +66,35 @@ def _leave_saving(key: tuple[str, Optional[str]]) -> None:
             _saving.pop(key, None)
 
 
+# (media, account id) -> how many load POSTs are still before their engine registers the load.
+_preparing: dict[tuple[str, Optional[str]], int] = {}
+
+
+def load_preparing(media: str) -> bool:
+    """Whether one of the caller's load POSTs is still in its preflight (evidence, checks, acquire)."""
+    with _lock:
+        return bool(_preparing.get((media, _account_id())))
+
+
+@contextlib.contextmanager
+def preparing_load(media: str):
+    """Held around a load POST: until begin_load registers the load, load-progress still
+    describes the previous model, and a page reopened then must not read its "ready" or null
+    as this load having ended."""
+    key = (media, _account_id())
+    with _lock:
+        _preparing[key] = _preparing.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _lock:
+            left = _preparing.get(key, 1) - 1
+            if left > 0:
+                _preparing[key] = left
+            else:
+                _preparing.pop(key, None)
+
+
 @contextlib.contextmanager
 def _saving_marker(media: str, account: Optional[str]):
     key = (media, account)

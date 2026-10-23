@@ -76,7 +76,7 @@ test("the page stores the pending load at start and clears it on every way a loa
   const source = readSrc("features/images/images-page.tsx");
   assert.match(source, /lastLoad\.current = \{[\s\S]*?fieldFiles: \{[^}]*\},\s*\};[\s\S]{0,200}rememberPendingImageLoad\(lastLoad\.current\);/);
   // Success consumes it before the descriptor is checked against the status.
-  assert.match(source, /lastLoad\.current = finishedLoadTarget\(lastLoad\.current, loaded\);\s*if \(lastLoad\.current\) rememberFinishedLoad\(lastLoad\.current, loaded\);/);
+  assert.match(source, /const started = lastLoad\.current;\s*lastLoad\.current = finishedLoadTarget\(started, loaded\);\s*if \(lastLoad\.current\) rememberFinishedLoad\(lastLoad\.current, loaded, lastLoad\.current !== started\);/);
   // Failed after starting, cancelled or evicted, refused at start, cancelled or ejected by the page, nothing to resume.
   assert.match(source, /if \(p\.phase === "error"\) \{\s*clearPendingImageLoad\(\);/);
   assert.match(source, /if \(p\.phase === null\) \{\s*clearPendingImageLoad\(\);/);
@@ -94,7 +94,7 @@ test("a load that finished while the page was closed records its paths before th
   // pending request with the resident build itself, the same way the poll does.
   assert.match(
     probe,
-    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded\);/,
+    /\} else if \(p\.phase === "ready"\) \{[\s\S]*?const loaded = await getDiffusionStatus\(\);\s*setStatusIfNewest\(ticket, loaded\);\s*const resumed = finishedLoadTarget<LastLoad>\(null, loaded\);\s*if \(resumed\) \{\s*lastLoad\.current = resumed;\s*rememberFinishedLoad\(resumed, loaded, true\);/,
   );
   // The shared recorder saves the model and its component files only for the build that is resident.
   const recorder = source.slice(source.indexOf("const rememberFinishedLoad = useCallback"));

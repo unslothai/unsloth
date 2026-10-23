@@ -12,6 +12,7 @@ import {
   readImageComponents,
   readImageModel,
   recalledComponentFiles,
+  recoveredComponentFields,
   reconcileRememberedComponents,
   rememberImageComponents,
   rememberLoadedImageComponents,
@@ -387,7 +388,7 @@ test("a resumed load the page did not start keeps the saved files it engages; a 
   const source = readSrc("features/images/images-page.tsx");
   assert.match(
     source,
-    /const files = rememberLoadedImageComponents\(target, loaded\);\s*if \(files\) componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(/,
+    /const files = rememberLoadedImageComponents\(target, loaded\);\s*if \(files && recovered\) \{[\s\S]*?\}\s*if \(files\) componentFieldsOwner\.current = componentFieldsOwnerAfterLoad\(/,
   );
 });
 
@@ -743,4 +744,63 @@ test("a reload that changed one override keeps the other's saved path", () => {
   rememberImageModel({ ...zImage, ...zFiles });
   assert.deepEqual(forgetStaleResidentComponents(vaeOnly), { ...zImage, vaeFile: zFiles.vaeFile });
   assert.deepEqual(readImageModel(), { ...zImage, vaeFile: zFiles.vaeFile });
+});
+
+test("a recovered pending load refills the Advanced fields the user has not touched since reopening", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  const tree = ts.createSourceFile("images-page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let declaration = "";
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "rememberFinishedLoad")
+      declaration = `const ${node.getText(tree)};`;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(declaration);
+  const { outputText } = ts.transpileModule(`${declaration}\nreturn rememberFinishedLoad;`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  });
+  const loaded = {
+    loaded: true,
+    repo_id: zImage.repoId,
+    model_kind: zImage.kind,
+    gguf_filename: zImage.filename,
+    engine: "diffusers",
+    component_files: { text_encoder: "qwen_3_4b.safetensors", vae: "ae.safetensors" },
+  };
+  // The page reopened before the load finished: the fields show what it opened on (`shown`, owned by `owner`).
+  const reopen = (shown: { textEncoderFiles?: string[]; vaeFile?: string }, owner: object, recovered = true) => {
+    const state = { te: (shown.textEncoderFiles ?? []).join("\n"), vae: shown.vaeFile ?? "" };
+    const scope = {
+      useCallback: (fn: unknown) => fn,
+      matchesRememberedModel: () => true,
+      withEngagedFamily: (target: object) => target,
+      rememberImageModel,
+      setRememberedModel: () => {},
+      rememberLoadedImageComponents,
+      componentFieldsOwnerAfterLoad,
+      recoveredComponentFields,
+      componentFieldsShown: { current: shown },
+      componentFieldsOwner: { current: owner },
+      setTextEncoderFiles: (v: string) => (state.te = v),
+      setVaeFile: (v: string) => (state.vae = v),
+    };
+    const remember = new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+    remember({ ...zImage, ...zFiles, fieldFiles: zFiles }, loaded, recovered);
+    return { state, scope };
+  };
+  store.clear();
+  // A fresh profile: both fields opened empty, so the recovered paths fill both, and own them.
+  const fresh = reopen({}, {});
+  assert.deepEqual(fresh.state, { te: zFiles.textEncoderFiles.join("\n"), vae: zFiles.vaeFile });
+  assert.deepEqual(fresh.scope.componentFieldsOwner.current, zFiles);
+  // Opened on an older model's files: still untouched, so they give way too.
+  const old = { textEncoderFiles: ["old-te.safetensors"], vaeFile: "old-ae.safetensors" };
+  assert.deepEqual(reopen(old, old).state, { te: zFiles.textEncoderFiles.join("\n"), vae: zFiles.vaeFile });
+  // A VAE the user typed after reopening stays, and stays theirs; the untouched encoder field still refills.
+  const edited = reopen({ textEncoderFiles: old.textEncoderFiles, vaeFile: "mine.safetensors" }, old);
+  assert.deepEqual(edited.state, { te: zFiles.textEncoderFiles.join("\n"), vae: "mine.safetensors" });
+  assert.deepEqual(edited.scope.componentFieldsOwner.current, { textEncoderFiles: zFiles.textEncoderFiles, vaeFile: old.vaeFile });
+  // The page's own load (not recovered) leaves the fields as they are.
+  assert.deepEqual(reopen({}, {}, false).state, { te: "", vae: "" });
 });

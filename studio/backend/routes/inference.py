@@ -51668,8 +51668,11 @@ async def load_diffusion_model(
         redact_host_paths,
         restore_inventory_handles,
     )
+    from core.inference.chat_swap_kv import preparing_load
+
     try:
-        loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+        with preparing_load("image"):
+            loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
     except HTTPException as exc:
         # A load that RAISES skips both wrappers, and the inner loader redacted native paths
         # only, which do not know inventory handles.
@@ -53771,6 +53774,20 @@ async def diffusion_inference_info(current_subject: str = Depends(get_current_su
     return DiffusionInferenceInfoResponse(families = family_inference_infos())
 
 
+def _image_load_preparing_progress() -> Optional[DiffusionLoadProgressResponse]:
+    """A load POST of the caller's still in preflight reads as starting: the engine's "ready",
+    "error" or null then describes the previous load. Once the engine runs this one, its phase wins."""
+    from core.inference.chat_swap_kv import load_preparing
+
+    if not load_preparing("image"):
+        return None
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    if get_active_diffusion_engine().load_progress().get("phase") in ("downloading", "finalizing"):
+        return None
+    return DiffusionLoadProgressResponse(phase = "downloading")
+
+
 @studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
 async def diffusion_load_progress(
     current_subject: str = Depends(get_current_subject),
@@ -53781,6 +53798,9 @@ async def diffusion_load_progress(
     saving = saving_progress("image")
     if saving is not None:
         return DiffusionLoadProgressResponse(**saving)
+    preparing = _image_load_preparing_progress()
+    if preparing is not None:
+        return preparing
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine

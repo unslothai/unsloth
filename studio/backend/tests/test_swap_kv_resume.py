@@ -518,3 +518,43 @@ def test_the_saving_phase_lasts_until_the_acquire_registers_the_load(
     assert seen == [{"phase": cs.SAVING_CHAT_CONTEXT}] * 2
     # Released once the acquire is done, whether it registered the load or failed.
     assert cs.saving_progress("image") is None and cs._saving == {}
+
+
+def test_load_progress_reads_in_flight_through_the_load_preflight(
+    client,
+    env,
+    monkeypatch,
+    healthy_diffusers,  # noqa: F811
+):
+    # Before begin_load, the engine's progress describes the previous model ("ready" here): a page
+    # reopened during the evidence fetch must read a load still starting, not one that finished.
+    import core.inference.diffusion_hub_evidence as evidence
+
+    _cuda(monkeypatch)
+    base, body = _LOADS["image"]
+    assert client.post(f"{base}/load", json = body).status_code == 200
+    assert client.get(f"{base}/load-progress").json()["phase"] == "ready"
+    entered, gate = threading.Event(), threading.Event()
+
+    def _slow_prefetch(*args, **kwargs):
+        entered.set()
+        gate.wait(10)
+
+    monkeypatch.setattr(evidence, "prefetch_for_pick", _slow_prefetch)
+    monkeypatch.setattr(cs, "_preparing", {}, raising = False)
+    answer: dict = {}
+    poster = threading.Thread(
+        target = lambda: answer.setdefault("resp", client.post(f"{base}/load", json = body))
+    )
+    poster.start()
+    try:
+        assert entered.wait(5)
+        during = client.get(f"{base}/load-progress").json()
+    finally:
+        gate.set()
+    poster.join(10)
+    assert during["phase"] in ("downloading", "finalizing", "saving_chat_context")
+    assert answer["resp"].status_code == 200
+    # Released with the POST: the engine's own phase answers again.
+    assert getattr(cs, "_preparing", {}) == {}
+    assert client.get(f"{base}/load-progress").json()["phase"] == "ready"

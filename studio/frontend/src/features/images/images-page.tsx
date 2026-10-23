@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, redirectRetiredImagePick, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
@@ -3438,12 +3438,20 @@ export function ImagesPage({
 
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   // Record a finished load's model and the component files it was started with (status names only basenames).
-  const rememberFinishedLoad = useCallback((target: LastLoad, loaded: DiffusionStatus) => {
+  // recovered: the load is the pending descriptor a reopened page took over, so the fields it opened on may be stale.
+  const rememberFinishedLoad = useCallback((target: LastLoad, loaded: DiffusionStatus, recovered = false) => {
     if (!matchesRememberedModel(target, loaded)) return;
     const remembered = withEngagedFamily(target, loaded);
     rememberImageModel(remembered);
     setRememberedModel(remembered);
     const files = rememberLoadedImageComponents(target, loaded);
+    if (files && recovered) {
+      // Untouched since reopening: show the recovered paths, so the next load sends what the fields say.
+      const fill = recoveredComponentFields(componentFieldsShown.current, componentFieldsOwner.current, files, target.kind);
+      if (fill.replaceEncoders) setTextEncoderFiles((fill.shown.textEncoderFiles ?? []).join("\n"));
+      if (fill.replaceVae) setVaeFile(fill.shown.vaeFile ?? "");
+      componentFieldsShown.current = fill.shown;
+    }
     if (files) componentFieldsOwner.current = componentFieldsOwnerAfterLoad(componentFieldsShown.current, files, componentFieldsOwner.current, target.kind);
   }, []);
 
@@ -3471,8 +3479,9 @@ export function ImagesPage({
         pendingEvicted.current = [];
         toast.success("Model loaded", evictedToastOptions(evicted));
         // A load resumed after a page reload takes its requested paths from the pending descriptor.
-        lastLoad.current = finishedLoadTarget(lastLoad.current, loaded);
-        if (lastLoad.current) rememberFinishedLoad(lastLoad.current, loaded);
+        const started = lastLoad.current;
+        lastLoad.current = finishedLoadTarget(started, loaded);
+        if (lastLoad.current) rememberFinishedLoad(lastLoad.current, loaded, lastLoad.current !== started);
         setBusy(null);
         // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
@@ -3640,7 +3649,7 @@ export function ImagesPage({
           const resumed = finishedLoadTarget<LastLoad>(null, loaded);
           if (resumed) {
             lastLoad.current = resumed;
-            rememberFinishedLoad(resumed, loaded);
+            rememberFinishedLoad(resumed, loaded, true);
           }
         }
       } catch {
