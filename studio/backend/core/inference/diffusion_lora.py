@@ -590,12 +590,20 @@ def resolve_specs(
     return out
 
 
-def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[ResolvedLora]:
+def materialize_native_dir(
+    resolved: list[ResolvedLora],
+    dest: Path,
+    *,
+    real_files: bool = False,
+) -> list[ResolvedLora]:
     """Populate ``dest`` with symlinks (copy fallback) to the resolved LoRA files.
 
     sd-cli resolves ``<lora:ALIAS:w>`` against filenames in ``--lora-model-dir``, so each adapter
     needs a uniquely-named file in this dedicated managed directory. Returns the resolved list with
     aliases updated to the (collision-broken) stems written, so the caller injects matching tags.
+    ``real_files``: hard links (copy fallback) instead of symlinks. sd-server (master-982+) canonicalizes
+    each file under ``--lora-model-dir`` and skips one that resolves outside it, so a symlink into the
+    LoRA cache is never listed and a request naming it is rejected.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()
@@ -614,10 +622,21 @@ def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[Res
         try:
             if link.exists() or link.is_symlink():
                 link.unlink()
-            os.symlink(os.path.realpath(r.path), link)
+            if real_files:
+                os.link(os.path.realpath(r.path), link)
+            else:
+                os.symlink(os.path.realpath(r.path), link)
         except OSError:
             import shutil
-            shutil.copy2(r.path, link)
+            try:
+                shutil.copy2(r.path, link)
+            except BaseException:
+                # A partial multi-GB copy (disk full, cancelled) must not outlive the failed request.
+                try:
+                    link.unlink()
+                except OSError:
+                    pass
+                raise
         out.append(ResolvedLora(r.id, alias, str(link), r.fmt, r.weight))
     return out
 
