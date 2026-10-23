@@ -97,6 +97,43 @@ def test_gathered_weight_reuses_its_plan_across_reallocation(monkeypatch):
     assert calls[0] == 1, "the planned launch was rebuilt for a re-allocated FSDP2 weight"
 
 
+def test_gathered_weight_view_reuses_its_plan_across_reallocation(monkeypatch):
+    """The fused LoRA MLP backward dequantizes `downW.t()`, a new view of the gathered weight each
+    call: the plan is reused for a view laid out like the one it was built from."""
+    utils = _utils()
+    calls = _count_planned(monkeypatch, utils)
+    q, s = _quantize(4)
+    q_other, _ = _quantize(5)
+    p = _gathered_param(q, mark = True)
+    got = utils.fast_dequantize(p.t(), s, use_global_buffer = True).t()
+    assert _equal(got, bnb_functional.dequantize_4bit(q, s))
+    for step, packed in enumerate((q_other, q)):
+        old, blocker = _reallocate(p, packed)
+        assert p.data_ptr() != old
+        got = utils.fast_dequantize(p.t(), s, use_global_buffer = True).t()
+        assert _equal(got, bnb_functional.dequantize_4bit(packed, s)), step
+        del blocker
+    assert calls[0] == 1, "the planned launch was rebuilt for a view of a re-allocated FSDP2 weight"
+    # The parameter itself, another layout of the same bytes, still decodes them.
+    got = utils.fast_dequantize(p, s, use_global_buffer = True)
+    assert _equal(got, bnb_functional.dequantize_4bit(q, s))
+
+
+def test_gathered_weight_with_swapped_storage_rebuilds(monkeypatch):
+    """A view the plan holds keeps the storage it was built on: when the parameter gets a new
+    storage object instead of a resized one, the plan must not read the old bytes."""
+    utils = _utils()
+    calls = _count_planned(monkeypatch, utils)
+    q, s = _quantize(6)
+    q_other, _ = _quantize(7)
+    p = _gathered_param(q, mark = True)
+    utils.fast_dequantize(p.t(), s, use_global_buffer = True)
+    p.data = q_other.reshape(-1).view(torch.bfloat16).reshape(-1, 1).clone()
+    got = utils.fast_dequantize(p.t(), s, use_global_buffer = True).t()
+    assert _equal(got, bnb_functional.dequantize_4bit(q_other, s))
+    assert calls[0] == 2
+
+
 def test_unmarked_weight_still_rebuilds_on_a_new_address(monkeypatch):
     utils = _utils()
     calls = _count_planned(monkeypatch, utils)

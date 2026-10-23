@@ -676,13 +676,16 @@ _FSDP2_GATHERED = "_unsloth_fsdp2_gathered"
 def _gathered_plan_hit(plan, W):
     """FSDP2 frees an all-gathered weight's storage after use and re-allocates it for the next
     all-gather: the same tensor at a new address, so a plan keyed on the address never hits. The
-    planned launch passes that tensor, whose address is read at launch time, so it still applies
-    while the 16 byte alignment the kernel was specialized on holds."""
-    return (
-        plan[6] is W
-        and getattr(W, _FSDP2_GATHERED, False)
-        and (W.data_ptr() & 15) == (plan[0] & 15)
-    )
+    planned launch passes the tensor it was built with and reads its address at launch time, so it
+    still applies to that tensor, or to a view laid out like it at W's address (the backward's
+    `W.t()` is a new view each call), while the 16 byte alignment it was specialized on holds."""
+    built = plan[6]
+    if built is not W and (
+        built.data_ptr() != W.data_ptr() or built.shape != W.shape or built.stride() != W.stride()
+    ):
+        return False
+    gathered = W if W._base is None else W._base
+    return getattr(gathered, _FSDP2_GATHERED, False) and (W.data_ptr() & 15) == (plan[0] & 15)
 
 
 def _nf4_kernels_failed(error):
