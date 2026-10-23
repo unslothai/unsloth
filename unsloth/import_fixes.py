@@ -7305,8 +7305,7 @@ def fix_inductor_reduction_readback_race():
     load._unsloth_readback_barrier = True
     kernel.load = load
     kernel.get_load_buffer = get_load_buffer
-    # A warm FX graph / AOTAutograd cache would hand back kernels compiled without the barrier:
-    # a no-op post-grad pass's uuid joins the cache key.
+    # Warm FX / AOTAutograd caches would return barrier-free kernels: this no-op pass's uuid keys them.
     try:
         from torch._inductor.custom_graph_pass import CustomGraphPass
         class ReadbackBarrierCacheKey(CustomGraphPass):
