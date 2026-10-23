@@ -4,7 +4,16 @@
 """Pre-tokenized text datasets: rows that already hold ``input_ids`` (optionally ``attention_mask`` and ``labels``). They train as-is, without a chat template; user ``labels`` are the objective, so response masking applies only to rows without them. Only datasets no other format matched are claimed, so every dataset that trained before keeps its route."""
 
 PRETOKENIZED_FORMAT = "pretokenized"
-_TOKEN_COLUMNS = ("input_ids", "attention_mask", "labels", "token_type_ids")
+_TOKEN_COLUMNS = (
+    "input_ids",
+    "attention_mask",
+    "labels",
+    "token_type_ids",
+    "completion_mask",
+    "assistant_masks",
+)
+# Per-token targets TRL applies to the labels: a length other than input_ids' fails mid-training.
+_LOSS_COLUMNS = ("labels", "completion_mask", "assistant_masks")
 _SAMPLE_ROWS = 20
 
 
@@ -49,11 +58,12 @@ def _check_arrow_table(table, max_seq_length, vocab_size) -> bool:
 
     ids = table.column("input_ids")
     lengths = pc.list_value_length(ids)
-    if "labels" in table.column_names:
-        labels = table.column("labels")
-        if not pc.all(pc.equal(lengths, pc.list_value_length(labels))).as_py():
+    for name in _LOSS_COLUMNS:
+        if name not in table.column_names:
+            continue
+        if not pc.all(pc.equal(lengths, pc.list_value_length(table.column(name)))).as_py():
             raise ValueError(
-                "Pre-tokenized dataset: 'labels' must have the same length as 'input_ids' in every row."
+                f"Pre-tokenized dataset: '{name}' must have the same length as 'input_ids' in every row."
             )
     if vocab_size:
         flat = pc.list_flatten(ids)

@@ -143,6 +143,22 @@ def test_prepare_rejects_labels_of_another_length():
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
+@pytest.mark.parametrize("mask", ["completion_mask", "assistant_masks"])
+def test_prepare_truncates_loss_masks_with_the_ids(mask):
+    # TRL applies these masks to the labels: left at full length they fail on the first step.
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3, 4, 5, 6]], mask: [[0, 0, 1, 1, 1, 1]]})
+    out = prepare_pretokenized_dataset(ds, max_seq_length = 4, vocab_size = 100)
+    assert out[0]["input_ids"] == [1, 2, 3, 4]
+    assert out[0][mask] == [0, 0, 1, 1]
+
+
+@pytest.mark.parametrize("mask", ["completion_mask", "assistant_masks"])
+def test_prepare_rejects_loss_masks_of_another_length(mask):
+    ds = Dataset.from_dict({"input_ids": [[1, 2, 3]], mask: [[0, 1]]})
+    with pytest.raises(ValueError, match = f"'{mask}' must have the same length"):
+        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+
+
 def test_only_user_labels_turn_off_response_masking():
     assert has_custom_labels(_pretokenized(with_labels = True))
     assert not has_custom_labels(_pretokenized(with_labels = False))
