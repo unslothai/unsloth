@@ -455,7 +455,8 @@ export function KeyboardShortcutsTab() {
 
   return (
     <div className="settings-page px-4">
-      <header className="flex flex-col gap-1">
+      {/* -mx-4 undoes the page's px-4: the heading sits where every other tab's does. */}
+      <header className="-mx-4 flex flex-col gap-1">
         <h1
           data-settings-label={t("settings.keyboardShortcuts.title")}
           className="text-xl font-semibold font-heading"
