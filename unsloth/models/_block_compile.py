@@ -4,6 +4,7 @@
 """One torch.compile region per decoder layer for training (stock forward: attention, MLP or MoE,
 norms, LoRA, NF4). UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE turns it off."""
 
+import contextlib
 import functools
 import os
 import sys
@@ -693,6 +694,10 @@ def _wrap(cls, compile_options):
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
     except Exception:
         inline_flag = [False]
+    try:
+        from unsloth_zoo.temporary_patches.misc import output_capture_scratch as capture_scratch
+    except Exception:
+        capture_scratch = contextlib.nullcontext
     # First call per grad mode compiles with errors raised: on failure retry with flex outside,
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
@@ -703,7 +708,9 @@ def _wrap(cls, compile_options):
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
         try:
-            return compiled(self, hidden_states, *args, **kwargs)
+            # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
+            with capture_scratch():
+                return compiled(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF

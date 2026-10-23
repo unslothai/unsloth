@@ -22,6 +22,7 @@ import math
 import os
 import re
 import struct
+from core.inference.inference_gate import holds_inference
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
@@ -2289,6 +2290,8 @@ def _archive_and_recall(
     recall_budget_tokens: int = 0,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
     branch_messages: Optional[list[dict]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    background: bool = False,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
@@ -2313,19 +2316,26 @@ def _archive_and_recall(
             return result
 
         gone = evicted_messages(before, conversation)
+        if background:
+            # llama.cpp only: its streams gate the idle-gap worker (`inference_running`).
+            conversation_archive.note_branch(thread_id, before, cancel_check)
         # `conversation` is the fitted prompt, so it says which repeats of a turn the model
         # can still read. Without it a twice-said turn is archived twice and spends two
         # recall slots on text already in the prompt.
         archived = (
             conversation_archive.archive_turns(
-                thread_id, gone, live = conversation, branch = branch_messages or conversation
+                thread_id,
+                gone,
+                live = conversation,
+                branch = branch_messages or conversation,
+                cancel_check = cancel_check,
             )
             if gone
             else 0
         )
         counts = {"archived_messages": archived}
 
-        if recall_done:
+        if recall_done or (cancel_check is not None and cancel_check()):
             result["counts"] = counts
             return result
         if not force_recall:
@@ -25938,6 +25948,7 @@ class LlamaCppBackend:
 
     @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
+    @holds_inference
     def load_model(
         self,
         intent: GgufLoadIntent,
@@ -39325,13 +39336,18 @@ class LlamaCppBackend:
                     or getattr(self, "_chat_template", None),
                 ),
             }
+        from core.rag.conversation_archive import inference_running
+
         stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-        with httpx.Client(
-            timeout = stream_timeout,
-            limits = httpx.Limits(max_keepalive_connections = 0),
-            trust_env = False,
-            verify = _local_ssl_context(),
-        ) as client:
+        with (
+            inference_running(),
+            httpx.Client(
+                timeout = stream_timeout,
+                limits = httpx.Limits(max_keepalive_connections = 0),
+                trust_env = False,
+                verify = _local_ssl_context(),
+            ) as client,
+        ):
             first_token_deadline = start_first_token_wait()
             with self._stream_with_retry(
                 client,
@@ -40065,6 +40081,8 @@ class LlamaCppBackend:
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = continue_final_message,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -41139,6 +41157,8 @@ class LlamaCppBackend:
                                 strict = True,
                                 chat_template_kwargs = _reasoning_kw,
                             ),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )
                         conversation = _recalled["conversation"]
                         truncation = {**truncation, **_recalled["counts"]}
@@ -41300,6 +41320,8 @@ class LlamaCppBackend:
                                 style = "inline",
                                 recall_done = True,
                                 branch_messages = _extend_live_branch(conversation),
+                                cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                                background = True,
                             )["counts"]
                         )
                     payload["messages"] = neutralize_control_markup_in_messages(
@@ -42825,7 +42847,8 @@ class LlamaCppBackend:
                         # nobody answered. Read before decision_slot is dropped in the deny branch.
                         _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
-                            # Approved: now it really is running.
+                            # tool_approved first: the route forwards it before retaking the model slot.
+                            yield decision.tool_approved_event(approval_id)
                             yield {"type": "status", "text": decision.status_text}
                         if _decision == "deny":
                             decision_slot = None
@@ -43989,6 +44012,8 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                        background = True,
                     )
                     conversation = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -44133,6 +44158,8 @@ class LlamaCppBackend:
                             style = "inline",
                             recall_done = True,
                             branch_messages = _extend_live_branch(conversation),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
+                            background = True,
                         )["counts"]
                     )
                 # Recorded rather than only forwarded, for the same reason as the
@@ -45119,6 +45146,7 @@ class LlamaCppBackend:
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
+    @holds_inference
     def generate_audio_response(
         self,
         text: str,
