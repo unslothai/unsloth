@@ -200,3 +200,12 @@ test("a temporary chat's run keeps its pages out of history after a switch to a 
     ],
   );
 });
+
+test("a run's temporary flag comes from its own thread, not a chat shown later", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(
+    adapter,
+    /const browserTemporary = resolvedThreadId\s*\?\s*isThreadIncognito\(resolvedThreadId\) \|\|\s*\(resolvedThreadId === runtime\.activeThreadId && runtime\.incognito\)\s*:\s*runtime\.incognito;/,
+  );
+});

@@ -4652,10 +4652,12 @@ export function createOpenAIStreamAdapter(
       // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
         (runThreadId ?? runtime.activeThreadId) || undefined;
-      // Taken as it sends: the browser agent's pages stay out of history after a switch to a saved chat.
-      const browserTemporary =
-        runtime.incognito ||
-        (resolvedThreadId ? isThreadIncognito(resolvedThreadId) : false);
+      // Taken as it sends, from the run's own thread: its browser pages keep that chat's history rule
+      // after a switch. The shown chat's toggle counts only for the thread on screen (marked as it initializes).
+      const browserTemporary = resolvedThreadId
+        ? isThreadIncognito(resolvedThreadId) ||
+          (resolvedThreadId === runtime.activeThreadId && runtime.incognito)
+        : runtime.incognito;
       if (resolvedThreadId) {
         rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
       }
