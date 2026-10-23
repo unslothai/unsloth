@@ -19,8 +19,7 @@ const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 // DISABLE_DMABUF first, so it never gets there unless we honour it ourselves.
 const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // Turns accelerated compositing off outright, a level above the transport switches above.
-// Presence alone is an operator override; compositing_disabled_by says which values turn it
-// off, and the setting below is the documented way off.
+// Presence alone is an operator override; compositing_disabled_by says which values turn it off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 // Ours, not WebKit's; compositing_setting parses it.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
@@ -1392,7 +1391,6 @@ mod tests {
 
     #[test]
     fn compositing_values_webkit_reads_as_on_keep_the_environment() {
-        // HardwareAccelerationManager.cpp keeps compositing on for "0" and an empty value.
         for value in ["0", ""] {
             for nvidia in [true, false] {
                 let wayland: &[(&str, &str)] =
