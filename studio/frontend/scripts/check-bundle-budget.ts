@@ -394,11 +394,11 @@ export const BUDGET = {
   // 2,084,514 B transfer against 4e2838ec5f, 2026-10-22, one machine and build, Node 24, chunk count unchanged
   // at 97). Raised by that growth so main's margin stays where it was.
   // Browser use step names in the agent bar (#14681): the step strings and docs link label in the eager en locale,
-  // the executor's step bookkeeping and the tool card's fence strip: +980 B raw / +383 B transfer (6,921,141 ->
-  // 6,922,121 B raw, 2,084,590 -> 2,084,973 B transfer against c2efedc690, Node 26, 97 chunks, one machine and
+  // the executor's step bookkeeping and the tool card's fence strip: +980 B raw / +399 B transfer (6,921,859 ->
+  // 6,922,839 B raw, 2,084,722 -> 2,085,121 B transfer against 4188371aa0, Node 26, 97 chunks, one machine and
   // build). Raised by that.
-  transferBytes: 2_085_018,
-  rawBytes: 6_922_543,
+  transferBytes: 2_085_417,
+  rawBytes: 6_923_523,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
