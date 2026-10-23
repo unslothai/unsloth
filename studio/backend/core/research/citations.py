@@ -20,7 +20,7 @@ from core.research.redaction import _escape_link_destination
 
 # unrolling avoids catastrophic backtracking on unclosed [Document: that would block the event loop.
 _DOCUMENT_CITATION = re.compile(r"\[(?:Document|MCP):[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
-_MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
+_MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)", re.IGNORECASE)
 _SOURCES_HEADING = re.compile(
     r"^(?:#{1,6}\s+|\*\*)?"
     r"(?:Sources?|References?|Bibliography|Works\s+Cited|Source\s+List)"
@@ -28,9 +28,10 @@ _SOURCES_HEADING = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
-_AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
+_AUTOLINK = re.compile(r"<(https?://[^>\s]+)>", re.IGNORECASE)
 # \x00 stops a URL glued to masked code from swallowing its placeholder.
-_RAW_URL = re.compile(r"https?://[^\s<>\x00]+")
+# Any case: a browser reads `HTTPS://` as https too.
+_RAW_URL = re.compile(r"https?://[^\s<>\x00]+", re.IGNORECASE)
 # Beside the pattern that restores them: a kind missing there leaves a raw sentinel in the
 # report. [0-9] not \d, which also matches other scripts' digits.
 _PLACEHOLDER_KINDS = ("research-code", "research-citation")
@@ -240,10 +241,16 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
     if heading:
         report = report[: heading.start()]
 
+    def catalog_url(url: str) -> str | None:
+        # The scheme is case-insensitive; the catalog spells it in lower case.
+        lowered = re.sub(r"^https?://", lambda m: m.group(0).lower(), url, flags = re.IGNORECASE)
+        return url if url in source_by_url else lowered if lowered in source_by_url else None
+
     def citation(url: str) -> str | None:
-        source = source_by_url.get(url)
-        if source is None:
+        url = catalog_url(url)
+        if url is None:
             return None
+        source = source_by_url[url]
         title = re.sub(r"(\\*)\|", r"\1\1\\|", _citation_title(source, url))
         token = _placeholder("research-citation", len(placeholders))
         placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
@@ -326,7 +333,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
         # Cite whole source URLs; drop other raw URLs. Whole-match avoids prefix collisions.
         raw = match.group(0)
         core = _trim_url_tail(raw)
-        if core in source_by_url:
+        if catalog_url(core):
             return (citation(core) or core) + raw[len(core) :]
         # Keep the trimmed tail so dropping the URL cannot unbalance the prose.
         return raw[len(core) :]

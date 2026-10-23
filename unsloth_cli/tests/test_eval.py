@@ -577,7 +577,8 @@ def test_unsafe_code_flag_is_forwarded(env, tmp_path):
         ["--batch-size", "0"],
         ["--batch-size", "-1"],
         ["--batch-size", "big"],
-        ["--backend", "vllm"],
+        ["--backend", "tgi"],
+        ["--backend", "vllm", "--gpu-memory-utilization", "1.5"],
         ["--num-fewshot", "-1"],
         ["--limit", "0"],
         ["--limit", "2.5"],
@@ -609,6 +610,142 @@ def test_unsloth_backend_refuses_multi_process(env, monkeypatch):
     assert result.exit_code == 2 and "--backend hf" in result.output
 
 
+@pytest.fixture
+def vllm_env(env, monkeypatch):
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
+    monkeypatch.setattr(evalmod.sys, "platform", "linux")
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
+    return env
+
+
+def test_vllm_backend_builds_lm_eval_vllm(vllm_env, tmp_path):
+    result = _run(
+        "fake/model",
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "--max-seq-length",
+        "4096",
+        "--gpu-memory-utilization",
+        "0.5",
+        "-o",
+        str(tmp_path),
+    )
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model"] == "vllm"
+    assert vllm_env["model_args"] == {
+        "pretrained": "fake/model",
+        "max_model_len": 4096,
+        "gpu_memory_utilization": 0.5,
+    }
+    assert vllm_env["kwargs"]["batch_size"] == "auto"
+    assert "model_name" not in vllm_env and "hflm" not in vllm_env
+
+
+def test_vllm_backend_serves_adapter_as_lora(vllm_env, tmp_path):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/Qwen3-8B-unsloth-bnb-4bit", "r": 64})
+    )
+    (adapter / "tokenizer.json").write_text("{}")
+    result = _run(
+        str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-b", "8", "-o", str(tmp_path / "o")
+    )
+    assert result.exit_code == 0, result.output
+    args = vllm_env["model_args"]
+    assert args["pretrained"] == "unsloth/Qwen3-8B"
+    assert args["lora_local_path"] == args["tokenizer"] == str(adapter.resolve())
+    assert args["max_lora_rank"] == 64
+    assert vllm_env["kwargs"]["batch_size"] == 8
+
+
+def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_path):
+    adapter = _adapter(tmp_path)
+    result = _run(
+        str(adapter),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "--load-in-4bit",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"]["pretrained"] == "org/base"
+    assert (
+        "max_lora_rank" not in vllm_env["model_args"] and "tokenizer" not in vllm_env["model_args"]
+    )
+    assert "16-bit" in result.output
+
+
+def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
+    assert result.exit_code == 2 and "--backend hf" in result.output
+    assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize("installed, ok", [("0.4.11", False), ("0.4.12", True)])
+def test_vllm_backend_needs_lm_eval_0_4_12(vllm_env, monkeypatch, tmp_path, installed, ok):
+    monkeypatch.setattr(evalmod, "version", lambda name: installed)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    if ok:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 2 and "model" not in vllm_env
+        assert installed in result.output and "pip install -U lm-eval" in result.output
+
+
+def test_vllm_engine_failure_prints_the_engine_log(vllm_env, monkeypatch, tmp_path):
+    def _fail_in_engine(**kwargs):
+        os.write(2, b"ValueError: No available memory for the cache blocks.\n")
+        raise RuntimeError("Engine core initialization failed. See root cause above.")
+
+    monkeypatch.setattr(sys.modules["lm_eval"], "simple_evaluate", _fail_in_engine)
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code != 0
+    assert "No available memory for the cache blocks" in result.output
+
+
+def test_vllm_gpu_probe_leaves_cuda_uninitialised(vllm_env, monkeypatch, tmp_path):
+    monkeypatch.delenv("PYTORCH_NVML_BASED_CUDA_CHECK", raising = False)
+    seen = []
+    sys.modules["torch"].cuda = SimpleNamespace(
+        is_available = lambda: seen.append(os.environ.get("PYTORCH_NVML_BASED_CUDA_CHECK")) or True,
+        device_count = lambda: 1,
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert seen == ["1"]
+
+
+@pytest.mark.parametrize(
+    "platform, cuda, vllm_installed, hint",
+    [
+        ("linux", True, False, "pip install vllm"),
+        ("linux", False, True, "--backend hf"),
+        ("darwin", True, True, "On a Mac use --backend hf"),
+    ],
+)
+def test_vllm_backend_refuses_where_it_cannot_run(
+    env, monkeypatch, platform, cuda, vllm_installed, hint
+):
+    sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: cuda, device_count = lambda: 1)
+    monkeypatch.setattr(evalmod.sys, "platform", platform)
+    monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
+    monkeypatch.setattr(
+        evalmod,
+        "find_spec",
+        lambda name: None if name == "vllm" and not vllm_installed else object(),
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "--backend", "vllm")
+    assert result.exit_code == 2, result.output
+    assert hint in result.output and "model" not in env
+
+
 def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
     import subprocess
 
@@ -626,3 +763,23 @@ def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr.decode(errors = "replace")
     assert "Evaluating gsm8k\u2026" in proc.stdout.decode("utf-8")
+
+
+@pytest.mark.parametrize("backend", ["unsloth", "hf"])
+def test_gpu_memory_utilization_says_it_only_applies_to_vllm(env, monkeypatch, tmp_path, backend):
+    """Only the vllm branch forwards it, so a user capping memory on another backend would
+    otherwise read the dropped cap as an OOM."""
+    result = _run(
+        "org/model",
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        backend,
+        "--gpu-memory-utilization",
+        "0.5",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    assert "--gpu-memory-utilization applies to --backend vllm" in result.output
+    assert "gpu_memory_utilization" not in (env["model_args"] or {})

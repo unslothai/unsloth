@@ -20,8 +20,10 @@ import {
   RESIZE_FALLBACK,
   bridgeShim,
   cspFrameQuery,
+  forReview,
   newBridgeToken,
   toolApprovalScope,
+  toolArgsForReview,
   toolResultParams,
   withBridgeShim,
 } from "./mcp-ui";
@@ -75,16 +77,6 @@ interface PendingToolCall {
 
 const clampHeight = (h: number) =>
   Math.min(Math.max(h, MIN_HEIGHT), MAX_HEIGHT);
-
-function argsPreview(args: Record<string, unknown>): string {
-  if (Object.keys(args).length === 0) return "";
-  try {
-    const text = JSON.stringify(args, null, 2);
-    return text.length > 600 ? `${text.slice(0, 600)}…` : text;
-  } catch {
-    return "";
-  }
-}
 
 // The shell's CSP is fixed at request time, so declared domains ride the URL; never the auth token.
 function frameSrc(csp: McpUiResource["ui"]["csp"] | null): string {
@@ -205,7 +197,8 @@ export function McpAppFrame(props: McpAppFrameProps) {
       if (pendingRef.current.length >= MAX_PENDING_TOOL_CALLS) {
         throw new RpcError("Too many tool requests are waiting");
       }
-      const preview = argsPreview(args);
+      // The card shows what an Allow will post; a very long call says how much is not shown.
+      const preview = toolArgsForReview(args);
       const [allow, always] = await new Promise<[boolean, boolean]>((done) =>
         setQueue([
           ...pendingRef.current,
@@ -428,7 +421,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       : null);
   if (failure) {
     return (
-      <div className="mt-2 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5 text-muted-foreground">
+      <div className="mt-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-ui-12p5 text-muted-foreground">
         Could not load this MCP app's interface: {failure}
       </div>
     );
@@ -436,7 +429,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
   if (!frame) {
     return (
       <div
-        className="mt-2 animate-pulse rounded border border-border bg-muted/30"
+        className="mt-2 animate-pulse rounded-xl border border-border bg-muted/30"
         style={{ height: MIN_HEIGHT }}
       />
     );
@@ -464,7 +457,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         style={{ height }}
         title={`${toolName} app`}
         className={cn(
-          "mt-2 block w-full rounded border border-border bg-background",
+          "mt-2 block w-full rounded-xl border border-border bg-background",
           className,
         )}
       />
@@ -472,11 +465,13 @@ export function McpAppFrame(props: McpAppFrameProps) {
         <div
           role="group"
           aria-label="Tool request from this app"
-          className="mt-1 rounded border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
+          className="mt-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-ui-12p5"
         >
           <div>
             {asking.link ? "This app wants to open " : "This app wants to run "}
-            <span className="font-mono break-all">{asking.name}</span>
+            <span className="font-mono break-all">
+              {forReview(asking.name)}
+            </span>
             {pendingCalls.length > 1
               ? ` (+${pendingCalls.length - 1} more waiting)`
               : ""}

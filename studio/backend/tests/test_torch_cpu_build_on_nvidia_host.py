@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A host whose GPUs PyTorch cannot use must not be reported as having no GPUs.
-
-Every GPU field in utils/hardware is gated on ``torch.cuda.is_available()``, so a
-managed environment that ends up with a CPU-only wheel goes silent about hardware
-that is plainly still there. Two Windows users hit exactly that after an in-app
-update resolved torch from PyPI (whose Windows default is ``2.11.0+cpu``) over a
-``cu124`` wheel: Settings > System showed ``VRAM --`` and "No visible GPU" while
-``nvidia-smi`` listed both RTX A4000s, ``UNSLOTH_PREBUILT_INFO.json`` still said
-``backend cuda``, and models ran on CPU (#8473, HF discussion 87).
-
-What these pin:
-  * the nvidia-smi inventory is read even though ``DEVICE`` is CPU;
-  * ``devices`` stays EMPTY regardless. That list is what the model-fit estimate
-    budgets against and what the training device picker pins from, so a card torch
-    cannot open must never be merged into it. The inventory travels beside it, in
-    ``physical_devices`` / ``mismatch``;
-  * ``CHAT_ONLY_REASON`` stops being ``"no_gpu"``, because on this host that is
-    false and the advice it implies ("get a GPU") is not the fix;
-  * a CPU-only wheel and an accelerator wheel whose runtime will not start stay
-    distinct reasons -- one is repaired by reinstalling torch, the other by the
-    driver;
-  * a host that genuinely has no GPU is unaffected, and a probe that cannot answer
-    (no nvidia-smi, malformed CSV, a comma inside a device name) degrades to a
-    structured unavailable result rather than raising out of the endpoint.
-
-No AMD/Windows hardware exists here, so torch and nvidia-smi are faked in the shapes
-the reports describe; the Windows adapter half is exercised through its own map.
-"""
+"""A CPU-only torch must still report nvidia-smi cards in physical_devices, never in devices."""
 
 from __future__ import annotations
 
@@ -52,12 +25,8 @@ def _shared_setup_1(monkeypatch, tmp_path):
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    # The fake above is only READ while the import is known good: TORCH_IMPORT_ERROR is a
-    # module global _has_torch() writes as a side effect, and _torch_reports_an_xpu_runtime()
-    # / _torch_reports_a_hip_runtime() / classify_torch_build() read the wheel off DISK
-    # whenever it is set. A sibling that watched a broken import leaves it non-None for the
-    # rest of the xdist worker, so pin it here rather than inherit it, as
-    # cpu_torch_on_an_nvidia_host already does.
+    # TORCH_IMPORT_ERROR is a global _has_torch() sets; when non-None the readers go to disk.
+    # A sibling may leave it set for the xdist worker, so pin it.
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
     return sys
@@ -87,12 +56,7 @@ _TWO_A4000_ROWS = "\n".join(
 
 
 def _fake_torch(vendor: str):
-    """A fake ``torch``, in the vendor shapes the reports describe.
-
-    "cpu"       -- the PyPI Windows default an unconstrained update resolves to.
-    "cuda_dead" -- a cu124 wheel whose runtime refuses to initialise.
-    "cuda"      -- a healthy CUDA wheel.
-    """
+    """Fake torch: cpu (PyPI Windows default), cuda_dead (a cu124 wheel that will not start), cuda."""
     torch = types.ModuleType("torch")
     if vendor == "cpu":
         torch.version = SimpleNamespace(hip = None, cuda = None)
@@ -120,17 +84,10 @@ def _smi(
     returncode: int = 0,
     raises: "type[BaseException] | None" = None,
 ):
-    """Pin what nvidia-smi answers, at the subprocess boundary.
-
-    The procfs count goes with it. A CLI that cannot answer falls back to
-    /proc/driver/nvidia/gpus, and this suite runs on a real NVIDIA host, so a test
-    simulating a machine with no cards has to simulate the kernel driver's absence too.
-    The fallback's own tests set it back.
-    """
+    """Fakes nvidia-smi at the subprocess boundary and the procfs count, which the CLI falls back to."""
 
     def _run(*_args, **_kwargs):
-        # `raises` is how an ABSENT binary is spelled: FileNotFoundError is an answer
-        # (every AMD, Intel and CPU host), while a nonzero exit is a probe that failed.
+        # FileNotFoundError is an answer (non-NVIDIA host); a nonzero exit is a failed probe.
         if raises is not None:
             raise raises("nvidia-smi")
         return SimpleNamespace(returncode = returncode, stdout = stdout)
@@ -148,6 +105,14 @@ def _no_inherited_visibility_mask(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _not_a_jetson(monkeypatch):
+    """A pre-CUDA-13 Jetson treats an automatic cpu record as chosen, so running the suite on one would
+    flip every unpinned-cpu assertion here. The Jetson cells live in test_chat_only_reason.py."""
+    from utils import tegra as tegra_mod
+    monkeypatch.setattr(tegra_mod, "tegra_before_cuda13", lambda: False)
+
+
+@pytest.fixture(autouse = True)
 def _no_carried_over_torch_measurement(monkeypatch):
     """The torch snapshot is cached with a TTL, so one test's fake host would answer
     for the next one. Both caches start empty here, as they do in a fresh process."""
@@ -157,13 +122,7 @@ def _no_carried_over_torch_measurement(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_background_inventory_refresh(monkeypatch):
-    """Keep the non-blocking refresh from probing the REAL host mid-test.
-
-    get_physical_gpu_inventory(block=False) hands a stale or cold cache to a daemon
-    thread, which is the whole point on a request path, but in a test it races the
-    assertions and can drop this machine's actual nvidia-smi output into the cache.
-    The tests that assert on the scheduling patch Thread themselves.
-    """
+    """Stubs the background refresh Thread so a non-blocking read cannot probe the real host mid-test."""
 
     class _NoThread:
         def __init__(self, *args, **kwargs):
@@ -188,12 +147,7 @@ def cpu_torch_on_an_nvidia_host(monkeypatch):
 
 
 def test_a_card_whose_capacity_is_unreported_is_still_a_card(monkeypatch):
-    """ "[N/A]" for memory.total is a missing metric, not a missing GPU.
-
-    Dropping the row took the card out of the whole inventory, and the Linux procfs
-    fallback does not cover it either: that answers for a query that FAILED, not one that
-    came back short. The host lost its mismatch and its repair guidance over a size.
-    """
+    """A card whose memory.total reads [N/A] is still a card; dropping the row lost its mismatch."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "0, NVIDIA RTX A4000, [N/A]\n1, NVIDIA RTX A4000, 16376\n")
@@ -253,8 +207,6 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
     assert inventory["available"] is False
     assert inventory["devices"] == []
     assert inventory["sources"] == []
-    # "The driver answered and there are no cards" is not "no probe could answer". An absent
-    # nvidia-smi is the exception: it is the normal state of every AMD, Intel and CPU host.
     _could_not_answer = returncode != 0 or (
         failure is not None and not isinstance(failure, FileNotFoundError)
     )
@@ -412,9 +364,7 @@ def _system_gpu_info(monkeypatch):
     monkeypatch.setattr(hardware_pkg, "get_vulkan_inference_gpu_info", lambda: None)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
     monkeypatch.setattr(main, "_system_gpu_cache", None)
-    # Warm the inventory the way startup does: the mismatch report reads it WITHOUT
-    # blocking, because /api/system is polled every three seconds, so a cold cache answers
-    # unknown. In a running backend _detect_hardware_locked has already blocked once.
+    # The mismatch report reads the inventory non-blocking (polled every 3s); warm it.
     hw.get_physical_gpu_inventory()
     hw.torch_build_snapshot()
     return main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
@@ -425,8 +375,7 @@ def test_the_system_endpoint_names_the_cards_without_offering_them(
 ):
     gpu, _inference_gpu = _system_gpu_info(monkeypatch)
 
-    # The hard constraint: `devices` is the runtime-usable list that model fit budgets
-    # against and the training picker pins from.
+    # `devices` is the runtime-usable list fit budgets and the training picker use.
     assert gpu["devices"] == []
     assert gpu["available"] is False
 
@@ -459,12 +408,7 @@ def test_a_cpu_host_with_no_cards_publishes_neither_field(monkeypatch):
 
 @pytest.mark.parametrize("local", ["cpu", "cpu.cxx11.abi", "cpu.cxx11abi", "CPU"])
 def test_extended_cpu_local_tags_are_still_cpu_builds(monkeypatch, local):
-    """PyTorch publishes CPU wheels whose local tag carries a suffix.
-
-    An exact "cpu" match called those CUDA wheels whose runtime failed to start, and
-    the UI then pointed the user at a driver rather than at the reinstall that is the
-    actual fix.
-    """
+    """CPU wheels with a local tag suffix still count as CPU builds, not as broken CUDA wheels."""
     import sys
 
     wheel = _fake_torch("cpu")
@@ -483,20 +427,13 @@ def test_a_cuda_local_tag_is_not_mistaken_for_a_cpu_one(monkeypatch):
 
 
 def test_export_and_video_stop_saying_no_accelerator_was_found(monkeypatch):
-    """Those two pages render the message verbatim, so it has to match the System tab.
-
-    Telling a two-A4000 host that no supported accelerator was found contradicts the
-    inventory the same server just published, and points at hardware instead of at the
-    repair.
-    """
+    """Export and Video show this message verbatim, so it must agree with the System tab's inventory."""
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
     monkeypatch.setattr(hw, "_has_torch", lambda: True)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    # The verdict is re-derived against the live inventory, so the cards have to be in
-    # it. Without them the honest answer really is that this host has no GPU.
     monkeypatch.setattr(
         hw, "current_chat_only_verdict", lambda: (hw.CHAT_ONLY_REASON, hw.CHAT_ONLY_DETAIL)
     )
@@ -541,12 +478,7 @@ def test_a_genuinely_gpu_less_host_keeps_the_old_wording(monkeypatch):
 
 
 def test_nvidia_smi_is_resolved_from_the_standard_windows_locations(monkeypatch):
-    """A driver install can leave nvidia-smi.exe off PATH entirely.
-
-    The bare name then raises FileNotFoundError and the inventory comes back empty on
-    exactly the host this feature exists for. setup.ps1 already falls back to these two
-    paths, so the backend has to as well.
-    """
+    """nvidia-smi can be off PATH after a driver install, so the standard Windows locations are tried."""
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
     monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
@@ -567,7 +499,6 @@ def test_nvidia_smi_is_resolved_from_the_standard_windows_locations(monkeypatch)
 def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch):
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Linux")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
-    # Not a WSL host: the /usr/lib/wsl/lib fallback has its own tests.
     monkeypatch.setattr(nvidia.os.path, "isfile", lambda _p: False)
     assert nvidia._nvidia_smi_executable() == "nvidia-smi"
 
@@ -579,26 +510,16 @@ def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch
 @pytest.mark.parametrize("mask", ["", " ", "-1"])
 @pytest.mark.parametrize("var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
 def test_a_hip_mask_only_counts_where_it_can_hide_something(monkeypatch, var, mask):
-    """A mask that cannot take effect must not silence the mismatch.
-
-    Windows HIP has no ROCr layer, and this module's own visibility resolver already
-    ignores ROCR_VISIBLE_DEVICES there. A stray empty one on a Windows NVIDIA host
-    would otherwise restore exactly the "no GPU" verdict this feature exists to
-    correct. The HIP variables likewise address AMD devices, so on an NVIDIA-only
-    inventory they mask nothing.
-    """
+    """A HIP or ROCR mask counts only where it can hide an AMD card; a stray one cannot silence it."""
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
     _smi(monkeypatch, _TWO_A4000_ROWS)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    # sys.platform too, not just platform.system(): the ROCR row is gated on sys.platform
-    # (hardware.py's own resolver reads it), so on a Windows runner ROCR is correctly
-    # ignored and this row asserted the opposite of what that host should do.
+    # The ROCR row is gated on sys.platform, not platform.system().
     monkeypatch.setattr(hw.sys, "platform", "linux")
     monkeypatch.setenv(var, mask)
-    # Prime the cache: the mask set reads the inventory WITHOUT blocking (it is reached
-    # from the verdict /api/liveness reads), and a cold cache keeps every mask.
+    # The mask set reads the inventory non-blocking; a cold cache keeps every mask.
     hw.get_physical_gpu_inventory()
 
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
@@ -642,11 +563,7 @@ def test_an_inventory_that_answers_nothing_keeps_every_mask(monkeypatch):
 
 
 def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_path):
-    """Pinning /cpu on a machine that has a GPU is a supported thing to do.
-
-    No mask is empty in that case, so the classifier called the wheel the user asked
-    for broken, and the UI offered a repair whose only effect would be to replace it.
-    """
+    """A deliberate /cpu pin on a GPU host is supported, so it must not be offered a repair."""
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
@@ -668,8 +585,7 @@ def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_pat
     assert hw.classify_torch_build() == "torch_cpu_build"
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
 
-    # A recorded cpu counts only when the record says someone NAMED it: setup.ps1 selects
-    # /cpu automatically on a GPU-less host and records it identically.
+    # setup.ps1 records an automatic /cpu identically, so only a NAMED cpu counts.
     manifest = tmp_path / "unsloth_install_manifest.json"
     manifest.write_text('{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8")
     assert hw.classify_torch_build() == "torch_cpu_build"
@@ -703,19 +619,14 @@ def test_a_dead_accelerator_wheel_is_unaffected_by_a_cpu_record(monkeypatch, tmp
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
     monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")
-    assert hw.classify_torch_build() is None  # the pin is honoured first
+    assert hw.classify_torch_build() is None
 
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
 
 def test_linux_amd_and_intel_cards_are_inventoried_from_sysfs(monkeypatch, tmp_path):
-    """The AMD/Linux shape of #8473: nvidia-smi contributes nothing.
-
-    sysfs rather than amd-smi, because amd-smi is separate ROCm userspace and this is
-    the host whose ROCm install is in question. vendor 0x1002 and a byte-valued
-    mem_info_vram_total are both documented amdgpu interfaces.
-    """
+    """AMD/Linux host where cards come from sysfs, not amd-smi, since the ROCm install is under test."""
     drm = tmp_path / "drm"
     for name, vendor, vram in (
         ("card0", "0x1002\n", str(16 * 1024**3)),
@@ -762,11 +673,7 @@ def test_the_sysfs_probe_is_silent_where_there_is_no_sysfs(monkeypatch):
 
 
 def test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin(monkeypatch, tmp_path):
-    """A pinned index may carry its credential in the query, which is supported.
-
-    A raw final-segment split sees "cpu?token=..." there, so the deliberate CPU build on
-    a GPU host was reported as broken and offered a repair that would replace it.
-    """
+    """A cpu index pin with a credential in its query string is still a deliberate cpu pin."""
     sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
 
@@ -798,12 +705,7 @@ def test_the_leaf_reader_matches_the_installers(url, leaf):
 
 
 def test_the_chat_only_verdict_follows_the_inventory(monkeypatch):
-    """The inventory refreshes on a 60s TTL; the startup verdict never did.
-
-    An eGPU attached after launch, or a driver that finished restarting, left the
-    sidebar and the Export and Video pages saying no accelerator exists while
-    /api/system listed the card and published a mismatch.
-    """
+    """The chat-only verdict must follow the 60s inventory TTL, not freeze until restart."""
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
@@ -812,7 +714,6 @@ def test_the_chat_only_verdict_follows_the_inventory(monkeypatch):
     monkeypatch.setattr(
         hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [{"vendor": "nvidia"}]}
     )
-    # The verdict never probes torch inline; measure this fake host as detection would.
     hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
@@ -863,11 +764,7 @@ def test_export_and_video_read_the_refreshed_verdict(monkeypatch):
 
 
 def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
-    """An Arc host whose XPU wheel was replaced has exactly this shape.
-
-    nvidia-smi contributes nothing there either, and the registry scan was filtered to
-    AMD, so the inventory came back empty and the mismatch was discarded.
-    """
+    """Windows Arc adapters must be inventoried too; the registry scan was AMD-only, dropping them."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(
@@ -925,13 +822,7 @@ def test_a_transient_probe_failure_does_not_retire_a_settled_mismatch(monkeypatc
 
 
 def test_only_uncertainty_about_the_mismatched_vendor_holds_the_verdict(monkeypatch):
-    """A broken probe for a vendor that never had a card cannot pin the old mismatch.
-
-    Detach an AMD eGPU: sysfs conclusively reports no AMD card, while nvidia-smi is broken
-    on a host that never had an NVIDIA one. The carry-forward has nothing to re-add, so
-    holding "your GPU is unusable" here asserts a card is present with nothing to point at,
-    and it holds for as long as that unrelated probe stays broken.
-    """
+    """Only uncertainty about the mismatched vendor holds a verdict; other broken probes do not."""
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
     monkeypatch.setattr(hw, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
@@ -954,7 +845,6 @@ def test_only_uncertainty_about_the_mismatched_vendor_holds_the_verdict(monkeypa
     _inventory(["nvidia"])
     assert hw.current_chat_only_verdict() == ("no_gpu", None)
 
-    # The vendor the mismatch DID come from, so the card may still be there and unread.
     _inventory(["amd"])
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
@@ -965,11 +855,7 @@ def test_only_uncertainty_about_the_mismatched_vendor_holds_the_verdict(monkeypa
 
 
 def test_the_recorded_vendors_follow_the_mismatch_when_it_moves(monkeypatch):
-    """The mismatch can change vendor inside one process: swap an AMD eGPU for an NVIDIA one.
-
-    Holding the startup answer would later freeze the verdict on a vendor a refresh has
-    already watched disappear, which is the same stale-scope bug one level up.
-    """
+    """The recorded mismatch vendors must follow the mismatch when it moves to another vendor."""
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
     monkeypatch.setattr(hw, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
@@ -986,11 +872,9 @@ def test_the_recorded_vendors_follow_the_mismatch_when_it_moves(monkeypatch):
     )
     hw.torch_build_snapshot()
 
-    # Only the reason: the detail is re-read from the live torch, which is this host's.
     assert hw.current_chat_only_verdict()[0] == "torch_cpu_build"
     assert hw.CHAT_ONLY_MISMATCH_VENDORS == frozenset({"nvidia"})
 
-    # And the AMD probe going unreadable now proves nothing about the card that is here.
     monkeypatch.setattr(
         hw,
         "get_physical_gpu_inventory",
@@ -1005,12 +889,7 @@ def test_the_recorded_vendors_follow_the_mismatch_when_it_moves(monkeypatch):
 
 
 def test_the_health_path_never_waits_on_the_gpu_probe(monkeypatch):
-    """/api/health and /api/liveness both read the chat-only verdict.
-
-    The NVIDIA half shells out with a 10 second timeout and the lock makes concurrent
-    callers queue, so a hung driver -- the exact host this feature is for -- would stall
-    the event loop every time the TTL expired, against a 2 second desktop timeout.
-    """
+    """/api/health and /api/liveness must never wait on the GPU probe, which can hang for seconds."""
     import sys
 
     calls = {"blocking": 0, "threads": 0}
@@ -1039,14 +918,11 @@ def test_the_health_path_never_waits_on_the_gpu_probe(monkeypatch):
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
 
     hw.torch_build_snapshot()
-    # That warm-up IS the blocking pass, standing in for detection. What the request path
-    # may not do is shell out again, so count from here.
+    # The warm-up is the blocking pass; the request path may not shell out again.
     calls["blocking"] = 0
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_refreshing", False)
 
-    # Cold inventory cache: no probe inline, the refresh goes to a thread, and the explicit
-    # unknown keeps the frozen verdict.
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
     assert calls["blocking"] == 0, "nothing may shell out on the request path"
     assert calls["threads"] >= 1
@@ -1108,13 +984,7 @@ def test_a_process_that_cannot_start_a_thread_keeps_the_stale_answer(monkeypatch
 
 
 def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
-    """The DirectX registry outlives the hardware.
-
-    setup.ps1 says so and uses these records only to RE-LABEL an adapter its live WMI
-    scan also returned, never to add one. A CPU-only machine with a driver record left
-    behind would otherwise be told it has an unusable GPU and offered a repair that
-    cannot restore absent hardware.
-    """
+    """A stale DirectX registry record must only relabel a live adapter, never add a GPU."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["Microsoft Basic Display"])
@@ -1166,12 +1036,7 @@ def test_the_registry_to_live_join_matches_setup_ps1(registry, live, matched):
 
 
 def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_path):
-    """setup.sh does not autodetect Linux XPU, and setup.ps1 limits it to Arc.
-
-    An Intel UHD iGPU beside a CPU wheel is the correct state of that machine, so
-    counting it would report a broken install and offer a repair that reinstalls the
-    very CPU build it just replaced.
-    """
+    """An ordinary Intel iGPU must not establish a mismatch; setup.sh has no Linux XPU autodetect."""
     sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
@@ -1236,23 +1101,13 @@ def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, 
 
 
 def test_a_leaked_import_error_is_what_stops_the_fake_torch_being_read(monkeypatch, tmp_path):
-    """Why _shared_setup_1 pins TORCH_IMPORT_ERROR: the assertion above is not self-contained.
-
-    _torch_reports_an_xpu_runtime() consults sys.modules only while that global is None;
-    set, it reads the wheel off disk and the fake +xpu torch above is never looked at, so
-    the nameless Intel card stops counting and the last assertion of the previous test
-    reads ``[] == [{...}]``. Nothing in this file writes the global -- _has_torch() does,
-    as a side effect, from whichever test in the xdist worker last watched an import fail,
-    which is why it went red under ``-n 4`` on one shard and green in every serial run.
-    """
+    """Pins TORCH_IMPORT_ERROR: a leaked import error from another test hides the fake +xpu torch."""
     sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     (tmp_path / "unsloth_install_manifest.json").write_text(
         '{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8"
     )
-    # The on-disk arm is pinned to a CPU wheel, so this does not turn on what torch the
-    # host running the suite happens to have installed.
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
     monkeypatch.setattr(
         hw,
@@ -1265,7 +1120,6 @@ def test_a_leaked_import_error_is_what_stops_the_fake_torch_being_read(monkeypat
     xpu_torch.__version__ = "2.9.0+xpu"
     monkeypatch.setitem(sys.modules, "torch", xpu_torch)
 
-    # Pinned, as _shared_setup_1 leaves it: the fake in sys.modules is what answers.
     assert hw._torch_reports_an_xpu_runtime() is True
     assert hw._devices_that_can_establish_a_mismatch(nameless) == nameless
 
@@ -1276,11 +1130,7 @@ def test_a_leaked_import_error_is_what_stops_the_fake_torch_being_read(monkeypat
 
 
 def test_an_accelerator_that_came_back_retires_the_cached_verdict(monkeypatch):
-    """Only reason and detail are refreshed here; DEVICE and CHAT_ONLY are not.
-
-    So a driver that finished restarting left Train and Export disabled AND the UI
-    saying there is no GPU, which is worse than the stale mismatch it replaced.
-    """
+    """A returning accelerator must retire the cached reason and detail, or Train and Export stay off."""
     import sys
 
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
@@ -1289,8 +1139,6 @@ def test_an_accelerator_that_came_back_retires_the_cached_verdict(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
     calls = {"n": 0}
     monkeypatch.setattr(hw, "invalidate_detection", lambda: calls.__setitem__("n", calls["n"] + 1))
-    # The recovery is measured, not probed inline. The recovery path drops the snapshot
-    # again, so the fresh pass re-reads this fake host rather than the pre-recovery answer.
     hw.torch_build_snapshot()
 
     assert hw.current_chat_only_verdict() == ("torch_cuda_unavailable", "2.6.0+cu124")
@@ -1319,12 +1167,7 @@ def test_a_host_whose_accelerator_never_came_back_is_not_re_detected(monkeypatch
 
 
 def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
-    """An Intel host that started while its runtime was down and later recovered.
-
-    Asking only about CUDA classified a perfectly healthy +xpu wheel as
-    torch_cuda_unavailable forever, so the recovery branch was never reached and the
-    process stayed chat-only until restart.
-    """
+    """A healthy +xpu wheel must not read as unavailable; CUDA-only checks kept Intel hosts chat-only."""
     import sys
 
     xpu = _fake_torch("cuda_dead")
@@ -1390,13 +1233,8 @@ def test_the_xpu_mask_is_ignored_on_an_nvidia_only_host(monkeypatch):
 
 
 def test_duplicate_registry_records_are_claimed_one_to_one(monkeypatch):
-    """Two identical cards leave two identical registry records.
-
-    Remove one and WMI reports a single live adapter, which a reusable predicate matched
-    to BOTH: a GPU reported that is gone, and its VRAM counted twice.
-    """
+    """Registry records claim live adapters one-to-one, so one removed card is not counted twice."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
     _smi(monkeypatch, "", raises = FileNotFoundError)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
     monkeypatch.setattr(
@@ -1442,12 +1280,7 @@ def test_both_records_survive_when_both_cards_are_live(monkeypatch):
 
 
 def test_the_live_scan_stops_on_a_cim_failure_rather_than_reporting_none(monkeypatch):
-    """-ErrorAction SilentlyContinue exits 0 with empty stdout.
-
-    That is indistinguishable from "no adapters", so the corroboration would have
-    dropped every real card on a host with damaged WMI, recreating the false no-GPU
-    result this whole change exists to remove.
-    """
+    """The Windows live scan must stop on a CIM failure; SilentlyContinue would report no adapters."""
     source = inspect.getsource(hw._windows_live_adapter_names)
     command = "".join(line for line in source.splitlines() if not line.strip().startswith("#"))
     assert "SilentlyContinue" not in command
@@ -1455,11 +1288,7 @@ def test_the_live_scan_stops_on_a_cim_failure_rather_than_reporting_none(monkeyp
 
 
 def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
-    """The normal state of every CPU-only, AMD and Intel host.
-
-    The inventory calls this on a 60 second refresh reached from the health and system
-    polls, so a warning here is a line a minute on a machine that is working correctly.
-    """
+    """A missing nvidia-smi is normal on CPU-only, AMD and Intel hosts; do not warn every refresh."""
 
     _shared_setup_2(monkeypatch)
     capsys.readouterr()
@@ -1475,13 +1304,7 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
 
 
 def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
-    """Retiring the epoch alone did nothing, so the round-six fix never took effect.
-
-    invalidate_detection leaves DEVICE set and DETECTION_COMPLETE raised, so /api/health
-    kept reading the settled snapshot and start_background_detection returned at once
-    because DEVICE was not None. The process stayed chat-only until restart, which is
-    exactly what the fix claimed to solve.
-    """
+    """Recovery must start a detection pass, since DEVICE stays set and the old snapshot is reused."""
     import sys
 
     calls = []
@@ -1494,8 +1317,6 @@ def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
     monkeypatch.setattr(hw, "_discard_detection_locked", lambda: calls.append("discard"))
     monkeypatch.setattr(hw, "start_background_detection", lambda: calls.append("start"))
 
-    # detect_hardware() warms the snapshot on the real path; the verdict only ever reads it
-    # non-blocking, so measure this fake host the same way first.
     hw.torch_build_snapshot()
     hw.current_chat_only_verdict()
 
@@ -1505,27 +1326,18 @@ def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
 
 
 def test_the_system_mismatch_report_does_not_block(monkeypatch):
-    # GET /api/system is polled every three seconds with _system_gpu_cache_lock held for the
-    # whole call, so a hung nvidia-smi would queue every concurrent read behind it.
+    # /api/system is polled every 3s under _system_gpu_cache_lock; a hung nvidia-smi blocks all.
     source = inspect.getsource(hw._torch_gpu_mismatch_report)
     assert "get_physical_gpu_inventory(block=False)" in source.replace(" ", "")
 
 
 def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
-    """A CUDA wheel whose native runtime will not load.
-
-    Returning None meant the mismatch report never ran, so a GPU host published no
-    physical_devices and the System tab said no visible GPU while nvidia-smi could
-    enumerate the card: the central failure, for the runtime-failure case.
-    """
+    """A CUDA wheel whose runtime will not load must still report its cards, or System shows no GPU."""
     import importlib.abc
     import importlib.util
     import sys
 
-    # A real import that raises, not an object in sys.modules whose attribute access does.
-    # Reading __spec__ off an existing sys.modules entry is import-machinery behaviour that
-    # changed in 3.13: on 3.10-3.12 `import torch` hands back the stub untouched, so the
-    # premise below silently inverted and this test passed for the wrong reason.
+    # A real failing import: on 3.10-3.12 `import torch` returns a sys.modules stub untouched.
     class _WillNotLoad(importlib.abc.Loader):
         def create_module(self, spec):
             return None
@@ -1546,10 +1358,7 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
 
     monkeypatch.delitem(sys.modules, "torch", raising = False)
     monkeypatch.setattr(sys, "meta_path", [_Finder(), *sys.meta_path])
-    # _has_torch() below writes hw.TORCH_IMPORT_ERROR as a side effect and nothing puts it
-    # back, so snapshot-restore it: left set, it sends every later test in this worker down
-    # the on-disk arm of the same three readers. Snapshot rather than None -- nothing here
-    # owns the value.
+    # _has_torch() sets hw.TORCH_IMPORT_ERROR; snapshot-restore it for later tests.
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", hw.TORCH_IMPORT_ERROR)
     # _has_torch() is NOT forced here: it reports False for a wheel that will not import,
     # and the early return on it used to keep this host from the on-disk fallback below.
@@ -1590,13 +1399,7 @@ def test_the_disk_label_reader_needs_no_interpreter(tmp_path):
 
 
 def test_an_untagged_xpu_build_is_not_called_a_cpu_wheel(monkeypatch):
-    """torch.version.xpu is the marker, and an untagged wheel can carry it.
-
-    An Arc host whose Level Zero runtime is down has no local version tag and neither
-    a cuda nor a hip one, so it read as a CPU wheel and the UI offered a reinstall,
-    which is the one remedy that cannot help. _torch_reports_an_xpu_runtime() already
-    knew better, so the card established a mismatch and then got the wrong advice.
-    """
+    """torch.version.xpu marks an untagged XPU build, which must not be called a CPU wheel."""
     import sys
 
     torch = types.ModuleType("torch")
@@ -1612,13 +1415,7 @@ def test_an_untagged_xpu_build_is_not_called_a_cpu_wheel(monkeypatch):
 
 
 def test_the_health_path_never_imports_torch_inline(monkeypatch):
-    """classify_torch_build() imports torch and asks CUDA and XPU if they are available.
-
-    Both block while a driver is wedged or restarting, which is the state
-    torch_cuda_unavailable names, and /api/health and /api/liveness reach them through
-    the chat-only verdict against a two second desktop timeout. Making only the
-    inventory lookup non-blocking still left this on the request thread.
-    """
+    """The health path must not import torch inline, since CUDA and XPU probes can block for a while."""
     calls = {"probes": 0, "threads": 0}
 
     def _classify(**_kw):
@@ -1653,11 +1450,7 @@ def test_the_health_path_never_imports_torch_inline(monkeypatch):
 
 
 def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeypatch):
-    """The snapshot that said the accelerator was missing must not outlive it.
-
-    Left in place, the fresh detection pass the recovery starts would read the same
-    stale measurement for the rest of its TTL and settle on the verdict it just retired.
-    """
+    """A recovery must re-measure torch, not reuse the snapshot that said the accelerator was missing."""
     import sys
 
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
@@ -1720,12 +1513,7 @@ def test_an_intel_only_host_still_reads_an_emptied_ze_mask_as_deliberate(monkeyp
 
 
 def test_an_untagged_conda_cuda_build_that_will_not_import_is_not_a_cpu_wheel(monkeypatch):
-    """torch/version.py records the runtime even when the wheel carries no local tag.
-
-    The importable path already reads exactly these attributes, so reading only
-    __version__ on the failure path gave the same installation the opposite diagnosis
-    and sent the user to reinstall a GPU wheel it already has.
-    """
+    """Reads torch.version on the failure path too, since an untagged CUDA build is not a CPU wheel."""
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.9.1")
     monkeypatch.setattr(
         hw, "_installed_torch_markers_on_disk", lambda: {"cuda": "12.8", "hip": None, "xpu": None}
@@ -1782,12 +1570,7 @@ def test_the_marker_reader_parses_both_shapes_torch_has_shipped(tmp_path):
 
 
 def test_an_unimportable_gpu_wheel_is_a_mismatch_rather_than_a_detection_failure():
-    """detection_failed sends the user to the server log; the mismatch offers the repair.
-
-    _has_torch() is False for a wheel whose runtime will not load, so detection took
-    the TORCH_IMPORT_ERROR arm and never reached the classification -- and the verdict
-    refresh deliberately freezes detection_failed, so nothing revisited it later.
-    """
+    """An unimportable GPU wheel must reach classification as a mismatch: detection_failed is frozen."""
     import pathlib
 
     source = pathlib.Path(hw.__file__).read_text(encoding = "utf-8")
@@ -1832,13 +1615,7 @@ def test_the_mismatch_verdict_names_the_wheel_it_could_not_import(monkeypatch):
 
 
 def test_cuda_visible_devices_masks_an_amd_host_too(monkeypatch):
-    """HIP honours CUDA_VISIBLE_DEVICES alongside its own variables.
-
-    This module's own visibility resolver reads all three together on an AMD host, so
-    mapping the variable to NVIDIA alone had an AMD-only box launched with
-    CUDA_VISIBLE_DEVICES="" reported as broken and offered a repair for a mask its
-    owner set on purpose.
-    """
+    """HIP honours CUDA_VISIBLE_DEVICES too, so an AMD host masked by it is not a broken install."""
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
@@ -1857,12 +1634,7 @@ def test_cuda_visible_devices_masks_an_amd_host_too(monkeypatch):
 
 
 def test_the_health_path_never_retries_a_failed_torch_import(monkeypatch):
-    """The label was read with _torch_version_label(), which imports torch.
-
-    On the broken-runtime host that import is what fails: it can take seconds, and
-    _has_torch() purges the partial module afterwards, so each call genuinely re-runs
-    the native load. /api/health, /api/liveness and GET /api/system all reach it.
-    """
+    """Health paths must not call _torch_version_label(), which imports torch and reruns a failed load."""
     calls = {"n": 0}
 
     def _label():
@@ -1898,12 +1670,7 @@ def test_the_health_path_never_retries_a_failed_torch_import(monkeypatch):
 
 
 def test_an_amd_card_the_installers_decline_is_not_a_broken_install(monkeypatch):
-    """setup.sh ships a ROCm wheel only for RDNA 2 and newer.
-
-    A Polaris or RDNA 1 card is left on CPU torch on purpose, and the DRM sysfs walk
-    reports it as vendor amd like any other, so it was being counted as evidence of a
-    broken install and offered a repair that cannot make that GPU usable.
-    """
+    """ROCm wheels ship only for RDNA 2 and newer, so an unsupported AMD card is not a broken install."""
     monkeypatch.setattr(hw, "_expected_rocm_flavor_was_chosen", lambda: False)
     monkeypatch.setattr(hw, "_torch_reports_a_hip_runtime", lambda: False)
 
@@ -1913,8 +1680,7 @@ def test_an_amd_card_the_installers_decline_is_not_a_broken_install(monkeypatch)
     supported = [{"vendor": "amd", "gfx_candidates": ["gfx1100"]}]
     assert hw._devices_that_can_establish_a_mismatch(supported) == supported
 
-    # A host with no ROCm userspace names no arch at all, and setup.sh detects AMD only
-    # through rocminfo and amd-smi, so that machine was never going to get a ROCm wheel.
+    # setup.sh detects AMD only via rocminfo/amd-smi, so an unnamed arch never got ROCm.
     unnamed = [{"vendor": "amd"}]
     assert hw._devices_that_can_establish_a_mismatch(unnamed) == []
 
@@ -1935,13 +1701,7 @@ def test_a_rocm_expectation_outranks_the_arch_table(monkeypatch):
 
 
 def test_the_supported_arch_set_matches_the_installer(monkeypatch):
-    """One table in two places drifts, and it drifts BOTH ways.
-
-    install.sh's _amd_arch_index_family_for_gfx is the map that decides whether this
-    stack ships a ROCm wheel for a card (it mirrors install.ps1's $archFamilyMap). A gfx
-    it lists but the backend does not is a supported card reported as no_gpu with no
-    repair; one the backend lists but it does not is a repair that cannot help.
-    """
+    """The supported gfx set must match install.sh's _amd_arch_index_family_for_gfx in both directions."""
     import pathlib
     import re
 
@@ -1984,14 +1744,7 @@ def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):
 
 
 def test_a_cold_start_measures_the_inventory_before_honouring_a_mask(monkeypatch):
-    """An irrelevant empty mask must not decide the verdict from a cold cache.
-
-    HIP_VISIBLE_DEVICES="" on an NVIDIA-only host is not a statement about the NVIDIA
-    card, but on the first pass the non-blocking read answers unknown, every mask counts
-    as relevant, and the classification was suppressed and cached as "torch is fine" for
-    a whole TTL -- withholding the repair from a host nvidia-smi describes a moment
-    later.
-    """
+    """An irrelevant empty mask must not decide a cold-cache verdict; measure the inventory first."""
     import sys
 
     probes = {"n": 0}
@@ -2018,13 +1771,7 @@ def test_a_cold_start_measures_the_inventory_before_honouring_a_mask(monkeypatch
 
 
 def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
-    """An AMD-only host has no nvidia-smi by design.
-
-    Marking its inventory unknown kept a settled mismatch alive for good once the AMD
-    card that established it was detached: the sysfs walk correctly found nothing, and
-    the verdict refresh read the unknown as "the probe declined" and preserved the old
-    reason, while /api/system had already dropped the device rows.
-    """
+    """An absent nvidia-smi is an answer, not a failed probe, or a detached AMD mismatch never clears."""
 
     _shared_setup_2(monkeypatch)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
@@ -2051,13 +1798,7 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
 
 
 def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
-    """The guard is one request per recovery, not one per process.
-
-    It was cleared only by detect_hardware(), while the recovery starts its pass through
-    start_background_detection(), which runs ensure_hardware_detected(). So the first
-    recovery raised the guard for good: a driver that flapped, or any later lifecycle
-    that published an inventory-sensitive CPU verdict, could never get another pass.
-    """
+    """The redetection guard clears per pass, not per process, so a later recovery can ask again."""
     import sys
 
     monkeypatch.setattr(hw, "_REDETECTION_REQUESTED", False)
@@ -2089,11 +1830,7 @@ def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
 
 
 def test_one_capability_response_describes_one_host(monkeypatch):
-    """Three reads of a verdict that refreshes on a TTL can disagree.
-
-    An eGPU attached or removed mid-response could give the reason from one host and the
-    message from another, or a reason with no message at all.
-    """
+    """Reason and message in one capability response must come from one verdict read, not three."""
     verdicts = [
         ("torch_cpu_build", "2.11.0+cpu"),
         ("no_gpu", None),
@@ -2120,13 +1857,7 @@ def _hardware_source() -> str:
 
 
 def test_the_hardware_module_loads_without_the_rest_of_the_package(tmp_path):
-    """tests/python/test_e2e_no_torch_sandbox.py executes this module on its own.
-
-    It builds a minimal stub tree -- loggers, structlog, utils/hardware -- and nothing
-    else, so a top-level import of anything further inside utils makes the module
-    unloadable there, which is how a Windows-only console-hiding helper broke hardware
-    detection on a host with no torch at all.
-    """
+    """The module must load under a stub-only tree, so it may not import other utils at top level."""
     import pathlib
     import re as _re
 
@@ -2143,12 +1874,7 @@ def test_the_hardware_module_loads_without_the_rest_of_the_package(tmp_path):
 
 
 def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
-    """/proc/driver/nvidia/gpus is published whatever nvidia-smi's state is.
-
-    install_python_stack._has_usable_nvidia_gpu() falls back to it for the same reason,
-    so without this the installer could select or repair a CUDA wheel on a host where
-    the backend insisted there was no card, and the user got no_gpu with no repair.
-    """
+    """Counts /proc/driver/nvidia/gpus even when nvidia-smi fails, matching the installer's fallback."""
 
     _shared_setup_2(monkeypatch)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 2)
@@ -2163,12 +1889,7 @@ def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
 
 
 def test_a_kfd_confirmed_amd_card_stays_eligible(monkeypatch):
-    """A minimal AMD host with /dev/kfd but no rocminfo or amd-smi.
-
-    install_python_stack._has_rocm_gpu() uses the KFD topology as its fallback exactly
-    so `studio update` can repair CPU-only torch there, so a card the installer would
-    repair cannot be dropped from the evidence here.
-    """
+    """A KFD-confirmed AMD card stays eligible with no rocminfo or amd-smi; the installer repairs it."""
     monkeypatch.setattr(hw, "_expected_rocm_flavor_was_chosen", lambda: False)
     monkeypatch.setattr(hw, "_torch_reports_a_hip_runtime", lambda: False)
     unnamed = [{"vendor": "amd"}]
@@ -2187,11 +1908,7 @@ def test_a_kfd_confirmed_amd_card_stays_eligible(monkeypatch):
 
 
 def test_the_kfd_probe_rejects_a_non_amd_node(monkeypatch, tmp_path):
-    """The NVIDIA open kernel module registers KFD nodes of its own.
-
-    Their vendor_id is 4318, not AMD's 4098, and the installer guards on exactly that,
-    so an NVIDIA-only host must not read as AMD here either.
-    """
+    """NVIDIA kernel modules register KFD nodes with vendor 4318, so only vendor 4098 is AMD."""
     nodes = tmp_path / "nodes"
     for name, gpu_id, vendor in (("0", "0", "4098"), ("1", "5555", "4318")):
         node = nodes / name
@@ -2221,11 +1938,7 @@ def test_the_kfd_probe_rejects_a_non_amd_node(monkeypatch, tmp_path):
 
 
 def test_the_installer_records_who_named_the_flavor(tmp_path, monkeypatch):
-    """The manifest has to carry the provenance, or the backend cannot ask.
-
-    setup.ps1 publishes UNSLOTH_EXPECTED_TORCH_TAG for an automatic /cpu choice exactly
-    as it does for a pinned one, so the handover variable alone is not evidence.
-    """
+    """The manifest must record who chose the flavor, as UNSLOTH_EXPECTED_TORCH_TAG is set for auto too."""
     import importlib.util
     import pathlib
 
@@ -2261,13 +1974,7 @@ def test_the_installer_records_who_named_the_flavor(tmp_path, monkeypatch):
 
 
 def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
-    """A hybrid Intel iGPU plus NVIDIA dGPU host with nvidia-smi timing out.
-
-    The Intel row cancelled the unknown, and _devices_that_can_establish_a_mismatch then
-    discarded the iGPU as ineligible, so the verdict saw neither an eligible card nor an
-    unanswered probe and downgraded a settled mismatch to no_gpu for a cache interval --
-    hiding the repair while the NVIDIA probe was merely unavailable.
-    """
+    """An unanswered vendor must keep the inventory unknown rather than downgrade to no_gpu."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         hw,
@@ -2291,12 +1998,7 @@ def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
 
 
 def test_a_stale_registry_record_cannot_claim_a_longer_named_live_card(monkeypatch):
-    """ "RX 7900 XT" is a prefix of a live "RX 7900 XTX".
-
-    Records are walked in LUID order and consume the first live name they match, so the
-    stale XT could claim the XTX that is really installed and the inventory would
-    publish the removed card's name and its VRAM.
-    """
+    """A stale 'RX 7900 XT' record must not claim the live 'RX 7900 XTX' by prefix match."""
     live = ["AMD Radeon RX 7900 XTX"]
     assert hw._claim_live_adapter("AMD Radeon RX 7900 XTX", live) == 0
 
@@ -2311,13 +2013,7 @@ def test_a_stale_registry_record_cannot_claim_a_longer_named_live_card(monkeypat
 
 
 def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
-    """Absent is not the only way the CLI fails to answer.
-
-    A nvidia-smi that hangs past its timeout, or exits non-zero, leaves the kernel
-    driver enumerating cards regardless. On a cold start there is no settled verdict for
-    the resulting unknown to protect, so the host was reported as having no GPU at all,
-    with no repair, for as long as the CLI stayed broken.
-    """
+    """A nvidia-smi that times out or exits non-zero must still count cards the kernel driver reports."""
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 1)
 
     _shared_setup_3(monkeypatch)
@@ -2337,12 +2033,7 @@ def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
 
 
 def test_hip_visible_devices_outranks_the_cuda_alias(monkeypatch):
-    """HIP reads its own variables first; the alias is only a fallback.
-
-    An AMD host that NAMES its devices in HIP_VISIBLE_DEVICES while inheriting an empty
-    CUDA_VISIBLE_DEVICES has not hidden anything, and _get_parent_visible_gpu_spec in
-    this same module already applies that precedence.
-    """
+    """HIP_VISIBLE_DEVICES outranks the alias; an inherited empty CUDA_VISIBLE_DEVICES hides nothing."""
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
@@ -2365,12 +2056,7 @@ def test_hip_visible_devices_outranks_the_cuda_alias(monkeypatch):
 
 
 def test_only_the_highest_priority_mask_that_is_set_decides(monkeypatch):
-    """A lower-priority variable naming devices does not un-hide them.
-
-    HIP stops at the first of the three that is SET, so HIP_VISIBLE_DEVICES=-1 hides
-    every AMD card however ROCR_VISIBLE_DEVICES is spelled. Reading the ROCR value there
-    would report a mismatch, and offer a repair, for a host masked exactly as asked.
-    """
+    """The first mask that is set decides: HIP_VISIBLE_DEVICES=-1 hides every AMD card regardless."""
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
@@ -2392,17 +2078,8 @@ def test_only_the_highest_priority_mask_that_is_set_decides(monkeypatch):
     assert hw._devices_that_can_establish_a_mismatch(amd) == amd
 
 
-# =============================================== a refresh that cannot answer is not news
-
-
 def test_an_unanswerable_refresh_keeps_the_cards_it_already_found(monkeypatch):
-    """nvidia-smi timing out must not read as "the GPUs were removed".
-
-    Overwriting the cache with the empty failure holds for a whole TTL, and the two
-    consumers then disagree inside one response: current_chat_only_verdict() keeps its
-    frozen mismatch on ``unknown`` while _torch_gpu_mismatch_report() reads the devices,
-    finds none, and drops physical_devices and mismatch from /api/system.
-    """
+    """A failed nvidia-smi refresh must keep the cards already found, not cache an empty inventory."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
@@ -2415,7 +2092,6 @@ def test_an_unanswerable_refresh_keeps_the_cards_it_already_found(monkeypatch):
 
     assert [d["name"] for d in after["devices"]] == [d["name"] for d in good["devices"]]
     assert after["available"] is True
-    # Still unknown: these rows describe the host as it was, not as this pass measured it.
     assert after["unknown"] is True
     assert after["unanswered"] == ["nvidia"]
 
@@ -2437,7 +2113,6 @@ def test_a_vendor_that_answered_none_is_allowed_to_lose_its_cards(monkeypatch):
 def test_a_registry_that_cannot_be_read_is_not_a_host_without_adapters(monkeypatch):
     """`{}` from the DirectX helper covers both, so the inventory has to ask which."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
     _smi(monkeypatch, "", raises = FileNotFoundError)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
     monkeypatch.setattr(
@@ -2463,9 +2138,6 @@ def test_the_ranking_callers_still_see_an_empty_map(monkeypatch):
     assert hw._windows_amd_adapter_records_by_luid(distinguish_failure = True) is None
 
 
-# ============================================ a Windows AMD card the registry did not name
-
-
 @pytest.mark.parametrize(
     "name,eligible",
     [
@@ -2482,12 +2154,7 @@ def test_the_ranking_callers_still_see_an_empty_map(monkeypatch):
 def test_a_windows_adapter_with_no_adapter_family_is_read_from_its_name(
     monkeypatch, name, eligible
 ):
-    """AdapterFamily is written by the driver, so the reported RX 7900 XT arrives bare.
-
-    Falling through to the KFD probe discards it: that probe is Linux-only and returns
-    False on Windows, which made Windows accidentally stricter than Linux for the exact
-    card this feature was written for.
-    """
+    """A Windows adapter lacking AdapterFamily is read by name; the KFD fallback is Linux-only."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)
     device = {"vendor": "amd", "name": name, "source": "directx-registry"}
@@ -2503,9 +2170,6 @@ def test_a_named_arch_still_wins_over_the_marketing_name(monkeypatch):
         )
         is False
     )
-
-
-# ================================================== only a real ROCm family is a ROCm pin
 
 
 @pytest.mark.parametrize(
@@ -2567,17 +2231,8 @@ def _installer_rocm_family(leaf: str) -> bool:
     return namespace["_is_pip_rocm_family_leaf"](leaf)
 
 
-# ======================================= a detection failure the disk already explained
-
-
 def test_a_disk_classified_detection_failure_transitions_when_the_probe_recovers(monkeypatch):
-    """torch will not import AND the OS probe timed out: only the inventory was missing.
-
-    detect_hardware() classifies the wheel from disk for exactly this host, then publishes
-    detection_failed when the inventory cannot corroborate it. Freezing that forever leaves
-    /api/system reporting the recovered mismatch while the sidebar, Export and Video keep
-    saying detection failed and never offer the repair.
-    """
+    """A disk-classified detection failure must become a mismatch once the OS probe recovers."""
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "detection_failed")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("[WinError 126] cudart64_12.dll"))
@@ -2635,12 +2290,7 @@ def test_a_detection_failure_with_an_importable_torch_stays_frozen(monkeypatch):
 
 
 def test_an_unreadable_drm_walk_is_not_a_host_without_amd_cards(monkeypatch, tmp_path):
-    """/sys/class/drm going unreadable is the driver restart the TTL exists to tolerate.
-
-    Swallowing that into an empty list made the failure look like a successful "no
-    cards", so nothing marked the vendor unanswered and the carry-forward had nothing
-    to act on: the previously detected cards were dropped for a whole TTL.
-    """
+    """An unreadable /sys/class/drm must not read as 'no AMD cards', or known cards drop for a TTL."""
 
     def denied(_root):
         raise PermissionError("EACCES during driver restart")
@@ -2723,15 +2373,10 @@ def test_a_previously_seen_amd_card_survives_an_unreadable_walk(monkeypatch):
     assert after["unknown"] is True
 
 
-# =========================== the URL outranks the family, as install.sh's resolver does
-
-
 @pytest.mark.parametrize(
     "chosen,url,family",
     [
-        # install.sh returns on UNSLOTH_TORCH_INDEX_URL without ever reading the family, so
-        # when the two disagree the family is not a second opinion, it is dead. A stale
-        # ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppressed a real CPU-wheel mismatch.
+        # install.sh returns on UNSLOTH_TORCH_INDEX_URL without reading the family.
         (False, "https://download.pytorch.org/whl/cu128", "cpu"),
         (True, "https://download.pytorch.org/whl/cpu", "cu128"),
         (True, "", "cpu"),
@@ -2787,9 +2432,6 @@ def test_the_backend_precedence_matches_install_sh():
     ), "install.sh no longer short-circuits on the URL; the backend mirrors that rule"
 
 
-# ================== a deliberate CPU install whose torch will not import is not broken
-
-
 @pytest.fixture
 def _broken_torch_on_a_gpu_host(monkeypatch):
     """detect_hardware()'s disk-only branch: torch is installed and will not import."""
@@ -2829,11 +2471,7 @@ def test_a_broken_torch_on_an_unpinned_host_still_reports_the_mismatch(
 def test_a_deliberate_cpu_install_is_not_offered_a_gpu_repair(
     monkeypatch, _broken_torch_on_a_gpu_host
 ):
-    """The repair the UI would offer reinstalls the very wheel that was asked for.
-
-    classify_torch_build() suppresses this before its own disk fallback; the branch in
-    detect_hardware() reached _classification_from_disk_label() directly and did not.
-    """
+    """A deliberate CPU install must not be offered a GPU repair; the disk fallback skipped that check."""
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cpu")
     assert hw._expected_cpu_flavor_was_chosen() is True
 
@@ -2846,15 +2484,9 @@ def test_a_deliberate_cpu_install_is_not_offered_a_gpu_repair(
     ), "and the mask suppression beside it: an emptied mask is a deliberate CPU pin too"
 
 
-# ============================ the recovery the message names has to exist where it is read
-
-
 @pytest.mark.parametrize("reason", ["torch_cpu_build", "torch_cuda_unavailable"])
 def test_the_repair_advice_names_a_route_every_deployment_has(monkeypatch, reason):
-    """Settings carries the repair row only inside the desktop app, and only for a backend
-    it manages: DesktopRepairControl returns null without a Tauri repair context and null
-    for an externally started server. A browser-hosted Studio, or a desktop attached to a
-    server started from a terminal, was told to use a control that is not on its page."""
+    """Repair advice must name a route every deployment has; the repair row is managed-desktop only."""
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
     message = hw._gpu_present_but_unusable_message("export", (reason, "2.11.0+cpu"))
@@ -2887,9 +2519,7 @@ def test_the_control_that_advice_points_at_still_has_both_gates():
     [
         (True, True),
         (False, False),
-        # bool("false") is True, so a migrated or hand-edited manifest carrying the string
-        # would read as a deliberate pin and suppress the repair on a host that never chose
-        # one. Unknown provenance gets the same answer an absent key gets.
+        # bool("false") is True; a string value must not read as a deliberate pin.
         ("false", False),
         ("true", False),
         (1, False),

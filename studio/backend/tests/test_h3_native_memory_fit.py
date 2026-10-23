@@ -757,6 +757,7 @@ class _FakeServer:
         files,
         *,
         offload,
+        threads = None,
         env = None,
         extra_args = None,
     ):

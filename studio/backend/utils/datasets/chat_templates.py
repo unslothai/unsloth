@@ -675,8 +675,13 @@ def apply_chat_template_to_dataset(
 
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
+        preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
+
         def _format_alpaca(examples):
             texts = []
+            systems = examples.get("system")
+            if systems is None:
+                systems = [None] * len(examples["instruction"])
             for i in range(len(examples["instruction"])):
                 fields = {
                     "instruction": examples["instruction"][i],
@@ -684,8 +689,11 @@ def apply_chat_template_to_dataset(
                     "output": examples["output"][i]
                 }
                 fields = {key: cell_text(value) for key, value in fields.items()}
+                system = systems[i]
+                if not (isinstance(system, str) and system.strip()):
+                    system = preamble
 
-                text = DEFAULT_ALPACA_TEMPLATE.format(
+                text = system + "\n\n" + alpaca_body.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
                 if not text.endswith(eos_token):

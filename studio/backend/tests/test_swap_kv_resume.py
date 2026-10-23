@@ -489,4 +489,5 @@ def test_load_progress_is_unchanged_without_a_save(client, env, monkeypatch, cas
         "bytes_total": 0,
         "fraction": 1.0,
         "error": None,
+        "error_code": None,
     }

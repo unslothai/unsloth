@@ -480,8 +480,11 @@ export async function deleteLocalModel(path: string, id?: string): Promise<void>
 
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   const response = await authFetch("/api/hub/scan-folders");
-  const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
-  return data.folders;
+  const data = await parseJsonOrThrow<{ folders?: ScanFolderInfo[] }>(
+    response,
+  );
+  // Every surface iterates this list, so a body without it must not take the page down.
+  return Array.isArray(data?.folders) ? data.folders : [];
 }
 
 export async function addScanFolder(

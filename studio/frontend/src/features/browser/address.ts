@@ -24,20 +24,20 @@ export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; searchUrl: 
 };
 
 const SCHEME = /^[a-z][a-z\d+.-]*:\/\//i;
-// A dotted host (optionally with port and path), no spaces: "docs.unsloth.ai/x", "пример.рф", "example.xn--p1ai".
+// A dotted host (optionally with port and path), no spaces: "unsloth.ai/docs/x", "пример.рф", "example.xn--p1ai".
 const HOST_LIKE = /^(?:[\p{L}\p{N}_-]+\.)+(?:\p{L}{2,}|xn--[a-z\d-]+)(?::\d+)?(?:[/?#]\S*)?$/iu;
 // File extensions that are not TLDs, so "llama.cpp" is a search (.py, .md and .rs are real TLDs).
 const FILE_NAME = /^[^/?#:]+\.(?:cpp|jsx?|tsx?|jsonl?|html?|css|txt|csv|ya?ml|toml|ipynb|gguf|safetensors|bin|pdf|png|jpe?g)$/i;
 const IPV4_LIKE = /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#]\S*)?$/;
 const IPV6_LIKE = /^\[[\da-f:.]+\](?::\d+)?(?:[/?#]\S*)?$/i;
-const LOCALHOST = /^localhost(?::\d+)?(?:[/?#]\S*)?$/i;
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:[/?#]\S*)?$/i;
 
 /** What the address bar navigates to: a URL as typed, a bare host as https, anything else as a search. */
 export function resolveAddress(input: string, engine: SearchEngineId): string | null {
   const text = input.trim();
   if (!text) return null;
   if (SCHEME.test(text)) return text;
-  if (LOCALHOST.test(text)) return `http://${text}`;
+  if (LOOPBACK.test(text)) return `http://${text}`;
   if ((HOST_LIKE.test(text) && !FILE_NAME.test(text)) || IPV4_LIKE.test(text) || IPV6_LIKE.test(text)) return `https://${text}`;
   return SEARCH_ENGINES[engine].searchUrl(text);
 }
@@ -62,6 +62,19 @@ function redirectTarget(url: string): string | null {
     // Not a URL; the fetch reports it.
   }
   return null;
+}
+
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(url);
+    return /^https?:$/.test(protocol) && /^(?:localhost|127(?:\.\d+){3}|\[::1\])$/.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function localOriginOf(url: string): string | null {
+  return isLoopbackUrl(url) ? new URL(url).origin : null;
 }
 
 export function isWebUrl(url: string): boolean {

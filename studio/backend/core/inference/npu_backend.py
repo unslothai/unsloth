@@ -438,8 +438,8 @@ class LemonadeNpuBackend:
             raise NpuError("No AMD Ryzen AI NPU was found on this machine.")
         if hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
             raise NpuError(
-                "The AMD NPU is off by default. Start Unsloth Studio with "
-                "UNSLOTH_STUDIO_ENABLE_NPU=1 to use it."
+                "The AMD NPU is turned off by UNSLOTH_STUDIO_ENABLE_NPU. Unset it or set it "
+                "to 1, then restart Unsloth Studio to use the NPU."
             )
         if not hardware.get("supported"):
             raise NpuError(

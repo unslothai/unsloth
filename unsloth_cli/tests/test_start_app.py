@@ -412,9 +412,35 @@ def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
     result = CliRunner().invoke(start.start_app, ["opencode", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    text = config.read_text()
+    assert "// mine" in text and "/* x */" in text
+    data = start._load_app_config(config, text)
     assert (data["model"], data["theme"]) == ("openai/gpt-5.5", "a//b")
     assert "unsloth-studio" in data["provider"]
+
+    assert CliRunner().invoke(start.start_app, ["opencode", "--app"]).exit_code == 0
+    assert config.read_text() == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "{}",
+        "{\n  // only a comment\n}\n",
+        '{\n  "provider": {\n    // keep\n    "openai": {"x": 1},\n  },\n}\n',
+        '{"provider": {"unsloth-studio": {"old": true}}, /* tail */ "model": "m"}',
+    ],
+)
+def test_set_app_values_keeps_jsonc_comments(tmp_path, text):
+    path = tmp_path / "opencode.jsonc"
+    updates = [(("provider", "unsloth-studio"), {"npm": "x", "models": {"a": {}}})]
+    out = start._set_app_values(text, path, updates)
+    expected = start._load_app_config(path, text)
+    expected.setdefault("provider", {})["unsloth-studio"] = updates[0][1]
+    assert start._load_app_config(path, out) == expected
+    for comment in ("// only a comment", "// keep", "/* tail */"):
+        assert (comment in out) is (comment in text)
+    assert start._set_app_values(out, path, updates) == out
 
 
 def test_opencode_app_reenables_a_disabled_unsloth(studio, monkeypatch):
@@ -439,7 +465,7 @@ def test_openclaw_app_reads_a_commented_config(studio):
     result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
 
     assert result.exit_code == 0, result.output
-    data = json.loads(config.read_text())
+    data = start._load_app_config(config, config.read_text())
     assert data["agents"]["defaults"] == {"model": "openai/gpt-5.5"}
     assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
 
@@ -470,6 +496,35 @@ def test_codex_app_owner_without_psutil(monkeypatch):
     assert start._codex_app_owner_alive(owner) is True
 
 
+def test_hermes_app_replaces_the_provider_an_earlier_run_named_unsloth(studio):
+    yaml = pytest.importorskip("yaml")
+    config = start._hermes_app_target().path
+    config.parent.mkdir(parents = True, exist_ok = True)
+    legacy = {"base_url": f"{BASE}/v1", "api_mode": "openai", "api_key": "sk-unsloth-old"}
+    mine = {"base_url": "http://elsewhere.test/v1", "api_key": "k"}
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "model": {"provider": "custom:unsloth", "default": "m"},
+                "providers": {"unsloth": legacy, "other": mine},
+            }
+        )
+    )
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = yaml.safe_load(config.read_text())
+    assert set(data["providers"]) == {"unsloth-studio", "other"}
+    assert data["model"] == {"provider": "custom:unsloth-studio", "default": "m"}
+
+    providers = {"unsloth": {**mine, "base_url": f"{BASE}/v1", "headers": {"x": "1"}}}
+    config.write_text(yaml.safe_dump({"providers": providers}))
+    result = CliRunner().invoke(start.start_app, ["hermes", "--app"])
+    assert result.exit_code == 0, result.output
+    assert "unsloth" in yaml.safe_load(config.read_text())["providers"]
+
+
 def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     yaml = pytest.importorskip("yaml")
     root = start._hermes_app_target().path.parent
@@ -488,7 +543,7 @@ def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     data = yaml.safe_load(config.read_text())
     assert data["model"] == {"default": "openrouter/kimi-k3", "provider": "openrouter"}
     assert "compression" not in data
-    provider = data["providers"]["unsloth"]
+    provider = data["providers"]["unsloth-studio"]
     assert provider["api_key"] == APP_KEY
     assert provider["base_url"] == f"{BASE}/v1"
     assert "key_env" not in provider
@@ -861,6 +916,84 @@ def test_vscode_in_a_dev_container_prints_the_group(studio, monkeypatch, name):
     assert result.exit_code == 0, result.output
     assert "nothing was written" in result.output
     assert not (studio["home"] / ".config" / "Code").exists()
+
+
+@pytest.mark.parametrize(
+    "marker, engine", [("/.dockerenv", "docker"), ("/run/.containerenv", "podman")]
+)
+def test_vscode_in_a_plain_container_prints_the_group(studio, monkeypatch, marker, engine):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES"):
+        monkeypatch.delenv(var, raising = False)
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        start.os.path,
+        "exists",
+        lambda p: p == marker
+        or (p not in ("/.dockerenv", "/run/.containerenv") and real_exists(p)),
+    )
+    user_dir = studio["home"] / ".config" / "Code" / "User"
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" in result.output
+    assert f"{engine} run -p 8888:8888" in result.output and "ssh -L" not in result.output
+    assert not user_dir.exists()
+
+    # A dead file an earlier release wrote here is left alone and the group is still printed.
+    user_dir.mkdir(parents = True)
+    (user_dir / "chatLanguageModels.json").write_text("[]\n")
+    (user_dir / "chatLanguageModels.json.unsloth-backup").write_text("[]\n")
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" in result.output
+    assert (user_dir / "chatLanguageModels.json").read_text() == "[]\n"
+
+    # VS Code itself running in the container keeps the write.
+    (user_dir / "globalStorage").mkdir()
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+    assert "Unsloth" in (user_dir / "chatLanguageModels.json").read_text()
+
+
+def test_vscode_in_a_container_writes_a_user_dir_it_never_targeted(studio, monkeypatch):
+    # A bind-mounted or fresh VS Code user dir holding only this file is VS Code's, not residue.
+    config = _vscode_config(studio, monkeypatch)
+    config.write_text("[]\n")
+    monkeypatch.setattr(start, "_container_engine", lambda: "docker")
+    for var in start._VSCODE_REMOTE_ENV:
+        monkeypatch.delenv(var, raising = False)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" not in result.output
+    assert [g["name"] for g in json.loads(config.read_text())] == ["Unsloth"]
+
+    # Its own earlier write there does not make the dir look stale.
+    monkeypatch.setitem(MODEL, "id", "unsloth/Qwen3.5-4B-GGUF")
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" not in result.output
+    assert [m["id"] for m in json.loads(config.read_text())[0]["models"]] == [MODEL["id"]]
+
+
+@pytest.mark.parametrize("name", ["REMOTE_CONTAINERS", "CODESPACES"])
+def test_vscode_in_a_docker_backed_dev_container_keeps_the_forwarding_hint(
+    studio, monkeypatch, name
+):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    for var in start._VSCODE_REMOTE_ENV:
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv(name, "true")
+    monkeypatch.setattr(start, "_container_engine", lambda: "docker")
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "ssh -L 8888:127.0.0.1:8888" in result.output and "docker run" not in result.output
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL paths are POSIX paths")

@@ -25,6 +25,7 @@ if _SCRIPTS not in sys.path:
 import enforce_kwargs_spacing  # noqa: E402
 from run_ruff_format import (  # noqa: E402
     CONFIG,
+    JOBS_ENV,
     installed_ruff_version,
     pinned_ruff_version,
     version_mismatch,
@@ -300,6 +301,8 @@ def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, 
     """Runs on the calling thread, not a pool, so a pytest-timeout raise reaches the kill loop."""
     log_dir.mkdir(parents = True, exist_ok = True)
     limit = max(1, min(len(argvs), os.cpu_count() or 1))
+    # The batches are already one per CPU; a worker pool inside each would multiply that.
+    env = {**os.environ, JOBS_ENV: "1"}
     results: list[tuple[int, str] | None] = [None] * len(argvs)
     running: dict[int, tuple[subprocess.Popen, Path]] = {}
     queued = list(enumerate(argvs))
@@ -311,7 +314,9 @@ def _run_side_by_side(argvs: list[list[str]], log_dir: Path) -> list[tuple[int, 
                 # SIGALRM held across the launch so a timeout cannot land before the process is recorded.
                 with _timeout_signal_held(), open(log, "wb") as sink:
                     running[index] = (
-                        subprocess.Popen(argv, stdout = sink, stderr = subprocess.STDOUT, **_OWN_GROUP),
+                        subprocess.Popen(
+                            argv, stdout = sink, stderr = subprocess.STDOUT, env = env, **_OWN_GROUP
+                        ),
                         log,
                     )
             for index, (proc, log) in list(running.items()):

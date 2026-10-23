@@ -7,7 +7,10 @@ the inference-path counterpart of the training worker's install.
 
 from __future__ import annotations
 
+import functools
 import importlib
+import importlib.machinery
+import importlib.metadata
 import importlib.util
 import os
 import shutil
@@ -33,6 +36,7 @@ from utils.wheel_utils import (
     direct_wheel_url,
     install_wheel,
     is_windows_wheel_env,
+    mamba_ssm_pure_wheel_url,
     pinned_source_build_supported,
     probe_torch_wheel_env,
     url_exists,
@@ -68,12 +72,6 @@ SSM_MODEL_TYPES = REQUIRED_SSM_MODEL_TYPES | frozenset(
     {"bamba", "jamba", "zamba", "zamba2", "mamba", "mamba2", "falcon_mamba"}
 )
 CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
-    "qwen3.5",
-    "qwen3_5",
-    "qwen3.6",
-    "qwen3_6",
-    "qwen3-next",
-    "qwen3_next",
     "nemotron_h",
     "nemotron-h",
     "nemotron-3-nano",
@@ -87,7 +85,91 @@ CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
     "zamba",
     "bamba",
 )
+# GatedDeltaNet models unsloth-zoo runs without causal_conv1d: its Triton causal conv for prefill /
+# training and Triton causal_conv1d_update for cached decode (temporary_patches/gdn_causal_conv1d.py,
+# `_GDN_MODELING`), plus the vendored FLA kernels. Qwen3.6 reuses the qwen3_5 model types. A usable
+# causal_conv1d still wins inside zoo; this only stops Studio from downloading it. Zoo's kill switch,
+# a zoo without the decode kernel (decode was slower on a T4 without it), ROCm, macOS or no Triton
+# bring the request back.
+ZOO_GDN_MODEL_TYPES = frozenset({"qwen3_5", "qwen3_5_moe", "qwen3_next"})
+ZOO_GDN_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+)
+ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH = "UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D"
+# Present in the zoo source from the release that added the decode kernel.
+_ZOO_GDN_DECODE_KERNEL_MARKER = "def triton_causal_conv1d_update("
 _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE: dict[tuple[str, str], bool | None] = {}
+# Mamba-2 mixers (transformers >= 5.15 resolves each kernel through the hub decorator) that
+# unsloth_zoo runs on Triton alone: the pure mamba_ssm wheel for the scan, zoo's causal conv
+# drop-ins for prefill, the fused training path and decode. Mamba-1 families need selective_scan_cuda.
+MAMBA2_TRITON_MODEL_TYPES = frozenset(
+    {"nemotron_h", "falcon_h1", "granitemoehybrid", "bamba", "zamba2", "mamba2"}
+)
+_ZOO_MAMBA2_TRITON_MARKERS = ("def install_mamba_ssm_triton_conv", "_MAMBA2_MODELING")
+_TRANSFORMERS_HUB_DECORATOR_FLOOR = (5, 15)
+
+
+def zoo_triton_causal_conv1d_enabled() -> bool:
+    return os.environ.get(ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "0") != "1"
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_triton_platform_usable() -> bool:
+    """Whether zoo's Triton conv can engage here: a CUDA torch (not ROCm) with Triton importable.
+    macOS, ROCm and a Windows install without triton-windows keep the prebuilt causal-conv1d.
+    Read from torch's distribution version, so no model load pays for importing torch: ROCm and
+    CPU builds carry `+rocm` / `+cpu`, a Windows CUDA build `+cu`, and a Linux PyPI torch with no
+    local version is the CUDA build."""
+    if sys.platform == "darwin" or importlib.util.find_spec("triton") is None:
+        return False
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        version = getattr(torch, "version", None)
+        return bool(getattr(version, "cuda", None)) and not getattr(version, "hip", None)
+    try:
+        local = importlib.metadata.version("torch").partition("+")[2].lower()
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    if local.startswith(("rocm", "cpu")):
+        return False
+    return local.startswith("cu") or (not local and sys.platform.startswith("linux"))
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_gdn_decode_kernel_present() -> bool:
+    """Whether the installed unsloth_zoo ships the Triton decode update. Read from its source on
+    sys.path, so nothing is imported and an import-guard stub in sys.modules cannot answer."""
+    try:
+        spec = importlib.machinery.PathFinder.find_spec("unsloth_zoo")
+    except (ImportError, ValueError):
+        return False
+    for location in (spec.submodule_search_locations or ()) if spec is not None else ():
+        source = Path(location) / "temporary_patches" / "gdn_causal_conv1d.py"
+        try:
+            if _ZOO_GDN_DECODE_KERNEL_MARKER in source.read_text(encoding = "utf-8", errors = "ignore"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def zoo_triton_causal_conv1d_usable() -> bool:
+    """zoo runs Qwen3.5 / 3.6 / Qwen3-Next prefill, training and decode without causal_conv1d here."""
+    return (
+        zoo_triton_causal_conv1d_enabled()
+        and _zoo_triton_platform_usable()
+        and _zoo_gdn_decode_kernel_present()
+    )
+
+
+def _is_zoo_gdn_model_type(model_type: str) -> bool:
+    """The model type or one of its `_text` / `_vision` sub-configs belongs to a zoo-covered model."""
+    return _base_model_type(model_type) in ZOO_GDN_MODEL_TYPES
 
 
 class SsmKernels(NamedTuple):
@@ -109,6 +191,10 @@ class SsmKernels(NamedTuple):
     # Falcon-H1, Granite-4.0-H) only means "worth a source build": their native transformers
     # models run without it.
     mamba_ssm_fatal: bool = False
+    # Whether this load runs the remote implementation: an auto_map plus trust_remote_code, or a
+    # model type this transformers has no native class for. A config that merely advertises remote
+    # code still loads the native class when trust_remote_code is off.
+    remote_code_used: bool = False
 
 
 def _base_model_type(model_type: str) -> str:
@@ -132,9 +218,14 @@ def model_requires_mamba_ssm(model_name: str) -> bool:
 
 
 def model_wants_causal_conv1d(model_name: str) -> bool:
-    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like Qwen3.5 / 3.6 / Qwen3-Next / LFM2 whose modeling files lazy-import it)."""
+    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like LFM2 whose modeling files lazy-import it; Qwen3.5 / 3.6 / Qwen3-Next only where zoo's Triton conv cannot run)."""
     name = (model_name or "").lower()
-    return any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS)
+    if any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS):
+        return True
+    return (
+        any(sub in name for sub in ZOO_GDN_MODEL_SUBSTRINGS)
+        and not zoo_triton_causal_conv1d_usable()
+    )
 
 
 def _normalized_model_identifier(value: str) -> str:
@@ -361,15 +452,31 @@ def _hub_cached_text(repo: str, filename: str) -> str | None:
     return None
 
 
-def _remote_model_sources(checkpoint: str, model_config: dict) -> list[tuple[str, str]]:
-    """(repo, file) of the model classes the config's ``auto_map`` names."""
-    auto_map = model_config.get("auto_map") if isinstance(model_config, dict) else None
-    if not isinstance(auto_map, dict):
+def _auto_maps(model_config) -> list[dict]:
+    """Every ``auto_map`` in a config, top level and sub-configs: the loader runs a composite
+    model's ``text_config.auto_map`` too (the remote-code consent gate reads the same set)."""
+    if not isinstance(model_config, dict):
         return []
+    try:
+        from utils.security.remote_code_scan import iter_auto_maps
+    except Exception:
+        auto_map = model_config.get("auto_map")
+        return [auto_map] if isinstance(auto_map, dict) else []
+    return list(iter_auto_maps(model_config))
+
+
+def _auto_model_entries(model_config):
+    """(key, value) of every ``AutoModel*`` entry across the config's auto_maps."""
+    for auto_map in _auto_maps(model_config):
+        for key, value in auto_map.items():
+            if str(key).startswith("AutoModel"):
+                yield key, value
+
+
+def _remote_model_sources(checkpoint: str, model_config: dict) -> list[tuple[str, str]]:
+    """(repo, file) of the model classes the config's ``auto_map`` names, at any nesting level."""
     sources = []
-    for key, value in auto_map.items():
-        if not str(key).startswith("AutoModel"):
-            continue
+    for _key, value in _auto_model_entries(model_config):
         for reference in value if isinstance(value, (list, tuple)) else (value,):
             if not isinstance(reference, str) or "." not in reference:
                 continue
@@ -414,20 +521,23 @@ def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
     model_types, architectures = _config_identifiers(model_config)
     if model_config_is_ssm(model_config):
         return True
+    # Before the source scan: their modeling files name causal_conv1d, which zoo covers.
+    if model_types and all(_is_zoo_gdn_model_type(model_type) for model_type in model_types):
+        return not zoo_triton_causal_conv1d_usable()
     source_requirements = {
         _transformers_model_type_uses_causal_conv1d(model_type) for model_type in model_types
     }
     if True in source_requirements:
         return True
-    config_identifiers = model_types | architectures
-    normalized_needles = {
-        _normalized_model_identifier(value) for value in CAUSAL_CONV1D_MODEL_SUBSTRINGS
-    }
-    if any(
-        needle in _normalized_model_identifier(identifier)
-        for identifier in config_identifiers
-        for needle in normalized_needles
-    ):
+    normalized = {_normalized_model_identifier(i) for i in model_types | architectures}
+
+    def _matches(substrings: tuple[str, ...]) -> bool:
+        needles = {_normalized_model_identifier(value) for value in substrings}
+        return any(needle in identifier for identifier in normalized for needle in needles)
+
+    if _matches(CAUSAL_CONV1D_MODEL_SUBSTRINGS):
+        return True
+    if _matches(ZOO_GDN_MODEL_SUBSTRINGS) and not zoo_triton_causal_conv1d_usable():
         return True
     if False in source_requirements:
         return False
@@ -521,6 +631,12 @@ def resolve_ssm_kernels(
         required = model_requires_mamba_ssm(probe)
     if wants is None:
         wants = model_wants_causal_conv1d(probe)
+    ssm_types = {t for t in model_types if t in SSM_MODEL_TYPES}
+    remote_code_used = bool(remote_code) and (
+        bool(trust_remote_code)
+        or not ssm_types
+        or not all(native_modeling_available(t) for t in ssm_types)
+    )
     fatal = False
     if is_ssm and required:
         if model_config is not None and model_types:
@@ -542,6 +658,7 @@ def resolve_ssm_kernels(
         model_types = model_types,
         remote_code = remote_code,
         mamba_ssm_fatal = bool(fatal),
+        remote_code_used = remote_code_used,
     )
 
 
@@ -571,7 +688,7 @@ def resolved_model_is_ssm(
     ).mamba_ssm
 
 
-def refresh_transformers_kernel_gates() -> None:
+def refresh_transformers_kernel_gates(removed: bool = False) -> None:
     """After an in-process install, let an already-imported transformers see the new kernels: its
     availability gates are lru_cached and the hub-kernel map can hold a cached None. Never raises.
     This cannot rebind functions a modeling module already captured; see
@@ -594,7 +711,8 @@ def refresh_transformers_kernel_gates() -> None:
         hub_kernels = sys.modules.get("transformers.integrations.hub_kernels")
         mapping = getattr(hub_kernels, "_KERNEL_MODULE_MAPPING", None)
         if isinstance(mapping, dict):
-            for key in [key for key, value in mapping.items() if value is None]:
+            # A removal also invalidates a cached module, not only a cached None.
+            for key in [key for key, value in mapping.items() if removed or value is None]:
                 if any(
                     kernel in str(key) for kernel in ("causal-conv1d", "causal_conv1d", "mamba")
                 ):
@@ -629,14 +747,10 @@ def remote_code_modules(checkpoint: str, model_config: dict) -> frozenset:
     """The (namespace, module) pairs of the model classes a config's ``auto_map`` points at: an
     entry ``"model.CustomForCausalLM"`` is module ``model`` of *checkpoint*, and
     ``"org/repo--model.Custom"`` module ``model`` of ``org/repo``. Any module name counts, not just
-    ``modeling_*``; AutoConfig / AutoTokenizer / processor entries capture no kernels."""
-    auto_map = model_config.get("auto_map") if isinstance(model_config, dict) else None
-    if not isinstance(auto_map, dict):
-        return frozenset()
+    ``modeling_*``; AutoConfig / AutoTokenizer / processor entries capture no kernels. Sub-configs
+    count: the loader runs a composite model's ``text_config.auto_map`` as well."""
     pairs = set()
-    for key, value in auto_map.items():
-        if not str(key).startswith("AutoModel"):
-            continue
+    for _key, value in _auto_model_entries(model_config):
         for reference in value if isinstance(value, (list, tuple)) else (value,):
             if not isinstance(reference, str) or "." not in reference:
                 continue
@@ -780,7 +894,128 @@ def _kernel_backend(env: dict[str, str] | None) -> str | None:
     return None
 
 
-def _failure_key(import_name: str) -> tuple:
+def _zoo_has_mamba2_triton_drop_ins() -> bool:
+    """Whether the installed unsloth_zoo runs Mamba-2 causal convs on Triton, read from its source
+    (importing unsloth_zoo here would patch the process)."""
+    try:
+        spec = importlib.util.find_spec("unsloth_zoo")
+        roots = list(spec.submodule_search_locations or []) if spec is not None else []
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            with open(
+                os.path.join(root, "temporary_patches", "gdn_causal_conv1d.py"), encoding = "utf-8"
+            ) as f:
+                text = f.read()
+        except OSError:
+            continue
+        return all(marker in text for marker in _ZOO_MAMBA2_TRITON_MARKERS)
+    return False
+
+
+def _transformers_resolves_kernels_per_function() -> bool:
+    try:
+        from importlib.metadata import version as _version
+
+        from packaging.version import Version
+        return Version(_version("transformers")).release[:2] >= _TRANSFORMERS_HUB_DECORATOR_FLOOR
+    except Exception:
+        return False
+
+
+def _model_type_uses_causal_conv1d(model_type: str) -> bool:
+    """Whether one model type runs a causal conv: an SSM family, a modeling file that uses
+    causal_conv1d, or a name on the causal-conv1d list."""
+    if model_type in SSM_MODEL_TYPES or _transformers_model_type_uses_causal_conv1d(model_type):
+        return True
+    identifier = _normalized_model_identifier(model_type)
+    return any(
+        _normalized_model_identifier(needle) in identifier
+        for needle in CAUSAL_CONV1D_MODEL_SUBSTRINGS
+    )
+
+
+def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
+    """True when this load can take the extension-free mamba_ssm wheel and skip causal-conv1d: a
+    config-resolved Mamba-2 family on a CUDA torch with Triton, transformers >= 5.15 and a zoo with
+    the Triton drop-ins. Never for a load whose own code needs mamba_ssm (``mamba_ssm_fatal``) or a
+    name-only guess."""
+    if not kernels.mamba_ssm or kernels.mamba_ssm_fatal or kernels.remote_code_used:
+        return False
+    ssm_types = {t for t in kernels.model_types if t in SSM_MODEL_TYPES}
+    if not ssm_types or not ssm_types <= MAMBA2_TRITON_MODEL_TYPES:
+        return False
+    # The zoo drop-ins cover only these families' causal conv: any other consumer in the config
+    # (an LFM2 or other conv sub-model in a composite) still needs causal-conv1d.
+    if any(
+        _model_type_uses_causal_conv1d(t) for t in kernels.model_types - MAMBA2_TRITON_MODEL_TYPES
+    ):
+        return False
+    if os.environ.get("UNSLOTH_MAMBA_CUDA_KERNELS", "0") == "1":
+        return False  # opt back into the CUDA wheels
+    if os.environ.get("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "0") == "1":
+        return False  # zoo's own kill switch: no Triton conv, so the CUDA wheels
+    if importlib.util.find_spec("triton") is None:
+        return False
+    if _kernel_backend(_torch_env()) != "cuda":
+        return False  # zoo's drop-ins are CUDA only; ROCm keeps its source builds
+    if not (_transformers_resolves_kernels_per_function() and _zoo_has_mamba2_triton_drop_ins()):
+        return False
+    # mamba_ssm's own Triton kernels (scan, state update) follow setup's GPU floor: none below
+    # sm75, Triton >= 3.4 on sm75. Below it this load keeps today's route.
+    return _mamba_ssm_floor_reason() is None
+
+
+# The compiled Mamba-1 scan. The extension-free mamba_ssm wheel imports fine without it, so a load on
+# the CUDA route (Mamba-1 families, remote code, UNSLOTH_MAMBA_CUDA_KERNELS=1) must check for it: with
+# it missing, transformers still takes mamba_ssm's fast path and selective_scan_fn raises.
+MAMBA_SSM_EXTENSION = "selective_scan_cuda"
+
+
+def kernel_usable(import_name: str, extension: str | None = None) -> bool:
+    """The package imports and, when *extension* is named, so does its compiled module."""
+    return _is_importable(import_name) and (extension is None or _is_importable(extension))
+
+
+def block_import(import_name: str, extension: str | None = None) -> None:
+    """Make *import_name* unavailable to this process (``sys.modules[name] = None``: ``import``
+    raises ImportError and ``importlib.util.find_spec`` returns None, so transformers' availability
+    gates read it as missing). For an extension-free mamba_ssm that could not be removed without
+    the install lock: this load then takes the torch path instead of selective_scan_fn."""
+    forget_imported_modules(import_name, extension)
+    sys.modules[import_name] = None
+
+
+def _hide_if_still_extension_free(import_name: str, extension: str) -> None:
+    """After an uninstall attempt: if the extension-free copy is still installed (read-only env,
+    locked files), hide it from this process so transformers does not pick selective_scan_fn."""
+    if _is_importable(import_name) and not _is_importable(extension):
+        logger.info(
+            "Could not uninstall the extension-free %s; hiding it from this load", import_name
+        )
+        block_import(import_name, extension)
+
+
+def _unblock_import(import_name: str) -> None:
+    if import_name in sys.modules and sys.modules[import_name] is None:
+        del sys.modules[import_name]
+        importlib.invalidate_caches()
+
+
+def forget_imported_modules(import_name: str, extension: str | None = None) -> None:
+    """Drop a replaced package from sys.modules so the next import loads the new copy: mamba_ssm
+    binds selective_scan_cuda (or None) when its modules are first imported."""
+    for name in list(sys.modules):
+        if name == import_name or name.startswith(import_name + ".") or name == extension:
+            sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
+def _failure_key(import_name: str, wheel_url_builder: Callable[..., Any] | None = None) -> tuple:
+    """What a failed install is remembered by. A non-default wheel source (the extension-free
+    mamba_ssm wheel) is its own attempt, so its failure does not also block the CUDA-wheel route
+    the load falls back to."""
     try:
         import importlib.metadata as metadata
         torch_version = metadata.version("torch")
@@ -788,6 +1023,7 @@ def _failure_key(import_name: str) -> tuple:
         torch_version = None
     return (
         import_name,
+        getattr(wheel_url_builder, "__qualname__", None) if wheel_url_builder is not None else None,
         sys.executable,
         torch_version,
         shutil.which("nvcc"),
@@ -842,12 +1078,17 @@ def _install_kernel(
     newly_installed: list[str] | None = None,
     allow_source_build: bool = True,
     required: bool = False,
+    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
+    extension: str | None = None,
 ) -> bool:
     """Install one kernel wheel-first, then (when *allow_source_build*) a HIP-aware PyPI source build
     (never on Windows). Returns True iff importable afterwards; idempotent (no-op when already
     installed). An install this call made is appended to *newly_installed*. One install per kernel
-    runs at a time across processes; a failed one is not retried in this process."""
-    if _is_importable(import_name):
+    runs at a time across processes; a failed one is not retried in this process. With
+    *extension*, an installed copy without that compiled module (the extension-free mamba_ssm
+    wheel) is replaced rather than accepted."""
+    _unblock_import(import_name)  # a previous load's in-process block; this one probes afresh
+    if kernel_usable(import_name, extension):
         logger.info("%s already installed", display_name)
         return True
 
@@ -856,11 +1097,20 @@ def _install_kernel(
     if package_installs_offline():
         # No URL probe, no source build, and no uv-to-pip fallback that would reach the network.
         logger.info("Skipping %s installation while offline", display_name)
+        if extension is not None and _is_importable(import_name):
+            # Removing is local, so offline still drops an extension-free copy this load cannot use.
+            if _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run):
+                _note_removed(newly_installed, import_name)
         return False
 
-    failure_key = _failure_key(import_name)
+    failure_key = _failure_key(import_name, wheel_url_builder)
     if failure_key in _FAILED_INSTALLS:
         logger.info("%s already failed to install in this process; not retrying", display_name)
+        if extension is not None and _is_importable(import_name):
+            # A later load reinstalled the extension-free copy after this route failed: drop it, or
+            # this load takes mamba_ssm's fast path and fails in selective_scan_fn.
+            if _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run):
+                _note_removed(newly_installed, import_name)
         return False
 
     from utils.kernel_install import (
@@ -883,14 +1133,31 @@ def _install_kernel(
                 f"Could not take the {display_name} install lock (another process is installing "
                 "it, or the lock is unavailable); continuing without it.",
             )
+            if (
+                extension is not None
+                and _is_importable(import_name)
+                and not _is_importable(extension)
+            ):
+                # Not ours to uninstall without the lock, but this load must not use it: hidden
+                # from this process, transformers takes its torch path.
+                block_import(import_name, extension)
+                _note_removed(newly_installed, import_name)
             return False
         # Another process may have installed it while this one waited: new to this worker all the
         # same, so its already-imported modeling modules are refreshed or restarted.
-        if _is_importable(import_name):
+        if kernel_usable(import_name, extension):
             logger.info("%s installed by another process", display_name)
+            if extension is not None:
+                forget_imported_modules(import_name, extension)
             if newly_installed is not None:
                 newly_installed.append(import_name)
             return True
+        # Importable but without the compiled module: the extension-free wheel, replaced here.
+        replacing = extension is not None and _is_importable(import_name)
+        if replacing:
+            _emit(
+                status_cb, f"Replacing the extension-free {display_name} with its CUDA kernels..."
+            )
         installed: bool | None = False
         try:
             installed = _install_kernel_locked(
@@ -903,6 +1170,9 @@ def _install_kernel(
                 status_cb = status_cb,
                 run = run,
                 allow_source_build = allow_source_build,
+                wheel_url_builder = wheel_url_builder,
+                extension = extension,
+                replacing = replacing,
             )
         except Exception as exc:
             # An installer that cannot even start (OSError) fails like any other attempt.
@@ -910,13 +1180,57 @@ def _install_kernel(
             installed = False
         finally:
             if installed is False:
+                # A failed replacement removes the extension-free copy too: left in place, a Mamba-1
+                # load would take mamba_ssm's fast path and fail in selective_scan_fn.
                 _remove_broken(pypi_name, display_name, run)
+                if replacing:
+                    forget_imported_modules(import_name, extension)
+                    _hide_if_still_extension_free(import_name, extension)
+                    if not _is_importable(import_name):
+                        _note_removed(newly_installed, import_name)
                 _FAILED_INSTALLS.add(failure_key)
         if installed is None:
             return False  # nothing attempted (unsupported torch backend)
         if installed and newly_installed is not None:
             newly_installed.append(import_name)
         return bool(installed)
+
+
+# A runtime removal is reported in the list of newly installed kernels under this prefix: it changes
+# what transformers' cached availability gates and already-imported modeling modules saw, so the
+# caller refreshes the gates and runs its stale-module / restart check exactly as for an install.
+REMOVED_PREFIX = "removed "
+
+
+def _note_removed(newly_installed: list[str] | None, import_name: str) -> None:
+    if newly_installed is not None:
+        newly_installed.append(f"{REMOVED_PREFIX}{import_name}")
+
+
+def _drop_extension_free_copy(
+    import_name: str, display_name: str, pypi_name: str, extension: str, run: Callable[..., Any]
+) -> bool:
+    """Uninstall an installed copy that lacks *extension*, under the per-env install lock. True
+    when it was removed."""
+    from utils.kernel_install import OPTIONAL_KERNEL_LOCK_WAIT, kernel_install_lock
+    with kernel_install_lock(import_name, wait_seconds = OPTIONAL_KERNEL_LOCK_WAIT) as held:
+        if kernel_usable(import_name, extension) or not _is_importable(import_name):
+            return False
+        if not held:
+            # Cannot uninstall without the lock: hide it from this process instead.
+            logger.info(
+                "Hiding the extension-free %s from this load: its install lock is busy",
+                display_name,
+            )
+            block_import(import_name, extension)
+            return True
+        logger.info(
+            "Removing the extension-free %s: this load needs its CUDA kernels", display_name
+        )
+        _remove_broken(pypi_name, display_name, run)
+        forget_imported_modules(import_name, extension)
+        _hide_if_still_extension_free(import_name, extension)
+        return True
 
 
 def _install_kernel_locked(
@@ -930,8 +1244,17 @@ def _install_kernel_locked(
     status_cb: StatusCb,
     run: Callable[..., Any],
     allow_source_build: bool,
+    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
+    extension: str | None = None,
+    replacing: bool = False,
 ) -> bool | None:
     """The install itself, under the kernel's lock. None when nothing was attempted."""
+
+    def _verify() -> bool:
+        if replacing:
+            forget_imported_modules(import_name, extension)
+        return kernel_usable(import_name, extension)
+
     env = _torch_env()
     backend = _kernel_backend(env)
     if backend is None:
@@ -941,13 +1264,16 @@ def _install_kernel_locked(
         )
         return None
     wheel_only = sys.platform == "win32" or is_windows_wheel_env(env)
-    wheel_url = direct_wheel_url(
-        filename_prefix = import_name,
-        package_version = package_version,
-        release_tag = release_tag,
-        release_base_url = release_base_url,
-        env = env,
-    )
+    if wheel_url_builder is not None:
+        wheel_url = wheel_url_builder(env)
+    else:
+        wheel_url = direct_wheel_url(
+            filename_prefix = import_name,
+            package_version = package_version,
+            release_tag = release_tag,
+            release_base_url = release_base_url,
+            env = env,
+        )
     wheel_available = url_exists(wheel_url) if wheel_url else False
     # Only a 404 proves nothing is published: an unanswered HEAD (a proxy refusing HEAD but serving
     # the download) still tries the wheel, as setup always did.
@@ -967,7 +1293,7 @@ def _install_kernel_locked(
             outcome = install_prebuilt(
                 wheel_url,
                 install = install_wheel,
-                verify = lambda: _is_importable(import_name),
+                verify = _verify,
                 on_failed = lambda installer, result: logger.warning(
                     "%s could not install %s wheel:\n%s",
                     installer,
@@ -976,6 +1302,8 @@ def _install_kernel_locked(
                 ),
                 use_uv = bool(shutil.which("uv")),
                 run = run,
+                # Over the extension-free copy of the same version, which uv / pip would keep.
+                **({"reinstall": True} if replacing else {}),
             )
         if outcome == "installed":
             logger.info("Installed prebuilt %s wheel", display_name)
@@ -1040,7 +1368,7 @@ def _install_kernel_locked(
         return False
     if getattr(result, "returncode", 1) != 0:
         logger.warning("%s source install failed:\n%s", display_name, getattr(result, "stdout", ""))
-    return _is_importable(import_name)
+    return _verify()
 
 
 def _pinned_kwargs(kernel: PinnedKernel) -> dict[str, str]:
@@ -1064,6 +1392,7 @@ def ensure_ssm_runtime(
     is_ssm: bool | None = None,
     mamba_ssm_required: bool | None = None,
     mamba_ssm_fatal: bool | None = None,
+    mamba2_triton: bool = False,
 ) -> list[str]:
     """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Returns the kernels newly installed by this call. Nemotron-H, Falcon-H1 and Granite-4.0-H (*mamba_ssm_required*) are worth a source build; a load fails on a missing ``mamba_ssm`` (``RuntimeError`` instead of a cryptic mid-load failure) only when *mamba_ssm_fatal*: it imports code that cannot run without it. Everything else, and ``causal_conv1d``, leaves transformers' torch path."""
     # The caller's config-resolved answers win; the name match is the default.
@@ -1083,7 +1412,12 @@ def ensure_ssm_runtime(
     if not (wants_causal_conv1d or is_ssm):
         return installed
 
-    def _install(kernel: PinnedKernel, *, allow_source_build: bool = True) -> bool:
+    def _install(
+        kernel: PinnedKernel,
+        *,
+        allow_source_build: bool = True,
+        **kwargs: Any,
+    ) -> bool:
         return _install_kernel(
             **_pinned_kwargs(kernel),
             status_cb = status_cb,
@@ -1092,6 +1426,21 @@ def ensure_ssm_runtime(
             allow_source_build = allow_source_build,
             # Nemotron-H, Falcon-H1, Granite-4.0-H wait out a peer's install; the rest move on.
             required = mamba_ssm_required,
+            **kwargs,
+        )
+
+    if mamba2_triton and is_ssm:
+        # unsloth_zoo serves the causal conv on Triton and the extension-free mamba_ssm wheel the
+        # scan: 224 KB instead of two CUDA wheels, nothing to build, same wheel on every platform.
+        if _install(
+            MAMBA_SSM, allow_source_build = False, wheel_url_builder = mamba_ssm_pure_wheel_url
+        ):
+            return installed
+        # Not published yet, refused, or not importable (removed again by _install_kernel): this
+        # load takes the CUDA-wheel route below, exactly as without the Triton drop-ins.
+        _emit(
+            status_cb,
+            "The extension-free mamba-ssm wheel is not available; using the CUDA kernels instead.",
         )
 
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
@@ -1123,7 +1472,9 @@ def ensure_ssm_runtime(
         if reason is not None:
             _emit(status_cb, f"Skipping mamba-ssm, which {reason}; using the model's torch path.")
             return installed
-    if not _install(MAMBA_SSM, allow_source_build = mamba_ssm_required):
+    if not _install(
+        MAMBA_SSM, allow_source_build = mamba_ssm_required, extension = MAMBA_SSM_EXTENSION
+    ):
         if mamba_ssm_fatal:
             # The model cannot load without mamba-ssm (its remote code imports it), so no torch
             # path exists to fall back on. On a CPU / XPU torch no install could have helped, so
@@ -1203,7 +1554,10 @@ def provision_ssm_kernels(
         is_ssm = kernels.mamba_ssm,
         mamba_ssm_required = kernels.mamba_ssm_required,
         mamba_ssm_fatal = kernels.mamba_ssm_fatal,
+        mamba2_triton = mamba2_runs_on_triton(kernels),
     )
     if installed:
-        refresh_transformers_kernel_gates()
+        refresh_transformers_kernel_gates(
+            removed = any(name.startswith(REMOVED_PREFIX) for name in installed)
+        )
     return kernels, installed

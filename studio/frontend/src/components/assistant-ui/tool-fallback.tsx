@@ -32,6 +32,8 @@ import {
 } from "@/components/assistant-ui/sandbox-files";
 import { SandboxFiles } from "@/components/assistant-ui/sandbox-files-view";
 import { useChatProjectScope } from "@/features/chat/chat-project-scope";
+// eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
+import { useToolAwaitingApproval } from "@/features/chat/tool-approval";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
@@ -420,7 +422,7 @@ function ToolFallbackResult({
                 src={`data:${img.mimeType};base64,${img.data}`}
                 alt={`Tool result ${i + 1}`}
                 loading="lazy"
-                className="max-w-full rounded border border-border"
+                className="max-w-full rounded-lg border border-border"
               />
             ))}
           </div>
@@ -476,6 +478,7 @@ function ToolFallbackError({
 }
 
 const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   toolName,
   argsText,
   result,
@@ -500,10 +503,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       ? { text: widget.text, images: widget.images }
       : (widget?.text ?? result);
 
+  // Open while it waits on Allow / Deny, so what is being approved is readable.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+
   return (
     <ToolFallbackRoot
       className={cn(isCancelled && "bg-muted/30")}
       defaultOpen={isToolCallRunning(status)}
+      awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
         toolName={toolName}

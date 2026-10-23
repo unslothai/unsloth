@@ -2336,11 +2336,12 @@ jobs:
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
-    # 25 rather than `consolidated`'s 35. This job runs the ~7.6 min zoo suite
-    # on top of the preamble and nothing else, and the cap is what turns a hung
-    # test into a bounded failure; see PYTEST_TIMEOUT in the step below, which
-    # is the mechanism that actually names the culprit.
-    timeout-minutes: 25
+    # Same as `consolidated`. The zoo suite (`pytest -n 4` plus the serial files)
+    # now takes up to about 23 min on a busy runner, so a 25 min cap cancelled
+    # cells that had already passed, while the pip cache was being saved. The cap
+    # still turns a hung test into a bounded failure; PYTEST_TIMEOUT in the step
+    # below is the mechanism that actually names the culprit.
+    timeout-minutes: 35
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
     env:
@@ -2364,19 +2365,16 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        # Its own `name`, not `consolidated`'s. Two jobs sharing one is the
-        # defect tests/studio/test_pip_cache_naming.py exists to reject: the
-        # save is gated on `cache-hit != 'true'`, so whichever job finished
-        # first on main would write the entry and the other would restore it
-        # and never save its own. The key-files are the same because the
-        # install is the same, which that file also allows for explicitly.
-        #
-        # The first run on a pull request therefore misses and downloads. The
-        # entry is written by the next push to main and warm from then on, the
-        # same lifecycle every other key here has.
+        # `consolidated`'s entry, read-only: this job has no pip-cache-save. The
+        # install is the same core-cpu-setup call on the same matrix (asserted by
+        # tests/studio/test_zoo_suite_parallel_isolation.py), so a separate entry
+        # held the same ~1.4 GiB of wheels twice. A shared name is only a defect
+        # when both jobs save, since then the first to finish wins and the other's
+        # extras are never written; with one writer there is nothing to lose.
+        # tests/studio/test_pip_cache_naming.py allows exactly this borrower.
         uses: ./.github/actions/pip-cache-restore
         with:
-          name: consolidated-zoo
+          name: consolidated
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -2512,14 +2510,6 @@ jobs:
           echo "Core zoo job done. Coverage:"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (GPU-only cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
-
-      - name: Save the pip cache
-        if: always()
-        uses: ./.github/actions/pip-cache-save
-        with:
-          dir: ${{ steps.pip-cache.outputs.dir }}
-          key: ${{ steps.pip-cache.outputs.key }}
-          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   llama-cpp-smoke:
     # Standalone llama.cpp build + smoke. Earlier this lived inside every

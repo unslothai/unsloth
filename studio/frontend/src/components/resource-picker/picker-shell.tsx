@@ -311,7 +311,7 @@ export function PickerShell({
         }}
         aria-label={t("picker.searchAriaLabel", { noun })}
         className={cn(
-          "max-h-(--radix-popover-content-available-height) w-[min(420px,calc(100vw-2rem))] gap-0 overflow-hidden rounded-2xl p-4",
+          "max-h-(--radix-popover-content-available-height) w-[min(420px,calc(100vw-2rem))] gap-0 overflow-hidden rounded-xl p-4",
           contentClassName,
         )}
       >
@@ -375,7 +375,7 @@ export function PickerShell({
 
           <div
             ref={scrollRef}
-            className="min-h-0 max-h-[calc(320px*var(--ui-space-scale,1))] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
+            className="min-h-0 max-h-[calc(320px*var(--ui-space-scale,1))] flex-1 overflow-y-auto overscroll-contain rounded-md [scrollbar-width:thin]"
           >
             {canUseThis && (
               <button
@@ -384,7 +384,7 @@ export function PickerShell({
                 data-picker-values={JSON.stringify([activeQuery])}
                 onClick={onUseThis}
                 className={cn(
-                  "mb-1 flex w-full items-center gap-2 rounded-[8px] border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-ui-12p5 transition-colors hover:bg-primary/[0.08]",
+                  "mb-1 flex w-full items-center gap-2 rounded-md border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-ui-12p5 transition-colors hover:bg-primary/[0.08]",
                   PICKER_OPTION_FOCUS_VISIBLE_CLASS,
                 )}
               >

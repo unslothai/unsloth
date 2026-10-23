@@ -68,7 +68,6 @@ function SliderRow({
         disabled={disabled}
         onValueChange={([v]) => onChange(v)}
         aria-label={label}
-        className="panel-slider"
       />
     </div>
   );
@@ -137,7 +136,6 @@ export function RetrievalSettingsSection() {
           step={1}
           onValueChange={([value]) => setRagTopK(value)}
           aria-label="Number of passages to retrieve"
-          className="panel-slider"
         />
       </div>
 
