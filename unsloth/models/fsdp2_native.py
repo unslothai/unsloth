@@ -2507,8 +2507,35 @@ def _scaler_for_native(trainer):
     if handler is not None and hasattr(handler, "to_kwargs"):
         kwargs = handler.to_kwargs()
     kwargs.setdefault("device", getattr(scaler, "_device", "cuda"))
+    # Each rank normalises its loss by its own share of the tokens (the Trainer multiplies the global
+    # mean by the world size), so every per-token activation gradient in the float16 backward is
+    # world_size times the one GPU one, while the reduce divides it back out. At the same loss scale a
+    # backward one GPU fits in float16 overflows here and the step is skipped. Start the scale divided
+    # by the data parallel size: the scaled backward then matches one GPU, and the unscaled gradients
+    # are unchanged.
+    world = _data_parallel_size(getattr(trainer, "model", None))
+    if world > 1:
+        kwargs["init_scale"] = float(kwargs.get("init_scale", 2.0**16)) / world
     accelerator.scaler = _ShardedGradScaler(**kwargs)
     return True
+
+
+def _data_parallel_size(model):
+    """Ranks a native FSDP2 model averages gradients over (its mesh, else the default group)."""
+    mesh = getattr(model, "__dict__", {}).get("_unsloth_fsdp2_mesh") if model is not None else None
+    try:
+        if mesh is not None:
+            return int(mesh.size())
+    except Exception:
+        pass
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            return int(dist.get_world_size())
+    except Exception:
+        pass
+    return 1
 
 
 def _native_optimizer(optimizer):
