@@ -1028,6 +1028,11 @@ class FlowEngine:
                 elif task.exception() is not None:
                     env.values[nid] = SKIPPED
                     logger.error("flows: node %s crashed", nid, exc_info = task.exception())
+                    # Outside its handler's own error path: still a failed step, so the run cannot end completed.
+                    rs.node(nid).error = (
+                        rs.node(nid).error or f"Unexpected error: {task.exception()}"
+                    )
+                    rs.set_status(nid, "failed")
 
     def _resolved(self, rs: RunState, nid: str, env: Env) -> bool:
         overrides = rs.input_overrides.get(nid, {})
