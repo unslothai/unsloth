@@ -532,9 +532,7 @@ def run_shortcut_recorder(page) -> None:
     chord = row.locator('button[aria-label^="Change shortcut"]').first
     box = row.locator("input")
     stored_js = "() => localStorage.getItem('unsloth_keyboard_shortcuts')"
-    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
-    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
-    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    # Same platform read as run_keystroke_search: Meta records nothing off macOS.
     mac = page.evaluate(
         "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
     )

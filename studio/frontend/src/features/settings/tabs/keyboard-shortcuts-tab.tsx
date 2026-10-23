@@ -269,7 +269,6 @@ export function KeyboardShortcutsTab() {
       .join(", ");
   };
 
-  /** The chord as plain text; selecting it swaps in the recorder box. */
   const renderSlot = (
     def: ShortcutDef,
     slot: ShortcutSlot,
