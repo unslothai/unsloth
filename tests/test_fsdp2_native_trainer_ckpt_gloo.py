@@ -352,3 +352,33 @@ def test_bnb_adam_is_kept_for_local_shards(optim):
     assert native._swap_bnb_optimizer(args) is False
     assert args.optim == optim
     assert set(native._BNB_LOCAL_SHARD_OPTIMS) <= set(native._BNB_OPTIMS)
+
+
+def _non_blockwise_adamw8bit():
+    """bitsandbytes Adam with per-tensor 8-bit state (block_wise = False, the kwarg older bitsandbytes
+    takes): an Optimizer2State 'adam' subclass the class check alone accepts."""
+    import bitsandbytes as bnb
+
+    class NonBlockwiseAdamW8bit(bnb.optim.AdamW8bit):
+        def __init__(self, params, **kwargs):
+            super().__init__(params, **kwargs)
+            self.args.block_wise = False
+
+    return NonBlockwiseAdamW8bit
+
+
+@pytest.mark.parametrize("which", ["lamb", "non_blockwise", "adamw8bit", "paged_adamw8bit"])
+def test_bnb_optimizer_cls_preflight_uses_the_localization_predicate(which):
+    bnb = pytest.importorskip("bitsandbytes")
+    native = _load_native()
+    cls = {
+        "lamb": bnb.optim.LAMB8bit,
+        "non_blockwise": _non_blockwise_adamw8bit(),
+        "adamw8bit": bnb.optim.AdamW8bit,
+        "paged_adamw8bit": bnb.optim.PagedAdamW8bit,
+    }[which]
+    if which in ("lamb", "non_blockwise"):
+        with pytest.raises(ValueError, match = "cannot"):
+            native._refuse_bnb_optimizer_cls((cls, {"lr": 1e-3}))
+    else:
+        native._refuse_bnb_optimizer_cls((cls, {"lr": 1e-3}))

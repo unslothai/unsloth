@@ -2343,7 +2343,9 @@ def _install_trainer_hooks():
         if is_native_fsdp2(getattr(self, "model", None)):
             # Before the LR scheduler records one base LR per group.
             _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
-            _localize_bnb_optimizer(optimizer)
+            # Localized, or refused here (a bitsandbytes optimizer that cannot step local shards
+            # would otherwise fail inside the first step).
+            _refuse_bnb_optimizer_instance(optimizer)
         return optimizer
 
     original_create_scheduler = Trainer.create_scheduler
@@ -2362,7 +2364,7 @@ def _install_trainer_hooks():
         # groups. Split here, before the scheduler records one base LR (and lambda) per group.
         target = optimizer if optimizer is not None else getattr(self, "optimizer", None)
         if is_native_fsdp2(getattr(self, "model", None)):
-            _localize_bnb_optimizer(target)  # a subclass create_optimizer's bitsandbytes Adam
+            _refuse_bnb_optimizer_instance(target)  # a subclass create_optimizer's bitsandbytes one
         if (
             target is not None
             and getattr(self, "lr_scheduler", None) is None
@@ -2736,6 +2738,19 @@ def _refuse_bnb_optimizer_instance(optimizer):
         )
 
 
+def _bnb_probe_supports_local_shards(cls, kwargs):
+    """The localization predicate on the optimizer the Trainer would build: the class alone cannot tell
+    (the optimizer name and block_wise / optim_bits come from __init__ and its kwargs), so build it over
+    one CPU placeholder parameter (bitsandbytes allocates state lazily) and ask the instance."""
+    from .fsdp2_bnb_optim import supports_local_shards
+
+    try:
+        probe = cls([nn.Parameter(torch.zeros(1))], **dict(kwargs))
+    except Exception:
+        return False
+    return supports_local_shards(probe)
+
+
 def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
     """Trainer(optimizer_cls_and_kwargs = (cls, kwargs)) overrides args.optim, so the bitsandbytes
     switch in _swap_bnb_optimizer never sees it; bitsandbytes' optimizers step plain CUDA tensors, not
@@ -2743,9 +2758,9 @@ def _refuse_bnb_optimizer_cls(optimizer_cls_and_kwargs):
     if not isinstance(optimizer_cls_and_kwargs, (tuple, list)) or not optimizer_cls_and_kwargs:
         return
     cls = optimizer_cls_and_kwargs[0]
+    kwargs = optimizer_cls_and_kwargs[1] if len(optimizer_cls_and_kwargs) > 1 else None
     if _is_bnb_optimizer_class(cls) and _bnb_local_shards_available():
-        from .fsdp2_bnb_optim import supports_local_shards
-        if supports_local_shards(cls):
+        if _bnb_probe_supports_local_shards(cls, kwargs or {}):
             return  # Trainer.create_optimizer builds it; the native hook makes it step local shards
     if _is_bnb_optimizer_class(cls):
         raise ValueError(
