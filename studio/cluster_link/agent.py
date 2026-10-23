@@ -37,6 +37,7 @@ import socket
 from .splice import (
     STREAM_LIMIT,
     SpliceSession,
+    accept_loop,
     authorized_async,
     close_writer,
     drop_socket,
@@ -323,10 +324,7 @@ class Agent:
         self._native_lock = asyncio.Lock()
         self.mode = "loopback"
         self.native_available = False
-        if self._native_tls is None:
-            wanted = not native.disabled()
-        else:
-            wanted = bool(self._native_tls)
+        wanted = not native.disabled() if self._native_tls is None else bool(self._native_tls)
         if self.rpc_binary is not None:
             try:
                 # Held for the agent's life: two workers starting on one rpc port cannot both pass the check.
@@ -726,23 +724,9 @@ class Agent:
 
     def _accept_loop(self) -> None:
         listener = self._listener
-        while listener is not None and not self._stopping:
-            try:
-                conn, addr = listener.accept()
-            except socket.timeout:
-                listener = self._listener
-                continue
-            except OSError:
-                if self._stopping or self._listener is None:
-                    return
-                time.sleep(0.05)  # EMFILE and the like: do not spin
-                continue
-            threading.Thread(
-                target = self._serve_conn,
-                args = (conn, addr),
-                name = "unsloth-cluster-agent-conn",
-                daemon = True,
-            ).start()
+        if listener is not None:
+            alive = lambda: self._listener is listener and not self._stopping
+            accept_loop(listener, alive, self._serve_conn, "unsloth-cluster-agent-conn")
 
     def _serve_conn(self, conn: socket.socket, addr: Any) -> None:
         self._raw.add(conn)

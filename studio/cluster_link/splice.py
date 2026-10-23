@@ -74,6 +74,11 @@ class _Trace:
             pass
 
 
+def _new_trace(a_to_b: str, b_to_a: str) -> Optional[_Trace]:
+    path = os.environ.get(TRACE_ENV)
+    return _Trace(path, (a_to_b, b_to_a)) if path else None
+
+
 KEEPALIVE_IDLE_S = 30
 KEEPALIVE_INTERVAL_S = 10
 KEEPALIVE_PROBES = 6
@@ -116,6 +121,23 @@ def drop_socket(sock: Any) -> None:
             step()
         except (OSError, ValueError):
             pass
+
+
+def accept_loop(
+    listener: socket.socket, alive: Callable[[], bool], handle: Callable[..., None], name: str
+) -> None:
+    """Hand each accepted (conn, addr) to ``handle`` on its own thread while ``alive()``."""
+    while alive():
+        try:
+            conn, addr = listener.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            if not alive():
+                return
+            time.sleep(0.05)  # EMFILE and the like: do not spin
+            continue
+        threading.Thread(target = handle, args = (conn, addr), name = name, daemon = True).start()
 
 
 def authorized(authorize: Callable[[Any], bool], pid: Any) -> bool:
@@ -280,8 +302,7 @@ async def splice(
     tune_socket(a_writer)
     tune_socket(b_writer)
     done: asyncio.Future = asyncio.get_running_loop().create_future()
-    trace_path = os.environ.get(TRACE_ENV)
-    trace = _Trace(trace_path, (a_to_b, b_to_a)) if trace_path else None
+    trace = _new_trace(a_to_b, b_to_a)
     a, a_pending, a_eof = _take_over(a_reader, a_writer, counters, a_to_b, done, trace)
     b, b_pending, b_eof = _take_over(b_reader, b_writer, counters, b_to_a, done, trace)
     a.peer, b.peer = b, a
@@ -534,8 +555,7 @@ def socket_splice(
     session.sockets = [a, b]
     if session.aborted:
         _shutdown_all(session.sockets)
-    trace_path = os.environ.get(TRACE_ENV)
-    trace = _Trace(trace_path, (a_to_b, b_to_a)) if trace_path else None
+    trace = _new_trace(a_to_b, b_to_a)
     end = _End()
     other = threading.Thread(
         target = _pump,

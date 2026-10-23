@@ -20,6 +20,7 @@ import time
 from .splice import (
     STREAM_LIMIT,
     SpliceSession,
+    accept_loop,
     close_writer,
     drop_socket as _drop,
     local_client_is_ours,
@@ -421,22 +422,12 @@ class RelayManager:
             await close_writer(writer)
 
     def _accept_loop(self, relay: _Relay, listener: socket.socket) -> None:
-        while relay.listener is listener:
-            try:
-                conn, _ = listener.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                if relay.listener is not listener:
-                    return
-                time.sleep(0.05)
-                continue
-            threading.Thread(
-                target = self._on_local_threaded,
-                args = (relay, conn),
-                name = "unsloth-cluster-relay-conn",
-                daemon = True,
-            ).start()
+        accept_loop(
+            listener,
+            lambda: relay.listener is listener,
+            lambda conn, _addr: self._on_local_threaded(relay, conn),
+            "unsloth-cluster-relay-conn",
+        )
 
     def _wait_idle_threaded(self, relay: _Relay) -> bool:
         deadline = time.monotonic() + BUSY_GRACE_S
