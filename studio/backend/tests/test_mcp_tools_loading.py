@@ -1442,7 +1442,13 @@ def test_a_late_media_unload_runs_after_the_replacement_is_evicted_elsewhere(
     _late_unload_scenario(monkeypatch, post_s = ())
     state = {"resident": None, "unloads": []}
 
-    async def route_json(method, path, caller = None, json_body = None, **_kw):
+    async def route_json(
+        method,
+        path,
+        caller = None,
+        json_body = None,
+        **_kw,
+    ):
         if path == "/api/inference/video/load":
             model = json_body["model_path"]
             await asyncio.sleep(0.5 if model == LTX else 0.05)
