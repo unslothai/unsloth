@@ -245,3 +245,54 @@ def test_supplied_quant_state_and_cloned_live_bytes_are_kept(tmp_path):
             bnb.functional.dequantize_4bit(restored.data, restored.quant_state),
             bnb.functional.dequantize_4bit(want.data, want.quant_state),
         )
+
+
+def test_live_bytes_check_compares_in_bounded_chunks(monkeypatch):
+    """Copied (not same-storage) packed bytes are compared slice by slice: no full-size copy of
+    the live tensor is ever moved to the supplied tensor's device, and a difference exits early."""
+    from unsloth import save as unsloth_save
+
+    monkeypatch.setattr(unsloth_save, "_PARAMS4BIT_COMPARE_CHUNK_BYTES", 1024)
+    live = torch.randint(0, 255, (10_000, 1), dtype = torch.uint8)
+    param = SimpleNamespace(data = live, shape = live.shape, dtype = live.dtype, device = live.device)
+    sizes = []
+    real_equal = torch.equal
+
+    def spy_equal(a, b):
+        sizes.append(max(a.numel(), b.numel()))
+        return real_equal(a, b)
+
+    monkeypatch.setattr(unsloth_save.torch, "equal", spy_equal)
+    assert unsloth_save._is_live_params4bit_data(param, live)  # same storage: no comparison
+    assert sizes == []
+    assert unsloth_save._is_live_params4bit_data(param, live.clone())
+    assert sizes and max(sizes) <= 1024 and len(sizes) == 10
+    sizes.clear()
+    other = live.clone()
+    other[5] ^= 1
+    assert not unsloth_save._is_live_params4bit_data(param, other)
+    assert len(sizes) == 1  # first chunk differs: stops
+    sizes.clear()
+    noncontig = torch.randint(0, 255, (100, 100), dtype = torch.uint8).t()
+    assert not noncontig.is_contiguous()
+    param_nc = SimpleNamespace(
+        data = noncontig, shape = noncontig.shape, dtype = noncontig.dtype, device = noncontig.device
+    )
+    assert unsloth_save._is_live_params4bit_data(param_nc, noncontig.contiguous())
+    assert sizes and max(sizes) <= 1024
+
+
+def test_live_bytes_check_errors_are_not_reported_as_foreign(monkeypatch):
+    """An error while comparing (an OOM moving a slice) propagates instead of becoming the
+    misleading foreign-weights ValueError."""
+    from unsloth import save as unsloth_save
+
+    live = torch.zeros(64, 1, dtype = torch.uint8)
+    param = SimpleNamespace(data = live, shape = live.shape, dtype = live.dtype, device = live.device)
+
+    def boom(a, b):
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(unsloth_save.torch, "equal", boom)
+    with pytest.raises(torch.OutOfMemoryError):
+        unsloth_save._is_live_params4bit_data(param, live.clone())

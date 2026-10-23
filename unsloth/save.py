@@ -357,18 +357,45 @@ def _add_bare_params4bit_quant_state(model, state_dict):
     return out
 
 
+_PARAMS4BIT_COMPARE_CHUNK_BYTES = 64 * 1024 * 1024
+
+
 def _is_live_params4bit_data(param, value):
-    """True when `value` is `param`'s packed data: the same storage, or equal bytes."""
+    """True when `value` is `param`'s packed data: the same storage, or equal bytes. The byte
+    comparison moves bounded slices of the live data to `value`'s device (a CPU-offloaded
+    `state_dict` never pulls a full fused expert tensor back onto the GPU) and stops at the first
+    differing slice. Errors during the comparison (OOM, device faults) propagate."""
     if not isinstance(value, torch.Tensor):
         return False
     if value.shape != param.shape or value.dtype != param.dtype:
         return False
-    if value.device == param.device and value.data_ptr() == param.data_ptr():
+    live = param.data.detach()
+    value = value.detach()
+    if value.device == live.device and value.data_ptr() == live.data_ptr():
         return True
-    try:
-        return bool(torch.equal(value.detach().to(param.device), param.data))
-    except Exception:
+    if value.device.type == "meta" or live.device.type == "meta":
         return False
+    if value.numel() == 0:
+        return True
+    chunk_bytes = _PARAMS4BIT_COMPARE_CHUNK_BYTES
+    if live.is_contiguous() and value.is_contiguous():
+        live_flat, value_flat = live.reshape(-1), value.reshape(-1)
+        step = max(1, chunk_bytes // max(1, live.element_size()))
+        for start in range(0, live_flat.numel(), step):
+            live_chunk = live_flat[start : start + step].to(value.device)
+            if not torch.equal(live_chunk, value_flat[start : start + step]):
+                return False
+        return True
+    # Non-contiguous: slice along dim 0 (each slice copies at most its own rows).
+    if live.dim() == 0:
+        return bool(torch.equal(live.to(value.device), value))
+    row_bytes = max(1, live[0].numel() * live.element_size())
+    step = max(1, chunk_bytes // row_bytes)
+    for start in range(0, live.shape[0], step):
+        live_chunk = live[start : start + step].to(value.device)
+        if not torch.equal(live_chunk, value[start : start + step]):
+            return False
+    return True
 
 
 def _supplied_params4bit_quant_state(param, value):
