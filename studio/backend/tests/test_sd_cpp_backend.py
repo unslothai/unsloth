@@ -1985,7 +1985,7 @@ def test_run_load_redacts_paths_in_progress_error(monkeypatch):
                 npl._NATIVE_PATH_REDACTIONS.remove(secret_root)
 
 
-def _fake_materialize(resolved, dest):
+def _fake_materialize(resolved, dest, **_kw):
     """Stand-in for diffusion_lora.materialize_native_dir: write a stub file per adapter
     into ``dest`` and return the resolved list pointing at the written paths (mirroring the
     real helper's contract without touching the Hub / real weights)."""
@@ -2048,6 +2048,51 @@ def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tm
     assert payload["lora"][0]["path"].endswith("myalias.safetensors")
     assert "<lora:" not in payload["prompt"]
     assert not list(_P(tmp_path).glob("gen_*"))
+
+
+def test_generate_server_stages_loras_inside_lora_dir(monkeypatch, tmp_path):
+    # sd-server (master-982+) canonicalizes each LoRA entry and skips any whose target leaves its
+    # --lora-model-dir, so the staged adapter must be a real file inside it, not a symlink to the hub cache.
+    import os as _os
+    from pathlib import Path as _P
+
+    from core.inference import diffusion_lora as dl
+
+    src = tmp_path / "hub" / "a.safetensors"
+    src.parent.mkdir()
+    src.write_bytes(b"adapter")
+    lora_dir = tmp_path / "server_loras"
+    lora_dir.mkdir()
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers)
+    servers[0].lora_dir = str(lora_dir)
+    monkeypatch.setattr(dl, "supports_lora", lambda **k: True)
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **k: [dl.ResolvedLora("id1", "myalias", str(src), "safetensors", 0.7)],
+    )
+    seen = []
+    real_img_gen = servers[0].img_gen
+
+    def _img_gen(payload, **kw):
+        staged = lora_dir / payload["lora"][0]["path"]
+        seen.append(
+            (
+                staged.is_symlink(),
+                staged.is_file(),
+                _os.path.realpath(staged).startswith(_os.path.realpath(lora_dir) + _os.sep),
+                staged.read_bytes(),
+            )
+        )
+        return real_img_gen(payload, **kw)
+
+    servers[0].img_gen = _img_gen
+    b.generate(prompt = "x", steps = 4, seed = 1, batch_size = 1, loras = [("id1", 0.7)])
+    assert seen == [(False, True, True, b"adapter")]
+    assert src.read_bytes() == b"adapter"
+    assert not list(_P(lora_dir).glob("gen_*"))
 
 
 def test_generate_rejects_loras_on_unsupported_family(monkeypatch):

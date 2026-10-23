@@ -4742,7 +4742,9 @@ class SdCppDiffusionBackend:
             server_lora_dir = state.server.lora_dir
             if server_lora_dir:
                 lora_stage = Path(server_lora_dir) / f"gen_{os.urandom(6).hex()}"
-                materialized = diffusion_lora.materialize_native_dir(lora_resolved, lora_stage)
+                materialized = diffusion_lora.materialize_native_dir(
+                    lora_resolved, lora_stage, hardlink = True
+                )
                 lora_payload = [
                     {
                         "path": f"{lora_stage.name}/{Path(m.path).name}",

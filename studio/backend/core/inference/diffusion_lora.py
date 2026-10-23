@@ -590,12 +590,18 @@ def resolve_specs(
     return out
 
 
-def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[ResolvedLora]:
+def materialize_native_dir(
+    resolved: list[ResolvedLora], dest: Path, *, hardlink: bool = False
+) -> list[ResolvedLora]:
     """Populate ``dest`` with symlinks (copy fallback) to the resolved LoRA files.
 
     sd-cli resolves ``<lora:ALIAS:w>`` against filenames in ``--lora-model-dir``, so each adapter
     needs a uniquely-named file in this dedicated managed directory. Returns the resolved list with
     aliases updated to the (collision-broken) stems written, so the caller injects matching tags.
+
+    ``hardlink=True`` stages hardlinks (copy fallback, never a symlink): sd-server canonicalizes each
+    LoRA entry and skips any whose target lies outside its LoRA directory, so a symlink to the hub
+    cache is never discovered and the request fails with HTTP 400.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()
@@ -614,7 +620,10 @@ def materialize_native_dir(resolved: list[ResolvedLora], dest: Path) -> list[Res
         try:
             if link.exists() or link.is_symlink():
                 link.unlink()
-            os.symlink(os.path.realpath(r.path), link)
+            if hardlink:
+                os.link(os.path.realpath(r.path), link)
+            else:
+                os.symlink(os.path.realpath(r.path), link)
         except OSError:
             import shutil
             shutil.copy2(r.path, link)

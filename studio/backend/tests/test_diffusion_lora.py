@@ -148,6 +148,49 @@ def test_materialize_native_dir_symlinks_and_breaks_collisions(tmp_path):
         assert Path(r.path).parent == dest
 
 
+def test_materialize_native_dir_hardlink_stays_inside_dest(tmp_path):
+    # sd-server rejects LoRA entries whose canonical target is outside its LoRA dir.
+    src = tmp_path / "hub" / "a.safetensors"
+    src.parent.mkdir()
+    src.write_bytes(b"x")
+    dest = tmp_path / "managed" / "gen_1"
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)], dest, hardlink = True
+    )
+    p = Path(out[0].path)
+    assert not p.is_symlink() and p.is_file()
+    assert os.path.realpath(p) == os.path.realpath(dest / "a.safetensors")
+    assert os.path.samefile(p, src)  # same filesystem: a hardlink, no copy
+
+
+def test_materialize_native_dir_hardlink_falls_back_to_copy(tmp_path, monkeypatch):
+    src = tmp_path / "a.safetensors"
+    src.write_bytes(b"x")
+
+    def _no_link(*_a, **_k):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(dl.os, "link", _no_link)
+    dest = tmp_path / "managed"
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)], dest, hardlink = True
+    )
+    p = Path(out[0].path)
+    assert not p.is_symlink() and p.read_bytes() == b"x"
+    assert not os.path.samefile(p, src)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinks need a privilege on Windows")
+def test_materialize_native_dir_default_still_symlinks(tmp_path):
+    # sd-cli resolves --lora-model-dir by joining paths, so symlinks remain fine there.
+    src = tmp_path / "a.safetensors"
+    src.write_bytes(b"x")
+    out = dl.materialize_native_dir(
+        [dl.ResolvedLora("a", "a", str(src), "safetensors", 1.0)], tmp_path / "managed"
+    )
+    assert Path(out[0].path).is_symlink()
+
+
 def test_list_loras_scans_local(tmp_path, monkeypatch):
     d = tmp_path / "loras"
     d.mkdir()
