@@ -331,6 +331,14 @@ def test_prepare_checks_masks_the_format_still_outputs():
         prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
 
 
+@pytest.mark.parametrize("mask", [[None, None], [1, 0]])
+def test_prepare_rejects_non_list_masks_with_the_mask_error(mask):
+    # An all-null or scalar mask column has no list kernel in Arrow: still the mask error.
+    ds = Dataset.from_dict({"input_ids": [[1, 2], [3]], "assistant_masks": mask})
+    with pytest.raises(ValueError, match = "'assistant_masks' must have the same length"):
+        prepare_pretokenized_dataset(ds, max_seq_length = 2048, vocab_size = 100)
+
+
 def test_only_user_labels_turn_off_response_masking():
     assert has_custom_labels(_pretokenized(with_labels = True))
     assert not has_custom_labels(_pretokenized(with_labels = False))

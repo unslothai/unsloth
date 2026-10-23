@@ -104,6 +104,7 @@ def has_custom_labels(dataset) -> bool:
 
 
 def _check_arrow_table(table, max_seq_length, vocab_size, masks = (), labels = True) -> bool:
+    import pyarrow as pa
     import pyarrow.compute as pc
 
     ids = table.column("input_ids")
@@ -114,6 +115,10 @@ def _check_arrow_table(table, max_seq_length, vocab_size, masks = (), labels = T
                 "Pre-tokenized dataset: 'labels' must have the same length as 'input_ids' in every row."
             )
     for name in masks:
+        # An all-null or scalar column has no list kernel: reject it with the same error.
+        kind = table.column(name).type
+        if not (pa.types.is_list(kind) or pa.types.is_large_list(kind) or pa.types.is_fixed_size_list(kind)):
+            raise _mask_error(name)
         same = pc.equal(lengths, pc.list_value_length(table.column(name)))
         # A row without the mask compares as null: that row fails too.
         if pc.all(same, skip_nulls = False).as_py() is not True:
