@@ -30418,7 +30418,10 @@ def _fit_external_context(
     payload,
     *,
     tools: Optional[list[dict]] = None,
+    branch: Optional[list[dict]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    """``branch`` is the client's request when ``messages`` is a tool loop's conversation, so recall
+    queries the user's turn rather than a controller re-prompt the loop appended."""
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
         estimate_messages_tokens_conservative,
@@ -30503,7 +30506,7 @@ def _fit_external_context(
         recall = _archive_and_recall(
             fitted,
             messages,
-            branch_messages = messages,
+            branch_messages = branch or messages,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
             recall_done = not truncation.get("fits", True),
@@ -31362,6 +31365,7 @@ async def _proxy_to_external_provider(
     _external_context_fitter = None
     _compaction_fallback = None
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
+        _request_branch = chat_messages
 
         async def _external_context_fitter(messages):
             nonlocal _external_truncation
@@ -31370,6 +31374,7 @@ async def _proxy_to_external_provider(
                 messages,
                 payload,
                 tools = _external_fit_tools,
+                branch = _request_branch,
             )
             fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
             if truncation and truncation.get("dropped_messages"):

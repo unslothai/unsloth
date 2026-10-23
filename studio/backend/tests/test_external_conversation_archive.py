@@ -195,3 +195,32 @@ def test_an_external_tool_chat_without_an_archive_gets_no_compaction_nudge(monke
 
     system = " ".join(str(m.get("content")) for m in sent["messages"] if m.get("role") == "system")
     assert "search_conversation" not in system
+
+
+def test_a_tool_loop_refit_recalls_for_the_users_turn_not_a_loop_reprompt(
+    archive_ready, monkeypatch
+):
+    branch = _chat()
+    _persist(THREAD, branch)
+    loop = [
+        *branch,
+        {"role": "assistant", "content": "I will look it up."},
+        {"role": "user", "content": "You described a plan without acting. Call a tool now."},
+    ]
+    seen = []
+
+    def spy(
+        conversation,
+        thread_id,
+        *,
+        branch_messages = None,
+        **kwargs,
+    ):
+        seen.append(tools_mod._last_user_text(branch_messages or conversation))
+        return None
+
+    monkeypatch.setattr(tools_mod, "build_conversation_recall", spy)
+
+    ri._fit_external_context(loop, _payload(THREAD), branch = branch)
+
+    assert seen == ["Was there a phone number on the report?"]
