@@ -421,3 +421,54 @@ async def test_a_run_value_change_is_not_served_from_the_cache():
     assert calls == ["Alice", "Bob"]
     assert _status(first, "t") == "done" and _status(second, "t") == "done"
     assert _status(again, "t") == "cached"
+
+
+def test_zero_temperature_and_zero_items_are_kept():
+    from core.flows.nodes import text, world as world_nodes
+
+    from .flows_player_fakes import FakeCtx
+
+    ctx = FakeCtx(
+        "llm.generate", params = {"temperature": 0}, inputs = {"prompt": "hi"}, llm = lambda **kw: "ok"
+    )
+    asyncio.run(text.generate(ctx))
+    assert ctx.llm_calls[0]["temperature"] == 0.0
+
+    ctx = FakeCtx(
+        "world.generator", params = {"premise": "a quiet pond", "items": 0}, llm = lambda **kw: {}
+    )
+    try:
+        asyncio.run(world_nodes.world_generator(ctx))
+    except Exception:
+        pass
+    assert "0 items" in ctx.llm_calls[0]["prompt"]
+    assert ctx.llm_calls[0]["schema"]["properties"]["items"]["maxItems"] == 0
+
+
+def test_a_truncated_recipe_is_reported():
+    from core.flows.nodes import data
+
+    class Ctx:
+        logs = []
+
+        def log(
+            self,
+            message,
+            level = "info",
+        ):
+            self.logs.append((level, message))
+
+        async def call(
+            self,
+            method,
+            path,
+            params = None,
+            **kw,
+        ):
+            offset = params["offset"]
+            return {"dataset": [{"i": offset + i} for i in range(500)], "total": 2000}
+
+    ctx = Ctx()
+    rows = asyncio.run(data.recipe_rows(ctx, "job1", limit = 1000))
+    assert len(rows) == 1000
+    assert ctx.logs and ctx.logs[0][0] == "warning" and "2000" in ctx.logs[0][1]

@@ -232,10 +232,11 @@ test("a scene whose dialogue is still being written waits for it", () => {
       },
       {
         id: "b",
+        lines: [],
         generate_lines: true,
         choices: [{ id: "end", text: "", goto: "c" }],
       },
-      { id: "c", lines: [{ text: "Bye." }] },
+      { id: "c", lines: [{ text: "Bye." }], choices: [] },
     ],
   };
   let s = R.initialState(m);

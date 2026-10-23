@@ -56,7 +56,9 @@ async def generate(ctx: NodeContext) -> dict:
             system = system,
             prompt = prompt,
             schema = schema,
-            temperature = float(ctx.params.get("temperature") or 0.8),
+            temperature = float(
+                0.8 if ctx.params.get("temperature") is None else ctx.params["temperature"]
+            ),
             max_tokens = int(ctx.params.get("max_tokens") or 1024),
             seed = ctx.seed,
             images = images,
@@ -66,7 +68,9 @@ async def generate(ctx: NodeContext) -> dict:
         model = ctx.params.get("model"),
         system = system,
         prompt = prompt,
-        temperature = float(ctx.params.get("temperature") or 0.8),
+        temperature = float(
+            0.8 if ctx.params.get("temperature") is None else ctx.params["temperature"]
+        ),
         max_tokens = int(ctx.params.get("max_tokens") or 1024),
         images = images,
         thinking = bool(ctx.params.get("thinking")),

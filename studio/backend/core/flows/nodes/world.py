@@ -47,7 +47,8 @@ async def world_generator(ctx: NodeContext) -> dict:
     premise = (premise or str(p.get("premise") or "")).strip()
     if not premise:
         raise FlowNodeError("Give the World Generator a premise.")
-    npcs, items = int(p.get("npcs") or 4), int(p.get("items") or 4)
+    npcs = int(4 if p.get("npcs") is None else p["npcs"])
+    items = int(4 if p.get("items") is None else p["items"])
     ctx.progress(0.05, phase = "designing")
     raw = await ctx.llm_json(
         model = p.get("model"),

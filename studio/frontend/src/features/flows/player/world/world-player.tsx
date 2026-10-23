@@ -302,6 +302,9 @@ export function WorldPlayer({
     });
   }, [turns.length, thinking]);
 
+  // Bumped on every load, so a reply to a conversation from before the load is dropped.
+  const loads = useRef(0);
+
   const send = async () => {
     const text = draft.trim();
     if (!text || !talking || thinking) return;
@@ -317,6 +320,7 @@ export function WorldPlayer({
       return;
     }
     setThinking(true);
+    const generation = loads.current;
     try {
       const res = await api.invoke(flowId, replyEntry, {
         state: {
@@ -329,12 +333,14 @@ export function WorldPlayer({
           completed_quests: before.completedQuests,
         },
       });
+      if (generation !== loads.current) return;
       const reply = res.outputs.reply as NpcReply | undefined;
       if (!reply?.text) throw new Error("No reply");
       const { state, notes } = applyReply(spec, wsRef.current, npcId, reply);
       setWs(state);
       for (const n of notes) toast(n);
     } catch (e) {
+      if (generation !== loads.current) return;
       setWs((s) =>
         addTurn(s, npcId, {
           role: "npc",
@@ -379,6 +385,7 @@ export function WorldPlayer({
       toast("That save is empty or from another world");
       return;
     }
+    loads.current += 1;
     setWs(state);
     setTalking(null);
     setPanel(null);

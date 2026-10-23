@@ -166,6 +166,7 @@ async def recipe_rows(
 ) -> list[dict]:
     """Every row a finished Data Recipe job produced."""
     rows: list[dict] = []
+    total = None
     while len(rows) < limit:
         page = await ctx.call(
             "GET",
@@ -181,4 +182,6 @@ async def recipe_rows(
         total = page.get("total") if isinstance(page, dict) else None
         if not batch or (isinstance(total, int) and len(rows) >= total):
             break
+    if isinstance(total, int) and total > len(rows):
+        ctx.log(f"The Data Recipe has {total} rows; Flows use the first {len(rows)}", "warning")
     return rows
