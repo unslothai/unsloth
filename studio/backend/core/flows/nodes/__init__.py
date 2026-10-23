@@ -12,6 +12,7 @@ from core.flows.nodes import (  # noqa: F401
     inputs,
     knowledge,
     logic,
+    media_utils,
     memory,
     output,
     story,

@@ -1407,107 +1407,144 @@ def sticker_pack() -> B:
     return b
 
 
-def daily_digest() -> B:
+BACKING = {"repo": "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF", "variant": None}
+
+
+def meme_maker() -> B:
     b = B(
-        "daily-digest",
-        "Daily Digest",
+        "meme-maker",
+        "Meme Maker",
         "pipeline",
-        "Every morning, fetches the Hacker News front page, has a local model write a short digest and reads it "
-        "aloud into your Library.",
-        tags = ["automation", "schedule", "http", "audio"],
-        seed = 46,
-    ).need("chat", "tts")
-    b.n("every_day", "trigger.schedule", 0, 1, cron = "0 8 * * *")
+        "Give it a topic: the LLM writes the joke, the image model draws the scene, and the captions go on "
+        "top and bottom.",
+        tags = ["image", "text overlay", "fun"],
+        seed = 51,
+    ).need("chat", "image")
+    b.n("topic", "input.text", 0, 1, value = "when the code works on the first try")
     b.n(
-        "fetch",
-        "http.request",
-        1,
-        1,
-        label = "Front page",
-        url = "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=15"
-        "&attributesToRetrieve=title,url,points",
-    )
-    b.n("stories", "json.get", 2, 1, path = "hits")
-    b.e("fetch.data", "stories.json")
-    b.n(
-        "digest",
+        "joke",
         "llm.generate",
-        3,
         1,
+        1,
+        label = "Joke writer",
         model = CHAT,
-        temperature = 0.4,
-        max_tokens = 600,
-        system = "You write a calm two-minute morning briefing. Group the stories by theme, one or two sentences "
-        "each, plain prose that reads well aloud, no lists or links.",
-        prompt = "Today's front page stories, with their points, are in the context.",
+        temperature = 0.9,
+        max_tokens = 300,
+        prompt = "Write a funny two-line meme about: {{prompt}}",
+        json_schema = {
+            "type": "object",
+            "properties": {
+                "scene": {"type": "string"},
+                "top": {"type": "string"},
+                "bottom": {"type": "string"},
+            },
+            "required": ["scene", "top", "bottom"],
+        },
     )
-    b.e("stories.value", "digest.context")
-    b.n("text", "output.result", 4, 0.5, name = "digest")
-    b.e("digest.text", "text.value")
-    b.n("speak", "audio.speak", 4, 1.5, model = TTS, voice = "af_heart")
-    b.e("digest.text", "speak.text")
-    b.n("save", "output.library", 5, 1.5, folder = "Digests")
-    b.e("speak.audio", "save.value")
-    b.note(
-        "tip",
-        "Studio asks you to approve the schedule and hn.algolia.com before this runs. The schedule is off until "
-        "you switch it on, and fires only while Studio is open. Press Run to try it once now.",
-        0,
-        2,
-        2,
-        0.8,
+    b.e("topic.text", "joke.prompt")
+    for i, part in enumerate(("scene", "top", "bottom")):
+        b.n(part, "json.get", 2, 0.4 + i * 0.8, path = part)
+        b.e("joke.json", f"{part}.json")
+    b.n("draw", "image.generate", 3, 0.4, model = IMAGE, size = "1024x1024", style = "photo, no text")
+    b.e("scene.value", "draw.prompt")
+    b.n("top_text", "image.text", 4, 0.8, label = "Top caption", size = 72, position = "top", outline = 4)
+    b.n(
+        "bottom_text",
+        "image.text",
+        5,
+        1.2,
+        label = "Bottom caption",
+        size = 72,
+        position = "bottom",
+        outline = 4,
     )
+    b.e("draw.image", "top_text.image")
+    b.e("top.value", "top_text.text")
+    b.e("top_text.image", "bottom_text.image")
+    b.e("bottom.value", "bottom_text.text")
+    b.n("show", "output.preview", 6, 1.2)
+    b.e("bottom_text.image", "show.value")
     return b
 
 
-def webhook_reply() -> B:
+def postcard() -> B:
     b = B(
-        "webhook-reply",
-        "Webhook Auto-Reply",
+        "postcard",
+        "Postcard",
         "pipeline",
-        "Another app POSTs a message to this flow's secret URL; a local model drafts a reply you find in the run "
-        "history.",
-        tags = ["automation", "webhook"],
-        seed = 47,
-    ).need("chat")
+        "Paint a scene and a paper background, warm up the photo, place it on the card and write the greeting.",
+        tags = ["image", "composite", "adjust", "text overlay"],
+        seed = 52,
+    ).need("image")
+    b.n("place", "input.text", 0, 1, value = "a sunny seaside town with colourful houses")
+    b.n("scene", "image.generate", 1, 0.5, label = "Photo", model = IMAGE, size = "1024x768")
+    b.e("place.text", "scene.prompt")
     b.n(
-        "hook",
-        "trigger.webhook",
-        0,
+        "paper",
+        "image.generate",
         1,
-        test_payload = {
-            "name": "Ana",
-            "message": "Do you ship to Canada, and how long does it take?",
-        },
+        1.6,
+        label = "Card",
+        model = IMAGE,
+        size = "1344x768",
+        prompt = "blank vintage postcard paper, cream, subtle texture, empty, no text",
     )
-    b.n("message", "json.get", 1, 0.5, path = "message")
-    b.e("hook.payload", "message.json")
-    b.n("name", "json.get", 1, 1.5, path = "name")
-    b.e("hook.payload", "name.json")
+    b.n("warm", "image.adjust", 2, 0.5, saturation = 1.25, contrast = 1.1, brightness = 1.05)
+    b.e("scene.image", "warm.image")
+    b.n("card", "image.composite", 3, 1, x = 0.42, y = 0.5, scale = 0.7)
+    b.e("paper.image", "card.image")
+    b.e("warm.image", "card.overlay")
     b.n(
-        "reply",
-        "llm.generate",
-        2,
+        "greeting",
+        "image.text",
+        4,
         1,
-        model = CHAT,
-        temperature = 0.4,
-        max_tokens = 400,
-        system = "You answer customer messages for a small online shop in two or three friendly sentences. The "
-        "context is the customer's name. If you do not know a fact, say a teammate will confirm it.",
-        prompt = "{{prompt}}",
+        text = "Greetings from the seaside!",
+        size = 56,
+        color = "#7c2d12",
+        position = "bottom-right",
+        outline = 0,
     )
-    b.e("message.value", "reply.prompt")
-    b.e("name.value", "reply.context")
-    b.n("draft", "output.result", 3, 1, name = "reply")
-    b.e("reply.text", "draft.value")
+    b.e("card.image", "greeting.image")
+    b.n("show", "output.preview", 5, 1)
+    b.e("greeting.image", "show.value")
+    return b
+
+
+def social_clip() -> B:
+    b = B(
+        "social-clip",
+        "Social Clip",
+        "pipeline",
+        "Cut the best ten seconds of your video, speed it up a little and lay a fresh music track under it.",
+        tags = ["video", "edit", "music"],
+        seed = 53,
+    )
+    b.doc["requirements"]["models"].append(
+        {
+            "ref": "band",
+            "kind": "audio",
+            "note": "Small Stable Audio music model; any music model works.",
+            "optional": False,
+            **BACKING,
+        }
+    )
+    b.n("clip", "input.video", 0, 0.5, label = "Your video")
+    b.n("vibe", "input.text", 0, 1.6, value = "upbeat lo-fi hip hop beat, warm, 90 bpm")
+    b.n("track", "audio.music", 1, 1.6, model = BACKING, mode = "song", duration_s = 12)
+    b.e("vibe.text", "track.prompt")
+    b.n("cut", "video.edit", 2, 1, start_s = 0, end_s = 10, speed = 1.25)
+    b.e("clip.video", "cut.video")
+    b.e("track.audio", "cut.audio")
+    b.n("show", "output.preview", 3, 1)
+    b.e("cut.video", "show.value")
     b.note(
         "tip",
-        "Approve the webhook and switch it on to get its secret URL. A POST answers with the run id at once; "
-        "Run by hand uses the test payload.",
+        "Upload a video in the first block, set where the cut starts and ends, then Run.",
         0,
-        2,
-        1.8,
-        0.7,
+        2.6,
+        1.6,
+        0.6,
     )
     return b
 
@@ -2906,6 +2943,111 @@ def email_triage() -> B:
     return b
 
 
+def daily_digest() -> B:
+    b = B(
+        "daily-digest",
+        "Daily Digest",
+        "pipeline",
+        "Every morning, fetches the Hacker News front page, has a local model write a short digest and reads it "
+        "aloud into your Library.",
+        tags = ["automation", "schedule", "http", "audio"],
+        seed = 46,
+    ).need("chat", "tts")
+    b.n("every_day", "trigger.schedule", 0, 1, cron = "0 8 * * *")
+    b.n(
+        "fetch",
+        "http.request",
+        1,
+        1,
+        label = "Front page",
+        url = "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=15"
+        "&attributesToRetrieve=title,url,points",
+    )
+    b.n("stories", "json.get", 2, 1, path = "hits")
+    b.e("fetch.data", "stories.json")
+    b.n(
+        "digest",
+        "llm.generate",
+        3,
+        1,
+        model = CHAT,
+        temperature = 0.4,
+        max_tokens = 600,
+        system = "You write a calm two-minute morning briefing. Group the stories by theme, one or two sentences "
+        "each, plain prose that reads well aloud, no lists or links.",
+        prompt = "Today's front page stories, with their points, are in the context.",
+    )
+    b.e("stories.value", "digest.context")
+    b.n("text", "output.result", 4, 0.5, name = "digest")
+    b.e("digest.text", "text.value")
+    b.n("speak", "audio.speak", 4, 1.5, model = TTS, voice = "af_heart")
+    b.e("digest.text", "speak.text")
+    b.n("save", "output.library", 5, 1.5, folder = "Digests")
+    b.e("speak.audio", "save.value")
+    b.note(
+        "tip",
+        "Studio asks you to approve the schedule and hn.algolia.com before this runs. The schedule is off until "
+        "you switch it on, and fires only while Studio is open. Press Run to try it once now.",
+        0,
+        2,
+        2,
+        0.8,
+    )
+    return b
+
+
+def webhook_reply() -> B:
+    b = B(
+        "webhook-reply",
+        "Webhook Auto-Reply",
+        "pipeline",
+        "Another app POSTs a message to this flow's secret URL; a local model drafts a reply you find in the run "
+        "history.",
+        tags = ["automation", "webhook"],
+        seed = 47,
+    ).need("chat")
+    b.n(
+        "hook",
+        "trigger.webhook",
+        0,
+        1,
+        test_payload = {
+            "name": "Ana",
+            "message": "Do you ship to Canada, and how long does it take?",
+        },
+    )
+    b.n("message", "json.get", 1, 0.5, path = "message")
+    b.e("hook.payload", "message.json")
+    b.n("name", "json.get", 1, 1.5, path = "name")
+    b.e("hook.payload", "name.json")
+    b.n(
+        "reply",
+        "llm.generate",
+        2,
+        1,
+        model = CHAT,
+        temperature = 0.4,
+        max_tokens = 400,
+        system = "You answer customer messages for a small online shop in two or three friendly sentences. The "
+        "context is the customer's name. If you do not know a fact, say a teammate will confirm it.",
+        prompt = "{{prompt}}",
+    )
+    b.e("message.value", "reply.prompt")
+    b.e("name.value", "reply.context")
+    b.n("draft", "output.result", 3, 1, name = "reply")
+    b.e("reply.text", "draft.value")
+    b.note(
+        "tip",
+        "Approve the webhook and switch it on to get its secret URL. A POST answers with the run id at once; "
+        "Run by hand uses the test payload.",
+        0,
+        2,
+        1.8,
+        0.7,
+    )
+    return b
+
+
 def _image_model(b: B, ref: str, choice: dict, note: str) -> None:
     b.doc["requirements"]["models"].append(
         {"ref": ref, "kind": "image", "note": note, "optional": False, **choice}
@@ -3176,8 +3318,9 @@ BUILDERS = (
     dataset_forge,
     prompt_tournament,
     sticker_pack,
-    daily_digest,
-    webhook_reply,
+    meme_maker,
+    postcard,
+    social_clip,
     photo_restyle,
     animate_photo,
     meeting_notes,
@@ -3200,6 +3343,8 @@ BUILDERS = (
     research_agent,
     invoice_extractor,
     email_triage,
+    daily_digest,
+    webhook_reply,
     lora_style,
     hires_fix,
     face_fix,

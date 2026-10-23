@@ -12,6 +12,7 @@ import {
 } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge, FlowNode } from "../types";
+import { addFileNodes } from "./file-drop";
 import { runFlow } from "./run-controller";
 import { flushSave } from "./use-autosave";
 
@@ -82,6 +83,34 @@ function parseClipboardText(text: string): GraphFragment | null {
   }
 }
 
+/** The first image on the system clipboard, or null (no image, no permission, or no async clipboard API). */
+async function clipboardImage(): Promise<File | null> {
+  if (!navigator.clipboard?.read) return null;
+  try {
+    for (const item of await navigator.clipboard.read()) {
+      const type = item.types.find((t) => t.startsWith("image/"));
+      if (type) {
+        const blob = await item.getType(type);
+        return new File([blob], `pasted.${type.split("/")[1] || "png"}`, {
+          type,
+        });
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function centreOfCanvas(): { x: number; y: number } {
+  const rect = document
+    .querySelector('[data-testid="flows-canvas"]')
+    ?.getBoundingClientRect();
+  return rect
+    ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+    : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+}
+
 export function useEditorShortcuts(active: boolean): void {
   const { fitView, screenToFlowPosition } = useReactFlow();
   useEffect(() => {
@@ -141,17 +170,25 @@ export function useEditorShortcuts(active: boolean): void {
       } else if (mod && key === "v") {
         event.preventDefault();
         const local = clipboard;
-        if (navigator.clipboard?.readText) {
-          void navigator.clipboard
-            .readText()
-            .then((text) => {
-              const fragment = parseClipboardText(text) ?? local;
-              if (fragment) paste(fragment);
-            })
-            .catch(() => local && paste(local));
-        } else if (local) {
-          paste(local);
-        }
+        const pasteBlocks = () => {
+          if (navigator.clipboard?.readText) {
+            void navigator.clipboard
+              .readText()
+              .then((text) => {
+                const fragment = parseClipboardText(text) ?? local;
+                if (fragment) paste(fragment);
+              })
+              .catch(() => local && paste(local));
+          } else if (local) {
+            paste(local);
+          }
+        };
+        // A copied picture becomes an Image block; anything else pastes blocks as before.
+        void clipboardImage().then((file) => {
+          if (!file) return pasteBlocks();
+          const at = pointer ?? centreOfCanvas();
+          void addFileNodes([file], screenToFlowPosition(at));
+        });
       } else if (mod && key === "d") {
         event.preventDefault();
         const ids = useUiStore
