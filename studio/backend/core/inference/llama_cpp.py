@@ -22,6 +22,7 @@ import math
 import os
 import re
 import struct
+from core.inference.inference_gate import holds_inference
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
 from utils import host_memory as _host_memory
@@ -25504,6 +25505,7 @@ class LlamaCppBackend:
 
     @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
+    @holds_inference
     def load_model(
         self,
         intent: GgufLoadIntent,
@@ -44457,6 +44459,7 @@ class LlamaCppBackend:
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
+    @holds_inference
     def generate_audio_response(
         self,
         text: str,

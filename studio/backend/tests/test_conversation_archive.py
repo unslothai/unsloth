@@ -1759,6 +1759,53 @@ def test_another_slots_stream_ending_does_not_restart_the_worker_mid_compaction(
     fg.join(5)
 
 
+def test_every_inference_entry_point_holds_the_gap_closed(conn, monkeypatch):
+    """MLX / Transformers generation, audio and model loads pause the worker too, not only llama streams."""
+    import threading
+
+    from core.inference.inference_gate import holds_inference
+    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    for fn in (
+        InferenceOrchestrator._generate_dispatched,
+        InferenceOrchestrator.generate_audio_response,
+        InferenceOrchestrator.generate_whisper_response,
+        InferenceOrchestrator.generate_audio_input_response,
+        InferenceOrchestrator.load_model,
+        LlamaCppBackend.generate_audio_response,
+        LlamaCppBackend.load_model,
+    ):
+        assert hasattr(fn, "__wrapped__"), fn.__qualname__
+
+    thread_id = "gate-thread"
+    turns = _gap_thread(thread_id, 30, tag = "gate")
+    monkeypatch.setattr(conversation_archive, "_PREWARM_BATCH", 1)
+    calls = _counting_encoder(monkeypatch)
+    conversation_archive.note_branch(thread_id, turns)
+    conversation_archive._start_prewarm()
+    seen = {}
+
+    @holds_inference
+    def tokens():
+        seen["depth"] = conversation_archive._inference_depth
+        worker = conversation_archive._prewarm_worker
+        seen["worker_alive"] = worker is not None and worker.is_alive()
+        before = len(calls)
+        yield 1
+        seen["embedded_during"] = len(calls) - before
+
+    @holds_inference
+    def load():
+        return conversation_archive._inference_depth
+
+    assert list(tokens()) == [1]
+    assert seen == {"depth": 1, "worker_alive": False, "embedded_during": 0}
+    assert load() == 1
+    assert conversation_archive._inference_depth == 0
+    assert threading.current_thread().name != "archive-prewarm"
+
+
 def test_an_edited_turn_misses_the_cache_and_is_embedded_fresh(conn, monkeypatch):
     thread_id = "edit-thread"
     turns = _gap_thread(thread_id, 2, tag = "edit")
